@@ -1125,7 +1125,78 @@ app.post('/api/ai-business-pulse', async (req, res) => {
 
 /// Mémoire vive pour le statut des paiements à table (Stripe Connect)
 const activeStripePayments = new Map();
+// =========================================================================
+// 🚀 GESTION DES CANDIDATURES PARTENAIRES (DEMANDE DE DÉMO)
+// =========================================================================
+app.post('/api/nouvelle-demande-demo', async (req, res) => {
+    try {
+        const { tenantID, restaurant, phone, email, details } = req.body;
 
+        // 1. Validation basique
+        if (!tenantID || !restaurant || !phone || !email) {
+            return res.status(400).json({ 
+                success: false, 
+                error: "Veuillez fournir toutes les informations requises." 
+            });
+        }
+
+        const safeID = cleanString(tenantID);
+
+        // 2. Vérifier si ce tenantID existe déjà (sécurité supplémentaire)
+        const existingTenant = await Tenant.findOne({ tenantID: safeID });
+        if (existingTenant) {
+             return res.status(409).json({ 
+                success: false, 
+                error: "Ce nom d'établissement semble déjà réservé ou est en cours de traitement." 
+            });
+        }
+
+        // 3. Création du compte "En attente" ou "Prospect" dans la BDD
+        // On utilise le statut 'SUSPENDU' ou un nouveau statut 'PROSPECT' pour ne pas activer la licence immédiatement.
+        const nouveauProspect = await Tenant.create({
+            tenantID: safeID,
+            clientName: String(restaurant).trim(),
+            email: String(email).trim(),
+            phone: String(phone).trim(),
+            status: 'SUSPENDU', // Le compte devra être activé manuellement par un admin
+            plan: 'BUSINESS', // Plan par défaut pour la démo
+            specialite: details?.type || 'resto',
+            pin: Math.floor(1000 + Math.random() * 9000).toString(), // PIN généré aléatoirement
+            maxScreens: 5,
+            maxStaff: 999,
+            // On peut ajouter une note ou les détails de la demande dans un champ s'il existe
+            // notes: `Secteur: ${details?.type} | Projet: ${details?.projet}` 
+        });
+
+        // 4. (Optionnel) Notification à l'équipe iCHEF
+        // Si tu veux recevoir un email ou un SMS à chaque nouvelle demande, c'est ici.
+        /*
+        if (twilioClient && twilioPhoneNumber) {
+             twilioClient.messages.create({
+                 body: `🚀 Nouvelle demande iCHEF OS : ${restaurant} (${phone}) - ${email}`,
+                 from: twilioPhoneNumber,
+                 to: NUMERO_FLAVIEN 
+             }).catch(err => console.error("Erreur SMS notification demande demo:", err));
+        }
+        */
+
+        console.log(`✅ Nouvelle candidature enregistrée : ${restaurant} (${safeID})`);
+
+        // 5. Réponse au frontend
+        return res.status(200).json({ 
+            success: true, 
+            message: "Candidature enregistrée avec succès.",
+            tenantID: safeID
+        });
+
+    } catch (error) {
+        console.error("🚨 Erreur lors de l'enregistrement de la demande de démo :", error);
+        return res.status(500).json({ 
+            success: false, 
+            error: "Erreur interne lors du traitement de votre candidature." 
+        });
+    }
+});
 // ==========================================
 // 💳 PAIEMENT DES COMMANDES (STRIPE CONNECT)
 // ==========================================
