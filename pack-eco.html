@@ -14736,154 +14736,17 @@ setTimeout(() => {
     if (typeof scheduleRender === "function") scheduleRender();
 }, 500);
 </script>
-  <!-- =========================================================
-     TRANSITION FULGURANTE : CODE PIN -> PLAN INTERACTIF
-     ========================================================= -->
-<style id="masquer-ancien-plan">
-/* 1. On masque définitivement l'ancienne grille de tables (Écran 1) */
-/* Cela empêche tout flash visuel indésirable pendant le chargement */
-#app {
-    display: none !important;
-}
-</style>
-
-<script id="acceleration-ouverture-plan">
-setTimeout(() => {
-    // 1. On force l'interface du plan à s'afficher IMMÉDIATEMENT, 
-    // avant même que les données de la BDD ne finissent de télécharger
-    window.openPadServiceHome = async function() {
-        if (typeof closeSheet === "function") closeSheet();
-        
-        // 👉 L'astuce est ici : on rend l'écran du plan visible tout de suite
-        const root = document.getElementById("ichefArchPad") || (typeof ensureRoot === "function" ? ensureRoot() : null);
-        if (root) root.classList.add("open");
-        document.body.style.overflow = "hidden";
-        
-        // Ensuite, on laisse le serveur télécharger les tables en arrière-plan
-        if (STATE.authenticated && !STATE.demo && navigator.onLine && typeof syncFull === "function") {
-            try { await syncFull("plan-open-live"); } catch(e) {}
-        }
-        try { if (typeof connectSocket === "function") connectSocket(); } catch(e) {}
-        
-        if (typeof loadData === "function") loadData();
-        if (typeof normaliseAll === "function") normaliseAll();
-        
-        if (typeof A !== "undefined") {
-            A.archUnlocked = false; A.archRole = ""; A.archPin = ""; A.pinOpen = false; A.pinValue = ""; A.pinMsg = ""; A.mode = "service";
-        }
-        
-        if (typeof renderAll === "function") renderAll();
-        if (root) root.focus();
-        if (typeof aToast === "function") aToast(STATE.connected ? "PLAN LIVE · TEMPS RÉEL" : "PLAN LIVE · SYNCHRO HTTP");
-    };
-
-    // 2. On modifie la vérification du PIN pour qu'elle déclenche cette ouverture instantanée
-    window.verifyPin = async function() {
-        if (!navigator.onLine) {
-            if(typeof loginMessage==="function") loginMessage("Connexion Internet requise");
-            return;
-        }
-        
-        const tenantInput = document.getElementById("tenantInput");
-        const typedTenant = tenantInput ? tenantInput.value.trim() : "";
-        if (typedTenant && typedTenant !== STATE.tenantID) {
-            STATE.tenantID = typedTenant;
-            STORAGE.set("ichef_tenant_id", STATE.tenantID);
-        }
-        if (STATE.loginPin.length < 4) { 
-            if(typeof loginMessage==="function") loginMessage("Code incomplet"); 
-            return; 
-        }
-        
-        if(typeof loginMessage==="function") loginMessage("Ouverture du plan...");
-        
-        try {
-            const r = await serverFetch("/api/verify-pin", {
-                method: "POST",
-                body: JSON.stringify({tenantID: STATE.tenantID, pin: STATE.loginPin, deviceId: STATE.deviceId, page: "PAD", terminal: "PAD"})
-            });
-            const j = await r.json().catch(() => ({}));
-            if (!r.ok || !j.success) throw new Error(j.error || j.message || "Code refusé");
-            
-            STATE.pin = STATE.loginPin;
-            if (j.safeTenantID) {
-                STATE.tenantID = String(j.safeTenantID).trim();
-                STORAGE.set("ichef_tenant_id", STATE.tenantID);
-            }
-            STATE.role = j.role || "";
-            STATE.plan = j.plan || "";
-            STATE.specialite = j.specialite || "";
-            STATE.authenticated = true;
-
-            // 👉 APPEL IMMÉDIAT DU PLAN DÈS QUE LE PIN EST BON
-            if (typeof window.openPadServiceHome === "function") {
-                window.openPadServiceHome();
-            }
-
-            // On cache la fenêtre de login en douceur
-            const loginEl = document.getElementById("login");
-            if (loginEl) loginEl.classList.add("hidden");
-            
-            const toolsEl = document.getElementById("tools");
-            if (toolsEl) toolsEl.classList.remove("hidden");
-            if(typeof loginMessage==="function") loginMessage("");
-
-            // On lance la synchro lourde en fond sans bloquer ton écran
-            if (typeof bootApp === "function") {
-                bootApp().catch(err => console.warn(err));
-            }
-        } catch(e) {
-            STATE.loginPin = "";
-            if(typeof renderPin==="function") renderPin();
-            if(typeof loginMessage==="function") loginMessage(e?.message || "Connexion impossible");
-        }
-    };
-
-    // 3. On écrase le comportement du bouton "Valider le PIN" proprement
-    const btnVal = document.getElementById("pinValidate");
-    if (btnVal) {
-        const newBtn = btnVal.cloneNode(true);
-        btnVal.parentNode.replaceChild(newBtn, btnVal);
-        newBtn.addEventListener("click", window.verifyPin);
-    }
-}, 800);
-</script>
-  <style id="force-phone-access">
-/* On détruit le verrouillage visuel qui cachait l'application */
-html.ichef-phone-denied body {
-    overflow: auto !important;
-}
-html.ichef-phone-denied body > *:not(#ichefPhoneDenied) {
-    display: block !important; 
-}
-/* Si c'est le bloc #app ou #order, on gère avec flex si besoin */
-html.ichef-phone-denied body > #app.hidden { display: none !important; }
-html.ichef-phone-denied body > #order { display: none !important; }
-body.order-open > #order { display: flex !important; }
-
-/* On masque l'écran rouge d'alerte */
-#ichefPhoneDenied {
-    display: none !important;
-}
-</style>
-
-<script>
-// On retire la classe de blocage du HTML pour libérer le défilement et l'interface
-setTimeout(() => {
-    document.documentElement.classList.remove("ichef-phone-denied");
-    const phoneLock = document.getElementById("ichefPhoneDenied");
-    if (phoneLock) phoneLock.remove();
-}, 200);
-</script>
-  <!-- =========================================================
-     VITESSE ÉCLAIR : SUPPRESSION DE TOUTES LES LATENCES (0.0s)
+<!-- =========================================================
+     VITESSE ÉCLAIR ABSOLUE (0.0s) + DÉBLOCAGE TÉLÉPHONE
      ========================================================= -->
 <style id="vitesse-eclair-absolue">
-/* 1. Destruction totale de l'animation de 0.8s */
+/* 1. Destruction de toute animation de fondu pour le login */
 #login.hidden {
     display: none !important;
     animation: none !important;
     transition: none !important;
+    opacity: 0 !important;
+    visibility: hidden !important;
 }
 .plan-visible-wrap {
     animation: none !important;
@@ -14894,11 +14757,27 @@ setTimeout(() => {
 #app {
     display: none !important;
 }
+
+/* 3. Déblocage Téléphone pour les tests */
+html.ichef-phone-denied body { overflow: auto !important; }
+html.ichef-phone-denied body > *:not(#ichefPhoneDenied) { display: block !important; }
+html.ichef-phone-denied body > #app.hidden { display: none !important; }
+html.ichef-phone-denied body > #order { display: none !important; }
+body.order-open > #order { display: flex !important; }
+#ichefPhoneDenied { display: none !important; }
 </style>
 
 <script id="acceleration-fulgurante">
+// Déblocage immédiat du téléphone dès la lecture du script
+document.documentElement.classList.remove("ichef-phone-denied");
+
 setTimeout(() => {
-    // Remplacement de la fonction de vérification par une version agressive
+    // Sécurité supplémentaire anti-verrouillage téléphone
+    const phoneLock = document.getElementById("ichefPhoneDenied");
+    if (phoneLock) phoneLock.remove();
+    document.documentElement.classList.remove("ichef-phone-denied");
+
+    // Remplacement de la fonction de vérification par une version instantanée
     window.verifyPin = async function() {
         if (!navigator.onLine) {
             if(typeof loginMessage==="function") loginMessage("Connexion Internet requise");
@@ -14911,10 +14790,10 @@ setTimeout(() => {
         }
         
         const btn = document.getElementById("pinValidate");
-        if (btn) btn.textContent = "OUVERTURE INSTANTANÉE...";
+        if (btn) btn.textContent = "OUVERTURE...";
         
         try {
-            // Frappe le serveur pour valider
+            // Frappe le serveur pour valider le code
             const r = await serverFetch("/api/verify-pin", {
                 method: "POST",
                 body: JSON.stringify({tenantID: STATE.tenantID, pin: STATE.loginPin, deviceId: STATE.deviceId, page: "PAD", terminal: "PAD"})
@@ -14927,19 +14806,23 @@ setTimeout(() => {
             STATE.plan = j.plan || "";
             STATE.authenticated = true;
 
-            // 👉 BASCULE VISUELLE INSTANTANÉE (0 MILLISECONDE)
+            // 👉 BASCULE VISUELLE INSTANTANÉE (0.0s)
             const loginEl = document.getElementById("login");
-            if(loginEl) loginEl.style.setProperty("display", "none", "important");
+            if(loginEl) {
+                loginEl.style.setProperty("display", "none", "important");
+                loginEl.classList.add("hidden");
+            }
             
-            const toolsEl = document.getElementById("tools");
-            if(toolsEl) toolsEl.classList.remove("hidden");
-            
-            // Affichage direct du plan
+            // Affichage direct et brutal du plan architectural
+            const root = document.getElementById("ichefArchPad") || (typeof ensureRoot === "function" ? ensureRoot() : null);
+            if (root) root.classList.add("open");
+            document.body.style.overflow = "hidden";
+
             if (typeof window.openPadServiceHome === "function") {
                 window.openPadServiceHome();
             }
 
-            // Lancement de la synchro de fond sans bloquer l'écran
+            // Lancement de la synchro des tables en arrière-plan sans bloquer l'écran
             if (typeof bootApp === "function") bootApp().catch(()=>{});
 
         } catch(e) {
@@ -14950,14 +14833,14 @@ setTimeout(() => {
         }
     };
 
-    // Re-câblage du bouton avec la nouvelle fonction
+    // Re-câblage du bouton avec la nouvelle fonction instantanée
     const btnVal = document.getElementById("pinValidate");
     if (btnVal) {
         const newBtn = btnVal.cloneNode(true);
         btnVal.parentNode.replaceChild(newBtn, btnVal);
         newBtn.addEventListener("click", window.verifyPin);
     }
-}, 900); // Laisse le temps aux autres scripts de charger avant de s'imposer
+}, 800); 
 </script>
 </body>
 </html>
