@@ -6112,32 +6112,91 @@ async function kitchenMessage(type,detail=""){
 function readyCount(){let n=0;Object.entries(STATE.activeOrders).forEach(([k,o])=>{if(!isRealOrder(k,o))return;(o.items||[]).forEach(i=>{if(lineReady(i)&&!lineServed(i))n+=Math.max(1,num(i.qty||i.quantity||1))})});return n}
 
 /* ---------------- ALERTS ---------------- */
+/*
+   CORRECTION V17 — ALERTE FANTÔME APRÈS RECONNEXION
+   Le serveur conserve ALERTS_MASTER comme dernier événement.
+   Avant cette correction, un simple rechargement remettait
+   STATE.lastAlertSignature à vide et l'ancien RING réapparaissait.
+*/
+const ICHEF_ALERT_SEEN_KEY="ichef_phone_last_alert_signature_v1";
+const ICHEF_ALERT_TTL_MS=30000;
+
+function globalAlertTimeMs(value){
+  if(value===null||value===undefined||value==="")return 0;
+  const numeric=Number(value);
+  if(Number.isFinite(numeric)&&numeric>0)return numeric;
+  const parsed=Date.parse(String(value));
+  return Number.isFinite(parsed)?parsed:0;
+}
+
 function checkGlobalAlert(){
-  const a=unwrap(STATE.activeOrders.ALERTS_MASTER);
-  if(!a||a.type!=="RING"){ $("server-alert").classList.remove("show");return }
-  
-  const sig=text(a.createdAt)+"|"+text(a.message);
-  if(sig===STATE.lastAlertSignature)return;
-  STATE.lastAlertSignature=sig;
-  
   const el=$("server-alert");
-  
-  // On récupère le numéro de la table concernée
-  const tableNum = a.tableId || "INCONNUE";
-  
-  // On remplace le long texte par un message ultra court avec une croix pour fermer
-  el.innerHTML = `
-    <div style="display: flex; align-items: center; justify-content: space-between; width: 100%;">
-      <span style="font-size: 32px; font-weight: 1000; letter-spacing: 1px;">⚠️ ATTENTION TABLE ${esc(tableNum)}</span>
-      <button onclick="document.getElementById('server-alert').classList.remove('show')" style="background: transparent; border: none; color: white; font-size: 45px; font-weight: bold; cursor: pointer; padding: 0 15px; line-height: 1; touch-action: manipulation;">×</button>
+  if(!el)return;
+
+  const a=unwrap(STATE.activeOrders.ALERTS_MASTER);
+  if(!a||a.type!=="RING"){
+    el.classList.remove("show");
+    return;
+  }
+
+  const sig=text(a.createdAt)+"|"+text(a.message)+"|"+text(a.tableId);
+  const createdAtMs=globalAlertTimeMs(a.createdAt);
+  const ageMs=createdAtMs ? now()-createdAtMs : Number.POSITIVE_INFINITY;
+
+  /*
+     Une alerte n'a de sens que pendant sa fenêtre d'affichage.
+     Si ALERTS_MASTER contient encore un vieux RING, on le marque
+     comme déjà traité mais on ne l'affiche surtout pas.
+  */
+  if(!createdAtMs || ageMs>ICHEF_ALERT_TTL_MS || ageMs < -5000){
+    STATE.lastAlertSignature=sig;
+    STORAGE.set(ICHEF_ALERT_SEEN_KEY,sig);
+    el.classList.remove("show");
+    return;
+  }
+
+  /*
+     La signature est mémorisée sur CE téléphone.
+     Ainsi un refresh / reconnexion ne transforme pas le dernier
+     événement du serveur en nouvelle alerte.
+  */
+  const alreadySeen =
+    sig===STATE.lastAlertSignature ||
+    sig===STORAGE.get(ICHEF_ALERT_SEEN_KEY,"");
+
+  if(alreadySeen)return;
+
+  STATE.lastAlertSignature=sig;
+  STORAGE.set(ICHEF_ALERT_SEEN_KEY,sig);
+
+  const tableNum=text(a.tableId)||"INCONNUE";
+
+  el.innerHTML=`
+    <div style="display:flex;align-items:center;justify-content:space-between;width:100%;">
+      <span style="font-size:32px;font-weight:1000;letter-spacing:1px;">⚠️ ATTENTION TABLE ${esc(tableNum)}</span>
+      <button type="button" data-close-server-alert
+        style="background:transparent;border:none;color:white;font-size:45px;font-weight:bold;cursor:pointer;padding:0 15px;line-height:1;touch-action:manipulation;">×</button>
     </div>
   `;
-  
+
+  const closeBtn=el.querySelector("[data-close-server-alert]");
+  if(closeBtn){
+    closeBtn.onclick=()=>{
+      el.classList.remove("show");
+      if(el.hideTimer){
+        clearTimeout(el.hideTimer);
+        el.hideTimer=null;
+      }
+    };
+  }
+
   el.classList.add("show");
-  
-  // On annule l'ancien chrono s'il y en avait un, et on le règle sur 30 secondes (30000 millisecondes)
-  if(el.hideTimer) clearTimeout(el.hideTimer);
-  el.hideTimer = setTimeout(()=>el.classList.remove("show"), 30000);
+
+  if(el.hideTimer)clearTimeout(el.hideTimer);
+  el.hideTimer=setTimeout(()=>{
+    el.classList.remove("show");
+    el.hideTimer=null;
+  },ICHEF_ALERT_TTL_MS);
 }
 /* ---------------- RENDER ---------------- */
 function scheduleRender(){
