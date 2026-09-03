@@ -4934,40 +4934,15 @@ function isArchivedOrder(order){
     status==="ANNULÉ_OU_SUPPRIMÉ" ||
     status==="ARCHIVED";
 }
-function ichefOrderPayload(value){
-  if(!value||typeof value!=="object")return null;
-  const candidates=[
-    value,
-    value.data,
-    value.order,
-    value.commande,
-    value.currentOrder,
-    value.snapshot,
-    value.fullOrderSnapshot,
-    value.orderSnapshot,
-    value.ticket
-  ];
-  for(const raw of candidates){
-    if(!raw||typeof raw!=="object"||Array.isArray(raw))continue;
-    const items=
-      Array.isArray(raw.items)?raw.items:
-      Array.isArray(raw.lines)?raw.lines:
-      Array.isArray(raw.articles)?raw.articles:
-      Array.isArray(raw.orderItems)?raw.orderItems:
-      Array.isArray(raw.ticketItems)?raw.ticketItems:
-      null;
-    if(items){
-      return normalizeCompatOrder({...raw,items});
-    }
-  }
-  return null;
-}
 function normalizeServerOrdersMap(activeOrders){
   const source=activeOrders&&typeof activeOrders==="object"?activeOrders:{};
   const out={};
   Object.entries(source).forEach(([key,value])=>{
-    const payload=ichefOrderPayload(value);
-    out[key]=payload||value;
+    if(value&&typeof value==="object"&&Array.isArray(value.items)){
+      out[key]=normalizeCompatOrder(value);
+    }else{
+      out[key]=value;
+    }
   });
   return out;
 }
@@ -5702,22 +5677,9 @@ async function connectSocket(){
       applyServerState(s,"socket");
     });
 
-    /* Événements génériques du server.js : symbiose globale + relecture dédiée
-       de la table ouverte. Un signal T3 ne doit jamais rester seulement visuel. */
+    /* Événements génériques du nouveau server.js : tous les écrans restent en symbiose. */
     socket.on("server-state-changed",evt=>{
-      const changedTable=text(evt?.tableId||"");
-      scheduleSymbioseSync(text(evt?.source||changedTable||"server-state-changed"),70);
-      if(STATE.currentTable && changedTable && ichefTableToken(changedTable)===ichefTableToken(STATE.currentTable)){
-        const opened=STATE.currentTable;
-        setTimeout(async()=>{
-          if(STATE.currentTable!==opened||document.hidden||!navigator.onLine)return;
-          const fresh=await ichefRefreshOpenedTable(opened,"server-state-changed:"+changedTable);
-          if(STATE.currentTable!==opened||!fresh)return;
-          STATE.currentOrder=clone(fresh);
-          scheduleRender();
-          if(document.body.classList.contains("summary-open"))renderSummary();
-        },120);
-      }
+      scheduleSymbioseSync(text(evt?.source||evt?.tableId||"server-state-changed"),180);
     });
 
     socket.on("architecture-changed",evt=>{
@@ -5858,62 +5820,8 @@ window.addEventListener("pageshow",event=>{
 },{passive:true});
 
 /* ---------------- DATA NORMALIZATION ---------------- */
-function ichefArchitectureLabelKey(value){
-  return text(value)
-    .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
-    .toUpperCase().replace(/\s+/g," ").trim();
-}
 function normalizeArchitecture(){
-  const raw=unwrap(STATE.activeOrders.ARCHITECTURE)||{};
-  const roomSource=Array.isArray(raw.rooms)&&raw.rooms.length?raw.rooms:["Salle Principale"];
-  const rooms=[];
-  const seenRooms=new Set();
-  roomSource.map(text).filter(Boolean).forEach(r=>{
-    const k=ichefArchitectureLabelKey(r);
-    if(!k||seenRooms.has(k))return;
-    seenRooms.add(k);rooms.push(r);
-  });
-  if(!rooms.length)rooms.push("Salle Principale");
-
-  const rawTables=Array.isArray(raw.tables)?raw.tables.filter(Boolean):[];
-  const tableMap=new Map();
-  const duplicateLabels=[];
-  rawTables.forEach((t,index)=>{
-    const label=text(t.label||t.name||t.id);
-    if(!label)return;
-    const key=ichefArchitectureLabelKey(label);
-    if(!key)return;
-    const normalized={...t,label,room:text(t.room||rooms[0])||rooms[0]};
-    if(!tableMap.has(key)){
-      tableMap.set(key,normalized);
-      return;
-    }
-    duplicateLabels.push(label);
-    /* Conserver la première identité de table, mais compléter les champs manquants
-       avec la copie suivante afin de ne pas perdre coordonnées / zone / capacité. */
-    const first=tableMap.get(key);
-    Object.entries(normalized).forEach(([k,v])=>{
-      if((first[k]===undefined||first[k]===null||first[k]==="") && v!==undefined && v!==null && v!=="")first[k]=v;
-    });
-  });
-  if(duplicateLabels.length){
-    console.warn("[iCHEF TELEPHONE] doublons de tables ignorés",[...new Set(duplicateLabels)]);
-  }
-
-  const zoneMap=new Map();
-  const rawZones=Array.isArray(raw.zones)?raw.zones.filter(Boolean):[];
-  rawZones.forEach((z,index)=>{
-    const label=text(z.label||z.name||z.id||("ZONE "+(index+1)));
-    const room=text(z.room||rooms[0])||rooms[0];
-    const key=ichefArchitectureLabelKey(room)+"|"+ichefArchitectureLabelKey(label);
-    if(!zoneMap.has(key))zoneMap.set(key,{...z,label,room});
-  });
-
-  const tables=[...tableMap.values()];
-  const zones=[...zoneMap.values()];
-  STATE.architecture={rooms,tables,zones};
-  STATE.rooms=rooms;STATE.tables=tables;STATE.zones=zones;
-  if(!STATE.rooms.includes(STATE.room))STATE.room=STATE.rooms[0];
+  const raw=unwrap(STATE.activeOrders.ARCHITECTURE)||{};const rooms=Array.isArray(raw.rooms)&&raw.rooms.length?raw.rooms.map(text).filter(Boolean):["Salle Principale"];const tables=Array.isArray(raw.tables)?raw.tables.filter(Boolean).map(t=>({...t,label:text(t.label||t.name||t.id),room:text(t.room||rooms[0])})).filter(t=>t.label):[];const zones=Array.isArray(raw.zones)?raw.zones.filter(Boolean).map(z=>({...z,label:text(z.label||z.name||z.id),room:text(z.room||rooms[0])})):[];STATE.architecture={rooms,tables,zones};STATE.rooms=rooms;STATE.tables=tables;STATE.zones=zones;if(!STATE.rooms.includes(STATE.room))STATE.room=STATE.rooms[0];
 }
 function productFrom(p,cat="Menu",key="",defaultDest="cuisine"){
   if(p==null)return null;
@@ -6004,62 +5912,7 @@ function isRealOrder(k,o){
     !isArchivedOrder(o) &&
     Array.isArray(o.items);
 }
-function ichefTableToken(value){
-  return text(value)
-    .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
-    .toUpperCase()
-    .replace(/^(TABLE|TAB|TBL)[\s_\-:]*/,"")
-    .replace(/[^A-Z0-9]/g,"");
-}
-function ichefOrderTableRefs(key,order){
-  const refs=[
-    key,order?.tableId,order?.tableID,order?.table,order?.tableLabel,
-    order?.tableName,order?.numeroTable,order?.numero,order?.label
-  ].map(text).filter(Boolean);
-  return [...new Set(refs)];
-}
-function ichefOrderActivityScore(order){
-  if(!order||!Array.isArray(order.items))return -1;
-  const active=order.items.filter(i=>i&&!i.cancelled&&itemQty(i)>0).length;
-  const all=order.items.filter(Boolean).length;
-  const updated=Number(order.updatedAt||order.serverUpdatedAt||order.lastModified||0);
-  return active*1000000 + all*10000 + Math.min(9999,Math.floor((updated||0)/1000)%10000);
-}
-function ichefResolveOrderEntry(table,source=STATE.activeOrders){
-  const wantedRaw=text(table);
-  const wanted=ichefTableToken(wantedRaw);
-  if(!wanted||!source||typeof source!=="object")return null;
-  let best=null;
-  Object.entries(source).forEach(([key,raw])=>{
-    if(SYSTEM_KEYS.has(key)||String(key).startsWith("FISCAL_")||String(key).startsWith("FINANCIAL_CANCEL_"))return;
-    const order=ichefOrderPayload(raw)||raw;
-    if(!isRealOrder(key,order))return;
-    const refs=ichefOrderTableRefs(key,order);
-    const exactKey=text(key)===wantedRaw;
-    const tokenMatch=refs.some(ref=>ichefTableToken(ref)===wanted);
-    if(!exactKey&&!tokenMatch)return;
-    let score=ichefOrderActivityScore(order);
-    if(exactKey)score+=200000;
-    if(text(order.tableId)===wantedRaw)score+=400000;
-    else if(ichefTableToken(order.tableId)===wanted)score+=300000;
-    if(!best||score>best.score)best={key,order:normalizeCompatOrder(order),score,refs};
-  });
-  return best;
-}
-function getOrder(table){
-  const hit=ichefResolveOrderEntry(table);
-  return hit?hit.order:null;
-}
-window.ichefDiagnoseTable=function(table){
-  const hit=ichefResolveOrderEntry(table);
-  return {
-    tenantID:STATE.tenantID,
-    table:text(table),
-    resolvedKey:hit?.key||null,
-    itemCount:hit?.order?.items?.length||0,
-    order:hit?.order||null
-  };
-};
+function getOrder(table){const o=STATE.activeOrders[table];return isRealOrder(table,o)?o:null}
 function orderCreated(o){if(!o)return 0;let t=Number(o.createdAt||o.openedAt||o.date||0);if(!t&&Array.isArray(o.items)&&o.items.length)t=Math.min(...o.items.map(i=>Number(i.itemId||i.createdAt||i.sentAt||Date.now())).filter(Number.isFinite));return t||0}
 function lineServed(i){return !!(i&&(i.served===true||i.isServed===true||i.servedAt||String(i.sequenceStatus||"").toUpperCase()==="SERVED"||String(i.status||"").toLowerCase()==="served"))}
 
@@ -6875,61 +6728,32 @@ async function kitchenMessage(type,detail=""){
 function readyCount(){let n=0;Object.entries(STATE.activeOrders).forEach(([k,o])=>{if(!isRealOrder(k,o))return;(o.items||[]).forEach(i=>{if(lineReady(i)&&!lineServed(i))n+=Math.max(1,num(i.qty||i.quantity||1))})});return n}
 
 /* ---------------- ALERTS ---------------- */
-function ichefAlertDestinationAllowed(alert){
-  const dest=text(alert?.destination||alert?.target||alert?.recipient||"").toLowerCase();
-  if(!dest)return true;
-  return ["all","all_services","salle","service","serveur","server","telephone","phone","runner"].includes(dest);
-}
-function ichefAlertIsFresh(alert){
-  const ts=Date.parse(text(alert?.createdAt||alert?.updatedAt||""));
-  if(!Number.isFinite(ts))return true;
-  return Math.max(0,Date.now()-ts)<=120000;
-}
-function ichefAlertTableStillActive(tableId){
-  const table=text(tableId);
-  if(!table||["SALLE","INCONNUE","ALL","TOUS"].includes(table.toUpperCase()))return true;
-  const o=getOrder(table);
-  if(!o)return false;
-  const active=(o.items||[]).some(i=>i&&!i.cancelled&&itemQty(i)>0);
-  const st=text(o.status).toLowerCase();
-  return active || ["open","active","sent","payment","ready","wait","late","alert"].some(v=>st.includes(v));
-}
-function dismissGlobalAlert(signature=""){
-  const el=$("server-alert");
-  el?.classList.remove("show");
-  const sig=text(signature||STATE.lastAlertSignature||"");
-  if(sig)STORAGE.set("ichef_phone_dismissed_alert",sig);
-}
-window.dismissGlobalAlert=dismissGlobalAlert;
 function checkGlobalAlert(){
   const a=unwrap(STATE.activeOrders.ALERTS_MASTER);
-  const el=$("server-alert");
-  if(!el)return;
-  if(!a||a.type!=="RING"||!ichefAlertDestinationAllowed(a)||!ichefAlertIsFresh(a)){
-    el.classList.remove("show");
-    return;
-  }
-
-  const tableNum=text(a.tableId||"INCONNUE")||"INCONNUE";
-  if(!ichefAlertTableStillActive(tableNum)){
-    el.classList.remove("show");
-    return;
-  }
-
-  const sig=text(a.createdAt)+"|"+text(a.message)+"|"+tableNum;
-  if(sig===STATE.lastAlertSignature || sig===STORAGE.get("ichef_phone_dismissed_alert",""))return;
+  if(!a||a.type!=="RING"){ $("server-alert").classList.remove("show");return }
+  
+  const sig=text(a.createdAt)+"|"+text(a.message);
+  if(sig===STATE.lastAlertSignature)return;
   STATE.lastAlertSignature=sig;
-
+  
+  const el=$("server-alert");
+  
+  // On récupère le numéro de la table concernée
+  const tableNum = a.tableId || "INCONNUE";
+  
+  // On remplace le long texte par un message ultra court avec une croix pour fermer
   el.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;width:100%;gap:12px;">
-      <span style="font-size:32px;font-weight:1000;letter-spacing:1px;">⚠️ ATTENTION TABLE ${esc(tableNum)}</span>
-      <button type="button" data-dismiss-server-alert style="background:transparent;border:none;color:white;font-size:45px;font-weight:bold;cursor:pointer;padding:0 15px;line-height:1;touch-action:manipulation;">×</button>
+    <div style="display: flex; align-items: center; justify-content: space-between; width: 100%;">
+      <span style="font-size: 32px; font-weight: 1000; letter-spacing: 1px;">⚠️ ATTENTION TABLE ${esc(tableNum)}</span>
+      <button onclick="document.getElementById('server-alert').classList.remove('show')" style="background: transparent; border: none; color: white; font-size: 45px; font-weight: bold; cursor: pointer; padding: 0 15px; line-height: 1; touch-action: manipulation;">×</button>
     </div>
   `;
-  el.querySelector("[data-dismiss-server-alert]")?.addEventListener("click",()=>dismissGlobalAlert(sig));
+  
   el.classList.add("show");
-  if(el.hideTimer)clearTimeout(el.hideTimer);
-  el.hideTimer=setTimeout(()=>dismissGlobalAlert(sig),30000);
+  
+  // On annule l'ancien chrono s'il y en avait un, et on le règle sur 30 secondes (30000 millisecondes)
+  if(el.hideTimer) clearTimeout(el.hideTimer);
+  el.hideTimer = setTimeout(()=>el.classList.remove("show"), 30000);
 }
 /* ---------------- RENDER ---------------- */
 function scheduleRender(){
@@ -7408,24 +7232,7 @@ function renderTicket(){
 }
 
 /* ---------------- ORDER OPEN/CLOSE ---------------- */
-async function ichefRefreshOpenedTable(table,reason="open-order"){
-  if(!STATE.authenticated||STATE.demo||!navigator.onLine)return getOrder(table);
-  try{
-    const state=await getState();
-    STATE.lastServerAt=now();
-    applyServerState(state,reason);
-    const hit=ichefResolveOrderEntry(table);
-    if(hit){
-      console.info("[iCHEF TELEPHONE] commande serveur résolue",{table,key:hit.key,items:hit.order?.items?.length||0});
-      return hit.order;
-    }
-    console.warn("[iCHEF TELEPHONE] aucune commande serveur résolue",{table});
-    return null;
-  }catch(err){
-    console.warn("[iCHEF TELEPHONE] lecture dédiée table impossible",table,err?.message||err);
-    return getOrder(table);
-  }
-}
+/* ---------------- ORDER OPEN/CLOSE ---------------- */
 function openOrder(table){
   STATE.currentTable=table;
   STATE.currentOrder=getOrder(table)||ensureOrder(table);
@@ -7441,18 +7248,16 @@ function openOrder(table){
   document.body.classList.add("order-open");
   renderOrder();
 
+  /* IMPORTANT : au moment où le serveur ouvre T3/T4/etc., le téléphone peut
+     avoir un ancien snapshot en mémoire. On relit immédiatement MongoDB et
+     on remplace la commande affichée par la copie serveur confirmée. */
   const openedTable=table;
   if(STATE.authenticated&&!STATE.demo&&navigator.onLine){
-    setOrderSyncState("● LECTURE SERVEUR…","pending");
     setTimeout(async()=>{
-      const fresh=await ichefRefreshOpenedTable(openedTable,"open-order:"+openedTable);
+      await syncFull("open-order:"+openedTable);
       if(STATE.currentTable!==openedTable)return;
-      if(fresh){
-        STATE.currentOrder=clone(fresh);
-        setOrderSyncState("✓ SERVEUR SYNCHRONISÉ","good");
-      }else{
-        setOrderSyncState("⚠ TABLE SANS COMMANDE SERVEUR","bad");
-      }
+      const fresh=getOrder(openedTable);
+      if(fresh)STATE.currentOrder=clone(fresh);
       renderOrder();
       if(document.body.classList.contains("summary-open"))renderSummary();
     },0);
@@ -8881,9 +8686,7 @@ function systemPrintHTML(lines,title="iCHEF",paperWidth=80){
 }
 </style>
 
-</head><body><div class="ticket">${body}</div>
-<!-- iCHEF TELEPHONE — QR + SYMBIOSE + ALERTES + TABLES UNIQUES · 2026-09-03 -->
-</body></html>`;
+</head><body><div class="ticket">${body}</div></body></html>`;
 }
 
 async function printViaSystem(printer,lines,meta={}){
@@ -13062,6 +12865,7 @@ setTimeout(() => {
     }
 }, 1000);
 </script>
+  </body>
   <!-- =========================================================
      RESTAURATION DU DOCK BAS À 3 LIGNES (STYLE CAPTURE)
      ========================================================= -->
@@ -14062,13 +13866,8 @@ setTimeout(() => {
             const body = lines.map(line => {
                 if (line && line.qrcode) {
                     // Utilisation de l'API pour générer l'image du QR code
-                    const qrUrl = "https://api.qrserver.com/v1/create-qr-code/?size=180x180&margin=8&data=" + encodeURIComponent(line.qrcode);
-                    const qrLabel = esc(String(line.qrLabel||"QR iCHEF"));
-                    return `<div style="margin:16px auto;text-align:center;border:2px solid #111;border-radius:12px;padding:10px;width:190px;box-sizing:border-box;break-inside:avoid;">
-                      <div style="font-size:12px;font-weight:900;letter-spacing:.7px;margin-bottom:7px;">${qrLabel}</div>
-                      <img src="${qrUrl}" alt="QR Code iCHEF" loading="eager" style="width:160px;height:160px;display:block;margin:0 auto;">
-                      <div style="font-size:9px;font-weight:700;margin-top:6px;">SCAN · VÉRIFICATION / TICKET</div>
-                    </div>`;
+                    const qrUrl = "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=" + encodeURIComponent(line.qrcode);
+                    return `<div style="text-align:center; margin: 15px 0;"><img src="${qrUrl}" alt="QR Code Fiscal" style="width: 150px; height: 150px; display: block; margin: 0 auto;"></div>`;
                 }
                 const o = typeof line==="string" ? {text:line} : line||{};
                 const textValue = esc(String(o.text||""));
@@ -14197,7 +13996,7 @@ setTimeout(() => {
             lines.push("------------------------------------------");
             
             const qrData = `RAPPORT:${label}|PERIODE:${key}|TOTAL:${total}|RECORDS:${records.length}`;
-            lines.push({qrcode: qrData,qrLabel:"RAPPORT FISCAL iCHEF"});
+            lines.push({qrcode: qrData});
 
             lines.push({text:"DOCUMENT DE CONTRÔLE — JOURNAL FISCAL iCHEF",bold:true,align:"center"});
             lines.push({text:"L'impression n'altère aucune écriture fiscale.",align:"center"});
@@ -14252,11 +14051,8 @@ setTimeout(() => {
             if(fiscalHash){
                 lines.push(`SCELLEMENT SHA-256:`);
                 lines.push(`${fiscalHash.slice(0,16).toUpperCase()}…`);
-                const publicToken=text(order?.receipt?.publicToken||order?.publicReceiptToken||order?.paymentDraft?.publicToken||"");
-                const qrData = publicToken
-                  ? `${APP_SERVER_URL}/api/public-receipt?tenantID=${encodeURIComponent(STATE.tenantID)}&token=${encodeURIComponent(publicToken)}`
-                  : `TICKET:${receiptReference(order)}|TOTAL:${total}|HASH:${fiscalHash.toUpperCase()}`;
-                lines.push({qrcode: qrData,qrLabel: publicToken?"TICKET CLIENT iCHEF":"SCELLEMENT FISCAL iCHEF"});
+                const qrData = `TICKET:${receiptReference(order)}|TOTAL:${total}|HASH:${fiscalHash.toUpperCase()}`;
+                lines.push({qrcode: qrData});
             }
             
             lines.push("------------------------------------------");
@@ -14268,211 +14064,6 @@ setTimeout(() => {
 
 }, 2000);
 
-</script>
-  <!-- =========================================================
-     FIX ULTIME : SYMBIOSE PARFAITE PLAN INTERACTIF / ACCUEIL
-     ========================================================= -->
-<style id="symbiose-totale-plans-css">
-/* 1. On supprime le vieux fond beige du plan interactif pour utiliser le fond de l'application */
-#sheet.plan-interactive-open .sheet-card,
-#sheet.plan-interactive-open .sheet-body,
-#livePlanHost,
-.plan-wrap.plan-touch,
-#sheet.plan-interactive-open {
-    background: var(--bg) !important;
-}
-
-/* 2. On adapte la barre d'outils du plan interactif au thème */
-.plan-live-toolbar {
-    background: var(--panel) !important;
-    color: var(--text) !important;
-    border-bottom: 2px solid var(--line) !important;
-}
-.plan-live-meta span {
-    color: var(--muted) !important;
-}
-
-/* 3. On permet aux tables du plan d'utiliser le design massif des cartes d'accueil */
-.plan-touch .plan-table.table-card {
-    position: absolute !important;
-    margin: 0 !important;
-    transform-origin: center center;
-}
-</style>
-
-<script id="symbiose-totale-plans-js">
-setTimeout(() => {
-    if (typeof window.renderLivePlan === "function") {
-        window.renderLivePlan = function() {
-            if(!STATE.planViewOpen) return;
-            const host = document.getElementById("livePlanHost");
-            if(!host) return;
-            if(STATE.planGestureActive) return;
-
-            const filter = typeof getDeviceFilter === "function" ? getDeviceFilter() : {type:"all"};
-            let ts = STATE.tables || [];
-            let zs = STATE.zones || [];
-
-            if (filter.type === "zone") {
-                ts = ts.filter(t => {
-                    const z = getZone(t);
-                    return (z?.label || t.zone || "Nouvelle Zone") === filter.value;
-                });
-                zs = zs.filter(z => z.label === filter.value);
-            } else if (filter.type === "room") {
-                ts = ts.filter(t => t.room === filter.value);
-                zs = zs.filter(z => z.room === filter.value);
-            } else {
-                ts = ts.filter(t => t.room === STATE.room);
-                zs = zs.filter(z => z.room === STATE.room);
-            }
-
-            if(!ts.length && !zs.length){
-                host.innerHTML = '<div class="empty-state" style="margin:12px; font-size:24px;">Aucun plan synchronisé pour ce secteur.</div>';
-                return;
-            }
-
-            let maxX = 900, maxY = 650;
-            [...ts,...zs].forEach(item => {
-                const p = planCoordinates(item);
-                maxX = Math.max(maxX, p.l + p.w + 60);
-                maxY = Math.max(maxY, p.t + p.h + 60);
-            });
-
-            if(!STATE.planTransform.initialized){
-                STATE.planTransform.scale = 1;
-                STATE.planTransform.x = 12;
-                STATE.planTransform.y = 12;
-                STATE.planTransform.initialized = true;
-            }
-
-            // NOM DE LA ZONE DE FOND EN TAILLE x2 (font-size: 26px)
-            const zonesHTML = zs.map(z => {
-                const p = planCoordinates({...z, w: z.w || 400, h: z.h || 300});
-                const color = text(z.color || z.couleur || "#58a9ff");
-                return `<div class="plan-zone" style="left:${p.l}px;top:${p.t}px;width:${p.w}px;height:${p.h}px;border: 3px dashed ${esc(color)};color:${esc(color)};background:${esc(color)}15;font-size:26px;font-weight:1000;padding:15px; text-transform:uppercase; z-index:1;">${esc(z.label || "Zone")}</div>`;
-            }).join("");
-
-            // CREATION DES TABLES EXACTEMENT COMME L'ACCUEIL (ajout de la classe "table-card")
-            const tablesHTML = ts.map(t => {
-                const p = planCoordinates(t);
-                const s = tableStats(t.label);
-                const o = getOrder(t.label);
-                const z = getZone(t);
-
-                const meta = s.pax ? `${s.pax} PAX` : (t.pax ? `${t.pax} PAX` : "0 PAX");
-                const zoneLabel = text(z?.label || t.zone || "Nouvelle Zone");
-
-                let etatLabel = "LIBRE";
-                if (s.status === 'reserved') etatLabel = "RÉSERVÉE";
-                else if (s.status === 'payment') etatLabel = "PAIEMENT";
-                else if (s.status === 'alert') etatLabel = "URGENT";
-                else if (s.status === 'late') etatLabel = "RETARD";
-                else if (s.status === 'ready') etatLabel = "PRÊT";
-                else if (s.status === 'wait') etatLabel = "ATTENTE";
-                else if (s.status === 'active') etatLabel = "OCCUPÉE";
-
-                const zoneColor = text(z?.color || z?.couleur || (
-                    s.status==="ready"?"#36d98a":
-                    s.status==="wait"?"#ff9a43":
-                    s.status==="late"||s.status==="alert"?"#ff5368":
-                    s.status==="reserved"?"#9b74ff":
-                    "#b7bd00"
-                ));
-
-                const preview = (o?.items||[])
-                    .filter(Boolean).slice(0,2)
-                    .map((item,index) => {
-                        const q = itemQty(item);
-                        const served = lineServed(item);
-                        const ready = lineReady(item) && !served && !item.cancelled;
-                        const sent = lineFired(item);
-                        const klass = (ready || s.status==="late" || s.status==="alert") ? " warn" : "";
-                        const state = served ? " · SERVI" : ready ? " · PRÊT" : sent ? "" : " · À ENVOYER";
-                        return `<span class="table-preview-line${klass}">• ${q>1?q+"× ":""}${esc(itemName(item))}${state}</span>`;
-                    }).join("");
-
-                const time = s.age ? duration(s.age) : (s.status === "reserved" ? "RÉSERVÉE" : "00:00");
-
-                let seatPastilles = "";
-                if (o && o.items) {
-                    const activeSeats = o.items
-                        .filter(i => i && !i.cancelled && itemQty(i) > 0)
-                        .map(i => itemSeat(i))
-                        .filter(seat => seat >= 1 && seat <= 9);
-                    
-                    const uniqueSeats = [...new Set(activeSeats)].sort((a, b) => a - b);
-                    
-                    if (uniqueSeats.length > 0) {
-                        seatPastilles = `<div style="display:flex; gap:4px; justify-content:center; margin-top:6px; flex-wrap:wrap; width:100%; position:relative; z-index:5;">` + 
-                            uniqueSeats.map(seat => `<span class="seat-badge seat-${seat}" style="background:#ffffff !important; border:2px solid var(--c${seat}) !important; color:var(--c${seat}) !important; min-width:26px; height:18px; font-size:9px; padding:0 6px; margin:0; font-weight:1000; display:inline-flex; align-items:center; justify-content:center; line-height:1; border-radius:999px;">C${seat}</span>`).join('') + 
-                        `</div>`;
-                    }
-                }
-
-                const readyOverlay = s.ready 
-                    ? `<div class="table-ready-overlay">${s.ready} PRÊT(S)</div>` 
-                    : "";
-
-                // LA FUSION S'OPÈRE ICI : On utilise "plan-table" pour la position et "table-card" pour le design
-                return `<button class="plan-table table-card ${s.status}" data-plan-table="${esc(t.label)}"
-                    style="position:absolute; left:${p.l}px; top:${p.t}px; width:${p.w}px; height:${p.h}px; padding: 10px 5px; z-index:10;">
-                    <span class="num" style="font-size:clamp(20px, 3.5vw, 40px) !important; position:relative; z-index:5;">${esc(t.label)}</span>
-                    <span class="meta state-label" style="font-size:11px; font-weight:950; text-transform:uppercase; margin-top:2px; position:relative; z-index:5;">${esc(etatLabel)}</span>
-                    <span class="time" style="font-size:14px; font-weight:900; margin-top:3px; position:relative; z-index:5;">${esc(time)}</span>
-                    <span class="meta pax" style="font-size:12px; margin-top:3px; font-weight:900; position:relative; z-index:5;">${esc(meta)}</span>
-                    ${seatPastilles}
-                    <span class="table-zone" style="color:${esc(zoneColor)}; margin-top:6px; position:relative; z-index:5; display: ${preview ? 'none' : 'flex'};">${esc(zoneLabel)}</span>
-                    ${preview ? `<span class="table-preview" style="position:relative; z-index:5;">${preview}</span>` : ""}
-                    ${readyOverlay}
-                </button>`;
-            }).join("");
-
-            host.innerHTML = `
-                <div class="plan-live-toolbar">
-                    <div class="plan-live-meta">
-                        <strong style="font-size: 16px;">🗺️ PLAN INTERACTIF · ${esc(filter.type === 'zone' ? filter.value : (filter.type === 'room' ? filter.value : STATE.room))}</strong>
-                        <span style="font-size: 12px; font-weight: 800;">${STATE.connected?"Socket.IO connecté":"Synchronisation HTTP"} · ${ts.length} table(s)</span>
-                    </div>
-                    <button id="planSyncNow" class="action-btn" style="flex:0 0 auto; background:#111; color:#fff; border-color:#111; min-height: 40px; font-size: 14px;">ACTUALISER</button>
-                </div>
-                <div id="livePlanViewport" class="plan-wrap plan-touch">
-                    <div id="livePlanCanvas" class="plan-canvas" data-plan-width="${maxX}" data-plan-height="${maxY}" style="width:${maxX}px;height:${maxY}px">${zonesHTML}${tablesHTML}</div>
-                    <div class="plan-touch-help">1 doigt : déplacer<br>2 doigts : zoomer</div>
-                    <div class="plan-zoom-controls" aria-label="Zoom du plan">
-                        <button id="planZoomMinus" class="plan-zoom-btn" type="button" aria-label="Zoom arrière">−</button>
-                        <div id="planZoomLevel" class="plan-zoom-level">100%</div>
-                        <button id="planZoomPlus" class="plan-zoom-btn" type="button" aria-label="Zoom avant">+</button>
-                    </div>
-                </div>`;
-
-            bindPlanTouch();
-            applyPlanTransform();
-
-            host.querySelectorAll("[data-plan-table]").forEach(b => {
-                b.onclick = () => {
-                    if(Date.now() < (STATE.planGesture.blockClickUntil||0)) return;
-                    const table = b.dataset.planTable;
-                    closeSheet();
-                    openOrder(table);
-                };
-            });
-
-            const minus = document.getElementById("planZoomMinus");
-            const plus = document.getElementById("planZoomPlus");
-            if(minus) minus.onclick = e => { e.stopPropagation(); zoomPlanTo(STATE.planTransform.scale/1.25); };
-            if(plus) plus.onclick = e => { e.stopPropagation(); zoomPlanTo(STATE.planTransform.scale*1.25); };
-
-            const syncBtn = document.getElementById("planSyncNow");
-            if(syncBtn) syncBtn.onclick = async() => {
-                syncBtn.disabled = true;
-                syncBtn.textContent = "SYNCHRO…";
-                await syncFull("plan-manual");
-                if(STATE.planViewOpen) renderLivePlan();
-            };
-        };
-    }
-}, 3000);
 </script>
   </body>
 </html>
