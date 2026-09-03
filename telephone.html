@@ -13060,17 +13060,17 @@ setTimeout(() => {
     }
 }, 1500);
 </script>
-  <!-- =========================================================
-     FIX : ANNULATIONS INVISIBLES, CONFIRMATIONS ET AUTO-FERMETURE
+<!-- =========================================================
+     FIX : ANNULATION "DOUBLE-TAP" SANS POPUP + AUTO-FERMETURE
      ========================================================= -->
 <script id="fix-annulation-invisible-auto-close">
 setTimeout(() => {
-    // 1. Rendre les articles annulés INVISIBLES sur le ticket (mais gardés en mémoire)
+    // 1. Rendre les articles annulés INVISIBLES sur le ticket
     if (typeof window.renderTicket === "function") {
         window.renderTicket = function() {
             const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
             
-            // FILTRE MAGIQUE : on retire visuellement les plats annulés de l'écran
+            // On retire visuellement les plats annulés
             const items = (o.items || []).filter(i => i && !i.cancelled);
 
             const ticketTotal = document.getElementById("ticketTotal");
@@ -13094,10 +13094,7 @@ setTimeout(() => {
                                     ? '<span class="line-state sent">ENVOYÉ</span>'
                                     : '<span class="line-state">BROUILLON</span>';
 
-                        const cooking = text(i.cooking)
-                            ? `<span class="cooking-tag">🌡️ ${esc(i.cooking)}</span>`
-                            : "";
-
+                        const cooking = text(i.cooking) ? `<span class="cooking-tag">🌡️ ${esc(i.cooking)}</span>` : "";
                         const seatBadge = seat ? seatBadgeHTML(seat) : '<span class="seat-badge">CTR</span>';
                         const obs = text(i.obs);
                         const critical = i.allergyCritical === true || /allerg/i.test(obs);
@@ -13105,11 +13102,11 @@ setTimeout(() => {
                         const controls = sent
                             ? `<button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
                                <button data-line="${esc(key)}" data-act="cooking" title="Cuisson">🌡️</button>
-                               <button data-line="${esc(key)}" data-act="delete" title="Annuler au poste" style="width:52px; font-weight:1000; color:#ff5368;">ANN.</button>`
+                               <button data-line="${esc(key)}" data-act="delete" style="width:auto; font-weight:1000; color:#ff5368; padding:0 10px; transition:all 0.2s;">ANN.</button>`
                             : `<button data-line="${esc(key)}" data-act="minus">−</button>
                                <button data-line="${esc(key)}" data-act="plus">+</button>
                                <button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
-                               <button data-line="${esc(key)}" data-act="delete" style="color:#ff5368;">×</button>`;
+                               <button data-line="${esc(key)}" data-act="delete" style="width:auto; padding:0 10px; color:#ff5368; font-weight:1000; transition:all 0.2s;">×</button>`;
 
                         return `<div class="ticket-row ${sent?"sent-lock":""} ${readyNow?"ready-to-serve":""} ${servedNow?"served-line":""}" data-ready-line="${readyNow?esc(key):""}">
                             <div class="ticket-left" data-line="${esc(key)}" data-act="obs" style="cursor:pointer;" title="${readyNow?"Maintenir 0,9 s pour valider SERVI":"Tap pour Observation/Allergie"}">
@@ -13136,62 +13133,51 @@ setTimeout(() => {
         };
     }
 
-    // 2. Annulation d'un plat ENVOYÉ (Bouton ANN.) + Auto-Fermeture
-    if (typeof window.cancelSentLine === "function") {
-        window.cancelSentLine = async function(item, reason="") {
-            if(!item || !lineFired(item)) return false;
+    // 2. Logique d'annulation SILENCIEUSE (sans popup)
+    window.cancelSentLineFast = async function(item) {
+        const o = ensureOrder(STATE.currentTable);
+        const target = o.items.find(x => lineKey(x) === lineKey(item));
+        if(!target) return false;
 
-            let motif = text(reason);
-            if(!motif){
-                motif = text(prompt(`Confirmer l'annulation de : ${itemQty(item)}x ${itemName(item)}\n\nMotif obligatoire (ex: Erreur, Changement d'avis...) :`, "Erreur de commande"));
+        const motif = "Correction / Annulation rapide"; // Motif automatique
+
+        target.originalPrice = target.originalPrice !== undefined ? target.originalPrice : itemPrice(target);
+        target.p = 0;
+        target.price = 0;
+        target.isOffered = true;
+        target.done = true;
+        target.cancelled = true;
+        target.cancelReason = motif;
+        target.cancelledAt = Date.now();
+        target.cancelledBy = STATE.role || "SERVEUR";
+        target.cancelDeviceId = STATE.deviceId;
+        target.sequenceStatus = "CANCELLED";
+        target.obs = `❌ ANNULÉ (${motif})${target.obs ? " | " + target.obs : ""}`;
+
+        const ok = await saveCurrent(o, "Annulation article déjà envoyé", {immediate: true});
+        if(ok){
+            if (typeof productionAlert === "function") await productionAlert(target, "ANNULATION", motif);
+            toast("🚨 Annulation transmise au poste");
+
+            // VÉRIFICATION AUTO-FERMETURE
+            const activeItems = o.items.filter(x => !x.cancelled);
+            if(activeItems.length === 0) {
+                o.isArchived = true;
+                o.status = "CLOSED";
+                await saveCurrent(o, "Table libérée (vide)", {immediate: true});
+                if (typeof closeOrder === "function") closeOrder(); 
+                toast("Table libérée (commande vide)");
+            } else {
+                renderTicket();
+                scheduleRender();
             }
-            // Si le serveur annule la popup (changement d'avis), on arrête tout
-            if(!motif){
-                return false; 
-            }
+        }
+        return ok;
+    };
 
-            const o = ensureOrder(STATE.currentTable);
-            const target = o.items.find(x => lineKey(x) === lineKey(item));
-            if(!target) return false;
-
-            // Enregistrement de l'annulation en mémoire
-            target.originalPrice = target.originalPrice !== undefined ? target.originalPrice : itemPrice(target);
-            target.p = 0;
-            target.price = 0;
-            target.isOffered = true;
-            target.done = true;
-            target.cancelled = true;
-            target.cancelReason = motif;
-            target.cancelledAt = Date.now();
-            target.cancelledBy = STATE.role || "SERVEUR";
-            target.cancelDeviceId = STATE.deviceId;
-            target.sequenceStatus = "CANCELLED";
-            target.obs = `❌ ANNULÉ (${motif})${target.obs ? " | " + target.obs : ""}`;
-
-            const ok = await saveCurrent(o, "Annulation article déjà envoyé", {immediate: true});
-            if(ok){
-                if (typeof productionAlert === "function") await productionAlert(target, "ANNULATION", motif);
-                toast("🚨 Annulation transmise au poste");
-
-                // VÉRIFICATION DE TABLE VIDE : Si plus aucun plat n'est actif, on ferme la table
-                const activeItems = o.items.filter(x => !x.cancelled);
-                if(activeItems.length === 0) {
-                    o.isArchived = true;
-                    o.status = "CLOSED";
-                    await saveCurrent(o, "Table libérée (tous les articles annulés)", {immediate: true});
-                    if (typeof closeOrder === "function") closeOrder(); // Retour auto au plan de salle
-                    toast("Table libérée (commande vide)");
-                } else {
-                    renderTicket();
-                    scheduleRender();
-                }
-            }
-            return ok;
-        };
-    }
-
-    // 3. Annulation d'un BROUILLON (Bouton ×) + Demande de Confirmation + Auto-Fermeture
+    // 3. Interception du clic pour le DOUBLE-TAP de sécurité
     if (typeof window.mutateLine === "function") {
+        const originalMutateLine = window.mutateLine;
         window.mutateLine = async function(key, action) {
             if(!STATE.currentTable) return;
 
@@ -13201,19 +13187,61 @@ setTimeout(() => {
 
             STATE.lastLineKey = key;
 
-            if(action === "obs"){
-                if (typeof openLineObservation === "function") openLineObservation(key);
-                return;
+            // MÉCANIQUE DU BOUTON DE SUPPRESSION (DOUBLE TAP)
+            if (action === "delete") {
+                const btn = document.querySelector(`button[data-line="${key}"][data-act="delete"]`);
+                
+                // Si c'est le PREMIER clic : on change le texte pour demander confirmation
+                if (btn && btn.dataset.confirming !== "true") {
+                    btn.dataset.confirming = "true";
+                    btn.dataset.originalText = btn.innerHTML;
+                    btn.innerHTML = "CONFIRMER";
+                    btn.style.background = "#ff5368"; // Rouge vif
+                    btn.style.color = "#ffffff";
+                    
+                    // Si le serveur change d'avis et ne fait rien, on annule au bout de 3 secondes
+                    btn.confirmTimeout = setTimeout(() => {
+                        if (btn && btn.dataset.confirming === "true") {
+                            btn.dataset.confirming = "false";
+                            btn.innerHTML = btn.dataset.originalText;
+                            btn.style.background = "";
+                            btn.style.color = "#ff5368";
+                        }
+                    }, 3000);
+                    return; // On arrête là (pas de suppression)
+                } 
+                // Si c'est le SECOND clic : on supprime vraiment
+                else if (btn && btn.dataset.confirming === "true") {
+                    clearTimeout(btn.confirmTimeout);
+                    
+                    if (lineFired(i)) {
+                        // Plat envoyé -> Annulation silencieuse
+                        await window.cancelSentLineFast(i);
+                    } else {
+                        // Brouillon -> Suppression simple
+                        const before = cloneOrderForUndo(o);
+                        o.items = o.items.filter(x => x !== i);
+                        pushUndo(`Retrait ${itemName(i)}`, before);
+                        await saveCurrent(o, "Retrait article", {delay: 120});
+                        
+                        // VÉRIFICATION AUTO-FERMETURE
+                        const activeItems = o.items.filter(x => !x.cancelled);
+                        if(activeItems.length === 0) {
+                            o.isArchived = true;
+                            o.status = "CLOSED";
+                            await saveCurrent(o, "Table libérée (vide)", {immediate: true});
+                            if (typeof closeOrder === "function") closeOrder(); 
+                        } else {
+                            renderTicket();
+                        }
+                    }
+                    return;
+                }
             }
 
-            if(action === "cooking"){
-                if (typeof openLineCooking === "function") openLineCooking(key);
-                return;
-            }
-
-            if(action === "serve"){
+            // GESTION DU "SERVI" (pour que le carré disparaisse correctement)
+            if (action === "serve") {
                 const before = cloneOrderForUndo(o);
-
                 i.served = true;
                 i.isServed = true;
                 i.servedAt = Date.now();
@@ -13236,48 +13264,46 @@ setTimeout(() => {
                 return;
             }
 
-            if(lineFired(i)){
-                if(action === "delete"){
-                    await cancelSentLine(i);
-                    return;
-                }
-                if(action === "plus" || action === "minus"){
+            // LOGIQUE CLASSIQUE POUR LES AUTRES BOUTONS (plus, minus, obs, cooking)
+            if (action === "plus") {
+                const before = cloneOrderForUndo(o);
+                i.qty = itemQty(i) + 1;
+                pushUndo(`Ajout +1 ${itemName(i)}`, before);
+                await saveCurrent(o, "Quantité +1", {delay: 120});
+                renderTicket();
+                return;
+            }
+            
+            if (action === "minus") {
+                if (lineFired(i)) {
                     toast("Déjà envoyé : utilisez le bouton ANN. pour annuler", true);
                     return;
                 }
-            }
-
-            const before = cloneOrderForUndo(o);
-
-            if(action === "plus") i.qty = itemQty(i) + 1;
-
-            if(action === "minus"){
+                const before = cloneOrderForUndo(o);
                 i.qty = Math.max(0, itemQty(i) - 1);
-                if(i.qty <= 0) o.items = o.items.filter(x => x !== i);
-            }
-
-            if(action === "delete"){
-                // DEMANDE DE CONFIRMATION AVANT DE SUPPRIMER LE BROUILLON
-                if(!confirm(`Confirmer le retrait de : ${itemName(i)} ?`)) return; 
-                o.items = o.items.filter(x => x !== i);
-            }
-
-            pushUndo(`Modification ${seatLabel(itemSeat(i)||STATE.activeSeat)} · ${itemName(i)}`, before);
-            await saveCurrent(o, "Modification rapide article", {delay: 120});
-            
-            // VÉRIFICATION DE TABLE VIDE APRÈS RETRAIT DU BROUILLON
-            const activeItems = o.items.filter(x => !x.cancelled);
-            if(activeItems.length === 0) {
-                o.isArchived = true;
-                o.status = "CLOSED";
-                await saveCurrent(o, "Table libérée (vide)", {immediate: true});
-                if (typeof closeOrder === "function") closeOrder(); // Retour au plan de salle
-            } else {
+                if(i.qty <= 0) {
+                    o.items = o.items.filter(x => x !== i);
+                    const activeItems = o.items.filter(x => !x.cancelled);
+                    if(activeItems.length === 0) {
+                        o.isArchived = true;
+                        o.status = "CLOSED";
+                        await saveCurrent(o, "Table libérée (vide)", {immediate: true});
+                        if (typeof closeOrder === "function") closeOrder(); 
+                        return;
+                    }
+                }
+                pushUndo(`Retrait -1 ${itemName(i)}`, before);
+                await saveCurrent(o, "Quantité -1", {delay: 120});
                 renderTicket();
+                return;
             }
+
+            if (action === "obs") { if (typeof openLineObservation === "function") openLineObservation(key); return; }
+            if (action === "cooking") { if (typeof openLineCooking === "function") openLineCooking(key); return; }
         };
     }
-}, 2000); // Exécution différée pour surcharger toute logique précédente
+}, 2000);
+</script>
 </script>
   </body>
 </html>
