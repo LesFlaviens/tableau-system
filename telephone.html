@@ -12843,176 +12843,6 @@ if(bottomFermer)bottomFermer.addEventListener("click", closeOrder);
 }
 
 
-    // 2. Logique d'annulation SILENCIEUSE (sans popup)
-    window.cancelSentLineFast = async function(item) {
-        const o = ensureOrder(STATE.currentTable);
-        const target = o.items.find(x => lineKey(x) === lineKey(item));
-        if(!target) return false;
-
-        const motif = "Correction / Annulation rapide"; // Motif automatique
-
-        target.originalPrice = target.originalPrice !== undefined ? target.originalPrice : itemPrice(target);
-        target.p = 0;
-        target.price = 0;
-        target.isOffered = true;
-        target.done = true;
-        target.cancelled = true;
-        target.cancelReason = motif;
-        target.cancelledAt = Date.now();
-        target.cancelledBy = STATE.role || "SERVEUR";
-        target.cancelDeviceId = STATE.deviceId;
-        target.sequenceStatus = "CANCELLED";
-        target.obs = `❌ ANNULÉ (${motif})${target.obs ? " | " + target.obs : ""}`;
-
-        const ok = await saveCurrent(o, "Annulation article déjà envoyé", {immediate: true});
-        if(ok){
-            if (typeof productionAlert === "function") await productionAlert(target, "ANNULATION", motif);
-            toast("🚨 Annulation transmise au poste");
-
-            // VÉRIFICATION AUTO-FERMETURE
-            const activeItems = o.items.filter(x => !x.cancelled);
-            if(activeItems.length === 0) {
-                o.isArchived = true;
-                o.status = "CLOSED";
-                await saveCurrent(o, "Table libérée (vide)", {immediate: true});
-                if (typeof closeOrder === "function") closeOrder(); 
-                toast("Table libérée (commande vide)");
-            } else {
-                renderTicket();
-                scheduleRender();
-            }
-        }
-        return ok;
-    };
-
-    // 3. Interception du clic pour le DOUBLE-TAP de sécurité
-    if (typeof window.mutateLine === "function") {
-        const originalMutateLine = window.mutateLine;
-        window.mutateLine = async function(key, action) {
-            if(!STATE.currentTable) return;
-
-            const o = ensureOrder(STATE.currentTable);
-            const i = o.items.find(x => lineKey(x) === key);
-            if(!i) return;
-
-            STATE.lastLineKey = key;
-
-            // MÉCANIQUE DU BOUTON DE SUPPRESSION (DOUBLE TAP)
-            if (action === "delete") {
-                const btn = document.querySelector(`button[data-line="${key}"][data-act="delete"]`);
-                
-                // Si c'est le PREMIER clic : on change le texte pour demander confirmation
-                if (btn && btn.dataset.confirming !== "true") {
-                    btn.dataset.confirming = "true";
-                    btn.dataset.originalText = btn.innerHTML;
-                    btn.innerHTML = "CONFIRMER";
-                    btn.style.background = "#ff5368"; // Rouge vif
-                    btn.style.color = "#ffffff";
-                    
-                    // Si le serveur change d'avis et ne fait rien, on annule au bout de 3 secondes
-                    btn.confirmTimeout = setTimeout(() => {
-                        if (btn && btn.dataset.confirming === "true") {
-                            btn.dataset.confirming = "false";
-                            btn.innerHTML = btn.dataset.originalText;
-                            btn.style.background = "";
-                            btn.style.color = "#ff5368";
-                        }
-                    }, 3000);
-                    return; // On arrête là (pas de suppression)
-                } 
-                // Si c'est le SECOND clic : on supprime vraiment
-                else if (btn && btn.dataset.confirming === "true") {
-                    clearTimeout(btn.confirmTimeout);
-                    
-                    if (lineFired(i)) {
-                        // Plat envoyé -> Annulation silencieuse
-                        await window.cancelSentLineFast(i);
-                    } else {
-                        // Brouillon -> Suppression simple
-                        const before = cloneOrderForUndo(o);
-                        o.items = o.items.filter(x => x !== i);
-                        pushUndo(`Retrait ${itemName(i)}`, before);
-                        await saveCurrent(o, "Retrait article", {delay: 120});
-                        
-                        // VÉRIFICATION AUTO-FERMETURE
-                        const activeItems = o.items.filter(x => !x.cancelled);
-                        if(activeItems.length === 0) {
-                            o.isArchived = true;
-                            o.status = "CLOSED";
-                            await saveCurrent(o, "Table libérée (vide)", {immediate: true});
-                            if (typeof closeOrder === "function") closeOrder(); 
-                        } else {
-                            renderTicket();
-                        }
-                    }
-                    return;
-                }
-            }
-
-            // GESTION DU "SERVI" (pour que le carré disparaisse correctement)
-            if (action === "serve") {
-                const before = cloneOrderForUndo(o);
-                i.served = true;
-                i.isServed = true;
-                i.servedAt = Date.now();
-                i.servedBy = STATE.role || "SERVEUR";
-                i.sequenceStatus = "SERVED";
-                i.status = "served";
-                i.productionStatus = "served";
-                i.done = false;
-                i.ready = false;
-                i.isReady = false;
-                i.readyAt = null;
-
-                pushUndo(`Plat servi : ${itemName(i)}`, before);
-                const savePromise = saveCurrent(o, "Plat marqué comme servi", {immediate: true});
-                renderTicket();
-                scheduleRender();
-                if (typeof updateToolBadges === "function") updateToolBadges();
-                const ok = await savePromise;
-                toast(ok ? "✓ Plat servi" : "✓ Plat servi · synchronisation en attente", !ok);
-                return;
-            }
-
-            // LOGIQUE CLASSIQUE POUR LES AUTRES BOUTONS (plus, minus, obs, cooking)
-            if (action === "plus") {
-                const before = cloneOrderForUndo(o);
-                i.qty = itemQty(i) + 1;
-                pushUndo(`Ajout +1 ${itemName(i)}`, before);
-                await saveCurrent(o, "Quantité +1", {delay: 120});
-                renderTicket();
-                return;
-            }
-            
-            if (action === "minus") {
-                if (lineFired(i)) {
-                    toast("Déjà envoyé : utilisez le bouton ANN. pour annuler", true);
-                    return;
-                }
-                const before = cloneOrderForUndo(o);
-                i.qty = Math.max(0, itemQty(i) - 1);
-                if(i.qty <= 0) {
-                    o.items = o.items.filter(x => x !== i);
-                    const activeItems = o.items.filter(x => !x.cancelled);
-                    if(activeItems.length === 0) {
-                        o.isArchived = true;
-                        o.status = "CLOSED";
-                        await saveCurrent(o, "Table libérée (vide)", {immediate: true});
-                        if (typeof closeOrder === "function") closeOrder(); 
-                        return;
-                    }
-                }
-                pushUndo(`Retrait -1 ${itemName(i)}`, before);
-                await saveCurrent(o, "Quantité -1", {delay: 120});
-                renderTicket();
-                return;
-            }
-
-            if (action === "obs") { if (typeof openLineObservation === "function") openLineObservation(key); return; }
-            if (action === "cooking") { if (typeof openLineCooking === "function") openLineCooking(key); return; }
-        };
-    }
-}, 2000);
 /* iCHEF VAT AUTO CORRECTION */
 setTimeout(() => {
     if (typeof window.itemVatRate !== 'undefined') {
@@ -13158,7 +12988,7 @@ setTimeout(() => {
                         return `<div class="ticket-row ${sent?"sent-lock":""} ${readyNow?"ready-to-serve":""} ${servedNow?"served-line":""}" data-ready-line="${readyNow?esc(key):""}">
                             <div class="ticket-left" data-line="${esc(key)}" data-act="obs" style="cursor:pointer;" title="${readyNow?"Maintenir 0,9 s pour valider SERVI":"Tap pour Observation/Allergie"}">
                                 <div class="ticket-name">${seatBadge}${esc(itemName(i))}${destinationTagHTML(i)}${cooking}${state}</div>
-                                <div class="ticket-meta">x${q} · ${esc(i.course||i.category||"")}${readyNow?" · maintien 0,9 s pour valider servi":""}</div>
+                                <div class="ticket-meta">x${q} · ${esc(i.course||i.category||"")}</div>
                                 ${obs?`<span class="ticket-obs ${critical?"critical":""}">${critical?"🛑 ":"⚠️ "}${esc(obs)}</span>`:""}
                             </div>
                             <div class="ticket-right"><div class="ticket-price">${money(itemPrice(i)*q)}</div><div class="qtybar">${controls}</div></div>
@@ -13269,8 +13099,13 @@ setTimeout(() => {
             const width = Number(paperWidth)===58 ? 58 : 80;
             const body = lines.map(line => {
                 if (line && line.qrcode) {
-                    const qrUrl = "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=" + encodeURIComponent(line.qrcode);
-                    return `<div style="text-align:center; margin: 15px 0;"><img src="${qrUrl}" alt="QR Code Fiscal" style="width: 150px; height: 150px; display: block; margin: 0 auto;"></div>`;
+                    const qrUrl = "https://api.qrserver.com/v1/create-qr-code/?size=180x180&margin=8&data=" + encodeURIComponent(line.qrcode);
+                    const qrLabel = esc(String(line.qrLabel||"QR iCHEF"));
+                    return `<div style="margin:16px auto;text-align:center;border:2px solid #111;border-radius:12px;padding:10px;width:190px;box-sizing:border-box;break-inside:avoid;">
+                      <div style="font-size:12px;font-weight:900;letter-spacing:.7px;margin-bottom:7px;">${qrLabel}</div>
+                      <img src="${qrUrl}" alt="QR Code iCHEF" loading="eager" style="width:160px;height:160px;display:block;margin:0 auto;">
+                      <div style="font-size:9px;font-weight:700;margin-top:6px;">SCAN · VÉRIFICATION / TICKET</div>
+                    </div>`;
                 }
                 const o = typeof line==="string" ? {text:line} : line||{};
                 const textValue = esc(String(o.text||""));
@@ -13395,7 +13230,7 @@ setTimeout(() => {
             lines.push("------------------------------------------");
             
             const qrData = `RAPPORT:${label}|PERIODE:${key}|TOTAL:${total}|RECORDS:${records.length}`;
-            lines.push({qrcode: qrData});
+            lines.push({qrcode: qrData, qrLabel:"RAPPORT FISCAL iCHEF"});
 
             lines.push({text:"DOCUMENT DE CONTRÔLE — JOURNAL FISCAL iCHEF",bold:true,align:"center"});
             lines.push({text:"L'impression n'altère aucune écriture fiscale.",align:"center"});
@@ -13637,4 +13472,3 @@ setTimeout(() => {
 </script>
 </body>
 </html>
-
