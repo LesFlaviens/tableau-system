@@ -1,11 +1,11 @@
 <!doctype html>
 <html lang="fr">
 <head>
-<!-- ICHEF TELEPHONE SYMBIOSE TOTALE V5 — REALTIME RECOVERY + SERVER + PLAN + BFCACHE -->
+<!-- ICHEF TELEPHONE — CORRECTIF T3/COMMANDE VIDE + SYMBIOSE SERVEUR · 03-09-2026 -->
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<title>iCHEF TÉLÉPHONE — IMPRIMANTES 4 POSTES + CAISSE</title>
+<title>iCHEF TÉLÉPHONE — BUG T3 + VALIDATION VIDE CORRIGÉS · 03-09-2026</title>
 <style>
 :root{
   --bg:#050607;--panel:#0b0e0f;--panel2:#111516;--line:#293033;--line2:#3a4346;
@@ -4842,8 +4842,19 @@ async function retryFailedWrites(){
 function preservePendingOverServer(incoming){
   const merged={...incoming};
   ICHEF_LOCAL_PENDING.forEach((pending,key)=>{
-    if(pending.data===null)delete merged[key];
-    else merged[key]=clone(pending.data);
+    if(pending.data===null){
+      delete merged[key];
+      return;
+    }
+    const local=extractOrderRecord(pending.data)||pending.data;
+    const remote=extractOrderRecord(merged[key])||merged[key];
+    const reason=text(pending.reason||"");
+    const destructive=/retrait article|annulation|annul|supprim|commande vide|table vide|lib[eé]r|fin de service|fermet|correction fiscale|archive/i.test(reason);
+    if(!destructive && local&&remote&&Array.isArray(local.items)&&Array.isArray(remote.items)&&local.items.length===0&&remote.items.length>0){
+      merged[key]={...clone(remote),...clone(local),items:clone(remote.items)};
+      return;
+    }
+    merged[key]=clone(pending.data);
   });
   return merged;
 }
@@ -4932,42 +4943,96 @@ function isArchivedOrder(order){
   return order.isArchived===true ||
     status==="ANNULE_OU_SUPPRIME" ||
     status==="ANNULÉ_OU_SUPPRIMÉ" ||
-    status==="ARCHIVED";
+    status==="ARCHIVED" ||
+    status==="CLOSED";
+}
+
+/* ---------- RÉSOLUTION ROBUSTE DES COMMANDES TABLE ----------
+   Plusieurs anciennes versions iCHEF ont pu renvoyer une commande sous :
+   T3 / TABLE_T3 / {data:{...}} / {order:{...}} / {payload:{order:{...}}}.
+   On extrait toujours la vraie commande avant de décider qu'une table est vide. */
+function extractOrderRecord(value){
+  if(!value||typeof value!=="object")return null;
+  const queue=[value];
+  const seen=new Set();
+  const keys=["data","order","currentOrder","payload","value","record","snapshot"];
+  let depth=0;
+  while(queue.length && depth<24){
+    depth++;
+    const cur=queue.shift();
+    if(!cur||typeof cur!=="object"||seen.has(cur))continue;
+    seen.add(cur);
+    if(Array.isArray(cur.items))return cur;
+    for(const k of keys){
+      const next=cur[k];
+      if(next&&typeof next==="object")queue.push(next);
+    }
+  }
+  return null;
+}
+function tableRefTokens(value){
+  let v=text(value).normalize("NFD").replace(/[\u0300-\u036f]/g,"").toUpperCase().trim();
+  if(!v)return [];
+  const out=new Set();
+  const compact=v.replace(/[^A-Z0-9]/g,"");
+  if(compact)out.add(compact);
+  const withoutWord=v.replace(/^(TABLE|TBL|MESA)[\s_:#-]*/i,"").replace(/[^A-Z0-9]/g,"");
+  if(withoutWord)out.add(withoutWord);
+  if(/^T\d+$/.test(compact))out.add(compact.slice(1));
+  if(/^\d+$/.test(compact))out.add("T"+compact);
+  return [...out];
+}
+function tableRefsMatch(a,b){
+  const aa=tableRefTokens(a),bb=new Set(tableRefTokens(b));
+  return aa.some(x=>bb.has(x));
+}
+function orderTableReference(order,fallbackKey=""){
+  return text(order?.tableId||order?.table||order?.tableLabel||order?.numeroTable||order?.tableNumber||order?.tableName||fallbackKey);
+}
+function orderHistoryCount(order){
+  return Array.isArray(order?.items)?order.items.filter(Boolean).length:0;
+}
+function orderActiveCount(order){
+  return Array.isArray(order?.items)?order.items.filter(i=>i&&!i.cancelled&&itemQty(i)>0).length:0;
+}
+function chooseBestTableOrder(previous,next){
+  if(!previous)return next;
+  if(!next)return previous;
+  const prevArchived=isArchivedOrder(previous),nextArchived=isArchivedOrder(next);
+  const prevStamp=Number(previous.updatedAt||previous.closedAt||previous.createdAt||0);
+  const nextStamp=Number(next.updatedAt||next.closedAt||next.createdAt||0);
+
+  /* Une fermeture explicite plus récente doit gagner. */
+  if(prevArchived!==nextArchived){
+    if(nextArchived && nextStamp>=prevStamp)return next;
+    if(prevArchived && prevStamp>=nextStamp)return previous;
+  }
+
+  const ph=orderHistoryCount(previous),nh=orderHistoryCount(next);
+  const pa=orderActiveCount(previous),na=orderActiveCount(next);
+
+  /* Correctif du bug T3 : un shell vide plus récent ne doit jamais écraser
+     silencieusement une vraie commande contenant les lignes du PAD. Une vraie
+     annulation conserve normalement l'historique des lignes avec cancelled=true. */
+  if(ph===0 && nh>0)return next;
+  if(nh===0 && ph>0)return previous;
+  if(pa===0 && na>0 && ph===0)return next;
+  if(na===0 && pa>0 && nh===0)return previous;
+
+  return nextStamp>=prevStamp?next:previous;
 }
 function normalizeServerOrdersMap(activeOrders){
   const source=activeOrders&&typeof activeOrders==="object"?activeOrders:{};
   const out={};
-
-  const orderTableRef=(value,fallbackKey)=>{
-    const raw=value&&typeof value==="object"&&value.data&&typeof value.data==="object"&&Array.isArray(value.data.items)
-      ?value.data
-      :value;
-    return text(raw?.tableId||raw?.table||raw?.tableLabel||raw?.numeroTable||fallbackKey);
-  };
+  const reserved=/^(ARCHITECTURE|SETTINGS_MASTER|RESERVATIONS_MASTER|MENU_MASTER|MENU_MASTER_BAR|MENU_MASTER_PATISSERIE|STAFF_ACCESS|LOYALTY_MASTER|TIMESHEETS_MASTER|ALERTS_MASTER|FINANCIAL_HISTORY|AUDIT_MASTER)$/;
 
   Object.entries(source).forEach(([key,value])=>{
-    const raw=value&&typeof value==="object"&&value.data&&typeof value.data==="object"&&Array.isArray(value.data.items)
-      ?value.data
-      :value;
-
-    if(raw&&typeof raw==="object"&&Array.isArray(raw.items)){
+    const raw=extractOrderRecord(value);
+    if(raw){
       const normalized=normalizeCompatOrder(raw);
-      const canonical=orderTableRef(raw,key)||key;
-
-      /* Les anciennes versions pouvaient stocker une commande sous une clé
-         différente de son numéro de table (wrapper, id interne, etc.).
-         Le téléphone travaille toujours avec le libellé réel de table afin
-         d'éviter « table occupée / commande vide ». */
-      const reserved=/^(ARCHITECTURE|SETTINGS_MASTER|RESERVATIONS_MASTER|MENU_MASTER|MENU_MASTER_BAR|MENU_MASTER_PATISSERIE|STAFF_ACCESS|LOYALTY_MASTER|TIMESHEETS_MASTER|ALERTS_MASTER|FINANCIAL_HISTORY|AUDIT_MASTER)$/.test(String(key));
-      const targetKey=reserved?key:canonical;
-      const previous=out[targetKey];
-      if(previous&&typeof previous==="object"&&Array.isArray(previous.items)){
-        const prevStamp=Number(previous.updatedAt||previous.createdAt||0);
-        const nextStamp=Number(normalized.updatedAt||normalized.createdAt||0);
-        if(nextStamp>=prevStamp)out[targetKey]=normalized;
-      }else{
-        out[targetKey]=normalized;
-      }
+      const canonical=orderTableReference(raw,key)||key;
+      const targetKey=reserved.test(String(key))?key:canonical;
+      out[targetKey]=chooseBestTableOrder(out[targetKey],normalized);
     }else{
       out[key]=value;
     }
@@ -5948,7 +6013,22 @@ function isRealOrder(k,o){
     !isArchivedOrder(o) &&
     Array.isArray(o.items);
 }
-function getOrder(table){const o=STATE.activeOrders[table];return isRealOrder(table,o)?o:null}
+function getOrder(table){
+  const exact=STATE.activeOrders[table];
+  if(isRealOrder(table,exact))return exact;
+
+  let best=null;
+  Object.entries(STATE.activeOrders||{}).forEach(([key,value])=>{
+    if(SYSTEM_KEYS.has(key)||String(key).startsWith("FISCAL_")||String(key).startsWith("FINANCIAL_CANCEL_"))return;
+    const raw=extractOrderRecord(value)||value;
+    if(!raw||typeof raw!=="object"||!Array.isArray(raw.items)||isArchivedOrder(raw))return;
+    const ref=orderTableReference(raw,key);
+    if(tableRefsMatch(table,key)||tableRefsMatch(table,ref)){
+      best=chooseBestTableOrder(best,normalizeCompatOrder(raw));
+    }
+  });
+  return best;
+}
 function orderCreated(o){if(!o)return 0;let t=Number(o.createdAt||o.openedAt||o.date||0);if(!t&&Array.isArray(o.items)&&o.items.length)t=Math.min(...o.items.map(i=>Number(i.itemId||i.createdAt||i.sentAt||Date.now())).filter(Number.isFinite));return t||0}
 function lineServed(i){return !!(i&&(i.served===true||i.isServed===true||i.servedAt||String(i.sequenceStatus||"").toUpperCase()==="SERVED"||String(i.status||"").toLowerCase()==="served"))}
 
@@ -6160,7 +6240,17 @@ async function saveCurrent(order,reason,options={}){
     return false;
   }
 
-  const o=normalizeCompatOrder(clone(order));
+  let o=normalizeCompatOrder(clone(order));
+
+  /* Anti-écrasement : si une vieille vue locale a fabriqué un objet T3 vide
+     pendant que le serveur possède déjà les articles, une simple mise à jour
+     de couverts/observation/état ne peut plus détruire les lignes existantes. */
+  const destructiveReason=/retrait article|annulation|annul|supprim|commande vide|table vide|lib[eé]r|fin de service|fermet|correction fiscale|archive/i.test(text(reason));
+  if(existing && Array.isArray(existing.items) && existing.items.length>0 && Array.isArray(o.items) && o.items.length===0 && !destructiveReason){
+    console.warn("[iCHEF] Protection anti-commande-vide",STATE.currentTable,reason);
+    o={...clone(existing),...o,items:clone(existing.items)};
+  }
+
   if(options.noHistory!==true)appendTableHistory(o,reason);
   o.updatedAt=Date.now();
   o.updatedBy=STATE.role||"SERVEUR";
@@ -11989,7 +12079,11 @@ function openSendRecap() {
   const items = (o.items || []).filter(i => !i.cancelled);
 
   if(items.length === 0) {
-    toast("La commande est vide.", true);
+    /* Une commande vide doit justement pouvoir atteindre l'écran RÉSUMÉ :
+       c'est là que la fermeture volontaire en deux temps est validée. */
+    closeSheet();
+    openSummary();
+    updateSummaryCloseButton();
     return;
   }
 
