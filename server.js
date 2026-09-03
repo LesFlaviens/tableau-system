@@ -6263,12 +6263,43 @@ app.post('/update-order', async (req, res) => {
                 }
             );
 
-        if (String(tableId || '').toUpperCase() === 'ARCHITECTURE') {
-            io.to(tenantID).emit('architecture-changed', {
+       if (String(tableId || '').toUpperCase() === 'ARCHITECTURE') {
+            const persistedArchitectureNode =
+                newState?.activeOrders?.ARCHITECTURE ?? orderToPersist ?? {};
+
+            const rawArchitecture =
+                persistedArchitectureNode &&
+                typeof persistedArchitectureNode === 'object' &&
+                persistedArchitectureNode.data &&
+                typeof persistedArchitectureNode.data === 'object'
+                    ? persistedArchitectureNode.data
+                    : persistedArchitectureNode;
+
+            const architecture = {
+                ...(rawArchitecture && typeof rawArchitecture === 'object' ? rawArchitecture : {}),
+                rooms: Array.isArray(rawArchitecture?.rooms) && rawArchitecture.rooms.length
+                    ? rawArchitecture.rooms
+                    : ['Salle Principale'],
+                tables: Array.isArray(rawArchitecture?.tables) ? rawArchitecture.tables : [],
+                zones: Array.isArray(rawArchitecture?.zones) ? rawArchitecture.zones : [],
+                elements: Array.isArray(rawArchitecture?.elements) ? rawArchitecture.elements : [],
+                canvas: rawArchitecture?.canvas && typeof rawArchitecture.canvas === 'object'
+                    ? rawArchitecture.canvas
+                    : {}
+            };
+
+            const architecturePacket = {
                 tenantID,
+                architecture,
                 source: 'update-order',
-                serverTime: new Date().toISOString()
-            });
+                terminal: String(terminal || '').trim(),
+                updatedAt: architecture?.updatedAt || Date.now(),
+                serverTime: Date.now()
+            };
+
+            // Le même plan complet part immédiatement vers ADMIN, PACK-ECO et TELEPHONE.
+            io.to(tenantID).emit('architectureState', architecturePacket);
+            io.to(tenantID).emit('architecture-changed', architecturePacket);
         }
 
         return res.json({
