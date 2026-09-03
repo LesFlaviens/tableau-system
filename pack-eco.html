@@ -4134,7 +4134,6 @@ body.order-open .order-sync-state.bad{background:#fff2f4 !important;}
     margin: 6px 0 0 12px !important; /* On l'écarte un peu du cadre noir */
 }
 </style>
-<style id="transition-login-douce">
 <style id="transition-login-douce-v2">
 /* =========================================================
    TRANSITION EXTRA FLUIDE (GPU) : ÉCRAN PIN -> PLAN
@@ -6052,9 +6051,9 @@ const STATE={
   deviceId:STORAGE.get("ichef_device_id","")||("dev_"+cryptoId()),
   pin:"",role:"",plan:"",specialite:"",authenticated:false,
   sessionToken:"",csrfToken:"",
-  connected:false,socket:null,socketLoading:null,lastServerAt:0,syncing:false,deviceReplaced:false,
-  activeOrders:{},architecture:{rooms:["Salle Principale"],tables:[],zones:[]},
-  rooms:["Salle Principale"],tables:[],zones:[],room:"Salle Principale",
+  connected:false,socket:null,socketLoading:null,lastServerAt:0,syncing:false,deviceReplaced:false,syncRevision:0,
+  activeOrders:{},architecture:{rooms:["Salle Principale"],tables:[],zones:[],elements:[],canvas:{}},
+  rooms:["Salle Principale"],tables:[],zones:[],elements:[],room:"Salle Principale",
   menu:[],categories:[],category:"TOUT",reservations:[],settings:{},
   currentTable:null,currentOrder:null,currentScreen:"tables",display:STORAGE.get("ichef_phone_display","auto")||"auto",
   renderPending:false,loginPin:"",lastAlertSignature:"",lastWriteAt:0,activeSeat:1,lastLineKey:"",pendingCookingLine:"",undoStack:[]
@@ -6382,12 +6381,23 @@ async function enqueueVersionedWrite(key,pending){
 
       for(let attempt=0;attempt<3;attempt++){
         try{
-          await updateServer(key,pending.data,pending.reason);
+          const result=await updateServer(key,pending.data,pending.reason);
 
           const latest=ICHEF_LOCAL_PENDING.get(key);
           if(latest && latest.version===pending.version){
             ICHEF_LOCAL_PENDING.delete(key);
             ICHEF_FAILED_WRITES.delete(key);
+
+            if(result?.state && typeof result.state==="object" && result.state.activeOrders){
+              STATE.lastServerAt=now();
+              applyServerState(result.state,"write-ack");
+            }else if(result?.order!==undefined){
+              if(result.order===null)delete STATE.activeOrders[key];
+              else STATE.activeOrders[key]=clone(result.order);
+              if(Number(result?.syncRevision||0)>0)STATE.syncRevision=Math.max(Number(STATE.syncRevision||0),Number(result.syncRevision));
+              applyDerived();
+              scheduleRender();
+            }
           }
 
           setOrderSyncState(" SERVEUR À JOUR","good");
@@ -6791,14 +6801,16 @@ async function updateServer(key,data,auditReason="Mise à jour PAD"){
     pin:STATE.pin,
     deviceId:STATE.deviceId,
     terminal:"PAD",
-    auditReason
+    auditReason,
+    clientRevision:Number(STATE.syncRevision||0)
   };
   const r=await serverFetch("/update-order?tenantID="+encodeURIComponent(STATE.tenantID),{
     method:"POST",
     body:JSON.stringify(body)
   });
   const j=await r.json().catch(()=>({}));
-  if(!r.ok)throw new Error(j.error||j.message||("Écriture serveur "+r.status));
+  if(!r.ok||j.success===false)throw new Error(j.error||j.message||("Écriture serveur "+r.status));
+  if(j.persisted===false)throw new Error("Écriture reçue mais non persistée");
   return j;
 }
 async function optimisticWrite(key,data,reason){
@@ -7059,6 +7071,14 @@ async function syncFull(reason="manual"){
 function applyServerState(serverState,source){
   if(!serverState||typeof serverState!=="object")return;
 
+  const incomingSyncRevision=Number(serverState.syncRevision||0);
+  const currentSyncRevision=Number(STATE.syncRevision||0);
+  if(incomingSyncRevision>0 && currentSyncRevision>0 && incomingSyncRevision<currentSyncRevision){
+    console.info("[iCHEF SYMBIOSE] état ancien ignoré",incomingSyncRevision,"<",currentSyncRevision);
+    return;
+  }
+  if(incomingSyncRevision>0)STATE.syncRevision=Math.max(currentSyncRevision,incomingSyncRevision);
+
   const serverIncoming=normalizeServerOrdersMap(
     serverState.activeOrders&&typeof serverState.activeOrders==="object"
       ?serverState.activeOrders
@@ -7121,7 +7141,15 @@ document.addEventListener("visibilitychange",()=>{if(!document.hidden&&STATE.aut
 
 /* ---------------- DATA NORMALIZATION ---------------- */
 function normalizeArchitecture(){
-  const raw=unwrap(STATE.activeOrders.ARCHITECTURE)||{};const rooms=Array.isArray(raw.rooms)&&raw.rooms.length?raw.rooms.map(text).filter(Boolean):["Salle Principale"];const tables=Array.isArray(raw.tables)?raw.tables.filter(Boolean).map(t=>({...t,label:text(t.label||t.name||t.id),room:text(t.room||rooms[0])})).filter(t=>t.label):[];const zones=Array.isArray(raw.zones)?raw.zones.filter(Boolean).map(z=>({...z,label:text(z.label||z.name||z.id),room:text(z.room||rooms[0])})):[];STATE.architecture={rooms,tables,zones};STATE.rooms=rooms;STATE.tables=tables;STATE.zones=zones;if(!STATE.rooms.includes(STATE.room))STATE.room=STATE.rooms[0];
+  const raw=unwrap(STATE.activeOrders.ARCHITECTURE)||{};
+  const rooms=Array.isArray(raw.rooms)&&raw.rooms.length?raw.rooms.map(text).filter(Boolean):["Salle Principale"];
+  const tables=Array.isArray(raw.tables)?raw.tables.filter(Boolean).map(t=>({...t,label:text(t.label||t.name||t.id),room:text(t.room||rooms[0])})).filter(t=>t.label):[];
+  const zones=Array.isArray(raw.zones)?raw.zones.filter(Boolean).map(z=>({...z,label:text(z.label||z.name||z.id),room:text(z.room||rooms[0])})):[];
+  const elements=Array.isArray(raw.elements)?raw.elements.filter(Boolean).map(e=>({...e,room:text(e.room||rooms[0])})):[];
+  const canvas=raw.canvas&&typeof raw.canvas==="object"?clone(raw.canvas):{};
+  STATE.architecture={rooms,tables,zones,elements,canvas};
+  STATE.rooms=rooms;STATE.tables=tables;STATE.zones=zones;STATE.elements=elements;
+  if(!STATE.rooms.includes(STATE.room))STATE.room=STATE.rooms[0];
 }
 function productFrom(p,cat="Menu",key="",defaultDest="cuisine"){
   if(p==null)return null;
@@ -13919,7 +13947,7 @@ console.log(
         try{window.refreshPadServiceLive?.()}catch(_){}
         badge(window.STATE?.connected?'✓ LIVE':'✓ HTTP','live');
       }catch(_){badge('SYNC ?','offline')}
-    },120);
+    },650);
   }
 
   function bind(){
@@ -13932,15 +13960,28 @@ console.log(
       setTimeout(()=>requestArchitecture('connect'),100);
     });
 
-    socket.on('architecture-changed',()=>requestArchitecture('changed'));
+    socket.on('architecture-changed',packet=>{
+      const architecture=packet?.architecture||packet?.data||null;
+      if(architecture){
+        if(Number(packet?.syncRevision||0)>0)STATE.syncRevision=Math.max(Number(STATE.syncRevision||0),Number(packet.syncRevision));
+        publishArchitecture(architecture,packet?.serverTime||packet?.updatedAt);
+        return;
+      }
+      requestArchitecture('changed');
+    });
 
     socket.on('architectureState',packet=>{
       const architecture=packet?.architecture||packet?.data||null;
+      if(Number(packet?.syncRevision||0)>0)STATE.syncRevision=Math.max(Number(STATE.syncRevision||0),Number(packet.syncRevision));
       publishArchitecture(architecture,packet?.serverTime||packet?.updatedAt);
     });
 
     socket.on('server-state-changed',evt=>{
-      if(String(evt?.tableId||'').toUpperCase()==='ARCHITECTURE')requestArchitecture('server-state');
+      if(String(evt?.tableId||'').toUpperCase()==='ARCHITECTURE'){
+        const rev=Number(evt?.syncRevision||0);
+        if(rev>0 && rev<=Number(STATE.syncRevision||0))return;
+        requestArchitecture('server-state');
+      }
     });
 
     socket.on('disconnect',()=>badge(navigator.onLine?'RECONNEXION':'HORS LIGNE',navigator.onLine?'syncing':'offline'));
@@ -14130,20 +14171,20 @@ console.log(
                 <button class="action-btn" data-status-btn="EN ATTENTE" style="background:#fff; color:#111; font-size:16px; font-weight:950; min-height:60px; border:2px solid #cfd2d5;">EN ATTENTE</button>
                 <button class="action-btn" data-status-btn="MÉNAGE" style="background:#fff; color:#111; font-size:16px; font-weight:950; min-height:60px; border:2px solid #cfd2d5;">MÉNAGE</button>
             </div>
-            <textarea id="tableStatusText" class="table-status-modal-textarea" placeholder="Ou tapez une autre raison ici (VIP, etc.)...">${safeNote}</textarea>
-            <button id="btnSaveTableStatus" class="action-btn" style="background:#111; color:#fff; font-size:18px; font-weight:950; width:100%; min-height:60px; border:none; border-radius:12px;">✓ OCCUPER LA TABLE</button>
+            <textarea id="tableStatusTextLegacy" class="table-status-modal-textarea" placeholder="Ou tapez une autre raison ici (VIP, etc.)...">${safeNote}</textarea>
+            <button id="btnSaveTableStatusLegacy" class="action-btn" style="background:#111; color:#fff; font-size:18px; font-weight:950; width:100%; min-height:60px; border:none; border-radius:12px;">✓ OCCUPER LA TABLE</button>
         `;
 
         if (typeof openSheet === "function") {
             openSheet("POURQUOI CETTE TABLE EST OCCUPÉE ?", html);
             
-            const area = document.getElementById("tableStatusText");
+            const area = document.getElementById("tableStatusTextLegacy");
             
             document.getElementById("sheetBody").querySelectorAll("[data-status-btn]").forEach(b => {
                 b.onclick = () => { area.value = b.dataset.statusBtn; };
             });
 
-            document.getElementById("btnSaveTableStatus").onclick = async () => {
+            document.getElementById("btnSaveTableStatusLegacy").onclick = async () => {
                 const reason = area.value.trim();
                 if (!reason) {
                     if (typeof toast === "function") toast("Veuillez indiquer un motif", true);
@@ -14669,6 +14710,7 @@ setTimeout(() => {
         if (STATE.currentTable) renderTicket();
     }
 }, 850);
+</script>
   <!-- =========================================================
      CORRECTION DÉFINITIVE : PROTECTION DU PRIX ET ALIGNEMENTS
      ========================================================= -->
@@ -14703,7 +14745,6 @@ body.order-open .ticket-name {
     text-overflow: ellipsis !important;
     width: 100% !important;
 }
-  </script>
 </style>
 
   <!-- =========================================================
