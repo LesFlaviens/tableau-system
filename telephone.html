@@ -12129,5 +12129,570 @@ if(bottomObservation)bottomObservation.addEventListener("click",()=>openObservat
 
 }
 </script>
+  <script id="ichef-logique-consolidated">
+    // ==========================================
+    // A. DOCK 2 LIGNES
+    // ==========================================
+    const btnFermerHaut = document.getElementById("btnCloseOrder");
+    if (btnFermerHaut) btnFermerHaut.style.setProperty("display", "none", "important");
+
+    const dock = document.getElementById("bottomObservationBar");
+    if (dock) {
+        dock.innerHTML = `
+            <div class="order-dock-row order-dock-close">
+                <button id="btnDockObserver" type="button">OBSERVER</button>
+                <button id="btnDockFermer" type="button">FERMER</button>
+            </div>
+            <div class="order-dock-row order-dock-payment">
+                <div class="order-total-card">
+                    <span class="order-total-label">TOTAL TABLE</span>
+                    <strong id="bottomTableTotal">0,00 CHF</strong>
+                </div>
+                <button id="btnDockPaiement" type="button">À PAYER</button>
+            </div>
+        `;
+        document.getElementById("btnDockObserver").addEventListener("click", () => {
+            if (typeof window.openTableStatusModal === "function") window.openTableStatusModal();
+            else if (typeof window.openObservationFast === "function") window.openObservationFast();
+        });
+        document.getElementById("btnDockFermer").addEventListener("click", () => {
+            if (typeof closeOrder === "function") closeOrder();
+        });
+        document.getElementById("btnDockPaiement").addEventListener("click", () => {
+            if (typeof openPayment === "function") openPayment();
+        });
+    }
+
+    // ==========================================
+    // B. ANNULATION DOUBLE-TAP INVISIBLE + AUTO-CLOSE
+    // ==========================================
+    if (typeof window.renderTicket === "function") {
+        window.renderTicket = function() {
+            const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
+            const items = (o.items || []).filter(i => i && !i.cancelled);
+            
+            const ticketTotal = document.getElementById("ticketTotal");
+            if(ticketTotal) ticketTotal.textContent = money(orderTotal(o));
+            const tableTotal = document.getElementById("bottomTableTotal");
+            if (tableTotal) tableTotal.textContent = money(orderTotal(o));
+
+            const ticket = document.getElementById("ticket");
+            if(ticket) {
+                ticket.innerHTML = items.length
+                    ? items.map(i => {
+                        const key = lineKey(i), q = itemQty(i), seat = itemSeat(i), sent = lineFired(i), servedNow = lineServed(i);
+                        const readyNow = lineReady(i) && !servedNow && !i.cancelled;
+                        const state = servedNow ? '<span class="line-state">SERVI</span>' : readyNow ? '<span class="line-state ready">PRÊT</span>' : sent ? '<span class="line-state sent">ENVOYÉ</span>' : '<span class="line-state">BROUILLON</span>';
+                        const cooking = text(i.cooking) ? `<span class="cooking-tag">🌡️ ${esc(i.cooking)}</span>` : "";
+                        const seatBadge = seat ? seatBadgeHTML(seat) : '<span class="seat-badge">CTR</span>';
+                        const obs = text(i.obs), critical = i.allergyCritical === true || /allerg/i.test(obs);
+                        
+                        window.pendingCancellations = window.pendingCancellations || {};
+                        const isConfirming = window.pendingCancellations[key];
+                        const deleteBtnText = isConfirming ? "CONFIRMER" : (sent ? "ANN." : "×");
+                        const deleteBtnStyle = isConfirming ? "width:auto; font-weight:1000; color:#ffffff; background:#ff5368; padding:0 10px; border-color:#ff5368; transition:all 0.2s;" : (sent ? "width:auto; font-weight:1000; color:#ff5368; padding:0 10px; transition:all 0.2s;" : "width:auto; padding:0 10px; color:#ff5368; font-weight:1000; transition:all 0.2s;");
+
+                        const controls = sent
+                            ? `<button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
+                               <button data-line="${esc(key)}" data-act="cooking" title="Cuisson">🌡️</button>
+                               <button data-line="${esc(key)}" data-act="delete" style="${deleteBtnStyle}">${deleteBtnText}</button>`
+                            : `<button data-line="${esc(key)}" data-act="minus">−</button>
+                               <button data-line="${esc(key)}" data-act="plus">+</button>
+                               <button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
+                               <button data-line="${esc(key)}" data-act="delete" style="${deleteBtnStyle}">${deleteBtnText}</button>`;
+
+                        return `<div class="ticket-row ${sent?"sent-lock":""} ${readyNow?"ready-to-serve":""} ${servedNow?"served-line":""}" data-ready-line="${readyNow?esc(key):""}">
+                            <div class="ticket-left" data-line="${esc(key)}" data-act="obs" style="cursor:pointer;" title="${readyNow?"Maintenir 0,9 s pour valider SERVI":"Tap pour Observation/Allergie"}">
+                                <div class="ticket-name">${seatBadge}${esc(itemName(i))}${destinationTagHTML(i)}${cooking}${state}</div>
+                                <div class="ticket-meta">x${q} · ${esc(i.course||i.category||"")}</div>
+                                ${obs?`<span class="ticket-obs ${critical?"critical":""}">${critical?"🛑 ":"⚠️ "}${esc(obs)}</span>`:""}
+                            </div>
+                            <div class="ticket-right"><div class="ticket-price">${money(itemPrice(i)*q)}</div><div class="qtybar">${controls}</div></div>
+                        </div>`;
+                    }).join("")
+                    : '<div class="empty-state">Choisissez C1…C9 puis touchez les produits.<br><b>1 tap = ajout immédiat.</b></div>';
+            }
+            if (typeof renderSendButton === "function") renderSendButton(o);
+            if (typeof updateUndoButton === "function") updateUndoButton();
+        };
+    }
+
+    window.cancelSentLineFast = async function(item) {
+        const o = ensureOrder(STATE.currentTable);
+        const target = o.items.find(x => lineKey(x) === lineKey(item));
+        if(!target) return false;
+        target.originalPrice = target.originalPrice !== undefined ? target.originalPrice : itemPrice(target);
+        target.p = 0; target.price = 0; target.isOffered = true; target.done = true; target.cancelled = true;
+        target.cancelReason = "Correction / Annulation rapide"; target.cancelledAt = Date.now(); target.cancelledBy = STATE.role || "SERVEUR";
+        target.sequenceStatus = "CANCELLED"; target.obs = `❌ ANNULÉ (Correction express)${target.obs ? " | " + target.obs : ""}`;
+        
+        const ok = await saveCurrent(o, "Annulation article déjà envoyé", {immediate: true});
+        if(ok){
+            if (typeof productionAlert === "function") await productionAlert(target, "ANNULATION", "Correction express");
+            toast("🚨 Annulation transmise au poste");
+            const activeItems = o.items.filter(x => !x.cancelled);
+            renderTicket(); scheduleRender();
+            if(activeItems.length === 0) toast("Commande vide · ouvrez RÉSUMÉ pour libérer la table");
+        }
+        return ok;
+    };
+
+    if (typeof window.mutateLine === "function") {
+        window.mutateLine = async function(key, action) {
+            if(!STATE.currentTable) return;
+            const o = ensureOrder(STATE.currentTable);
+            const i = o.items.find(x => lineKey(x) === key);
+            if(!i) return;
+            STATE.lastLineKey = key;
+
+            if (action === "delete") {
+                window.pendingCancellations = window.pendingCancellations || {};
+                if (!window.pendingCancellations[key]) {
+                    window.pendingCancellations[key] = { timer: setTimeout(() => { delete window.pendingCancellations[key]; renderTicket(); }, 3000) };
+                    renderTicket();
+                    return; 
+                } else {
+                    clearTimeout(window.pendingCancellations[key].timer);
+                    delete window.pendingCancellations[key];
+                    if (lineFired(i)) { await window.cancelSentLineFast(i); } 
+                    else {
+                        const before = cloneOrderForUndo(o);
+                        o.items = o.items.filter(x => x !== i);
+                        pushUndo(`Retrait ${itemName(i)}`, before);
+                        await saveCurrent(o, "Retrait article", {delay: 120});
+                        const activeItems = o.items.filter(x => !x.cancelled);
+                        renderTicket(); scheduleRender();
+                        if(activeItems.length === 0) toast("Commande vide · ouvrez RÉSUMÉ pour libérer la table");
+                    }
+                    return;
+                }
+            }
+            if(action==="serve"){
+                const before=cloneOrderForUndo(o);
+                i.served=true; i.isServed=true; i.servedAt=Date.now(); i.servedBy=STATE.role||"SERVEUR";
+                i.sequenceStatus="SERVED"; i.status="served"; i.productionStatus="served"; i.done=false; i.ready=false; i.isReady=false; i.readyAt=null;
+                pushUndo(`Plat servi : ${itemName(i)}`,before);
+                const savePromise=saveCurrent(o,"Plat marqué comme servi",{immediate:true});
+                renderTicket(); scheduleRender(); if (typeof updateToolBadges === "function") updateToolBadges();
+                const ok=await savePromise;
+                toast(ok?"✓ Plat servi":"✓ Plat servi · synchronisation en attente",!ok);
+                return;
+            }
+            if(lineFired(i)){ if(action==="plus"||action==="minus"){ toast("Déjà envoyé : utilisez ANN. pour annuler",true); return; } }
+            const before=cloneOrderForUndo(o);
+            if(action==="plus") i.qty=itemQty(i)+1;
+            if(action==="minus"){
+                i.qty=Math.max(0,itemQty(i)-1);
+                if(i.qty<=0) {
+                    o.items=o.items.filter(x=>x!==i);
+                    const activeItems = o.items.filter(x => !x.cancelled);
+                    if(activeItems.length === 0) toast("Commande vide · ouvrez RÉSUMÉ pour libérer la table");
+                }
+            }
+            pushUndo(`Modification ${seatLabel(itemSeat(i)||STATE.activeSeat)} · ${itemName(i)}`,before);
+            await saveCurrent(o,"Modification rapide article",{delay:120});
+            renderTicket();
+        };
+    }
+
+    // ==========================================
+    // C. QR CODE FISCAL GLOBAL ET IMPRESSION
+    // ==========================================
+    if (typeof window.systemPrintHTML === "function") {
+        window.systemPrintHTML = function(lines, title="iCHEF", paperWidth=80) {
+            const width = Number(paperWidth)===58 ? 58 : 80;
+            const body = lines.map(line => {
+                if (line && line.qrcode) {
+                    const qrUrl = "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=" + encodeURIComponent(line.qrcode);
+                    return `<div style="text-align:center; margin: 15px 0;"><img src="${qrUrl}" alt="QR Code Fiscal" style="width: 150px; height: 150px; display: block; margin: 0 auto;"></div>`;
+                }
+                const o = typeof line==="string" ? {text:line} : line||{};
+                const textValue = esc(String(o.text||""));
+                const size = (Number(o.width)>1 || Number(o.height)>1) ? "font-size:18px;" : "font-size:13px;";
+                const weight = o.bold ? "font-weight:900;" : "";
+                const align = o.align ? `text-align:${o.align};` : "";
+                return `<div style="${size}${weight}${align}white-space:pre-wrap;line-height:1.25">${textValue||"&nbsp;"}</div>`;
+            }).join("");
+            return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>@page{size:${width}mm auto;margin:3mm}html,body{margin:0;padding:0;background:#fff;color:#000;font-family:Arial,sans-serif}.ticket{width:${width-6}mm;margin:0 auto}</style></head><body><div class="ticket">${body}</div></body></html>`;
+        };
+    }
+
+    if (typeof window.printViaSystem === "function") {
+        window.printViaSystem = async function(printer, lines, meta={}) {
+            return new Promise((resolve,reject) => {
+                try {
+                    const frame = document.createElement("iframe");
+                    frame.setAttribute("aria-hidden", "true");
+                    frame.style.cssText = "position:fixed;right:0;bottom:0;width:1px;height:1px;opacity:0;pointer-events:none;";
+                    document.body.appendChild(frame);
+                    const doc = frame.contentDocument || frame.contentWindow?.document;
+                    if (!doc) throw new Error("Impression navigateur indisponible");
+                    
+                    doc.open();
+                    doc.write(window.systemPrintHTML(lines, `iCHEF ${meta.dest||"IMPRIMANTE"}`, printer.paperWidth));
+                    doc.close();
+                    
+                    setTimeout(() => {
+                        try {
+                            frame.contentWindow?.focus();
+                            frame.contentWindow?.print();
+                            resolve({ok: true, mode: "system", note: "Dialogue d'impression ouvert"});
+                        } catch(e) { reject(e); }
+                        setTimeout(() => frame.remove(), 3000);
+                    }, 1200);
+                } catch(e) { reject(e); }
+            });
+        };
+    }
+
+    if (typeof window.buildEpsonSoap === "function") {
+        window.buildEpsonSoap = function(lines, options={}) {
+            const body=[];
+            body.push('<text lang="fr"/>');
+            if(options.title){
+                body.push('<text align="center"/>');
+                body.push('<text em="true" width="2" height="2"/>');
+                body.push(`<text>${xmlEsc(options.title+"\\n")}</text>`);
+                body.push('<text em="false" width="1" height="1" align="left"/>');
+            }
+            lines.forEach(line => {
+                if(typeof line === "string"){
+                    body.push(eposTextLine(line));
+                } else if(line && typeof line === "object"){
+                    if(line.qrcode) {
+                        body.push('<text align="center"/>');
+                        body.push(`<barcode type="qrcode" width="5" height="5">${xmlEsc(line.qrcode)}</barcode>`);
+                        body.push('<text align="left"/>');
+                    } else {
+                        body.push(eposTextLine(line.text||"",line));
+                    }
+                }
+            });
+            body.push('<feed line="2"/>');
+            body.push('<cut type="feed"/>');
+            return `<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><epos-print xmlns="http://www.epson-pos.com/schemas/2011/03/epos-print">${body.join("")}</epos-print></s:Body></s:Envelope>`;
+        };
+    }
+
+    if (typeof window.fiscalReportLines === "function") {
+        window.fiscalReportLines = function(period,key,records){
+            const profile=fiscalProfile();
+            const cfg=loadPrinterConfig();
+            const receipt=cfg?.receipt||{};
+            const label=period==="day"?"JOURNALIER":period==="month"?"MENSUEL":"ANNUEL";
+            const vat=new Map(),payments=new Map();
+            let total=0,paymentsCount=0,corrections=0,operationalCancels=0;
+
+            records.forEach(r=>{
+                if(r.type==="PAYMENT"){paymentsCount++; total=fiscalRound2(total+r.amount)}
+                else if(r.type==="CANCEL_PAYMENT"){corrections++; total=fiscalRound2(total+r.amount)}
+                else if(r.type==="CANCEL_ORDER"){operationalCancels++}
+                if(r.type!=="CANCEL_ORDER")payments.set(r.method,fiscalRound2((payments.get(r.method)||0)+r.amount));
+                (r.rows||[]).map(fiscalNormalizeVatRow).forEach(v=>{
+                    const k=String(v.rate),cur=vat.get(k)||{rate:v.rate,gross:0,net:0,tax:0};
+                    cur.gross=fiscalRound2(cur.gross+v.gross);cur.net=fiscalRound2(cur.net+v.net);cur.tax=fiscalRound2(cur.tax+v.tax);vat.set(k,cur);
+                });
+            });
+
+            const lines=[];
+            lines.push({text:text(receipt.businessName||receipt.logoText||"iCHEF"),bold:true,width:2,height:2,align:"center"});
+            if(receipt.address)lines.push({text:receipt.address,align:"center"});
+            if(receipt.taxId)lines.push({text:`TVA / ID: ${receipt.taxId}`,align:"center"});
+            lines.push({text:`RAPPORT FISCAL ${label}`,bold:true,width:2,height:2,align:"center"});
+            lines.push({text:`${profile.label} · ${profile.currency} · ${key}`,bold:true,align:"center"});
+            lines.push(`ÉDITÉ: ${new Date().toLocaleString("fr-FR",{timeZone:fiscalPrintTimeZone()})}`);
+            lines.push(`TERMINAL: ${text(STATE.deviceId||"—")}`);
+            lines.push(`OPÉRATEUR: ${text(STATE.role||"—")}`);
+            lines.push("------------------------------------------");
+            lines.push(`PAIEMENTS: ${paymentsCount}`);
+            lines.push(`CORRECTIONS PAYÉES: ${corrections}`);
+            lines.push(`ANNULATIONS AVANT PAIEMENT: ${operationalCancels}`);
+            lines.push({text:`TOTAL NET TTC: ${fiscalPrintMoney(total,profile.currency)}`,bold:true,width:2,height:2,align:"right"});
+            lines.push("------------------------------------------");
+            lines.push({text:"TVA",bold:true});
+            if(vat.size){
+                [...vat.values()].sort((a,b)=>a.rate-b.rate).forEach(v=>lines.push(`TVA ${v.rate.toFixed(2).replace(".",",")}% · HT ${fiscalPrintMoney(v.net,profile.currency)} · TVA ${fiscalPrintMoney(v.tax,profile.currency)} · TTC ${fiscalPrintMoney(v.gross,profile.currency)}`));
+            }else lines.push("Aucune TVA fiscalisée sur cette période");
+            lines.push("------------------------------------------");
+            lines.push({text:"MOYENS DE PAIEMENT",bold:true});
+            if(payments.size)[...payments.entries()].forEach(([m,v])=>lines.push(`${m}: ${fiscalPrintMoney(v,profile.currency)}`));
+            else lines.push("Aucun paiement");
+            lines.push("------------------------------------------");
+            lines.push({text:"ÉCRITURES",bold:true});
+            records.forEach(r=>{
+                const sign=r.type==="CANCEL_PAYMENT"?"CORRECTION":r.type==="CANCEL_ORDER"?"ANNULATION":"VENTE";
+                lines.push(`${sign} · ${r.id}`);
+                lines.push(`  ${r.date?new Date(r.date).toLocaleString("fr-FR"):"—"} · ${r.method} · ${fiscalPrintMoney(r.amount,profile.currency)}`);
+                if(r.correctionOf)lines.push(`  ORIGINAL: ${r.correctionOf}`);
+                if(r.reason)lines.push(`  MOTIF: ${r.reason}`);
+            });
+            lines.push("------------------------------------------");
+            
+            const qrData = `RAPPORT:${label}|PERIODE:${key}|TOTAL:${total}|RECORDS:${records.length}`;
+            lines.push({qrcode: qrData});
+
+            lines.push({text:"DOCUMENT DE CONTRÔLE — JOURNAL FISCAL iCHEF",bold:true,align:"center"});
+            lines.push({text:"L'impression n'altère aucune écriture fiscale.",align:"center"});
+            return lines;
+        };
+    }
+
+    if (typeof window.cashReceiptLines === "function") {
+        window.cashReceiptLines = function(order,options={}) {
+            const cfg=loadPrinterConfig();
+            const r=cfg.receipt||{};
+            const fiscal=fiscalBreakdown(order||{});
+            const total=fiscalRound2(fiscal.gross);
+            const payment=text(order?.paymentDraft?.payments?.[0]?.method||order?.paymentMethod||"");
+            const profile=fiscal.profile;
+            const paidAt=order?.paymentDraft?.updatedAt||order?.fiscalFinalizedAt||new Date().toISOString();
+            const fiscalHash=text(order?.paymentDraft?.fiscalHash||order?.fiscalHash||"");
+            const lines=[];
+            const header=text(r.logoText||r.businessName||"iCHEF");
+
+            lines.push({text:header||"iCHEF",bold:true,width:2,height:2,align:"center"});
+            if(r.businessName && text(r.businessName)!==header)lines.push({text:r.businessName,bold:true,align:"center"});
+            if(r.address)lines.push({text:r.address,align:"center"});
+            if(r.phone)lines.push({text:r.phone,align:"center"});
+            if(r.taxId)lines.push({text:`TVA / ID: ${r.taxId}`,align:"center"});
+            lines.push({text:`PROFIL FISCAL: ${profile.label} · ${profile.currency}`,bold:true,align:"center"});
+            lines.push("------------------------------------------");
+            lines.push({text:`TABLE ${STATE.currentTable||order?.tableId||"—"} · ${new Date(paidAt).toLocaleString("fr-FR")}`,bold:true});
+            lines.push(`JUSTIFICATIF ${receiptReference(order)}`);
+            lines.push(`CAISSE ${text(STATE.deviceId||"—")}`);
+            if(r.showServer!==false)lines.push(`Opérateur: ${STATE.role||order?.updatedBy||"—"}`);
+            if(options.duplicate)lines.push({text:"*** DUPLICATA ***",bold:true,width:2,height:2,align:"center"});
+            lines.push("------------------------------------------");
+
+            (fiscal.lines||[]).forEach(line=>{
+                const item=line.item;
+                const seat=itemSeat(item);
+                lines.push({text:`${r.showGuests!==false&&seat?seatLabel(seat)+" · ":""}${line.qty} x ${line.label}`,bold:true});
+                lines.push({text:`TTC ${money(line.gross)} · TVA ${Number(line.rate||0).toFixed(2).replace(".",",")}% · HT ${money(line.net)}`,align:"right"});
+                const obs=text(item?.obs||item?.observation||item?.note);
+                if(obs)lines.push(`  ${obs}`);
+            });
+
+            lines.push("------------------------------------------");
+            fiscal.rows.forEach(row=>{
+                lines.push(`TVA ${Number(row.rate||0).toFixed(2).replace(".",",")}%  HT ${money(row.net)}  TVA ${money(row.tax)}  TTC ${money(row.gross)}`);
+            });
+            lines.push({text:`TOTAL ${money(total)}`,bold:true,width:2,height:2,align:"right"});
+            if(payment)lines.push({text:`PAIEMENT: ${payment}`,bold:true});
+            
+            if(fiscalHash){
+                lines.push(`SCELLEMENT SHA-256:`);
+                lines.push(`${fiscalHash.slice(0,16).toUpperCase()}…`);
+                const publicToken=text(order?.receipt?.publicToken||order?.publicReceiptToken||order?.paymentDraft?.publicToken||"");
+                const qrData = publicToken
+                  ? `${APP_SERVER_URL}/api/public-receipt?tenantID=${encodeURIComponent(STATE.tenantID)}&token=${encodeURIComponent(publicToken)}`
+                  : `TICKET:${receiptReference(order)}|TOTAL:${total}|HASH:${fiscalHash.toUpperCase()}`;
+                lines.push({qrcode: qrData,qrLabel: publicToken?"TICKET CLIENT iCHEF":"SCELLEMENT FISCAL iCHEF"});
+            }
+            
+            lines.push("------------------------------------------");
+            if(r.footer)lines.push({text:r.footer,align:"center"});
+            lines.push({text:"Propulsé par iCHEF",align:"center"});
+            return lines;
+        };
+    }
+
+    // ==========================================
+    // D. SYMBIOSE PLAN INTERACTIF
+    // ==========================================
+    if (typeof window.renderLivePlan === "function") {
+        window.renderLivePlan = function() {
+            if(!STATE.planViewOpen) return;
+            const host = document.getElementById("livePlanHost");
+            if(!host) return;
+            if(STATE.planGestureActive) return;
+
+            const filter = typeof getDeviceFilter === "function" ? getDeviceFilter() : {type:"all"};
+            let ts = STATE.tables || [];
+            let zs = STATE.zones || [];
+            let es = STATE.elements || STATE.architecture?.elements || [];
+
+            if (filter.type === "zone") {
+                const selectedZone = zs.find(z => z.label === filter.value);
+                const selectedRoom = selectedZone?.room || STATE.room;
+                ts = ts.filter(t => {
+                    const z = getZone(t);
+                    return (z?.label || t.zone || "Nouvelle Zone") === filter.value;
+                });
+                zs = zs.filter(z => z.label === filter.value);
+                es = es.filter(e => (!e?.room || e.room === selectedRoom) && (!e?.zone || e.zone === filter.value));
+            } else if (filter.type === "room") {
+                ts = ts.filter(t => t.room === filter.value);
+                zs = zs.filter(z => z.room === filter.value);
+                es = es.filter(e => !e?.room || e.room === filter.value);
+            } else {
+                ts = ts.filter(t => t.room === STATE.room);
+                zs = zs.filter(z => z.room === STATE.room);
+                es = es.filter(e => !e?.room || e.room === STATE.room);
+            }
+
+            if(!ts.length && !zs.length && !es.length){
+                host.innerHTML = '<div class="empty-state" style="margin:12px; font-size:24px;">Aucun plan synchronisé pour ce secteur.</div>';
+                return;
+            }
+
+            const canvasCfg = STATE.architecture?.canvas || {};
+            let maxX = Math.max(900, Number(canvasCfg.width || 0) || 0);
+            let maxY = Math.max(650, Number(canvasCfg.height || 0) || 0);
+            [...ts,...zs,...es].forEach(item => {
+                const p = planCoordinates(item);
+                maxX = Math.max(maxX, p.l + p.w + 60);
+                maxY = Math.max(maxY, p.t + p.h + 60);
+            });
+
+            if(!STATE.planTransform.initialized){
+                STATE.planTransform.scale = 1;
+                STATE.planTransform.x = 12;
+                STATE.planTransform.y = 12;
+                STATE.planTransform.initialized = true;
+            }
+
+            const zonesHTML = zs.map(z => {
+                const p = planCoordinates({...z, w: z.w || 400, h: z.h || 300});
+                const color = text(z.color || z.couleur || "#58a9ff");
+                return `<div class="plan-zone" style="left:${p.l}px;top:${p.t}px;width:${p.w}px;height:${p.h}px;border: 3px dashed ${esc(color)};color:${esc(color)};background:${esc(color)}15;font-size:26px;font-weight:1000;padding:15px; text-transform:uppercase; z-index:1;">${esc(z.label || "Zone")}</div>`;
+            }).join("");
+
+            const planElementPalette = {
+                wall:["#3d4243","#171a1b","#fff"], door:["#d6c6aa","#6b5c48","#332b23"], window:["#a9dbeb","#4b7b8b","#1d4653"],
+                bar:["#844e32","#4e2c1b","#fff"], kitchen:["#b7bdc0","#697276","#202527"], cash:["#d7b04a","#816417","#17130a"],
+                buffet:["#c7a36e","#755b38","#1f160d"], text:["transparent","transparent","#222"], plant:["#b9d89b","#60804f","#183313"],
+                pool:["#a7dff0","#4f94aa","#173d49"], roomservice:["#d9c7ee","#8468a5","#321f48"], bed_single:["#eee","#999","#222"],
+                bed_double:["#eee","#999","#222"], desk:["#d8c09b","#82643e","#222"], sofa:["#c8b0a1","#7c6254","#222"], wardrobe:["#b6946a","#6d4e2e","#fff"],
+                sink:["#dceff3","#7faab5","#23434b"], toilet:["#f4f4f4","#a5a5a5","#222"], shower:["#dceff3","#7faab5","#23434b"]
+            };
+            const planElementDefaultLabel = {door:"PORTE",window:"FENÊTRE",bar:"BAR",kitchen:"CUISINE",cash:"CAISSE",buffet:"BUFFET",plant:"PLANTE",pool:"PISCINE",roomservice:"ROOM SERVICE",bed_single:"LIT",bed_double:"LIT DOUBLE",desk:"BUREAU",sofa:"CANAPÉ",wardrobe:"ARMOIRE",sink:"LAVABO",toilet:"WC",shower:"DOUCHE",wall:"",text:""};
+            const elementsHTML = es.map(e => {
+                const p = planCoordinates(e);
+                const type = text(e?.type || "element").toLowerCase();
+                const palette = planElementPalette[type] || ["#ddd","#777","#222"];
+                const rotation = Number(e?.rotation || 0) || 0;
+                const label = text(e?.label || planElementDefaultLabel[type] || type.toUpperCase());
+                return `<div class="plan-element plan-element-${esc(type)}" style="left:${p.l}px;top:${p.t}px;width:${p.w}px;height:${p.h}px;transform:rotate(${rotation}deg);background:${palette[0]};border-color:${palette[1]};color:${palette[2]}">${esc(label)}</div>`;
+            }).join("");
+
+            const tablesHTML = ts.map(t => {
+                const p = planCoordinates(t);
+                const s = tableStats(t.label);
+                const o = getOrder(t.label);
+                const z = getZone(t);
+
+                const meta = s.pax ? `${s.pax} PAX` : (t.pax ? `${t.pax} PAX` : "0 PAX");
+                const zoneLabel = text(z?.label || t.zone || "Nouvelle Zone");
+
+                let etatLabel = "LIBRE";
+                if (s.status === 'reserved') etatLabel = "RÉSERVÉE";
+                else if (s.status === 'payment') etatLabel = "PAIEMENT";
+                else if (s.status === 'alert') etatLabel = "URGENT";
+                else if (s.status === 'late') etatLabel = "RETARD";
+                else if (s.status === 'ready') etatLabel = "PRÊT";
+                else if (s.status === 'wait') etatLabel = "ATTENTE";
+                else if (s.status === 'active') etatLabel = "OCCUPÉE";
+
+                const zoneColor = text(z?.color || z?.couleur || (
+                    s.status==="ready"?"#36d98a":
+                    s.status==="wait"?"#ff9a43":
+                    s.status==="late"||s.status==="alert"?"#ff5368":
+                    s.status==="reserved"?"#9b74ff":
+                    "#b7bd00"
+                ));
+
+                const preview = (o?.items||[])
+                    .filter(Boolean).slice(0,2)
+                    .map((item,index) => {
+                        const q = itemQty(item);
+                        const served = lineServed(item);
+                        const ready = lineReady(item) && !served && !item.cancelled;
+                        const sent = lineFired(item);
+                        const klass = (ready || s.status==="late" || s.status==="alert") ? " warn" : "";
+                        const state = served ? " · SERVI" : ready ? " · PRÊT" : sent ? "" : " · À ENVOYER";
+                        return `<span class="table-preview-line${klass}">• ${q>1?q+"× ":""}${esc(itemName(item))}${state}</span>`;
+                    }).join("");
+
+                const time = s.age ? duration(s.age) : (s.status === "reserved" ? "RÉSERVÉE" : "00:00");
+
+                let seatPastilles = "";
+                if (o && o.items) {
+                    const activeSeats = o.items
+                        .filter(i => i && !i.cancelled && itemQty(i) > 0)
+                        .map(i => itemSeat(i))
+                        .filter(seat => seat >= 1 && seat <= 9);
+                    
+                    const uniqueSeats = [...new Set(activeSeats)].sort((a, b) => a - b);
+                    
+                    if (uniqueSeats.length > 0) {
+                        seatPastilles = `<div style="display:flex; gap:4px; justify-content:center; margin-top:6px; flex-wrap:wrap; width:100%; position:relative; z-index:5;">` + 
+                            uniqueSeats.map(seat => `<span class="seat-badge seat-${seat}" style="background:#ffffff !important; border:2px solid var(--c${seat}) !important; color:var(--c${seat}) !important; min-width:26px; height:18px; font-size:9px; padding:0 6px; margin:0; font-weight:1000; display:inline-flex; align-items:center; justify-content:center; line-height:1; border-radius:999px;">C${seat}</span>`).join('') + 
+                        `</div>`;
+                    }
+                }
+
+                const readyOverlay = s.ready 
+                    ? `<div class="table-ready-overlay">${s.ready} PRÊT(S)</div>` 
+                    : "";
+
+                return `<button class="plan-table table-card ${s.status}" data-plan-table="${esc(t.label)}"
+                    style="position:absolute; left:${p.l}px; top:${p.t}px; width:${p.w}px; height:${p.h}px; padding: 10px 5px; z-index:10; overflow:visible !important;">
+                    <span class="num" style="font-size:clamp(20px, 3.5vw, 40px) !important; position:relative; z-index:5;">${esc(t.label)}</span>
+                    <span class="meta state-label" style="font-size:11px; font-weight:950; text-transform:uppercase; margin-top:2px; position:relative; z-index:5;">${esc(etatLabel)}</span>
+                    <span class="time" style="font-size:14px; font-weight:900; margin-top:3px; position:relative; z-index:5;">${esc(time)}</span>
+                    <span class="meta pax" style="font-size:12px; margin-top:3px; font-weight:900; position:relative; z-index:5;">${esc(meta)}</span>
+                    ${seatPastilles}
+                    <span class="table-zone" style="color:${esc(zoneColor)}; margin-top:6px; position:relative; z-index:5; display: ${preview ? 'none' : 'flex'};">${esc(zoneLabel)}</span>
+                    ${preview ? `<span class="table-preview" style="position:relative; z-index:5;">${preview}</span>` : ""}
+                    ${readyOverlay}
+                </button>`;
+            }).join("");
+
+            host.innerHTML = `
+                <div class="plan-live-toolbar">
+                    <div class="plan-live-meta">
+                        <strong style="font-size: 16px;">🗺️ PLAN INTERACTIF · ${esc(filter.type === 'zone' ? filter.value : (filter.type === 'room' ? filter.value : STATE.room))}</strong>
+                        <span style="font-size: 12px; font-weight: 800;">${STATE.connected?"Socket.IO connecté":"Synchronisation HTTP"} · ${ts.length} table(s)</span>
+                    </div>
+                    <button id="planSyncNow" class="action-btn" style="flex:0 0 auto; background:#111; color:#fff; border-color:#111; min-height: 40px; font-size: 14px;">ACTUALISER</button>
+                </div>
+                <div id="livePlanViewport" class="plan-wrap plan-touch">
+                    <div id="livePlanCanvas" class="plan-canvas" data-plan-width="${maxX}" data-plan-height="${maxY}" style="width:${maxX}px;height:${maxY}px">${zonesHTML}${elementsHTML}${tablesHTML}</div>
+                    <div class="plan-touch-help">1 doigt : déplacer<br>2 doigts : zoomer</div>
+                    <div class="plan-zoom-controls" aria-label="Zoom du plan">
+                        <button id="planZoomMinus" class="plan-zoom-btn" type="button" aria-label="Zoom arrière">−</button>
+                        <div id="planZoomLevel" class="plan-zoom-level">100%</div>
+                        <button id="planZoomPlus" class="plan-zoom-btn" type="button" aria-label="Zoom avant">+</button>
+                    </div>
+                </div>`;
+
+            bindPlanTouch();
+            applyPlanTransform();
+
+            host.querySelectorAll("[data-plan-table]").forEach(b => {
+                b.onclick = () => {
+                    if(Date.now() < (STATE.planGesture.blockClickUntil||0)) return;
+                    const table = b.dataset.planTable;
+                    closeSheet();
+                    openOrder(table);
+                };
+            });
+
+            const minus = document.getElementById("planZoomMinus");
+            const plus = document.getElementById("planZoomPlus");
+            if(minus) minus.onclick = e => { e.stopPropagation(); zoomPlanTo(STATE.planTransform.scale/1.25); };
+            if(plus) plus.onclick = e => { e.stopPropagation(); zoomPlanTo(STATE.planTransform.scale*1.25); };
+
+            const syncBtn = document.getElementById("planSyncNow");
+            if(syncBtn) syncBtn.onclick = async() => {
+                syncBtn.disabled = true;
+                syncBtn.textContent = "SYNCHRO…";
+                await syncFull("plan-manual");
+                if(STATE.planViewOpen) renderLivePlan();
+            };
+        };
+    }
+</script>
 </body>
 </html>
