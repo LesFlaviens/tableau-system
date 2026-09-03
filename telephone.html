@@ -13060,6 +13060,224 @@ setTimeout(() => {
     }
 }, 1500);
 </script>
-  
+  <!-- =========================================================
+     FIX : ANNULATIONS INVISIBLES, CONFIRMATIONS ET AUTO-FERMETURE
+     ========================================================= -->
+<script id="fix-annulation-invisible-auto-close">
+setTimeout(() => {
+    // 1. Rendre les articles annulés INVISIBLES sur le ticket (mais gardés en mémoire)
+    if (typeof window.renderTicket === "function") {
+        window.renderTicket = function() {
+            const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
+            
+            // FILTRE MAGIQUE : on retire visuellement les plats annulés de l'écran
+            const items = (o.items || []).filter(i => i && !i.cancelled);
+
+            const ticketTotal = document.getElementById("ticketTotal");
+            if(ticketTotal) ticketTotal.textContent = money(orderTotal(o));
+
+            const ticket = document.getElementById("ticket");
+            if(ticket) {
+                ticket.innerHTML = items.length
+                    ? items.map(i => {
+                        const key = lineKey(i);
+                        const q = itemQty(i);
+                        const seat = itemSeat(i);
+                        const sent = lineFired(i);
+                        const servedNow = lineServed(i);
+                        const readyNow = lineReady(i) && !servedNow && !i.cancelled;
+                        const state = servedNow
+                            ? '<span class="line-state">SERVI</span>'
+                            : readyNow
+                                ? '<span class="line-state ready">PRÊT</span>'
+                                : sent
+                                    ? '<span class="line-state sent">ENVOYÉ</span>'
+                                    : '<span class="line-state">BROUILLON</span>';
+
+                        const cooking = text(i.cooking)
+                            ? `<span class="cooking-tag">🌡️ ${esc(i.cooking)}</span>`
+                            : "";
+
+                        const seatBadge = seat ? seatBadgeHTML(seat) : '<span class="seat-badge">CTR</span>';
+                        const obs = text(i.obs);
+                        const critical = i.allergyCritical === true || /allerg/i.test(obs);
+
+                        const controls = sent
+                            ? `<button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
+                               <button data-line="${esc(key)}" data-act="cooking" title="Cuisson">🌡️</button>
+                               <button data-line="${esc(key)}" data-act="delete" title="Annuler au poste" style="width:52px; font-weight:1000; color:#ff5368;">ANN.</button>`
+                            : `<button data-line="${esc(key)}" data-act="minus">−</button>
+                               <button data-line="${esc(key)}" data-act="plus">+</button>
+                               <button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
+                               <button data-line="${esc(key)}" data-act="delete" style="color:#ff5368;">×</button>`;
+
+                        return `<div class="ticket-row ${sent?"sent-lock":""} ${readyNow?"ready-to-serve":""} ${servedNow?"served-line":""}" data-ready-line="${readyNow?esc(key):""}">
+                            <div class="ticket-left" data-line="${esc(key)}" data-act="obs" style="cursor:pointer;" title="${readyNow?"Maintenir 0,9 s pour valider SERVI":"Tap pour Observation/Allergie"}">
+                                <div class="ticket-name">
+                                    ${seatBadge}${esc(itemName(i))}
+                                    ${destinationTagHTML(i)}
+                                    ${cooking}
+                                    ${state}
+                                </div>
+                                <div class="ticket-meta">x${q} · ${esc(i.course||i.category||"")}${readyNow?" · maintien 0,9 s pour valider servi":""}</div>
+                                ${obs?`<span class="ticket-obs ${critical?"critical":""}">${critical?"🛑 ":"⚠️ "}${esc(obs)}</span>`:""}
+                            </div>
+                            <div class="ticket-right">
+                                <div class="ticket-price">${money(itemPrice(i)*q)}</div>
+                                <div class="qtybar">${controls}</div>
+                            </div>
+                        </div>`;
+                    }).join("")
+                    : '<div class="empty-state">Choisissez C1…C9 puis touchez les produits.<br><b>1 tap = ajout immédiat.</b></div>';
+            }
+
+            if (typeof renderSendButton === "function") renderSendButton(o);
+            if (typeof updateUndoButton === "function") updateUndoButton();
+        };
+    }
+
+    // 2. Annulation d'un plat ENVOYÉ (Bouton ANN.) + Auto-Fermeture
+    if (typeof window.cancelSentLine === "function") {
+        window.cancelSentLine = async function(item, reason="") {
+            if(!item || !lineFired(item)) return false;
+
+            let motif = text(reason);
+            if(!motif){
+                motif = text(prompt(`Confirmer l'annulation de : ${itemQty(item)}x ${itemName(item)}\n\nMotif obligatoire (ex: Erreur, Changement d'avis...) :`, "Erreur de commande"));
+            }
+            // Si le serveur annule la popup (changement d'avis), on arrête tout
+            if(!motif){
+                return false; 
+            }
+
+            const o = ensureOrder(STATE.currentTable);
+            const target = o.items.find(x => lineKey(x) === lineKey(item));
+            if(!target) return false;
+
+            // Enregistrement de l'annulation en mémoire
+            target.originalPrice = target.originalPrice !== undefined ? target.originalPrice : itemPrice(target);
+            target.p = 0;
+            target.price = 0;
+            target.isOffered = true;
+            target.done = true;
+            target.cancelled = true;
+            target.cancelReason = motif;
+            target.cancelledAt = Date.now();
+            target.cancelledBy = STATE.role || "SERVEUR";
+            target.cancelDeviceId = STATE.deviceId;
+            target.sequenceStatus = "CANCELLED";
+            target.obs = `❌ ANNULÉ (${motif})${target.obs ? " | " + target.obs : ""}`;
+
+            const ok = await saveCurrent(o, "Annulation article déjà envoyé", {immediate: true});
+            if(ok){
+                if (typeof productionAlert === "function") await productionAlert(target, "ANNULATION", motif);
+                toast("🚨 Annulation transmise au poste");
+
+                // VÉRIFICATION DE TABLE VIDE : Si plus aucun plat n'est actif, on ferme la table
+                const activeItems = o.items.filter(x => !x.cancelled);
+                if(activeItems.length === 0) {
+                    o.isArchived = true;
+                    o.status = "CLOSED";
+                    await saveCurrent(o, "Table libérée (tous les articles annulés)", {immediate: true});
+                    if (typeof closeOrder === "function") closeOrder(); // Retour auto au plan de salle
+                    toast("Table libérée (commande vide)");
+                } else {
+                    renderTicket();
+                    scheduleRender();
+                }
+            }
+            return ok;
+        };
+    }
+
+    // 3. Annulation d'un BROUILLON (Bouton ×) + Demande de Confirmation + Auto-Fermeture
+    if (typeof window.mutateLine === "function") {
+        window.mutateLine = async function(key, action) {
+            if(!STATE.currentTable) return;
+
+            const o = ensureOrder(STATE.currentTable);
+            const i = o.items.find(x => lineKey(x) === key);
+            if(!i) return;
+
+            STATE.lastLineKey = key;
+
+            if(action === "obs"){
+                if (typeof openLineObservation === "function") openLineObservation(key);
+                return;
+            }
+
+            if(action === "cooking"){
+                if (typeof openLineCooking === "function") openLineCooking(key);
+                return;
+            }
+
+            if(action === "serve"){
+                const before = cloneOrderForUndo(o);
+
+                i.served = true;
+                i.isServed = true;
+                i.servedAt = Date.now();
+                i.servedBy = STATE.role || "SERVEUR";
+                i.sequenceStatus = "SERVED";
+                i.status = "served";
+                i.productionStatus = "served";
+                i.done = false;
+                i.ready = false;
+                i.isReady = false;
+                i.readyAt = null;
+
+                pushUndo(`Plat servi : ${itemName(i)}`, before);
+                const savePromise = saveCurrent(o, "Plat marqué comme servi", {immediate: true});
+                renderTicket();
+                scheduleRender();
+                if (typeof updateToolBadges === "function") updateToolBadges();
+                const ok = await savePromise;
+                toast(ok ? "✓ Plat servi" : "✓ Plat servi · synchronisation en attente", !ok);
+                return;
+            }
+
+            if(lineFired(i)){
+                if(action === "delete"){
+                    await cancelSentLine(i);
+                    return;
+                }
+                if(action === "plus" || action === "minus"){
+                    toast("Déjà envoyé : utilisez le bouton ANN. pour annuler", true);
+                    return;
+                }
+            }
+
+            const before = cloneOrderForUndo(o);
+
+            if(action === "plus") i.qty = itemQty(i) + 1;
+
+            if(action === "minus"){
+                i.qty = Math.max(0, itemQty(i) - 1);
+                if(i.qty <= 0) o.items = o.items.filter(x => x !== i);
+            }
+
+            if(action === "delete"){
+                // DEMANDE DE CONFIRMATION AVANT DE SUPPRIMER LE BROUILLON
+                if(!confirm(`Confirmer le retrait de : ${itemName(i)} ?`)) return; 
+                o.items = o.items.filter(x => x !== i);
+            }
+
+            pushUndo(`Modification ${seatLabel(itemSeat(i)||STATE.activeSeat)} · ${itemName(i)}`, before);
+            await saveCurrent(o, "Modification rapide article", {delay: 120});
+            
+            // VÉRIFICATION DE TABLE VIDE APRÈS RETRAIT DU BROUILLON
+            const activeItems = o.items.filter(x => !x.cancelled);
+            if(activeItems.length === 0) {
+                o.isArchived = true;
+                o.status = "CLOSED";
+                await saveCurrent(o, "Table libérée (vide)", {immediate: true});
+                if (typeof closeOrder === "function") closeOrder(); // Retour au plan de salle
+            } else {
+                renderTicket();
+            }
+        };
+    }
+}, 2000); // Exécution différée pour surcharger toute logique précédente
+</script>
   </body>
 </html>
