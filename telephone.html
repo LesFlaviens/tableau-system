@@ -2442,7 +2442,7 @@ body.order-open #order, .order-main, .menu-side, .ticket-side, #bottomObservatio
 .tenant-box input { background: #ffffff !important; color: #000000 !important; border: 1px solid #cccccc !important; }
 .login-card .logo { color: #000000 !important; }
 
-<style>
+/* correction: bloc CSS PIN intégré au style parent */
   /* =========================================================
    CORRECTION LISIBILITÉ ÉCRAN CODE PIN (FOND BLANC)
    ========================================================= */
@@ -4363,7 +4363,7 @@ if (window.ICHEF_PHONE_ONLY_ALLOWED) {
    ========================================================= */
 
 /* CONNEXION SERVER.JS — téléphone = serveur Render, localhost = serveur local */
-const APP_SERVER_URL="https://tableau-system.onrender.com";
+const APP_SERVER_URL=(location.hostname==="localhost"||location.hostname==="127.0.0.1")?"http://localhost:10000":"https://tableau-system.onrender.com";
 
 const $=id=>document.getElementById(id);
 const clone=v=>{try{return structuredClone(v)}catch(_){return JSON.parse(JSON.stringify(v))}};
@@ -6214,43 +6214,13 @@ function addProduct(product,options={}){
   }
 }
 
-async function cancelSentLine(item,reason=""){
-  if(!item||!lineFired(item))return false;
-
-  // Motif automatique et silencieux
-  let motif="Correction express";
-
-  const o=ensureOrder(STATE.currentTable);
-  const target=o.items.find(x=>lineKey(x)===lineKey(item));
-  if(!target)return false;
-
-  target.originalPrice=target.originalPrice!==undefined?target.originalPrice:itemPrice(target);
-  target.p=0;
-  target.price=0;
-  target.isOffered=true;
-  target.done=true;
-  target.cancelled=true;
-  target.cancelReason=motif;
-  target.cancelledAt=Date.now();
-  target.cancelledBy=STATE.role||"SERVEUR";
-  target.cancelDeviceId=STATE.deviceId;
-  target.sequenceStatus="CANCELLED";
-  target.obs=`❌ ANNULÉ (${motif})${target.obs?" | "+target.obs:""}`;
-
-  const ok=await saveCurrent(o,"Annulation article déjà envoyé",{immediate:true});
-  if(ok){
-    await productionAlert(target,"ANNULATION",motif);
-    toast("🚨 Annulation transmise au poste");
-  }
-  return ok;
-}
 window.pendingCancellations = window.pendingCancellations || {};
 
 async function cancelSentLine(item, reason=""){
   if(!item||!lineFired(item))return false;
 
   // Motif automatique et silencieux (PLUS DE FENÊTRE QUI BLOQUE L'ÉCRAN)
-  let motif = "Correction express"; 
+  let motif = "Correction / Annulation express"; 
 
   const o=ensureOrder(STATE.currentTable);
   const target=o.items.find(x=>lineKey(x)===lineKey(item));
@@ -6289,6 +6259,7 @@ async function cancelSentLine(item, reason=""){
   }
   return ok;
 }
+
 async function mutateLine(key,action){
   if(!STATE.currentTable)return;
 
@@ -6305,26 +6276,36 @@ async function mutateLine(key,action){
   // GESTION DU DOUBLE TAP (Sécurité Annulation)
   // ===============================================
   if (action === "delete") {
-    window.pendingCancellations = window.pendingCancellations || {};
-    
-    if (!window.pendingCancellations[key]) {
+    const btn = document.querySelector(`button[data-line="${key}"][data-act="delete"]`);
+    if (btn && btn.dataset.confirming !== "true") {
         // PREMIER CLIC : Mettre le bouton en mode "CONFIRMER"
-        window.pendingCancellations[key] = {
-            timer: setTimeout(() => {
-                delete window.pendingCancellations[key];
-                renderTicket(); // Remet le bouton normal après 3s
-            }, 3000)
-        };
-        renderTicket(); // Affiche le bouton rouge
-        return; 
-    } else {
+        btn.dataset.confirming = "true";
+        btn.dataset.originalText = btn.innerHTML; // Sauvegarde "×" ou "ANN."
+        btn.innerHTML = "CONFIRMER";
+        btn.style.background = "#ff5368";
+        btn.style.color = "#ffffff";
+        btn.style.border = "none";
+        
+        // Timeout de sécurité : annule l'état rouge après 3 secondes si pas de clic
+        btn.confirmTimeout = setTimeout(() => {
+            if (btn && btn.dataset.confirming === "true") {
+                btn.dataset.confirming = "false";
+                btn.innerHTML = btn.dataset.originalText;
+                btn.style.background = "transparent";
+                btn.style.color = "#ff5368"; // Re-passe le texte en rouge
+            }
+        }, 3000);
+        return; // On arrête là, on attend le second clic de validation
+    } 
+    else if (btn && btn.dataset.confirming === "true") {
         // DEUXIÈME CLIC : Confirmation !
-        clearTimeout(window.pendingCancellations[key].timer);
-        delete window.pendingCancellations[key];
+        clearTimeout(btn.confirmTimeout);
         
         if (lineFired(i)) {
+            // Plat déjà envoyé en cuisine -> Annulation réseau silencieuse
             await cancelSentLine(i);
         } else {
+            // Brouillon -> Suppression simple
             const before = cloneOrderForUndo(o);
             o.items = o.items.filter(x => x !== i);
             pushUndo(`Retrait ${itemName(i)}`, before);
@@ -7200,6 +7181,7 @@ function renderTicket(){
   renderSendButton(o);
   updateUndoButton();
 }
+
 /* ---------------- ORDER OPEN/CLOSE ---------------- */
 /* ---------------- ORDER OPEN/CLOSE ---------------- */
 function openOrder(table){
@@ -13387,7 +13369,6 @@ setTimeout(() => {
         };
     }
 }, 2000);
-</script>
 </script>
   </body>
 </html>
