@@ -6842,33 +6842,100 @@ async function kitchenMessage(type,detail=""){
 function readyCount(){let n=0;Object.entries(STATE.activeOrders).forEach(([k,o])=>{if(!isRealOrder(k,o))return;(o.items||[]).forEach(i=>{if(lineReady(i)&&!lineServed(i))n+=Math.max(1,num(i.qty||i.quantity||1))})});return n}
 
 /* ---------------- ALERTS ---------------- */
-function checkGlobalAlert(){
-  const a=unwrap(STATE.activeOrders.ALERTS_MASTER);
-  if(!a||a.type!=="RING"){ $("server-alert").classList.remove("show");return }
-  
-  const sig=text(a.createdAt)+"|"+text(a.message);
-  if(sig===STATE.lastAlertSignature)return;
-  STATE.lastAlertSignature=sig;
-  
+/* ALERTE TEMPS RÉEL — ne jamais rejouer une ancienne alerte après connexion/rechargement. */
+const ICHEF_ALERT_MAX_AGE_MS = 90 * 1000;
+const ICHEF_ALERT_BOOT_AT = Date.now();
+
+function ichefAlertStorageKey(){
+  return "ichef_last_alert_"+String(STATE.tenantID||"default");
+}
+function ichefAlertSignature(a){
+  return [
+    text(a?.createdAt),
+    text(a?.broadcastId),
+    text(a?.tableId),
+    text(a?.message)
+  ].join("|");
+}
+function ichefDismissGlobalAlert(sig=""){
   const el=$("server-alert");
-  
-  // On récupère le numéro de la table concernée
-  const tableNum = a.tableId || "INCONNUE";
-  
-  // On remplace le long texte par un message ultra court avec une croix pour fermer
+  if(el){
+    el.classList.remove("show");
+    if(el.hideTimer){ clearTimeout(el.hideTimer); el.hideTimer=null; }
+  }
+  if(sig){
+    STATE.lastAlertSignature=sig;
+    STORAGE.set(ichefAlertStorageKey(),sig);
+  }
+}
+function checkGlobalAlert(){
+  const el=$("server-alert");
+  const a=unwrap(STATE.activeOrders.ALERTS_MASTER);
+
+  if(!a||String(a.type||"").toUpperCase()!=="RING"){
+    ichefDismissGlobalAlert();
+    return;
+  }
+
+  const sig=ichefAlertSignature(a);
+  const alreadySeen=STATE.lastAlertSignature===sig || STORAGE.get(ichefAlertStorageKey(),"")===sig;
+  if(alreadySeen){
+    if(el)el.classList.remove("show");
+    return;
+  }
+
+  /* ALERTS_MASTER est persistant côté serveur. À la connexion il peut donc
+     contenir le dernier message d'un ancien service. Une alerte temps réel
+     n'est valable que si son horodatage est récent et postérieur à l'ouverture
+     de cette page (avec une petite tolérance réseau). */
+  const rawCreated=a.createdAt??a.at??a.timestamp??a.time;
+  const createdMs=typeof rawCreated==="number" ? rawCreated : Date.parse(String(rawCreated||""));
+  const age=Number.isFinite(createdMs)?Date.now()-createdMs:Infinity;
+  const predatesThisSession=Number.isFinite(createdMs) && createdMs < (ICHEF_ALERT_BOOT_AT - 5000);
+
+  if(!Number.isFinite(createdMs) || age < -15000 || age > ICHEF_ALERT_MAX_AGE_MS || predatesThisSession){
+    ichefDismissGlobalAlert(sig);
+    return;
+  }
+
+  const tableNum=text(a.tableId||"").trim();
+
+  /* Une alerte attachée à une table qui n'a plus de service ouvert est
+     forcément obsolète : ne pas afficher "ATTENTION T2" si T2=LIBRE. */
+  if(tableNum){
+    const liveOrder=getOrder(tableNum);
+    if(!liveOrder || isArchivedOrder(liveOrder)){
+      ichefDismissGlobalAlert(sig);
+      return;
+    }
+  }
+
+  /* Ne pas faire rebondir sur ce téléphone une communication qu'il vient
+     lui-même d'émettre. Les autres écrans continuent à la recevoir. */
+  if(text(a.deviceId) && text(a.deviceId)===text(STATE.deviceId) && String(a.source||"").toUpperCase()==="TELEPHONE"){
+    ichefDismissGlobalAlert(sig);
+    return;
+  }
+
+  STATE.lastAlertSignature=sig;
+  STORAGE.set(ichefAlertStorageKey(),sig);
+
+  const label=tableNum||"SERVICE";
   el.innerHTML = `
-    <div style="display: flex; align-items: center; justify-content: space-between; width: 100%;">
-      <span style="font-size: 32px; font-weight: 1000; letter-spacing: 1px;">⚠️ ATTENTION TABLE ${esc(tableNum)}</span>
-      <button onclick="document.getElementById('server-alert').classList.remove('show')" style="background: transparent; border: none; color: white; font-size: 45px; font-weight: bold; cursor: pointer; padding: 0 15px; line-height: 1; touch-action: manipulation;">×</button>
+    <div style="display:flex;align-items:center;justify-content:space-between;width:100%;">
+      <span style="font-size:32px;font-weight:1000;letter-spacing:1px;">⚠️ ATTENTION ${tableNum?"TABLE "+esc(label):esc(label)}</span>
+      <button id="ichefAlertCloseBtn" type="button" style="background:transparent;border:none;color:white;font-size:45px;font-weight:bold;cursor:pointer;padding:0 15px;line-height:1;touch-action:manipulation;">×</button>
     </div>
   `;
-  
   el.classList.add("show");
-  
-  // On annule l'ancien chrono s'il y en avait un, et on le règle sur 30 secondes (30000 millisecondes)
-  if(el.hideTimer) clearTimeout(el.hideTimer);
-  el.hideTimer = setTimeout(()=>el.classList.remove("show"), 30000);
+
+  const closeBtn=$("ichefAlertCloseBtn");
+  if(closeBtn)closeBtn.onclick=()=>ichefDismissGlobalAlert(sig);
+
+  if(el.hideTimer)clearTimeout(el.hideTimer);
+  el.hideTimer=setTimeout(()=>ichefDismissGlobalAlert(sig),30000);
 }
+
 /* ---------------- RENDER ---------------- */
 function scheduleRender(){
   if(STATE.renderPending)return;
@@ -6988,7 +7055,13 @@ function renderTables(){
   const el=$("tables");
 
   if(!list.length){
-    el.innerHTML='<div class="empty-state">Aucune table dans ce secteur.</div>';
+    /* Au démarrage, l'architecture n'est pas encore arrivée du serveur.
+       Ne pas afficher une fausse salle vide pendant la synchronisation. */
+    if(STATE.authenticated && !STATE.lastServerAt){
+      el.innerHTML='<div class="empty-state">Synchronisation des tables…</div>';
+    }else{
+      el.innerHTML='<div class="empty-state">Aucune table dans ce secteur.</div>';
+    }
     return;
   }
 
