@@ -3453,7 +3453,7 @@ body.order-open .order-sync-state.bad{background:#fff2f4 !important;}
   box-shadow:none !important;
 }
 </style>
-  <style id="taille-quantite-x2">
+  <style id="taille-quantite-x2-bis">
 /* =========================================================
    TAILLE X2 POUR LA QUANTITÉ ET CATÉGORIE (ex: x2 · PLATS)
    ========================================================= */
@@ -4937,9 +4937,37 @@ function isArchivedOrder(order){
 function normalizeServerOrdersMap(activeOrders){
   const source=activeOrders&&typeof activeOrders==="object"?activeOrders:{};
   const out={};
+
+  const orderTableRef=(value,fallbackKey)=>{
+    const raw=value&&typeof value==="object"&&value.data&&typeof value.data==="object"&&Array.isArray(value.data.items)
+      ?value.data
+      :value;
+    return text(raw?.tableId||raw?.table||raw?.tableLabel||raw?.numeroTable||fallbackKey);
+  };
+
   Object.entries(source).forEach(([key,value])=>{
-    if(value&&typeof value==="object"&&Array.isArray(value.items)){
-      out[key]=normalizeCompatOrder(value);
+    const raw=value&&typeof value==="object"&&value.data&&typeof value.data==="object"&&Array.isArray(value.data.items)
+      ?value.data
+      :value;
+
+    if(raw&&typeof raw==="object"&&Array.isArray(raw.items)){
+      const normalized=normalizeCompatOrder(raw);
+      const canonical=orderTableRef(raw,key)||key;
+
+      /* Les anciennes versions pouvaient stocker une commande sous une clé
+         différente de son numéro de table (wrapper, id interne, etc.).
+         Le téléphone travaille toujours avec le libellé réel de table afin
+         d'éviter « table occupée / commande vide ». */
+      const reserved=/^(ARCHITECTURE|SETTINGS_MASTER|RESERVATIONS_MASTER|MENU_MASTER|MENU_MASTER_BAR|MENU_MASTER_PATISSERIE|STAFF_ACCESS|LOYALTY_MASTER|TIMESHEETS_MASTER|ALERTS_MASTER|FINANCIAL_HISTORY|AUDIT_MASTER)$/.test(String(key));
+      const targetKey=reserved?key:canonical;
+      const previous=out[targetKey];
+      if(previous&&typeof previous==="object"&&Array.isArray(previous.items)){
+        const prevStamp=Number(previous.updatedAt||previous.createdAt||0);
+        const nextStamp=Number(normalized.updatedAt||normalized.createdAt||0);
+        if(nextStamp>=prevStamp)out[targetKey]=normalized;
+      }else{
+        out[targetKey]=normalized;
+      }
     }else{
       out[key]=value;
     }
@@ -5752,6 +5780,14 @@ function applyServerState(serverState,source){
 
   applyDerived();
 
+  if(ICHEF_EMPTY_TABLE_CONFIRM?.armed && openedTable===ICHEF_EMPTY_TABLE_CONFIRM.table){
+    const refreshed=STATE.currentOrder||getOrder(openedTable);
+    if(!refreshed || emptyTableFingerprint(refreshed)!==ICHEF_EMPTY_TABLE_CONFIRM.fingerprint){
+      resetEmptyTableConfirmation();
+      if(document.body.classList.contains("summary-open"))updateSummaryCloseButton();
+    }
+  }
+
   if(
     openedTable &&
     rawOpened &&
@@ -6293,17 +6329,14 @@ async function cancelSentLine(item, reason=""){
     if (typeof productionAlert === "function") await productionAlert(target,"ANNULATION",motif);
     toast("🚨 Annulation transmise au poste");
     
-    // VÉRIFICATION AUTO-FERMETURE SI LA TABLE EST VIDE
+    /* Une commande devenue vide reste ouverte jusqu'à la validation volontaire
+       dans RÉSUMÉ. Cela évite de libérer une table par erreur après l'annulation
+       du dernier article. */
     const activeItems = o.items.filter(x => !x.cancelled);
-    if(activeItems.length === 0) {
-        o.isArchived = true;
-        o.status = "CLOSED";
-        await saveCurrent(o, "Table libérée", {immediate: true});
-        if (typeof closeOrder === "function") closeOrder(); 
-        toast("Table libérée (commande vide)");
-    } else {
-        renderTicket();
-        scheduleRender();
+    renderTicket();
+    scheduleRender();
+    if(activeItems.length === 0){
+      toast("Commande vide · ouvrez RÉSUMÉ pour libérer la table");
     }
   }
   return ok;
@@ -6360,15 +6393,11 @@ async function mutateLine(key,action){
             pushUndo(`Retrait ${itemName(i)}`, before);
             await saveCurrent(o, "Retrait article", {delay: 120});
             
-            // Check table vide pour auto-fermeture
             const activeItems = o.items.filter(x => !x.cancelled);
-            if(activeItems.length === 0) {
-                o.isArchived = true;
-                o.status = "CLOSED";
-                await saveCurrent(o, "Table libérée", {immediate: true});
-                if (typeof closeOrder === "function") closeOrder(); 
-            } else {
-                renderTicket();
+            renderTicket();
+            scheduleRender();
+            if(activeItems.length === 0){
+              toast("Commande vide · ouvrez RÉSUMÉ pour libérer la table");
             }
         }
         return;
@@ -6419,14 +6448,9 @@ async function mutateLine(key,action){
     i.qty=Math.max(0,itemQty(i)-1);
     if(i.qty<=0) {
         o.items=o.items.filter(x=>x!==i);
-        // Vérification Auto-Fermeture si on réduit à 0
         const activeItems = o.items.filter(x => !x.cancelled);
-        if(activeItems.length === 0) {
-            o.isArchived = true;
-            o.status = "CLOSED";
-            await saveCurrent(o, "Table libérée (vide)", {immediate: true});
-            if (typeof closeOrder === "function") closeOrder(); 
-            return;
+        if(activeItems.length === 0){
+          toast("Commande vide · ouvrez RÉSUMÉ pour libérer la table");
         }
     }
   }
@@ -7274,6 +7298,86 @@ function closeOrder(){
   document.body.classList.remove("summary-open","order-open");
   scheduleRender();
 }
+let ICHEF_EMPTY_TABLE_CONFIRM={table:"",fingerprint:"",armed:false};
+
+function currentOrderActiveItems(order){
+  return (order?.items||[]).filter(i=>i&&!i.cancelled&&itemQty(i)>0);
+}
+function emptyTableFingerprint(order){
+  if(!order)return "";
+  return [
+    text(order.serviceId||""),
+    Number(order.updatedAt||0),
+    (order.items||[]).length,
+    currentOrderActiveItems(order).length,
+    fiscalRound2(orderTotal(order))
+  ].join("|");
+}
+function resetEmptyTableConfirmation(){
+  ICHEF_EMPTY_TABLE_CONFIRM={table:"",fingerprint:"",armed:false};
+}
+function updateSummaryCloseButton(){
+  const btn=$("summaryClose");
+  if(!btn)return;
+  const order=STATE.currentTable?(STATE.currentOrder||getOrder(STATE.currentTable)):null;
+  const empty=!!order && currentOrderActiveItems(order).length===0 && Math.abs(orderTotal(order))<0.005 && !fiscalOrderFinalized(order);
+  const fp=empty?emptyTableFingerprint(order):"";
+  const armed=empty && ICHEF_EMPTY_TABLE_CONFIRM.armed && ICHEF_EMPTY_TABLE_CONFIRM.table===STATE.currentTable && ICHEF_EMPTY_TABLE_CONFIRM.fingerprint===fp;
+  btn.textContent=empty?(armed?"CONFIRMER ✕":"APPUYER POUR VALIDATION ✕"):"FERMER ✕";
+  btn.dataset.emptyClose=empty?"1":"0";
+  btn.dataset.confirming=armed?"1":"0";
+}
+async function handleSummaryClose(){
+  if(!STATE.currentTable){ closeOrder(); return; }
+  const order=STATE.currentOrder||getOrder(STATE.currentTable)||ensureOrder(STATE.currentTable);
+  const empty=currentOrderActiveItems(order).length===0 && Math.abs(orderTotal(order))<0.005 && !fiscalOrderFinalized(order);
+
+  if(!empty){
+    resetEmptyTableConfirmation();
+    closeSummary();
+    return;
+  }
+
+  const fp=emptyTableFingerprint(order);
+  const same=ICHEF_EMPTY_TABLE_CONFIRM.armed && ICHEF_EMPTY_TABLE_CONFIRM.table===STATE.currentTable && ICHEF_EMPTY_TABLE_CONFIRM.fingerprint===fp;
+  if(!same){
+    ICHEF_EMPTY_TABLE_CONFIRM={table:STATE.currentTable,fingerprint:fp,armed:true};
+    updateSummaryCloseButton();
+    toast("Appuyez de nouveau sur CONFIRMER pour libérer la table");
+    return;
+  }
+
+  /* Deuxième appui : on revérifie la commande juste avant la fermeture.
+     Si le serveur a ajouté/modifié quelque chose, la confirmation est annulée. */
+  const fresh=STATE.currentOrder||getOrder(STATE.currentTable)||order;
+  if(currentOrderActiveItems(fresh).length!==0 || Math.abs(orderTotal(fresh))>=0.005 || emptyTableFingerprint(fresh)!==fp){
+    resetEmptyTableConfirmation();
+    updateSummaryCloseButton();
+    toast("Commande modifiée · validation annulée",true);
+    renderSummary();
+    return;
+  }
+
+  const table=STATE.currentTable;
+  const closed=clone(fresh);
+  closed.isArchived=true;
+  closed.status="CLOSED";
+  closed.closedAt=Date.now();
+  closed.closedBy=STATE.role||"SERVEUR";
+  closed.closeReason="COMMANDE_VIDE_VALIDEE";
+  const ok=await saveCurrent(closed,"Table vide validée · libération",{immediate:true});
+  if(!ok){
+    resetEmptyTableConfirmation();
+    updateSummaryCloseButton();
+    toast("Libération non confirmée par le serveur",true);
+    return;
+  }
+
+  resetEmptyTableConfirmation();
+  closeOrder();
+  toast(`✓ ${table} libérée`);
+}
+
 function openSummary(){
   if(!STATE.currentTable){toast("Ouvrez d’abord une table",true);return}
 
@@ -7305,6 +7409,7 @@ function openSummary(){
   }
 }
 function closeSummary(){
+  resetEmptyTableConfirmation();
   STATE.currentScreen="order";
   const label=$("screenLabel");
   if(label)label.textContent="ÉCRAN 2 · PRISE DE COMMANDE";
@@ -11408,6 +11513,8 @@ function renderSummary(){
     <div class="fiscal-warning">
       Facture complète : C1–C9, destination, cuisson, observations, allergies, états de production, annulations, historique et paiement. Les lignes annulées restent visibles mais sont exclues du total.
     </div>`;
+
+  updateSummaryCloseButton();
 }
 
 
@@ -11977,7 +12084,7 @@ $("btnOrderMore").onclick=openOrderMore;
 $("btnObsFast").onclick=openObservationFast;
 $("btnCooking").onclick=openCooking;
 $("btnAllergyFast").onclick=openAllergyFast;
-$("summaryClose").onclick=closeSummary;
+$("summaryClose").onclick=handleSummaryClose;
 $("summaryModify").onclick=closeSummary;
 $("summaryKitchen").onclick=async()=>{await sendKitchen();renderSummary()};
 
@@ -13034,12 +13141,8 @@ setTimeout(() => {
             if (typeof productionAlert === "function") await productionAlert(target, "ANNULATION", "Correction express");
             toast("🚨 Annulation transmise au poste");
             const activeItems = o.items.filter(x => !x.cancelled);
-            if(activeItems.length === 0) {
-                o.isArchived = true; o.status = "CLOSED";
-                await saveCurrent(o, "Table libérée (vide)", {immediate: true});
-                if (typeof closeOrder === "function") closeOrder(); 
-                toast("Table libérée (commande vide)");
-            } else { renderTicket(); scheduleRender(); }
+            renderTicket(); scheduleRender();
+            if(activeItems.length === 0) toast("Commande vide · ouvrez RÉSUMÉ pour libérer la table");
         }
         return ok;
     };
@@ -13068,11 +13171,8 @@ setTimeout(() => {
                         pushUndo(`Retrait ${itemName(i)}`, before);
                         await saveCurrent(o, "Retrait article", {delay: 120});
                         const activeItems = o.items.filter(x => !x.cancelled);
-                        if(activeItems.length === 0) {
-                            o.isArchived = true; o.status = "CLOSED";
-                            await saveCurrent(o, "Table libérée (vide)", {immediate: true});
-                            if (typeof closeOrder === "function") closeOrder(); 
-                        } else { renderTicket(); }
+                        renderTicket(); scheduleRender();
+                        if(activeItems.length === 0) toast("Commande vide · ouvrez RÉSUMÉ pour libérer la table");
                     }
                     return;
                 }
@@ -13096,12 +13196,7 @@ setTimeout(() => {
                 if(i.qty<=0) {
                     o.items=o.items.filter(x=>x!==i);
                     const activeItems = o.items.filter(x => !x.cancelled);
-                    if(activeItems.length === 0) {
-                        o.isArchived = true; o.status = "CLOSED";
-                        await saveCurrent(o, "Table libérée (vide)", {immediate: true});
-                        if (typeof closeOrder === "function") closeOrder(); 
-                        return;
-                    }
+                    if(activeItems.length === 0) toast("Commande vide · ouvrez RÉSUMÉ pour libérer la table");
                 }
             }
             pushUndo(`Modification ${seatLabel(itemSeat(i)||STATE.activeSeat)} · ${itemName(i)}`,before);
@@ -13581,5 +13676,11 @@ setTimeout(() => {
     }
 }, 2000); // Laisse le temps à l'application de charger avant d'appliquer ce correctif
 </script>
+
+<style id="ichef-summary-empty-close-fix">
+#summaryClose{min-width:max-content!important;white-space:nowrap!important;padding:0 14px!important}
+#summaryClose[data-empty-close="1"]{border:2px solid #bd2035!important;border-radius:10px!important;color:#bd2035!important;background:#fff!important;font-size:12px!important}
+#summaryClose[data-confirming="1"]{background:#bd2035!important;color:#fff!important}
+</style>
 </body>
 </html>
