@@ -13979,5 +13979,77 @@ setTimeout(() => {
 
 }, 2500);
 </script>
+  <!-- =========================================================
+     FIX : AJOUT DU QR CODE SUR LES RAPPORTS FISCAUX
+     ========================================================= -->
+<script id="ichef-qr-code-rapport-fiscal">
+setTimeout(() => {
+    if (typeof window.fiscalReportLines === "function") {
+        window.fiscalReportLines = function(period,key,records){
+            const profile=fiscalProfile();
+            const cfg=loadPrinterConfig();
+            const receipt=cfg?.receipt||{};
+            const label=period==="day"?"JOURNALIER":period==="month"?"MENSUEL":"ANNUEL";
+            const vat=new Map(),payments=new Map();
+            let total=0,paymentsCount=0,corrections=0,operationalCancels=0;
+
+            records.forEach(r=>{
+                if(r.type==="PAYMENT"){paymentsCount++; total=fiscalRound2(total+r.amount)}
+                else if(r.type==="CANCEL_PAYMENT"){corrections++; total=fiscalRound2(total+r.amount)}
+                else if(r.type==="CANCEL_ORDER"){operationalCancels++}
+                if(r.type!=="CANCEL_ORDER")payments.set(r.method,fiscalRound2((payments.get(r.method)||0)+r.amount));
+                (r.rows||[]).map(fiscalNormalizeVatRow).forEach(v=>{
+                    const k=String(v.rate),cur=vat.get(k)||{rate:v.rate,gross:0,net:0,tax:0};
+                    cur.gross=fiscalRound2(cur.gross+v.gross);cur.net=fiscalRound2(cur.net+v.net);cur.tax=fiscalRound2(cur.tax+v.tax);vat.set(k,cur);
+                });
+            });
+
+            const lines=[];
+            lines.push({text:text(receipt.businessName||receipt.logoText||"iCHEF"),bold:true,width:2,height:2,align:"center"});
+            if(receipt.address)lines.push({text:receipt.address,align:"center"});
+            if(receipt.taxId)lines.push({text:`TVA / ID: ${receipt.taxId}`,align:"center"});
+            lines.push({text:`RAPPORT FISCAL ${label}`,bold:true,width:2,height:2,align:"center"});
+            lines.push({text:`${profile.label} · ${profile.currency} · ${key}`,bold:true,align:"center"});
+            lines.push(`ÉDITÉ: ${new Date().toLocaleString("fr-FR",{timeZone:fiscalPrintTimeZone()})}`);
+            lines.push(`TERMINAL: ${text(STATE.deviceId||"—")}`);
+            lines.push(`OPÉRATEUR: ${text(STATE.role||"—")}`);
+            lines.push("------------------------------------------");
+            lines.push(`PAIEMENTS: ${paymentsCount}`);
+            lines.push(`CORRECTIONS PAYÉES: ${corrections}`);
+            lines.push(`ANNULATIONS AVANT PAIEMENT: ${operationalCancels}`);
+            lines.push({text:`TOTAL NET TTC: ${fiscalPrintMoney(total,profile.currency)}`,bold:true,width:2,height:2,align:"right"});
+            lines.push("------------------------------------------");
+            lines.push({text:"TVA",bold:true});
+            if(vat.size){
+                [...vat.values()].sort((a,b)=>a.rate-b.rate).forEach(v=>lines.push(`TVA ${v.rate.toFixed(2).replace(".",",")}% · HT ${fiscalPrintMoney(v.net,profile.currency)} · TVA ${fiscalPrintMoney(v.tax,profile.currency)} · TTC ${fiscalPrintMoney(v.gross,profile.currency)}`));
+            }else lines.push("Aucune TVA fiscalisée sur cette période");
+            lines.push("------------------------------------------");
+            lines.push({text:"MOYENS DE PAIEMENT",bold:true});
+            if(payments.size)[...payments.entries()].forEach(([m,v])=>lines.push(`${m}: ${fiscalPrintMoney(v,profile.currency)}`));
+            else lines.push("Aucun paiement");
+            lines.push("------------------------------------------");
+            lines.push({text:"ÉCRITURES",bold:true});
+            records.forEach(r=>{
+                const sign=r.type==="CANCEL_PAYMENT"?"CORRECTION":r.type==="CANCEL_ORDER"?"ANNULATION":"VENTE";
+                lines.push(`${sign} · ${r.id}`);
+                lines.push(`  ${r.date?new Date(r.date).toLocaleString("fr-FR"):"—"} · ${r.method} · ${fiscalPrintMoney(r.amount,profile.currency)}`);
+                if(r.correctionOf)lines.push(`  ORIGINAL: ${r.correctionOf}`);
+                if(r.reason)lines.push(`  MOTIF: ${r.reason}`);
+            });
+            lines.push("------------------------------------------");
+            
+            // --- SECTION QR CODE RAPPORT FISCAL ---
+            // On génère un QR Code contenant la période, le nombre d'écritures et le total
+            const qrData = `RAPPORT:${label}|PERIODE:${key}|TOTAL:${total}|RECORDS:${records.length}`;
+            lines.push({qrcode: qrData});
+            // --------------------------------------
+
+            lines.push({text:"DOCUMENT DE CONTRÔLE — JOURNAL FISCAL iCHEF",bold:true,align:"center"});
+            lines.push({text:"L'impression n'altère aucune écriture fiscale.",align:"center"});
+            return lines;
+        };
+    }
+}, 3000);
+</script>
   </body>
 </html>
