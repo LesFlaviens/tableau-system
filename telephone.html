@@ -11222,66 +11222,90 @@ $("quickCookCancel").onclick=async()=>{
 };
 
 /* ---------------- PRODUITS : TAP RAPIDE / APPUI 0,6 S ---------------- */
-const PRODUCT_HOLD_MS=600;
-const PRODUCT_DOUBLE_GUARD_MS=135;
+const PRODUCT_HOLD_MS = 600;
+const PRODUCT_DOUBLE_GUARD_MS = 135;
 
-let productPress={
-  timer:null,
-  button:null,
-  startX:0,
-  startY:0,
-  long:false
-};
+let productPressTimer = null;
+let lastProductLongPressTime = 0;
+let lastProductTap = { key: "", at: 0 };
 
-let lastProductTap={
-  key:"",
-  at:0
-};
+// 1. Détection de l'appui long (Nom complet)
+$("products").addEventListener("pointerdown", e => {
+  const b = e.target.closest("[data-product]");
+  if (!b || b.classList.contains("sold")) return;
 
-function findProductFromButton(b){
-  if(!b)return null;
-  return STATE.menu.find(x=>x.id===b.dataset.product&&x.name===b.dataset.pname)
-    ||STATE.menu.find(x=>x.id===b.dataset.product)
-    ||null;
-}
+  if (productPressTimer) clearTimeout(productPressTimer);
+  b.classList.add("longpress-active");
 
-function clearProductPress(){
-  if(productPress.timer){
-    clearTimeout(productPress.timer);
-    productPress.timer=null;
+  productPressTimer = setTimeout(() => {
+    b.classList.remove("longpress-active");
+    lastProductLongPressTime = Date.now(); // Marque qu'un appui long a eu lieu
+    const p = STATE.menu.find(x => x.id === b.dataset.product);
+    if (navigator.vibrate) try { navigator.vibrate(35); } catch (_) {}
+    showFullProductTitle(p);
+  }, PRODUCT_HOLD_MS);
+}, { passive: true });
+
+// 2. Annulation de l'appui long si on bouge le doigt (Scroll)
+$("products").addEventListener("pointermove", e => {
+  if (productPressTimer) {
+    clearTimeout(productPressTimer);
+    productPressTimer = null;
   }
-  if(productPress.button){
-    productPress.button.classList.remove("longpress-active");
-  }
-}
+  const b = e.target.closest("[data-product]");
+  if (b) b.classList.remove("longpress-active");
+}, { passive: true });
 
-function showFullProductTitle(product){
-  if(!product)return;
-  const d=normalizeDestination(product.dest);
+$("products").addEventListener("pointerup", e => {
+  if (productPressTimer) {
+    clearTimeout(productPressTimer);
+    productPressTimer = null;
+  }
+  const b = e.target.closest("[data-product]");
+  if (b) b.classList.remove("longpress-active");
+}, { passive: true });
+
+$("products").addEventListener("pointercancel", e => {
+  if (productPressTimer) {
+    clearTimeout(productPressTimer);
+    productPressTimer = null;
+  }
+  const b = e.target.closest("[data-product]");
+  if (b) b.classList.remove("longpress-active");
+}, { passive: true });
+
+// 3. LE CLIC NATIF INFAILLIBLE POUR AJOUTER LE PLAT
+$("products").addEventListener("click", e => {
+  const b = e.target.closest("[data-product]");
+  if (!b || b.classList.contains("sold")) return;
+
+  // Si on vient de faire un appui long, on ignore ce clic
+  if (Date.now() - lastProductLongPressTime < 300) {
+    e.preventDefault();
+    return;
+  }
+
+  if (STATE.pendingCookingLine) {
+    toast("🥩 Choisissez la cuisson avant de continuer", true);
+    return;
+  }
+
+  const key = b.dataset.product;
+  const t = Date.now();
   
-  /* 1. On retire les émojis de la destination */
-  const dest=d==="bar"?"BAR":d==="patisserie"?"PÂTISSERIE":"CUISINE";
+  /* Anti double-frappe accidentelle */
+  if (lastProductTap.key === key && t - lastProductTap.at < PRODUCT_DOUBLE_GUARD_MS) return;
+  lastProductTap = { key, at: t };
 
-  /* 2. On affiche le nom, LE PRIX X2 (34px), et le texte d'aide X2 (20px) sans émoji */
-  openSheet("INTITULÉ DU PLAT",`
-    <div class="full-title-card">
-      <div class="full-title-name">${esc(product.name)}</div>
-      
-      <!-- PRIX DOUBLÉ (34px) -->
-      <div class="full-title-meta" style="font-size: 34px !important; margin-top: 15px !important;">
-        ${money(product.price)}
-      </div>
-      
-      <!-- TEXTE D'AIDE X2 SANS ÉMOJI -->
-      <div class="full-title-help" style="font-size: 20px !important; line-height: 1.4 !important; font-weight: 700 !important; color: #9aa2a5 !important; margin-top: 15px !important;">
-        ${esc(product.category||"Menu")} · ${dest}<br>
-        Appui long : aucun ajout à la commande.
-      </div>
-    </div>
-  `);
-}
+  const p = STATE.menu.find(x => x.id === key);
+  if (!p) return;
 
+  /* Ouverture immédiate de QUI MANGE QUOI */
+  void handleFastProductTap(p, b);
+});
 
+/* Bouton global "Qui mange ?" : réaffectation complète si besoin. */
+$("toolWho").onclick=openWho;
 /* =========================================================
    TAP PRODUIT -> CHOIX C1-C9 -> AJOUT
    Le plat n'entre dans la commande qu'après le choix du convive.
