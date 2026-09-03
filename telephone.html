@@ -14065,5 +14065,210 @@ setTimeout(() => {
 }, 2000);
 
 </script>
+  <!-- =========================================================
+     FIX ULTIME : SYMBIOSE PARFAITE PLAN INTERACTIF / ACCUEIL
+     ========================================================= -->
+<style id="symbiose-totale-plans-css">
+/* 1. On supprime le vieux fond beige du plan interactif pour utiliser le fond de l'application */
+#sheet.plan-interactive-open .sheet-card,
+#sheet.plan-interactive-open .sheet-body,
+#livePlanHost,
+.plan-wrap.plan-touch,
+#sheet.plan-interactive-open {
+    background: var(--bg) !important;
+}
+
+/* 2. On adapte la barre d'outils du plan interactif au thème */
+.plan-live-toolbar {
+    background: var(--panel) !important;
+    color: var(--text) !important;
+    border-bottom: 2px solid var(--line) !important;
+}
+.plan-live-meta span {
+    color: var(--muted) !important;
+}
+
+/* 3. On permet aux tables du plan d'utiliser le design massif des cartes d'accueil */
+.plan-touch .plan-table.table-card {
+    position: absolute !important;
+    margin: 0 !important;
+    transform-origin: center center;
+}
+</style>
+
+<script id="symbiose-totale-plans-js">
+setTimeout(() => {
+    if (typeof window.renderLivePlan === "function") {
+        window.renderLivePlan = function() {
+            if(!STATE.planViewOpen) return;
+            const host = document.getElementById("livePlanHost");
+            if(!host) return;
+            if(STATE.planGestureActive) return;
+
+            const filter = typeof getDeviceFilter === "function" ? getDeviceFilter() : {type:"all"};
+            let ts = STATE.tables || [];
+            let zs = STATE.zones || [];
+
+            if (filter.type === "zone") {
+                ts = ts.filter(t => {
+                    const z = getZone(t);
+                    return (z?.label || t.zone || "Nouvelle Zone") === filter.value;
+                });
+                zs = zs.filter(z => z.label === filter.value);
+            } else if (filter.type === "room") {
+                ts = ts.filter(t => t.room === filter.value);
+                zs = zs.filter(z => z.room === filter.value);
+            } else {
+                ts = ts.filter(t => t.room === STATE.room);
+                zs = zs.filter(z => z.room === STATE.room);
+            }
+
+            if(!ts.length && !zs.length){
+                host.innerHTML = '<div class="empty-state" style="margin:12px; font-size:24px;">Aucun plan synchronisé pour ce secteur.</div>';
+                return;
+            }
+
+            let maxX = 900, maxY = 650;
+            [...ts,...zs].forEach(item => {
+                const p = planCoordinates(item);
+                maxX = Math.max(maxX, p.l + p.w + 60);
+                maxY = Math.max(maxY, p.t + p.h + 60);
+            });
+
+            if(!STATE.planTransform.initialized){
+                STATE.planTransform.scale = 1;
+                STATE.planTransform.x = 12;
+                STATE.planTransform.y = 12;
+                STATE.planTransform.initialized = true;
+            }
+
+            // NOM DE LA ZONE DE FOND EN TAILLE x2 (font-size: 26px)
+            const zonesHTML = zs.map(z => {
+                const p = planCoordinates({...z, w: z.w || 400, h: z.h || 300});
+                const color = text(z.color || z.couleur || "#58a9ff");
+                return `<div class="plan-zone" style="left:${p.l}px;top:${p.t}px;width:${p.w}px;height:${p.h}px;border: 3px dashed ${esc(color)};color:${esc(color)};background:${esc(color)}15;font-size:26px;font-weight:1000;padding:15px; text-transform:uppercase; z-index:1;">${esc(z.label || "Zone")}</div>`;
+            }).join("");
+
+            // CREATION DES TABLES EXACTEMENT COMME L'ACCUEIL (ajout de la classe "table-card")
+            const tablesHTML = ts.map(t => {
+                const p = planCoordinates(t);
+                const s = tableStats(t.label);
+                const o = getOrder(t.label);
+                const z = getZone(t);
+
+                const meta = s.pax ? `${s.pax} PAX` : (t.pax ? `${t.pax} PAX` : "0 PAX");
+                const zoneLabel = text(z?.label || t.zone || "Nouvelle Zone");
+
+                let etatLabel = "LIBRE";
+                if (s.status === 'reserved') etatLabel = "RÉSERVÉE";
+                else if (s.status === 'payment') etatLabel = "PAIEMENT";
+                else if (s.status === 'alert') etatLabel = "URGENT";
+                else if (s.status === 'late') etatLabel = "RETARD";
+                else if (s.status === 'ready') etatLabel = "PRÊT";
+                else if (s.status === 'wait') etatLabel = "ATTENTE";
+                else if (s.status === 'active') etatLabel = "OCCUPÉE";
+
+                const zoneColor = text(z?.color || z?.couleur || (
+                    s.status==="ready"?"#36d98a":
+                    s.status==="wait"?"#ff9a43":
+                    s.status==="late"||s.status==="alert"?"#ff5368":
+                    s.status==="reserved"?"#9b74ff":
+                    "#b7bd00"
+                ));
+
+                const preview = (o?.items||[])
+                    .filter(Boolean).slice(0,2)
+                    .map((item,index) => {
+                        const q = itemQty(item);
+                        const served = lineServed(item);
+                        const ready = lineReady(item) && !served && !item.cancelled;
+                        const sent = lineFired(item);
+                        const klass = (ready || s.status==="late" || s.status==="alert") ? " warn" : "";
+                        const state = served ? " · SERVI" : ready ? " · PRÊT" : sent ? "" : " · À ENVOYER";
+                        return `<span class="table-preview-line${klass}">• ${q>1?q+"× ":""}${esc(itemName(item))}${state}</span>`;
+                    }).join("");
+
+                const time = s.age ? duration(s.age) : (s.status === "reserved" ? "RÉSERVÉE" : "00:00");
+
+                let seatPastilles = "";
+                if (o && o.items) {
+                    const activeSeats = o.items
+                        .filter(i => i && !i.cancelled && itemQty(i) > 0)
+                        .map(i => itemSeat(i))
+                        .filter(seat => seat >= 1 && seat <= 9);
+                    
+                    const uniqueSeats = [...new Set(activeSeats)].sort((a, b) => a - b);
+                    
+                    if (uniqueSeats.length > 0) {
+                        seatPastilles = `<div style="display:flex; gap:4px; justify-content:center; margin-top:6px; flex-wrap:wrap; width:100%; position:relative; z-index:5;">` + 
+                            uniqueSeats.map(seat => `<span class="seat-badge seat-${seat}" style="background:#ffffff !important; border:2px solid var(--c${seat}) !important; color:var(--c${seat}) !important; min-width:26px; height:18px; font-size:9px; padding:0 6px; margin:0; font-weight:1000; display:inline-flex; align-items:center; justify-content:center; line-height:1; border-radius:999px;">C${seat}</span>`).join('') + 
+                        `</div>`;
+                    }
+                }
+
+                const readyOverlay = s.ready 
+                    ? `<div class="table-ready-overlay">${s.ready} PRÊT(S)</div>` 
+                    : "";
+
+                // LA FUSION S'OPÈRE ICI : On utilise "plan-table" pour la position et "table-card" pour le design
+                return `<button class="plan-table table-card ${s.status}" data-plan-table="${esc(t.label)}"
+                    style="position:absolute; left:${p.l}px; top:${p.t}px; width:${p.w}px; height:${p.h}px; padding: 10px 5px; z-index:10;">
+                    <span class="num" style="font-size:clamp(20px, 3.5vw, 40px) !important; position:relative; z-index:5;">${esc(t.label)}</span>
+                    <span class="meta state-label" style="font-size:11px; font-weight:950; text-transform:uppercase; margin-top:2px; position:relative; z-index:5;">${esc(etatLabel)}</span>
+                    <span class="time" style="font-size:14px; font-weight:900; margin-top:3px; position:relative; z-index:5;">${esc(time)}</span>
+                    <span class="meta pax" style="font-size:12px; margin-top:3px; font-weight:900; position:relative; z-index:5;">${esc(meta)}</span>
+                    ${seatPastilles}
+                    <span class="table-zone" style="color:${esc(zoneColor)}; margin-top:6px; position:relative; z-index:5; display: ${preview ? 'none' : 'flex'};">${esc(zoneLabel)}</span>
+                    ${preview ? `<span class="table-preview" style="position:relative; z-index:5;">${preview}</span>` : ""}
+                    ${readyOverlay}
+                </button>`;
+            }).join("");
+
+            host.innerHTML = `
+                <div class="plan-live-toolbar">
+                    <div class="plan-live-meta">
+                        <strong style="font-size: 16px;">🗺️ PLAN INTERACTIF · ${esc(filter.type === 'zone' ? filter.value : (filter.type === 'room' ? filter.value : STATE.room))}</strong>
+                        <span style="font-size: 12px; font-weight: 800;">${STATE.connected?"Socket.IO connecté":"Synchronisation HTTP"} · ${ts.length} table(s)</span>
+                    </div>
+                    <button id="planSyncNow" class="action-btn" style="flex:0 0 auto; background:#111; color:#fff; border-color:#111; min-height: 40px; font-size: 14px;">ACTUALISER</button>
+                </div>
+                <div id="livePlanViewport" class="plan-wrap plan-touch">
+                    <div id="livePlanCanvas" class="plan-canvas" data-plan-width="${maxX}" data-plan-height="${maxY}" style="width:${maxX}px;height:${maxY}px">${zonesHTML}${tablesHTML}</div>
+                    <div class="plan-touch-help">1 doigt : déplacer<br>2 doigts : zoomer</div>
+                    <div class="plan-zoom-controls" aria-label="Zoom du plan">
+                        <button id="planZoomMinus" class="plan-zoom-btn" type="button" aria-label="Zoom arrière">−</button>
+                        <div id="planZoomLevel" class="plan-zoom-level">100%</div>
+                        <button id="planZoomPlus" class="plan-zoom-btn" type="button" aria-label="Zoom avant">+</button>
+                    </div>
+                </div>`;
+
+            bindPlanTouch();
+            applyPlanTransform();
+
+            host.querySelectorAll("[data-plan-table]").forEach(b => {
+                b.onclick = () => {
+                    if(Date.now() < (STATE.planGesture.blockClickUntil||0)) return;
+                    const table = b.dataset.planTable;
+                    closeSheet();
+                    openOrder(table);
+                };
+            });
+
+            const minus = document.getElementById("planZoomMinus");
+            const plus = document.getElementById("planZoomPlus");
+            if(minus) minus.onclick = e => { e.stopPropagation(); zoomPlanTo(STATE.planTransform.scale/1.25); };
+            if(plus) plus.onclick = e => { e.stopPropagation(); zoomPlanTo(STATE.planTransform.scale*1.25); };
+
+            const syncBtn = document.getElementById("planSyncNow");
+            if(syncBtn) syncBtn.onclick = async() => {
+                syncBtn.disabled = true;
+                syncBtn.textContent = "SYNCHRO…";
+                await syncFull("plan-manual");
+                if(STATE.planViewOpen) renderLivePlan();
+            };
+        };
+    }
+}, 3000);
+</script>
   </body>
 </html>
