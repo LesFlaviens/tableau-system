@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="fr">
 <head>
+<!-- iCHEF SYMBIOSE TOTALE PLANS V30 · TELEPHONE · 2026-09-03 -->
 <!-- ICHEF TELEPHONE — CORRECTIF T3/COMMANDE VIDE + SYMBIOSE SERVEUR · 03-09-2026 -->
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
@@ -4151,6 +4152,14 @@ body.order-open .send-btn.no-draft {
 </style>
 
   
+<style id="ichef-symbiose-plan-elements">
+/* SYMBIOSE PLAN : objets architecturaux PACK-ECO visibles aussi sur téléphone */
+.plan-zone{z-index:2}
+.plan-element{position:absolute;z-index:3;box-sizing:border-box;border:2px solid #777;border-radius:4px;display:flex;align-items:center;justify-content:center;text-align:center;padding:3px;font-size:10px;font-weight:950;overflow:hidden;pointer-events:none;transform-origin:center center}
+.plan-element-wall{border-radius:1px!important;padding:0!important}
+.plan-element-text{border:0!important;background:transparent!important;font-size:12px!important}
+.plan-table{z-index:7}
+</style>
 </head>
 <body>
 
@@ -4426,9 +4435,9 @@ const STATE={
   pin:"",role:"",plan:"",specialite:"",authenticated:false,
   addons:[],featureRights:{PLAN_INTERACTIF:false},
   sessionToken:"",csrfToken:"",
-  connected:false,socket:null,socketLoading:null,lastServerAt:0,syncing:false,
-  activeOrders:{},architecture:{rooms:["Salle Principale"],tables:[],zones:[]},
-  rooms:["Salle Principale"],tables:[],zones:[],room:"Salle Principale",
+  connected:false,socket:null,socketLoading:null,lastServerAt:0,syncing:false,syncRevision:0,
+  activeOrders:{},architecture:{rooms:["Salle Principale"],tables:[],zones:[],elements:[],canvas:{}},
+  rooms:["Salle Principale"],tables:[],zones:[],elements:[],room:"Salle Principale",
   menu:[],categories:[],category:"TOUT",reservations:[],settings:{},
   currentTable:null,currentOrder:null,currentScreen:"tables",display:STORAGE.get("ichef_phone_display","auto")||"auto",
   renderPending:false,loginPin:"",lastAlertSignature:"",lastWriteAt:0,activeSeat:1,lastLineKey:"",pendingCookingLine:"",undoStack:[]
@@ -4756,13 +4765,17 @@ async function enqueueVersionedWrite(key,pending){
 
             /* On adopte la copie confirmée par MongoDB seulement si aucune
                modification plus récente n'attend encore localement. */
-            if(result?.order!==undefined){
+            if(result?.state && typeof result.state==="object" && result.state.activeOrders){
+              STATE.lastServerAt=now();
+              applyServerState(result.state,"write-ack");
+            }else if(result?.order!==undefined){
               if(result.order===null)delete STATE.activeOrders[key];
               else STATE.activeOrders[key]=clone(result.order);
 
               if(key===STATE.currentTable && result.order && !isArchivedOrder(result.order)){
                 STATE.currentOrder=clone(result.order);
               }
+              if(Number(result?.syncRevision||0)>0)STATE.syncRevision=Math.max(Number(STATE.syncRevision||0),Number(result.syncRevision));
               applyDerived();
               scheduleRender();
             }
@@ -5532,7 +5545,8 @@ async function updateServer(key,data,auditReason="Mise à jour téléphone"){
     auditReason,
     clientTime:new Date().toISOString(),
     snapshot:data,
-    fullOrderSnapshot:data
+    fullOrderSnapshot:data,
+    clientRevision:Number(STATE.syncRevision||0)
   };
 
   const r=await serverFetch("/update-order?tenantID="+encodeURIComponent(STATE.tenantID),{
@@ -5772,11 +5786,38 @@ async function connectSocket(){
 
     /* Événements génériques du nouveau server.js : tous les écrans restent en symbiose. */
     socket.on("server-state-changed",evt=>{
-      scheduleSymbioseSync(text(evt?.source||evt?.tableId||"server-state-changed"),180);
+      const rev=Number(evt?.syncRevision||0);
+      if(rev>0 && rev<=Number(STATE.syncRevision||0)){
+        scheduleRender();
+        return;
+      }
+      scheduleSymbioseSync(text(evt?.source||evt?.tableId||"server-state-changed"),80);
     });
 
+    const applyArchitecturePacket=evt=>{
+      const architecture=evt?.architecture||evt?.data||null;
+      if(!architecture||typeof architecture!=="object")return false;
+      if(!STATE.activeOrders||typeof STATE.activeOrders!=="object")STATE.activeOrders={};
+      STATE.activeOrders.ARCHITECTURE={
+        ...(STATE.activeOrders.ARCHITECTURE&&typeof STATE.activeOrders.ARCHITECTURE==="object"?STATE.activeOrders.ARCHITECTURE:{}),
+        data:clone(architecture),
+        updatedAt:evt?.updatedAt||evt?.serverTime||new Date().toISOString()
+      };
+      if(Number(evt?.syncRevision||0)>0)STATE.syncRevision=Math.max(Number(STATE.syncRevision||0),Number(evt.syncRevision));
+      STATE.lastServerAt=now();
+      applyDerived();
+      scheduleRender();
+      if(STATE.planViewOpen)setTimeout(()=>renderLivePlan(),0);
+      try{window.dispatchEvent(new CustomEvent("ichef:live-state-updated",{detail:{source:"architecture-direct",syncRevision:Number(STATE.syncRevision||0)}}))}catch(_){}
+      return true;
+    };
+
+    socket.on("architectureState",evt=>{applyArchitecturePacket(evt)});
     socket.on("architecture-changed",evt=>{
-      scheduleSymbioseSync(text(evt?.source||"architecture-changed"),120);
+      if(applyArchitecturePacket(evt))return;
+      const rev=Number(evt?.syncRevision||0);
+      if(rev>0 && rev<=Number(STATE.syncRevision||0))return;
+      scheduleSymbioseSync(text(evt?.source||"architecture-changed"),60);
     });
 
     socket.on("staffDutyChanged",ichefHandleDutyChanged);
@@ -5828,6 +5869,14 @@ async function syncFull(reason="manual"){
 function applyServerState(serverState,source){
   if(!serverState||typeof serverState!=="object")return;
 
+  const incomingSyncRevision=Number(serverState.syncRevision||0);
+  const currentSyncRevision=Number(STATE.syncRevision||0);
+  if(incomingSyncRevision>0 && currentSyncRevision>0 && incomingSyncRevision<currentSyncRevision){
+    console.info("[iCHEF SYMBIOSE] état ancien ignoré",incomingSyncRevision,"<",currentSyncRevision);
+    return;
+  }
+  if(incomingSyncRevision>0)STATE.syncRevision=Math.max(currentSyncRevision,incomingSyncRevision);
+
   if(!ichefEnforceDutyFromState(serverState))return;
 
   const serverIncoming=normalizeServerOrdersMap(
@@ -5869,6 +5918,7 @@ function applyServerState(serverState,source){
 
   scheduleRender();
   checkGlobalAlert();
+  try{window.dispatchEvent(new CustomEvent("ichef:live-state-updated",{detail:{source:source||"server",syncRevision:Number(STATE.syncRevision||0)}}))}catch(_){}
 }
 
 window.addEventListener("online",()=>{
@@ -5922,7 +5972,15 @@ window.addEventListener("pageshow",event=>{
 
 /* ---------------- DATA NORMALIZATION ---------------- */
 function normalizeArchitecture(){
-  const raw=unwrap(STATE.activeOrders.ARCHITECTURE)||{};const rooms=Array.isArray(raw.rooms)&&raw.rooms.length?raw.rooms.map(text).filter(Boolean):["Salle Principale"];const tables=Array.isArray(raw.tables)?raw.tables.filter(Boolean).map(t=>({...t,label:text(t.label||t.name||t.id),room:text(t.room||rooms[0])})).filter(t=>t.label):[];const zones=Array.isArray(raw.zones)?raw.zones.filter(Boolean).map(z=>({...z,label:text(z.label||z.name||z.id),room:text(z.room||rooms[0])})):[];STATE.architecture={rooms,tables,zones};STATE.rooms=rooms;STATE.tables=tables;STATE.zones=zones;if(!STATE.rooms.includes(STATE.room))STATE.room=STATE.rooms[0];
+  const raw=unwrap(STATE.activeOrders.ARCHITECTURE)||{};
+  const rooms=Array.isArray(raw.rooms)&&raw.rooms.length?raw.rooms.map(text).filter(Boolean):["Salle Principale"];
+  const tables=Array.isArray(raw.tables)?raw.tables.filter(Boolean).map(t=>({...t,label:text(t.label||t.name||t.id),room:text(t.room||rooms[0])})).filter(t=>t.label):[];
+  const zones=Array.isArray(raw.zones)?raw.zones.filter(Boolean).map(z=>({...z,label:text(z.label||z.name||z.id),room:text(z.room||rooms[0])})):[];
+  const elements=Array.isArray(raw.elements)?raw.elements.filter(Boolean).map(e=>({...e,room:text(e.room||rooms[0])})):[];
+  const canvas=raw.canvas&&typeof raw.canvas==="object"?clone(raw.canvas):{};
+  STATE.architecture={rooms,tables,zones,elements,canvas};
+  STATE.rooms=rooms;STATE.tables=tables;STATE.zones=zones;STATE.elements=elements;
+  if(!STATE.rooms.includes(STATE.room))STATE.room=STATE.rooms[0];
 }
 function productFrom(p,cat="Menu",key="",defaultDest="cuisine"){
   if(p==null)return null;
@@ -8333,14 +8391,16 @@ function renderLivePlan(){
 
   const ts=(STATE.tables||[]).filter(t=>t.room===STATE.room);
   const zs=(STATE.zones||[]).filter(z=>z.room===STATE.room);
+  const es=(STATE.architecture?.elements||STATE.elements||[]).filter(e=>!e.room||e.room===STATE.room);
 
-  if(!ts.length && !zs.length){
+  if(!ts.length && !zs.length && !es.length){
     host.innerHTML='<div class="empty-state" style="margin:12px">Aucun plan synchronisé pour cette salle.</div>';
     return;
   }
 
-  let maxX=900,maxY=650;
-  [...ts,...zs].forEach(item=>{
+  const archCanvas=STATE.architecture?.canvas||{};
+  let maxX=Math.max(900,Number(archCanvas.width)||0),maxY=Math.max(650,Number(archCanvas.height)||0);
+  [...ts,...zs,...es].forEach(item=>{
     const p=planCoordinates(item);
     maxX=Math.max(maxX,p.l+p.w+60);
     maxY=Math.max(maxY,p.t+p.h+60);
@@ -8357,6 +8417,32 @@ function renderLivePlan(){
     const p=planCoordinates({...z,w:z.w||400,h:z.h||300});
     const color=text(z.color||z.couleur||"#58a9ff");
     return `<div class="plan-zone" style="left:${p.l}px;top:${p.t}px;width:${p.w}px;height:${p.h}px;border-color:${esc(color)};color:${esc(color)};background:${esc(color)}12;font-size:13px;font-weight:1000;padding:8px">${esc(z.label||"Zone")}</div>`;
+  }).join("");
+
+  const elementLabel=e=>{
+    const type=text(e?.type||"").toLowerCase();
+    if(e?.label)return text(e.label);
+    return ({wall:"",door:"PORTE",window:"FENÊTRE",bar:"BAR",kitchen:"CUISINE",cash:"CAISSE",buffet:"BUFFET",text:"",plant:"PLANTE",pool:"PISCINE",roomservice:"ROOM SERVICE",bed_single:"LIT",bed_double:"LIT DOUBLE",desk:"BUREAU",sofa:"CANAPÉ",wardrobe:"ARMOIRE",sink:"LAVABO",toilet:"WC",shower:"DOUCHE"})[type]||type.toUpperCase();
+  };
+  const elementStyle=e=>{
+    const type=text(e?.type||"").toLowerCase();
+    const palette={
+      wall:["#3d4243","#171a1b","#fff"],door:["#d6c6aa","#6b5c48","#332b23"],window:["#a9dbeb","#4b7b8b","#1d4653"],
+      bar:["#844e32","#4e2c1b","#fff"],kitchen:["#b7bdc0","#697276","#202527"],cash:["#d7b04a","#816417","#17130a"],
+      buffet:["#c7a36e","#755b38","#1f160d"],text:["transparent","transparent","#222"],plant:["#b9d89b","#60804f","#183313"],
+      pool:["#a7dff0","#4f94aa","#173d49"],roomservice:["#d9c7ee","#8468a5","#321f48"],bed_single:["#eee","#999","#222"],
+      bed_double:["#eee","#999","#222"],desk:["#d8c09b","#82643e","#222"],sofa:["#c8b0a1","#7c6254","#222"],wardrobe:["#b6946a","#6d4e2e","#fff"],
+      sink:["#dceff3","#7faab5","#23434b"],toilet:["#f4f4f4","#a5a5a5","#222"],shower:["#dceff3","#7faab5","#23434b"]
+    };
+    return palette[type]||["#ddd","#777","#222"];
+  };
+  const elementsHTML=es.map(e=>{
+    const p=planCoordinates(e);
+    const [bg,border,fg]=elementStyle(e);
+    const type=text(e?.type||"element").toLowerCase();
+    const rotation=Number(e?.rotation||0)||0;
+    const label=elementLabel(e);
+    return `<div class="plan-element plan-element-${esc(type)}" style="left:${p.l}px;top:${p.t}px;width:${p.w}px;height:${p.h}px;transform:rotate(${rotation}deg);background:${bg};border-color:${border};color:${fg}">${esc(label)}</div>`;
   }).join("");
 
   const tablesHTML=ts.map(t=>{
@@ -8409,7 +8495,7 @@ function renderLivePlan(){
       <button id="planSyncNow" class="mini-btn" style="flex:0 0 auto;background:#fff;color:#111;border-color:#111">ACTUALISER</button>
     </div>
     <div id="livePlanViewport" class="plan-wrap plan-touch">
-      <div id="livePlanCanvas" class="plan-canvas" data-plan-width="${maxX}" data-plan-height="${maxY}" style="width:${maxX}px;height:${maxY}px">${zonesHTML}${tablesHTML}</div>
+      <div id="livePlanCanvas" class="plan-canvas" data-plan-width="${maxX}" data-plan-height="${maxY}" style="width:${maxX}px;height:${maxY}px">${zonesHTML}${elementsHTML}${tablesHTML}</div>
       <div class="plan-touch-help">1 doigt : déplacer<br>2 doigts : zoomer</div>
       <div class="plan-zoom-controls" aria-label="Zoom du plan">
         <button id="planZoomMinus" class="plan-zoom-btn" type="button" aria-label="Zoom arrière">−</button>
@@ -13587,28 +13673,36 @@ setTimeout(() => {
             const filter = typeof getDeviceFilter === "function" ? getDeviceFilter() : {type:"all"};
             let ts = STATE.tables || [];
             let zs = STATE.zones || [];
+            let es = STATE.elements || STATE.architecture?.elements || [];
 
             if (filter.type === "zone") {
+                const selectedZone = zs.find(z => z.label === filter.value);
+                const selectedRoom = selectedZone?.room || STATE.room;
                 ts = ts.filter(t => {
                     const z = getZone(t);
                     return (z?.label || t.zone || "Nouvelle Zone") === filter.value;
                 });
                 zs = zs.filter(z => z.label === filter.value);
+                es = es.filter(e => (!e?.room || e.room === selectedRoom) && (!e?.zone || e.zone === filter.value));
             } else if (filter.type === "room") {
                 ts = ts.filter(t => t.room === filter.value);
                 zs = zs.filter(z => z.room === filter.value);
+                es = es.filter(e => !e?.room || e.room === filter.value);
             } else {
                 ts = ts.filter(t => t.room === STATE.room);
                 zs = zs.filter(z => z.room === STATE.room);
+                es = es.filter(e => !e?.room || e.room === STATE.room);
             }
 
-            if(!ts.length && !zs.length){
+            if(!ts.length && !zs.length && !es.length){
                 host.innerHTML = '<div class="empty-state" style="margin:12px; font-size:24px;">Aucun plan synchronisé pour ce secteur.</div>';
                 return;
             }
 
-            let maxX = 900, maxY = 650;
-            [...ts,...zs].forEach(item => {
+            const canvasCfg = STATE.architecture?.canvas || {};
+            let maxX = Math.max(900, Number(canvasCfg.width || 0) || 0);
+            let maxY = Math.max(650, Number(canvasCfg.height || 0) || 0);
+            [...ts,...zs,...es].forEach(item => {
                 const p = planCoordinates(item);
                 maxX = Math.max(maxX, p.l + p.w + 60);
                 maxY = Math.max(maxY, p.t + p.h + 60);
@@ -13625,6 +13719,24 @@ setTimeout(() => {
                 const p = planCoordinates({...z, w: z.w || 400, h: z.h || 300});
                 const color = text(z.color || z.couleur || "#58a9ff");
                 return `<div class="plan-zone" style="left:${p.l}px;top:${p.t}px;width:${p.w}px;height:${p.h}px;border: 3px dashed ${esc(color)};color:${esc(color)};background:${esc(color)}15;font-size:26px;font-weight:1000;padding:15px; text-transform:uppercase; z-index:1;">${esc(z.label || "Zone")}</div>`;
+            }).join("");
+
+            const planElementPalette = {
+                wall:["#3d4243","#171a1b","#fff"], door:["#d6c6aa","#6b5c48","#332b23"], window:["#a9dbeb","#4b7b8b","#1d4653"],
+                bar:["#844e32","#4e2c1b","#fff"], kitchen:["#b7bdc0","#697276","#202527"], cash:["#d7b04a","#816417","#17130a"],
+                buffet:["#c7a36e","#755b38","#1f160d"], text:["transparent","transparent","#222"], plant:["#b9d89b","#60804f","#183313"],
+                pool:["#a7dff0","#4f94aa","#173d49"], roomservice:["#d9c7ee","#8468a5","#321f48"], bed_single:["#eee","#999","#222"],
+                bed_double:["#eee","#999","#222"], desk:["#d8c09b","#82643e","#222"], sofa:["#c8b0a1","#7c6254","#222"], wardrobe:["#b6946a","#6d4e2e","#fff"],
+                sink:["#dceff3","#7faab5","#23434b"], toilet:["#f4f4f4","#a5a5a5","#222"], shower:["#dceff3","#7faab5","#23434b"]
+            };
+            const planElementDefaultLabel = {door:"PORTE",window:"FENÊTRE",bar:"BAR",kitchen:"CUISINE",cash:"CAISSE",buffet:"BUFFET",plant:"PLANTE",pool:"PISCINE",roomservice:"ROOM SERVICE",bed_single:"LIT",bed_double:"LIT DOUBLE",desk:"BUREAU",sofa:"CANAPÉ",wardrobe:"ARMOIRE",sink:"LAVABO",toilet:"WC",shower:"DOUCHE",wall:"",text:""};
+            const elementsHTML = es.map(e => {
+                const p = planCoordinates(e);
+                const type = text(e?.type || "element").toLowerCase();
+                const palette = planElementPalette[type] || ["#ddd","#777","#222"];
+                const rotation = Number(e?.rotation || 0) || 0;
+                const label = text(e?.label || planElementDefaultLabel[type] || type.toUpperCase());
+                return `<div class="plan-element plan-element-${esc(type)}" style="left:${p.l}px;top:${p.t}px;width:${p.w}px;height:${p.h}px;transform:rotate(${rotation}deg);background:${palette[0]};border-color:${palette[1]};color:${palette[2]}">${esc(label)}</div>`;
             }).join("");
 
             const tablesHTML = ts.map(t => {
@@ -13709,7 +13821,7 @@ setTimeout(() => {
                     <button id="planSyncNow" class="action-btn" style="flex:0 0 auto; background:#111; color:#fff; border-color:#111; min-height: 40px; font-size: 14px;">ACTUALISER</button>
                 </div>
                 <div id="livePlanViewport" class="plan-wrap plan-touch">
-                    <div id="livePlanCanvas" class="plan-canvas" data-plan-width="${maxX}" data-plan-height="${maxY}" style="width:${maxX}px;height:${maxY}px">${zonesHTML}${tablesHTML}</div>
+                    <div id="livePlanCanvas" class="plan-canvas" data-plan-width="${maxX}" data-plan-height="${maxY}" style="width:${maxX}px;height:${maxY}px">${zonesHTML}${elementsHTML}${tablesHTML}</div>
                     <div class="plan-touch-help">1 doigt : déplacer<br>2 doigts : zoomer</div>
                     <div class="plan-zoom-controls" aria-label="Zoom du plan">
                         <button id="planZoomMinus" class="plan-zoom-btn" type="button" aria-label="Zoom arrière">−</button>
