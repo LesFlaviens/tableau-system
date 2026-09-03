@@ -6244,6 +6244,52 @@ async function cancelSentLine(item,reason=""){
   }
   return ok;
 }
+window.pendingCancellations = window.pendingCancellations || {};
+
+async function cancelSentLine(item, reason=""){
+  if(!item||!lineFired(item))return false;
+
+  // Motif automatique et silencieux (PLUS DE FENÊTRE QUI BLOQUE L'ÉCRAN)
+  let motif = "Correction / Annulation express"; 
+
+  const o=ensureOrder(STATE.currentTable);
+  const target=o.items.find(x=>lineKey(x)===lineKey(item));
+  if(!target)return false;
+
+  target.originalPrice=target.originalPrice!==undefined?target.originalPrice:itemPrice(target);
+  target.p=0;
+  target.price=0;
+  target.isOffered=true;
+  target.done=true;
+  target.cancelled=true;
+  target.cancelReason=motif;
+  target.cancelledAt=Date.now();
+  target.cancelledBy=STATE.role||"SERVEUR";
+  target.cancelDeviceId=STATE.deviceId;
+  target.sequenceStatus="CANCELLED";
+  target.obs=`❌ ANNULÉ (${motif})${target.obs?" | "+target.obs:""}`;
+
+  const ok=await saveCurrent(o,"Annulation article déjà envoyé",{immediate:true});
+  if(ok){
+    if (typeof productionAlert === "function") await productionAlert(target,"ANNULATION",motif);
+    toast("🚨 Annulation transmise au poste");
+    
+    // VÉRIFICATION AUTO-FERMETURE SI LA TABLE EST VIDE
+    const activeItems = o.items.filter(x => !x.cancelled);
+    if(activeItems.length === 0) {
+        o.isArchived = true;
+        o.status = "CLOSED";
+        await saveCurrent(o, "Table libérée", {immediate: true});
+        if (typeof closeOrder === "function") closeOrder(); 
+        toast("Table libérée (commande vide)");
+    } else {
+        renderTicket();
+        scheduleRender();
+    }
+  }
+  return ok;
+}
+
 async function mutateLine(key,action){
   if(!STATE.currentTable)return;
 
@@ -6253,14 +6299,61 @@ async function mutateLine(key,action){
 
   STATE.lastLineKey=key;
 
-  if(action==="obs"){
-    openLineObservation(key);
-    return;
-  }
+  if(action==="obs"){ openLineObservation(key); return; }
+  if(action==="cooking"){ openLineCooking(key); return; }
 
-if(action==="cooking"){
-    openLineCooking(key);
-    return;
+  // ===============================================
+  // GESTION DU DOUBLE TAP (Sécurité Annulation)
+  // ===============================================
+  if (action === "delete") {
+    const btn = document.querySelector(`button[data-line="${key}"][data-act="delete"]`);
+    if (btn && btn.dataset.confirming !== "true") {
+        // PREMIER CLIC : Mettre le bouton en mode "CONFIRMER"
+        btn.dataset.confirming = "true";
+        btn.dataset.originalText = btn.innerHTML; // Sauvegarde "×" ou "ANN."
+        btn.innerHTML = "CONFIRMER";
+        btn.style.background = "#ff5368";
+        btn.style.color = "#ffffff";
+        btn.style.border = "none";
+        
+        // Timeout de sécurité : annule l'état rouge après 3 secondes si pas de clic
+        btn.confirmTimeout = setTimeout(() => {
+            if (btn && btn.dataset.confirming === "true") {
+                btn.dataset.confirming = "false";
+                btn.innerHTML = btn.dataset.originalText;
+                btn.style.background = "transparent";
+                btn.style.color = "#ff5368"; // Re-passe le texte en rouge
+            }
+        }, 3000);
+        return; // On arrête là, on attend le second clic de validation
+    } 
+    else if (btn && btn.dataset.confirming === "true") {
+        // DEUXIÈME CLIC : Confirmation !
+        clearTimeout(btn.confirmTimeout);
+        
+        if (lineFired(i)) {
+            // Plat déjà envoyé en cuisine -> Annulation réseau silencieuse
+            await cancelSentLine(i);
+        } else {
+            // Brouillon -> Suppression simple
+            const before = cloneOrderForUndo(o);
+            o.items = o.items.filter(x => x !== i);
+            pushUndo(`Retrait ${itemName(i)}`, before);
+            await saveCurrent(o, "Retrait article", {delay: 120});
+            
+            // Check table vide pour auto-fermeture
+            const activeItems = o.items.filter(x => !x.cancelled);
+            if(activeItems.length === 0) {
+                o.isArchived = true;
+                o.status = "CLOSED";
+                await saveCurrent(o, "Table libérée", {immediate: true});
+                if (typeof closeOrder === "function") closeOrder(); 
+            } else {
+                renderTicket();
+            }
+        }
+        return;
+    }
   }
 
   /* PRÊT -> SERVI : on retire aussi tous les marqueurs PRÊT.
@@ -6276,15 +6369,12 @@ if(action==="cooking"){
     i.status="served";
     i.productionStatus="served";
 
-    /* Très important : ne plus laisser la ligne être relue comme PRÊT. */
     i.done=false;
     i.ready=false;
     i.isReady=false;
     i.readyAt=null;
 
     pushUndo(`Plat servi : ${itemName(i)}`,before);
-
-    /* Mise à jour locale AVANT le réseau : le carré PRÊT disparaît immédiatement. */
     const savePromise=saveCurrent(o,"Plat marqué comme servi",{immediate:true});
     renderTicket();
     scheduleRender();
@@ -6296,13 +6386,8 @@ if(action==="cooking"){
   }
 
   if(lineFired(i)){
-    if(action==="delete"){
-      await cancelSentLine(i);
-      return;
-    }
-
     if(action==="plus"||action==="minus"){
-      toast("Déjà envoyé : ajoutez une nouvelle ligne ou utilisez ANNULER",true);
+      toast("Déjà envoyé : utilisez ANN. pour annuler",true);
       return;
     }
   }
@@ -6313,15 +6398,23 @@ if(action==="cooking"){
 
   if(action==="minus"){
     i.qty=Math.max(0,itemQty(i)-1);
-    if(i.qty<=0)o.items=o.items.filter(x=>x!==i);
-  }
-
-  if(action==="delete"){
-    o.items=o.items.filter(x=>x!==i);
+    if(i.qty<=0) {
+        o.items=o.items.filter(x=>x!==i);
+        // Vérification Auto-Fermeture si on réduit à 0
+        const activeItems = o.items.filter(x => !x.cancelled);
+        if(activeItems.length === 0) {
+            o.isArchived = true;
+            o.status = "CLOSED";
+            await saveCurrent(o, "Table libérée (vide)", {immediate: true});
+            if (typeof closeOrder === "function") closeOrder(); 
+            return;
+        }
+    }
   }
 
   pushUndo(`Modification ${seatLabel(itemSeat(i)||STATE.activeSeat)} · ${itemName(i)}`,before);
   await saveCurrent(o,"Modification rapide article",{delay:120});
+  renderTicket();
 }
 
 async function sendKitchen(){
@@ -6438,7 +6531,6 @@ function setPax(delta){
   saveCurrent(o,"Modification couverts",{delay:140});
   renderGuestButtons();
 }
-
 /* ---------------- RESERVATIONS ---------------- */
 function findReservation(table){const today=new Date().toISOString().slice(0,10);return STATE.reservations.find(r=>{const t=text(r.tableId||r.table||r.tableLabel||r.numeroTable);const d=text(r.date||r.day||"").slice(0,10);const status=text(r.status||"").toLowerCase();return t===table&&(!d||d===today)&&!status.includes("cancel")})||null}
 
