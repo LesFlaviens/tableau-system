@@ -13461,5 +13461,195 @@ setTimeout(() => {
     }
 }, 2000);
 </script>
+  <!-- =========================================================
+     FIX : SYNCHRONISATION PARFAITE DES DEUX PLANS DE TABLE
+     ========================================================= -->
+<style id="style-sync-plans-parfaits">
+/* On force le plan interactif à utiliser les mêmes clignotements que l'écran 1 */
+.plan-table.ready {
+    animation: pulseReady 1.5s infinite !important;
+    border: 4px solid #2dcc70 !important;
+    background: linear-gradient(180deg, rgba(45, 204, 112, 0.15), #070a0b) !important;
+    color: #fff !important;
+}
+.plan-table.alert {
+    animation: pulse 1.1s infinite !important;
+    border: 4px solid #ff5368 !important;
+}
+.plan-table {
+    position: relative; /* Indispensable pour centrer le gros message PRÊT */
+    overflow: hidden;
+}
+</style>
+
+<script id="script-sync-plans-parfaits">
+setTimeout(() => {
+    // Remplacement direct de la fonction du plan interactif pour qu'elle devienne le clone parfait de l'Écran 1
+    if (typeof window.renderLivePlan === "function") {
+        window.renderLivePlan = function() {
+            if(!STATE.planViewOpen) return;
+            const host = document.getElementById("livePlanHost");
+            if(!host) return;
+            if(STATE.planGestureActive) return;
+
+            // 1. MÊME LOGIQUE DE FILTRE EXACTE (Salle ou Zone restreinte)
+            const filter = typeof getDeviceFilter === "function" ? getDeviceFilter() : {type:"all"};
+            let ts = STATE.tables || [];
+            let zs = STATE.zones || [];
+
+            if (filter.type === "zone") {
+                ts = ts.filter(t => {
+                    const z = getZone(t);
+                    return (z?.label || t.zone || "Nouvelle Zone") === filter.value;
+                });
+                zs = zs.filter(z => z.label === filter.value);
+            } else if (filter.type === "room") {
+                ts = ts.filter(t => t.room === filter.value);
+                zs = zs.filter(z => z.room === filter.value);
+            } else {
+                ts = ts.filter(t => t.room === STATE.room);
+                zs = zs.filter(z => z.room === STATE.room);
+            }
+
+            if(!ts.length && !zs.length){
+                host.innerHTML = '<div class="empty-state" style="margin:12px">Aucun plan synchronisé pour ce secteur.</div>';
+                return;
+            }
+
+            let maxX = 900, maxY = 650;
+            [...ts,...zs].forEach(item => {
+                const p = planCoordinates(item);
+                maxX = Math.max(maxX, p.l + p.w + 60);
+                maxY = Math.max(maxY, p.t + p.h + 60);
+            });
+
+            if(!STATE.planTransform.initialized){
+                STATE.planTransform.scale = 1;
+                STATE.planTransform.x = 12;
+                STATE.planTransform.y = 12;
+                STATE.planTransform.initialized = true;
+            }
+
+            const zonesHTML = zs.map(z => {
+                const p = planCoordinates({...z, w: z.w || 400, h: z.h || 300});
+                const color = text(z.color || z.couleur || "#58a9ff");
+                return `<div class="plan-zone" style="left:${p.l}px;top:${p.t}px;width:${p.w}px;height:${p.h}px;border-color:${esc(color)};color:${esc(color)};background:${esc(color)}12;font-size:13px;font-weight:1000;padding:8px">${esc(z.label || "Zone")}</div>`;
+            }).join("");
+
+            const tablesHTML = ts.map(t => {
+                const p = planCoordinates(t);
+                const s = tableStats(t.label);
+                const o = getOrder(t.label);
+                
+                // 2. MÊMES LABELS STATUTS EXACTS (Urgent, Attente, Prêt...)
+                let etatLabel = "LIBRE";
+                if (s.status === 'reserved') etatLabel = "RÉSERVÉE";
+                else if (s.status === 'payment') etatLabel = "PAIEMENT";
+                else if (s.status === 'alert') etatLabel = "URGENT";
+                else if (s.status === 'late') etatLabel = "RETARD";
+                else if (s.status === 'ready') etatLabel = "PRÊT";
+                else if (s.status === 'wait') etatLabel = "ATTENTE";
+                else if (s.status === 'active') etatLabel = "OCCUPÉE";
+
+                const bg = planStatusColor(s.status);
+                const fg = planStatusTextColor(s.status);
+                const livePax = s.pax > 0 ? s.pax : 0;
+                const time = s.age ? duration(s.age) : (s.status === "reserved" ? "RÉSERVÉE" : "—");
+                
+                // 3. MÊMES PASTILLES C1-C9
+                let seatPastilles = "";
+                if (o && o.items) {
+                    const activeSeats = o.items
+                        .filter(i => i && !i.cancelled && itemQty(i) > 0)
+                        .map(i => itemSeat(i))
+                        .filter(seat => seat >= 1 && seat <= 9);
+                    
+                    const uniqueSeats = [...new Set(activeSeats)].sort((a, b) => a - b);
+                    if (uniqueSeats.length > 0) {
+                        seatPastilles = `<div style="display:flex; gap:3px; justify-content:center; margin-top:6px; flex-wrap:wrap; width:100%; position:relative; z-index:2;">` + 
+                            uniqueSeats.map(seat => `<span class="seat-badge seat-${seat}" style="background:#ffffff !important; border:2px solid var(--c${seat}) !important; color:var(--c${seat}) !important; min-width:clamp(16px, 2.5vw, 24px); height:clamp(12px, 1.6vw, 16px); font-size:clamp(7px, 1vw, 9px); padding:0 3px; margin:0; font-weight:1000; display:inline-flex; align-items:center; justify-content:center; line-height:1; border-radius:999px;">C${seat}</span>`).join('') + 
+                        `</div>`;
+                    }
+                }
+
+                // 4. MÊME APERÇU TEXTUEL DES PLATS (les 2 premiers plats)
+                const preview = (o?.items||[])
+                    .filter(Boolean).slice(0,2)
+                    .map((item,index) => {
+                        const q = itemQty(item);
+                        const served = lineServed(item);
+                        const ready = lineReady(item) && !served && !item.cancelled;
+                        const sent = lineFired(item);
+                        const klass = (ready || s.status==="late" || s.status==="alert") ? " warn" : "";
+                        const state = served ? " · SERVI" : ready ? " · PRÊT" : sent ? "" : " · À ENVOYER";
+                        return `<span class="table-preview-line${klass}" style="font-size:clamp(6px, 1.2vw, 9px); margin-top:2px;">• ${q>1?q+"× ":""}${esc(itemName(item))}${state}</span>`;
+                    }).join("");
+
+                // 5. MÊME GROS OVERLAY CLIGNOTANT POUR LES PLATS PRÊTS
+                const readyOverlay = s.ready 
+                    ? `<div class="table-ready-overlay" style="font-size:clamp(10px, 2vw, 18px) !important; padding:4px 8px;">${s.ready} PRÊT(S)</div>` 
+                    : "";
+
+                // Ajout de la classe de statut (ex: 'ready', 'alert') directement sur le bouton pour déclencher le CSS
+                return `<button class="plan-table ${s.status}" data-plan-table="${esc(t.label)}"
+                    style="left:${p.l}px;top:${p.t}px;width:${p.w}px;height:${p.h}px;
+                    background:${bg};color:${fg};border:2px solid ${s.status==="active"?"#cfd2d5":bg};
+                    display:flex;flex-direction:column;gap:2px;line-height:1.05;box-shadow:0 4px 12px rgba(0,0,0,.16);padding:4px; overflow:hidden;">
+                    <strong style="font-size:${Math.max(14,Math.min(24,p.w/3.5))}px; position:relative; z-index:2;">${esc(t.label)}</strong>
+                    <span style="font-size:9px;font-weight:1000; position:relative; z-index:2; text-transform:uppercase;">${etatLabel}</span>
+                    <span style="font-size:9px;font-weight:900; position:relative; z-index:2;">${esc(time)}</span>
+                    <span style="font-size:9px;font-weight:1000; position:relative; z-index:2;">${livePax} PAX</span>
+                    ${seatPastilles}
+                    ${preview ? `<div class="table-preview" style="position:relative; z-index:2; border-top:1px solid rgba(0,0,0,0.1); margin-top:2px; padding-top:2px;">${preview}</div>` : ""}
+                    ${readyOverlay}
+                </button>`;
+            }).join("");
+
+            host.innerHTML = `
+                <div class="plan-live-toolbar">
+                    <div class="plan-live-meta">
+                        <strong>SYNCHRO LIVE · ${esc(filter.type === 'zone' ? filter.value : (filter.type === 'room' ? filter.value : STATE.room))}</strong>
+                        <span>${STATE.connected?"Socket.IO connecté":"Synchronisation HTTP"} · ${ts.length} table(s)</span>
+                    </div>
+                    <button id="planSyncNow" class="mini-btn" style="flex:0 0 auto;background:#fff;color:#111;border-color:#111">ACTUALISER</button>
+                </div>
+                <div id="livePlanViewport" class="plan-wrap plan-touch">
+                    <div id="livePlanCanvas" class="plan-canvas" data-plan-width="${maxX}" data-plan-height="${maxY}" style="width:${maxX}px;height:${maxY}px">${zonesHTML}${tablesHTML}</div>
+                    <div class="plan-touch-help">1 doigt : déplacer<br>2 doigts : zoomer</div>
+                    <div class="plan-zoom-controls" aria-label="Zoom du plan">
+                        <button id="planZoomMinus" class="plan-zoom-btn" type="button" aria-label="Zoom arrière">−</button>
+                        <div id="planZoomLevel" class="plan-zoom-level">100%</div>
+                        <button id="planZoomPlus" class="plan-zoom-btn" type="button" aria-label="Zoom avant">+</button>
+                    </div>
+                </div>`;
+
+            bindPlanTouch();
+            applyPlanTransform();
+
+            host.querySelectorAll("[data-plan-table]").forEach(b => {
+                b.onclick = () => {
+                    if(Date.now() < (STATE.planGesture.blockClickUntil||0)) return;
+                    const table = b.dataset.planTable;
+                    closeSheet();
+                    openOrder(table);
+                };
+            });
+
+            const minus = document.getElementById("planZoomMinus");
+            const plus = document.getElementById("planZoomPlus");
+            if(minus) minus.onclick = e => { e.stopPropagation(); zoomPlanTo(STATE.planTransform.scale/1.25); };
+            if(plus) plus.onclick = e => { e.stopPropagation(); zoomPlanTo(STATE.planTransform.scale*1.25); };
+
+            const syncBtn = document.getElementById("planSyncNow");
+            if(syncBtn) syncBtn.onclick = async() => {
+                syncBtn.disabled = true;
+                syncBtn.textContent = "SYNCHRO…";
+                await syncFull("plan-manual");
+                if(STATE.planViewOpen) renderLivePlan();
+            };
+        };
+    }
+}, 2000); // Exécution différée pour écraser la version d'origine sans créer de conflit
+</script>
   </body>
 </html>
