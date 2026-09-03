@@ -6305,36 +6305,26 @@ async function mutateLine(key,action){
   // GESTION DU DOUBLE TAP (Sécurité Annulation)
   // ===============================================
   if (action === "delete") {
-    const btn = document.querySelector(`button[data-line="${key}"][data-act="delete"]`);
-    if (btn && btn.dataset.confirming !== "true") {
+    window.pendingCancellations = window.pendingCancellations || {};
+    
+    if (!window.pendingCancellations[key]) {
         // PREMIER CLIC : Mettre le bouton en mode "CONFIRMER"
-        btn.dataset.confirming = "true";
-        btn.dataset.originalText = btn.innerHTML; // Sauvegarde "×" ou "ANN."
-        btn.innerHTML = "CONFIRMER";
-        btn.style.background = "#ff5368";
-        btn.style.color = "#ffffff";
-        btn.style.border = "none";
-        
-        // Timeout de sécurité : annule l'état rouge après 3 secondes si pas de clic
-        btn.confirmTimeout = setTimeout(() => {
-            if (btn && btn.dataset.confirming === "true") {
-                btn.dataset.confirming = "false";
-                btn.innerHTML = btn.dataset.originalText;
-                btn.style.background = "transparent";
-                btn.style.color = "#ff5368"; // Re-passe le texte en rouge
-            }
-        }, 3000);
-        return; // On arrête là, on attend le second clic de validation
-    } 
-    else if (btn && btn.dataset.confirming === "true") {
+        window.pendingCancellations[key] = {
+            timer: setTimeout(() => {
+                delete window.pendingCancellations[key];
+                renderTicket(); // Remet le bouton normal après 3s
+            }, 3000)
+        };
+        renderTicket(); // Affiche le bouton rouge
+        return; 
+    } else {
         // DEUXIÈME CLIC : Confirmation !
-        clearTimeout(btn.confirmTimeout);
+        clearTimeout(window.pendingCancellations[key].timer);
+        delete window.pendingCancellations[key];
         
         if (lineFired(i)) {
-            // Plat déjà envoyé en cuisine -> Annulation réseau silencieuse
             await cancelSentLine(i);
         } else {
-            // Brouillon -> Suppression simple
             const before = cloneOrderForUndo(o);
             o.items = o.items.filter(x => x !== i);
             pushUndo(`Retrait ${itemName(i)}`, before);
