@@ -4361,8 +4361,8 @@ body.order-open .line-state {
     <div class="summary-actions">
       <button id="summaryModify" type="button">✎ MODIFIER<span class="summary-action-sub">Retour à la commande</span></button>
       <button id="summaryKitchen" class="kitchen" type="button">CUISINE / BAR<span class="summary-action-sub">Envoyer en production</span></button>
-      <button id="summaryServiceDone" class="summary-service-done" type="button">SERVICE EFFECTUÉ<span class="summary-action-sub">Plats / boissons posés sur table</span></button>
-      <button id="summaryCash" class="summary-cash" type="button">PAIEMENT VERROUILLÉ<span class="summary-action-sub">SERVICE EFFECTUÉ obligatoire</span></button>
+      <button id="summaryServiceDone" class="summary-service-done" type="button" style="display:none">SERVICE EFFECTUÉ AUTOMATIQUE</button>
+      <button id="summaryCash" class="summary-cash" type="button">PAIEMENT VERROUILLÉ<span class="summary-action-sub">EN ATTENTE DU OK CUISINE</span></button>
     </div>
   </div>
 </div>
@@ -5504,19 +5504,56 @@ function serviceActiveItems(order){
 
 function servicePaymentState(order){
   const active=serviceActiveItems(order);
+  const count=active.reduce((s,i)=>s+itemQty(i),0);
   const allServed=active.length>0 && active.every(lineServed);
-  const confirmed=order?.serviceCompleted===true ||
-    String(order?.serviceConfirmation?.status||"").toUpperCase()==="COMPLETED";
+  const confirmation=order?.serviceConfirmation&&typeof order.serviceConfirmation==="object"
+    ?order.serviceConfirmation:{};
+  const confirmed=(order?.serviceCompleted===true || String(confirmation.status||"").toUpperCase()==="COMPLETED") &&
+    (!Number(confirmation.activeQuantity) || Number(confirmation.activeQuantity)===count);
 
   return {
     active,
-    count:active.reduce((s,i)=>s+itemQty(i),0),
+    count,
     allServed,
     confirmed,
     ok:active.length>0 && allServed && confirmed,
-    completedAt:order?.serviceCompletedAt||order?.serviceConfirmation?.at||null,
-    completedBy:text(order?.serviceCompletedBy||order?.serviceConfirmation?.by||"")
+    completedAt:order?.serviceCompletedAt||confirmation.at||null,
+    completedBy:text(order?.serviceCompletedBy||confirmation.by||"")
   };
+}
+
+/* ENVOYER / OK CUISINE vaut désormais SERVICE EFFECTUÉ.
+   Dès que toutes les lignes actives sont SERVIES, la confirmation de service
+   est enregistrée automatiquement, sans second bouton. */
+function autoConfirmServiceIfComplete(order,source="OK_CUISINE",at=Date.now()){
+  const active=serviceActiveItems(order);
+  if(!active.length || !active.every(lineServed))return false;
+
+  const by=STATE.role||"SERVEUR";
+  const qty=active.reduce((sum,item)=>sum+itemQty(item),0);
+  order.serviceCompleted=true;
+  order.serviceCompletedAt=at;
+  order.serviceCompletedBy=by;
+  order.serviceCompletedDeviceId=STATE.deviceId;
+  order.serviceConfirmation={
+    status:"COMPLETED",
+    at,
+    by,
+    deviceId:STATE.deviceId,
+    terminal:"TELEPHONE",
+    source,
+    automatic:true,
+    activeLines:active.length,
+    activeQuantity:qty
+  };
+  order.orderMeta={
+    ...(order.orderMeta&&typeof order.orderMeta==="object"?order.orderMeta:{}),
+    serviceCompleted:true,
+    serviceCompletedAt:at,
+    serviceCompletedBy:by,
+    serviceCompletionSource:source
+  };
+  return true;
 }
 
 async function confirmServiceCompleted(){
@@ -5912,6 +5949,9 @@ if(action==="cooking"){
     i.isReady=false;
     i.readyAt=null;
 
+    /* Si c'était le dernier article à servir, le service est automatiquement validé. */
+    autoConfirmServiceIfComplete(o,"OK_CUISINE_LIGNE",i.servedAt);
+
     pushUndo(`Plat servi : ${itemName(i)}`,before);
 
     /* Mise à jour locale AVANT le réseau : le carré PRÊT disparaît immédiatement. */
@@ -5999,6 +6039,9 @@ async function acknowledgeReadyForCurrentTable(){
   o.lastKitchenAckAt=at;
   o.lastKitchenAckBy=by;
 
+  /* Le dernier OK CUISINE remplace désormais l'ancien clic SERVICE EFFECTUÉ. */
+  const serviceAutoConfirmed=autoConfirmServiceIfComplete(o,"OK_CUISINE",at);
+
   /* Mise à jour locale avant le réseau : PRÊT disparaît immédiatement. */
   STATE.currentOrder=clone(o);
   renderTicket();
@@ -6008,7 +6051,9 @@ async function acknowledgeReadyForCurrentTable(){
 
   const ok=await saveCurrent(
     o,
-    "OK CUISINE · envoi en salle · PRÊT retiré · chrono remis à zéro",
+    serviceAutoConfirmed
+      ?"OK CUISINE · service effectué automatique · paiement autorisé · PRÊT retiré · chrono remis à zéro"
+      :"OK CUISINE · envoi en salle · PRÊT retiré · chrono remis à zéro",
     {immediate:true}
   );
 
@@ -6016,7 +6061,9 @@ async function acknowledgeReadyForCurrentTable(){
   scheduleRender();
   updateToolBadges();
   toast(ok
-    ?`✓ OK CUISINE · ${qty} envoyé${qty>1?"s":""} en salle · chrono 00:00`
+    ?(serviceAutoConfirmed
+      ?`✓ OK CUISINE · ${qty} envoyé${qty>1?"s":""} · SERVICE EFFECTUÉ · paiement autorisé`
+      :`✓ OK CUISINE · ${qty} envoyé${qty>1?"s":""} en salle · chrono 00:00`)
     :"✓ OK CUISINE local · synchronisation serveur en attente",
     !ok
   );
@@ -9208,13 +9255,13 @@ function openPayment(force=false){
   const overlay=ensurePaymentOverlay();
   const finalized=fiscalOrderFinalized(o);
 
-  /* Aucun nouvel encaissement tant que SERVICE EFFECTUÉ n'est pas confirmé. */
+  /* Paiement autorisé automatiquement après le dernier ENVOYER / OK CUISINE. */
   if(!finalized){
     const serviceGate=servicePaymentState(o);
     if(!serviceGate.ok){
-      const reason=!serviceGate.confirmed
-        ?"Le serveur doit cliquer SERVICE EFFECTUÉ quand les plats/boissons sont sur table."
-        :"Un article a été ajouté ou n’est plus SERVI : reconfirmez SERVICE EFFECTUÉ.";
+      const reason=!serviceGate.allServed
+        ?"Tous les articles doivent être SERVI. Validez les PRÊT avec ENVOYER / OK CUISINE."
+        :"Validation serveur du service en cours. Réessayez dans un instant.";
       toast("PAIEMENT BLOQUÉ · "+reason,true);
       if(document.body.classList.contains("summary-open"))renderSummary();
       return;
@@ -10660,10 +10707,8 @@ function renderSummary(){
 
   const serviceBanner=`<div class="service-payment-lock-banner ${serviceGate.ok?"ok":""}">
     ${serviceGate.ok
-      ?`SERVICE EFFECTUÉ · paiement autorisé${serviceGate.completedBy?` · ${esc(serviceGate.completedBy)}`:""}`
-      :serviceGate.confirmed
-        ?"PAIEMENT BLOQUÉ · un nouvel article ou une ligne non servie nécessite une nouvelle confirmation SERVICE EFFECTUÉ."
-        :"PAIEMENT BLOQUÉ · quand les plats et boissons sont sur table, le serveur doit cliquer SERVICE EFFECTUÉ."}
+      ?`SERVICE EFFECTUÉ AUTOMATIQUE · paiement autorisé${serviceGate.completedBy?` · ${esc(serviceGate.completedBy)}`:""}`
+      :"PAIEMENT EN ATTENTE · validez les articles PRÊT avec ENVOYER / OK CUISINE."}
   </div>`;
 
   const orderHeader=`<section class="summary-table-file">
@@ -10779,19 +10824,14 @@ function renderSummary(){
   const serviceBtn=$("summaryServiceDone");
   const cashBtn=$("summaryCash");
   if(serviceBtn){
-    serviceBtn.classList.toggle("service-confirmed",serviceGate.ok);
-    serviceBtn.classList.toggle("service-reconfirm",serviceGate.confirmed&&!serviceGate.ok);
-    serviceBtn.innerHTML=serviceGate.ok
-      ?`SERVICE EFFECTUÉ<span class="summary-action-sub">Confirmé · ${esc(serviceGate.completedBy||"SERVEUR")}</span>`
-      :serviceGate.confirmed
-        ?`RECONFIRMER SERVICE<span class="summary-action-sub">Nouvel article / état modifié</span>`
-        :`SERVICE EFFECTUÉ<span class="summary-action-sub">Plats / boissons posés sur table</span>`;
+    /* Plus de double validation : ENVOYER / OK CUISINE fait déjà SERVICE EFFECTUÉ. */
+    serviceBtn.style.display="none";
   }
   if(cashBtn){
     cashBtn.disabled=!serviceGate.ok && !fiscalOrderFinalized(order);
     cashBtn.innerHTML=(serviceGate.ok||fiscalOrderFinalized(order))
-      ?`OUVRIR LE PAIEMENT<span class="summary-action-sub">Service confirmé</span>`
-      :`PAIEMENT VERROUILLÉ<span class="summary-action-sub">SERVICE EFFECTUÉ obligatoire</span>`;
+      ?`OUVRIR LE PAIEMENT<span class="summary-action-sub">Service validé automatiquement</span>`
+      :`PAIEMENT VERROUILLÉ<span class="summary-action-sub">EN ATTENTE DU OK CUISINE</span>`;
   }
 
   $("summaryContent").querySelectorAll("[data-summary-line]").forEach(el=>{
@@ -10832,9 +10872,9 @@ async function recordPayment(method){
     const serviceGate=servicePaymentState(o);
     if(!serviceGate.ok){
       return ichefPaymentFail(
-        !serviceGate.confirmed
-          ?"PAIEMENT BLOQUÉ : SERVICE EFFECTUÉ doit être confirmé par le serveur."
-          :"PAIEMENT BLOQUÉ : un article n’est pas SERVI. Refaire SERVICE EFFECTUÉ."
+        !serviceGate.allServed
+          ?"PAIEMENT BLOQUÉ : validez les articles PRÊT avec ENVOYER / OK CUISINE."
+          :"PAIEMENT BLOQUÉ : validation du service en cours, réessayez dans un instant."
       );
     }
   }
@@ -11298,7 +11338,7 @@ $("btnSummary").onclick=openSummary;
 $("summaryClose").onclick=closeSummary;
 $("summaryModify").onclick=closeSummary;
 $("summaryKitchen").onclick=async()=>{await sendKitchen();renderSummary()};
-$("summaryServiceDone").onclick=confirmServiceCompleted;
+$("summaryServiceDone").onclick=()=>toast("SERVICE EFFECTUÉ est maintenant automatique après ENVOYER / OK CUISINE");
 $("summaryCash").onclick=openPayment;
 
 /* PAIEMENT : délégation tactile de secours */
