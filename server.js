@@ -6866,16 +6866,16 @@ async function ichefMergeStaffAccessPreservingDuty(tenantID, incomingOrder) {
 
 app.post('/update-order', async (req, res) => {
     try {
-        const tenantID =
-            cleanString(
-                req.query.tenantID
-            );
+        const tenantID = cleanString(req.query.tenantID);
 
         const {
             tableId,
             order,
             pin,
-            terminal
+            terminal,
+            deviceId,
+            auditReason,
+            operator
         } = req.body || {};
 
         if (!tenantID) {
@@ -6895,46 +6895,58 @@ app.post('/update-order', async (req, res) => {
             });
         }
 
-        const terminalAccess =
-            await ichefCheckServiceTerminalAccess({
-                tenantID,
-                pin,
-                terminal
-            });
+        const terminalAccess = await ichefCheckServiceTerminalAccess({
+            tenantID,
+            pin,
+            terminal
+        });
 
         if (!terminalAccess.ok) {
             return res
                 .status(terminalAccess.status || 403)
                 .json({
                     success: false,
-                    error:
-                        terminalAccess.error ||
-                        'Accès service refusé.',
-                    code:
-                        terminalAccess.requiresDuty === true &&
-                        terminalAccess.onDuty !== true
+                    error: terminalAccess.error || 'Accès service refusé.',
+                    code: terminalAccess.requiresDuty === true && terminalAccess.onDuty !== true
                             ? 'NOT_ON_DUTY'
                             : 'TERMINAL_ACCESS_DENIED',
-                    onDuty:
-                        terminalAccess.onDuty === true,
-                    requiresDuty:
-                        terminalAccess.requiresDuty === true
+                    onDuty: terminalAccess.onDuty === true,
+                    requiresDuty: terminalAccess.requiresDuty === true
                 });
         }
 
+        // Lecture ciblée de la valeur précédente pour produire un historique fiable
+        // sans charger tout AppState en mémoire.
+        const historyProjection = {
+            [`activeOrders.${tableId}`]: 1,
+            'activeOrders.AUDIT_MASTER': 1
+        };
+        const previousStateForHistory = await AppState
+            .findOne({ tenantID }, historyProjection)
+            .lean();
+        const previousValueForHistory = previousStateForHistory?.activeOrders?.[tableId];
+
+        const actorForHistory = ichefHistoryActor(terminalAccess, req.body || {});
+
         let orderToPersist = order;
 
-        if (
-            tableId === 'STAFF_ACCESS' &&
-            order &&
-            Array.isArray(order.data)
-        ) {
-            orderToPersist =
-                await ichefMergeStaffAccessPreservingDuty(
-                    tenantID,
-                    order
-                );
+        if (tableId === 'STAFF_ACCESS' && order && Array.isArray(order.data)) {
+            orderToPersist = await ichefMergeStaffAccessPreservingDuty(tenantID, order);
         }
+
+        const centralHistoryEntries = ichefBuildCentralHistoryEntries(
+            previousValueForHistory,
+            orderToPersist,
+            {
+                tableId: String(tableId),
+                terminal: String(terminal || 'INCONNU'),
+                deviceId: String(deviceId || ''),
+                auditReason: String(auditReason || ''),
+                operator: actorForHistory.operator,
+                role: actorForHistory.role,
+                source: 'update-order'
+            }
+        );
 
         let updateQuery = {};
 
@@ -6952,38 +6964,53 @@ app.post('/update-order', async (req, res) => {
             };
         }
 
-        const newState =
-            await AppState.findOneAndUpdate(
-                { tenantID },
-                updateQuery,
-                {
-                    upsert: true,
-                    new: true
-                }
+        if (centralHistoryEntries.length && String(tableId) !== 'AUDIT_MASTER') {
+            const nextAuditNode = ichefBuildAuditMasterNode(
+                previousStateForHistory?.activeOrders?.AUDIT_MASTER,
+                centralHistoryEntries
             );
+            updateQuery.$set = {
+                ...(updateQuery.$set || {}),
+                'activeOrders.AUDIT_MASTER': nextAuditNode
+            };
+        }
 
-        io
-            .to(tenantID)
-            .emit(
-                "updateState",
-                newState
-            );
+        const newState = await AppState.findOneAndUpdate(
+            { tenantID },
+            updateQuery,
+            { upsert: true, new: true }
+        );
 
-        io
-            .to(tenantID)
-            .emit(
-                "server-state-changed",
-                {
-                    tenantID,
-                    tableId,
-                    source: "update-order",
-                    timestamp: new Date().toISOString()
-                }
-            );
+        const finalPersistedState =
+            typeof newState?.toObject === 'function'
+                ? newState.toObject()
+                : newState;
 
-       if (String(tableId || '').toUpperCase() === 'ARCHITECTURE') {
-            const persistedArchitectureNode =
-                newState?.activeOrders?.ARCHITECTURE ?? orderToPersist ?? {};
+        // Archive durable séparée de la table active.
+        await ichefArchiveCentralHistory(tenantID, centralHistoryEntries);
+
+        if (centralHistoryEntries.length) {
+            io.to(tenantID).emit('auditUpdated', {
+                tenantID,
+                tableId: String(tableId),
+                entries: centralHistoryEntries,
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        io.to(tenantID).emit("updateState", finalPersistedState);
+
+        io.to(tenantID).emit("server-state-changed", {
+            tenantID,
+            tableId,
+            source: "update-order",
+            persisted: true,
+            historyCount: centralHistoryEntries.length,
+            timestamp: new Date().toISOString()
+        });
+
+        if (String(tableId || '').toUpperCase() === 'ARCHITECTURE') {
+            const persistedArchitectureNode = newState?.activeOrders?.ARCHITECTURE ?? orderToPersist ?? {};
 
             const rawArchitecture =
                 persistedArchitectureNode &&
@@ -7015,7 +7042,6 @@ app.post('/update-order', async (req, res) => {
                 serverTime: Date.now()
             };
 
-            // Le même plan complet part immédiatement vers ADMIN, PACK-ECO et TELEPHONE.
             io.to(tenantID).emit('architectureState', architecturePacket);
             io.to(tenantID).emit('architecture-changed', architecturePacket);
         }
@@ -7023,16 +7049,14 @@ app.post('/update-order', async (req, res) => {
         return res.json({
             success: true,
             persisted: true,
-            order: order === null ? null : (newState?.activeOrders?.[tableId] ?? orderToPersist),
+            symbiose: true,
+            historyCount: centralHistoryEntries.length,
+            order: order === null ? null : (finalPersistedState?.activeOrders?.[tableId] ?? orderToPersist),
             serverTime: new Date().toISOString()
         });
 
     } catch (e) {
-        console.error(
-            "Erreur /update-order:",
-            e
-        );
-
+        console.error("Erreur /update-order:", e);
         const tooLarge = e?.code === 10334 || /BSONObjectTooLarge|object to insert too large|document.*larger than/i.test(String(e?.message || ''));
 
         return res
@@ -7047,7 +7071,6 @@ app.post('/update-order', async (req, res) => {
             });
     }
 });
-
 // ==========================================================
 // 📱 RÉINITIALISATION DES APPAREILS / ÉCRANS ENREGISTRÉS
 // ==========================================================
@@ -14810,7 +14833,65 @@ process.on('uncaughtException', error => {
 
     ichefGracefulShutdown('uncaughtException', 1);
 });
+// ==========================================================
+// 🧾 LECTURE HISTORIQUE CENTRAL — MANAGER / STAFF AUTORISÉ
+// ==========================================================
+app.get('/api/audit/history', async (req, res) => {
+    try {
+        const tenantID = cleanString(
+            req.query?.tenantID || req.headers['x-ichef-tenant'] || ''
+        );
+        const pin = String(
+            req.query?.pin || req.headers['x-ichef-pin'] || ''
+        ).trim();
 
+        const auth = await ichefAuthorizePin(tenantID, pin);
+        if (!auth.ok) {
+            return res.status(auth.status || 403).json({
+                success: false,
+                error: auth.error || 'Historique non autorisé.'
+            });
+        }
+
+        const tableId = String(req.query?.tableId || '').trim();
+        const serviceId = String(req.query?.serviceId || '').trim();
+        const source = String(req.query?.source || '').trim();
+        const requestedLimit = Number(req.query?.limit || 500);
+        const limit = Math.max(1, Math.min(5000, Number.isFinite(requestedLimit) ? requestedLimit : 500));
+
+        const filter = { tenantID };
+        if (tableId) filter.tableId = tableId;
+        if (serviceId) filter.serviceId = serviceId;
+        if (source) filter.source = source;
+
+        let rows = await SystemHistoryRecord
+            .find(filter)
+            .sort({ at: -1, _id: -1 })
+            .limit(limit)
+            .lean();
+
+        // Compatibilité immédiate si l'archive séparée vient juste d'être activée.
+        if (!rows.length) {
+            const state = await AppState.findOne({ tenantID }, { 'activeOrders.AUDIT_MASTER': 1 }).lean();
+            rows = ichefAuditMasterArray(state?.activeOrders?.AUDIT_MASTER)
+                .filter(e => !tableId || String(e?.tableId || '') === tableId)
+                .slice(0, limit);
+        }
+
+        return res.json({
+            success: true,
+            tenantID,
+            count: rows.length,
+            data: rows
+        });
+    } catch (error) {
+        console.error('[iCHEF HISTORIQUE CENTRAL] lecture :', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Historique central indisponible.'
+        });
+     }
+});
 // ==========================================================
 // 🚀 DÉMARRAGE OFFICIEL — DERNIÈRE INSTRUCTION
 // ==========================================================
