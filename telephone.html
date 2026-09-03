@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<title>iCHEF TÉLÉPHONE — IMPRIMANTES 4 POSTES + CAISSE</title>
+<title>iCHEF TÉLÉPHONE — DEVISE LIÉE AU COMPTE CLIENT</title>
 <style>
 :root{
   --bg:#050607;--panel:#0b0e0f;--panel2:#111516;--line:#293033;--line2:#3a4346;
@@ -9193,8 +9193,13 @@ async function saveFiscalProfileFromPayment(country){
   const settings={...(STATE.settings&&typeof STATE.settings==="object"?STATE.settings:{})};
   settings.fiscalCountry=country;
   settings.countryCode=country;
-  /* IMPORTANT : le pays fiscal ne force jamais la devise.
-     EUR / CHF restent un choix séparé du serveur. */
+
+  /* V19 — DEVISE LIÉE AU COMPTE CLIENT
+     Compte Suisse = CHF. Compte Europe/France = EUR.
+     Le serveur ne peut plus choisir une autre devise depuis la caisse. */
+  const accountCurrency=country==="CH"?"CHF":"EUR";
+  settings.currency=accountCurrency;
+  settings.devise=accountCurrency;
 
   STATE.settings=settings;
   STATE.activeOrders.SETTINGS_MASTER={data:clone(settings)};
@@ -9203,33 +9208,10 @@ async function saveFiscalProfileFromPayment(country){
     await optimisticWrite(
       "SETTINGS_MASTER",
       {data:clone(settings)},
-      "Configuration fiscale depuis la caisse"
+      "Configuration fiscale et devise du compte client"
     );
   }catch(err){
     console.warn("[iCHEF PAIEMENT] configuration fiscale serveur",err);
-  }
-  return true;
-}
-
-async function savePaymentCurrencyFromPayment(currency){
-  currency=text(currency).toUpperCase();
-  if(currency!=="EUR"&&currency!=="CHF")return false;
-
-  const settings={...(STATE.settings&&typeof STATE.settings==="object"?STATE.settings:{})};
-  settings.currency=currency;
-  settings.devise=currency;
-
-  STATE.settings=settings;
-  STATE.activeOrders.SETTINGS_MASTER={data:clone(settings)};
-
-  try{
-    await optimisticWrite(
-      "SETTINGS_MASTER",
-      {data:clone(settings)},
-      "Devise choisie librement depuis la caisse"
-    );
-  }catch(err){
-    console.warn("[iCHEF PAIEMENT] devise serveur",err);
   }
   return true;
 }
@@ -9322,14 +9304,12 @@ function openPayment(force=false){
 
       ${!finalized ? `
         <div class="fiscal-choose" style="border-color:#2f73c9;background:#eef6ff;">
-          <strong>DEVISE D’ENCAISSEMENT · CHOIX LIBRE</strong>
-          <div>Le serveur choisit la devise la plus pratique. Le pays fiscal reste indépendant.</div>
-          <div class="fiscal-grid">
-            <button type="button" class="fiscal-btn" data-payment-currency="EUR" style="${profile.currency==="EUR"?"background:#111;color:#fff;border-color:#111;":""}">EUR · €</button>
-            <button type="button" class="fiscal-btn" data-payment-currency="CHF" style="${profile.currency==="CHF"?"background:#111;color:#fff;border-color:#111;":""}">CHF</button>
-          </div>
+          <strong>DEVISE DU COMPTE CLIENT · ${esc(profile.currency)}</strong>
+          <div>${profile.country==="CH"
+            ? "Compte SUISSE · encaissement verrouillé en CHF."
+            : "Compte EUROPE · encaissement verrouillé en EUR."}</div>
         </div>` : `
-        <div class="pay-profile">Devise du paiement : ${esc(profile.currency)}</div>`}
+        <div class="pay-profile">Devise du compte client : ${esc(profile.currency)}</div>`}
 
       ${paymentStatusBlock}
 
@@ -9360,15 +9340,6 @@ function openPayment(force=false){
       if(ICHEF_PAYMENT_PROCESSING)return;
       btn.disabled=true;
       await saveFiscalProfileFromPayment(btn.dataset.fiscalCountry);
-      openPayment(true);
-    });
-  });
-
-  overlay.querySelectorAll("[data-payment-currency]").forEach(btn=>{
-    btn.addEventListener("click",async()=>{
-      if(ICHEF_PAYMENT_PROCESSING)return;
-      btn.disabled=true;
-      await savePaymentCurrencyFromPayment(btn.dataset.paymentCurrency);
       openPayment(true);
     });
   });
@@ -9882,14 +9853,10 @@ function fiscalProfile(){
   let country=fiscalCountryCode(rawCountry);
   if(country!=="FR"&&country!=="CH")country="UNSET";
 
-  /* La devise est volontairement indépendante du pays fiscal.
-     Une configuration CH peut encaisser/afficher en EUR et une configuration FR en CHF
-     si le serveur le choisit. Si aucune devise n'a encore été choisie, on conserve
-     seulement un défaut d'affichage compatible avec les anciennes installations. */
-  let currency=text(s.currency||s.devise||nested.currency||nested.devise||"").toUpperCase();
-  if(currency!=="EUR"&&currency!=="CHF"){
-    currency=country==="CH"?"CHF":"EUR";
-  }
+  /* V19 — SOURCE DE VÉRITÉ = COMPTE CLIENT.
+     Suisse -> CHF. Europe/France -> EUR.
+     Une ancienne valeur settings.currency ne peut plus contourner cette règle. */
+  const currency=country==="CH"?"CHF":"EUR";
 
   return {
     country,
