@@ -3189,6 +3189,55 @@ body.ichef-qr-fullscreen-open {
     elements: [],
     canvas: {}
 };
+
+        // ==========================================================
+        // iCHEF ARCHITECTURE — SYMBIOSE ADMIN / PAD / TELEPHONE
+        // Un seul contrat : rooms + tables + zones + elements + canvas
+        // ==========================================================
+        function normalizeAdminArchitecture(architecture) {
+            const source = architecture && typeof architecture === 'object'
+                ? architecture
+                : {};
+
+            return {
+                ...source,
+                rooms: Array.isArray(source.rooms) && source.rooms.length
+                    ? source.rooms
+                    : ['Salle Principale'],
+                tables: Array.isArray(source.tables) ? source.tables : [],
+                zones: Array.isArray(source.zones) ? source.zones : [],
+                elements: Array.isArray(source.elements) ? source.elements : [],
+                canvas: source.canvas && typeof source.canvas === 'object'
+                    ? source.canvas
+                    : {}
+            };
+        }
+
+        function applyArchitectureToAdmin(architecture, options = {}) {
+            if (!architecture || typeof architecture !== 'object') return false;
+
+            globalArchitecture = normalizeAdminArchitecture(architecture);
+
+            if (options.render !== false && typeof renderZonesList === 'function') {
+                try { renderZonesList(); } catch (_) {}
+            }
+
+            if (options.syncQr !== false && typeof syncQRTables === 'function') {
+                Promise.resolve(syncQRTables({
+                    architecture: globalArchitecture,
+                    reloadIfEmpty: false,
+                    silent: true
+                })).catch(err => console.warn('[iCHEF ARCHITECTURE ADMIN QR]', err));
+            }
+
+            try {
+                window.dispatchEvent(new CustomEvent('ichef:architecture-updated', {
+                    detail: { architecture: globalArchitecture }
+                }));
+            } catch (_) {}
+
+            return true;
+        }
         let menuCuisine = {}; 
         let menuBar = {}; 
         let menuPatisserie = {}; //  LA VOILÀ !
@@ -6097,35 +6146,11 @@ window.addEventListener('load', function () {
         let financialData = aO['FINANCIAL_HISTORY'];
         archiveCuisine = financialData?.data || (Array.isArray(financialData) ? financialData : []);
 
-        globalArchitecture = {
-    ...archi,
-
-    rooms:
-        Array.isArray(archi.rooms)
-            ? archi.rooms
-            : ['Salle Principale'],
-
-    tables:
-        Array.isArray(archi.tables)
-            ? archi.tables
-            : [],
-
-    zones:
-        Array.isArray(archi.zones)
-            ? archi.zones
-            : [],
-
-    elements:
-        Array.isArray(archi.elements)
-            ? archi.elements
-            : [],
-
-    canvas:
-        archi.canvas &&
-        typeof archi.canvas === 'object'
-            ? archi.canvas
-            : {}
-};
+        const architectureNode = aO['ARCHITECTURE'];
+        const archi = architectureNode?.data || architectureNode || null;
+        if (archi && typeof archi === 'object') {
+            globalArchitecture = normalizeAdminArchitecture(archi);
+        }
         injectSettingsToUI();
         if (!qrNfcHasUnsavedChanges) {
             setQrNfcSaveIndicator('checking', 'État chargé. Confirmation server.js en attente...');
@@ -6331,6 +6356,16 @@ async function startAuthenticatedApplication() {
                 '',
             page: 'CONFIGURATION'
         });
+
+        // Demande immédiatement le plan complet réellement persisté.
+        socket.emit('requestArchitectureState', {
+            tenantID: String(tenantID),
+            deviceId:
+                window.ICHEF_SECURITY?.deviceId ||
+                localStorage.getItem('ichef_device_id') ||
+                '',
+            page: 'CONFIGURATION'
+        });
     });
 
     socket.on('ichef-session-replaced', (info) => {
@@ -6405,19 +6440,13 @@ async function startAuthenticatedApplication() {
         // l'architecture distante peut être utilisée immédiatement pour reconstruire
         // les QR, sans écraser les modifications locales actuellement ouvertes dans l'Admin.
         const remoteArchitectureNode = state?.activeOrders?.['ARCHITECTURE'];
-        if (remoteArchitectureNode && typeof syncQRTables === 'function') {
+        if (remoteArchitectureNode) {
             const remoteArchitecture =
                 remoteArchitectureNode?.data ||
                 remoteArchitectureNode;
 
             if (remoteArchitecture && typeof remoteArchitecture === 'object') {
-                syncQRTables({
-                    architecture: remoteArchitecture,
-                    reloadIfEmpty: false,
-                    silent: true
-                }).catch(err =>
-                    console.warn('[iCHEF QR/NFC auto socket]', err)
-                );
+                applyArchitectureToAdmin(remoteArchitecture);
             }
         }
 
@@ -6457,6 +6486,32 @@ async function startAuthenticatedApplication() {
                     syncBtn.style.borderColor = 'var(--border)';
                 };
             }
+        }
+    });
+
+    // ARCHITECTURE DIRECTE — même plan sur ADMIN / PACK-ECO / TELEPHONE
+    socket.on('architectureState', (packet) => {
+        const architecture = packet?.architecture || packet?.data || null;
+        if (!architecture || typeof architecture !== 'object') return;
+        applyArchitectureToAdmin(architecture);
+    });
+
+    socket.on('architecture-changed', (packet) => {
+        const architecture = packet?.architecture || packet?.data || null;
+
+        // Serveur récent : le plan complet est déjà dans l'événement.
+        if (architecture && typeof architecture === 'object') {
+            applyArchitectureToAdmin(architecture);
+            return;
+        }
+
+        // Compatibilité serveur précédent : réclame la dernière architecture MongoDB.
+        if (socket?.connected) {
+            socket.emit('requestArchitectureState', {
+                tenantID: String(tenantID),
+                deviceId: window.ICHEF_SECURITY?.deviceId || '',
+                page: 'CONFIGURATION'
+            });
         }
     });
 
@@ -6510,22 +6565,24 @@ async function startAuthenticatedApplication() {
     socket.on('server-state-changed', (payload) => {
         refreshAuditIfVisible();
 
-        if (
-            String(payload?.tableId || '').toUpperCase() === 'ARCHITECTURE' &&
-            typeof fetchStateFromCloud === 'function'
-        ) {
-            fetchStateFromCloud(true, { preserveStaff: true })
-                .then(() => {
-                    if (typeof syncQRTables === 'function') {
-                        return syncQRTables({
-                            reloadIfEmpty: false,
-                            silent: true
-                        });
-                    }
-                })
-                .catch(err =>
-                    console.warn('[iCHEF QR/NFC auto architecture]', err)
-                );
+        if (String(payload?.tableId || '').toUpperCase() === 'ARCHITECTURE') {
+            if (socket?.connected) {
+                try {
+                    socket.emit('requestArchitectureState', {
+                        tenantID: String(tenantID),
+                        deviceId: window.ICHEF_SECURITY?.deviceId || '',
+                        page: 'CONFIGURATION'
+                    });
+                } catch (_) {}
+            }
+
+            // HTTP reste uniquement le filet de sécurité si un événement Socket se perd.
+            if (typeof fetchStateFromCloud === 'function') {
+                setTimeout(() => {
+                    fetchStateFromCloud(true, { preserveStaff: true })
+                        .catch(err => console.warn('[iCHEF ADMIN architecture fallback]', err));
+                }, 650);
+            }
         }
     });
 }
