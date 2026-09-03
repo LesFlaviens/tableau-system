@@ -2442,7 +2442,6 @@ body.order-open #order, .order-main, .menu-side, .ticket-side, #bottomObservatio
 .tenant-box input { background: #ffffff !important; color: #000000 !important; border: 1px solid #cccccc !important; }
 .login-card .logo { color: #000000 !important; }
 
-<style>
   /* =========================================================
    CORRECTION LISIBILITÉ ÉCRAN CODE PIN (FOND BLANC)
    ========================================================= */
@@ -4080,6 +4079,12 @@ body.ichef-payment-open #sheet .sheet-card{
   background:#fff7e7;color:#6b3f00;font-size:12px;line-height:1.35;font-weight:900;
 }
 .service-payment-lock-banner.ok{border-color:#198754;background:#eefbf4;color:#146c43}
+#summaryClose.ichef-release-confirm{
+  border-color:#c86b00!important;
+  background:#fff7e7!important;
+  color:#7a4700!important;
+  font-weight:1000!important;
+}
 </style>
 
 <style id="bouton-fermer-en-bas">
@@ -4363,7 +4368,9 @@ if (window.ICHEF_PHONE_ONLY_ALLOWED) {
    ========================================================= */
 
 /* CONNEXION SERVER.JS — téléphone = serveur Render, localhost = serveur local */
-const APP_SERVER_URL="https://tableau-system.onrender.com";
+const APP_SERVER_URL=(location.hostname==="localhost"||location.hostname==="127.0.0.1")
+  ? "http://localhost:10000"
+  : "https://tableau-system.onrender.com";
 
 const $=id=>document.getElementById(id);
 const clone=v=>{try{return structuredClone(v)}catch(_){return JSON.parse(JSON.stringify(v))}};
@@ -7165,6 +7172,8 @@ function openSummary(){
     summary.style.setProperty("pointer-events","auto","important");
   }
 
+  ICHEF_SUMMARY_RELEASE_ARMED=false;
+  ICHEF_SUMMARY_RELEASE_SIGNATURE="";
   renderSummary();
 
   /* Même commande + même source serveur que la page 2. */
@@ -7175,6 +7184,8 @@ function openSummary(){
   }
 }
 function closeSummary(){
+  ICHEF_SUMMARY_RELEASE_ARMED=false;
+  ICHEF_SUMMARY_RELEASE_SIGNATURE="";
   STATE.currentScreen="order";
   const label=$("screenLabel");
   if(label)label.textContent="ÉCRAN 2 · PRISE DE COMMANDE";
@@ -11088,6 +11099,153 @@ function openSummaryLineDetail(key){
   );
 }
 
+
+/* =========================================================
+   VALIDATION FINALE TABLE — CROIX EN 2 TEMPS
+   - la même touche ✕ reste en place
+   - 1er appui : CONFIRMER ✕
+   - MODIFIER : retour à la commande
+   - toute modification serveur annule la confirmation armée
+   - confirmation : libère la table puis revient au plan
+   ========================================================= */
+let ICHEF_SUMMARY_RELEASE_ARMED=false;
+let ICHEF_SUMMARY_RELEASE_SIGNATURE="";
+
+function ichefSummaryReleaseSignature(order){
+  if(!order||typeof order!=="object")return "";
+  const items=(order.items||[]).filter(Boolean).map(i=>({
+    id:lineKey(i),
+    q:itemQty(i),
+    cancelled:!!i.cancelled,
+    sent:lineFired(i),
+    ready:lineReady(i),
+    served:lineServed(i),
+    price:itemPrice(i),
+    obs:text(i.obs||i.observation||i.note||""),
+    cooking:text(i.cooking||i.cuisson||"")
+  }));
+  return JSON.stringify({
+    table:STATE.currentTable||"",
+    updatedAt:Number(order.updatedAt||0),
+    status:text(order.status||""),
+    paymentStatus:text(order.paymentStatus||order?.paymentDraft?.status||""),
+    fiscalStatus:text(order?.paymentDraft?.fiscalStatus||""),
+    total:orderTotal(order),
+    items
+  });
+}
+
+function ichefSummaryCanRelease(order){
+  if(!order)return false;
+  /* Une commande totalement annulée / vide (total 0) peut être libérée.
+     Une vente positive ne peut être libérée qu'après fiscalisation du paiement. */
+  return orderTotal(order)<=0.0001 || fiscalOrderFinalized(order);
+}
+
+function ichefResetSummaryRelease(order,notify=false){
+  ICHEF_SUMMARY_RELEASE_ARMED=false;
+  ICHEF_SUMMARY_RELEASE_SIGNATURE=ichefSummaryReleaseSignature(order);
+  const btn=$("summaryClose");
+  if(!btn)return;
+  if(ichefSummaryCanRelease(order)){
+    btn.innerHTML='APPUYER POUR VALIDATION <span aria-hidden="true">✕</span>';
+    btn.dataset.releaseMode="ready";
+  }else{
+    btn.innerHTML='FERMER <span aria-hidden="true">✕</span>';
+    btn.dataset.releaseMode="close";
+  }
+  btn.disabled=false;
+  btn.classList.remove("ichef-release-confirm");
+  if(notify)toast("Commande modifiée · validation finale annulée");
+}
+
+function ichefSyncSummaryReleaseButton(order){
+  const btn=$("summaryClose");
+  if(!btn)return;
+  const signature=ichefSummaryReleaseSignature(order);
+
+  /* Si la cuisine / caisse / un autre terminal change la commande après le
+     premier appui, la confirmation n'est plus valable. */
+  if(ICHEF_SUMMARY_RELEASE_ARMED && signature!==ICHEF_SUMMARY_RELEASE_SIGNATURE){
+    ichefResetSummaryRelease(order,true);
+    return;
+  }
+
+  if(!ICHEF_SUMMARY_RELEASE_ARMED){
+    ichefResetSummaryRelease(order,false);
+  }else{
+    btn.innerHTML='CONFIRMER <span aria-hidden="true">✕</span>';
+    btn.dataset.releaseMode="confirm";
+    btn.classList.add("ichef-release-confirm");
+  }
+}
+
+async function ichefSummaryCloseOrRelease(){
+  if(!STATE.currentTable){
+    closeSummary();
+    return;
+  }
+
+  const order=getOrder(STATE.currentTable)||STATE.currentOrder||ensureOrder(STATE.currentTable);
+
+  /* Tant qu'il reste un montant non encaissé, la croix reste une simple sortie
+     du résumé. On ne contourne jamais la protection fiscale. */
+  if(!ichefSummaryCanRelease(order)){
+    ICHEF_SUMMARY_RELEASE_ARMED=false;
+    closeSummary();
+    return;
+  }
+
+  const signature=ichefSummaryReleaseSignature(order);
+
+  if(!ICHEF_SUMMARY_RELEASE_ARMED){
+    ICHEF_SUMMARY_RELEASE_ARMED=true;
+    ICHEF_SUMMARY_RELEASE_SIGNATURE=signature;
+    const btn=$("summaryClose");
+    if(btn){
+      btn.innerHTML='CONFIRMER <span aria-hidden="true">✕</span>';
+      btn.dataset.releaseMode="confirm";
+      btn.classList.add("ichef-release-confirm");
+    }
+    toast("Appuyez une seconde fois pour confirmer la libération de la table");
+    return;
+  }
+
+  /* Sécurité : si quelque chose a changé depuis le premier appui, on n'exécute
+     jamais une fermeture avec une validation devenue obsolète. */
+  if(signature!==ICHEF_SUMMARY_RELEASE_SIGNATURE){
+    ichefResetSummaryRelease(order,true);
+    return;
+  }
+
+  const btn=$("summaryClose");
+  if(btn){
+    btn.disabled=true;
+    btn.innerHTML='VALIDATION… <span aria-hidden="true">✕</span>';
+  }
+
+  const released=await closeTable({
+    auto:true,
+    reason:orderTotal(order)<=0.0001
+      ?"Commande annulée · validation serveur"
+      :"Fin de service confirmée"
+  });
+
+  if(released){
+    ICHEF_SUMMARY_RELEASE_ARMED=false;
+    ICHEF_SUMMARY_RELEASE_SIGNATURE="";
+    /* closeTable() appelle déjà closeOrder() : écran 1 / plan des tables. */
+    scheduleRender();
+    return;
+  }
+
+  /* En cas d'échec serveur/fiscal, ne jamais laisser un faux état CONFIRMÉ. */
+  const current=STATE.currentTable
+    ?(getOrder(STATE.currentTable)||STATE.currentOrder||order)
+    :order;
+  ichefResetSummaryRelease(current,false);
+}
+
 function renderSummary(){
   if(!STATE.currentTable)return;
 
@@ -11255,6 +11413,8 @@ function renderSummary(){
       ?`OUVRIR LE PAIEMENT<span class="summary-action-sub">Service confirmé</span>`
       :`PAIEMENT VERROUILLÉ<span class="summary-action-sub">SERVICE EFFECTUÉ obligatoire</span>`;
   }
+
+  ichefSyncSummaryReleaseButton(order);
 
   $("summaryContent").querySelectorAll("[data-summary-line]").forEach(el=>{
     el.addEventListener("click",()=>openSummaryLineDetail(el.dataset.summaryLine));
@@ -11847,8 +12007,12 @@ $("btnOrderMore").onclick=openOrderMore;
 $("btnObsFast").onclick=openObservationFast;
 $("btnCooking").onclick=openCooking;
 $("btnAllergyFast").onclick=openAllergyFast;
-$("summaryClose").onclick=closeSummary;
-$("summaryModify").onclick=closeSummary;
+$("summaryClose").onclick=ichefSummaryCloseOrRelease;
+$("summaryModify").onclick=()=>{
+  ICHEF_SUMMARY_RELEASE_ARMED=false;
+  ICHEF_SUMMARY_RELEASE_SIGNATURE="";
+  closeSummary();
+};
 $("summaryKitchen").onclick=async()=>{await sendKitchen();renderSummary()};
 
 // Modification ici : Le bouton de la page RÉSUMÉ force le service global
@@ -12708,183 +12872,7 @@ setTimeout(() => {
     }
 }, 1000);
 </script>
-  </body>
-  <!-- =========================================================
-     RESTAURATION DU DOCK BAS À 3 LIGNES (STYLE CAPTURE)
-     ========================================================= -->
-<style id="dock-bas-3-lignes">
-/* 1. Assurer que le dock s'affiche et s'adapte à son contenu */
-body.order-open #bottomObservationBar {
-    display: flex !important;
-    flex-direction: column !important;
-    gap: 8px !important;
-    padding: 10px 10px calc(10px + var(--safe-bottom)) !important;
-    height: auto !important;
-    min-height: auto !important;
-    background: #f6f7f7 !important;
-    border-top: 3px solid #111 !important;
-    border-radius: 16px 16px 0 0 !important; /* Arrondis en haut uniquement */
-}
 
-/* 2. Style commun à toutes les rangées */
-#bottomObservationBar .order-dock-row {
-    display: grid !important;
-    grid-template-columns: 1fr 1fr !important;
-    gap: 8px !important;
-    width: 100% !important;
-}
-
-/* 3. Style commun à tous les boutons et à la carte de total */
-#bottomObservationBar button,
-#bottomObservationBar .order-total-card {
-    min-height: 60px !important;
-    height: auto !important;
-    margin: 0 !important;
-    border: 3px solid #111 !important;
-    border-radius: 12px !important;
-    background: #fff !important;
-    color: #111 !important;
-    font-size: 18px !important;
-    font-weight: 1000 !important;
-    letter-spacing: 0.5px !important;
-    text-transform: uppercase !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-}
-
-/* 4. Style spécifique pour le bloc TOTAL (à gauche, Ligne 2) */
-#bottomObservationBar .order-total-card {
-    justify-content: space-between !important;
-    padding: 0 15px !important;
-}
-#bottomObservationBar .order-total-label {
-    font-size: 14px !important;
-    font-weight: 1000 !important;
-    color: #111 !important;
-}
-#bottomTableTotal {
-    font-size: 24px !important;
-    color: #d39b13 !important; /* Couleur or/jaune comme sur l'image */
-}
-
-/* 5. Effet de clic sur les boutons */
-#bottomObservationBar button:active {
-    transform: scale(0.98) !important;
-    background: #111 !important;
-    color: #fff !important;
-}
-
-/* 6. On annule l'ancien style qui forçait la disposition 50/50 */
-#bottomObservation, #bottomFermer {
-    width: 100% !important;
-    flex: unset !important;
-}
-
-/* 7. On ajuste le padding bas de la zone principale pour ne pas cacher les derniers articles */
-body.order-open #order {
-    padding-bottom: 240px !important;
-}
-</style>
-
-<script id="reconstruction-html-dock">
-setTimeout(() => {
-    const dock = document.getElementById("bottomObservationBar");
-    if (dock) {
-        // On reconstruit le HTML exact pour garantir les 3 lignes dans le bon ordre
-        dock.innerHTML = `
-            <!-- LIGNE 1 : OBSERVER / FERMER -->
-            <div class="order-dock-row order-dock-close">
-                <button id="bottomObservation" type="button">OBSERVER</button>
-                <button id="bottomFermer" type="button">FERMER</button>
-            </div>
-            
-            <!-- LIGNE 2 : TOTAL / À PAYER -->
-            <div class="order-dock-row order-dock-payment">
-                <div class="order-total-card">
-                    <span class="order-total-label">TOTAL TABLE</span>
-                    <strong id="bottomTableTotal">0,00 CHF</strong>
-                </div>
-                <button id="btnBottomPayment" type="button">À PAYER</button>
-            </div>
-            
-            <!-- LIGNE 3 : RÉSUMÉ / SERVICE -->
-            <div class="order-dock-row order-dock-service">
-                <button id="btnBottomSummary" type="button">RÉSUMÉ</button>
-                <button id="btnBottomService" type="button">SERVICE</button>
-            </div>
-        `;
-
-        // On réattache les événements aux nouveaux boutons
-        const btnObs = document.getElementById("bottomObservation");
-        if (btnObs && typeof window.openTableStatusModal === "function") {
-            btnObs.addEventListener("click", window.openTableStatusModal);
-        } else if (btnObs && typeof window.openObservationFast === "function") {
-             btnObs.addEventListener("click", window.openObservationFast);
-        }
-
-        const btnFermer = document.getElementById("bottomFermer");
-        if (btnFermer && typeof closeOrder === "function") {
-            btnFermer.addEventListener("click", closeOrder);
-        }
-
-        const btnPayment = document.getElementById("btnBottomPayment");
-        if (btnPayment && typeof openPayment === "function") {
-            btnPayment.addEventListener("click", openPayment);
-        }
-
-        const btnSummary = document.getElementById("btnBottomSummary");
-        if (btnSummary && typeof openSummary === "function") {
-            btnSummary.addEventListener("click", openSummary);
-        }
-
-        const btnService = document.getElementById("btnBottomService");
-        if (btnService && typeof markTableServed === "function") {
-            btnService.addEventListener("click", markTableServed);
-        }
-    }
-}, 1500); // Exécution retardée pour être certain d'écraser les autres scripts
-</script>
-  <!-- =========================================================
-     REMPLACEMENT DU BOUTON "RETOUR" PAR "PLAN" (ALLER-RETOUR)
-     ========================================================= -->
-<script id="bouton-retour-vers-plan">
-setTimeout(() => {
-    const btnRetour = document.getElementById("btnUndoFast");
-    if (btnRetour) {
-        // On clone le bouton pour le déconnecter du système d'annulation (qui le grisait)
-        const btnPlan = btnRetour.cloneNode(true);
-        btnPlan.id = "btnGoToPlanTop"; // Nouvel ID pour éviter que le moteur ne le désactive
-        
-        // Nouveau style et texte
-        btnPlan.innerHTML = "🗺️ PLAN";
-        btnPlan.disabled = false;
-        btnPlan.style.opacity = "1";
-        btnPlan.style.background = "#ffffff";
-        btnPlan.style.color = "#111111";
-        btnPlan.style.border = "2px solid #111111";
-        btnPlan.style.fontWeight = "950";
-        btnPlan.style.cursor = "pointer";
-        
-        // Remplacement dans l'interface
-        btnRetour.parentNode.replaceChild(btnPlan, btnRetour);
-        
-        // Action : Retourner au plan de salle instantanément
-        btnPlan.addEventListener("click", () => {
-            if (typeof closeSheet === "function") closeSheet();
-            if (typeof closeOrder === "function") closeOrder();
-            setTimeout(() => {
-                if (typeof window.openPadServiceHome === "function") {
-                    window.openPadServiceHome();
-                }
-            }, 0);
-        });
-    }
-}, 1500); // Exécution retardée pour s'assurer d'écraser l'ancien comportement
-</script>
- <!-- =========================================================
-     SYMBIOSE TÉLÉPHONE : BOUTON ACTION FLOTTANT + DOCK FIXE 2 LIGNES
-     ========================================================= -->
 <style id="symbiose-mobile-bouton-dessus">
 /* 1. DOCK BAS FIXE À 2 LIGNES */
 body.order-open #bottomObservationBar {
@@ -12957,10 +12945,11 @@ body.order-open #bottomObservationBar {
 
 
 /* 2. LE BOUTON D'ACTION DANS LA PAGE (TICKET FOOT) */
-/* On réaffiche le bloc qui contient le bouton dynamique */
 body.order-open .ticket-foot {
     display: block !important;
     padding: 10px !important;
+    /* On ajoute une ÉNORME marge en bas pour pouvoir scroller et voir le bouton au-dessus du dock */
+    padding-bottom: 220px !important; 
     background: transparent !important;
     border: none !important;
 }
@@ -12981,13 +12970,15 @@ body.order-open .send-btn {
     border-radius: 12px !important;
     border: 3px solid #111 !important;
     margin: 0 !important;
+    /* On ajoute une petite ombre pour qu'il se détache du fond en défilant */
+    box-shadow: 0 4px 10px rgba(0,0,0,0.1) !important;
 }
 
 
 /* 3. PROTECTIONS VISUELLES POUR LE TÉLÉPHONE */
-/* On libère l'espace exact pour que le dock ne cache JAMAIS le bouton vert */
+/* On enlève le padding de order pour le mettre sur le ticket-foot */
 body.order-open #order {
-    padding-bottom: 160px !important; 
+    padding-bottom: 0px !important; 
 }
 
 /* On remonte les notifications (Toasts) pour qu'elles s'affichent AU-DESSUS du dock */
@@ -13060,501 +13051,6 @@ setTimeout(() => {
     }
 }, 1500);
 </script>
-<!-- =========================================================
-     FIX : ANNULATION "DOUBLE-TAP" SANS POPUP + AUTO-FERMETURE
-     ========================================================= -->
-<script id="fix-annulation-invisible-auto-close">
-setTimeout(() => {
-    // 1. Rendre les articles annulés INVISIBLES sur le ticket
-    if (typeof window.renderTicket === "function") {
-        window.renderTicket = function() {
-            const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
-            
-            // On retire visuellement les plats annulés
-            const items = (o.items || []).filter(i => i && !i.cancelled);
 
-            const ticketTotal = document.getElementById("ticketTotal");
-            if(ticketTotal) ticketTotal.textContent = money(orderTotal(o));
-
-            const ticket = document.getElementById("ticket");
-            if(ticket) {
-                ticket.innerHTML = items.length
-                    ? items.map(i => {
-                        const key = lineKey(i);
-                        const q = itemQty(i);
-                        const seat = itemSeat(i);
-                        const sent = lineFired(i);
-                        const servedNow = lineServed(i);
-                        const readyNow = lineReady(i) && !servedNow && !i.cancelled;
-                        const state = servedNow
-                            ? '<span class="line-state">SERVI</span>'
-                            : readyNow
-                                ? '<span class="line-state ready">PRÊT</span>'
-                                : sent
-                                    ? '<span class="line-state sent">ENVOYÉ</span>'
-                                    : '<span class="line-state">BROUILLON</span>';
-
-                        const cooking = text(i.cooking) ? `<span class="cooking-tag">🌡️ ${esc(i.cooking)}</span>` : "";
-                        const seatBadge = seat ? seatBadgeHTML(seat) : '<span class="seat-badge">CTR</span>';
-                        const obs = text(i.obs);
-                        const critical = i.allergyCritical === true || /allerg/i.test(obs);
-
-                        const controls = sent
-                            ? `<button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
-                               <button data-line="${esc(key)}" data-act="cooking" title="Cuisson">🌡️</button>
-                               <button data-line="${esc(key)}" data-act="delete" style="width:auto; font-weight:1000; color:#ff5368; padding:0 10px; transition:all 0.2s;">ANN.</button>`
-                            : `<button data-line="${esc(key)}" data-act="minus">−</button>
-                               <button data-line="${esc(key)}" data-act="plus">+</button>
-                               <button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
-                               <button data-line="${esc(key)}" data-act="delete" style="width:auto; padding:0 10px; color:#ff5368; font-weight:1000; transition:all 0.2s;">×</button>`;
-
-                        return `<div class="ticket-row ${sent?"sent-lock":""} ${readyNow?"ready-to-serve":""} ${servedNow?"served-line":""}" data-ready-line="${readyNow?esc(key):""}">
-                            <div class="ticket-left" data-line="${esc(key)}" data-act="obs" style="cursor:pointer;" title="${readyNow?"Maintenir 0,9 s pour valider SERVI":"Tap pour Observation/Allergie"}">
-                                <div class="ticket-name">
-                                    ${seatBadge}${esc(itemName(i))}
-                                    ${destinationTagHTML(i)}
-                                    ${cooking}
-                                    ${state}
-                                </div>
-                                <div class="ticket-meta">x${q} · ${esc(i.course||i.category||"")}${readyNow?" · maintien 0,9 s pour valider servi":""}</div>
-                                ${obs?`<span class="ticket-obs ${critical?"critical":""}">${critical?"🛑 ":"⚠️ "}${esc(obs)}</span>`:""}
-                            </div>
-                            <div class="ticket-right">
-                                <div class="ticket-price">${money(itemPrice(i)*q)}</div>
-                                <div class="qtybar">${controls}</div>
-                            </div>
-                        </div>`;
-                    }).join("")
-                    : '<div class="empty-state">Choisissez C1…C9 puis touchez les produits.<br><b>1 tap = ajout immédiat.</b></div>';
-            }
-
-            if (typeof renderSendButton === "function") renderSendButton(o);
-            if (typeof updateUndoButton === "function") updateUndoButton();
-        };
-    }
-
-    // 2. Logique d'annulation SILENCIEUSE (sans popup)
-    window.cancelSentLineFast = async function(item) {
-        const o = ensureOrder(STATE.currentTable);
-        const target = o.items.find(x => lineKey(x) === lineKey(item));
-        if(!target) return false;
-
-        const motif = "Correction / Annulation rapide"; // Motif automatique
-
-        target.originalPrice = target.originalPrice !== undefined ? target.originalPrice : itemPrice(target);
-        target.p = 0;
-        target.price = 0;
-        target.isOffered = true;
-        target.done = true;
-        target.cancelled = true;
-        target.cancelReason = motif;
-        target.cancelledAt = Date.now();
-        target.cancelledBy = STATE.role || "SERVEUR";
-        target.cancelDeviceId = STATE.deviceId;
-        target.sequenceStatus = "CANCELLED";
-        target.obs = `❌ ANNULÉ (${motif})${target.obs ? " | " + target.obs : ""}`;
-
-        const ok = await saveCurrent(o, "Annulation article déjà envoyé", {immediate: true});
-        if(ok){
-            if (typeof productionAlert === "function") await productionAlert(target, "ANNULATION", motif);
-            toast("🚨 Annulation transmise au poste");
-
-            // VÉRIFICATION AUTO-FERMETURE
-            const activeItems = o.items.filter(x => !x.cancelled);
-            if(activeItems.length === 0) {
-                o.isArchived = true;
-                o.status = "CLOSED";
-                await saveCurrent(o, "Table libérée (vide)", {immediate: true});
-                if (typeof closeOrder === "function") closeOrder(); 
-                toast("Table libérée (commande vide)");
-            } else {
-                renderTicket();
-                scheduleRender();
-            }
-        }
-        return ok;
-    };
-
-    // 3. Interception du clic pour le DOUBLE-TAP de sécurité
-    if (typeof window.mutateLine === "function") {
-        const originalMutateLine = window.mutateLine;
-        window.mutateLine = async function(key, action) {
-            if(!STATE.currentTable) return;
-
-            const o = ensureOrder(STATE.currentTable);
-            const i = o.items.find(x => lineKey(x) === key);
-            if(!i) return;
-
-            STATE.lastLineKey = key;
-
-            // MÉCANIQUE DU BOUTON DE SUPPRESSION (DOUBLE TAP)
-            if (action === "delete") {
-                const btn = document.querySelector(`button[data-line="${key}"][data-act="delete"]`);
-                
-                // Si c'est le PREMIER clic : on change le texte pour demander confirmation
-                if (btn && btn.dataset.confirming !== "true") {
-                    btn.dataset.confirming = "true";
-                    btn.dataset.originalText = btn.innerHTML;
-                    btn.innerHTML = "CONFIRMER";
-                    btn.style.background = "#ff5368"; // Rouge vif
-                    btn.style.color = "#ffffff";
-                    
-                    // Si le serveur change d'avis et ne fait rien, on annule au bout de 3 secondes
-                    btn.confirmTimeout = setTimeout(() => {
-                        if (btn && btn.dataset.confirming === "true") {
-                            btn.dataset.confirming = "false";
-                            btn.innerHTML = btn.dataset.originalText;
-                            btn.style.background = "";
-                            btn.style.color = "#ff5368";
-                        }
-                    }, 3000);
-                    return; // On arrête là (pas de suppression)
-                } 
-                // Si c'est le SECOND clic : on supprime vraiment
-                else if (btn && btn.dataset.confirming === "true") {
-                    clearTimeout(btn.confirmTimeout);
-                    
-                    if (lineFired(i)) {
-                        // Plat envoyé -> Annulation silencieuse
-                        await window.cancelSentLineFast(i);
-                    } else {
-                        // Brouillon -> Suppression simple
-                        const before = cloneOrderForUndo(o);
-                        o.items = o.items.filter(x => x !== i);
-                        pushUndo(`Retrait ${itemName(i)}`, before);
-                        await saveCurrent(o, "Retrait article", {delay: 120});
-                        
-                        // VÉRIFICATION AUTO-FERMETURE
-                        const activeItems = o.items.filter(x => !x.cancelled);
-                        if(activeItems.length === 0) {
-                            o.isArchived = true;
-                            o.status = "CLOSED";
-                            await saveCurrent(o, "Table libérée (vide)", {immediate: true});
-                            if (typeof closeOrder === "function") closeOrder(); 
-                        } else {
-                            renderTicket();
-                        }
-                    }
-                    return;
-                }
-            }
-
-            // GESTION DU "SERVI" (pour que le carré disparaisse correctement)
-            if (action === "serve") {
-                const before = cloneOrderForUndo(o);
-                i.served = true;
-                i.isServed = true;
-                i.servedAt = Date.now();
-                i.servedBy = STATE.role || "SERVEUR";
-                i.sequenceStatus = "SERVED";
-                i.status = "served";
-                i.productionStatus = "served";
-                i.done = false;
-                i.ready = false;
-                i.isReady = false;
-                i.readyAt = null;
-
-                pushUndo(`Plat servi : ${itemName(i)}`, before);
-                const savePromise = saveCurrent(o, "Plat marqué comme servi", {immediate: true});
-                renderTicket();
-                scheduleRender();
-                if (typeof updateToolBadges === "function") updateToolBadges();
-                const ok = await savePromise;
-                toast(ok ? "✓ Plat servi" : "✓ Plat servi · synchronisation en attente", !ok);
-                return;
-            }
-
-            // LOGIQUE CLASSIQUE POUR LES AUTRES BOUTONS (plus, minus, obs, cooking)
-            if (action === "plus") {
-                const before = cloneOrderForUndo(o);
-                i.qty = itemQty(i) + 1;
-                pushUndo(`Ajout +1 ${itemName(i)}`, before);
-                await saveCurrent(o, "Quantité +1", {delay: 120});
-                renderTicket();
-                return;
-            }
-            
-            if (action === "minus") {
-                if (lineFired(i)) {
-                    toast("Déjà envoyé : utilisez le bouton ANN. pour annuler", true);
-                    return;
-                }
-                const before = cloneOrderForUndo(o);
-                i.qty = Math.max(0, itemQty(i) - 1);
-                if(i.qty <= 0) {
-                    o.items = o.items.filter(x => x !== i);
-                    const activeItems = o.items.filter(x => !x.cancelled);
-                    if(activeItems.length === 0) {
-                        o.isArchived = true;
-                        o.status = "CLOSED";
-                        await saveCurrent(o, "Table libérée (vide)", {immediate: true});
-                        if (typeof closeOrder === "function") closeOrder(); 
-                        return;
-                    }
-                }
-                pushUndo(`Retrait -1 ${itemName(i)}`, before);
-                await saveCurrent(o, "Quantité -1", {delay: 120});
-                renderTicket();
-                return;
-            }
-
-            if (action === "obs") { if (typeof openLineObservation === "function") openLineObservation(key); return; }
-            if (action === "cooking") { if (typeof openLineCooking === "function") openLineCooking(key); return; }
-        };
-    }
-}, 2000);
-</script>
-<script id="fix-annulation-invisible-auto-close-v3">
-setTimeout(() => {
-    // Variable globale pour stocker l'état "en attente de confirmation" des boutons
-    window.pendingCancellations = window.pendingCancellations || {};
-
-    // 1. Rendre les articles annulés INVISIBLES sur le ticket + Gérer le bouton Rouge
-    if (typeof window.renderTicket === "function") {
-        window.renderTicket = function() {
-            const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
-            
-            // FILTRE MAGIQUE : on retire visuellement les plats annulés de l'écran
-            const items = (o.items || []).filter(i => i && !i.cancelled);
-
-            const ticketTotal = document.getElementById("ticketTotal");
-            if(ticketTotal) ticketTotal.textContent = money(orderTotal(o));
-
-            const ticket = document.getElementById("ticket");
-            if(ticket) {
-                ticket.innerHTML = items.length
-                    ? items.map(i => {
-                        const key = lineKey(i);
-                        const q = itemQty(i);
-                        const seat = itemSeat(i);
-                        const sent = lineFired(i);
-                        const servedNow = lineServed(i);
-                        const readyNow = lineReady(i) && !servedNow && !i.cancelled;
-                        const state = servedNow
-                            ? '<span class="line-state">SERVI</span>'
-                            : readyNow
-                                ? '<span class="line-state ready">PRÊT</span>'
-                                : sent
-                                    ? '<span class="line-state sent">ENVOYÉ</span>'
-                                    : '<span class="line-state">BROUILLON</span>';
-
-                        const cooking = text(i.cooking) ? `<span class="cooking-tag">🌡️ ${esc(i.cooking)}</span>` : "";
-                        const seatBadge = seat ? seatBadgeHTML(seat) : '<span class="seat-badge">CTR</span>';
-                        const obs = text(i.obs);
-                        const critical = i.allergyCritical === true || /allerg/i.test(obs);
-
-                        // GESTION VISUELLE DU DOUBLE TAP
-                        const isConfirming = window.pendingCancellations[key];
-                        const deleteBtnText = isConfirming ? "CONFIRMER" : (sent ? "ANN." : "×");
-                        const deleteBtnStyle = isConfirming 
-                            ? "width:auto; font-weight:1000; color:#ffffff; background:#ff5368; padding:0 10px; border-color:#ff5368; transition:all 0.2s;" 
-                            : (sent ? "width:auto; font-weight:1000; color:#ff5368; padding:0 10px; transition:all 0.2s;" : "width:auto; padding:0 10px; color:#ff5368; font-weight:1000; transition:all 0.2s;");
-
-                        const controls = sent
-                            ? `<button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
-                               <button data-line="${esc(key)}" data-act="cooking" title="Cuisson">🌡️</button>
-                               <button data-line="${esc(key)}" data-act="delete" style="${deleteBtnStyle}">${deleteBtnText}</button>`
-                            : `<button data-line="${esc(key)}" data-act="minus">−</button>
-                               <button data-line="${esc(key)}" data-act="plus">+</button>
-                               <button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
-                               <button data-line="${esc(key)}" data-act="delete" style="${deleteBtnStyle}">${deleteBtnText}</button>`;
-
-                        return `<div class="ticket-row ${sent?"sent-lock":""} ${readyNow?"ready-to-serve":""} ${servedNow?"served-line":""}" data-ready-line="${readyNow?esc(key):""}">
-                            <div class="ticket-left" data-line="${esc(key)}" data-act="obs" style="cursor:pointer;" title="${readyNow?"Maintenir 0,9 s pour valider SERVI":"Tap pour Observation/Allergie"}">
-                                <div class="ticket-name">
-                                    ${seatBadge}${esc(itemName(i))}
-                                    ${destinationTagHTML(i)}
-                                    ${cooking}
-                                    ${state}
-                                </div>
-                                <div class="ticket-meta">x${q} · ${esc(i.course||i.category||"")}${readyNow?" · maintien 0,9 s pour valider servi":""}</div>
-                                ${obs?`<span class="ticket-obs ${critical?"critical":""}">${critical?"🛑 ":"⚠️ "}${esc(obs)}</span>`:""}
-                            </div>
-                            <div class="ticket-right">
-                                <div class="ticket-price">${money(itemPrice(i)*q)}</div>
-                                <div class="qtybar">${controls}</div>
-                            </div>
-                        </div>`;
-                    }).join("")
-                    : '<div class="empty-state">Choisissez C1…C9 puis touchez les produits.<br><b>1 tap = ajout immédiat.</b></div>';
-            }
-
-            if (typeof renderSendButton === "function") renderSendButton(o);
-            if (typeof updateUndoButton === "function") updateUndoButton();
-        };
-        
-        // Forcer le nettoyage initial de l'écran
-        if (STATE && STATE.currentTable) renderTicket();
-    }
-
-    // 2. Fonction d'annulation réseau SANS POPUP
-    window.cancelSentLineFast = async function(item) {
-        const o = ensureOrder(STATE.currentTable);
-        const target = o.items.find(x => lineKey(x) === lineKey(item));
-        if(!target) return false;
-
-        const motif = "Correction express"; // Motif automatique silencieux
-
-        target.originalPrice = target.originalPrice !== undefined ? target.originalPrice : itemPrice(target);
-        target.p = 0;
-        target.price = 0;
-        target.isOffered = true;
-        target.done = true;
-        target.cancelled = true;
-        target.cancelReason = motif;
-        target.cancelledAt = Date.now();
-        target.cancelledBy = STATE.role || "SERVEUR";
-        target.cancelDeviceId = STATE.deviceId;
-        target.sequenceStatus = "CANCELLED";
-        target.obs = `❌ ANNULÉ (${motif})${target.obs ? " | " + target.obs : ""}`;
-
-        const ok = await saveCurrent(o, "Annulation article envoyée", {immediate: true});
-        if(ok){
-            if (typeof productionAlert === "function") await productionAlert(target, "ANNULATION", motif);
-            toast("🚨 Annulation transmise");
-
-            // VÉRIFICATION AUTO-FERMETURE SI LA TABLE EST VIDE
-            const activeItems = o.items.filter(x => !x.cancelled);
-            if(activeItems.length === 0) {
-                o.isArchived = true;
-                o.status = "CLOSED";
-                await saveCurrent(o, "Table libérée", {immediate: true});
-                if (typeof closeOrder === "function") closeOrder(); 
-                toast("Table libérée (commande vide)");
-            } else {
-                renderTicket();
-                scheduleRender();
-            }
-        }
-        return ok;
-    };
-
-    // 3. Interception de "mutateLine" pour intégrer la mécanique Double-Tap
-    if (typeof window.mutateLine === "function") {
-        const originalMutateLine = window.mutateLine;
-        window.mutateLine = async function(key, action) {
-            if(!STATE.currentTable) return;
-
-            const o = ensureOrder(STATE.currentTable);
-            const i = o.items.find(x => lineKey(x) === key);
-            if(!i) return;
-
-            STATE.lastLineKey = key;
-
-            // ===============================================
-            // GESTION DU DOUBLE TAP (Bouton Annulation)
-            // ===============================================
-            if (action === "delete") {
-                // DEUXIÈME CLIC : L'utilisateur a cliqué sur "CONFIRMER"
-                if (window.pendingCancellations[key]) {
-                    // Nettoyer le timer
-                    clearTimeout(window.pendingCancellations[key].timer);
-                    delete window.pendingCancellations[key];
-
-                    // Exécuter l'annulation
-                    if (lineFired(i)) {
-                        // Annulation réseau silencieuse
-                        await window.cancelSentLineFast(i);
-                    } else {
-                        // Annulation simple d'un brouillon
-                        const before = cloneOrderForUndo(o);
-                        o.items = o.items.filter(x => x !== i);
-                        pushUndo(`Retrait ${itemName(i)}`, before);
-                        await saveCurrent(o, "Retrait article", {delay: 120});
-                        
-                        // Check table vide
-                        const activeItems = o.items.filter(x => !x.cancelled);
-                        if(activeItems.length === 0) {
-                            o.isArchived = true;
-                            o.status = "CLOSED";
-                            await saveCurrent(o, "Table libérée", {immediate: true});
-                            if (typeof closeOrder === "function") closeOrder(); 
-                        } else {
-                            renderTicket();
-                        }
-                    }
-                    return;
-                } 
-                // PREMIER CLIC : Mettre le bouton en mode "CONFIRMER"
-                else {
-                    window.pendingCancellations[key] = {
-                        timer: setTimeout(() => {
-                            // Au bout de 3s, on annule l'état de confirmation si le serveur n'a pas re-cliqué
-                            delete window.pendingCancellations[key];
-                            renderTicket(); // Remet le bouton à son état normal "ANN."
-                        }, 3000)
-                    };
-                    renderTicket(); // Force le re-rendu pour afficher "CONFIRMER" en rouge
-                    return;
-                }
-            }
-
-            // ===============================================
-            // GESTION DU "SERVI"
-            // ===============================================
-            if (action === "serve") {
-                const before = cloneOrderForUndo(o);
-                i.served = true;
-                i.isServed = true;
-                i.servedAt = Date.now();
-                i.servedBy = STATE.role || "SERVEUR";
-                i.sequenceStatus = "SERVED";
-                i.status = "served";
-                i.productionStatus = "served";
-                i.done = false;
-                i.ready = false;
-                i.isReady = false;
-                i.readyAt = null;
-
-                pushUndo(`Plat servi : ${itemName(i)}`, before);
-                const savePromise = saveCurrent(o, "Plat marqué comme servi", {immediate: true});
-                renderTicket();
-                scheduleRender();
-                if (typeof updateToolBadges === "function") updateToolBadges();
-                const ok = await savePromise;
-                toast(ok ? "✓ Plat servi" : "✓ Plat servi · synchronisation en attente", !ok);
-                return;
-            }
-
-            // AUTRES ACTIONS (plus, minus, obs, cooking)
-            if (action === "plus") {
-                const before = cloneOrderForUndo(o);
-                i.qty = itemQty(i) + 1;
-                pushUndo(`Ajout +1 ${itemName(i)}`, before);
-                await saveCurrent(o, "Quantité +1", {delay: 120});
-                renderTicket();
-                return;
-            }
-            
-            if (action === "minus") {
-                if (lineFired(i)) {
-                    toast("Déjà envoyé : utilisez ANN. pour annuler", true);
-                    return;
-                }
-                const before = cloneOrderForUndo(o);
-                i.qty = Math.max(0, itemQty(i) - 1);
-                if(i.qty <= 0) {
-                    o.items = o.items.filter(x => x !== i);
-                    const activeItems = o.items.filter(x => !x.cancelled);
-                    if(activeItems.length === 0) {
-                        o.isArchived = true;
-                        o.status = "CLOSED";
-                        await saveCurrent(o, "Table libérée (vide)", {immediate: true});
-                        if (typeof closeOrder === "function") closeOrder(); 
-                        return;
-                    }
-                }
-                pushUndo(`Retrait -1 ${itemName(i)}`, before);
-                await saveCurrent(o, "Quantité -1", {delay: 120});
-                renderTicket();
-                return;
-            }
-
-            if (action === "obs") { if (typeof openLineObservation === "function") openLineObservation(key); return; }
-            if (action === "cooking") { if (typeof openLineCooking === "function") openLineCooking(key); return; }
-        };
-    }
-}, 2000);
-</script>
-  </body>
+</body>
 </html>
