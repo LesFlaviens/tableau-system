@@ -4934,15 +4934,40 @@ function isArchivedOrder(order){
     status==="ANNULÉ_OU_SUPPRIMÉ" ||
     status==="ARCHIVED";
 }
+function ichefOrderPayload(value){
+  if(!value||typeof value!=="object")return null;
+  const candidates=[
+    value,
+    value.data,
+    value.order,
+    value.commande,
+    value.currentOrder,
+    value.snapshot,
+    value.fullOrderSnapshot,
+    value.orderSnapshot,
+    value.ticket
+  ];
+  for(const raw of candidates){
+    if(!raw||typeof raw!=="object"||Array.isArray(raw))continue;
+    const items=
+      Array.isArray(raw.items)?raw.items:
+      Array.isArray(raw.lines)?raw.lines:
+      Array.isArray(raw.articles)?raw.articles:
+      Array.isArray(raw.orderItems)?raw.orderItems:
+      Array.isArray(raw.ticketItems)?raw.ticketItems:
+      null;
+    if(items){
+      return normalizeCompatOrder({...raw,items});
+    }
+  }
+  return null;
+}
 function normalizeServerOrdersMap(activeOrders){
   const source=activeOrders&&typeof activeOrders==="object"?activeOrders:{};
   const out={};
   Object.entries(source).forEach(([key,value])=>{
-    if(value&&typeof value==="object"&&Array.isArray(value.items)){
-      out[key]=normalizeCompatOrder(value);
-    }else{
-      out[key]=value;
-    }
+    const payload=ichefOrderPayload(value);
+    out[key]=payload||value;
   });
   return out;
 }
@@ -5677,9 +5702,22 @@ async function connectSocket(){
       applyServerState(s,"socket");
     });
 
-    /* Événements génériques du nouveau server.js : tous les écrans restent en symbiose. */
+    /* Événements génériques du server.js : symbiose globale + relecture dédiée
+       de la table ouverte. Un signal T3 ne doit jamais rester seulement visuel. */
     socket.on("server-state-changed",evt=>{
-      scheduleSymbioseSync(text(evt?.source||evt?.tableId||"server-state-changed"),180);
+      const changedTable=text(evt?.tableId||"");
+      scheduleSymbioseSync(text(evt?.source||changedTable||"server-state-changed"),70);
+      if(STATE.currentTable && changedTable && ichefTableToken(changedTable)===ichefTableToken(STATE.currentTable)){
+        const opened=STATE.currentTable;
+        setTimeout(async()=>{
+          if(STATE.currentTable!==opened||document.hidden||!navigator.onLine)return;
+          const fresh=await ichefRefreshOpenedTable(opened,"server-state-changed:"+changedTable);
+          if(STATE.currentTable!==opened||!fresh)return;
+          STATE.currentOrder=clone(fresh);
+          scheduleRender();
+          if(document.body.classList.contains("summary-open"))renderSummary();
+        },120);
+      }
     });
 
     socket.on("architecture-changed",evt=>{
@@ -5820,8 +5858,62 @@ window.addEventListener("pageshow",event=>{
 },{passive:true});
 
 /* ---------------- DATA NORMALIZATION ---------------- */
+function ichefArchitectureLabelKey(value){
+  return text(value)
+    .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+    .toUpperCase().replace(/\s+/g," ").trim();
+}
 function normalizeArchitecture(){
-  const raw=unwrap(STATE.activeOrders.ARCHITECTURE)||{};const rooms=Array.isArray(raw.rooms)&&raw.rooms.length?raw.rooms.map(text).filter(Boolean):["Salle Principale"];const tables=Array.isArray(raw.tables)?raw.tables.filter(Boolean).map(t=>({...t,label:text(t.label||t.name||t.id),room:text(t.room||rooms[0])})).filter(t=>t.label):[];const zones=Array.isArray(raw.zones)?raw.zones.filter(Boolean).map(z=>({...z,label:text(z.label||z.name||z.id),room:text(z.room||rooms[0])})):[];STATE.architecture={rooms,tables,zones};STATE.rooms=rooms;STATE.tables=tables;STATE.zones=zones;if(!STATE.rooms.includes(STATE.room))STATE.room=STATE.rooms[0];
+  const raw=unwrap(STATE.activeOrders.ARCHITECTURE)||{};
+  const roomSource=Array.isArray(raw.rooms)&&raw.rooms.length?raw.rooms:["Salle Principale"];
+  const rooms=[];
+  const seenRooms=new Set();
+  roomSource.map(text).filter(Boolean).forEach(r=>{
+    const k=ichefArchitectureLabelKey(r);
+    if(!k||seenRooms.has(k))return;
+    seenRooms.add(k);rooms.push(r);
+  });
+  if(!rooms.length)rooms.push("Salle Principale");
+
+  const rawTables=Array.isArray(raw.tables)?raw.tables.filter(Boolean):[];
+  const tableMap=new Map();
+  const duplicateLabels=[];
+  rawTables.forEach((t,index)=>{
+    const label=text(t.label||t.name||t.id);
+    if(!label)return;
+    const key=ichefArchitectureLabelKey(label);
+    if(!key)return;
+    const normalized={...t,label,room:text(t.room||rooms[0])||rooms[0]};
+    if(!tableMap.has(key)){
+      tableMap.set(key,normalized);
+      return;
+    }
+    duplicateLabels.push(label);
+    /* Conserver la première identité de table, mais compléter les champs manquants
+       avec la copie suivante afin de ne pas perdre coordonnées / zone / capacité. */
+    const first=tableMap.get(key);
+    Object.entries(normalized).forEach(([k,v])=>{
+      if((first[k]===undefined||first[k]===null||first[k]==="") && v!==undefined && v!==null && v!=="")first[k]=v;
+    });
+  });
+  if(duplicateLabels.length){
+    console.warn("[iCHEF TELEPHONE] doublons de tables ignorés",[...new Set(duplicateLabels)]);
+  }
+
+  const zoneMap=new Map();
+  const rawZones=Array.isArray(raw.zones)?raw.zones.filter(Boolean):[];
+  rawZones.forEach((z,index)=>{
+    const label=text(z.label||z.name||z.id||("ZONE "+(index+1)));
+    const room=text(z.room||rooms[0])||rooms[0];
+    const key=ichefArchitectureLabelKey(room)+"|"+ichefArchitectureLabelKey(label);
+    if(!zoneMap.has(key))zoneMap.set(key,{...z,label,room});
+  });
+
+  const tables=[...tableMap.values()];
+  const zones=[...zoneMap.values()];
+  STATE.architecture={rooms,tables,zones};
+  STATE.rooms=rooms;STATE.tables=tables;STATE.zones=zones;
+  if(!STATE.rooms.includes(STATE.room))STATE.room=STATE.rooms[0];
 }
 function productFrom(p,cat="Menu",key="",defaultDest="cuisine"){
   if(p==null)return null;
@@ -5912,7 +6004,62 @@ function isRealOrder(k,o){
     !isArchivedOrder(o) &&
     Array.isArray(o.items);
 }
-function getOrder(table){const o=STATE.activeOrders[table];return isRealOrder(table,o)?o:null}
+function ichefTableToken(value){
+  return text(value)
+    .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+    .toUpperCase()
+    .replace(/^(TABLE|TAB|TBL)[\s_\-:]*/,"")
+    .replace(/[^A-Z0-9]/g,"");
+}
+function ichefOrderTableRefs(key,order){
+  const refs=[
+    key,order?.tableId,order?.tableID,order?.table,order?.tableLabel,
+    order?.tableName,order?.numeroTable,order?.numero,order?.label
+  ].map(text).filter(Boolean);
+  return [...new Set(refs)];
+}
+function ichefOrderActivityScore(order){
+  if(!order||!Array.isArray(order.items))return -1;
+  const active=order.items.filter(i=>i&&!i.cancelled&&itemQty(i)>0).length;
+  const all=order.items.filter(Boolean).length;
+  const updated=Number(order.updatedAt||order.serverUpdatedAt||order.lastModified||0);
+  return active*1000000 + all*10000 + Math.min(9999,Math.floor((updated||0)/1000)%10000);
+}
+function ichefResolveOrderEntry(table,source=STATE.activeOrders){
+  const wantedRaw=text(table);
+  const wanted=ichefTableToken(wantedRaw);
+  if(!wanted||!source||typeof source!=="object")return null;
+  let best=null;
+  Object.entries(source).forEach(([key,raw])=>{
+    if(SYSTEM_KEYS.has(key)||String(key).startsWith("FISCAL_")||String(key).startsWith("FINANCIAL_CANCEL_"))return;
+    const order=ichefOrderPayload(raw)||raw;
+    if(!isRealOrder(key,order))return;
+    const refs=ichefOrderTableRefs(key,order);
+    const exactKey=text(key)===wantedRaw;
+    const tokenMatch=refs.some(ref=>ichefTableToken(ref)===wanted);
+    if(!exactKey&&!tokenMatch)return;
+    let score=ichefOrderActivityScore(order);
+    if(exactKey)score+=200000;
+    if(text(order.tableId)===wantedRaw)score+=400000;
+    else if(ichefTableToken(order.tableId)===wanted)score+=300000;
+    if(!best||score>best.score)best={key,order:normalizeCompatOrder(order),score,refs};
+  });
+  return best;
+}
+function getOrder(table){
+  const hit=ichefResolveOrderEntry(table);
+  return hit?hit.order:null;
+}
+window.ichefDiagnoseTable=function(table){
+  const hit=ichefResolveOrderEntry(table);
+  return {
+    tenantID:STATE.tenantID,
+    table:text(table),
+    resolvedKey:hit?.key||null,
+    itemCount:hit?.order?.items?.length||0,
+    order:hit?.order||null
+  };
+};
 function orderCreated(o){if(!o)return 0;let t=Number(o.createdAt||o.openedAt||o.date||0);if(!t&&Array.isArray(o.items)&&o.items.length)t=Math.min(...o.items.map(i=>Number(i.itemId||i.createdAt||i.sentAt||Date.now())).filter(Number.isFinite));return t||0}
 function lineServed(i){return !!(i&&(i.served===true||i.isServed===true||i.servedAt||String(i.sequenceStatus||"").toUpperCase()==="SERVED"||String(i.status||"").toLowerCase()==="served"))}
 
@@ -6728,32 +6875,61 @@ async function kitchenMessage(type,detail=""){
 function readyCount(){let n=0;Object.entries(STATE.activeOrders).forEach(([k,o])=>{if(!isRealOrder(k,o))return;(o.items||[]).forEach(i=>{if(lineReady(i)&&!lineServed(i))n+=Math.max(1,num(i.qty||i.quantity||1))})});return n}
 
 /* ---------------- ALERTS ---------------- */
+function ichefAlertDestinationAllowed(alert){
+  const dest=text(alert?.destination||alert?.target||alert?.recipient||"").toLowerCase();
+  if(!dest)return true;
+  return ["all","all_services","salle","service","serveur","server","telephone","phone","runner"].includes(dest);
+}
+function ichefAlertIsFresh(alert){
+  const ts=Date.parse(text(alert?.createdAt||alert?.updatedAt||""));
+  if(!Number.isFinite(ts))return true;
+  return Math.max(0,Date.now()-ts)<=120000;
+}
+function ichefAlertTableStillActive(tableId){
+  const table=text(tableId);
+  if(!table||["SALLE","INCONNUE","ALL","TOUS"].includes(table.toUpperCase()))return true;
+  const o=getOrder(table);
+  if(!o)return false;
+  const active=(o.items||[]).some(i=>i&&!i.cancelled&&itemQty(i)>0);
+  const st=text(o.status).toLowerCase();
+  return active || ["open","active","sent","payment","ready","wait","late","alert"].some(v=>st.includes(v));
+}
+function dismissGlobalAlert(signature=""){
+  const el=$("server-alert");
+  el?.classList.remove("show");
+  const sig=text(signature||STATE.lastAlertSignature||"");
+  if(sig)STORAGE.set("ichef_phone_dismissed_alert",sig);
+}
+window.dismissGlobalAlert=dismissGlobalAlert;
 function checkGlobalAlert(){
   const a=unwrap(STATE.activeOrders.ALERTS_MASTER);
-  if(!a||a.type!=="RING"){ $("server-alert").classList.remove("show");return }
-  
-  const sig=text(a.createdAt)+"|"+text(a.message);
-  if(sig===STATE.lastAlertSignature)return;
-  STATE.lastAlertSignature=sig;
-  
   const el=$("server-alert");
-  
-  // On récupère le numéro de la table concernée
-  const tableNum = a.tableId || "INCONNUE";
-  
-  // On remplace le long texte par un message ultra court avec une croix pour fermer
+  if(!el)return;
+  if(!a||a.type!=="RING"||!ichefAlertDestinationAllowed(a)||!ichefAlertIsFresh(a)){
+    el.classList.remove("show");
+    return;
+  }
+
+  const tableNum=text(a.tableId||"INCONNUE")||"INCONNUE";
+  if(!ichefAlertTableStillActive(tableNum)){
+    el.classList.remove("show");
+    return;
+  }
+
+  const sig=text(a.createdAt)+"|"+text(a.message)+"|"+tableNum;
+  if(sig===STATE.lastAlertSignature || sig===STORAGE.get("ichef_phone_dismissed_alert",""))return;
+  STATE.lastAlertSignature=sig;
+
   el.innerHTML = `
-    <div style="display: flex; align-items: center; justify-content: space-between; width: 100%;">
-      <span style="font-size: 32px; font-weight: 1000; letter-spacing: 1px;">⚠️ ATTENTION TABLE ${esc(tableNum)}</span>
-      <button onclick="document.getElementById('server-alert').classList.remove('show')" style="background: transparent; border: none; color: white; font-size: 45px; font-weight: bold; cursor: pointer; padding: 0 15px; line-height: 1; touch-action: manipulation;">×</button>
+    <div style="display:flex;align-items:center;justify-content:space-between;width:100%;gap:12px;">
+      <span style="font-size:32px;font-weight:1000;letter-spacing:1px;">⚠️ ATTENTION TABLE ${esc(tableNum)}</span>
+      <button type="button" data-dismiss-server-alert style="background:transparent;border:none;color:white;font-size:45px;font-weight:bold;cursor:pointer;padding:0 15px;line-height:1;touch-action:manipulation;">×</button>
     </div>
   `;
-  
+  el.querySelector("[data-dismiss-server-alert]")?.addEventListener("click",()=>dismissGlobalAlert(sig));
   el.classList.add("show");
-  
-  // On annule l'ancien chrono s'il y en avait un, et on le règle sur 30 secondes (30000 millisecondes)
-  if(el.hideTimer) clearTimeout(el.hideTimer);
-  el.hideTimer = setTimeout(()=>el.classList.remove("show"), 30000);
+  if(el.hideTimer)clearTimeout(el.hideTimer);
+  el.hideTimer=setTimeout(()=>dismissGlobalAlert(sig),30000);
 }
 /* ---------------- RENDER ---------------- */
 function scheduleRender(){
@@ -7232,7 +7408,24 @@ function renderTicket(){
 }
 
 /* ---------------- ORDER OPEN/CLOSE ---------------- */
-/* ---------------- ORDER OPEN/CLOSE ---------------- */
+async function ichefRefreshOpenedTable(table,reason="open-order"){
+  if(!STATE.authenticated||STATE.demo||!navigator.onLine)return getOrder(table);
+  try{
+    const state=await getState();
+    STATE.lastServerAt=now();
+    applyServerState(state,reason);
+    const hit=ichefResolveOrderEntry(table);
+    if(hit){
+      console.info("[iCHEF TELEPHONE] commande serveur résolue",{table,key:hit.key,items:hit.order?.items?.length||0});
+      return hit.order;
+    }
+    console.warn("[iCHEF TELEPHONE] aucune commande serveur résolue",{table});
+    return null;
+  }catch(err){
+    console.warn("[iCHEF TELEPHONE] lecture dédiée table impossible",table,err?.message||err);
+    return getOrder(table);
+  }
+}
 function openOrder(table){
   STATE.currentTable=table;
   STATE.currentOrder=getOrder(table)||ensureOrder(table);
@@ -7248,16 +7441,18 @@ function openOrder(table){
   document.body.classList.add("order-open");
   renderOrder();
 
-  /* IMPORTANT : au moment où le serveur ouvre T3/T4/etc., le téléphone peut
-     avoir un ancien snapshot en mémoire. On relit immédiatement MongoDB et
-     on remplace la commande affichée par la copie serveur confirmée. */
   const openedTable=table;
   if(STATE.authenticated&&!STATE.demo&&navigator.onLine){
+    setOrderSyncState("● LECTURE SERVEUR…","pending");
     setTimeout(async()=>{
-      await syncFull("open-order:"+openedTable);
+      const fresh=await ichefRefreshOpenedTable(openedTable,"open-order:"+openedTable);
       if(STATE.currentTable!==openedTable)return;
-      const fresh=getOrder(openedTable);
-      if(fresh)STATE.currentOrder=clone(fresh);
+      if(fresh){
+        STATE.currentOrder=clone(fresh);
+        setOrderSyncState("✓ SERVEUR SYNCHRONISÉ","good");
+      }else{
+        setOrderSyncState("⚠ TABLE SANS COMMANDE SERVEUR","bad");
+      }
       renderOrder();
       if(document.body.classList.contains("summary-open"))renderSummary();
     },0);
@@ -8686,7 +8881,9 @@ function systemPrintHTML(lines,title="iCHEF",paperWidth=80){
 }
 </style>
 
-</head><body><div class="ticket">${body}</div></body></html>`;
+</head><body><div class="ticket">${body}</div>
+<!-- iCHEF TELEPHONE — QR + SYMBIOSE + ALERTES + TABLES UNIQUES · 2026-09-03 -->
+</body></html>`;
 }
 
 async function printViaSystem(printer,lines,meta={}){
@@ -12865,7 +13062,6 @@ setTimeout(() => {
     }
 }, 1000);
 </script>
-  </body>
   <!-- =========================================================
      RESTAURATION DU DOCK BAS À 3 LIGNES (STYLE CAPTURE)
      ========================================================= -->
@@ -13866,8 +14062,13 @@ setTimeout(() => {
             const body = lines.map(line => {
                 if (line && line.qrcode) {
                     // Utilisation de l'API pour générer l'image du QR code
-                    const qrUrl = "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=" + encodeURIComponent(line.qrcode);
-                    return `<div style="text-align:center; margin: 15px 0;"><img src="${qrUrl}" alt="QR Code Fiscal" style="width: 150px; height: 150px; display: block; margin: 0 auto;"></div>`;
+                    const qrUrl = "https://api.qrserver.com/v1/create-qr-code/?size=180x180&margin=8&data=" + encodeURIComponent(line.qrcode);
+                    const qrLabel = esc(String(line.qrLabel||"QR iCHEF"));
+                    return `<div style="margin:16px auto;text-align:center;border:2px solid #111;border-radius:12px;padding:10px;width:190px;box-sizing:border-box;break-inside:avoid;">
+                      <div style="font-size:12px;font-weight:900;letter-spacing:.7px;margin-bottom:7px;">${qrLabel}</div>
+                      <img src="${qrUrl}" alt="QR Code iCHEF" loading="eager" style="width:160px;height:160px;display:block;margin:0 auto;">
+                      <div style="font-size:9px;font-weight:700;margin-top:6px;">SCAN · VÉRIFICATION / TICKET</div>
+                    </div>`;
                 }
                 const o = typeof line==="string" ? {text:line} : line||{};
                 const textValue = esc(String(o.text||""));
@@ -13996,7 +14197,7 @@ setTimeout(() => {
             lines.push("------------------------------------------");
             
             const qrData = `RAPPORT:${label}|PERIODE:${key}|TOTAL:${total}|RECORDS:${records.length}`;
-            lines.push({qrcode: qrData});
+            lines.push({qrcode: qrData,qrLabel:"RAPPORT FISCAL iCHEF"});
 
             lines.push({text:"DOCUMENT DE CONTRÔLE — JOURNAL FISCAL iCHEF",bold:true,align:"center"});
             lines.push({text:"L'impression n'altère aucune écriture fiscale.",align:"center"});
@@ -14051,8 +14252,11 @@ setTimeout(() => {
             if(fiscalHash){
                 lines.push(`SCELLEMENT SHA-256:`);
                 lines.push(`${fiscalHash.slice(0,16).toUpperCase()}…`);
-                const qrData = `TICKET:${receiptReference(order)}|TOTAL:${total}|HASH:${fiscalHash.toUpperCase()}`;
-                lines.push({qrcode: qrData});
+                const publicToken=text(order?.receipt?.publicToken||order?.publicReceiptToken||order?.paymentDraft?.publicToken||"");
+                const qrData = publicToken
+                  ? `${APP_SERVER_URL}/api/public-receipt?tenantID=${encodeURIComponent(STATE.tenantID)}&token=${encodeURIComponent(publicToken)}`
+                  : `TICKET:${receiptReference(order)}|TOTAL:${total}|HASH:${fiscalHash.toUpperCase()}`;
+                lines.push({qrcode: qrData,qrLabel: publicToken?"TICKET CLIENT iCHEF":"SCELLEMENT FISCAL iCHEF"});
             }
             
             lines.push("------------------------------------------");
