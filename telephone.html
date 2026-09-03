@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="fr">
 <head>
-<!-- ICHEF TELEPHONE SYMBIOSE TOTALE V4 — SERVER + PLAN + BFCACHE -->
+<!-- ICHEF TELEPHONE SYMBIOSE TOTALE V5 — REALTIME RECOVERY + SERVER + PLAN + BFCACHE -->
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
@@ -5565,6 +5565,10 @@ function joinTelephoneTenant(socket=STATE.socket){
 }
 
 function scheduleSymbioseSync(reason="server-event",delay=180){
+  /* VRAIE SYMBIOSE : on mémorise l'instant DU SIGNAL serveur.
+     Une ancienne donnée reçue 200/500/800 ms avant ne doit jamais empêcher
+     la relecture de MongoDB si le paquet updateState correspondant a été perdu. */
+  const signalAt=now();
   if(ICHEF_SYMBIOSE_SYNC_TIMER){
     clearTimeout(ICHEF_SYMBIOSE_SYNC_TIMER);
     ICHEF_SYMBIOSE_SYNC_TIMER=null;
@@ -5573,13 +5577,29 @@ function scheduleSymbioseSync(reason="server-event",delay=180){
     ICHEF_SYMBIOSE_SYNC_TIMER=null;
     if(!STATE.authenticated||document.hidden||!navigator.onLine)return;
 
-    /* Si updateState vient juste d'arriver, inutile de refaire un GET immédiat. */
-    if(STATE.lastServerAt&&now()-STATE.lastServerAt<900){
+    /* updateState arrivé autour/après ce signal : l'état est déjà frais. */
+    if(Number(STATE.lastServerAt||0)>=signalAt-120){
       scheduleRender();
       if(STATE.planViewOpen)renderLivePlan();
       return;
     }
-    syncFull("symbiose:"+reason);
+
+    /* Sinon on réclame explicitement l'état complet par Socket.IO puis HTTP. */
+    if(STATE.socket?.connected){
+      try{
+        STATE.socket.emit("requestMenuState",{
+          ...ichefSocketIdentity(),
+          source:"TELEPHONE_SYMBIOSE_"+String(reason||"SERVER_EVENT")
+        });
+      }catch(_){}
+    }
+
+    const before=Number(STATE.lastServerAt||0);
+    setTimeout(()=>{
+      if(!STATE.authenticated||document.hidden||!navigator.onLine)return;
+      if(Number(STATE.lastServerAt||0)>before)return;
+      syncFull("symbiose:"+reason);
+    },650);
   },Math.max(0,Number(delay)||0));
 }
 
@@ -5598,6 +5618,7 @@ async function connectSocket(){
       return STATE.socket;
     }
 
+    const identity=ichefSocketIdentity();
     const socket=window.io(APP_SERVER_URL,{
       withCredentials:false,
       transports:["websocket","polling"],
@@ -5607,7 +5628,9 @@ async function connectSocket(){
       reconnectionDelay:350,
       reconnectionDelayMax:2500,
       timeout:4500,
-      auth:ichefSocketIdentity()
+      auth:identity,
+      /* Compatibilité maximale avec les différentes versions server.js. */
+      query:identity
     });
 
     STATE.socket=socket;
@@ -5615,16 +5638,42 @@ async function connectSocket(){
     socket.on("connect",()=>{
       STATE.connected=true;
       ICHEF_BFCACHE_SUSPENDED=false;
+      const stateSeenBeforeJoin=Number(STATE.lastServerAt||0);
       setConnection("TEMPS RÉEL","good");
       joinTelephoneTenant(socket);
       retryFailedWrites();
-      if(!STATE.lastServerAt||now()-STATE.lastServerAt>5000)syncFull("reconnect");
+
+      /* joinTenant doit provoquer un updateState complet côté server.js.
+         Si ce paquet se perd, on réclame explicitement l'état puis HTTP en secours. */
+      setTimeout(()=>{
+        if(!socket.connected||!STATE.authenticated)return;
+        if(Number(STATE.lastServerAt||0)>stateSeenBeforeJoin)return;
+        try{
+          socket.emit("requestMenuState",{
+            ...ichefSocketIdentity(),
+            source:"TELEPHONE_JOIN_RECOVERY"
+          });
+        }catch(_){}
+      },350);
+
+      setTimeout(()=>{
+        if(!socket.connected||!STATE.authenticated)return;
+        if(Number(STATE.lastServerAt||0)>stateSeenBeforeJoin)return;
+        syncFull("socket-connect-fallback");
+      },1300);
     });
 
     socket.on("updateState",s=>{
       STATE.connected=true;
-      STATE.lastServerAt=now();
       setConnection("TEMPS RÉEL","good");
+
+      /* Ne jamais traiter un éventuel delta comme un état complet. */
+      if(!s||typeof s!=="object"||!s.activeOrders||typeof s.activeOrders!=="object"){
+        scheduleSymbioseSync("updateState-partiel",40);
+        return;
+      }
+
+      STATE.lastServerAt=now();
       applyServerState(s,"socket");
     });
 
@@ -7198,6 +7247,21 @@ function openOrder(table){
   document.body.classList.remove("summary-open");
   document.body.classList.add("order-open");
   renderOrder();
+
+  /* IMPORTANT : au moment où le serveur ouvre T3/T4/etc., le téléphone peut
+     avoir un ancien snapshot en mémoire. On relit immédiatement MongoDB et
+     on remplace la commande affichée par la copie serveur confirmée. */
+  const openedTable=table;
+  if(STATE.authenticated&&!STATE.demo&&navigator.onLine){
+    setTimeout(async()=>{
+      await syncFull("open-order:"+openedTable);
+      if(STATE.currentTable!==openedTable)return;
+      const fresh=getOrder(openedTable);
+      if(fresh)STATE.currentOrder=clone(fresh);
+      renderOrder();
+      if(document.body.classList.contains("summary-open"))renderSummary();
+    },0);
+  }
 }
 function closeOrder(){
   STATE.currentScreen="tables";
@@ -12730,11 +12794,38 @@ async function bootApp(){
     autoDisplay();
   },1000);
 
-  /* Watchdog plus calme : Socket.IO est prioritaire, HTTP ne sert que de garde-fou. */
+  /* Watchdog temps réel : Socket.IO reste prioritaire. Si la socket devient
+     silencieuse, le téléphone réclame l'état complet puis passe par HTTP.
+     Cela évite une table T3 à jour sur le PLAN mais vide sur le téléphone. */
+  let watchdogRecoveryRunning=false;
   setInterval(()=>{
-    if(document.hidden||!navigator.onLine||STATE.syncing)return;
-    if(!STATE.lastServerAt||now()-STATE.lastServerAt>30000)syncFull("watchdog");
-  },15000);
+    if(document.hidden||!navigator.onLine||STATE.syncing||watchdogRecoveryRunning)return;
+    if(STATE.lastServerAt&&now()-STATE.lastServerAt<7000)return;
+
+    watchdogRecoveryRunning=true;
+    const before=Number(STATE.lastServerAt||0);
+
+    if(STATE.socket?.connected){
+      try{
+        STATE.socket.emit("requestMenuState",{
+          ...ichefSocketIdentity(),
+          source:"TELEPHONE_WATCHDOG"
+        });
+      }catch(_){}
+    }else{
+      connectSocket();
+    }
+
+    setTimeout(async()=>{
+      try{
+        if(Number(STATE.lastServerAt||0)<=before && navigator.onLine){
+          await syncFull("watchdog-http");
+        }
+      }finally{
+        watchdogRecoveryRunning=false;
+      }
+    },800);
+  },4000);
 
   /* Les listeners online/offline/visibility existent déjà plus haut. On évite les doublons. */
   window.addEventListener("focus",()=>{
