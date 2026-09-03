@@ -13854,13 +13854,63 @@ setTimeout(() => {
     font-weight: 950 !important;     /* Texte extra gras pour une lecture flash */
 }
 </style>
-  <!-- =========================================================
-     NOUVEAU : IMPRESSION DU SCELLEMENT FISCAL EN QR CODE
+<!-- =========================================================
+     FIX ULTIME : QR CODE SUR TOUS LES TICKETS ET RAPPORTS FISCAUX
      ========================================================= -->
-<script id="ichef-qr-code-fiscal">
+<script id="ichef-qr-code-global-fix">
 setTimeout(() => {
-    
-    // 1. Support du QR Code pour la construction XML des imprimantes EPSON (ePOS)
+    // 1. Génération du QR Code pour Impression Système (Navigateur / PDF / Imprimante classique)
+    if (typeof window.systemPrintHTML === "function") {
+        window.systemPrintHTML = function(lines, title="iCHEF", paperWidth=80) {
+            const width = Number(paperWidth)===58 ? 58 : 80;
+            const body = lines.map(line => {
+                if (line && line.qrcode) {
+                    // Utilisation de l'API pour générer l'image du QR code
+                    const qrUrl = "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=" + encodeURIComponent(line.qrcode);
+                    return `<div style="text-align:center; margin: 15px 0;"><img src="${qrUrl}" alt="QR Code Fiscal" style="width: 150px; height: 150px; display: block; margin: 0 auto;"></div>`;
+                }
+                const o = typeof line==="string" ? {text:line} : line||{};
+                const textValue = esc(String(o.text||""));
+                const size = (Number(o.width)>1 || Number(o.height)>1) ? "font-size:18px;" : "font-size:13px;";
+                const weight = o.bold ? "font-weight:900;" : "";
+                const align = o.align ? `text-align:${o.align};` : "";
+                return `<div style="${size}${weight}${align}white-space:pre-wrap;line-height:1.25">${textValue||"&nbsp;"}</div>`;
+            }).join("");
+            return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>@page{size:${width}mm auto;margin:3mm}html,body{margin:0;padding:0;background:#fff;color:#000;font-family:Arial,sans-serif}.ticket{width:${width-6}mm;margin:0 auto}</style></head><body><div class="ticket">${body}</div></body></html>`;
+        };
+    }
+
+    // 2. Rallonger le délai avant l'ouverture de la fenêtre d'impression (Laisser le temps au QR de charger)
+    if (typeof window.printViaSystem === "function") {
+        window.printViaSystem = async function(printer, lines, meta={}) {
+            return new Promise((resolve,reject) => {
+                try {
+                    const frame = document.createElement("iframe");
+                    frame.setAttribute("aria-hidden", "true");
+                    frame.style.cssText = "position:fixed;right:0;bottom:0;width:1px;height:1px;opacity:0;pointer-events:none;";
+                    document.body.appendChild(frame);
+                    const doc = frame.contentDocument || frame.contentWindow?.document;
+                    if (!doc) throw new Error("Impression navigateur indisponible");
+                    
+                    doc.open();
+                    doc.write(window.systemPrintHTML(lines, `iCHEF ${meta.dest||"IMPRIMANTE"}`, printer.paperWidth));
+                    doc.close();
+                    
+                    // DELAI AUGMENTÉ À 1200ms
+                    setTimeout(() => {
+                        try {
+                            frame.contentWindow?.focus();
+                            frame.contentWindow?.print();
+                            resolve({ok: true, mode: "system", note: "Dialogue d'impression ouvert"});
+                        } catch(e) { reject(e); }
+                        setTimeout(() => frame.remove(), 3000);
+                    }, 1200);
+                } catch(e) { reject(e); }
+            });
+        };
+    }
+
+    // 3. Epson ePOS (Génération native du QR Code sans passer par une image internet)
     if (typeof window.buildEpsonSoap === "function") {
         window.buildEpsonSoap = function(lines, options={}) {
             const body=[];
@@ -13875,10 +13925,8 @@ setTimeout(() => {
                 if(typeof line === "string"){
                     body.push(eposTextLine(line));
                 } else if(line && typeof line === "object"){
-                    // Si l'objet contient un qrcode, on le dessine !
                     if(line.qrcode) {
                         body.push('<text align="center"/>');
-                        // module size: 5 pour une bonne lisibilité
                         body.push(`<barcode type="qrcode" width="5" height="5">${xmlEsc(line.qrcode)}</barcode>`);
                         body.push('<text align="left"/>');
                     } else {
@@ -13892,98 +13940,7 @@ setTimeout(() => {
         };
     }
 
-    // 2. Support du QR Code pour l'impression système (navigateur HTML)
-    if (typeof window.systemPrintHTML === "function") {
-        window.systemPrintHTML = function(lines, title="iCHEF", paperWidth=80) {
-            const width=Number(paperWidth)===58?58:80;
-            const body=lines.map(line => {
-                if (line && line.qrcode) {
-                    // Création de l'image QR Code via une API gratuite pour le rendu HTML
-                    const qrUrl = "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=" + encodeURIComponent(line.qrcode);
-                    return `<div style="text-align:center; margin: 15px 0;"><img src="${qrUrl}" alt="QR Code Fiscal" style="width: 150px; height: 150px; display: block; margin: 0 auto;"></div>`;
-                }
-                const o=typeof line==="string"?{text:line}:line||{};
-                const textValue=esc(String(o.text||""));
-                const size=(Number(o.width)>1||Number(o.height)>1)?"font-size:18px;":"font-size:13px;";
-                const weight=o.bold?"font-weight:900;":"";
-                const align=o.align?`text-align:${o.align};`:"";
-                return `<div style="${size}${weight}${align}white-space:pre-wrap;line-height:1.25">${textValue||"&nbsp;"}</div>`;
-            }).join("");
-            return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>@page{size:${width}mm auto;margin:3mm}html,body{margin:0;padding:0;background:#fff;color:#000;font-family:Arial,sans-serif}.ticket{width:${width-6}mm;margin:0 auto}</style></head><body><div class="ticket">${body}</div></body></html>`;
-        };
-    }
-
-    // 3. Ajout de l'objet QR Code à la fin du Ticket Client de Caisse
-    if (typeof window.cashReceiptLines === "function") {
-        window.cashReceiptLines = function(order,options={}) {
-            const cfg=loadPrinterConfig();
-            const r=cfg.receipt||{};
-            const fiscal=fiscalBreakdown(order||{});
-            const total=fiscalRound2(fiscal.gross);
-            const payment=text(order?.paymentDraft?.payments?.[0]?.method||order?.paymentMethod||"");
-            const profile=fiscal.profile;
-            const paidAt=order?.paymentDraft?.updatedAt||order?.fiscalFinalizedAt||new Date().toISOString();
-            const fiscalHash=text(order?.paymentDraft?.fiscalHash||order?.fiscalHash||"");
-            const lines=[];
-            const header=text(r.logoText||r.businessName||"iCHEF");
-
-            lines.push({text:header||"iCHEF",bold:true,width:2,height:2,align:"center"});
-            if(r.businessName && text(r.businessName)!==header)lines.push({text:r.businessName,bold:true,align:"center"});
-            if(r.address)lines.push({text:r.address,align:"center"});
-            if(r.phone)lines.push({text:r.phone,align:"center"});
-            if(r.taxId)lines.push({text:`TVA / ID: ${r.taxId}`,align:"center"});
-            lines.push({text:`PROFIL FISCAL: ${profile.label} · ${profile.currency}`,bold:true,align:"center"});
-            lines.push("------------------------------------------");
-            lines.push({text:`TABLE ${STATE.currentTable||order?.tableId||"—"} · ${new Date(paidAt).toLocaleString("fr-FR")}`,bold:true});
-            lines.push(`JUSTIFICATIF ${receiptReference(order)}`);
-            lines.push(`CAISSE ${text(STATE.deviceId||"—")}`);
-            if(r.showServer!==false)lines.push(`Opérateur: ${STATE.role||order?.updatedBy||"—"}`);
-            if(options.duplicate)lines.push({text:"*** DUPLICATA ***",bold:true,width:2,height:2,align:"center"});
-            lines.push("------------------------------------------");
-
-            (fiscal.lines||[]).forEach(line=>{
-                const item=line.item;
-                const seat=itemSeat(item);
-                lines.push({text:`${r.showGuests!==false&&seat?seatLabel(seat)+" · ":""}${line.qty} x ${line.label}`,bold:true});
-                lines.push({text:`TTC ${money(line.gross)} · TVA ${Number(line.rate||0).toFixed(2).replace(".",",")}% · HT ${money(line.net)}`,align:"right"});
-                const obs=text(item?.obs||item?.observation||item?.note);
-                if(obs)lines.push(`  ${obs}`);
-            });
-
-            lines.push("------------------------------------------");
-            fiscal.rows.forEach(row=>{
-                lines.push(`TVA ${Number(row.rate||0).toFixed(2).replace(".",",")}%  HT ${money(row.net)}  TVA ${money(row.tax)}  TTC ${money(row.gross)}`);
-            });
-            lines.push({text:`TOTAL ${money(total)}`,bold:true,width:2,height:2,align:"right"});
-            if(payment)lines.push({text:`PAIEMENT: ${payment}`,bold:true});
-            
-            // --- SECTION FISCALE & QR CODE ---
-            if(fiscalHash){
-                lines.push(`SCELLEMENT SHA-256:`);
-                lines.push(`${fiscalHash.slice(0,16).toUpperCase()}…`);
-                
-                // La donnée embarquée dans le QR Code (Lisible par un smartphone)
-                const qrData = `TICKET:${receiptReference(order)}|TOTAL:${total}|HASH:${fiscalHash.toUpperCase()}`;
-                
-                // On passe l'instruction de dessiner le QR
-                lines.push({qrcode: qrData});
-            }
-            // ---------------------------------
-            
-            lines.push("------------------------------------------");
-            if(r.footer)lines.push({text:r.footer,align:"center"});
-            lines.push({text:"Propulsé par iCHEF",align:"center"});
-            return lines;
-        };
-    }
-
-}, 2500);
-</script>
-  <!-- =========================================================
-     FIX : AJOUT DU QR CODE SUR LES RAPPORTS FISCAUX
-     ========================================================= -->
-<script id="ichef-qr-code-rapport-fiscal">
-setTimeout(() => {
+    // 4. Ajout sur les RAPPORTS FISCAUX
     if (typeof window.fiscalReportLines === "function") {
         window.fiscalReportLines = function(period,key,records){
             const profile=fiscalProfile();
@@ -14038,18 +13995,75 @@ setTimeout(() => {
             });
             lines.push("------------------------------------------");
             
-            // --- SECTION QR CODE RAPPORT FISCAL ---
-            // On génère un QR Code contenant la période, le nombre d'écritures et le total
             const qrData = `RAPPORT:${label}|PERIODE:${key}|TOTAL:${total}|RECORDS:${records.length}`;
             lines.push({qrcode: qrData});
-            // --------------------------------------
 
             lines.push({text:"DOCUMENT DE CONTRÔLE — JOURNAL FISCAL iCHEF",bold:true,align:"center"});
             lines.push({text:"L'impression n'altère aucune écriture fiscale.",align:"center"});
             return lines;
         };
     }
-}, 3000);
+
+    // 5. Ajout sur les FACTURES / TICKETS CLIENTS
+    if (typeof window.cashReceiptLines === "function") {
+        window.cashReceiptLines = function(order,options={}) {
+            const cfg=loadPrinterConfig();
+            const r=cfg.receipt||{};
+            const fiscal=fiscalBreakdown(order||{});
+            const total=fiscalRound2(fiscal.gross);
+            const payment=text(order?.paymentDraft?.payments?.[0]?.method||order?.paymentMethod||"");
+            const profile=fiscal.profile;
+            const paidAt=order?.paymentDraft?.updatedAt||order?.fiscalFinalizedAt||new Date().toISOString();
+            const fiscalHash=text(order?.paymentDraft?.fiscalHash||order?.fiscalHash||"");
+            const lines=[];
+            const header=text(r.logoText||r.businessName||"iCHEF");
+
+            lines.push({text:header||"iCHEF",bold:true,width:2,height:2,align:"center"});
+            if(r.businessName && text(r.businessName)!==header)lines.push({text:r.businessName,bold:true,align:"center"});
+            if(r.address)lines.push({text:r.address,align:"center"});
+            if(r.phone)lines.push({text:r.phone,align:"center"});
+            if(r.taxId)lines.push({text:`TVA / ID: ${r.taxId}`,align:"center"});
+            lines.push({text:`PROFIL FISCAL: ${profile.label} · ${profile.currency}`,bold:true,align:"center"});
+            lines.push("------------------------------------------");
+            lines.push({text:`TABLE ${STATE.currentTable||order?.tableId||"—"} · ${new Date(paidAt).toLocaleString("fr-FR")}`,bold:true});
+            lines.push(`JUSTIFICATIF ${receiptReference(order)}`);
+            lines.push(`CAISSE ${text(STATE.deviceId||"—")}`);
+            if(r.showServer!==false)lines.push(`Opérateur: ${STATE.role||order?.updatedBy||"—"}`);
+            if(options.duplicate)lines.push({text:"*** DUPLICATA ***",bold:true,width:2,height:2,align:"center"});
+            lines.push("------------------------------------------");
+
+            (fiscal.lines||[]).forEach(line=>{
+                const item=line.item;
+                const seat=itemSeat(item);
+                lines.push({text:`${r.showGuests!==false&&seat?seatLabel(seat)+" · ":""}${line.qty} x ${line.label}`,bold:true});
+                lines.push({text:`TTC ${money(line.gross)} · TVA ${Number(line.rate||0).toFixed(2).replace(".",",")}% · HT ${money(line.net)}`,align:"right"});
+                const obs=text(item?.obs||item?.observation||item?.note);
+                if(obs)lines.push(`  ${obs}`);
+            });
+
+            lines.push("------------------------------------------");
+            fiscal.rows.forEach(row=>{
+                lines.push(`TVA ${Number(row.rate||0).toFixed(2).replace(".",",")}%  HT ${money(row.net)}  TVA ${money(row.tax)}  TTC ${money(row.gross)}`);
+            });
+            lines.push({text:`TOTAL ${money(total)}`,bold:true,width:2,height:2,align:"right"});
+            if(payment)lines.push({text:`PAIEMENT: ${payment}`,bold:true});
+            
+            if(fiscalHash){
+                lines.push(`SCELLEMENT SHA-256:`);
+                lines.push(`${fiscalHash.slice(0,16).toUpperCase()}…`);
+                const qrData = `TICKET:${receiptReference(order)}|TOTAL:${total}|HASH:${fiscalHash.toUpperCase()}`;
+                lines.push({qrcode: qrData});
+            }
+            
+            lines.push("------------------------------------------");
+            if(r.footer)lines.push({text:r.footer,align:"center"});
+            lines.push({text:"Propulsé par iCHEF",align:"center"});
+            return lines;
+        };
+    }
+
+}, 2000);
+
 </script>
   </body>
 </html>
