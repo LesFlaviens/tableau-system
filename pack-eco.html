@@ -14462,377 +14462,183 @@ body.order-open #bottomObservationBar {
 
 })();
 </script>
-  <!-- =========================================================
-     FOND DE LA LIGNE TICKET EN 3 PARTIES ÉGALES
-     (Gris clair | Blanc | Marron clair)
+<!-- =========================================================
+     SYMBIOSE TÉLÉPHONE : BOUTON ACTION FLOTTANT + DOCK FIXE 2 LIGNES
      ========================================================= -->
-<style id="fond-ticket-3-couleurs">
-body.order-open .ticket-row {
-    /* Crée 3 colonnes de couleur parfaitement égales en arrière-plan */
-    background: linear-gradient(
-        to right, 
-        #e9e9e9 0%,          /* Début gris clair */
-        #e9e9e9 33.33%,      /* Fin gris clair à 1/3 */
-        #ffffff 33.33%,      /* Début blanc à 1/3 */
-        #ffffff 66.66%,      /* Fin blanc à 2/3 */
-        #e8d5bc 66.66%,      /* Début marron clair à 2/3 */
-        #e8d5bc 100%         /* Fin marron clair */
-    ) !important;
-    
-    border-bottom: 1px solid #ced2d5 !important;
+<style id="symbiose-mobile-bouton-dessus">
+/* 1. DOCK BAS FIXE À 2 LIGNES */
+body.order-open #bottomObservationBar {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 8px !important;
+    padding: 8px 8px calc(8px + var(--safe-bottom)) !important;
+    height: auto !important;
+    min-height: auto !important;
+    background: #f6f7f7 !important;
+    border-top: 3px solid #111 !important;
+    border-radius: 16px 16px 0 0 !important;
+    z-index: 2500 !important;
+    position: fixed !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    width: 100vw !important;
 }
 
-/* S'assurer que le fond du texte est bien transparent pour laisser voir les 3 couleurs */
-body.order-open .ticket-name,
-body.order-open .ticket-left,
-body.order-open .ticket-right {
-    background-color: transparent !important;
-}
-</style>
-  <!-- =========================================================
-     SYSTÈME DE COLONNES RAPIDE (ENTRÉES / PLATS / DESSERTS)
-     ========================================================= -->
-<style id="style-colonnes-services">
-/* Fait glisser le texte dans la bonne colonne selon l'ordre d'envoi */
-.ticket-row[data-course-col="1"] .ticket-left { margin-left: 0%; width: 33%; }
-.ticket-row[data-course-col="2"] .ticket-left { margin-left: 33.33%; width: 33%; }
-.ticket-row[data-course-col="3"] .ticket-left { margin-left: 66.66%; width: 33%; }
-
-/* Bouton d'ordre d'envoi sur le ticket */
-.btn-course-cycle {
-    background: #111 !important;
-    color: #fff !important;
-    font-weight: 1000 !important;
-    border: 2px solid #e2b84e !important;
-}
-</style>
-
-<script id="script-colonnes-services">
-setTimeout(() => {
-    // 1. Fonction pour deviner la colonne automatiquement selon le nom ou la catégorie
-    function guessCourseColumn(item) {
-        if (item.courseIndex) return item.courseIndex; // S'il a déjà été forcé manuellement
-        
-        const cat = (item.category || item.course || item.dest || "").toLowerCase();
-        const name = (item.name || "").toLowerCase();
-        const hay = cat + " " + name;
-
-        if (/(dessert|glace|patisserie|fromage|sucre|café)/.test(hay)) return 3; // Colonne 3
-        if (/(plat|viande|poisson|burger|pates|risotto|suite)/.test(hay)) return 2; // Colonne 2
-        return 1; // Colonne 1 (Entrées / Tapas / Défaut)
-    }
-
-    // 2. Interception du rendu du ticket pour ajouter le bouton et décaler le texte
-    if (typeof window.renderTicket === "function") {
-        const originalRenderTicket = window.renderTicket;
-        window.renderTicket = function() {
-            // Exécute le rendu normal
-            originalRenderTicket.apply(this, arguments);
-
-            // Modifie le HTML généré pour ajouter la notion de colonnes
-            const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
-            if (!o || !o.items) return;
-
-            document.querySelectorAll(".ticket-row").forEach(row => {
-                const leftDiv = row.querySelector(".ticket-left");
-                if (!leftDiv) return;
-                
-                const key = leftDiv.dataset.line;
-                const item = o.items.find(i => lineKey(i) === key);
-                if (!item) return;
-
-                // Calcule la colonne (1, 2 ou 3)
-                const col = guessCourseColumn(item);
-                row.setAttribute("data-course-col", col); // Applique le décalage CSS
-
-                // Ajoute le bouton de sélection rapide dans les contrôles à droite
-                const qtybar = row.querySelector(".qtybar");
-                if (qtybar && !lineFired(item)) { // Uniquement si non envoyé en cuisine
-                    const courseBtn = document.createElement("button");
-                    courseBtn.className = "btn-course-cycle";
-                    courseBtn.title = "Changer l'ordre d'envoi (Entrée / Plat / Dessert)";
-                    courseBtn.dataset.line = key;
-                    courseBtn.dataset.act = "cycle-course";
-                    courseBtn.textContent = col; // Affiche 1, 2 ou 3
-                    
-                    // Insère le bouton juste avant le bouton de suppression (x)
-                    qtybar.insertBefore(courseBtn, qtybar.lastElementChild);
-                }
-            });
-        };
-        // Forcer le re-rendu immédiat
-        if (STATE.currentTable) renderTicket();
-    }
-
-    // 3. Interception du clic pour faire tourner la colonne (1 -> 2 -> 3 -> 1)
-    if (typeof window.mutateLine === "function") {
-        const originalMutateLine2 = window.mutateLine;
-        window.mutateLine = async function(key, action) {
-            if (action === "cycle-course") {
-                const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
-                const item = (o.items || []).find(x => lineKey(x) === key);
-                if (!item) return;
-
-                // Fait tourner la valeur : 1 devient 2, 2 devient 3, 3 redevient 1
-                let currentCol = guessCourseColumn(item);
-                currentCol = currentCol >= 3 ? 1 : currentCol + 1;
-                
-                item.courseIndex = currentCol; // Sauvegarde la modification manuelle
-                
-                if (navigator.vibrate) { try { navigator.vibrate(20); } catch (_) {} }
-                
-                // Sauvegarde silencieuse et met à jour l'affichage
-                if (typeof saveCurrent === "function") saveCurrent(o, "Changement ordre d'envoi");
-                renderTicket();
-                return;
-            }
-            return originalMutateLine2(key, action);
-        };
-    }
-}, 600);
-</script>
-  <!-- =========================================================
-     GESTION DES MENUS / FORMULES (Bannière + Sous-articles)
-     ========================================================= -->
-<style id="style-menus-formules">
-/* 1. La bannière Titre du Menu (Traverse les 3 colonnes) */
-.ticket-row[data-course-col][data-is-menu="true"] .ticket-left { 
-    margin-left: 0% !important; 
-    width: 100% !important; 
-}
-.ticket-row[data-is-menu="true"] {
-    background: linear-gradient(135deg, #1a1c1d, #2a2e30) !important;
-    border-bottom: 2px solid #111 !important;
-    margin-top: 6px !important;
-    border-radius: 8px !important;
-}
-.ticket-row[data-is-menu="true"] .ticket-name {
-    color: #e2b84e !important; /* Texte en Or */
-    font-size: 20px !important;
-}
-.ticket-row[data-is-menu="true"] .ticket-price {
-    color: #e2b84e !important;
-    font-size: 22px !important;
-}
-.ticket-row[data-is-menu="true"] .ticket-meta,
-.ticket-row[data-is-menu="true"] .btn-course-cycle {
-    display: none !important; /* Cache les infos inutiles sur le titre du menu */
-}
-
-/* 2. Les choix du menu (articles à 0€) en retrait dans les colonnes */
-.ticket-row[data-is-menu-choice="true"] .ticket-name::before {
-    content: "↳ "; /* Petite flèche pour relier visuellement au menu */
-    color: #888;
-    font-weight: 900;
-}
-.ticket-row[data-is-menu-choice="true"] .ticket-name {
-    font-size: 15px !important;
-}
-</style>
-
-<script id="script-menus-formules">
-setTimeout(() => {
-    if (typeof window.renderTicket === "function") {
-        const originalRenderTicketMenu = window.renderTicket;
-        window.renderTicket = function() {
-            // Rend le ticket normalement
-            originalRenderTicketMenu.apply(this, arguments);
-
-            const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
-            if (!o || !o.items) return;
-
-            // Analyse chaque ligne pour voir si c'est un menu ou un choix
-            document.querySelectorAll(".ticket-row").forEach(row => {
-                const leftDiv = row.querySelector(".ticket-left");
-                if (!leftDiv) return;
-                
-                const key = leftDiv.dataset.line;
-                const item = o.items.find(i => lineKey(i) === key);
-                if (!item) return;
-
-                const name = (item.name || "").toLowerCase();
-                const price = Number(item.price || item.p || 0);
-
-                // 1. Détecter si c'est un Menu principal (Titre)
-                if (name.includes("menu") || name.includes("formule")) {
-                    row.setAttribute("data-is-menu", "true");
-                }
-                
-                // 2. Détecter si c'est un choix rattaché au menu (prix = 0€ ou commence par ">>")
-                // On exclut l'article s'il s'appelle lui-même "menu" pour ne pas confondre
-                if ((price === 0 || name.startsWith(">>") || name.startsWith("-")) && !name.includes("menu") && !name.includes("formule")) {
-                    row.setAttribute("data-is-menu-choice", "true");
-                }
-            });
-        };
-        // Re-rendu immédiat si une table est ouverte
-        if (STATE.currentTable) renderTicket();
-    }
-}, 850);
-  <!-- =========================================================
-     CORRECTION DÉFINITIVE : PROTECTION DU PRIX ET ALIGNEMENTS
-     ========================================================= -->
-<style id="fix-visuel-colonnes-prix">
-/* 1. On crée une grille stricte : Zone de texte à gauche, Zone protégée (Prix/Boutons) à droite */
-body.order-open .ticket-row {
+#bottomObservationBar .order-dock-row {
     display: grid !important;
-    grid-template-columns: minmax(0, 1fr) auto !important; /* Le 1fr prend l'espace dispo, le 'auto' protège les boutons */
-    gap: 15px !important; /* Marge de sécurité infranchissable entre le texte et le prix */
-}
-
-/* 2. Au lieu d'utiliser "margin" (qui pousse hors de l'écran), on utilise "padding" (à l'intérieur).
-      Le texte s'aligne sur les couleurs, mais s'il est trop long, il se coupera proprement ! */
-body.order-open .ticket-row[data-course-col="1"] .ticket-left { 
-    margin-left: 0 !important; 
-    padding-left: 5px !important; 
-}
-body.order-open .ticket-row[data-course-col="2"] .ticket-left { 
-    margin-left: 0 !important; 
-    padding-left: 33% !important; 
-}
-body.order-open .ticket-row[data-course-col="3"] .ticket-left { 
-    margin-left: 0 !important; 
-    padding-left: 64% !important; 
-}
-
-/* 3. Garantie absolue que le texte long se coupe avec des "..." */
-body.order-open .ticket-name {
-    display: block !important;
-    white-space: nowrap !important;
-    overflow: hidden !important;
-    text-overflow: ellipsis !important;
+    grid-template-columns: 1fr 1fr !important;
+    gap: 8px !important;
     width: 100% !important;
 }
-  </script>
-</style>
 
-  <!-- =========================================================
-     CORRECTION : TITRES COURTS SUR LE TICKET (4 MOTS MAX)
-     ========================================================= -->
-<script id="fix-titres-courts">
-setTimeout(() => {
-    // On redéfinit la fonction centrale qui génère le nom des plats
-    window.itemName = function(item) {
-        let name = String(item?.name ?? item?.n ?? item?.productName ?? item?.title ?? item?.label ?? "Article").trim();
-        
-        // 1. S'il y a un séparateur de description (ex: "--" ou "[BR]"), on coupe tout ce qui est après
-        const sepIndex = name.search(/\[BR\]|--/i);
-        if (sepIndex >= 0) {
-            name = name.slice(0, sepIndex).trim();
-        }
+#bottomObservationBar button,
+#bottomObservationBar .order-total-card {
+    min-height: 55px !important;
+    height: auto !important;
+    margin: 0 !important;
+    border: 2px solid #111 !important;
+    border-radius: 10px !important;
+    background: #fff !important;
+    color: #111 !important;
+    font-size: 16px !important;
+    font-weight: 1000 !important;
+    letter-spacing: 0.5px !important;
+    text-transform: uppercase !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    cursor: pointer !important;
+    touch-action: manipulation !important;
+}
 
-        // 2. On sépare les mots
-        let words = name.split(/\s+/).filter(Boolean);
-        
-        // 3. Si le titre fait plus de 4 mots, on le coupe à 4 mots
-        if (words.length > 4) {
-            name = words.slice(0, 4).join(" ");
-        }
-        
-        return name;
-    };
+/* Bloc TOTAL */
+#bottomObservationBar .order-total-card {
+    justify-content: space-between !important;
+    padding: 0 12px !important;
+    cursor: default !important;
+}
+#bottomObservationBar .order-total-label {
+    font-size: 12px !important;
+    font-weight: 1000 !important;
+    color: #111 !important;
+}
+#bottomTableTotal {
+    font-size: 20px !important;
+    color: #d39b13 !important; /* Jaune/Or */
+}
 
-    // On force la mise à jour immédiate de l'écran si on est sur un ticket
-    if (typeof scheduleRender === "function") scheduleRender();
-}, 500);
-</script>
-<!-- =========================================================
-     VITESSE ÉCLAIR ABSOLUE (0.0s) + DÉBLOCAGE TÉLÉPHONE
-     ========================================================= -->
-<style id="vitesse-eclair-absolue">
-/* 1. On masque DEFINITIVEMENT l'ancien menu et sa barre d'outils pour éviter tout flash */
-#app, #tools {
+/* Effets au clic sur le dock */
+#bottomObservationBar button:active {
+    transform: scale(0.97) !important;
+    background: #111 !important;
+    color: #fff !important;
+}
+
+
+/* 2. LE BOUTON D'ACTION DANS LA PAGE (TICKET FOOT) */
+/* On réaffiche le bloc qui contient le bouton dynamique */
+body.order-open .ticket-foot {
+    display: block !important;
+    padding: 10px !important;
+    background: transparent !important;
+    border: none !important;
+}
+
+/* On CACHE tous les éléments inutiles pour que le bouton soit seul */
+body.order-open .ticket-foot .order-page-links,
+body.order-open .ticket-foot .ticket-total,
+body.order-open .ticket-foot .order-sync-state {
     display: none !important;
 }
 
-/* 2. Destruction des animations de fondu du login pour gagner 0.8s */
-#login.hidden {
-    display: none !important;
-    animation: none !important;
-    transition: none !important;
-    opacity: 0 !important;
-    visibility: hidden !important;
+/* On stylise le bouton d'action d'origine */
+body.order-open .send-btn {
+    width: 100% !important;
+    min-height: 64px !important;
+    font-size: 20px !important;
+    font-weight: 1000 !important;
+    border-radius: 12px !important;
+    border: 3px solid #111 !important;
+    margin: 0 !important;
 }
 
-/* 3. Déblocage Téléphone pour les tests */
-html.ichef-phone-denied body { overflow: auto !important; }
-html.ichef-phone-denied body > *:not(#ichefPhoneDenied) { display: block !important; }
-html.ichef-phone-denied body > #app { display: none !important; }
-html.ichef-phone-denied body > #tools { display: none !important; }
-html.ichef-phone-denied body > #order.hidden { display: none !important; }
-#ichefPhoneDenied { display: none !important; }
+
+/* 3. PROTECTIONS VISUELLES POUR LE TÉLÉPHONE */
+/* On libère l'espace exact pour que le dock ne cache JAMAIS le bouton vert */
+body.order-open #order {
+    padding-bottom: 160px !important; 
+}
+
+/* On remonte les notifications (Toasts) pour qu'elles s'affichent AU-DESSUS du dock */
+#toast, .toast-show #toast, .archpad-toast {
+    bottom: 165px !important;
+    z-index: 9999 !important;
+}
 </style>
 
-<script id="acceleration-fulgurante">
-// Déblocage immédiat du téléphone dès la lecture du script
-document.documentElement.classList.remove("ichef-phone-denied");
-
+<script id="symbiose-mobile-logique-2lignes">
 setTimeout(() => {
-    // Sécurité supplémentaire anti-verrouillage téléphone
-    const phoneLock = document.getElementById("ichefPhoneDenied");
-    if (phoneLock) phoneLock.remove();
-    document.documentElement.classList.remove("ichef-phone-denied");
-
-    // Remplacement de la fonction de vérification
-    window.verifyPin = async function() {
-        if (!navigator.onLine) {
-            if(typeof loginMessage==="function") loginMessage("Connexion Internet requise");
-            return;
-        }
+    // ==========================================
+    // 1. BARRE DU HAUT : RETOUR -> PLAN
+    // ==========================================
+    const btnRetour = document.getElementById("btnUndoFast");
+    if (btnRetour) {
+        const btnPlan = btnRetour.cloneNode(true);
+        btnPlan.id = "btnGoToPlanTop"; 
+        btnPlan.innerHTML = "🗺️ PLAN";
+        btnPlan.disabled = false;
+        btnPlan.style.cssText = "opacity:1; background:#ffffff; color:#111111; border:2px solid #111111; font-weight:950; cursor:pointer; width:auto; padding:0 12px;";
         
-        if (STATE.loginPin.length < 4) { 
-            if(typeof loginMessage==="function") loginMessage("Code incomplet"); 
-            return; 
-        }
+        btnRetour.parentNode.replaceChild(btnPlan, btnRetour);
         
-        const btn = document.getElementById("pinValidate");
-        if (btn) btn.textContent = "SYNCHRONISATION DU PLAN...";
-        
-        try {
-            // Frappe le serveur pour valider le code
-            const r = await serverFetch("/api/verify-pin", {
-                method: "POST",
-                body: JSON.stringify({tenantID: STATE.tenantID, pin: STATE.loginPin, deviceId: STATE.deviceId, page: "PAD", terminal: "PAD"})
-            });
-            const j = await r.json().catch(() => ({}));
-            if (!r.ok || !j.success) throw new Error(j.error || j.message || "Code refusé");
-            
-            STATE.pin = STATE.loginPin;
-            STATE.role = j.role || "";
-            STATE.plan = j.plan || "";
-            STATE.authenticated = true;
-
-            // Lancement de la synchro de base en fond
-            if (typeof bootApp === "function") bootApp().catch(()=>{});
-
-            // 👉 Appel propre du plan (qui va télécharger et dessiner les tables EN ARRIÈRE-PLAN)
-            if (typeof window.openPadServiceHome === "function") {
-                await window.openPadServiceHome();
-            }
-
-            // 👉 BASCULE VISUELLE INSTANTANÉE (0.0s) UNIQUEMENT QUAND LE PLAN EST PRÊT
-            const loginEl = document.getElementById("login");
-            if(loginEl) {
-                loginEl.style.setProperty("display", "none", "important");
-                loginEl.classList.add("hidden");
-            }
-
-        } catch(e) {
-            STATE.loginPin = "";
-            if(typeof renderPin==="function") renderPin();
-            if(typeof loginMessage==="function") loginMessage(e?.message || "Connexion impossible");
-            if (btn) btn.textContent = "VALIDER LE PIN";
-        }
-    };
-
-    // Re-câblage du bouton avec la nouvelle fonction instantanée
-    const btnVal = document.getElementById("pinValidate");
-    if (btnVal) {
-        const newBtn = btnVal.cloneNode(true);
-        btnVal.parentNode.replaceChild(newBtn, btnVal);
-        newBtn.addEventListener("click", window.verifyPin);
+        btnPlan.addEventListener("click", () => {
+            if (typeof closeSheet === "function") closeSheet();
+            if (typeof closeOrder === "function") closeOrder();
+            setTimeout(() => {
+                if (typeof window.openPadServiceHome === "function") window.openPadServiceHome();
+            }, 0);
+        });
     }
-}, 800); 
+
+    // Masquer le bouton FERMER du haut (doublon)
+    const btnFermerHaut = document.getElementById("btnCloseOrder");
+    if (btnFermerHaut) btnFermerHaut.style.setProperty("display", "none", "important");
+
+
+    // ==========================================
+    // 2. DOCK BAS : CONSTRUCTION DES 2 LIGNES
+    // ==========================================
+    const dock = document.getElementById("bottomObservationBar");
+    if (dock) {
+        dock.innerHTML = `
+            <div class="order-dock-row order-dock-close">
+                <button id="btnDockObserver" type="button">OBSERVER</button>
+                <button id="btnDockFermer" type="button">FERMER</button>
+            </div>
+            <div class="order-dock-row order-dock-payment">
+                <div class="order-total-card">
+                    <span class="order-total-label">TOTAL TABLE</span>
+                    <strong id="bottomTableTotal">0,00 CHF</strong>
+                </div>
+                <button id="btnDockPaiement" type="button">À PAYER</button>
+            </div>
+        `;
+
+        // Connexion des boutons du dock
+        document.getElementById("btnDockObserver").addEventListener("click", () => {
+            if (typeof window.openTableStatusModal === "function") window.openTableStatusModal();
+            else if (typeof window.openObservationFast === "function") window.openObservationFast();
+        });
+        document.getElementById("btnDockFermer").addEventListener("click", () => {
+            if (typeof closeOrder === "function") closeOrder();
+            setTimeout(() => { if (typeof window.openPadServiceHome === "function") window.openPadServiceHome(); }, 0);
+        });
+        document.getElementById("btnDockPaiement").addEventListener("click", () => {
+            if (typeof openPayment === "function") openPayment();
+        });
+    }
+}, 1500);
 </script>
 </body>
 </html>
