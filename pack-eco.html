@@ -9376,7 +9376,235 @@ function systemPrintHTML(lines,title="iCHEF",paperWidth=80){
 </head><body><div class="ticket">${body}</div>
 <!-- iCHEF FIX 2026-08-25 : affichage PAX du PLAN = CAPACITÉ ARCHITECTURALE de la table (t.pax), jamais PAX clients live. -->
 
+<!-- =========================================================
+     CORRECTION : C1-C9 STRICTEMENT LIMITÉ AU PAX DE LA TABLE
+     ========================================================= -->
+<style id="style-limite-pax-boutons">
+/* On s'assure que s'il n'y a que 2 ou 3 couverts, les boutons se centrent joliment au lieu de s'étirer à l'infini */
+.who-seat-grid.product-seat-choice-grid,
+.product-cooking-seat-grid {
+    display: flex !important;
+    flex-wrap: wrap !important;
+    justify-content: center !important;
+    gap: 10px !important;
+}
+.who-seat-grid.product-seat-choice-grid .who-seat-btn,
+.product-cooking-seat-grid .product-cooking-seat-btn,
+.product-cooking-seat-grid .quick-cook-seat-btn {
+    flex: 0 0 auto !important;
+    min-width: 90px !important;
+    max-width: 120px !important;
+}
+</style>
 
+<script id="script-limite-pax-boutons">
+setTimeout(() => {
+
+    // 1. Popup de choix du convive au moment de l'ajout d'un plat
+    if (typeof window.openProductSeatPicker === "function") {
+        window.openProductSeatPicker = function(product, sourceButton=null) {
+            if(!STATE.currentTable||!product) return;
+            pendingProductSeatChoice = {product, sourceButton};
+            
+            const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
+            const pax = Math.max(1, Number(o.pax) || 1); // <-- ICI : On récupère le nombre exact
+            const active = Math.max(1, Math.min(pax, Number(STATE.activeSeat) || 1));
+            const counts = productSeatCounts();
+
+            // On boucle uniquement jusqu'au "pax" au lieu de 9
+            const seatButtons = Array.from({length: pax}, (_, idx) => {
+                const seat = idx + 1;
+                const current = seat === active ? " active" : "";
+                const count = counts[seat] || 0;
+                return `<button type="button"
+                                class="who-seat-btn${current}"
+                                data-product-seat="${seat}"
+                                data-seat="${seat}"
+                                title="Ajouter ${esc(product.name)} à C${seat}">
+                          C${seat}
+                          <small>${count} sélection${count>1?"s":""}</small>
+                        </button>`;
+            }).join("");
+
+            openSheet(
+                "QUI MANGE QUOI ? · " + product.name,
+                `<div class="who-active-card product-seat-choice-card">
+                   <div class="who-active-title">${esc(product.name)}</div>
+                   <div class="who-active-sub">
+                     ${money(product.price)} · Choisissez C1 à C${pax}.
+                   </div>
+                 </div>
+                 <div class="who-seat-grid product-seat-choice-grid">${seatButtons}</div>`
+            );
+
+            document.getElementById("sheet").classList.add("product-seat-picker-open");
+
+            const body = document.getElementById("sheetBody");
+            body.querySelectorAll("[data-product-seat]").forEach(btn => {
+                btn.addEventListener("click", () => confirmProductSeat(Number(btn.dataset.productSeat)));
+            });
+        };
+    }
+
+    // 2. Popup de choix de cuisson intégrée
+    if (typeof window.showProductCookingPicker === "function") {
+        window.showProductCookingPicker = function(pending, seat) {
+            if(!pending||!pending.product) return;
+
+            const product = pending.product;
+            const n = Math.max(1, Math.min(9, Number(seat) || 1));
+            const dest = normalizeDestination(product.dest||product.raw?.dest||product.raw?.destination||"cuisine");
+            const profile = cookingProfileFor(product);
+
+            if(dest !== "cuisine" || !profile.required || !profile.levels.length) {
+                finalizeProductSeatChoice(n, profile.automatic||"");
+                return;
+            }
+
+            pendingProductSeatChoice = {...pending, seat: n};
+            const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
+            const pax = Math.max(1, Number(o?.pax) || 1); // <-- ICI : Limite stricte au pax
+
+            // On boucle uniquement jusqu'au "pax"
+            const seatsHTML = Array.from({length: pax}, (_, idx) => {
+                const s = idx + 1;
+                return `<button type="button"
+                                class="product-cooking-seat-btn${s===n?" active":""}"
+                                data-cooking-seat="${s}"
+                                data-seat="${s}"
+                                title="Attribuer ce plat à C${s}">
+                          C${s}
+                        </button>`;
+            }).join("");
+
+            openSheet(
+                `${seatLabel(n)} · ${profile.label||"CUISSON"}`,
+                `<div class="product-cooking-card">
+                   <div class="product-cooking-head">
+                     ${seatBadgeHTML(n)}
+                     <div>
+                       <div class="product-cooking-name" title="${esc(product.name)}">${esc(cookingPickerShortName(product.name,4))}</div>
+                       <div class="product-cooking-sub">Choisissez le convive puis la cuisson.</div>
+                     </div>
+                   </div>
+                   <div class="product-cooking-seat-wrap">
+                     <div class="product-cooking-seat-label">QUI MANGE QUOI ?</div>
+                     <div class="product-cooking-seat-grid">${seatsHTML}</div>
+                   </div>
+                   <div class="product-cooking-grid">
+                     ${profile.levels.map(level => `
+                       <button type="button"
+                               class="product-cooking-btn"
+                               data-product-cooking="${esc(level)}">
+                         ${esc(level)}
+                       </button>
+                     `).join("")}
+                   </div>
+                   <button type="button" class="product-cooking-back" data-product-cooking-back>
+                     RETOUR À QUI MANGE QUOI
+                   </button>
+                 </div>`
+            );
+
+            const sheet = document.getElementById("sheet");
+            if (sheet) {
+                sheet.classList.remove("product-seat-picker-open");
+                sheet.classList.add("product-cooking-picker-open");
+            }
+
+            const body = document.getElementById("sheetBody");
+            if(!body) return;
+
+            body.querySelectorAll("[data-cooking-seat]").forEach(btn => {
+                btn.onclick = () => {
+                    const nextSeat = Math.max(1, Math.min(9, Number(btn.dataset.cookingSeat) || 1));
+                    pendingProductSeatChoice = {...pendingProductSeatChoice, seat: nextSeat};
+                    showProductCookingPicker(pendingProductSeatChoice, nextSeat);
+                };
+            });
+
+            body.querySelectorAll("[data-product-cooking]").forEach(btn => {
+                btn.onclick = () => {
+                    const level = btn.dataset.productCooking || "";
+                    const selectedSeat = Math.max(1, Math.min(9, Number(pendingProductSeatChoice?.seat) || n));
+                    body.querySelectorAll("[data-product-cooking],[data-cooking-seat]").forEach(x => x.disabled = true);
+                    finalizeProductSeatChoice(selectedSeat, level);
+                };
+            });
+
+            body.querySelector("[data-product-cooking-back]")?.addEventListener("click", () => {
+                document.getElementById("sheet")?.classList.remove("product-cooking-picker-open");
+                pendingProductSeatChoice = null;
+                openWho();
+            });
+        };
+    }
+
+    // 3. Barre principale des convives (en bas de l'en-tête de commande)
+    if (typeof window.renderGuestButtons === "function") {
+        window.renderGuestButtons = function() {
+            const el = document.getElementById("guestButtons");
+            if (!el) return;
+
+            const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
+            const pax = Math.max(1, num(o.pax || 2)); // <-- ICI : On limite l'affichage au pax
+
+            let active = Math.max(1, Math.min(99, Number(STATE.activeSeat) || 1));
+            if (active > pax) {
+                active = pax;
+                STATE.activeSeat = pax;
+            }
+
+            const activeLabel = document.getElementById("activeGuestLabel");
+            if (activeLabel) activeLabel.textContent = `ACTIF : C${active}`;
+            
+            const whoHead = document.getElementById("btnHeadWho");
+            if (whoHead) {
+                const main = whoHead.querySelector(".head-main-v20");
+                if (main) main.textContent = `QUI MANGE ? · C${active}`;
+                else whoHead.textContent = `QUI MANGE ? · C${active}`;
+                whoHead.dataset.activeSeat = String(active);
+                whoHead.style.borderColor = `var(--c${Math.min(active, 9)})`;
+                whoHead.style.color = "#111";
+                whoHead.style.background = "#fff";
+            }
+
+            // Génération dynamique limitée au nombre de PAX (fini les boutons fantômes)
+            el.innerHTML = Array.from({length: pax}, (_, idx) => {
+                const seat = idx + 1;
+                return `<button type="button"
+                                class="guest-btn${seat === active ? " active" : ""}"
+                                data-seat="${seat}"
+                                title="Convive C${seat}">
+                          C${seat}
+                        </button>`;
+            }).join("");
+        };
+    }
+
+    // 4. Panneau Cuisson express indépendant
+    if (typeof window.renderQuickCookingSeats === "function") {
+        window.renderQuickCookingSeats = function(activeSeat) {
+            const host = document.getElementById("quickCookSeats");
+            if(!host) return;
+            const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
+            const pax = Math.max(1, num(o.pax || 2));
+            const active = Math.max(1, Math.min(pax, Number(activeSeat) || 1));
+
+            host.innerHTML = Array.from({length: pax}, (_, idx) => {
+                const seat = idx + 1;
+                return `<button type="button"
+                                class="quick-cook-seat-btn${seat === active ? " active" : ""}"
+                                data-quick-seat="${seat}"
+                                data-seat="${seat}"
+                                aria-pressed="${seat === active ? "true" : "false"}">
+                          <span>C${seat}</span>
+                        </button>`;
+            }).join("");
+        };
+    }
+}, 1000);
+</script>
 
 </body></html>`;
 }
