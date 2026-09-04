@@ -221,6 +221,7 @@ async function verifyAdminPin() {
                     tenantID: sec.tenantID,
                     pin,
                     deviceId: sec.deviceId || getDeviceFingerprint(),
+                    terminal: 'ADMIN',
                     module: 'ADMIN',
                     source: 'admin.html'
                 })
@@ -233,15 +234,22 @@ async function verifyAdminPin() {
             if (!adminRoleAllowed(data)) {
                 throw new Error('Ce PIN est valide, mais ne possède pas les droits Admin/Manager.');
             }
-            if (!data.accessToken || !data.csrfToken) {
-                throw new Error('Session sécurisée incomplète. Reconnexion requise.');
-            }
 
-            sec.accessToken = data.accessToken;
-            sec.csrfToken = data.csrfToken;
+            // Compatibilité avec le server.js actuellement déployé :
+            // /api/verify-pin renvoie success/role/safeTenantID mais les jetons
+            // accessToken/csrfToken peuvent être absents. Un succès serveur ne doit
+            // donc jamais être transformé en faux refus de PIN.
+            sec.accessToken = data.accessToken || null;
+            sec.csrfToken = data.csrfToken || null;
             sec.sessionId = data.sessionId || null;
-            sec.user = data.user || { name: 'Direction', role: data.role || 'MASTER' };
-            sec.permissions = Array.isArray(data.permissions) ? data.permissions : [];
+            sec.sessionExpiresAt = data.sessionExpiresAt || null;
+            sec.user = data.user || {
+                name: data.staffName || 'Direction',
+                role: data.role || (data.isManager ? 'MANAGER' : 'MASTER')
+            };
+            sec.permissions = Array.isArray(data.permissions)
+                ? data.permissions
+                : (data.isManager || String(data.role || '').toUpperCase() === 'MASTER' ? ['*'] : []);
             sec.ready = true;
             sec.connectionState = 'online';
 
@@ -250,8 +258,10 @@ async function verifyAdminPin() {
             window.__ICHEF_AUDIT_PIN = pin;
             localStorage.removeItem('ichef_master_pin');
             localStorage.removeItem('pin');
-            sessionStorage.setItem('ichef_csrf_token', sec.csrfToken);
-            sessionStorage.setItem('ichef_session_hint', sec.sessionId || 'admin-session');
+            if (sec.csrfToken) sessionStorage.setItem('ichef_csrf_token', sec.csrfToken);
+            else sessionStorage.removeItem('ichef_csrf_token');
+            if (sec.sessionId) sessionStorage.setItem('ichef_session_hint', sec.sessionId);
+            else sessionStorage.removeItem('ichef_session_hint');
 
             window.tenantID = sec.tenantID;
             window.SERVER_URL = sec.serverURL;
@@ -287,7 +297,10 @@ async function verifyAdminPin() {
                 input.value = '';
                 input.focus();
             }
-            setAdminPinMessage(error?.message || 'Accès refusé par le système iCHEF.', true);
+            const message = error?.message === 'Failed to fetch'
+                ? 'Serveur iCHEF injoignable. Vérifiez la connexion puis réessayez.'
+                : (error?.message || 'Accès refusé par le système iCHEF.');
+            setAdminPinMessage(message, true);
         } finally {
             if (button) button.disabled = false;
         }
