@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="robots" content="noindex,nofollow">
+<meta name="referrer" content="no-referrer">
 <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
 <title>iCHEF OS — Contrôle fiscal</title>
 <style>
@@ -206,9 +207,32 @@ pre{
 
 <script>
 const params = new URLSearchParams(window.location.search);
-const tenantID = params.get('tenantID') || '';
-const ticket = params.get('ticket') || '';
-const token = params.get('token') || '';
+const hashParams = new URLSearchParams(
+    String(window.location.hash || '').replace(/^#\??/,'')
+);
+
+function firstParam(...names){
+    for(const name of names){
+        const value =
+            params.get(name) ||
+            hashParams.get(name);
+        if(value) return String(value).trim();
+    }
+    return '';
+}
+
+// Rétrocompatibilité : anciens liens = tenantID + ticket + token.
+// Nouveau lien recommandé = token seul.
+let tenantID = firstParam('tenantID','tenant','restaurant');
+let ticket = firstParam('ticket','ticketNumber','fiscalId');
+let token = firstParam('token','controlToken','fiscalControlToken','t');
+
+// Accepte aussi une future URL du type /controle-fiscal/<TOKEN>
+if(!token){
+    const match = String(window.location.pathname || '')
+        .match(/\/controle-fiscal\/([a-zA-Z0-9_-]{32,256})\/?$/);
+    if(match) token = match[1];
+}
 
 const SERVER_URL =
     (window.location.hostname === 'localhost' ||
@@ -261,19 +285,23 @@ async function loadControl(){
     const text = document.getElementById('status-text');
     const content = document.getElementById('content');
 
-    if(!tenantID || !ticket || !token){
+    // Le token est la seule donnée publique indispensable.
+    // Le serveur résout ensuite le restaurant et le ticket.
+    if(!token || token.length < 32){
         status.className='status bad';
         dot.textContent='×';
         title.textContent='QR fiscal incomplet';
-        text.textContent='Le lien de contrôle ne contient pas toutes les informations nécessaires.';
+        text.textContent='Le lien de contrôle ne contient pas de jeton fiscal valide.';
         return;
     }
 
     try{
         const url = new URL('/api/fiscal/control', SERVER_URL);
-        url.searchParams.set('tenantID',tenantID);
-        url.searchParams.set('ticket',ticket);
+        // Token obligatoire. Les deux autres paramètres restent optionnels
+        // pour compatibilité avec les anciens QR.
         url.searchParams.set('token',token);
+        if(tenantID) url.searchParams.set('tenantID',tenantID);
+        if(ticket) url.searchParams.set('ticket',ticket);
 
         const response = await fetch(url,{
             method:'GET',
@@ -418,56 +446,5 @@ async function loadControl(){
 
 loadControl();
 </script>
-    <style id="fix-bugs-affichage-vitesse">
-/* 1. Vitesse Éclair : Destruction de TOUTES les animations de transition */
-#login.hidden {
-    display: none !important;
-    animation: none !important;
-    transition: none !important;
-    opacity: 0 !important;
-    visibility: hidden !important;
-}
-.plan-visible-wrap {
-    animation: none !important;
-    transition: none !important;
-}
-
-/* 2. Masquage définitif de l'ancienne interface (Écran 1 obsolète) pour éviter le flash avant le plan interactif */
-body:not(.order-open):not(.summary-open) #app,
-body:not(.order-open):not(.summary-open) #tools {
-    display: none !important;
-    opacity: 0 !important;
-}
-</style>
-
-<script id="fix-bugs-logique">
-setTimeout(() => {
-    // BUG 2 : On charge le plan AVANT de cacher l'écran de connexion (Zéro transition, 100% instantané)
-    if (typeof window.verifyPin === "function") {
-        window.verifyPin = async function() {
-            if(STATE.loginBusy) return;
-            if(!navigator.onLine){
-                if(typeof loginMessage==="function") loginMessage("Connexion Internet requise");
-                return;
-            }
-
-            const validateBtn = document.getElementById("pinValidate");
-            const typedTenant = (document.getElementById("tenantInput")?.value || "").trim();
-            const tenantCandidate = typedTenant || STATE.tenantID;
-
-            if(!tenantCandidate) {
-                if(typeof loginMessage==="function") loginMessage("Identifiant requis");
-                return;
-            }
-
-            if(STATE.loginPin.length < 4){
-                if(typeof loginMessage==="function") loginMessage("Code incomplet");
-                return;
-            }
-
-            STATE.loginBusy = true;
-            if(validateBtn) validateBtn.disabled = true;
-            if(typeof loginMessage==="function") loginMessage("Chargement du plan interact
-</script> 
 </body>
 </html>
