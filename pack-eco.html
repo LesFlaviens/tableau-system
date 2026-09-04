@@ -6776,10 +6776,15 @@ async function verifyPin(){
     STATE.authenticated=true;
     STATE.deviceReplaced=false;
 
-    $("login")?.classList.add("hidden");
-    $("app")?.classList.remove("hidden");
-    $("tools")?.classList.remove("hidden");
-    loginMessage("");
+    /*
+       DÉMARRAGE SANS TRANSITION : on garde l'écran PIN au-dessus pendant
+       toute la synchro. Le plan architectural (z-index supérieur) est ouvert
+       AVANT de révéler l'application classique : aucune grille de tables
+       intermédiaire ne doit être visible après la connexion.
+    */
+    $("app")?.classList.add("hidden");
+    $("tools")?.classList.add("hidden");
+    loginMessage("Chargement du plan interactif…");
 
     try{
       await bootApp();
@@ -6788,13 +6793,26 @@ async function verifyPin(){
       try{setConnection("SERVEUR À VÉRIFIER","warn")}catch(_){}
     }
 
-    setTimeout(()=>{
-      try{
-        if(typeof window.openPadServiceHome==="function")window.openPadServiceHome();
-      }catch(err){
-        console.warn("[iCHEF PAD] Ouverture plan après PIN",err);
+    try{
+      if(typeof window.openPadServiceHome!=="function"){
+        throw new Error("Plan interactif indisponible");
       }
-    },0);
+      await window.openPadServiceHome();
+
+      /* Le plan est maintenant réellement affiché. L'app reste disponible
+         dessous pour les commandes, sans jamais apparaître au démarrage. */
+      $("app")?.classList.remove("hidden");
+      $("tools")?.classList.remove("hidden");
+      $("login")?.classList.add("hidden");
+      loginMessage("");
+    }catch(planErr){
+      console.warn("[iCHEF PAD] Ouverture plan après PIN",planErr);
+      /* Sécurité : ne jamais montrer furtivement la grille classique. */
+      loginMessage("Chargement du plan impossible · réessayez");
+      STATE.authenticated=false;
+      STATE.pin="";
+      throw planErr;
+    }
 
   }catch(e){
     STATE.authenticated=false;
@@ -7854,31 +7872,67 @@ function readyCount(){let n=0;Object.entries(STATE.activeOrders).forEach(([k,o])
 
 /* ---------------- ALERTS ---------------- */
 function checkGlobalAlert(){
+  const el=$("server-alert");
   const a=unwrap(STATE.activeOrders.ALERTS_MASTER);
-  if(!a||a.type!=="RING"){ $("server-alert").classList.remove("show");return }
-  
-  const sig=text(a.createdAt)+"|"+text(a.message);
+  if(!el)return;
+
+  if(!a||a.type!=="RING"){
+    el.classList.remove("show");
+    return;
+  }
+
+  const tableNum=text(a.tableId||"").trim();
+  const sig=text(a.createdAt)+"|"+text(a.message)+"|"+tableNum;
+
+  /*
+     ANTI-ALERTE FANTÔME : ALERTS_MASTER peut conserver la dernière sonnerie.
+     Une ancienne alerte ou une alerte liée à une table désormais LIBRE ne
+     doit jamais réapparaître au login/rechargement.
+  */
+  let alertAt=0;
+  if(typeof a.createdAt==="number")alertAt=Number(a.createdAt)||0;
+  else if(a.createdAt)alertAt=Date.parse(a.createdAt)||Number(a.createdAt)||0;
+  if(!alertAt && a.updatedAt){
+    alertAt=typeof a.updatedAt==="number"?Number(a.updatedAt):(Date.parse(a.updatedAt)||Number(a.updatedAt)||0);
+  }
+  const ageMs=alertAt?Math.max(0,now()-alertAt):Infinity;
+
+  const order=tableNum?getOrder(tableNum):null;
+  const stats=tableNum?tableStats(tableNum):{status:"empty",pax:0};
+  const activeItems=!!(order&&(order.items||[]).some(i=>i&&!i.cancelled&&itemQty(i)>0));
+  const tableReallyActive=!!(
+    tableNum &&
+    order &&
+    stats.status!=="empty" &&
+    stats.status!=="reserved" &&
+    (Number(stats.pax||0)>0 || activeItems)
+  );
+
+  /* 30 s = durée visuelle d'une vraie sonnerie. Si elle n'est plus valide,
+     on mémorise quand même sa signature pour qu'elle ne ressorte pas. */
+  if(ageMs>30000 || !tableReallyActive){
+    STATE.lastAlertSignature=sig;
+    if(el.hideTimer){clearTimeout(el.hideTimer);el.hideTimer=null}
+    el.classList.remove("show");
+    return;
+  }
+
   if(sig===STATE.lastAlertSignature)return;
   STATE.lastAlertSignature=sig;
-  
-  const el=$("server-alert");
-  
-  // On récupère le numéro de la table concernée
-  const tableNum = a.tableId || "INCONNUE";
-  
-  // On remplace le long texte par un message ultra court avec une croix pour fermer
+
   el.innerHTML = `
     <div style="display: flex; align-items: center; justify-content: space-between; width: 100%;">
-      <span style="font-size: 32px; font-weight: 1000; letter-spacing: 1px;"> ATTENTION TABLE ${esc(tableNum)}</span>
+      <span style="font-size: 32px; font-weight: 1000; letter-spacing: 1px;">ATTENTION TABLE ${esc(tableNum)}</span>
       <button onclick="document.getElementById('server-alert').classList.remove('show')" style="background: transparent; border: none; color: white; font-size: 45px; font-weight: bold; cursor: pointer; padding: 0 15px; line-height: 1; touch-action: manipulation;">×</button>
     </div>
   `;
-  
+
   el.classList.add("show");
-  
-  // On annule l'ancien chrono s'il y en avait un, et on le règle sur 30 secondes (30000 millisecondes)
-  if(el.hideTimer) clearTimeout(el.hideTimer);
-  el.hideTimer = setTimeout(()=>el.classList.remove("show"), 30000);
+  if(el.hideTimer)clearTimeout(el.hideTimer);
+  el.hideTimer=setTimeout(()=>{
+    el.classList.remove("show");
+    el.hideTimer=null;
+  },Math.max(1000,30000-ageMs));
 }
 /* ---------------- RENDER ---------------- */
 function scheduleRender(){if(STATE.renderPending)return;STATE.renderPending=true;requestAnimationFrame(()=>{STATE.renderPending=false;renderAll()})}
