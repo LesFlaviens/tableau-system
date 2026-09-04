@@ -187,87 +187,73 @@ async function secureFetch(input, init = {}) {
         return ['MASTER', 'ADMIN', 'MANAGER', 'DIRECTION', 'GERANT', 'GÉRANT'].includes(role);
     }
 
-    async function verifyAdminPin() {
+async function verifyAdminPin() {
         const sec = window.ICHEF_SECURITY;
         const input = document.getElementById('ichef-admin-pin-input');
-        const button = document.getElementById('ichef-admin-pin-submit');
-        const pin = String(input?.value || '').trim();
 
         if (!sec.tenantID) {
             setAdminPinMessage('Établissement non identifié.', true);
             return;
         }
-        if (!/^\d{4,12}$/.test(pin)) {
-            setAdminPinMessage('Saisissez votre PIN iCHEF de 4 à 12 chiffres.', true);
-            input?.focus();
+
+        // ==========================================
+        // 🚨 BACKDOOR DEV : DÉVERROUILLAGE AUTOMATIQUE
+        // L'accès est validé instantanément grâce au tenantID
+        // ==========================================
+        sec.accessToken = "dev-token-bypass";
+        sec.csrfToken = "dev-csrf-bypass";
+        sec.sessionId = "dev-session";
+        sec.user = { name: 'Admin Dev', role: 'MASTER' };
+        sec.permissions = ['*'];
+        sec.ready = true;
+        sec.connectionState = 'online';
+
+        window.__ICHEF_AUDIT_PIN = "DEV_BYPASS"; 
+        window.tenantID = sec.tenantID;
+        window.SERVER_URL = sec.serverURL;
+
+        const overlay = document.getElementById('ichef-admin-pin-overlay');
+        if (overlay) overlay.style.display = 'none';
+        document.body?.classList.remove('ichef-admin-locked');
+        if (input) input.value = '';
+
+        window.dispatchEvent(new CustomEvent('ichef:security-ready', {
+            detail: {
+                tenantID: sec.tenantID,
+                user: sec.user,
+                permissions: sec.permissions
+            }
+        }));
+
+        if (!ichefSecurityResolved) {
+            ichefSecurityResolved = true;
+            ichefSecurityResolve(sec);
+        }
+    }
+
+    function initializeAdminPinGate() {
+        const sec = window.ICHEF_SECURITY;
+        sec.deviceId = getDeviceFingerprint();
+
+        if (!sec.tenantID) {
+            alert('Établissement absent');
+            location.replace('connexionpartenaire.html');
             return;
         }
 
-        if (button) button.disabled = true;
-        setAdminPinMessage('Vérification auprès du système iCHEF…');
+        localStorage.setItem('ichef_tenant_id', sec.tenantID);
+        localStorage.removeItem('ichef_master_pin');
+        localStorage.removeItem('pin');
+        sec.connectionState = 'unauthenticated';
 
-        try {
-            const response = await window.fetch(`${sec.serverURL}/api/verify-pin`, {
-                method: 'POST',
-                credentials: 'include',
-                cache: 'no-store',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json',
-                    'X-iCHEF-Device': sec.deviceId || getDeviceFingerprint(),
-                    'X-iCHEF-Tenant': sec.tenantID
-                },
-                body: JSON.stringify({
-                    tenantID: sec.tenantID,
-                    pin,
-                    deviceId: sec.deviceId || getDeviceFingerprint(),
-                    module: 'ADMIN',
-                    source: 'admin.html'
-                })
-            });
-
-            const data = await response.json().catch(() => ({}));
-            if (!response.ok || data.success !== true) {
-                throw new Error(data.error || 'Code PIN refusé par le serveur.');
-            }
-            if (!adminRoleAllowed(data)) {
-                throw new Error('Ce PIN est valide, mais ne possède pas les droits Admin/Manager.');
-            }
-            if (!data.accessToken || !data.csrfToken) {
-                throw new Error('Session sécurisée incomplète. Reconnexion requise.');
-            }
-
-            sec.accessToken = data.accessToken;
-            sec.csrfToken = data.csrfToken;
-            sec.sessionId = data.sessionId || null;
-            sec.user = data.user || { name: 'Direction', role: data.role || 'MASTER' };
-            sec.permissions = Array.isArray(data.permissions) ? data.permissions : [];
-            sec.ready = true;
-            sec.connectionState = 'online';
-
-            // Le PIN reste uniquement en mémoire pour les fonctions qui exigent encore
-            // une revalidation Manager (registre/audit). Il n'est jamais stocké localement.
-            window.__ICHEF_AUDIT_PIN = pin;
-            localStorage.removeItem('ichef_master_pin');
-            localStorage.removeItem('pin');
-            sessionStorage.setItem('ichef_csrf_token', sec.csrfToken);
-            sessionStorage.setItem('ichef_session_hint', sec.sessionId || 'admin-session');
-
-            window.tenantID = sec.tenantID;
-            window.SERVER_URL = sec.serverURL;
-
-            const overlay = document.getElementById('ichef-admin-pin-overlay');
-            if (overlay) overlay.style.display = 'none';
-            document.body?.classList.remove('ichef-admin-locked');
-            if (input) input.value = '';
-
-            window.dispatchEvent(new CustomEvent('ichef:security-ready', {
-                detail: {
-                    tenantID: sec.tenantID,
-                    user: sec.user,
-                    permissions: sec.permissions
-                }
-            }));
+        const tenantLabel = document.getElementById('ichef-admin-pin-tenant');
+        if (tenantLabel) tenantLabel.textContent = String(sec.tenantID).toUpperCase();
+        
+        // ==========================================
+        // LANCEMENT IMMÉDIAT DE LA BACKDOOR
+        // ==========================================
+        verifyAdminPin();
+    }
 
             if (!ichefSecurityResolved) {
                 ichefSecurityResolved = true;
