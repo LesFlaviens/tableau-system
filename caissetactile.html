@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
+<!-- ICHEF ADMIN V22 — STRUCTURE + PIN SERVEUR + RESPONSIVE RÉPARÉS -->
 <!-- ICHEF ADMIN V19 — SOCKET STABLE POLLING→WEBSOCKET -->
 <!-- ICHEF ADMIN FINAL V18.1 — CARTE & CATEGORIES PRO -->
 <!-- ICHEF ADMIN V18 — CARTE & CATEGORIES PRO -->
@@ -49,6 +50,7 @@
             ? "http://localhost:10000"
             : "https://tableau-system.onrender.com",
         csrfToken: null,
+        accessToken: null,
         sessionId: null,
         sessionExpiresAt: null,
         user: null,
@@ -96,25 +98,41 @@ async function secureFetch(input, init = {}) {
         const sec = window.ICHEF_SECURITY;
         const rawUrl = typeof input === "string" ? input : input.url;
         const absoluteUrl = rawUrl.startsWith("/") ? `${sec.serverURL}${rawUrl}` : rawUrl;
-        
+
         const headers = new Headers(init.headers || {});
-        if (init.body && typeof init.body === "string") {
+        if (!headers.has("Accept")) headers.set("Accept", "application/json");
+        if (init.body && typeof init.body === "string" && !headers.has("Content-Type")) {
             headers.set("Content-Type", "application/json");
+        }
+        if (sec.accessToken && !headers.has("Authorization")) {
+            headers.set("Authorization", `Bearer ${sec.accessToken}`);
+        }
+        if (sec.csrfToken && !headers.has("X-CSRF-Token")) {
+            headers.set("X-CSRF-Token", sec.csrfToken);
+        }
+        if (sec.tenantID && !headers.has("X-iCHEF-Tenant")) {
+            headers.set("X-iCHEF-Tenant", sec.tenantID);
+        }
+        if (sec.deviceId && !headers.has("X-iCHEF-Device")) {
+            headers.set("X-iCHEF-Device", sec.deviceId);
         }
 
         try {
             const response = await window.fetch(absoluteUrl, {
                 ...init,
                 headers,
+                credentials: init.credentials || "include",
                 cache: "no-store"
             });
-            
-            if (!response.ok) {
-                console.warn(` Le serveur a répondu ${response.status} sur ${absoluteUrl}`);
+
+            if (response.status === 401 || response.status === 403) {
+                console.warn(`[iCHEF ADMIN] Accès refusé ${response.status} sur ${absoluteUrl}`);
+            } else if (!response.ok) {
+                console.warn(`[iCHEF ADMIN] Le serveur a répondu ${response.status} sur ${absoluteUrl}`);
             }
             return response;
         } catch (error) {
-            console.error(" Erreur de connexion au serveur iCHEF Cloud :", error);
+            console.error("Erreur de connexion au serveur iCHEF Cloud :", error);
             throw error;
         }
     }
@@ -137,31 +155,112 @@ async function secureFetch(input, init = {}) {
         }
     }
 
-    window.ICHEF_SECURITY_READY = (async function enforceSecurity() {
+    let ichefSecurityResolve;
+    let ichefSecurityResolved = false;
+
+    window.ICHEF_SECURITY_READY = new Promise((resolve) => {
+        ichefSecurityResolve = resolve;
+    });
+
+    function setAdminPinMessage(message, isError = false) {
+        const el = document.getElementById('ichef-admin-pin-message');
+        if (!el) return;
+        el.textContent = message || '';
+        el.style.color = isError ? '#ef4444' : '#94a3b8';
+    }
+
+    function adminRoleAllowed(pinData) {
+        const permissions = Array.isArray(pinData?.permissions) ? pinData.permissions : [];
+        if (permissions.includes('*')) return true;
+        const role = String(pinData?.role || pinData?.user?.role || '').trim().toUpperCase();
+        return ['MASTER', 'ADMIN', 'MANAGER', 'DIRECTION', 'GERANT', 'GÉRANT'].includes(role);
+    }
+
+async function verifyAdminPin() {
         const sec = window.ICHEF_SECURITY;
-        sec.deviceId = getDeviceFingerprint();
+        const input = document.getElementById('ichef-admin-pin-input');
+        const button = document.getElementById('ichef-admin-pin-submit');
+        const pin = String(input?.value || '').trim();
 
         if (!sec.tenantID) {
-            alert("Établissement absent");
-            location.replace("connexionpartenaire.html");
-            throw new Error("Établissement absent");
+            setAdminPinMessage('Établissement non identifié.', true);
+            return;
+        }
+        if (!/^\d{4,12}$/.test(pin)) {
+            setAdminPinMessage('Saisissez votre PIN iCHEF de 4 à 12 chiffres.', true);
+            input?.focus();
+            return;
         }
 
-        localStorage.setItem("ichef_tenant_id", sec.tenantID);
+        if (button) button.disabled = true;
+        setAdminPinMessage('Vérification auprès du système iCHEF…');
 
         try {
-            //  MODE DÉVELOPPEMENT : On simule un passeport Manager valide (Pleins pouvoirs)
-            sec.csrfToken = localStorage.getItem('ichef_csrf_token') || 'token-dev-123';
-            sec.sessionId = 'session-dev-123';
-            sec.user = { nom: "Admin", role: "MANAGER" };
-            sec.permissions = ["*"]; // <-- C'est ça qui te donne le droit de sauvegarder !
+            const response = await window.fetch(`${sec.serverURL}/api/verify-pin`, {
+                method: 'POST',
+                credentials: 'include',
+                cache: 'no-store',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-iCHEF-Device': sec.deviceId || getDeviceFingerprint(),
+                    'X-iCHEF-Tenant': sec.tenantID
+                },
+                body: JSON.stringify({
+                    tenantID: sec.tenantID,
+                    pin,
+                    deviceId: sec.deviceId || getDeviceFingerprint(),
+                    terminal: 'ADMIN',
+                    module: 'ADMIN',
+                    source: 'admin.html'
+                })
+            });
+
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || data.success !== true) {
+                throw new Error(data.error || 'Code PIN refusé par le serveur.');
+            }
+            if (!adminRoleAllowed(data)) {
+                throw new Error('Ce PIN est valide, mais ne possède pas les droits Admin/Manager.');
+            }
+
+            // Compatibilité avec le server.js actuellement déployé :
+            // /api/verify-pin renvoie success/role/safeTenantID mais les jetons
+            // accessToken/csrfToken peuvent être absents. Un succès serveur ne doit
+            // donc jamais être transformé en faux refus de PIN.
+            sec.accessToken = data.accessToken || null;
+            sec.csrfToken = data.csrfToken || null;
+            sec.sessionId = data.sessionId || null;
+            sec.sessionExpiresAt = data.sessionExpiresAt || null;
+            sec.user = data.user || {
+                name: data.staffName || 'Direction',
+                role: data.role || (data.isManager ? 'MANAGER' : 'MASTER')
+            };
+            sec.permissions = Array.isArray(data.permissions) && data.permissions.length
+                ? data.permissions
+                : (adminRoleAllowed(data) ? ['*'] : []);
             sec.ready = true;
-            sec.connectionState = "online";
+            sec.connectionState = 'online';
+
+            // Le PIN reste uniquement en mémoire pour les fonctions qui exigent encore
+            // une revalidation Manager (registre/audit). Il n'est jamais stocké localement.
+            window.__ICHEF_AUDIT_PIN = pin;
+            localStorage.removeItem('ichef_master_pin');
+            localStorage.removeItem('pin');
+            if (sec.csrfToken) sessionStorage.setItem('ichef_csrf_token', sec.csrfToken);
+            else sessionStorage.removeItem('ichef_csrf_token');
+            if (sec.sessionId) sessionStorage.setItem('ichef_session_hint', sec.sessionId);
+            else sessionStorage.removeItem('ichef_session_hint');
 
             window.tenantID = sec.tenantID;
             window.SERVER_URL = sec.serverURL;
 
-            window.dispatchEvent(new CustomEvent("ichef:security-ready", {
+            const overlay = document.getElementById('ichef-admin-pin-overlay');
+            if (overlay) overlay.style.display = 'none';
+            document.body?.classList.remove('ichef-admin-locked');
+            if (input) input.value = '';
+
+            window.dispatchEvent(new CustomEvent('ichef:security-ready', {
                 detail: {
                     tenantID: sec.tenantID,
                     user: sec.user,
@@ -169,11 +268,57 @@ async function secureFetch(input, init = {}) {
                 }
             }));
 
-            return sec;
+            if (!ichefSecurityResolved) {
+                ichefSecurityResolved = true;
+                ichefSecurityResolve(sec);
+            }
         } catch (error) {
-            console.error("Erreur de session :", error);
+            sec.ready = false;
+            sec.connectionState = 'unauthenticated';
+            sec.accessToken = null;
+            sec.csrfToken = null;
+            sec.sessionId = null;
+            sec.user = null;
+            sec.permissions = [];
+            sessionStorage.removeItem('ichef_csrf_token');
+            sessionStorage.removeItem('ichef_session_hint');
+            if (input) {
+                input.value = '';
+                input.focus();
+            }
+            const message = error?.message === 'Failed to fetch'
+                ? 'Serveur iCHEF injoignable. Vérifiez la connexion puis réessayez.'
+                : (error?.message || 'Accès refusé par le système iCHEF.');
+            setAdminPinMessage(message, true);
+        } finally {
+            if (button) button.disabled = false;
         }
-    })();
+    }
+
+    function initializeAdminPinGate() {
+        const sec = window.ICHEF_SECURITY;
+        sec.deviceId = getDeviceFingerprint();
+
+        if (!sec.tenantID) {
+            alert('Établissement absent');
+            location.replace('connexionpartenaire.html');
+            return;
+        }
+
+        localStorage.setItem('ichef_tenant_id', sec.tenantID);
+        localStorage.removeItem('ichef_master_pin');
+        localStorage.removeItem('pin');
+        sec.connectionState = 'unauthenticated';
+
+        const tenantLabel = document.getElementById('ichef-admin-pin-tenant');
+        if (tenantLabel) tenantLabel.textContent = String(sec.tenantID).toUpperCase();
+        const input = document.getElementById('ichef-admin-pin-input');
+        input?.focus();
+    }
+
+    window.verifyAdminPin = verifyAdminPin;
+    window.addEventListener('DOMContentLoaded', initializeAdminPinGate, { once: true });
+    
     </script>
     
     <style>
@@ -1583,9 +1728,8 @@ async function secureFetch(input, init = {}) {
 <style id="ichef-responsive-screen-v21">
 /* =========================================================
    iCHEF ADMIN V21 — ADAPTATION AUTOMATIQUE À L'ÉCRAN
-   Aucun changement métier / serveur / caisse / fiscal.
+   Correctif structure uniquement : aucune logique métier modifiée.
    ========================================================= */
-    <script>
 html {
     width: 100%;
     height: 100%;
@@ -1641,50 +1785,123 @@ body {
     min-width: 0;
     flex: 1 1 auto;
 }
-
-function setCashRegisterSyncBadge(label, color, border, detail) {
-    const badge = document.getElementById('cash-register-sync-status');
-    const card = document.getElementById('cash-register-sync-card');
-    const detailEl = document.getElementById('cash-register-sync-detail');
-    
-    if (badge) {
-        badge.textContent = label;
-        badge.style.color = color;
-        badge.style.borderColor = border;
-        
-        // Active l'animation CSS uniquement pendant la synchronisation
-        if (label.includes('SYNCHRONISATION...')) {
-            badge.classList.add('status-syncing');
-        } else {
-            badge.classList.remove('status-syncing');
-        }
-    }
-    if (card) card.style.borderColor = border;
-    if (detailEl && detail) detailEl.textContent = detail;
-}function setCashRegisterSyncBadge(label, color, border, detail) {
-    const badge = document.getElementById('cash-register-sync-status');
-    const card = document.getElementById('cash-register-sync-card');
-    const detailEl = document.getElementById('cash-register-sync-detail');
-    
-    if (badge) {
-        badge.textContent = label;
-        badge.style.color = color;
-        badge.style.borderColor = border;
-        
-        // Active l'animation CSS uniquement pendant la synchronisation
-        if (label.includes('SYNCHRONISATION...')) {
-            badge.classList.add('status-syncing');
-        } else {
-            badge.classList.remove('status-syncing');
-        }
-    }
-    if (card) card.style.borderColor = border;
-    if (detailEl && detail) detailEl.textContent = detail;
+.grid-2,
+.hourly-grid-main,
+.popularity-dashboard,
+.ia-pulse-grid,
+.tax-profile-grid {
+    min-width: 0;
 }
-</head>
-<body oncontextmenu="return false;" ondragstart="return false;" ondrop="return false;" data-security-version="2026.07-secure">
+input, select, textarea, button {
+    max-width: 100%;
+}
+@media (min-width: 1400px) {
+    .main-scroll { max-width: 1280px; }
+    .sidebar { width: clamp(260px, 18vw, 300px); }
+}
+@media (max-width: 1100px) {
+    .main-scroll { max-width: 100%; }
+    .tax-profile-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 900px) {
+    .content-scroll { padding: clamp(12px, 2.2vw, 20px); }
+    .main-scroll { width: 100%; max-width: 100%; }
+    .topbar { min-width: 0; }
+    .topbar-title { min-width: 0; flex: 1 1 auto; }
+    .topbar-actions { min-width: 0; flex-wrap: wrap; }
+}
+@media (max-width: 620px) {
+    .section-card { padding: 16px; border-radius: 14px; }
+    .toggle-row { align-items: flex-start; padding: 15px; }
+    .tax-profile-grid { grid-template-columns: 1fr; }
+    .topbar { padding: 12px 14px; }
+    .topbar-actions { width: 100%; justify-content: stretch; }
+    .topbar-actions > * { flex: 1 1 auto; }
+}
+@media (max-height: 760px) and (min-width: 901px) {
+    .sidebar-header { padding-top: 18px; padding-bottom: 12px; }
+    .nav-item { padding-top: 10px; padding-bottom: 10px; }
+    .topbar { padding-top: 10px; padding-bottom: 10px; }
+    .section-card { padding-top: 20px; padding-bottom: 20px; }
+}
+</style>
 
-    <div class="app-container">
+<style id="ichef-admin-pin-system-style">
+    body.ichef-admin-locked .app-container { visibility: hidden; }
+    #ichef-admin-pin-overlay {
+        position: fixed; inset: 0; z-index: 999999;
+        display: flex; align-items: center; justify-content: center;
+        padding: 22px; box-sizing: border-box;
+        background: #0b0f19;
+        font-family: 'Inter', sans-serif;
+    }
+    .ichef-admin-pin-card {
+        width: min(430px, 100%);
+        background: #151e2e;
+        border: 1px solid rgba(255,255,255,.15);
+        border-radius: 20px;
+        padding: 30px;
+        box-shadow: 0 24px 70px rgba(0,0,0,.55);
+        text-align: center;
+    }
+    .ichef-admin-pin-brand {
+        font-family: 'Playfair Display', serif;
+        color: #d4af37;
+        font-size: 2rem;
+        font-weight: 700;
+        letter-spacing: 1px;
+        margin-bottom: 5px;
+    }
+    .ichef-admin-pin-title {
+        color: #f8fafc; font-size: 1rem; font-weight: 800;
+        letter-spacing: 1.5px; text-transform: uppercase;
+        margin-bottom: 8px;
+    }
+    .ichef-admin-pin-tenant {
+        color: #94a3b8; font-size: .76rem; font-weight: 700;
+        letter-spacing: 1px; margin-bottom: 22px;
+    }
+    #ichef-admin-pin-input {
+        width: 100%; box-sizing: border-box;
+        background: rgba(0,0,0,.28); color: #f8fafc;
+        border: 1px solid rgba(255,255,255,.18);
+        border-radius: 12px; padding: 15px 16px;
+        font-size: 1.35rem; font-weight: 800;
+        letter-spacing: 7px; text-align: center; outline: none;
+    }
+    #ichef-admin-pin-input:focus { border-color: #d4af37; box-shadow: 0 0 0 3px rgba(212,175,55,.12); }
+    #ichef-admin-pin-message { min-height: 21px; margin: 12px 0; font-size: .78rem; line-height: 1.4; }
+    .ichef-admin-pin-submit, .ichef-admin-pin-back {
+        width: 100%; min-height: 48px; border-radius: 11px;
+        font-weight: 800; letter-spacing: .8px; cursor: pointer;
+        font-family: inherit;
+    }
+    .ichef-admin-pin-submit {
+        border: none; background: linear-gradient(135deg,#d4af37,#b89626); color: #000;
+    }
+    .ichef-admin-pin-submit:disabled { opacity: .55; cursor: wait; }
+    .ichef-admin-pin-back {
+        margin-top: 10px; background: transparent; color: #94a3b8;
+        border: 1px solid rgba(255,255,255,.14);
+    }
+    .ichef-admin-pin-note { margin-top: 16px; color: #64748b; font-size: .7rem; line-height: 1.45; }
+</style>
+</head>
+<body class="ichef-admin-locked" data-security-version="2026.09-pin-system-v21" oncontextmenu="return false;" ondragstart="return false;" ondrop="return false;">
+
+    <div id="ichef-admin-pin-overlay" role="dialog" aria-modal="true" aria-labelledby="ichef-admin-pin-title">
+    <div class="ichef-admin-pin-card">
+        <div class="ichef-admin-pin-brand">iCHEF</div>
+        <div class="ichef-admin-pin-title" id="ichef-admin-pin-title">Accès Administration</div>
+        <div class="ichef-admin-pin-tenant" id="ichef-admin-pin-tenant">RESTAURANT</div>
+        <input id="ichef-admin-pin-input" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="12" autocomplete="off" placeholder="PIN" aria-label="Code PIN Admin" onkeydown="if(event.key==='Enter'){event.preventDefault();verifyAdminPin();}" />
+        <div id="ichef-admin-pin-message">Entrez le PIN Admin/Manager enregistré dans iCHEF.</div>
+        <button id="ichef-admin-pin-submit" class="ichef-admin-pin-submit" type="button" onclick="verifyAdminPin()">DÉVERROUILLER</button>
+        <button class="ichef-admin-pin-back" type="button" onclick="location.href='connexionpartenaire.html?tenantID='+encodeURIComponent(window.ICHEF_SECURITY?.tenantID||'')">RETOUR</button>
+        <div class="ichef-admin-pin-note">Aucun code fixe n'est intégré à cette page. Le PIN est vérifié directement par le serveur iCHEF pour cet établissement.</div>
+    </div>
+</div>
+<div class="app-container">
         <div class="mobile-overlay" id="mobile-overlay" onclick="toggleMobileMenu()"></div>
 
 <aside class="sidebar" id="sidebar">
@@ -5820,7 +6037,8 @@ async function startAuthenticatedApplication() {
         auth: {
             tenantID,
             deviceId: window.ICHEF_SECURITY.deviceId,
-            csrfToken: window.ICHEF_SECURITY.csrfToken || ''
+            csrfToken: window.ICHEF_SECURITY.csrfToken || '',
+            accessToken: window.ICHEF_SECURITY.accessToken || ''
         },
         query: {
             tenantID,
@@ -7098,7 +7316,6 @@ async function loadAIProfitability() {
         }
     }
 </script>
-<script>
 <script id="ichef-qrnfc-legacy-cleanup-v10">
 (function () {
     function removeLegacyQrNfcBlocks() {
