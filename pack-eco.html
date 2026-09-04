@@ -15016,5 +15016,123 @@ setTimeout(() => {
     }
 }, 1000);
 </script>
+  <!-- =========================================================
+     CORRECTION DÉFINITIVE : PRISE DE COMMANDE TACTILE (1 TAP)
+     ========================================================= -->
+<script id="fix-prise-commande-tactile">
+(function fixTactileOrder() {
+    const container = document.getElementById("products");
+    if (!container) return;
+
+    // 1. Clonage pour purger tous les écouteurs capricieux ou conflictuels
+    const newContainer = container.cloneNode(true);
+    container.parentNode.replaceChild(newContainer, container);
+
+    let press = { timer: null, button: null, startX: 0, startY: 0, long: false };
+
+    function clearPress() {
+        if (press.timer) clearTimeout(press.timer);
+        press.timer = null;
+        if (press.button) press.button.classList.remove("longpress-active");
+    }
+
+    newContainer.addEventListener("pointerdown", e => {
+        const b = e.target.closest("[data-product]");
+        if (!b || b.classList.contains("sold")) return;
+
+        clearPress();
+        press.button = b;
+        press.startX = e.clientX;
+        press.startY = e.clientY;
+        press.long = false;
+        b.classList.add("longpress-active");
+
+        // Appui long (0.6s) pour le nom complet et informations
+        press.timer = setTimeout(() => {
+            press.timer = null;
+            press.long = true;
+            b.classList.remove("longpress-active");
+
+            const p = typeof findProductFromButton === "function" ? findProductFromButton(b) : null;
+            if (p) {
+                if (navigator.vibrate) { try { navigator.vibrate(40); } catch (_) {} }
+                if (typeof showFullProductTitle === "function") showFullProductTitle(p);
+            }
+        }, 600);
+    }, { passive: true });
+
+    newContainer.addEventListener("pointermove", e => {
+        if (!press.button) return;
+        const dx = Math.abs(e.clientX - press.startX);
+        const dy = Math.abs(e.clientY - press.startY);
+        
+        // 2. Tolérance augmentée à 25px : empêche l'annulation du tap si le doigt roule
+        if (dx > 25 || dy > 25) {
+            clearPress();
+            press.button = null;
+        }
+    }, { passive: true });
+
+    newContainer.addEventListener("pointerup", e => {
+        const b = e.target.closest("[data-product]");
+        if (!b || !press.button) return;
+
+        const wasLong = press.long;
+        const sameButton = b === press.button;
+
+        clearPress();
+        press.button = null;
+        press.long = false;
+
+        if (!sameButton || wasLong) return;
+
+        // --- LOGIQUE D'AJOUT IMMÉDIAT (1 TAP) ---
+        
+        const pendingCookingItem = typeof getValidPendingCookingItem === "function" ? getValidPendingCookingItem() : null;
+        if (pendingCookingItem) {
+            if (typeof showQuickCooking === "function") showQuickCooking(pendingCookingItem);
+            if (typeof toast === "function") toast("Cuisson obligatoire en attente", true);
+            return;
+        }
+
+        // 3. Anti-doublon frénétique (135ms)
+        const key = b.dataset.product + "|" + b.dataset.pname;
+        const t = Date.now();
+        if (typeof lastProductTap !== "undefined") {
+            if (lastProductTap.key === key && t - lastProductTap.at < 135) return;
+            lastProductTap = { key, at: t };
+        }
+
+        const p = typeof findProductFromButton === "function" ? findProductFromButton(b) : null;
+        if (!p) return;
+
+        const seat = Math.max(1, Math.min(9, Number(STATE.activeSeat) || 1));
+        const dest = typeof normalizeDestination === "function" ? normalizeDestination(p.dest || p.raw?.dest || p.raw?.destination || "cuisine") : "cuisine";
+        const profile = typeof cookingProfileFor === "function" ? cookingProfileFor(p) : { required: false, automatic: "", levels: [] };
+
+        if (typeof window.ichefCancelPendingProductSelection !== "undefined") {
+             pendingProductSeatChoice = { product: p, sourceButton: b, seat: seat };
+        }
+
+        if (dest === "cuisine" && profile.required === true && profile.levels.length) {
+            // Ouvre la fenêtre de cuisson uniquement si requise
+            if (typeof showProductCookingPicker === "function") {
+                showProductCookingPicker(pendingProductSeatChoice, seat);
+            }
+        } else {
+            // AJOUT IMMÉDIAT AU CONVIVE ACTIF
+            if (typeof finalizeProductSeatChoice === "function") {
+                finalizeProductSeatChoice(seat, profile.automatic || "");
+            }
+        }
+    });
+
+    newContainer.addEventListener("pointercancel", () => {
+        clearPress();
+        press.button = null;
+        press.long = false;
+    });
+})();
+</script>
 </body>
 </html>
