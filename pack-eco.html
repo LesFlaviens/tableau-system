@@ -6703,8 +6703,6 @@ function syncTenantLoginField(forceShow=false){
   if(box&&(forceShow||!STATE.tenantID))box.classList.add("show");
 }
 async function verifyPin(){
-  const validateBtn=$("pinValidate");
-  if(validateBtn?.dataset.busy==="1")return;
   if(!navigator.onLine){
     loginMessage("Connexion Internet requise pour ouvrir le PAD");
     updatePadLoginNetworkStatus();
@@ -6727,7 +6725,6 @@ async function verifyPin(){
   }
   if(STATE.loginPin.length<4){loginMessage("Code incomplet");return}
   loginMessage("Connexion…");
-  if(validateBtn){validateBtn.dataset.busy="1";validateBtn.disabled=true;validateBtn.textContent="CONNEXION…";}
   try{
     const r=await serverFetch("/api/verify-pin",{
       method:"POST",
@@ -6743,8 +6740,6 @@ async function verifyPin(){
     STATE.role=j.role||"";
     STATE.plan=j.plan||"";
     STATE.specialite=j.specialite||"";
-    if(j.sessionToken)STATE.sessionToken=j.sessionToken;
-    if(j.csrfToken)STATE.csrfToken=j.csrfToken;
     STATE.authenticated=true;
     $("login")?.classList.add("hidden");
     $("app")?.classList.remove("hidden");
@@ -6766,12 +6761,6 @@ async function verifyPin(){
     renderPin();
     syncTenantLoginField(true);
     loginMessage(e?.message||"Connexion impossible");
-  }finally{
-    if(validateBtn){
-      validateBtn.dataset.busy="0";
-      validateBtn.disabled=false;
-      validateBtn.textContent="VALIDER LE PIN";
-    }
   }
 }
 
@@ -6912,7 +6901,6 @@ async function connectSocket(){
     STATE.socket=socket;
 
     socket.on("connect",()=>{
-      const previousServerAt=Number(STATE.lastServerAt||0);
       STATE.connected=true;
       STATE.lastServerAt=now();
 
@@ -6936,8 +6924,8 @@ async function connectSocket(){
       retryFailedWrites();
 
       if(
-        !previousServerAt ||
-        now()-previousServerAt>5000
+        !STATE.lastServerAt ||
+        now()-STATE.lastServerAt>5000
       ){
         syncFull("reconnect");
       }
@@ -9348,8 +9336,8 @@ async function postPrintBridge(printer,cfg,lines,meta={}){
 }
 
 function systemPrintHTML(lines,title="iCHEF",paperWidth=80){
-  const width=Math.max(48,Math.min(120,Number(paperWidth)||80));
-  const body=(Array.isArray(lines)?lines:[]).map(line=>{
+  const width=Number(paperWidth)===58?58:80;
+  const body=lines.map(line=>{
     const o=typeof line==="string"?{text:line}:line||{};
     const textValue=esc(String(o.text||""));
     const size=(Number(o.width)>1||Number(o.height)>1)?"font-size:18px;":"font-size:13px;";
@@ -9357,7 +9345,268 @@ function systemPrintHTML(lines,title="iCHEF",paperWidth=80){
     const align=o.align?`text-align:${o.align};`:"";
     return `<div style="${size}${weight}${align}white-space:pre-wrap;line-height:1.25">${textValue||"&nbsp;"}</div>`;
   }).join("");
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>@page{size:${width}mm auto;margin:3mm}html,body{margin:0;padding:0;background:#fff;color:#000;font-family:Arial,sans-serif}.ticket{width:${width-6}mm;margin:0 auto}</style></head><body><div class="ticket">${body}</div></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>@page{size:${width}mm auto;margin:3mm}html,body{margin:0;padding:0;background:#fff;color:#000;font-family:Arial,sans-serif}.ticket{width:${width-6}mm;margin:0 auto}</style>
+<style id="ichef-plan-zoom-sync-v29">
+/* V29 — le pourcentage pilote réellement le canevas 5000x5000. */
+#ichefArchPad .archpad-stage-shell{
+  min-width:0 !important;
+  min-height:0 !important;
+  max-width:none !important;
+  margin:0 !important;
+  overflow:visible !important;
+  transform:none !important;
+  transition:width .12s ease-out,height .12s ease-out !important;
+}
+#ichefArchPad .archpad-stage{
+  position:absolute !important;
+  left:0 !important;
+  top:0 !important;
+  transform-origin:0 0 !important;
+}
+#ichefArchPad .archpad-room-nav{
+  display:inline-flex !important;
+  align-items:center !important;
+  justify-content:center !important;
+  font-size:24px !important;
+  line-height:1 !important;
+  color:#fff !important;
+}
+#ichefArchPad .archpad-room-nav:active{transform:scale(.94)}
+</style>
+</head><body><div class="ticket">${body}</div>
+<!-- iCHEF FIX 2026-08-25 : affichage PAX du PLAN = CAPACITÉ ARCHITECTURALE de la table (t.pax), jamais PAX clients live. -->
+
+<!-- =========================================================
+     CORRECTION : C1-C9 STRICTEMENT LIMITÉ AU PAX DE LA TABLE
+     ========================================================= -->
+<style id="style-limite-pax-boutons">
+/* On s'assure que s'il n'y a que 2 ou 3 couverts, les boutons se centrent joliment au lieu de s'étirer à l'infini */
+.who-seat-grid.product-seat-choice-grid,
+.product-cooking-seat-grid {
+    display: flex !important;
+    flex-wrap: wrap !important;
+    justify-content: center !important;
+    gap: 10px !important;
+}
+.who-seat-grid.product-seat-choice-grid .who-seat-btn,
+.product-cooking-seat-grid .product-cooking-seat-btn,
+.product-cooking-seat-grid .quick-cook-seat-btn {
+    flex: 0 0 auto !important;
+    min-width: 90px !important;
+    max-width: 120px !important;
+}
+</style>
+
+<script id="script-limite-pax-boutons">
+setTimeout(() => {
+
+    // 1. Popup de choix du convive au moment de l'ajout d'un plat
+    if (typeof window.openProductSeatPicker === "function") {
+        window.openProductSeatPicker = function(product, sourceButton=null) {
+            if(!STATE.currentTable||!product) return;
+            pendingProductSeatChoice = {product, sourceButton};
+            
+            const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
+            const pax = Math.max(1, Number(o.pax) || 1); // <-- ICI : On récupère le nombre exact
+            const active = Math.max(1, Math.min(pax, Number(STATE.activeSeat) || 1));
+            const counts = productSeatCounts();
+
+            // On boucle uniquement jusqu'au "pax" au lieu de 9
+            const seatButtons = Array.from({length: pax}, (_, idx) => {
+                const seat = idx + 1;
+                const current = seat === active ? " active" : "";
+                const count = counts[seat] || 0;
+                return `<button type="button"
+                                class="who-seat-btn${current}"
+                                data-product-seat="${seat}"
+                                data-seat="${seat}"
+                                title="Ajouter ${esc(product.name)} à C${seat}">
+                          C${seat}
+                          <small>${count} sélection${count>1?"s":""}</small>
+                        </button>`;
+            }).join("");
+
+            openSheet(
+                "QUI MANGE QUOI ? · " + product.name,
+                `<div class="who-active-card product-seat-choice-card">
+                   <div class="who-active-title">${esc(product.name)}</div>
+                   <div class="who-active-sub">
+                     ${money(product.price)} · Choisissez C1 à C${pax}.
+                   </div>
+                 </div>
+                 <div class="who-seat-grid product-seat-choice-grid">${seatButtons}</div>`
+            );
+
+            document.getElementById("sheet").classList.add("product-seat-picker-open");
+
+            const body = document.getElementById("sheetBody");
+            body.querySelectorAll("[data-product-seat]").forEach(btn => {
+                btn.addEventListener("click", () => confirmProductSeat(Number(btn.dataset.productSeat)));
+            });
+        };
+    }
+
+    // 2. Popup de choix de cuisson intégrée
+    if (typeof window.showProductCookingPicker === "function") {
+        window.showProductCookingPicker = function(pending, seat) {
+            if(!pending||!pending.product) return;
+
+            const product = pending.product;
+            const n = Math.max(1, Math.min(9, Number(seat) || 1));
+            const dest = normalizeDestination(product.dest||product.raw?.dest||product.raw?.destination||"cuisine");
+            const profile = cookingProfileFor(product);
+
+            if(dest !== "cuisine" || !profile.required || !profile.levels.length) {
+                finalizeProductSeatChoice(n, profile.automatic||"");
+                return;
+            }
+
+            pendingProductSeatChoice = {...pending, seat: n};
+            const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
+            const pax = Math.max(1, Number(o?.pax) || 1); // <-- ICI : Limite stricte au pax
+
+            // On boucle uniquement jusqu'au "pax"
+            const seatsHTML = Array.from({length: pax}, (_, idx) => {
+                const s = idx + 1;
+                return `<button type="button"
+                                class="product-cooking-seat-btn${s===n?" active":""}"
+                                data-cooking-seat="${s}"
+                                data-seat="${s}"
+                                title="Attribuer ce plat à C${s}">
+                          C${s}
+                        </button>`;
+            }).join("");
+
+            openSheet(
+                `${seatLabel(n)} · ${profile.label||"CUISSON"}`,
+                `<div class="product-cooking-card">
+                   <div class="product-cooking-head">
+                     ${seatBadgeHTML(n)}
+                     <div>
+                       <div class="product-cooking-name" title="${esc(product.name)}">${esc(cookingPickerShortName(product.name,4))}</div>
+                       <div class="product-cooking-sub">Choisissez le convive puis la cuisson.</div>
+                     </div>
+                   </div>
+                   <div class="product-cooking-seat-wrap">
+                     <div class="product-cooking-seat-label">QUI MANGE QUOI ?</div>
+                     <div class="product-cooking-seat-grid">${seatsHTML}</div>
+                   </div>
+                   <div class="product-cooking-grid">
+                     ${profile.levels.map(level => `
+                       <button type="button"
+                               class="product-cooking-btn"
+                               data-product-cooking="${esc(level)}">
+                         ${esc(level)}
+                       </button>
+                     `).join("")}
+                   </div>
+                   <button type="button" class="product-cooking-back" data-product-cooking-back>
+                     RETOUR À QUI MANGE QUOI
+                   </button>
+                 </div>`
+            );
+
+            const sheet = document.getElementById("sheet");
+            if (sheet) {
+                sheet.classList.remove("product-seat-picker-open");
+                sheet.classList.add("product-cooking-picker-open");
+            }
+
+            const body = document.getElementById("sheetBody");
+            if(!body) return;
+
+            body.querySelectorAll("[data-cooking-seat]").forEach(btn => {
+                btn.onclick = () => {
+                    const nextSeat = Math.max(1, Math.min(9, Number(btn.dataset.cookingSeat) || 1));
+                    pendingProductSeatChoice = {...pendingProductSeatChoice, seat: nextSeat};
+                    showProductCookingPicker(pendingProductSeatChoice, nextSeat);
+                };
+            });
+
+            body.querySelectorAll("[data-product-cooking]").forEach(btn => {
+                btn.onclick = () => {
+                    const level = btn.dataset.productCooking || "";
+                    const selectedSeat = Math.max(1, Math.min(9, Number(pendingProductSeatChoice?.seat) || n));
+                    body.querySelectorAll("[data-product-cooking],[data-cooking-seat]").forEach(x => x.disabled = true);
+                    finalizeProductSeatChoice(selectedSeat, level);
+                };
+            });
+
+            body.querySelector("[data-product-cooking-back]")?.addEventListener("click", () => {
+                document.getElementById("sheet")?.classList.remove("product-cooking-picker-open");
+                pendingProductSeatChoice = null;
+                openWho();
+            });
+        };
+    }
+
+    // 3. Barre principale des convives (en bas de l'en-tête de commande)
+    if (typeof window.renderGuestButtons === "function") {
+        window.renderGuestButtons = function() {
+            const el = document.getElementById("guestButtons");
+            if (!el) return;
+
+            const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
+            const pax = Math.max(1, num(o.pax || 2)); // <-- ICI : On limite l'affichage au pax
+
+            let active = Math.max(1, Math.min(99, Number(STATE.activeSeat) || 1));
+            if (active > pax) {
+                active = pax;
+                STATE.activeSeat = pax;
+            }
+
+            const activeLabel = document.getElementById("activeGuestLabel");
+            if (activeLabel) activeLabel.textContent = `ACTIF : C${active}`;
+            
+            const whoHead = document.getElementById("btnHeadWho");
+            if (whoHead) {
+                const main = whoHead.querySelector(".head-main-v20");
+                if (main) main.textContent = `QUI MANGE ? · C${active}`;
+                else whoHead.textContent = `QUI MANGE ? · C${active}`;
+                whoHead.dataset.activeSeat = String(active);
+                whoHead.style.borderColor = `var(--c${Math.min(active, 9)})`;
+                whoHead.style.color = "#111";
+                whoHead.style.background = "#fff";
+            }
+
+            // Génération dynamique limitée au nombre de PAX (fini les boutons fantômes)
+            el.innerHTML = Array.from({length: pax}, (_, idx) => {
+                const seat = idx + 1;
+                return `<button type="button"
+                                class="guest-btn${seat === active ? " active" : ""}"
+                                data-seat="${seat}"
+                                title="Convive C${seat}">
+                          C${seat}
+                        </button>`;
+            }).join("");
+        };
+    }
+
+    // 4. Panneau Cuisson express indépendant
+    if (typeof window.renderQuickCookingSeats === "function") {
+        window.renderQuickCookingSeats = function(activeSeat) {
+            const host = document.getElementById("quickCookSeats");
+            if(!host) return;
+            const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
+            const pax = Math.max(1, num(o.pax || 2));
+            const active = Math.max(1, Math.min(pax, Number(activeSeat) || 1));
+
+            host.innerHTML = Array.from({length: pax}, (_, idx) => {
+                const seat = idx + 1;
+                return `<button type="button"
+                                class="quick-cook-seat-btn${seat === active ? " active" : ""}"
+                                data-quick-seat="${seat}"
+                                data-seat="${seat}"
+                                aria-pressed="${seat === active ? "true" : "false"}">
+                          <span>C${seat}</span>
+                        </button>`;
+            }).join("");
+        };
+    }
+}, 1000);
+</script>
+
+</body></html>`;
 }
 
 async function printViaSystem(printer,lines,meta={}){
@@ -14822,16 +15071,75 @@ html.ichef-phone-denied body > #order.hidden { display: none !important; }
 </style>
 
 <script id="acceleration-fulgurante">
-/* CONNEXION CORRIGÉE 2026-09-04
-   Important : on conserve UNE SEULE fonction verifyPin(), celle du moteur principal.
-   L'ancien override tardif ignorait parfois l'identifiant établissement saisi et
-   créait une course entre bootApp(), le plan et Socket.IO. */
+// Déblocage immédiat du téléphone dès la lecture du script
 document.documentElement.classList.remove("ichef-phone-denied");
+
 setTimeout(() => {
-  const phoneLock=document.getElementById("ichefPhoneDenied");
-  if(phoneLock)phoneLock.remove();
-  document.documentElement.classList.remove("ichef-phone-denied");
-},0);
+    // Sécurité supplémentaire anti-verrouillage téléphone
+    const phoneLock = document.getElementById("ichefPhoneDenied");
+    if (phoneLock) phoneLock.remove();
+    document.documentElement.classList.remove("ichef-phone-denied");
+
+    // Remplacement de la fonction de vérification
+    window.verifyPin = async function() {
+        if (!navigator.onLine) {
+            if(typeof loginMessage==="function") loginMessage("Connexion Internet requise");
+            return;
+        }
+        
+        if (STATE.loginPin.length < 4) { 
+            if(typeof loginMessage==="function") loginMessage("Code incomplet"); 
+            return; 
+        }
+        
+        const btn = document.getElementById("pinValidate");
+        if (btn) btn.textContent = "SYNCHRONISATION DU PLAN...";
+        
+        try {
+            // Frappe le serveur pour valider le code
+            const r = await serverFetch("/api/verify-pin", {
+                method: "POST",
+                body: JSON.stringify({tenantID: STATE.tenantID, pin: STATE.loginPin, deviceId: STATE.deviceId, page: "PAD", terminal: "PAD"})
+            });
+            const j = await r.json().catch(() => ({}));
+            if (!r.ok || !j.success) throw new Error(j.error || j.message || "Code refusé");
+            
+            STATE.pin = STATE.loginPin;
+            STATE.role = j.role || "";
+            STATE.plan = j.plan || "";
+            STATE.authenticated = true;
+
+            // Lancement de la synchro de base en fond
+            if (typeof bootApp === "function") bootApp().catch(()=>{});
+
+            // 👉 Appel propre du plan (qui va télécharger et dessiner les tables EN ARRIÈRE-PLAN)
+            if (typeof window.openPadServiceHome === "function") {
+                await window.openPadServiceHome();
+            }
+
+            // 👉 BASCULE VISUELLE INSTANTANÉE (0.0s) UNIQUEMENT QUAND LE PLAN EST PRÊT
+            const loginEl = document.getElementById("login");
+            if(loginEl) {
+                loginEl.style.setProperty("display", "none", "important");
+                loginEl.classList.add("hidden");
+            }
+
+        } catch(e) {
+            STATE.loginPin = "";
+            if(typeof renderPin==="function") renderPin();
+            if(typeof loginMessage==="function") loginMessage(e?.message || "Connexion impossible");
+            if (btn) btn.textContent = "VALIDER LE PIN";
+        }
+    };
+
+    // Re-câblage du bouton avec la nouvelle fonction instantanée
+    const btnVal = document.getElementById("pinValidate");
+    if (btnVal) {
+        const newBtn = btnVal.cloneNode(true);
+        btnVal.parentNode.replaceChild(newBtn, btnVal);
+        newBtn.addEventListener("click", window.verifyPin);
+    }
+}, 800); 
 </script>
   <!-- =========================================================
      DÉVERROUILLAGE DU PAIEMENT DIRECT (SANS ATTENDRE LE SERVICE)
@@ -14987,7 +15295,7 @@ setTimeout(() => {
             
             openSheet("CAISSE · TABLE " + STATE.currentTable, `
                 <div class="big-state"><div class="big gold">${money(total)}</div><div class="small">Profil fiscal ${esc(profile.label)} · ${esc(profile.currency)} · serveur officiel</div></div>
-                ${paid ? `<div class="list-row"><div class="grow"><div class="title">VENTE FISCALISÉE</div><div class="sub">Ticket ${esc(o.fiscalTicket?.ticketNumber||o.fiscalReceiptReference||o.paymentDraft?.receiptReference||"—")}</div></div></div>` : ""}
+                ${paid ? \`<div class="list-row"><div class="grow"><div class="title">VENTE FISCALISÉE</div><div class="sub">Ticket \${esc(o.fiscalTicket?.ticketNumber||o.fiscalReceiptReference||o.paymentDraft?.receiptReference||"—")}</div></div></div>\` : ""}
                 
                 <!-- GRILLE DE PAIEMENT MISE À JOUR AVEC LE QR CODE -->
                 <div class="action-grid" style="gap: 12px;">
@@ -14997,7 +15305,7 @@ setTimeout(() => {
                     <button class="action-btn" data-pay="QR_CODE" style="min-height: 80px; font-size: 18px; background: #f4faff !important; border: 3px solid #58a9ff !important; color: #13568c !important;" ${paid||!stripeOn?"disabled":""}>📱 SCAN QR CODE</button>
                     <button class="action-btn" data-pay="STRIPE" style="min-height: 80px; font-size: 18px;" ${paid||!stripeOn?"disabled":""}>LIEN STRIPE${stripeOn?"":" · OFF"}</button>
                     
-                    ${twint ? `<button class="action-btn purple" data-pay="TWINT" style="min-height: 70px; font-size: 16px;" ${paid?"disabled":""}>TWINT</button>` : `<button class="action-btn purple" data-pay="AUTRE" style="min-height: 70px; font-size: 16px;" ${paid?"disabled":""}>AUTRE</button>`}
+                    ${twint ? \`<button class="action-btn purple" data-pay="TWINT" style="min-height: 70px; font-size: 16px;" \${paid?"disabled":""}>TWINT</button>\` : \`<button class="action-btn purple" data-pay="AUTRE" style="min-height: 70px; font-size: 16px;" \${paid?"disabled":""}>AUTRE</button>\`}
                     <button class="action-btn" data-pay="" style="min-height: 70px; font-size: 16px;" ${paid?"disabled":""}>EN ATTENTE</button>
                 </div>
                 
@@ -15056,128 +15364,6 @@ setTimeout(() => {
         };
     }
 }, 1200);
-</script>
-      <!-- =========================================================
-     CORRECTION DÉFINITIVE : 4 COLONNES (ENTRÉE/PLAT/DESSERT/PRIX)
-     ========================================================= -->
-<style id="style-colonnes-parfaites-v3">
-/* 1. La VRAIE grille à 4 colonnes : 3 parts égales (1fr) + la zone prix/boutons (auto) */
-body.order-open .ticket-row {
-    display: grid !important;
-    grid-template-columns: 1fr 1fr 1fr auto !important;
-    align-items: center !important;
-    min-height: 75px !important;
-    padding: 0 10px !important;
-    gap: 5px !important;
-}
-
-/* 2. On place la zone des boutons bien sagement dans la 4ème colonne */
-body.order-open .ticket-right {
-    grid-column: 4 !important;
-    position: static !important; /* Annule l'ancien mode flottant */
-    transform: none !important;
-    display: flex !important;
-    flex-direction: column !important;
-    align-items: flex-end !important;
-    z-index: 10 !important;
-}
-
-/* 3. Placement du plat dans la colonne 1, 2 ou 3 */
-body.order-open .ticket-row[data-course-col="1"] .ticket-left { grid-column: 1 !important; }
-body.order-open .ticket-row[data-course-col="2"] .ticket-left { grid-column: 2 !important; }
-body.order-open .ticket-row[data-course-col="3"] .ticket-left { grid-column: 3 !important; }
-
-/* 4. Centrage parfait du texte dans sa colonne */
-body.order-open .ticket-left {
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    width: 100% !important;
-    min-width: 0 !important; 
-    padding: 0 10px !important;
-    box-sizing: border-box !important;
-}
-
-/* Alignement interne avec le badge et les émojis */
-body.order-open .ticket-name {
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    flex-wrap: nowrap !important;
-    width: 100% !important;
-    font-size: 18px !important;
-    font-weight: 950 !important;
-    color: #111111 !important;
-}
-
-/* 5. Affichage des éléments internes du texte */
-body.order-open .ticket-name .seat-badge {
-    flex: 0 0 auto !important;
-    margin-right: 8px !important;
-}
-
-html body.order-open .ticket-name .dest-tag,
-html body.order-open .ticket-name .line-state,
-html body.order-open .ticket-name .cooking-tag {
-    display: inline-flex !important;
-    margin-left: 6px !important;
-    flex: 0 0 auto !important;
-}
-
-/* On masque le sous-texte inutile (x1 PLATS) */
-html body.order-open .ticket-row .ticket-meta {
-    display: none !important;
-}
-</style>
-
-<script id="fix-titres-3-mots">
-setTimeout(() => {
-    // Remplacement de la fonction pour limiter le titre STRICTEMENT à 3 mots
-    window.itemName = function(item) {
-        let name = String(item?.name ?? item?.n ?? item?.productName ?? item?.title ?? item?.label ?? "Article").trim();
-        
-        // Supprime les descriptions d'iCHEF après le séparateur
-        const sepIndex = name.search(/\[BR\]|--/i);
-        if (sepIndex >= 0) {
-            name = name.slice(0, sepIndex).trim();
-        }
-        
-        // Découpe et limite à 3 mots
-        let words = name.split(/\s+/).filter(Boolean);
-        if (words.length > 3) {
-            name = words.slice(0, 3).join(" ") + "…";
-        }
-        
-        return name;
-    };
-    
-    // Force la mise à jour de l'affichage immédiatement
-    if (typeof scheduleRender === "function") scheduleRender();
-}, 800);
-</script>
-
-<script id="ichef-pad-connection-watchdog">
-/* Filet de sécurité connexion uniquement — aucun impact sur le mode architectural. */
-(function(){
-  let lastKick=0;
-  function healConnection(){
-    if(typeof STATE==="undefined" || !STATE.authenticated || STATE.demo || !navigator.onLine)return;
-    const t=Date.now();
-    if(t-lastKick<8000)return;
-    const socketOk=!!STATE.socket?.connected;
-    const serverFresh=Number(STATE.lastServerAt||0)>0 && (t-Number(STATE.lastServerAt||0)<20000);
-    if(socketOk && serverFresh)return;
-    lastKick=t;
-    try{connectSocket();}catch(_){}
-    if(!serverFresh){
-      try{syncFull("watchdog");}catch(_){}
-    }
-  }
-  window.addEventListener("online",()=>setTimeout(healConnection,150),{passive:true});
-  window.addEventListener("focus",healConnection,{passive:true});
-  document.addEventListener("visibilitychange",()=>{if(!document.hidden)healConnection();});
-  setInterval(healConnection,10000);
-})();
 </script>
 </body>
 </html>
