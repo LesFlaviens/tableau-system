@@ -14911,5 +14911,193 @@ setTimeout(() => {
     }
 }, 1200);
 </script>
+  <!-- =========================================================
+     NOUVEAU SYSTÈME : PAIEMENT CLIENT PAR QR CODE
+     ========================================================= -->
+<script id="ichef-qr-code-payment">
+setTimeout(() => {
+    // 1. Nouvelle fonction : Générer et écouter le paiement par QR Code
+    window.startQRCodePayment = async function(order) {
+        if(!stripeEnabledForRestaurant()) throw new Error("Stripe est désactivé dans l'administration");
+        const total = orderTotal(order);
+        const paymentRequestId = serverPaymentId("STRIPE_QR");
+        const snap = fiscalServerSnapshot(order);
+        
+        // Écran d'attente pendant la création du lien
+        openSheet("GÉNÉRATION DU QR CODE...", `<div class="big-state"><div class="small" style="font-size:18px; font-weight:bold;">Connexion au serveur bancaire en cours...</div></div>`);
+        
+        let checkout;
+        try {
+            checkout = await paymentServerRequest('/api/payments/stripe/checkout', {
+                method: 'POST',
+                idempotencyKey: paymentRequestId,
+                body: {
+                    paymentRequestId, tableId: STATE.currentTable, amount: total, 
+                    currency: paymentCurrency(), orderSnapshot: snap,
+                    successUrl: location.href, cancelUrl: location.href
+                }
+            });
+        } catch(err) {
+            throw err;
+        }
+        
+        if(!checkout.url) throw new Error("Lien de paiement non retourné par le serveur");
+        
+        // Génération du QR Code à partir de l'URL Stripe sécurisée
+        const qrUrl = "https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=10&data=" + encodeURIComponent(checkout.url);
+        
+        openSheet("📱 SCANNEZ POUR PAYER", `
+            <div class="big-state" style="background:#fff; border:4px solid #58a9ff; border-radius: 24px; padding: 25px;">
+                <div class="big" style="color:#111 !important; font-size:48px !important; margin-bottom: 15px;">${money(total)}</div>
+                <img src="${qrUrl}" alt="QR Code" style="width:250px; height:250px; border-radius:12px; box-shadow:0 8px 25px rgba(0,0,0,0.15);">
+                <div class="small" style="font-size:16px; margin-top:20px; color:#555; line-height: 1.4; font-weight: 800;">
+                    Le client scanne ce code avec son appareil photo, paie sur son téléphone, et récupère sa facture.
+                </div>
+            </div>
+            <div id="stripeQrState" class="list-row" style="margin-top:15px; border: 2px solid #cfd2d5;">
+                <div class="grow" style="text-align: center;">
+                    <div class="title" style="font-size:18px; color: #111;">STATUT DU PAIEMENT</div>
+                    <div class="sub" style="font-size:18px; color:#ff9a45; font-weight:1000; margin-top: 5px;">⏳ EN ATTENTE DU CLIENT...</div>
+                </div>
+            </div>
+            <button class="action-btn" style="width:100%; margin-top:15px; min-height: 60px; font-size: 18px; font-weight: 950;" data-stripe-qr-check>🔄 VÉRIFIER LE STATUT</button>
+        `);
+
+        // Fonction de vérification (Polling)
+        const check = async () => {
+            try {
+                const st = await stripeStatus(paymentRequestId);
+                const label = text(st.status).toUpperCase();
+                const sub = document.getElementById("stripeQrState")?.querySelector(".sub");
+                
+                if(sub) {
+                    if (label === "PAID") {
+                        sub.innerHTML = "✅ PAIEMENT VALIDÉ !";
+                        sub.style.color = "#2dcc70";
+                    } else {
+                        sub.innerHTML = "⏳ EN ATTENTE DU CLIENT...";
+                    }
+                }
+                
+                if (label === "PAID") {
+                    clearStripeWatch();
+                    const result = await fiscalizeWithServer(order, "ONLINE", [{method:"QR_CODE", provider:"STRIPE", amount:total, paymentRequestId}], serverPaymentId("FISCAL_STRIPE"));
+                    applyServerFiscalResult(order, result, "QR_CODE");
+                    
+                    document.getElementById("sheetBody").innerHTML = `
+                        <div class="big-state" style="background:#eefbf4!important; border: 4px solid #2dcc70!important; padding: 40px !important;">
+                            <div class="big" style="color:#2dcc70!important; font-size:50px!important; margin-bottom: 20px;">✅ PAYÉ</div>
+                            <div class="small" style="font-size:22px!important; color:#111!important; font-weight: 900; line-height: 1.4;">Le paiement par QR Code est validé.<br>La table est libérée.</div>
+                        </div>
+                        <button class="action-btn green" onclick="closeSheet()" style="width:100%; margin-top:20px; min-height: 80px; font-size:26px!important; font-weight: 1000;">TERMINER</button>
+                    `;
+                    
+                    await syncFull("stripe-paid").catch(()=>{});
+                    if (typeof toast === "function") toast(`✅ QR Code confirmé · ticket ${result.ticketNumber}`);
+                    const pcfg = loadPrinterConfig();
+                    if (pcfg.enabled && pcfg.printers?.caisse?.enabled && pcfg.receipt?.autoAfterPayment !== false) {
+                        try { await printCashReceipt(STATE.currentOrder, {auto:true}); } catch(_) {}
+                    }
+                    return true;
+                }
+                if(["EXPIRED","FAILED","CANCELED","CANCELLED","REJECTED"].includes(label)) {
+                    clearStripeWatch();
+                    if (typeof toast === "function") toast("Paiement QR Code annulé ou échoué", true);
+                    return false;
+                }
+            } catch(err) {
+                console.warn('[iCHEF QR STRIPE] statut', err);
+            }
+            return false;
+        };
+
+        document.getElementById("sheetBody")?.querySelector("[data-stripe-qr-check]")?.addEventListener("click", check);
+        clearStripeWatch();
+        ICHEF_STRIPE_WATCH = setInterval(check, 3000); // Vérification automatique toutes les 3 secondes
+        setTimeout(clearStripeWatch, 15 * 60 * 1000); // Timeout de sécurité après 15 minutes
+        return true;
+    };
+
+    // 2. Écraser la fonction openPayment pour intégrer le bouton QR CODE
+    if (typeof window.openPayment === "function") {
+        window.openPayment = function() {
+            if(!STATE.currentTable){ toast("Ouvrez d’abord une table",true); return; }
+            const o = ensureOrder(STATE.currentTable), total = orderTotal(o), profile = fiscalProfile();
+            const paid = fiscalOrderFinalized(o);
+            const stripeOn = stripeEnabledForRestaurant();
+            const twint = profile.country === "CH";
+            
+            openSheet("CAISSE · TABLE " + STATE.currentTable, `
+                <div class="big-state"><div class="big gold">${money(total)}</div><div class="small">Profil fiscal ${esc(profile.label)} · ${esc(profile.currency)} · serveur officiel</div></div>
+                ${paid ? \`<div class="list-row"><div class="grow"><div class="title">VENTE FISCALISÉE</div><div class="sub">Ticket \${esc(o.fiscalTicket?.ticketNumber||o.fiscalReceiptReference||o.paymentDraft?.receiptReference||"—")}</div></div></div>\` : ""}
+                
+                <!-- GRILLE DE PAIEMENT MISE À JOUR AVEC LE QR CODE -->
+                <div class="action-grid" style="gap: 12px;">
+                    <button class="action-btn green" data-pay="CARTE" style="min-height: 70px; font-size: 16px;" ${paid?"disabled":""}>CARTE / TPE</button>
+                    <button class="action-btn gold" data-pay="ESPÈCES" style="min-height: 70px; font-size: 16px;" ${paid?"disabled":""}>ESPÈCES</button>
+                    
+                    <button class="action-btn" data-pay="QR_CODE" style="min-height: 80px; font-size: 18px; background: #f4faff !important; border: 3px solid #58a9ff !important; color: #13568c !important;" ${paid||!stripeOn?"disabled":""}>📱 SCAN QR CODE</button>
+                    <button class="action-btn" data-pay="STRIPE" style="min-height: 80px; font-size: 18px;" ${paid||!stripeOn?"disabled":""}>LIEN STRIPE${stripeOn?"":" · OFF"}</button>
+                    
+                    ${twint ? \`<button class="action-btn purple" data-pay="TWINT" style="min-height: 70px; font-size: 16px;" \${paid?"disabled":""}>TWINT</button>\` : \`<button class="action-btn purple" data-pay="AUTRE" style="min-height: 70px; font-size: 16px;" \${paid?"disabled":""}>AUTRE</button>\`}
+                    <button class="action-btn" data-pay="" style="min-height: 70px; font-size: 16px;" ${paid?"disabled":""}>EN ATTENTE</button>
+                </div>
+                
+                <div class="action-grid" style="margin-top:12px">
+                    <button class="action-btn gold" data-cash-receipt ${paid?"":"disabled"}>TICKET CLIENT</button>
+                    <button class="action-btn green" data-fiscal-ticket-print ${paid?"":"disabled"}>IMPRIMER FISCAL</button>
+                    <button class="action-btn" data-fiscal-history style="grid-column:1/-1">HISTORIQUE FISCAL</button>
+                </div>
+                <div style="margin-top:12px;color:#98a1a4;font-size:11px;text-align:center;line-height:1.4;">Le QR Code affiche l'addition sur le téléphone du client. Le paiement est automatiquement validé et la table libérée.</div>
+            `);
+
+            document.getElementById("sheetBody").querySelectorAll("[data-pay]").forEach(b => {
+                b.onclick = async () => {
+                    const m = b.dataset.pay || null;
+                    
+                    if(m === "STRIPE") {
+                        b.disabled = true; const old = b.textContent; b.textContent = "OUVERTURE…";
+                        try { await startStripePayment(o); } catch(e) { toast(e.message || "Stripe impossible", true); b.disabled = false; b.textContent = old; }
+                        return;
+                    }
+                    
+                    // INTERCEPTION DU BOUTON QR CODE
+                    if(m === "QR_CODE") {
+                        b.disabled = true; const old = b.textContent; b.textContent = "GÉNÉRATION...";
+                        try { await startQRCodePayment(o); } catch(e) { toast(e.message || "Génération du QR Code impossible", true); b.disabled = false; b.textContent = old; }
+                        return;
+                    }
+
+                    b.disabled = true;
+                    try {
+                        const ok = await recordPayment(m);
+                        if(ok) {
+                            closeSheet();
+                            if(document.body.classList.contains("summary-open")) renderSummary();
+                        }
+                    } catch(e) {
+                        toast(e.message || "Paiement refusé", true);
+                    } finally {
+                        b.disabled = false;
+                    }
+                };
+            });
+
+            document.getElementById("sheetBody").querySelector("[data-cash-receipt]")?.addEventListener("click", async () => {
+                const target = STATE.currentOrder || o;
+                try { await printCashReceipt(target, {duplicate: true}); toast("Ticket client envoyé à la caisse"); }
+                catch(e) { toast("Ticket caisse : " + (e?.message || "échec"), true); }
+            });
+
+            document.getElementById("sheetBody").querySelector("[data-fiscal-ticket-print]")?.addEventListener("click", async () => {
+                try { const ref = await printCurrentFiscalTicket(); toast(`Copie fiscale ${ref} envoyée à l'impression`); }
+                catch(e) { toast("Impression fiscale : " + (e?.message || "échec"), true); }
+            });
+
+            document.getElementById("sheetBody").querySelector("[data-fiscal-history]")?.addEventListener("click", () => openServerFiscalHistory("day", ""));
+        };
+    }
+}, 1200);
+</script>
 </body>
 </html>
