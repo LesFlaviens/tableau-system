@@ -6087,13 +6087,17 @@ const ICHEF_COOKING_LEVELS_PHONE = [
   "BIEN CUIT",
   "PLUS QUE BIEN CUIT"
 ];
-const ICHEF_COOKING_LEVELS_FISH=["NACRÉ","À POINT","BIEN CUIT"];
-const ICHEF_COOKING_LEVELS_VEAL_DUCK=["ROSÉ","À POINT","BIEN CUIT"];
+const ICHEF_COOKING_LEVELS_FISH=["NACRÉ","BIEN CUIT"];
+const ICHEF_COOKING_LEVELS_VEAL_DUCK=["ROSÉ","BIEN CUIT"];
 const ICHEF_COOKING_LEVELS_WHITE_MEAT=["BIEN CUIT"];
 const ICHEF_COOKING_AUTOMATIC={
   POISSON:"NACRÉ",
-  VOLAILLE:"BIEN CUIT",
+  VIANDE_BLANCHE:"BIEN CUIT",
   PORC:"BIEN CUIT",
+  RAGOUT:"BIEN CUIT",
+
+  /* Compatibilité avec les anciennes commandes déjà enregistrées. */
+  VOLAILLE:"BIEN CUIT",
   MIJOTE:"BIEN CUIT"
 };
 
@@ -6166,7 +6170,7 @@ function detectDishFamily(productOrItem){
 
   /* Ragoûts / mijotés : BIEN CUIT automatique. */
   if(/\b(ragout|ragout|bourguignon|daube|civet|blanquette|mijote|mijotee|braise|braisee|pot au feu|navarin|carbonnade|goulash)\b/.test(hay)){
-    return "MIJOTE";
+    return "RAGOUT";
   }
 
   /* Poisson : NACRÉ automatique. */
@@ -6176,7 +6180,7 @@ function detectDishFamily(productOrItem){
 
   /* Viandes blanches / volaille : BIEN CUIT automatique. */
   if(/\b(viande blanche|poulet|poussin|poussin roti|poussin grille|volaille|dinde|pintade|coquelet|chapon|poularde)\b/.test(hay)){
-    return "VOLAILLE";
+    return "VIANDE_BLANCHE";
   }
 
   /* Porc : BIEN CUIT automatique. */
@@ -6211,23 +6215,42 @@ function detectDishFamily(productOrItem){
 function cookingProfileFor(productOrItem){
   const family=detectDishFamily(productOrItem);
 
-  if(family==="MIJOTE" || family==="VOLAILLE" || family==="PORC"){
+  /*
+    IMPORTANT :
+    Le moteur PAD utilise "automatic" comme TEXTE de cuisson
+    (ex. "BIEN CUIT"), et non comme booléen.
+    "defaultCooking" est ajouté pour conserver aussi la sémantique
+    du nouveau profil fourni.
+  */
+
+  if(family==="RAGOUT" || family==="PORC" || family==="VIANDE_BLANCHE"){
+    const defaultCooking="BIEN CUIT";
     return {
       family,
       required:false,
-      automatic:ICHEF_COOKING_AUTOMATIC[family]||"BIEN CUIT",
-      label:"CUISSON",
+      automatic:defaultCooking,
+      automaticEnabled:true,
+      defaultCooking,
+      label:
+        family==="RAGOUT"
+          ?"CUISSON RAGOÛT"
+          :family==="PORC"
+            ?"CUISSON PORC"
+            :"CUISSON VIANDE BLANCHE",
       levels:["BIEN CUIT"]
     };
   }
 
   if(family==="POISSON"){
+    const defaultCooking="NACRÉ";
     return {
       family,
       required:false,
-      automatic:ICHEF_COOKING_AUTOMATIC.POISSON,
+      automatic:defaultCooking,
+      automaticEnabled:true,
+      defaultCooking,
       label:"CUISSON POISSON",
-      levels:ICHEF_COOKING_LEVELS_FISH
+      levels:["NACRÉ","BIEN CUIT"]
     };
   }
 
@@ -6236,8 +6259,10 @@ function cookingProfileFor(productOrItem){
       family,
       required:true,
       automatic:"",
+      automaticEnabled:false,
+      defaultCooking:"",
       label:"CUISSON VEAU",
-      levels:ICHEF_COOKING_LEVELS_VEAL_DUCK
+      levels:["ROSÉ","BIEN CUIT"]
     };
   }
 
@@ -6246,8 +6271,10 @@ function cookingProfileFor(productOrItem){
       family,
       required:true,
       automatic:"",
+      automaticEnabled:false,
+      defaultCooking:"",
       label:"CUISSON CANARD",
-      levels:ICHEF_COOKING_LEVELS_VEAL_DUCK
+      levels:["ROSÉ","BIEN CUIT"]
     };
   }
 
@@ -6256,6 +6283,8 @@ function cookingProfileFor(productOrItem){
       family,
       required:true,
       automatic:"",
+      automaticEnabled:false,
+      defaultCooking:"",
       label:"CUISSON VIANDE ROUGE",
       levels:[
         "BLEU FROID",
@@ -6277,6 +6306,8 @@ function cookingProfileFor(productOrItem){
       family,
       required:false,
       automatic:"",
+      automaticEnabled:false,
+      defaultCooking:"",
       label:"CUISSON PÂTES",
       levels:["AL DENTE","BIEN CUITES"]
     };
@@ -6287,12 +6318,36 @@ function cookingProfileFor(productOrItem){
       family,
       required:false,
       automatic:"",
+      automaticEnabled:false,
+      defaultCooking:"",
       label:"CUISSON ŒUF",
-      levels:["COULANT","MOLLET","BIEN CUIT"]
+      levels:["COULANT","MOLLET","POCHER","BIEN CUIT"]
     };
   }
 
-  return {family,required:false,automatic:"",label:"",levels:[]};
+  /* Compatibilité si une ancienne ligne arrive encore avec l'ancien nom de famille. */
+  if(family==="MIJOTE" || family==="VOLAILLE"){
+    const defaultCooking="BIEN CUIT";
+    return {
+      family,
+      required:false,
+      automatic:defaultCooking,
+      automaticEnabled:true,
+      defaultCooking,
+      label:family==="MIJOTE"?"CUISSON RAGOÛT":"CUISSON VIANDE BLANCHE",
+      levels:["BIEN CUIT"]
+    };
+  }
+
+  return {
+    family,
+    required:false,
+    automatic:"",
+    automaticEnabled:false,
+    defaultCooking:"",
+    label:"",
+    levels:[]
+  };
 }
 
 function needsMeatCookingChoice(name,dest="cuisine"){
@@ -15134,5 +15189,11 @@ setTimeout(() => {
     });
 })();
 </script>
+
+<script id="ichef-cuisson-complete-marker">
+window.__ICHEF_COOKING_PROFILE_VERSION__="CUISSON-COMPLETE-2026-09-04";
+console.info("[iCHEF] profils cuisson complets actifs : RAGOÛT / VIANDE BLANCHE / POISSON / VEAU / CANARD / VIANDE ROUGE / PÂTES / ŒUF");
+</script>
+
 </body>
 </html>
