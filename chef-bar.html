@@ -682,29 +682,155 @@
         }
 
         // === MOTEUR RÉSEAU BLINDÉ ===
+        // Correction 2026-09-04 : une écriture n'est considérée comme enregistrée
+        // que si /update-order répond réellement OK. Les écritures non confirmées
+        // restent dans un cache propre à l'établissement et ne peuvent plus être
+        // écrasées par le polling de 10 secondes.
+        const CHEF_BAR_CACHE_KEY = `ICHEF_CHEF_BAR_SYNC_${tenantID || 'UNKNOWN'}`;
+        const CHEF_BAR_PENDING_KEY = `ICHEF_CHEF_BAR_PENDING_${tenantID || 'UNKNOWN'}`;
+
+        function readChefBarCache() {
+            try {
+                const own = JSON.parse(localStorage.getItem(CHEF_BAR_CACHE_KEY) || 'null');
+                if (own && typeof own === 'object') {
+                    if (!own.activeOrders || typeof own.activeOrders !== 'object') own.activeOrders = {};
+                    return own;
+                }
+            } catch (_) {}
+
+            // Compatibilité avec l'ancien cache sans mélanger les établissements
+            // dès qu'un cache tenant-spécifique a été créé.
+            try {
+                const legacy = JSON.parse(localStorage.getItem('EMPIRE_CHEF_SYNC') || 'null');
+                if (legacy && typeof legacy === 'object') {
+                    if (!legacy.activeOrders || typeof legacy.activeOrders !== 'object') legacy.activeOrders = {};
+                    return legacy;
+                }
+            } catch (_) {}
+            return { activeOrders: {} };
+        }
+
+        function writeChefBarCache(state) {
+            try {
+                const safeState = (state && typeof state === 'object') ? state : { activeOrders: {} };
+                if (!safeState.activeOrders || typeof safeState.activeOrders !== 'object') safeState.activeOrders = {};
+                localStorage.setItem(CHEF_BAR_CACHE_KEY, JSON.stringify(safeState));
+                // Ancienne clé conservée uniquement pour compatibilité avec les versions précédentes.
+                localStorage.setItem('EMPIRE_CHEF_SYNC', JSON.stringify(safeState));
+            } catch (e) {
+                console.warn('Cache Chef Bar indisponible :', e);
+            }
+        }
+
+        function loadChefBarPendingKeys() {
+            try {
+                const arr = JSON.parse(localStorage.getItem(CHEF_BAR_PENDING_KEY) || '[]');
+                return new Set(Array.isArray(arr) ? arr.filter(Boolean).map(String) : []);
+            } catch (_) {
+                return new Set();
+            }
+        }
+
+        const chefBarDirtyKeys = loadChefBarPendingKeys();
+        let chefBarSaveInProgress = 0;
+
+        function persistChefBarPendingKeys() {
+            try {
+                localStorage.setItem(CHEF_BAR_PENDING_KEY, JSON.stringify([...chefBarDirtyKeys]));
+            } catch (_) {}
+        }
+
+        function markChefBarDirty(key) {
+            chefBarDirtyKeys.add(String(key));
+            persistChefBarPendingKeys();
+        }
+
+        function clearChefBarDirty(key) {
+            chefBarDirtyKeys.delete(String(key));
+            persistChefBarPendingKeys();
+        }
+
+        function setChefBarNetworkStatus(label, ok) {
+            const syncDot = document.getElementById('sync-dot');
+            const syncText = document.getElementById('sync-text');
+            if (syncDot) syncDot.style.background = ok ? 'var(--accent)' : 'var(--alert)';
+            if (syncText) syncText.innerText = label;
+        }
+
         const API = {
             get: async () => {
                 try {
-                    let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(tenantID)}`, { credentials:'include', cache:'no-store', headers: chefBarAuthHeaders() });
-                    if(r.ok) return await r.json();
-                    throw new Error("Serveur injoignable");
+                    const r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(tenantID)}`, {
+                        credentials:'include',
+                        cache:'no-store',
+                        headers: chefBarAuthHeaders()
+                    });
+                    const payload = await r.json().catch(() => ({}));
+                    if (!r.ok) throw new Error(payload?.error || `Lecture serveur refusée (${r.status})`);
+                    if (!payload || typeof payload !== 'object') throw new Error('Réponse serveur invalide');
+                    payload.__ichefOffline = false;
+                    return payload;
                 } catch(e) {
-                    return JSON.parse(localStorage.getItem('EMPIRE_CHEF_SYNC')) || { activeOrders: {} };
+                    const fallback = readChefBarCache();
+                    fallback.__ichefOffline = true;
+                    fallback.__ichefOfflineReason = e?.message || 'Serveur injoignable';
+                    return fallback;
                 }
             },
+
             save: async (k, d) => {
-                let state = JSON.parse(localStorage.getItem('EMPIRE_CHEF_SYNC')) || { activeOrders: {} };
-                state.activeOrders[k] = { data: d };
-                localStorage.setItem('EMPIRE_CHEF_SYNC', JSON.stringify(state));
-                
+                const key = String(k || '').trim();
+                if (!key) return { ok:false, error:'Clé de sauvegarde invalide.' };
+
+                // Écriture locale AVANT le réseau : aucune saisie utilisateur n'est perdue.
+                const state = readChefBarCache();
+                state.activeOrders[key] = { data: cloneSafe(d, d) };
+                writeChefBarCache(state);
+                markChefBarDirty(key);
+
+                chefBarSaveInProgress++;
                 try {
-                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
-                        method:'POST', credentials:'include', cache:'no-store', headers:chefBarAuthHeaders({'Content-Type':'application/json'}),
-                        body: JSON.stringify({ tableId:k, order:{data:d} })
+                    const r = await fetch(`${SERVER_URL}/update-order?tenantID=${encodeURIComponent(tenantID)}`, {
+                        method:'POST',
+                        credentials:'include',
+                        cache:'no-store',
+                        headers:chefBarAuthHeaders({'Content-Type':'application/json'}),
+                        body: JSON.stringify({
+                            tableId:key,
+                            order:{data:d},
+                            deviceId:getDeviceFingerprint(),
+                            terminal:'CHEF_BAR'
+                        })
                     });
-                } catch(e) { console.warn("Réseau lent. Données sécurisées localement."); }
+
+                    const payload = await r.json().catch(() => ({}));
+                    if (!r.ok || payload?.success === false) {
+                        throw new Error(payload?.error || `Sauvegarde refusée (${r.status})`);
+                    }
+
+                    clearChefBarDirty(key);
+                    setChefBarNetworkStatus('EN LIGNE', true);
+                    return { ok:true, status:r.status, data:payload };
+                } catch(e) {
+                    console.warn(`Chef Bar : ${key} conservé localement, serveur non confirmé.`, e);
+                    setChefBarNetworkStatus('À SYNCHRONISER', false);
+                    return { ok:false, error:e?.message || 'Synchronisation impossible' };
+                } finally {
+                    chefBarSaveInProgress = Math.max(0, chefBarSaveInProgress - 1);
+                }
             }
         };
+
+        async function retryChefBarPendingWrites() {
+            if (!chefBarDirtyKeys.size || chefBarSaveInProgress > 0 || !window.ICHEF_AUTH?.authenticated) return;
+            const cached = readChefBarCache();
+            const keys = [...chefBarDirtyKeys];
+            for (const key of keys) {
+                const entry = cached?.activeOrders?.[key];
+                if (!entry || !Object.prototype.hasOwnProperty.call(entry, 'data')) continue;
+                await API.save(key, entry.data);
+            }
+        }
 
         // ==============================================================
         // SÉCURITÉ — PIN VALIDÉ UNIQUEMENT PAR server.js
@@ -888,13 +1014,19 @@
         async function bootSystem() {
             if (window.ICHEF_PHONE_BLOCKED || !window.ICHEF_AUTH?.authenticated) return;
             try {
+                // Une sauvegarde locale interrompue lors d'une précédente session
+                // est retentée avant de charger l'état distant.
+                await retryChefBarPendingWrites();
                 const state = await API.get();
                 const aO = state?.activeOrders || {};
+                const cachedOrders = readChefBarCache()?.activeOrders || {};
 
                 // ------------------------------------------------------
                 // 1. CARTE : BAR UNIQUEMENT
                 // ------------------------------------------------------
-                const barMenuOrder = aO['MENU_MASTER_BAR'];
+                const barMenuOrder = chefBarDirtyKeys.has('MENU_MASTER_BAR')
+                    ? cachedOrders['MENU_MASTER_BAR']
+                    : aO['MENU_MASTER_BAR'];
 
                 if (
                     barMenuOrder?.data &&
@@ -932,8 +1064,11 @@
                 // ------------------------------------------------------
                 // 2. FICHES TECHNIQUES : BAR UNIQUEMENT
                 // ------------------------------------------------------
-                if (Array.isArray(aO['RECIPES_MASTER_BAR']?.data)) {
-                    recipesData = cloneSafe(aO['RECIPES_MASTER_BAR'].data, []);
+                const bootRecipesBar = chefBarDirtyKeys.has('RECIPES_MASTER_BAR')
+                    ? cachedOrders['RECIPES_MASTER_BAR']?.data
+                    : aO['RECIPES_MASTER_BAR']?.data;
+                if (Array.isArray(bootRecipesBar)) {
+                    recipesData = cloneSafe(bootRecipesBar, []);
                 } else {
                     recipesData = filterBarRecipes(aO['RECIPES_MASTER']?.data || [], menuData);
                 }
@@ -941,8 +1076,11 @@
                 // ------------------------------------------------------
                 // 3. STOCK : BAR UNIQUEMENT
                 // ------------------------------------------------------
-                if (Array.isArray(aO['INVENTORY_MASTER_BAR']?.data)) {
-                    stockGlobalData = cloneSafe(aO['INVENTORY_MASTER_BAR'].data, []);
+                const bootInventoryBar = chefBarDirtyKeys.has('INVENTORY_MASTER_BAR')
+                    ? cachedOrders['INVENTORY_MASTER_BAR']?.data
+                    : aO['INVENTORY_MASTER_BAR']?.data;
+                if (Array.isArray(bootInventoryBar)) {
+                    stockGlobalData = cloneSafe(bootInventoryBar, []);
                 } else {
                     stockGlobalData = filterBarStock(aO['INVENTORY_MASTER']?.data || []);
                 }
@@ -979,19 +1117,30 @@
                 const syncDot = document.getElementById('sync-dot');
                 const syncText = document.getElementById('sync-text');
 
-                if (syncDot) syncDot.style.background = 'var(--accent)';
-                if (syncText) syncText.innerText = "EN LIGNE";
+                if (state?.__ichefOffline) {
+                    if (syncDot) syncDot.style.background = 'var(--alert)';
+                    if (syncText) syncText.innerText = "HORS LIGNE — CACHE LOCAL";
+                } else {
+                    if (syncDot) syncDot.style.background = 'var(--accent)';
+                    if (syncText) syncText.innerText = "EN LIGNE";
+                }
 
                 // Rafraîchissement léger : devise + changements BAR.
                 if (window.__chefBarPoll) clearInterval(window.__chefBarPoll);
 
                 window.__chefBarPoll = setInterval(async () => {
                     try {
+                        await retryChefBarPendingWrites();
                         const freshState = await API.get();
+                        if (freshState?.__ichefOffline) {
+                            throw new Error(freshState.__ichefOfflineReason || 'Serveur indisponible');
+                        }
                         const fresh = freshState?.activeOrders || {};
 
                         const freshBarMenu = fresh['MENU_MASTER_BAR']?.data;
                         if (
+                            !chefBarDirtyKeys.has('MENU_MASTER_BAR') &&
+                            chefBarSaveInProgress === 0 &&
                             freshBarMenu &&
                             typeof freshBarMenu === 'object' &&
                             !Array.isArray(freshBarMenu)
@@ -999,11 +1148,11 @@
                             menuData = cloneSafe(freshBarMenu, menuData);
                         }
 
-                        if (Array.isArray(fresh['RECIPES_MASTER_BAR']?.data)) {
+                        if (!chefBarDirtyKeys.has('RECIPES_MASTER_BAR') && Array.isArray(fresh['RECIPES_MASTER_BAR']?.data)) {
                             recipesData = cloneSafe(fresh['RECIPES_MASTER_BAR'].data, recipesData);
                         }
 
-                        if (Array.isArray(fresh['INVENTORY_MASTER_BAR']?.data)) {
+                        if (!chefBarDirtyKeys.has('INVENTORY_MASTER_BAR') && Array.isArray(fresh['INVENTORY_MASTER_BAR']?.data)) {
                             stockGlobalData = cloneSafe(fresh['INVENTORY_MASTER_BAR'].data, stockGlobalData);
                         }
 
@@ -1115,8 +1264,17 @@
                 department: 'BAR'
             }));
 
-            await API.save('MENU_MASTER_BAR', cleanBarMenu);
-            await API.save('CATEGORIES_BAR', categoriesBar);
+            const menuSave = await API.save('MENU_MASTER_BAR', cleanBarMenu);
+            if (!menuSave?.ok) {
+                throw new Error(menuSave?.error || 'La carte BAR n’a pas été confirmée par le serveur.');
+            }
+
+            // Les catégories sont une donnée auxiliaire : si leur écriture échoue,
+            // la carte produit reste tout de même correctement enregistrée.
+            const categoriesSave = await API.save('CATEGORIES_BAR', categoriesBar);
+            if (!categoriesSave?.ok) {
+                console.warn('Catégories BAR en attente de synchronisation :', categoriesSave?.error);
+            }
 
             // Compatibilité ancienne interface Admin :
             // les données restent explicitement identifiées BAR.
@@ -1496,14 +1654,23 @@
 
             renderAll();
 
-            // Connexion stable existante conservée.
-            await syncMenuToCloud();
+            // Connexion stable existante conservée, avec confirmation réelle du serveur.
+            try {
+                await syncMenuToCloud();
 
-            if (nameInput) nameInput.value = '';
-            if (priceInput) priceInput.value = '';
-            if (stockInput) stockInput.value = '';
+                if (nameInput) nameInput.value = '';
+                if (priceInput) priceInput.value = '';
+                if (stockInput) stockInput.value = '';
 
-            alert(` "${name}" publié.`);
+                alert(` "${name}" publié et enregistré.`);
+            } catch (e) {
+                // Le produit reste dans menuData + cache local et sera retenté automatiquement.
+                // Surtout : le polling ne peut plus remettre l'ancienne carte par-dessus.
+                console.error('Enregistrement produit BAR non confirmé :', e);
+                alert(` "${name}" est conservé sur cet appareil mais le serveur n’a pas confirmé l’enregistrement.
+
+La synchronisation sera retentée automatiquement.`);
+            }
         }
         async function updateDishStock(cat, id) {
             let item = menuData[cat].find(x => x.id === id); if(!item) return;
