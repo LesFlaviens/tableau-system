@@ -8503,482 +8503,87 @@ startAuthenticatedApplication().catch(error => {
         }
 
 
-        // =========================================================
-        // QR CONTRÔLE FISCAL — PARTAGE SERVEUR EN LECTURE SEULE
-        // Le PIN reste en mémoire dans Admin et n'est jamais placé dans le QR.
-        // =========================================================
-        window.__ICHEF_FISCAL_CONTROL = window.__ICHEF_FISCAL_CONTROL || { publicUrl:'', token:'', contentHash:'', dossier:null };
-
-        function setFiscalControlStatus(message, error = false) {
-            const el = document.getElementById('ichef-fiscal-qr-status');
-            if (!el) return;
-            el.textContent = message || '';
-            el.style.color = error ? 'var(--danger)' : 'var(--text-muted)';
-        }
-
-        function openFiscalControlQR() {
-            const modal = document.getElementById('ichef-fiscal-qr-modal');
-            if (modal) modal.classList.add('show');
-            if (!window.__ICHEF_FISCAL_CONTROL.publicUrl) {
-                generateFiscalControlQR();
-            }
-        }
-
-        function closeFiscalControlQR() {
-            document.getElementById('ichef-fiscal-qr-modal')?.classList.remove('show');
-        }
-
-        function buildFiscalControlDossier(data) {
-            return {
-                ...data,
-                format: 'ICHEF_CONTROLE_FISCAL_QR_V1',
-                generatedAt: new Date().toISOString(),
-                generatedBy: window.ICHEF_SECURITY?.user?.name || window.ICHEF_SECURITY?.user?.nom || 'ADMIN',
-                tenantID: window.ICHEF_SECURITY?.tenantID || tenantID,
-                readOnlyShare: true
-            };
-        }
-
-        function renderFiscalControlQR(publicUrl, contentHash) {
-            const box = document.getElementById('ichef-fiscal-qr-code');
-            const urlEl = document.getElementById('ichef-fiscal-qr-url');
-            const hashEl = document.getElementById('ichef-fiscal-qr-hash');
-            if (urlEl) urlEl.textContent = publicUrl || 'Lien indisponible';
-            if (hashEl) hashEl.textContent = contentHash ? `SHA-256 dossier partagé : ${contentHash}` : '';
-            if (!box) return;
-            box.innerHTML = '';
-            if (!publicUrl) return;
-            if (typeof QRCode !== 'function') {
-                box.innerHTML = '<div style="color:#b91c1c;font-weight:800;text-align:center;">Bibliothèque QR indisponible. Utilisez COPIER LE LIEN.</div>';
-                return;
-            }
-            new QRCode(box, {
-                text: publicUrl,
-                width: 230,
-                height: 230,
-                colorDark: '#000000',
-                colorLight: '#ffffff',
-                correctLevel: QRCode.CorrectLevel.M
-            });
-        }
-
-        async function generateFiscalControlQR() {
-            try {
-                const pin = String(window.__ICHEF_AUDIT_PIN || '').trim();
-                if (!pin) throw new Error('PIN Manager absent. Reconnectez-vous à Admin.');
-                setFiscalControlStatus('Préparation du dossier fiscal complet…');
-
-                // Lecture du même registre sécurisé que l'écran Anti-Fraude.
-                const data = await fetchUnifiedIchefHistory(pin);
-                const dossier = buildFiscalControlDossier(data);
-
-                setFiscalControlStatus('Création du lien fiscal en lecture seule…');
-                const response = await secureFetch('/api/fiscal-file/share', {
-                    method: 'POST',
-                    body: JSON.stringify({
-                        tenantID: window.ICHEF_SECURITY?.tenantID || tenantID,
-                        pin,
-                        masterPin: pin,
-                        dossier
-                    })
-                });
-                const result = await response.json().catch(() => ({}));
-                if (!response.ok || result.success !== true || !result.publicUrl) {
-                    throw new Error(result.error || `Service QR fiscal indisponible (${response.status}).`);
-                }
-
-                window.__ICHEF_FISCAL_CONTROL = {
-                    publicUrl: result.publicUrl,
-                    token: result.token || '',
-                    contentHash: result.contentHash || '',
-                    dossier
-                };
-                renderFiscalControlQR(result.publicUrl, result.contentHash || '');
-                setFiscalControlStatus('QR prêt. Le téléphone ouvre une copie fiscale en lecture seule.');
-                try { await auditEvent('FISCAL_QR_SHARE_CREATED', { contentHash: result.contentHash || '', shareTokenPresent: !!result.token }); } catch (_) {}
-            } catch (error) {
-                console.error('[iCHEF QR FISCAL]', error);
-                renderFiscalControlQR('', '');
-                setFiscalControlStatus(error.message || 'Impossible de générer le QR fiscal.', true);
-            }
-        }
-
-        async function copyFiscalControlLink() {
-            const url = window.__ICHEF_FISCAL_CONTROL?.publicUrl || '';
-            if (!url) return setFiscalControlStatus('Générez d’abord le QR.', true);
-            try {
-                await navigator.clipboard.writeText(url);
-                setFiscalControlStatus('Lien fiscal copié.');
-            } catch (_) {
-                const ta = document.createElement('textarea'); ta.value = url; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove();
-                setFiscalControlStatus('Lien fiscal copié.');
-            }
-        }
-
-        function openFiscalControlLink() {
-            const url = window.__ICHEF_FISCAL_CONTROL?.publicUrl || '';
-            if (!url) return setFiscalControlStatus('Générez d’abord le QR.', true);
-            window.open(url, '_blank', 'noopener,noreferrer');
-        }
-
-        function downloadFiscalControlLocal() {
-            const dossier = window.__ICHEF_FISCAL_CONTROL?.dossier;
-            if (!dossier) return setFiscalControlStatus('Générez d’abord le dossier fiscal.', true);
-            const safeTenant = String(window.ICHEF_SECURITY?.tenantID || tenantID || 'restaurant').replace(/[^a-z0-9_-]/gi,'_');
-            const blob = new Blob([JSON.stringify(dossier, null, 2)], { type:'application/json;charset=utf-8' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `iCHEF_CONTROLE_FISCAL_${safeTenant}_${new Date().toISOString().slice(0,10)}.json`;
-            document.body.appendChild(a); a.click(); a.remove();
-            setTimeout(() => URL.revokeObjectURL(url), 1500);
-            setFiscalControlStatus('Dossier fiscal téléchargé localement.');
-        }
-
-async function loadAIProfitability() {
-            try {
-                await window.ICHEF_SECURITY_READY;
-                let response = await secureFetch('/api/ai-profitability', {
-                    method: 'POST',
-                    body: JSON.stringify({ tenantID: window.ICHEF_SECURITY.tenantID })
-                });
-                
-                let data = await response.json();
-                
-                if (data.success && data.rentabilite) {
-                    const r = data.rentabilite;
-                    
-                    document.getElementById('ia-rent-top').innerText = r.topRentable;
-                    document.getElementById('ia-rent-flop').innerText = r.pireRentable;
-                    document.getElementById('ia-rent-marge').innerText = r.margeMoyenne + ' %';
-                    
-                    let advicesHtml = (r.recommandations || []).map(conseil => `
-                        <li class="ia-advice-item">
-                            <span style="font-size: 1.2rem;"></span>
-                            <div>${escapeHTML(conseil)}</div>
-                        </li>
-                    `).join('');
-                    
-                    document.getElementById('ia-rent-advices').innerHTML = advicesHtml;
-                }
-            } catch (e) {
-                console.error("Erreur IA Rentabilité:", e);
-                document.getElementById('ia-rent-advices').innerHTML = `<li class="ia-advice-item"><span style="font-size: 1.2rem;"></span><div>L'IA de rentabilité n'a pas pu être contactée.</div></li>`;
-            }
-        }
-    </script>
-<script>
-    // =========================================================
-    // DICTÉE VOCALE DES PLATS — aucun changement des connexions
-    // =========================================================
-    function startItemDictation(inputId, buttonId) {
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!SpeechRecognition) {
-            alert("La dictée vocale n’est pas prise en charge par ce navigateur.");
-            return;
-        }
-
-        const input = document.getElementById(inputId);
-        const button = document.getElementById(buttonId);
-        if (!input || !button) return;
-
-        const recognition = new SpeechRecognition();
-        recognition.lang = "fr-FR";
-        recognition.continuous = false;
-        recognition.interimResults = false;
-        recognition.maxAlternatives = 1;
-
-        const originalContent = button.innerHTML;
-        const originalTitle = button.title;
-
-        recognition.onstart = () => {
-            button.innerHTML = "";
-            button.title = "Écoute en cours…";
-            button.disabled = true;
-        };
-
-        recognition.onresult = (event) => {
-            const transcript = event.results?.[0]?.[0]?.transcript?.trim();
-            if (!transcript) return;
-
-            input.value = transcript.charAt(0).toUpperCase() + transcript.slice(1);
-            input.dispatchEvent(new Event("input", { bubbles: true }));
-            input.dispatchEvent(new Event("change", { bubbles: true }));
-            input.focus();
-        };
-
-        recognition.onerror = (event) => {
-            console.warn("Dictée vocale indisponible :", event.error);
-            if (event.error !== "no-speech" && event.error !== "aborted") {
-                alert("La retranscription vocale n’a pas pu être effectuée.");
-            }
-        };
-
-        recognition.onend = () => {
-            button.innerHTML = originalContent;
-            button.title = originalTitle;
-            button.disabled = false;
-        };
-
-        recognition.start();
-    }
-
-    // Fonction qui ouvre/ferme le menu quand on clique sur le bouton
-    function toggleMenuIchef() {
-        document.getElementById("dropdownList").classList.toggle("show-menu");
-    }
-
-    // Sécurité : Ferme le menu si l'utilisateur clique n'importe où ailleurs sur l'écran
-    window.onclick = function(event) {
-        if (!event.target.matches('.drop-btn-ichef')) {
-            var dropdowns = document.getElementsByClassName("dropdown-content-ichef");
-            for (var i = 0; i < dropdowns.length; i++) {
-                var openDropdown = dropdowns[i];
-                if (openDropdown.classList.contains('show-menu')) {
-                    openDropdown.classList.remove('show-menu');
-                }
-            }
-        }
-    }
-</script>
-<script id="ichef-qrnfc-legacy-cleanup-v10">
-(function () {
-    function removeLegacyQrNfcBlocks() {
-        try {
-            // Supprime tout ancien bouton de génération manuelle.
-            document.querySelectorAll(
-                '#qr-generate-btn, button[onclick*="syncQRTables"]'
-            ).forEach(btn => {
-                const card = btn.closest('.section-card');
-                if (card && card.id !== 'qr-nfc-auto-card') {
-                    card.remove();
-                } else {
-                    btn.remove();
-                }
-            });
-
-            // Supprime tout ancien bloc contenant l'ancien champ domaine manuel.
-            document.querySelectorAll('.section-card').forEach(card => {
-                if (card.id === 'qr-nfc-auto-card') return;
-
-                const txt = String(card.textContent || '').toLowerCase();
-                const hasLegacyTitle =
-                    txt.includes('générateur qr codes') ||
-                    txt.includes('programmation nfc');
-
-                const hasLegacyDomainText =
-                    txt.includes('domaine de votre menu') ||
-                    txt.includes('laissez vide pour auto');
-
-                if (hasLegacyTitle && hasLegacyDomainText) {
-                    card.remove();
-                }
-            });
-
-            // Le champ de l'écran automatique doit toujours rester lecture seule.
-            const autoBase = document.querySelector('#qr-nfc-auto-card #qr-base-url');
-            if (autoBase) {
-                autoBase.readOnly = true;
-                autoBase.removeAttribute('oninput');
-                autoBase.removeAttribute('onchange');
-            }
-        } catch (e) {
-            console.warn('[iCHEF QR/NFC] nettoyage legacy impossible', e);
-        }
-    }
-
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', removeLegacyQrNfcBlocks, { once: true });
-    } else {
-        removeLegacyQrNfcBlocks();
-    }
-
-    // Protection supplémentaire après chargement différé d'un fragment HTML.
-    setTimeout(removeLegacyQrNfcBlocks, 500);
-    setTimeout(removeLegacyQrNfcBlocks, 1500);
-})();
-</script>
-</div><div class="main-scroll" id="tab-design">
-<div class="grid-2">
-<div class="section-card">
-<h3 class="section-title">Personnalisation Visuelle</h3>
-<div class="input-group">
-<label>Photo de Bannière (URL)</label>
-<input class="input-field" id="design-banner-url" oninput="markUnsaved(); updateDesignPreview()" placeholder="Ex: https://mon-site.com/photo.jpg" type="text"/>
-</div>
-<div class="input-group">
-<label>Couleur Fond Global</label>
-<input class="input-field" id="design-bg-color" oninput="markUnsaved(); updateDesignPreview()" type="color"/>
-</div>
-<div class="input-group">
-<label>Couleur du Titre "LA CARTE"</label>
-<input class="input-field" id="design-title-color" oninput="markUnsaved(); updateDesignPreview()" type="color"/>
-</div>
-<div class="input-group">
-<label>Police du Titre</label>
-<select class="input-field" id="design-title-font" onchange="markUnsaved(); updateDesignPreview()">
-<optgroup label="Modernes (Sans-Serif)">
-<option value="'Inter', sans-serif">Inter</option>
-<option value="'Montserrat', sans-serif">Montserrat</option>
-</optgroup>
-<optgroup label="Classiques &amp; Élégantes (Serif)">
-<option value="'Playfair Display', serif">Playfair Display</option>
-<option value="'Merriweather', serif">Merriweather</option>
-</optgroup>
-</select>
-</div>
-<div class="input-group">
-<label>Couleur Texte &amp; Catégories</label>
-<input class="input-field" id="design-text-color" oninput="markUnsaved(); updateDesignPreview()" type="color"/>
-</div>
-<div class="input-group">
-<label>Police Texte &amp; Catégories</label>
-<select class="input-field" id="design-font" onchange="markUnsaved(); updateDesignPreview()">
-<optgroup label="Modernes (Sans-Serif)">
-<option value="'Inter', sans-serif">Inter</option>
-<option value="'Roboto', sans-serif">Roboto</option>
-</optgroup>
-</select>
-</div>
-<div class="input-group">
-<label>Couleur Boutons &amp; Prix</label>
-<input class="input-field" id="design-alert-color" oninput="markUnsaved(); updateDesignPreview()" type="color"/>
-</div>
-</div>
-<div style="display: flex; justify-content: center; align-items: center; padding: 20px;">
-<div id="phone-preview" style="width: 320px; height: 600px; border: 12px solid #111; border-radius: 40px; background: #000; color: #fff; position: relative; overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 10px 30px rgba(0,0,0,0.5); font-family: 'Inter', sans-serif;">
-<div id="preview-banner-img" style="height: 140px; background: url('https://images.unsplash.com/photo-1414235077428-338989a2e8c0?q=80&amp;w=500&amp;auto=format&amp;fit=crop') center/cover; position: relative;">
-<div class="gradient-overlay" style="position: absolute; bottom: 0; left: 0; width: 100%; height: 60%; background: linear-gradient(transparent, #000);"></div>
-</div>
-<div style="padding: 15px; flex: 1; overflow-y: auto;">
-<h2 id="preview-title" style="margin: 0 0 15px 0; font-size: 1.6rem; text-align: center; font-family: 'Playfair Display', serif;">LA CARTE</h2>
-<div class="preview-card" style="padding: 15px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.03); margin-bottom: 12px;">
-<div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 5px;">
-<span style="font-weight: 600; font-size: 0.95rem; font-family: 'Playfair Display', serif;">Salade César</span>
-<span class="preview-accent" style="color: #d4af37; font-weight: bold;">12.00 €</span>
-</div>
-</div>
-</div>
-</div>
-</div>
-</div>
-<div class="section-card">
-<h3 class="section-title"> Avis Google Clients</h3>
-<p style="color: var(--text-muted); font-size: 0.85rem; margin-top: -15px; margin-bottom: 20px;">
-                            Affichez un bouton dans le menu QR pour inciter vos clients à laisser un avis. Désactivez-le en un clic si le service est compliqué.
-                        </p>
-<div class="toggle-row">
-<div class="toggle-info"><strong>Afficher le bouton "Laissez un avis"</strong></div>
-<label class="switch"><input id="setting-reviews-active" onchange="markUnsaved()" type="checkbox"/><span class="slider"></span></label>
-</div>
-<div class="input-group">
-<label>Lien direct vers vos avis Google</label>
-<input class="input-field" id="setting-reviews-url" oninput="markUnsaved()" placeholder="Ex: https://g.page/r/votreresto/review" type="text"/>
-</div>
-</div>
-</div><div class="main-scroll" id="tab-loyalty">
-<div class="section-card">
-<h3 class="section-title">Programme de Fidélité (Cagnotte)</h3>
-<div class="toggle-row">
-<div class="toggle-info"><strong>Activer la fidélité</strong></div>
-<label class="switch"><input id="setting-loyalty-active" onchange="markUnsaved()" type="checkbox"/><span class="slider"></span></label>
-</div>
-<div class="input-group">
-<label>Pourcentage (%)</label>
-<input class="input-field" id="setting-loyalty-percent" min="0" oninput="markUnsaved()" step="0.1" type="number"/>
-</div>
-</div>
-</div><div class="main-scroll" id="tab-payment">
 <div class="section-card" style="border: 1px solid var(--gold); background: rgba(212, 175, 55, 0.03);">
-<h3 class="section-title" style="color: var(--gold); border-bottom-color: rgba(212, 175, 55, 0.2);">
-                             Caisse &amp; Fiscal — Automatique
-                        </h3>
-<p style="color: var(--text-muted); font-size: 0.9rem; line-height: 1.6; margin-top: 0;">
-                            L’encaissement, le ticket fiscal, les clôtures et l’export sont gérés ici.
-                            Les <strong>modes de zone QR/NFC / Serveur / Comptoir</strong> se règlent désormais uniquement dans l’écran <strong>QR &amp; NFC</strong>.
-                        </p>
-<!-- iCHEF V8 : caisse système 100 % automatique.
-                             Les inputs restent présents mais invisibles pour conserver
-                             la compatibilité avec le reste du moteur. -->
-<input checked="" hidden="" id="setting-cash-register-enabled" type="checkbox"/>
-<input checked="" hidden="" id="setting-fiscal-mode" type="checkbox"/>
-<div class="toggle-row">
-<div class="toggle-info">
-<strong>Module caisse</strong>
-<span>Activé automatiquement par iCHEF. Aucun réglage manuel nécessaire.</span>
-</div>
-<span id="cash-auto-module-state" style="font-size:.76rem;font-weight:900;border:1px solid var(--success);color:var(--success);border-radius:999px;padding:7px 11px;">
-                                AUTOMATIQUE
-                            </span>
-</div>
-<div class="toggle-row">
-<div class="toggle-info">
-<strong>Mode fiscal sécurisé côté serveur</strong>
-<span>Chaînage, preuves, clôtures et export pilotés automatiquement côté serveur.</span>
-</div>
-<span id="cash-auto-fiscal-state" style="font-size:.76rem;font-weight:900;border:1px solid var(--success);color:var(--success);border-radius:999px;padding:7px 11px;">
-                                AUTOMATIQUE
-                            </span>
-</div>
-<div id="cash-register-sync-card" style="margin:16px 0 18px;padding:16px;border:2px solid var(--border-strong);border-radius:12px;background:rgba(255,255,255,.025);line-height:1.5;">
-<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
-<strong style="color:var(--gold);font-size:.88rem;letter-spacing:.5px;">SYNCHRONISATION CAISSE / SYSTÈME</strong>
-<span id="cash-register-sync-status" style="font-size:.75rem;font-weight:900;border:1px solid var(--border-strong);border-radius:999px;padding:5px 9px;color:var(--text-muted);">VÉRIFICATION...</span>
-</div>
-<div id="cash-register-sync-detail" style="margin-top:9px;color:var(--text-muted);font-size:.84rem;">
-                                Configuration automatique centrale. iCHEF verrouille la route fiscale et synchronise l’état avec tous les écrans du restaurant.
-                            </div>
-<div class="input-group">
-    <label style="display: flex; align-items: center; gap: 8px; color: var(--text-main);">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--success)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
-        Route Caisse Fiscale (Backend)
-    </label>
-    
-    <div style="position: relative; margin-top: 4px;">
-        <input aria-readonly="true" class="input-field" id="setting-fiscal-backend-url" readonly="" type="text" value="/api/fiscal/cash-in" style="width: 100%; padding: 14px 16px; background: rgba(0,0,0,0.4); border: 1px solid var(--border-strong); border-left: 3px solid var(--success); border-radius: 8px; color: var(--success); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.95rem; font-weight: 600; letter-spacing: 0.5px; cursor: default; outline: none; box-sizing: border-box;" />
-        
-        <div style="position: absolute; right: 12px; top: 50%; transform: translateY(-50%); background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.3); color: var(--success); font-size: 0.65rem; font-weight: 900; padding: 4px 8px; border-radius: 6px; letter-spacing: 0.5px; pointer-events: none;">
-            SYSTÈME
+    <h3 class="section-title" style="color: var(--gold); border-bottom-color: rgba(212, 175, 55, 0.2);">
+         Caisse & Fiscal — Automatique
+    </h3>
+
+    <p style="color: var(--text-muted); font-size: 0.9rem; line-height: 1.6; margin-top: 0;">
+        L’encaissement, le ticket fiscal, les clôtures et l’export sont gérés ici.
+        Les <strong>modes de zone QR/NFC / Serveur / Comptoir</strong> se règlent désormais uniquement dans l’écran <strong>QR & NFC</strong>.
+    </p>
+
+    <!-- Inputs invisibles de fonctionnement -->
+    <input type="checkbox" id="setting-cash-register-enabled" checked hidden>
+    <input type="checkbox" id="setting-fiscal-mode" checked hidden>
+
+    <div class="toggle-row">
+        <div class="toggle-info">
+            <strong>Module caisse</strong>
+            <span>Activé automatiquement par iCHEF. Aucun réglage manuel nécessaire.</span>
         </div>
-    </div>
-
-   <!-- DÉBUT DU BLOC : Backend caisse fiscale -->
-<div class="input-group">
-    <label style="display: flex; align-items: center; gap: 8px; color: var(--text-main);">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--success)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
-        Route Caisse Fiscale (Backend)
-    </label>
-    
-    <div style="position: relative; margin-top: 4px;">
-        <input aria-readonly="true" class="input-field" id="setting-fiscal-backend-url" readonly="" type="text" value="/api/fiscal/cash-in" style="width: 100%; padding: 14px 16px; background: rgba(0,0,0,0.4); border: 1px solid var(--border-strong); border-left: 3px solid var(--success); border-radius: 8px; color: var(--success); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.95rem; font-weight: 600; letter-spacing: 0.5px; cursor: default; outline: none; box-sizing: border-box;" />
-        
-        <div style="position: absolute; right: 12px; top: 50%; transform: translateY(-50%); background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.3); color: var(--success); font-size: 0.65rem; font-weight: 900; padding: 4px 8px; border-radius: 6px; letter-spacing: 0.5px; pointer-events: none;">
-            SYSTÈME
-        </div>
-    </div>
-
-    <div style="margin-top: 8px; color: var(--text-muted); font-size: .78rem; line-height: 1.45;">
-        Transmission sécurisée active. Cette route est scellée par le noyau iCHEF pour garantir l'intégrité fiscale.
-    </div>
-</div>
-
-<!-- ENCART AVERTISSEMENT LÉGAL -->
-<div style="margin-top: 25px; background: rgba(239, 68, 68, 0.05); border: 1px solid rgba(239, 68, 68, 0.25); padding: 16px; border-radius: 12px; display: flex; align-items: flex-start; gap: 14px; box-sizing: border-box;">
-    <svg style="flex-shrink: 0; color: var(--danger); margin-top: 2px;" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
-        <line x1="12" y1="9" x2="12" y2="13"></line>
-        <line x1="12" y1="17" x2="12.01" y2="17"></line>
-    </svg>
-    <div style="min-width: 0;">
-        <strong style="color: var(--danger); font-size: 0.85rem; display: block; margin-bottom: 5px; letter-spacing: 0.5px; text-transform: uppercase;">Avertissement de Conformité</strong>
-        <span style="color: var(--text-muted); font-size: 0.85rem; line-height: 1.5; display: block;">
-            Ne pas afficher la mention “certifié” ou “conforme NF525” tant que l’attestation ou la certification officielle n’est pas définitivement validée.
+        <span id="cash-auto-module-state" style="font-size:.76rem;font-weight:900;border:1px solid var(--success);color:var(--success);border-radius:999px;padding:7px 11px;">
+            AUTOMATIQUE
         </span>
     </div>
+
+    <div class="toggle-row">
+        <div class="toggle-info">
+            <strong>Mode fiscal sécurisé côté serveur</strong>
+            <span>Chaînage, preuves, clôtures et export pilotés automatiquement côté serveur.</span>
+        </div>
+        <span id="cash-auto-fiscal-state" style="font-size:.76rem;font-weight:900;border:1px solid var(--success);color:var(--success);border-radius:999px;padding:7px 11px;">
+            AUTOMATIQUE
+        </span>
+    </div>
+
+    <!-- CARTE DE SYNCHRONISATION -->
+    <div id="cash-register-sync-card" style="margin:16px 0 18px;padding:16px;border:2px solid var(--border-strong);border-radius:12px;background:rgba(255,255,255,.025);line-height:1.5;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+            <strong style="color:var(--gold);font-size:.88rem;letter-spacing:.5px;">SYNCHRONISATION CAISSE / SYSTÈME</strong>
+            <span id="cash-register-sync-status" style="font-size:.75rem;font-weight:900;border:1px solid var(--border-strong);border-radius:999px;padding:5px 9px;color:var(--text-muted);">VÉRIFICATION...</span>
+        </div>
+        <div id="cash-register-sync-detail" style="margin-top:9px;color:var(--text-muted);font-size:.84rem;">
+            Configuration automatique centrale. iCHEF verrouille la route fiscale et synchronise l’état avec tous les écrans du restaurant.
+        </div>
+    </div> 
+
+    <!-- BLOC BACKEND SÉCURISÉ (UNIQUE ET PROPRE) -->
+    <div class="input-group">
+        <label style="display: flex; align-items: center; gap: 8px; color: var(--text-main);">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--success)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+            Route Caisse Fiscale (Backend)
+        </label>
+        
+        <div style="position: relative; margin-top: 4px;">
+            <input aria-readonly="true" class="input-field" id="setting-fiscal-backend-url" readonly="" type="text" value="/api/fiscal/cash-in" style="width: 100%; padding: 14px 16px; background: rgba(0,0,0,0.4); border: 1px solid var(--border-strong); border-left: 3px solid var(--success); border-radius: 8px; color: var(--success); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.95rem; font-weight: 600; letter-spacing: 0.5px; cursor: default; outline: none; box-sizing: border-box;" />
+            
+            <div style="position: absolute; right: 12px; top: 50%; transform: translateY(-50%); background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.3); color: var(--success); font-size: 0.65rem; font-weight: 900; padding: 4px 8px; border-radius: 6px; letter-spacing: 0.5px; pointer-events: none;">
+                SYSTÈME
+            </div>
+        </div>
+
+        <div style="margin-top: 8px; color: var(--text-muted); font-size: .78rem; line-height: 1.45;">
+            Transmission sécurisée active. Cette route est scellée par le noyau iCHEF pour garantir l'intégrité fiscale.
+        </div>
+    </div>
+
+    <!-- ENCART AVERTISSEMENT LÉGAL -->
+    <div style="margin-top: 25px; background: rgba(239, 68, 68, 0.05); border: 1px solid rgba(239, 68, 68, 0.25); padding: 16px; border-radius: 12px; display: flex; align-items: flex-start; gap: 14px; box-sizing: border-box;">
+        <svg style="flex-shrink: 0; color: var(--danger); margin-top: 2px;" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+            <line x1="12" y1="9" x2="12" y2="13"></line>
+            <line x1="12" y1="17" x2="12.01" y2="17"></line>
+        </svg>
+        <div style="min-width: 0;">
+            <strong style="color: var(--danger); font-size: 0.85rem; display: block; margin-bottom: 5px; letter-spacing: 0.5px; text-transform: uppercase;">Avertissement de Conformité</strong>
+            <span style="color: var(--text-muted); font-size: 0.85rem; line-height: 1.5; display: block;">
+                Ne pas afficher la mention “certifié” ou “conforme NF525” tant que l’attestation ou la certification officielle n’est pas définitivement validée.
+            </span>
+        </div>
+    </div>
+
 </div>
-
-</div> <!-- FIN DE LA SECTION CAISSE & FISCAL -->
-
 <!-- DÉBUT SECTION INTÉGRATION BANCAIRE -->
 <div class="section-card">
     <h3 class="section-title">Intégration Bancaire</h3>
