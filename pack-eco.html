@@ -4335,6 +4335,44 @@ body.order-open .ticket-name .line-state {
 }
 </style>
 
+<style id="ticket-une-ligne-parfait">
+/* =========================================================
+   TICKET ÉPURÉ : TITRE SUR UNE LIGNE AVEC C1 (CORRIGÉ)
+   ========================================================= */
+
+/* 1. On protège la zone de gauche pour qu'elle puisse se réduire */
+body.order-open .ticket-left {
+    min-width: 0 !important;
+    display: block !important; /* Surtout pas de "flex" ici ! */
+    overflow: hidden !important; 
+}
+
+/* 2. Le titre coupe proprement avec des "..." sans cacher le C1 */
+body.order-open .ticket-name {
+    display: block !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    width: 100% !important;
+    line-height: 24px !important; /* Centre joliment le texte avec le badge */
+    padding-right: 10px !important;
+}
+
+/* 3. On garantit que le badge "C1" reste à sa place */
+body.order-open .ticket-name .seat-badge {
+    display: inline-flex !important;
+    vertical-align: middle !important;
+    margin-right: 8px !important;
+}
+
+/* 4. On masque la sous-ligne "x1 • PLATS" et les tags de statut */
+html body.order-open .ticket-row .ticket-meta,
+body.order-open .ticket-name .dest-tag,
+body.order-open .ticket-name .line-state {
+    display: none !important;
+}
+</style>
+  
 
   
 
@@ -6013,7 +6051,7 @@ const STATE={
   deviceId:STORAGE.get("ichef_device_id","")||("dev_"+cryptoId()),
   pin:"",role:"",plan:"",specialite:"",authenticated:false,
   sessionToken:"",csrfToken:"",
-  connected:false,socket:null,socketLoading:null,lastServerAt:0,syncing:false,deviceReplaced:false,syncRevision:0,
+  connected:false,socket:null,socketLoading:null,socketIdentityKey:"",lastServerAt:0,syncing:false,deviceReplaced:false,syncRevision:0,loginBusy:false,
   activeOrders:{},architecture:{rooms:["Salle Principale"],tables:[],zones:[],elements:[],canvas:{}},
   rooms:["Salle Principale"],tables:[],zones:[],elements:[],room:"Salle Principale",
   menu:[],categories:[],category:"TOUT",reservations:[],settings:{},
@@ -6560,17 +6598,21 @@ function serverSecurityHeaders(extra={},hasBody=false){
 }
 
 async function serverFetch(path,options={}){
+  const safePath=String(path||"");
+  if(!safePath.startsWith("/"))throw new Error("Route serveur refusée");
+
   const controller=new AbortController();
   const timer=setTimeout(()=>controller.abort(),12000);
   const cfg={
     cache:"no-store",
     credentials:"omit",
+    referrerPolicy:"no-referrer",
     ...options,
     signal:options.signal||controller.signal
   };
   cfg.headers=serverSecurityHeaders(options.headers||{},options.body!==undefined&&options.body!==null);
   try{
-    return await fetch(APP_SERVER_URL+path,cfg);
+    return await fetch(APP_SERVER_URL+safePath,cfg);
   }catch(err){
     if(err?.name==="AbortError")throw new Error("Serveur iCHEF sans réponse");
     throw new Error("Serveur iCHEF inaccessible");
@@ -6665,64 +6707,105 @@ function syncTenantLoginField(forceShow=false){
   if(box&&(forceShow||!STATE.tenantID))box.classList.add("show");
 }
 async function verifyPin(){
+  if(STATE.loginBusy)return;
+
   if(!navigator.onLine){
     loginMessage("Connexion Internet requise pour ouvrir le PAD");
     updatePadLoginNetworkStatus();
     showPadNetworkOverlay("Aucune connexion Internet. Le PAD principal ne peut pas être ouvert sans le serveur iCHEF.");
     return;
   }
-  const typedTenant=text($("tenantInput")?.value);
-  if(typedTenant&&typedTenant!==STATE.tenantID){
-    STATE.tenantID=typedTenant;
-    STORAGE.set("ichef_tenant_id",STATE.tenantID);
+
+  const validateBtn=$("pinValidate");
+  const typedTenant=text($("tenantInput")?.value).trim().slice(0,96);
+  const tenantCandidate=(typedTenant||text(STATE.tenantID)).trim();
+
+  if(!tenantCandidate){
+    loginMessage("Identifiant établissement requis");
+    syncTenantLoginField(true);
+    return;
   }
-  if(!STATE.tenantID){
-    STATE.tenantID=typedTenant;
-    if(!STATE.tenantID){
-      loginMessage("Identifiant établissement requis");
-      syncTenantLoginField(true);
-      return;
-    }
-    STORAGE.set("ichef_tenant_id",STATE.tenantID);
+
+  /* Caractères volontairement simples : évite espaces invisibles et identifiants ambigus. */
+  if(!/^[A-Za-z0-9._:-]{1,96}$/.test(tenantCandidate)){
+    loginMessage("Identifiant établissement invalide");
+    syncTenantLoginField(true);
+    return;
   }
-  if(STATE.loginPin.length<4){loginMessage("Code incomplet");return}
+
+  if(STATE.loginPin.length<4){
+    loginMessage("Code incomplet");
+    return;
+  }
+
+  STATE.loginBusy=true;
+  if(validateBtn)validateBtn.disabled=true;
   loginMessage("Connexion…");
+
   try{
+    STATE.tenantID=tenantCandidate;
+    STORAGE.set("ichef_tenant_id",STATE.tenantID);
+
+    const pinAttempt=String(STATE.loginPin);
     const r=await serverFetch("/api/verify-pin",{
       method:"POST",
-      body:JSON.stringify({tenantID:STATE.tenantID,pin:STATE.loginPin,deviceId:STATE.deviceId,page:"PAD",terminal:"PAD"})
+      body:JSON.stringify({
+        tenantID:STATE.tenantID,
+        pin:pinAttempt,
+        deviceId:STATE.deviceId,
+        page:"PAD",
+        terminal:"PAD"
+      })
     });
     const j=await r.json().catch(()=>({}));
     if(!r.ok||!j.success)throw new Error(j.error||j.message||"Code refusé");
-    STATE.pin=STATE.loginPin;
+
+    STATE.pin=pinAttempt; /* mémoire vive uniquement : jamais localStorage */
+    STATE.loginPin="";
+    renderPin();
+
     if(j.safeTenantID){
-      STATE.tenantID=text(j.safeTenantID);
+      const safeTenant=text(j.safeTenantID).trim().slice(0,96);
+      if(safeTenant)STATE.tenantID=safeTenant;
       STORAGE.set("ichef_tenant_id",STATE.tenantID);
     }
+
     STATE.role=j.role||"";
     STATE.plan=j.plan||"";
     STATE.specialite=j.specialite||"";
     STATE.authenticated=true;
+    STATE.deviceReplaced=false;
+
     $("login")?.classList.add("hidden");
     $("app")?.classList.remove("hidden");
     $("tools")?.classList.remove("hidden");
     loginMessage("");
+
     try{
       await bootApp();
     }catch(bootErr){
       console.warn("[iCHEF PAD] Synchronisation initiale à vérifier",bootErr);
-      try{ setConnection("SERVEUR À VÉRIFIER","warn"); }catch(_){}
+      try{setConnection("SERVEUR À VÉRIFIER","warn")}catch(_){}
     }
+
     setTimeout(()=>{
       try{
-        if(typeof window.openPadServiceHome === "function") window.openPadServiceHome();
-      }catch(err){ console.warn("[iCHEF PAD] Ouverture plan après PIN",err); }
+        if(typeof window.openPadServiceHome==="function")window.openPadServiceHome();
+      }catch(err){
+        console.warn("[iCHEF PAD] Ouverture plan après PIN",err);
+      }
     },0);
+
   }catch(e){
+    STATE.authenticated=false;
+    STATE.pin="";
     STATE.loginPin="";
     renderPin();
     syncTenantLoginField(true);
     loginMessage(e?.message||"Connexion impossible");
+  }finally{
+    STATE.loginBusy=false;
+    if(validateBtn)validateBtn.disabled=false;
   }
 }
 
@@ -6791,21 +6874,21 @@ function loadSocket(){
 
   STATE.socketLoading=new Promise((resolve,reject)=>{
     const s=document.createElement("script");
-    /* On force le téléchargement depuis VOTRE server.js local en priorité */
     s.src=APP_SERVER_URL+"/socket.io/socket.io.js";
     s.async=true;
-    s.onload=()=>resolve(window.io);
+    s.referrerPolicy="no-referrer";
+    s.onload=()=>{
+      if(window.io)return resolve(window.io);
+      STATE.socketLoading=null;
+      reject(new Error("Socket.IO serveur invalide"));
+    };
     s.onerror=()=>{
-      /* Si échec, on utilise Internet en plan B */
-      const s2=document.createElement("script");
-      s2.src="https://cdn.socket.io/4.7.2/socket.io.min.js";
-      s2.async=true;
-      s2.onload=()=>resolve(window.io);
-      s2.onerror=()=>{STATE.socketLoading=null;reject(new Error("Socket.IO indisponible"))};
-      document.head.appendChild(s2);
+      STATE.socketLoading=null;
+      reject(new Error("Socket.IO serveur indisponible"));
     };
     document.head.appendChild(s);
   });
+
   return STATE.socketLoading;
 }
 
@@ -6819,24 +6902,30 @@ async function connectSocket(){
       STATE.deviceReplaced=false;
     }
 
-    /* Une seule instance Socket par page PAD. */
-    if(STATE.socket){
-      if(STATE.socket.connected){
-        return STATE.socket;
-      }
-
-      /* Socket.IO conserve lui-même son Manager et gère la reconnexion. */
-      if(typeof STATE.socket.connect==="function"){
-        try{STATE.socket.connect()}catch(_){}
-      }
-      return STATE.socket;
-    }
-
     const identity={
       tenantID:String(STATE.tenantID||"").trim(),
       deviceId:String(STATE.deviceId||"").trim(),
       page:"PLAN_INTERACTIF"
     };
+    const identityKey=`${identity.tenantID}|${identity.deviceId}|${identity.page}`;
+
+    /* Une seule instance Socket par page PAD, mais jamais réutilisée pour un autre tenant/appareil. */
+    if(STATE.socket && STATE.socketIdentityKey && STATE.socketIdentityKey!==identityKey){
+      try{STATE.socket.removeAllListeners()}catch(_){}
+      try{STATE.socket.disconnect()}catch(_){}
+      STATE.socket=null;
+      STATE.connected=false;
+    }
+
+    if(STATE.socket){
+      if(STATE.socket.connected)return STATE.socket;
+
+      /* Socket.IO conserve son Manager et gère la reconnexion. */
+      if(typeof STATE.socket.connect==="function"){
+        try{STATE.socket.connect()}catch(_){}
+      }
+      return STATE.socket;
+    }
 
     const socket=window.io(APP_SERVER_URL,{
       withCredentials:false,
@@ -6861,8 +6950,10 @@ async function connectSocket(){
     });
 
     STATE.socket=socket;
+    STATE.socketIdentityKey=identityKey;
 
     socket.on("connect",()=>{
+      const previousServerAt=Number(STATE.lastServerAt||0);
       STATE.connected=true;
       STATE.lastServerAt=now();
 
@@ -6885,11 +6976,9 @@ async function connectSocket(){
 
       retryFailedWrites();
 
-      if(
-        !STATE.lastServerAt ||
-        now()-STATE.lastServerAt>5000
-      ){
-        syncFull("reconnect");
+      /* IMPORTANT : tester l'ancien horodatage, pas celui qu'on vient de mettre à jour. */
+      if(!previousServerAt || now()-previousServerAt>5000){
+        syncFull("socket-connect");
       }
 
       console.info(
@@ -6980,6 +7069,9 @@ async function connectSocket(){
       STATE.connected=true;
       setConnection("TEMPS RÉEL","good");
       hidePadNetworkOverlay();
+
+      /* Une coupure peut avoir fait perdre des événements : relecture serveur obligatoire. */
+      syncFull("socket-reconnect");
 
       console.info(
         "[iCHEF PAD V1] WebSocket rétabli après",
@@ -9307,268 +9399,9 @@ function systemPrintHTML(lines,title="iCHEF",paperWidth=80){
     const align=o.align?`text-align:${o.align};`:"";
     return `<div style="${size}${weight}${align}white-space:pre-wrap;line-height:1.25">${textValue||"&nbsp;"}</div>`;
   }).join("");
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>@page{size:${width}mm auto;margin:3mm}html,body{margin:0;padding:0;background:#fff;color:#000;font-family:Arial,sans-serif}.ticket{width:${width-6}mm;margin:0 auto}</style>
-<style id="ichef-plan-zoom-sync-v29">
-/* V29 — le pourcentage pilote réellement le canevas 5000x5000. */
-#ichefArchPad .archpad-stage-shell{
-  min-width:0 !important;
-  min-height:0 !important;
-  max-width:none !important;
-  margin:0 !important;
-  overflow:visible !important;
-  transform:none !important;
-  transition:width .12s ease-out,height .12s ease-out !important;
-}
-#ichefArchPad .archpad-stage{
-  position:absolute !important;
-  left:0 !important;
-  top:0 !important;
-  transform-origin:0 0 !important;
-}
-#ichefArchPad .archpad-room-nav{
-  display:inline-flex !important;
-  align-items:center !important;
-  justify-content:center !important;
-  font-size:24px !important;
-  line-height:1 !important;
-  color:#fff !important;
-}
-#ichefArchPad .archpad-room-nav:active{transform:scale(.94)}
-</style>
-</head><body><div class="ticket">${body}</div>
-<!-- iCHEF FIX 2026-08-25 : affichage PAX du PLAN = CAPACITÉ ARCHITECTURALE de la table (t.pax), jamais PAX clients live. -->
 
-<!-- =========================================================
-     CORRECTION : C1-C9 STRICTEMENT LIMITÉ AU PAX DE LA TABLE
-     ========================================================= -->
-<style id="style-limite-pax-boutons">
-/* On s'assure que s'il n'y a que 2 ou 3 couverts, les boutons se centrent joliment au lieu de s'étirer à l'infini */
-.who-seat-grid.product-seat-choice-grid,
-.product-cooking-seat-grid {
-    display: flex !important;
-    flex-wrap: wrap !important;
-    justify-content: center !important;
-    gap: 10px !important;
-}
-.who-seat-grid.product-seat-choice-grid .who-seat-btn,
-.product-cooking-seat-grid .product-cooking-seat-btn,
-.product-cooking-seat-grid .quick-cook-seat-btn {
-    flex: 0 0 auto !important;
-    min-width: 90px !important;
-    max-width: 120px !important;
-}
-</style>
-
-<script id="script-limite-pax-boutons">
-setTimeout(() => {
-
-    // 1. Popup de choix du convive au moment de l'ajout d'un plat
-    if (typeof window.openProductSeatPicker === "function") {
-        window.openProductSeatPicker = function(product, sourceButton=null) {
-            if(!STATE.currentTable||!product) return;
-            pendingProductSeatChoice = {product, sourceButton};
-            
-            const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
-            const pax = Math.max(1, Number(o.pax) || 1); // <-- ICI : On récupère le nombre exact
-            const active = Math.max(1, Math.min(pax, Number(STATE.activeSeat) || 1));
-            const counts = productSeatCounts();
-
-            // On boucle uniquement jusqu'au "pax" au lieu de 9
-            const seatButtons = Array.from({length: pax}, (_, idx) => {
-                const seat = idx + 1;
-                const current = seat === active ? " active" : "";
-                const count = counts[seat] || 0;
-                return `<button type="button"
-                                class="who-seat-btn${current}"
-                                data-product-seat="${seat}"
-                                data-seat="${seat}"
-                                title="Ajouter ${esc(product.name)} à C${seat}">
-                          C${seat}
-                          <small>${count} sélection${count>1?"s":""}</small>
-                        </button>`;
-            }).join("");
-
-            openSheet(
-                "QUI MANGE QUOI ? · " + product.name,
-                `<div class="who-active-card product-seat-choice-card">
-                   <div class="who-active-title">${esc(product.name)}</div>
-                   <div class="who-active-sub">
-                     ${money(product.price)} · Choisissez C1 à C${pax}.
-                   </div>
-                 </div>
-                 <div class="who-seat-grid product-seat-choice-grid">${seatButtons}</div>`
-            );
-
-            document.getElementById("sheet").classList.add("product-seat-picker-open");
-
-            const body = document.getElementById("sheetBody");
-            body.querySelectorAll("[data-product-seat]").forEach(btn => {
-                btn.addEventListener("click", () => confirmProductSeat(Number(btn.dataset.productSeat)));
-            });
-        };
-    }
-
-    // 2. Popup de choix de cuisson intégrée
-    if (typeof window.showProductCookingPicker === "function") {
-        window.showProductCookingPicker = function(pending, seat) {
-            if(!pending||!pending.product) return;
-
-            const product = pending.product;
-            const n = Math.max(1, Math.min(9, Number(seat) || 1));
-            const dest = normalizeDestination(product.dest||product.raw?.dest||product.raw?.destination||"cuisine");
-            const profile = cookingProfileFor(product);
-
-            if(dest !== "cuisine" || !profile.required || !profile.levels.length) {
-                finalizeProductSeatChoice(n, profile.automatic||"");
-                return;
-            }
-
-            pendingProductSeatChoice = {...pending, seat: n};
-            const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
-            const pax = Math.max(1, Number(o?.pax) || 1); // <-- ICI : Limite stricte au pax
-
-            // On boucle uniquement jusqu'au "pax"
-            const seatsHTML = Array.from({length: pax}, (_, idx) => {
-                const s = idx + 1;
-                return `<button type="button"
-                                class="product-cooking-seat-btn${s===n?" active":""}"
-                                data-cooking-seat="${s}"
-                                data-seat="${s}"
-                                title="Attribuer ce plat à C${s}">
-                          C${s}
-                        </button>`;
-            }).join("");
-
-            openSheet(
-                `${seatLabel(n)} · ${profile.label||"CUISSON"}`,
-                `<div class="product-cooking-card">
-                   <div class="product-cooking-head">
-                     ${seatBadgeHTML(n)}
-                     <div>
-                       <div class="product-cooking-name" title="${esc(product.name)}">${esc(cookingPickerShortName(product.name,4))}</div>
-                       <div class="product-cooking-sub">Choisissez le convive puis la cuisson.</div>
-                     </div>
-                   </div>
-                   <div class="product-cooking-seat-wrap">
-                     <div class="product-cooking-seat-label">QUI MANGE QUOI ?</div>
-                     <div class="product-cooking-seat-grid">${seatsHTML}</div>
-                   </div>
-                   <div class="product-cooking-grid">
-                     ${profile.levels.map(level => `
-                       <button type="button"
-                               class="product-cooking-btn"
-                               data-product-cooking="${esc(level)}">
-                         ${esc(level)}
-                       </button>
-                     `).join("")}
-                   </div>
-                   <button type="button" class="product-cooking-back" data-product-cooking-back>
-                     RETOUR À QUI MANGE QUOI
-                   </button>
-                 </div>`
-            );
-
-            const sheet = document.getElementById("sheet");
-            if (sheet) {
-                sheet.classList.remove("product-seat-picker-open");
-                sheet.classList.add("product-cooking-picker-open");
-            }
-
-            const body = document.getElementById("sheetBody");
-            if(!body) return;
-
-            body.querySelectorAll("[data-cooking-seat]").forEach(btn => {
-                btn.onclick = () => {
-                    const nextSeat = Math.max(1, Math.min(9, Number(btn.dataset.cookingSeat) || 1));
-                    pendingProductSeatChoice = {...pendingProductSeatChoice, seat: nextSeat};
-                    showProductCookingPicker(pendingProductSeatChoice, nextSeat);
-                };
-            });
-
-            body.querySelectorAll("[data-product-cooking]").forEach(btn => {
-                btn.onclick = () => {
-                    const level = btn.dataset.productCooking || "";
-                    const selectedSeat = Math.max(1, Math.min(9, Number(pendingProductSeatChoice?.seat) || n));
-                    body.querySelectorAll("[data-product-cooking],[data-cooking-seat]").forEach(x => x.disabled = true);
-                    finalizeProductSeatChoice(selectedSeat, level);
-                };
-            });
-
-            body.querySelector("[data-product-cooking-back]")?.addEventListener("click", () => {
-                document.getElementById("sheet")?.classList.remove("product-cooking-picker-open");
-                pendingProductSeatChoice = null;
-                openWho();
-            });
-        };
-    }
-
-    // 3. Barre principale des convives (en bas de l'en-tête de commande)
-    if (typeof window.renderGuestButtons === "function") {
-        window.renderGuestButtons = function() {
-            const el = document.getElementById("guestButtons");
-            if (!el) return;
-
-            const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
-            const pax = Math.max(1, num(o.pax || 2)); // <-- ICI : On limite l'affichage au pax
-
-            let active = Math.max(1, Math.min(99, Number(STATE.activeSeat) || 1));
-            if (active > pax) {
-                active = pax;
-                STATE.activeSeat = pax;
-            }
-
-            const activeLabel = document.getElementById("activeGuestLabel");
-            if (activeLabel) activeLabel.textContent = `ACTIF : C${active}`;
-            
-            const whoHead = document.getElementById("btnHeadWho");
-            if (whoHead) {
-                const main = whoHead.querySelector(".head-main-v20");
-                if (main) main.textContent = `QUI MANGE ? · C${active}`;
-                else whoHead.textContent = `QUI MANGE ? · C${active}`;
-                whoHead.dataset.activeSeat = String(active);
-                whoHead.style.borderColor = `var(--c${Math.min(active, 9)})`;
-                whoHead.style.color = "#111";
-                whoHead.style.background = "#fff";
-            }
-
-            // Génération dynamique limitée au nombre de PAX (fini les boutons fantômes)
-            el.innerHTML = Array.from({length: pax}, (_, idx) => {
-                const seat = idx + 1;
-                return `<button type="button"
-                                class="guest-btn${seat === active ? " active" : ""}"
-                                data-seat="${seat}"
-                                title="Convive C${seat}">
-                          C${seat}
-                        </button>`;
-            }).join("");
-        };
-    }
-
-    // 4. Panneau Cuisson express indépendant
-    if (typeof window.renderQuickCookingSeats === "function") {
-        window.renderQuickCookingSeats = function(activeSeat) {
-            const host = document.getElementById("quickCookSeats");
-            if(!host) return;
-            const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
-            const pax = Math.max(1, num(o.pax || 2));
-            const active = Math.max(1, Math.min(pax, Number(activeSeat) || 1));
-
-            host.innerHTML = Array.from({length: pax}, (_, idx) => {
-                const seat = idx + 1;
-                return `<button type="button"
-                                class="quick-cook-seat-btn${seat === active ? " active" : ""}"
-                                data-quick-seat="${seat}"
-                                data-seat="${seat}"
-                                aria-pressed="${seat === active ? "true" : "false"}">
-                          <span>C${seat}</span>
-                        </button>`;
-            }).join("");
-        };
-    }
-}, 1000);
-</script>
-
-</body></html>`;
+  /* Ticket d'impression isolé : aucun script applicatif/architecture ne doit être injecté ici. */
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>@page{size:${width}mm auto;margin:3mm}html,body{margin:0;padding:0;background:#fff;color:#000;font-family:Arial,sans-serif}.ticket{width:${width-6}mm;margin:0 auto}</style></head><body><div class="ticket">${body}</div></body></html>`;
 }
 
 async function printViaSystem(printer,lines,meta={}){
@@ -12563,6 +12396,28 @@ function renderGuestButtons(){
 
 
 
+function ticketCourseColumn(item){
+  /* category est prise en compte même si course a reçu la valeur par défaut PLATS. */
+  const raw=`${text(item?.course||"")} ${text(item?.category||"")}`
+    .normalize("NFD").replace(/[\u0300-\u036f]/g,"").toUpperCase();
+  if(/ENTREE|ENTREES|STARTER|APPETIZER/.test(raw))return 1;
+  if(/DESSERT|DESSERTS|PATISSERIE|PATISSERIES|SWEET/.test(raw))return 3;
+  return 2;
+}
+
+function ticketShortTitle(value,maxWords=3){
+  const words=text(value).trim().split(/\s+/).filter(Boolean);
+  if(!words.length)return "Article";
+  const short=words.slice(0,maxWords).join(" ");
+  return words.length>maxWords?short+"…":short;
+}
+
+function ticketGridHeaderHTML(){
+  return `<div class="ticket-grid-head" aria-hidden="true">
+    <span>ENTRÉE</span><span>PLAT</span><span>DESSERT</span><span>PRIX</span>
+  </div>`;
+}
+
 function renderTicket(){
   const o=STATE.currentOrder||ensureOrder(STATE.currentTable);
   const items=(o.items||[]).filter(Boolean);
@@ -12580,11 +12435,15 @@ function renderTicket(){
   }
 
   $("ticket").innerHTML=items.length
-    ?items.map(i=>{
+    ?ticketGridHeaderHTML()+items.map(i=>{
       const key=lineKey(i);
       const q=itemQty(i);
       const seat=itemSeat(i);
       const sent=lineFired(i);
+      const col=ticketCourseColumn(i);
+      const fullName=itemName(i);
+      const shortName=ticketShortTitle(fullName,3);
+
       const state=lineReady(i)
         ?'<span class="line-state ready">PRÊT</span>'
         :sent
@@ -12592,7 +12451,7 @@ function renderTicket(){
           :'<span class="line-state">BROUILLON</span>';
 
       const cooking=text(i.cooking)
-        ?`<span class="cooking-tag">🌡️ ${esc(i.cooking)}</span>`
+        ?`<span class="cooking-tag">${esc(i.cooking)}</span>`
         :"";
 
       const seatBadge=seat?seatBadgeHTML(seat):'<span class="seat-badge">CTR</span>';
@@ -12608,13 +12467,13 @@ function renderTicket(){
           <button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
           <button data-line="${esc(key)}" data-act="delete">×</button>`;
 
-      return `<div class="ticket-row ${sent?"sent-lock":""}">
-        <div class="ticket-left" data-line="${esc(key)}" data-act="obs" style="cursor:pointer;" title="Tap pour Observation/Allergie">
+      return `<div class="ticket-row ${sent?"sent-lock":""}" data-course-col="${col}">
+        <div class="ticket-left" data-line="${esc(key)}" data-act="obs" style="cursor:pointer;" title="${esc(fullName)}">
           <div class="ticket-name">
-            ${seatBadge}${esc(itemName(i))}
-            ${destinationTagHTML(i)}
-            ${cooking}
-            ${state}
+            ${seatBadge}<span class="ticket-name-text">${esc(shortName)}</span>
+          </div>
+          <div class="ticket-tags">
+            ${destinationTagHTML(i)}${cooking}${state}
           </div>
           <div class="ticket-meta">x${q} · ${esc(i.course||i.category||"")}</div>
           ${obs?`<span class="ticket-obs ${critical?"critical":""}">${critical?"🛑 ":"⚠️ "}${esc(obs)}</span>`:""}
@@ -12630,7 +12489,6 @@ function renderTicket(){
   renderSendButton(o);
   updateUndoButton();
 }
-
 
 
 function openWho(){
@@ -13803,7 +13661,13 @@ setTimeout(() => {
     scheduleRender();
 }, 200);
 </script>
-<script>
+<!-- 1. CORRECTION VISUELLE : TITRE SUR UNE LIGNE SANS CASSER LE C1 -->
+<style id="ticket-une-ligne-flottant">
+/* La colonne de gauche doit pouvoir se réduire */
+body.order-open .ticket-left {
+    min-width: 0 !important;
+    display: block !important;
+}
 
 /* Le conteneur du texte est un bloc classique avec coupe stricte (ellipsis) */
 body.order-open .ticket-name {
@@ -14687,75 +14551,187 @@ body.order-open #bottomObservationBar {
 
 })();
 </script>
-     
 <!-- =========================================================
-     CORRECTION DÉFINITIVE : 4 COLONNES (ENTRÉE/PLAT/DESSERT) + CENTRAGE
+     CORRECTION DÉFINITIVE : 4 COLONNES (ENTRÉE / PLAT / DESSERT / PRIX)
+     - titre = 3 premiers mots maximum
+     - aucune sortie de cadre
+     - colonne métier calculée en JavaScript
      ========================================================= -->
 <style id="style-colonnes-parfaites-v6">
-/* 1. La VRAIE grille à 4 colonnes : 3 parts égales (1fr) + la zone prix/boutons (auto) */
-body.order-open .ticket-row {
-    display: grid !important;
-    grid-template-columns: 1fr 1fr 1fr auto !important;
-    align-items: center !important;
-    min-height: 75px !important;
-    padding: 0 10px !important;
-    gap: 5px !important;
+body.order-open .ticket-items{
+    overflow-x:hidden !important;
 }
 
-/* 2. On place la zone des boutons dans la 4ème colonne */
-body.order-open .ticket-right {
-    grid-column: 4 !important;
-    position: static !important;
-    transform: none !important;
-    display: flex !important;
-    flex-direction: column !important;
-    align-items: flex-end !important;
-    z-index: 10 !important;
+body.order-open .ticket-grid-head{
+    position:sticky;
+    top:0;
+    z-index:30;
+    display:grid;
+    grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) minmax(112px,.82fr);
+    gap:6px;
+    padding:7px 8px;
+    border-bottom:2px solid #d8b24c;
+    background:#ffffff;
+    color:#111111;
+    font-size:clamp(9px,1.8vw,12px);
+    font-weight:1000;
+    text-align:center;
+    letter-spacing:.25px;
 }
 
-/* 3. Placement du plat dans la colonne 1, 2 ou 3 */
-body.order-open .ticket-row[data-course-col="1"] .ticket-left { grid-column: 1 !important; }
-body.order-open .ticket-row[data-course-col="2"] .ticket-left { grid-column: 2 !important; }
-body.order-open .ticket-row[data-course-col="3"] .ticket-left { grid-column: 3 !important; }
-
-/* 4. Le conteneur gauche : prend toute la largeur dispo, limite stricte en mode bloc */
-body.order-open .ticket-left {
-    display: block !important;
-    width: 100% !important;
-    min-width: 0 !important;
-    padding: 0 5px !important;
-    box-sizing: border-box !important;
+body.order-open .ticket-row{
+    display:grid !important;
+    grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) minmax(112px,.82fr) !important;
+    align-items:center !important;
+    min-height:84px !important;
+    padding:7px 8px !important;
+    gap:6px !important;
+    overflow:hidden !important;
 }
 
-/* 5. Le texte (nom du plat) : Centré, coupé avec ... si trop long */
-body.order-open .ticket-name {
-    display: block !important;
-    width: 100% !important;
-    text-align: center !important; /* TEXTE PARFAITEMENT AU CENTRE */
-    white-space: nowrap !important;
-    overflow: hidden !important;
-    text-overflow: ellipsis !important;
-    font-size: 18px !important;
-    font-weight: 950 !important;
-    color: #111111 !important;
-    line-height: 26px !important; /* Centre verticalement le texte par rapport au badge */
+body.order-open .ticket-row[data-course-col="1"] .ticket-left{grid-column:1 !important}
+body.order-open .ticket-row[data-course-col="2"] .ticket-left{grid-column:2 !important}
+body.order-open .ticket-row[data-course-col="3"] .ticket-left{grid-column:3 !important}
+
+body.order-open .ticket-left{
+    width:100% !important;
+    min-width:0 !important;
+    max-width:100% !important;
+    padding:2px 3px !important;
+    box-sizing:border-box !important;
+    display:flex !important;
+    flex-direction:column !important;
+    align-items:stretch !important;
+    justify-content:center !important;
+    overflow:hidden !important;
 }
 
-/* 6. Le badge C1 : accroché à gauche */
-body.order-open .ticket-name .seat-badge {
-    float: left !important;
-    margin-right: 8px !important;
-    margin-top: 2px !important;
+body.order-open .ticket-name{
+    width:100% !important;
+    min-width:0 !important;
+    max-width:100% !important;
+    margin:0 !important;
+    display:grid !important;
+    grid-template-columns:auto minmax(0,1fr) !important;
+    align-items:center !important;
+    gap:5px !important;
+    color:#111111 !important;
+    font-size:clamp(11px,2.2vw,16px) !important;
+    font-weight:1000 !important;
+    line-height:1.05 !important;
+    overflow:hidden !important;
 }
 
-/* 7. Masquage des éléments inutiles pour un affichage ultra épuré */
-html body.order-open .ticket-row .ticket-meta,
-html body.order-open .ticket-name .dest-tag,
-html body.order-open .ticket-name .line-state,
-html body.order-open .ticket-name .cooking-tag {
-    display: none !important;
+body.order-open .ticket-name-text{
+    display:block !important;
+    min-width:0 !important;
+    max-width:100% !important;
+    white-space:nowrap !important;
+    overflow:hidden !important;
+    text-overflow:ellipsis !important;
 }
-</style>
+
+body.order-open .ticket-name .seat-badge{
+    flex:0 0 auto !important;
+    min-width:26px !important;
+    height:20px !important;
+    margin:0 !important;
+    padding:0 5px !important;
+    font-size:8px !important;
+}
+
+body.order-open .ticket-tags{
+    min-width:0 !important;
+    max-width:100% !important;
+    margin-top:4px !important;
+    display:flex !important;
+    align-items:center !important;
+    justify-content:center !important;
+    flex-wrap:wrap !important;
+    gap:3px !important;
+    overflow:hidden !important;
+}
+
+html body.order-open .ticket-tags .dest-tag,
+html body.order-open .ticket-tags .line-state,
+html body.order-open .ticket-tags .cooking-tag{
+    display:inline-flex !important;
+    max-width:100% !important;
+    margin:0 !important;
+    padding:1px 4px !important;
+    font-size:clamp(7px,1.5vw,10px) !important;
+    line-height:1.1 !important;
+    white-space:nowrap !important;
+    overflow:hidden !important;
+    text-overflow:ellipsis !important;
+}
+
+body.order-open .ticket-right{
+    grid-column:4 !important;
+    min-width:0 !important;
+    max-width:100% !important;
+    position:static !important;
+    transform:none !important;
+    display:flex !important;
+    flex-direction:column !important;
+    align-items:flex-end !important;
+    justify-content:center !important;
+    overflow:hidden !important;
+    z-index:10 !important;
+}
+
+body.order-open .ticket-price{
+    max-width:100% !important;
+    white-space:nowrap !important;
+    overflow:hidden !important;
+    text-overflow:ellipsis !important;
+    font-size:clamp(11px,2vw,15px) !important;
+}
+
+body.order-open .qtybar{
+    max-width:100% !important;
+    display:flex !important;
+    justify-content:flex-end !important;
+    gap:3px !important;
+    overflow:hidden !important;
+}
+
+body.order-open .qtybar button{
+    width:clamp(25px,4vw,34px) !important;
+    min-width:25px !important;
+    height:31px !important;
+    padding:0 !important;
+    font-size:13px !important;
+}
+
+html body.order-open .ticket-row .ticket-meta{
+    display:none !important;
+}
+
+body.order-open .ticket-obs{
+    max-width:100% !important;
+    overflow:hidden !important;
+    text-overflow:ellipsis !important;
+    white-space:nowrap !important;
+    font-size:9px !important;
+}
+
+@media(max-width:520px){
+    body.order-open .ticket-grid-head,
+    body.order-open .ticket-row{
+        grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) minmax(94px,.9fr) !important;
+        gap:3px !important;
+        padding-left:4px !important;
+        padding-right:4px !important;
+    }
+    body.order-open .ticket-name{font-size:11px !important;gap:3px !important}
+    body.order-open .ticket-name .seat-badge{min-width:23px !important;height:19px !important;padding:0 4px !important}
+    body.order-open .ticket-tags{gap:2px !important}
+    html body.order-open .ticket-tags .dest-tag,
+    html body.order-open .ticket-tags .line-state,
+    html body.order-open .ticket-tags .cooking-tag{font-size:7px !important;padding:1px 3px !important}
+    body.order-open .qtybar button{width:25px !important;min-width:25px !important;height:29px !important;font-size:12px !important}
+}
 </style>
 </body>
 </html>
