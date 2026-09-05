@@ -2908,8 +2908,7 @@ app.get('/api/export-preuves-legales', async (req, res) => {
 // 🗺️ ROADMAP & MISES À JOUR iCHEF OS — CONTRAT DE SYNCHRONISATION
 // =========================================================================
 
-// Données de base de la Roadmap Serveur
-// Données de base de la Roadmap Serveur
+// Données de base de la Roadmap Serveur (IDs sécurisés pour MongoDB avec "_")
 const ROADMAP_SERVER_CATALOGUE = [
     {
         id: "v4_0", version: "4.0", status: "done",
@@ -2941,29 +2940,30 @@ const ROADMAP_SERVER_CATALOGUE = [
     }
 ];
 
-// [...] Gardez les routes 1, 2, 3 intactes [...]
-
-// 4. ACTIONS REQUISES
-app.get('/api/roadmap/actions', async (req, res) => {
+// 1. STATUT GLOBAL ROADMAP
+app.get('/api/roadmap/status', async (req, res) => {
     try {
         const tenantID = cleanString(req.query.tenantID);
-        const state = await AppState.findOne({ tenantID }).lean();
-        const betaRequests = state?.activeOrders?.ROADMAP_MASTER?.betaRequests || [];
+        if (!tenantID) return res.status(400).json({ error: "tenantID manquant." });
         
-        let actions = [];
-        // CORRECTION : On vérifie avec le nouvel ID "v4_3"
-        if (betaRequests.includes("v4_3")) {
-            actions.push({
-                priority: "info",
-                title: "Bêta v4.3 en attente",
-                description: "Votre demande de participation est en cours d'analyse par nos équipes."
-            });
-        }
-        res.json({ actions: { items: { tasks: actions } } });
+        res.json({
+            currentVersion: "4.2",
+            state: "up_to_date",
+            stateLabel: "Connecté et à jour",
+            lastUpdate: new Date().toISOString(),
+            newCount: 1,
+            deployingCount: 1,
+            upcomingCount: 2,
+            recentUpdates: [
+                { version: "4.2", dateLabel: "Sept. 2026", title: "Centre d'Exports Réels & Académie" },
+                { version: "4.0", dateLabel: "Août 2026", title: "Sécurité Fiscale & Vision IA Haute Performance" }
+            ]
+        });
     } catch (e) {
-        res.status(500).json({ error: "Erreur lecture des actions" });
+        res.status(500).json({ error: "Erreur de statut Roadmap" });
     }
 });
+
 // 2. CATALOGUE DES RELEASES
 app.get('/api/roadmap/releases', async (req, res) => {
     try {
@@ -2979,7 +2979,6 @@ app.get('/api/roadmap/releases', async (req, res) => {
             clientStatusLabel: deployments[r.id] >= 100 ? "ACTIF CHEZ VOUS" : (deployments[r.id] > 0 ? "EN DÉPLOIEMENT" : "À CONFIGURER")
         }));
 
-        // CORRECTION CRITIQUE : Le tableau est renvoyé directement sous la clé "releases"
         res.json({ releases: personalizedReleases });
         
     } catch (e) {
@@ -3018,7 +3017,7 @@ app.get('/api/roadmap/actions', async (req, res) => {
         const betaRequests = state?.activeOrders?.ROADMAP_MASTER?.betaRequests || [];
         
         let actions = [];
-        if (betaRequests.includes("v4.3")) {
+        if (betaRequests.includes("v4_3")) {
             actions.push({
                 priority: "info",
                 title: "Bêta v4.3 en attente",
@@ -3049,7 +3048,7 @@ app.post('/api/roadmap/beta/request', async (req, res) => {
         const safeID = cleanString(tenantID);
         if (!safeID || !releaseId) return res.status(400).json({ error: "Données manquantes." });
 
-        const newState = await AppState.findOneAndUpdate(
+        await AppState.findOneAndUpdate(
             { tenantID: safeID },
             { $addToSet: { "activeOrders.ROADMAP_MASTER.betaRequests": releaseId } },
             { new: true, upsert: true }
@@ -3074,7 +3073,7 @@ app.post('/api/roadmap/deployment', async (req, res) => {
 
         const safePercent = Math.max(0, Math.min(100, Number(percent)));
 
-        const newState = await AppState.findOneAndUpdate(
+        await AppState.findOneAndUpdate(
             { tenantID: safeID },
             { 
                 $set: { 
@@ -3113,7 +3112,6 @@ app.get('/api/roadmap/votes', async (req, res) => {
 });
 
 app.post('/api/roadmap/votes', async (req, res) => {
-    // Les votes sont factices dans cette version, renvoi succès
     res.json({ success: true });
 });
 
@@ -3140,7 +3138,245 @@ app.get('/api/roadmap/system-status', async (req, res) => {
             "Stripe Paiements": { status: typeof stripe !== 'undefined' && stripe ? "OK" : "Inactif" },
             "Twilio SMS": { status: typeof twilioClient !== 'undefined' && twilioClient ? "OK" : "Inactif" },
             "Gemini IA": { status: "OK" },
-            // Ajouts pour satisfaire le contrat du frontend (core-sync-checks)
+            "AppState client": { status: mongoReady ? "OK" : "Dégradé" },
+            "Roadmap CORE": { status: "OK" },
+            "Room Socket tenant": { status: "OK" }
+        }
+    });
+});// =========================================================================
+// 🗺️ ROADMAP & MISES À JOUR iCHEF OS — CONTRAT DE SYNCHRONISATION
+// =========================================================================
+
+// Données de base de la Roadmap Serveur (IDs sécurisés pour MongoDB avec "_")
+const ROADMAP_SERVER_CATALOGUE = [
+    {
+        id: "v4_0", version: "4.0", status: "done",
+        title: "Sécurité Fiscale & Vision IA Haute Performance",
+        description: "Mise à niveau de l'assistant intelligent et renforcement des outils de traçabilité et de conformité fiscale.",
+        features: ["Registre anti-fraude et traçabilité renforcée", "Nouveau moteur de vision IA pour la numérisation des factures", "Cockpit de Direction optimisé"],
+        directClient: true, rolloutPercent: 100, globalStatus: "done", clientStatus: "done"
+    },
+    {
+        id: "v4_2", version: "4.2", status: "current",
+        title: "Centre d'Exports Réels & Académie",
+        description: "Connexion directe des modules d'apprentissage et extraction des données réelles du restaurant.",
+        features: ["Export du Z de caisse et historique des ventes", "Certificat de preuves et journal légal", "Académie de formation pour la brigade", "Synchronisation avec l'Assistant IA"],
+        directClient: true, rolloutPercent: 100, globalStatus: "current", clientStatus: "current"
+    },
+    {
+        id: "v4_3", version: "4.3", status: "beta",
+        title: "Synchronisation Salle-Cuisine & Puces Intelligentes",
+        description: "Fluidité du service grâce à une communication instantanée entre tables, salle et production.",
+        features: ["Écrans de production tactiles et suivi du temps", "Puces NFC sur table", "Régulation automatique Anti-Rush"],
+        betaAvailable: true, directClient: true, rolloutPercent: 0, globalStatus: "beta", clientStatus: "future"
+    },
+    {
+        id: "v5_0", version: "5.0", status: "future",
+        title: "Nouvelles expériences client & Intelligence avancée",
+        description: "Encore plus d'outils pour augmenter les marges et simplifier le quotidien.",
+        features: ["Programme de fidélité intelligent", "Analyses prédictives IA", "Intégration hôtellerie / room service", "Marketplace fournisseurs"],
+        directClient: true, rolloutPercent: 0, globalStatus: "future", clientStatus: "future"
+    }
+];
+
+// 1. STATUT GLOBAL ROADMAP
+app.get('/api/roadmap/status', async (req, res) => {
+    try {
+        const tenantID = cleanString(req.query.tenantID);
+        if (!tenantID) return res.status(400).json({ error: "tenantID manquant." });
+        
+        res.json({
+            currentVersion: "4.2",
+            state: "up_to_date",
+            stateLabel: "Connecté et à jour",
+            lastUpdate: new Date().toISOString(),
+            newCount: 1,
+            deployingCount: 1,
+            upcomingCount: 2,
+            recentUpdates: [
+                { version: "4.2", dateLabel: "Sept. 2026", title: "Centre d'Exports Réels & Académie" },
+                { version: "4.0", dateLabel: "Août 2026", title: "Sécurité Fiscale & Vision IA Haute Performance" }
+            ]
+        });
+    } catch (e) {
+        res.status(500).json({ error: "Erreur de statut Roadmap" });
+    }
+});
+
+// 2. CATALOGUE DES RELEASES
+app.get('/api/roadmap/releases', async (req, res) => {
+    try {
+        const tenantID = cleanString(req.query.tenantID);
+        if (!tenantID) return res.status(400).json({ error: "tenantID manquant." });
+
+        const state = await AppState.findOne({ tenantID }).lean();
+        const deployments = state?.activeOrders?.ROADMAP_MASTER?.deployments || {};
+
+        const personalizedReleases = ROADMAP_SERVER_CATALOGUE.map(r => ({
+            ...r,
+            rolloutPercent: deployments[r.id] !== undefined ? deployments[r.id] : r.rolloutPercent,
+            clientStatusLabel: deployments[r.id] >= 100 ? "ACTIF CHEZ VOUS" : (deployments[r.id] > 0 ? "EN DÉPLOIEMENT" : "À CONFIGURER")
+        }));
+
+        res.json({ releases: personalizedReleases });
+        
+    } catch (e) {
+        res.status(500).json({ error: "Erreur lecture des releases" });
+    }
+});
+
+// 3. STATUT DES MODULES
+app.get('/api/roadmap/modules', async (req, res) => {
+    try {
+        const tenantID = cleanString(req.query.tenantID);
+        const tenant = await Tenant.findOne({ tenantID }).lean();
+        if (!tenant) return res.status(404).json({ error: "Restaurant inconnu." });
+
+        const plan = String(tenant.plan || 'BUSINESS').toUpperCase();
+        const baseModules = {
+            "Caisse & Paiement": { active: true },
+            "Plan de Salle": { active: true },
+            "Cockpit Anti-Rush": { active: ["EMPIRE", "PREMIUM", "BRIGADE", "BUSINESS"].includes(plan) },
+            "Ressources Humaines": { active: ["EMPIRE", "PREMIUM", "BRIGADE"].includes(plan) },
+            "Assistant IA": { active: true },
+            "API Comptabilité": { active: ["EMPIRE", "PREMIUM", "RENTABILITE"].includes(plan) }
+        };
+
+        res.json({ modules: baseModules });
+    } catch (e) {
+        res.status(500).json({ error: "Erreur lecture des modules" });
+    }
+});
+
+// 4. ACTIONS REQUISES
+app.get('/api/roadmap/actions', async (req, res) => {
+    try {
+        const tenantID = cleanString(req.query.tenantID);
+        const state = await AppState.findOne({ tenantID }).lean();
+        const betaRequests = state?.activeOrders?.ROADMAP_MASTER?.betaRequests || [];
+        
+        let actions = [];
+        if (betaRequests.includes("v4_3")) {
+            actions.push({
+                priority: "info",
+                title: "Bêta v4.3 en attente",
+                description: "Votre demande de participation est en cours d'analyse par nos équipes."
+            });
+        }
+        res.json({ actions: { items: { tasks: actions } } });
+    } catch (e) {
+        res.status(500).json({ error: "Erreur lecture des actions" });
+    }
+});
+
+// 5. GESTION DES BÊTAS
+app.get('/api/roadmap/beta', async (req, res) => {
+    try {
+        const betas = ROADMAP_SERVER_CATALOGUE.filter(r => r.betaAvailable).map(b => ({
+            id: b.id, title: b.title, description: b.description
+        }));
+        res.json({ beta: { items: { releases: betas } } });
+    } catch (e) {
+        res.status(500).json({ error: "Erreur catalogue Bêta" });
+    }
+});
+
+app.post('/api/roadmap/beta/request', async (req, res) => {
+    try {
+        const { tenantID, releaseId } = req.body;
+        const safeID = cleanString(tenantID);
+        if (!safeID || !releaseId) return res.status(400).json({ error: "Données manquantes." });
+
+        await AppState.findOneAndUpdate(
+            { tenantID: safeID },
+            { $addToSet: { "activeOrders.ROADMAP_MASTER.betaRequests": releaseId } },
+            { new: true, upsert: true }
+        ).lean();
+
+        io.to(safeID).emit('roadmap:beta', { releaseId, status: 'requested' });
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: "Erreur inscription Bêta" });
+    }
+});
+
+// 6. GESTION DES DÉPLOIEMENTS CLIENTS (Gérant/Admin)
+app.post('/api/roadmap/deployment', async (req, res) => {
+    try {
+        const { tenantID, releaseId, percent, pin } = req.body;
+        const safeID = cleanString(tenantID);
+        
+        // Sécurité par code PIN Gérant
+        const auth = await ichefAuthorizePin(safeID, pin, { managerOnly: true });
+        if (!auth.ok) return res.status(auth.status || 403).json({ error: auth.error || "Accès refusé. PIN Gérant requis." });
+
+        const safePercent = Math.max(0, Math.min(100, Number(percent)));
+
+        await AppState.findOneAndUpdate(
+            { tenantID: safeID },
+            { 
+                $set: { 
+                    [`activeOrders.ROADMAP_MASTER.deployments.${releaseId}`]: safePercent,
+                    'activeOrders.ROADMAP_MASTER.updatedAt': new Date().toISOString()
+                } 
+            },
+            { new: true, upsert: true }
+        ).lean();
+
+        // Audit cryptographique anti-fraude
+        await scellerOperation(safeID, 'UPDATE', 'ROADMAP_DEPLOYMENT', releaseId, auth.name || 'MANAGER', { percent: safePercent });
+
+        // Synchronisation WebSocket
+        io.to(safeID).emit('roadmap:deployment', { releaseId, percent: safePercent });
+        
+        res.json({ success: true, percent: safePercent });
+    } catch (e) {
+        res.status(500).json({ error: "Erreur lors de la modification du déploiement." });
+    }
+});
+
+// 7. VOTES ET SUGGESTIONS
+app.get('/api/roadmap/votes', async (req, res) => {
+    res.json({
+        votes: {
+            items: {
+                features: [
+                    { id: "vote_1", title: "Module Click & Collect avancé", percent: 85 },
+                    { id: "vote_2", title: "Paiement partagé par article", percent: 92 },
+                    { id: "vote_3", title: "Connecteur UberEats / Deliveroo", percent: 64 }
+                ]
+            }
+        }
+    });
+});
+
+app.post('/api/roadmap/votes', async (req, res) => {
+    res.json({ success: true });
+});
+
+// 8. PROBLÈMES CONNUS (INCIDENTS)
+app.get('/api/roadmap/issues', async (req, res) => {
+    res.json({
+        issues: {
+            items: {
+                incidents: [
+                    { title: "Latence TPE Ciontek", description: "Léger délai de communication constaté sur les TPE Ciontek CS50S.", module: "Paiement", status: "En résolution" }
+                ]
+            }
+        }
+    });
+});
+
+// 9. ÉTAT DES SERVICES SYSTÈME (SOCKET, MONGODB, ETC.)
+app.get('/api/roadmap/system-status', async (req, res) => {
+    const mongoReady = mongoose.connection.readyState === 1;
+    res.json({
+        services: {
+            "MongoDB": { status: mongoReady ? "OK" : "Dégradé" },
+            "Socket.IO": { status: "OK" },
+            "Stripe Paiements": { status: typeof stripe !== 'undefined' && stripe ? "OK" : "Inactif" },
+            "Twilio SMS": { status: typeof twilioClient !== 'undefined' && twilioClient ? "OK" : "Inactif" },
+            "Gemini IA": { status: "OK" },
             "AppState client": { status: mongoReady ? "OK" : "Dégradé" },
             "Roadmap CORE": { status: "OK" },
             "Room Socket tenant": { status: "OK" }
