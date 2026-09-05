@@ -1092,6 +1092,187 @@ function renderReleases(releases){
     return;
   }
 
+  wrap.innerHTML = releases.map(r0 => {
+    const r = normalizeRelease(r0);
+    const cls = r.status === "done" ? "done" : r.status === "current" ? "current" : "future";
+    const badgeClass = r.status === "done" ? "green" : r.status === "current" ? "gold" : "gray";
+    const features = r.features.map(f => `<li>${esc(typeof f === "string" ? f : (f.label || f.title || ""))}</li>`).join("");
+    const image = r.image ? `<img src="${attr(r.image)}" alt="${attr(r.title)}">` : "";
+    const button = r.actionLabel
+      ? `<button class="btn roadmap-action" data-url="${attr(r.actionUrl)}">${esc(r.actionLabel)}</button>`
+      : "";
+    return `
+      <article class="release ${cls}">
+        <div class="release-date">${esc(r.dateLabel)}</div>
+        <div>
+          <span class="badge ${badgeClass}">VERSION ${esc(r.version)} — ${esc(r.statusLabel)}</span>
+          ${r.directClient ? `<div class="client-live-chip ${r.clientStatus === "future" ? "future" : r.rolloutPercent > 0 && r.rolloutPercent < 100 ? "deploying" : ""}">● DIRECT CLIENT · ${esc(r.clientStatusLabel || (r.rolloutPercent >= 100 ? "ACTIF CHEZ VOUS" : "À CONFIGURER"))}</div>` : ""}
+          <h2>${esc(r.title)}</h2>
+          <p>${esc(r.description)}</p>
+          <ul class="feature-list">${features}</ul>
+        </div>
+        <div class="release-visual">
+          ${image}
+          ${button}
+        </div>
+      </article>`;
+  }).join("");
+
+  wrap.querySelectorAll(".roadmap-action").forEach(btn=>{
+    btn.addEventListener("click",()=>{
+      const raw = btn.dataset.url || "";
+      if(!raw) return;
+      const sep = raw.includes("?") ? "&" : "?";
+      location.href = raw + (tenantID ? sep + "tenantID=" + encodeURIComponent(tenantID) : "");
+    });
+  });
+}
+
+function renderStatus(status={}){
+  const version = status.currentVersion || status.version || status.latestVersion || "—";
+  document.getElementById("current-version").textContent = version;
+  document.getElementById("sidebar-version").textContent = version;
+  document.getElementById("header-version").textContent = "Version " + version;
+
+  const state = String(status.state || status.updateState || "unknown").toLowerCase();
+  const badge = document.getElementById("version-state");
+  badge.className = "badge " + (["current","up_to_date","à jour","a_jour"].includes(state) ? "green" : state === "deploying" ? "gold" : "gray");
+  badge.textContent = status.stateLabel || (["current","up_to_date","a_jour"].includes(state) ? "À jour" : state === "deploying" ? "Déploiement" : "Connecté");
+
+  document.getElementById("last-update").textContent = "Dernière mise à jour : " + formatDateTime(status.lastUpdate || status.updatedAt || status.deployedAt);
+  document.getElementById("new-count").textContent = status.newCount ?? status.unreadCount ?? "—";
+  document.getElementById("deploying-count").textContent = status.deployingCount ?? "—";
+  document.getElementById("upcoming-count").textContent = status.upcomingCount ?? "—";
+
+  const updates = extractArray(status, ["recentUpdates","updates","history"]);
+  renderUpdates(updates);
+}
+
+function renderUpdates(updates){
+  const wrap = document.getElementById("updates-list");
+  if(!updates.length){
+    wrap.innerHTML = `<div class="todo"><div class="todo-main"><b>Aucun historique reçu</b><span>/api/roadmap/status → recentUpdates</span></div></div>`;
+    return;
+  }
+  wrap.innerHTML = updates.slice(0,7).map(u => `
+    <div class="update-row">
+      <span>${esc(u.dateLabel || u.date || (u.createdAt ? formatDateTime(u.createdAt).split(" ")[0] : "—"))}</span>
+      <b>${esc(u.version || "—")}</b>
+      <div>${esc(u.title || u.label || u.description || "")}</div>
+    </div>`).join("");
+}
+
+function normalizeModule(name, raw){
+  if(typeof raw === "boolean") return {name, active:raw, status:raw ? "Actif" : "Inactif"};
+  return {
+    name: raw?.name || raw?.label || name,
+    active: raw?.active === true || raw?.enabled === true || raw?.connected === true,
+    status: raw?.statusLabel || raw?.status || (raw?.active || raw?.enabled || raw?.connected ? "Actif" : "Inactif")
+  };
+}
+
+function renderModules(data){
+  const wrap = document.getElementById("modules-list");
+  let modules = [];
+  if(Array.isArray(data)){
+    modules = data.map(m => normalizeModule(m.key || m.id || m.name || "Module", m));
+  }else if(data && typeof data === "object"){
+    modules = Object.entries(data).map(([name,raw]) => normalizeModule(name,raw));
+  }
+  if(!modules.length){
+    wrap.innerHTML = `<div class="module"><span>Aucun module reçu</span><em style="color:var(--muted)">—</em></div>`;
+    document.getElementById("module-summary").textContent = "À connecter";
+    return;
+  }
+  const activeCount = modules.filter(m=>m.active).length;
+  document.getElementById("module-summary").textContent = `${activeCount}/${modules.length} actifs`;
+  document.getElementById("module-summary").style.color = activeCount === modules.length ? "var(--green)" : "var(--orange)";
+  wrap.innerHTML = modules.map(m => `
+    <div class="module">
+      <span>${esc(m.name)}</span>
+      <em style="${m.active ? "" : "color:#f5bd62"}">${esc(m.status)}</em>
+    </div>`).join("");
+}
+
+function renderActions(actions){
+  const wrap = document.getElementById("todo-list");
+  document.getElementById("todo-count").textContent = actions.length;
+  if(!actions.length){
+    wrap.innerHTML = `<div class="todo"><div class="todo-icon" style="background:#14351f;color:#9df0b6">✓</div><div class="todo-main"><b>Aucune action requise</b><span>Votre Roadmap est à jour.</span></div></div>`;
+    return;
+  }
+  wrap.innerHTML = actions.slice(0,6).map((a,index) => `
+    <div class="todo">
+      <div class="todo-icon">${esc(a.icon || (a.priority === "urgent" ? "!" : "i"))}</div>
+      <div class="todo-main">
+        <b>${esc(a.title || "Action iCHEF")}</b>
+        <span>${esc(a.description || a.subtitle || "")}</span>
+      </div>
+      ${a.url || a.actionUrl ? `<button class="btn todo-action" data-index="${index}">${esc(a.buttonLabel || a.actionLabel || "Ouvrir")}</button>` : ""}
+    </div>`).join("");
+
+  wrap.querySelectorAll(".todo-action").forEach(btn=>{
+    btn.addEventListener("click",()=>{
+      const a = actions[Number(btn.dataset.index)];
+      const raw = a?.url || a?.actionUrl || "";
+      if(!raw) return;
+      const sep = raw.includes("?") ? "&" : "?";
+      location.href = raw + (tenantID ? sep + "tenantID=" + encodeURIComponent(tenantID) : "");
+    });
+  });
+}
+
+
+function renderPremiumSummary(status={}, modulesData=null, actions=[], issues=[]){
+  const version = status.currentVersion || status.version || status.latestVersion || "—";
+  document.getElementById("premium-version").textContent = version;
+
+  let modules = [];
+  if(Array.isArray(modulesData)) modules = modulesData;
+  else if(modulesData && typeof modulesData === "object") modules = Object.values(modulesData);
+  const active = modules.filter(m => m === true || m?.active === true || m?.enabled === true || m?.connected === true).length;
+  document.getElementById("premium-modules").textContent = modules.length ? `${active}/${modules.length}` : "—";
+
+  document.getElementById("premium-news").textContent = status.newCount ?? status.unreadCount ?? "—";
+  document.getElementById("premium-actions").textContent = actions.length;
+  const critical = issues.filter(i => ["critical","urgent","major"].includes(String(i.severity || i.level || "").toLowerCase())).length;
+  document.getElementById("premium-incidents").textContent = critical;
+}
+
+function normalizeRelease(raw={}){
+  const statusRaw = String(raw.status || raw.state || raw.phase || "future").toLowerCase();
+  let status = "future";
+  if(["done","deployed","deployee","déployée","released","active"].includes(statusRaw)) status = "done";
+  if(["current","deploying","in_progress","en_cours"].includes(statusRaw)) status = "current";
+  if(["beta","pilot","test"].includes(statusRaw)) status = "beta";
+
+  return {
+    id: raw.id || raw._id || raw.version || raw.title || "",
+    version: raw.version || raw.tag || "—",
+    status,
+    statusLabel: raw.statusLabel || raw.label || (status === "done" ? "DÉPLOYÉE" : status === "current" ? "EN COURS" : status === "beta" ? "BÊTA" : "À VENIR"),
+    dateLabel: raw.dateLabel || raw.period || raw.date || raw.releaseDate || "—",
+    title: raw.title || "Mise à jour iCHEF",
+    description: raw.description || raw.summary || "",
+    features: Array.isArray(raw.features) ? raw.features : [],
+    image: localReleaseImage(raw.version || raw.tag, raw.image || raw.imageUrl || ""),
+    actionLabel: raw.actionLabel || "",
+    actionUrl: raw.actionUrl || raw.link || "",
+    demoUrl: raw.demoUrl || "",
+    betaAvailable: raw.betaAvailable === true,
+    activationAvailable: raw.activationAvailable === true,
+    rolloutPercent: Math.max(0, Math.min(100, Number(raw.clientPercent ?? raw.rolloutPercent ?? raw.progress ?? (status === "done" ? 100 : 0)))),
+    directClient: raw.directClient === true,
+    globalStatus: String(raw.globalStatus || ""),
+    clientStatus: String(raw.clientStatus || ""),
+    clientStatusLabel: String(raw.clientStatusLabel || ""),
+    clientUpdatedAt: raw.clientUpdatedAt || null,
+    deploymentSource: String(raw.deploymentSource || ""),
+    changeForYou: raw.changeForYou || raw.customerImpact || "",
+    impacts: Array.isArray(raw.impacts) ? raw.impacts : []
+  };
+}
+
 function renderReleases(releases){
   const wrap = document.getElementById("release-timeline");
   if(!releases.length){
@@ -1117,7 +1298,7 @@ function renderReleases(releases){
     ].join("");
 
     return `
-      <article class="release ${cls}" data-release-id="${attr(r.id)}" data-status="${attr(r.status)}" data-search="${attr((r.version+" "+r.title+" "+r.description+" "+r.features.join(" ")).toLowerCase())}">
+      <article class="release ${cls}" data-status="${attr(r.status)}" data-search="${attr((r.version+" "+r.title+" "+r.description+" "+r.features.join(" ")).toLowerCase())}">
         <div class="release-date">${esc(r.dateLabel)}</div>
         <div>
           <span class="badge ${badgeClass}">VERSION ${esc(r.version)} — ${esc(r.statusLabel)}</span>
@@ -1147,7 +1328,6 @@ function renderReleases(releases){
         </div>
       </article>`;
   }).join("");
-}
 
   wrap.querySelectorAll(".roadmap-action,.roadmap-demo").forEach(btn=>{
     btn.addEventListener("click",()=>{
@@ -1460,43 +1640,45 @@ function updateCoreSync(checks){
 async function loadRoadmap(){
   if(!tenantID){
     setSyncStatus("offline","TENANT ABSENT");
-    renderReleases(ROADMAP_FALLBACK_RELEASES);
-    renderModules({});
+    renderReleases([]);
+    renderModules([]);
     renderActions([]);
     return;
   }
 
-  // Protection contre le blocage infini (Timeout de 5 secondes)
-  const fetchWithTimeout = async (path) => {
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), 5000);
-    try {
-      const res = await secureFetch(path, { signal: controller.signal });
-      clearTimeout(id);
-      return await res.json();
-    } catch (err) {
-      clearTimeout(id);
-      throw err;
-    }
-  };
-
   const calls = [
-    fetchWithTimeout(`/api/roadmap/status?tenantID=${encodeURIComponent(tenantID)}`).catch(() => null),
-    fetchWithTimeout(`/api/roadmap/releases?tenantID=${encodeURIComponent(tenantID)}`).catch(() => null),
-    fetchWithTimeout(`/api/roadmap/modules?tenantID=${encodeURIComponent(tenantID)}`).catch(() => null),
-    fetchWithTimeout(`/api/roadmap/actions?tenantID=${encodeURIComponent(tenantID)}`).catch(() => null),
-    fetchWithTimeout(`/api/roadmap/beta?tenantID=${encodeURIComponent(tenantID)}`).catch(() => null),
-    fetchWithTimeout(`/api/roadmap/votes?tenantID=${encodeURIComponent(tenantID)}`).catch(() => null),
-    fetchWithTimeout(`/api/roadmap/issues?tenantID=${encodeURIComponent(tenantID)}`).catch(() => null),
-    fetchWithTimeout(`/api/roadmap/system-status?tenantID=${encodeURIComponent(tenantID)}`).catch(() => null)
+    secureFetch(`/api/roadmap/status?tenantID=${encodeURIComponent(tenantID)}`).then(r=>r.json()),
+    secureFetch(`/api/roadmap/releases?tenantID=${encodeURIComponent(tenantID)}`).then(r=>r.json()),
+    secureFetch(`/api/roadmap/modules?tenantID=${encodeURIComponent(tenantID)}`).then(r=>r.json()),
+    secureFetch(`/api/roadmap/actions?tenantID=${encodeURIComponent(tenantID)}`).then(r=>r.json()),
+    secureFetch(`/api/roadmap/beta?tenantID=${encodeURIComponent(tenantID)}`).then(r=>r.json()),
+    secureFetch(`/api/roadmap/votes?tenantID=${encodeURIComponent(tenantID)}`).then(r=>r.json()),
+    secureFetch(`/api/roadmap/issues?tenantID=${encodeURIComponent(tenantID)}`).then(r=>r.json()),
+    secureFetch(`/api/roadmap/system-status?tenantID=${encodeURIComponent(tenantID)}`).then(r=>r.json())
   ];
 
-  const [statusR, releasesR, modulesR, actionsR, betaR, votesR, issuesR, systemR] = await Promise.all(calls);
+  const [statusR,releasesR,modulesR,actionsR,betaR,votesR,issuesR,systemR] = await Promise.allSettled(calls);
 
-  // 1. Statut
-  if(statusR && (statusR.currentVersion || statusR.version || statusR.latestVersion)){
-    renderStatus(statusR);
-  } else {
+  let successCount = 0;
+
+  if(statusR.status === "fulfilled"){
+    successCount++;
+    const statusData = statusR.value || {};
+    const hasUsefulStatus = Boolean(statusData.currentVersion || statusData.version || statusData.latestVersion);
+    if(hasUsefulStatus){
+      renderStatus(statusData);
+    }else{
+      renderStatus({
+        currentVersion:"4.2.1",
+        state:"deploying",
+        stateLabel:"Roadmap locale",
+        newCount:3,
+        deployingCount:2,
+        upcomingCount:5
+      });
+    }
+  }else{
+    console.warn("[iCHEF ROADMAP] status", statusR.reason);
     renderStatus({
       currentVersion:"4.2.1",
       state:"deploying",
@@ -1506,46 +1688,6 @@ async function loadRoadmap(){
       upcomingCount:5
     });
   }
-
-  // 2. Releases (avec repli garanti sur le catalogue local si le serveur est muet)
-  const serverReleases = extractArray(releasesR, ["releases","items","roadmap"]);
-  if(serverReleases.length){
-    renderReleases(serverReleases);
-    const timelineEl = document.getElementById("release-timeline");
-    if(timelineEl) timelineEl.dataset.source = "server";
-  } else {
-    console.warn("[iCHEF ROADMAP] Utilisation du catalogue de secours local");
-    renderReleases(ROADMAP_FALLBACK_RELEASES);
-    const timelineEl = document.getElementById("release-timeline");
-    if(timelineEl) timelineEl.dataset.source = "fallback";
-    setSyncStatus("degraded","ROADMAP LOCALE — MODE SECOURS");
-  }
-
-  // 3. Modules, actions, bêta, votes, incidents, système
-  renderModules(modulesR?.modules ?? modulesR);
-  const actionsData = extractArray(actionsR, ["actions","items","tasks"]);
-  renderActions(actionsData);
-  renderBeta(betaR || {});
-  renderVotes(votesR || {});
-  const issuesData = renderIssues(issuesR || {}) || [];
-  renderSystemStatus(systemR?.services ?? systemR || {});
-
-  const modulesDataForSummary = modulesR?.modules ?? modulesR;
-  renderPremiumSummary(statusR || {}, modulesDataForSummary, actionsData, issuesData);
-
-  updateCoreSync({
-    "tenantID reconnu": Boolean(tenantID),
-    "API statut": statusR !== null,
-    "API versions": serverReleases.length > 0,
-    "API modules": modulesR !== null,
-    "API actions": actionsR !== null,
-    "API bêta": betaR !== null,
-    "API votes": votesR !== null,
-    "API incidents": issuesR !== null,
-    "API état système": systemR !== null,
-    "Socket navigateur": roadmapSocketConnected === true
-  });
-}
 
   if(releasesR.status === "fulfilled"){
     successCount++;
