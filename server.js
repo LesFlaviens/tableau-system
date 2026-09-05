@@ -2979,7 +2979,9 @@ app.get('/api/roadmap/releases', async (req, res) => {
             clientStatusLabel: deployments[r.id] >= 100 ? "ACTIF CHEZ VOUS" : (deployments[r.id] > 0 ? "EN DÉPLOIEMENT" : "À CONFIGURER")
         }));
 
-        res.json({ releases: { items: { roadmap: personalizedReleases } } });
+        // CORRECTION : Le frontend attend un tableau direct sous la clé "releases" ou "roadmap"
+        res.json({ releases: personalizedReleases });
+        
     } catch (e) {
         res.status(500).json({ error: "Erreur lecture des releases" });
     }
