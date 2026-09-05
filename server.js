@@ -7,8 +7,6 @@
  * RH · Paiement/Caisse/Fiscal · Administration · Socket.IO.
  * Les évolutions UI doivent rester côté HTML tant que ce contrat suffit.
  */
-
-
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
