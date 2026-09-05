@@ -7995,100 +7995,1582 @@ app.post(
 );
 
 
+// ============================================================================
+// 🗺️ ICHEF ROADMAP CORE — MONGODB + API + SOCKET.IO
+// ============================================================================
+
+const ichefRoadmapSchema = new mongoose.Schema(
+    {
+        tenantID: {
+            type: String,
+            required: true,
+            unique: true,
+            index: true
+        },
+
+        currentVersion: {
+            type: String,
+            default: '4.2.1'
+        },
+
+        lastUpdate: {
+            type: Date,
+            default: Date.now
+        },
+
+        releases: {
+            type: [mongoose.Schema.Types.Mixed],
+            default: []
+        },
+
+        modules: {
+            type: mongoose.Schema.Types.Mixed,
+            default: () => ({})
+        },
+
+        actions: {
+            type: [mongoose.Schema.Types.Mixed],
+            default: []
+        },
+
+        beta: {
+            type: [mongoose.Schema.Types.Mixed],
+            default: []
+        },
+
+        votes: {
+            type: [mongoose.Schema.Types.Mixed],
+            default: []
+        },
+
+        issues: {
+            type: [mongoose.Schema.Types.Mixed],
+            default: []
+        }
+    },
+    {
+        minimize: false,
+        timestamps: true
+    }
+);
+
+const IchefRoadmapState =
+    mongoose.models.IchefRoadmapState ||
+    mongoose.model(
+        'IchefRoadmapState',
+        ichefRoadmapSchema
+    );
+
+
 // ==========================================================
-// 💳 PORTAIL CLIENT STRIPE
+// 🔑 RÉCUPÉRATION TENANT
 // ==========================================================
 
-app.post(
-    '/api/stripe/create-customer-portal-session',
+function ichefRoadmapTenantID(req) {
+
+    return cleanString(
+        req.query?.tenantID ||
+        req.body?.tenantID ||
+        req.headers['x-ichef-tenant'] ||
+        ''
+    );
+}
+
+
+// ==========================================================
+// 📦 ROADMAP PAR DÉFAUT
+// ==========================================================
+
+function ichefDefaultRoadmapReleases() {
+
+    return [
+
+        {
+            id: 'v4.0',
+            version: '4.0',
+
+            status: 'done',
+            statusLabel: 'DÉPLOYÉE',
+
+            dateLabel: 'Août 2026',
+
+            title:
+                'Sécurité Fiscale & Vision IA Haute Performance',
+
+            description:
+                'Renforcement de la traçabilité et évolution de l’assistant intelligent.',
+
+            features: [
+                'Registre anti-fraude et traçabilité renforcée',
+                'Vision IA pour les factures',
+                'Cockpit de Direction optimisé'
+            ],
+
+            rolloutPercent: 100,
+
+            changeForYou:
+                'Plus de traçabilité et un pilotage plus rapide.',
+
+            impacts: [
+                'Conformité',
+                'Direction',
+                'IA'
+            ]
+        },
+
+
+        {
+            id: 'v4.2',
+            version: '4.2',
+
+            status: 'current',
+            statusLabel: 'EN COURS',
+
+            dateLabel: 'Sept. 2026',
+
+            title:
+                'Centre d’Exports Réels & Académie',
+
+            description:
+                'Connexion des formations et des exports iCHEF.',
+
+            features: [
+                'Export Z de caisse',
+                'Historique des ventes',
+                'Académie iCHEF',
+                'Synchronisation Assistant IA'
+            ],
+
+            rolloutPercent: 72,
+
+            changeForYou:
+                'Formation, exports et informations sont centralisés.',
+
+            impacts: [
+                'Formation',
+                'Exports',
+                'Équipe',
+                'IA'
+            ],
+
+            actionLabel:
+                'OUVRIR L’ACADÉMIE',
+
+            actionUrl:
+                'formation.html'
+        },
+
+
+        {
+            id: 'v4.3',
+            version: '4.3',
+
+            status: 'future',
+            statusLabel: 'À VENIR',
+
+            dateLabel: 'Oct. 2026',
+
+            title:
+                'Synchronisation Salle-Cuisine & Puces Intelligentes',
+
+            description:
+                'Communication instantanée entre salle, tables et production.',
+
+            features: [
+                'Écrans de production tactiles',
+                'Puces NFC sur table',
+                'Anti-Rush intelligent',
+                'Suivi des temps de service'
+            ],
+
+            rolloutPercent: 35,
+
+            changeForYou:
+                'Moins d’attente entre salle et cuisine.',
+
+            impacts: [
+                'Service',
+                'Cuisine',
+                'NFC',
+                'Anti-Rush'
+            ],
+
+            betaAvailable: true
+        },
+
+
+        {
+            id: 'v5.0',
+            version: '5.0',
+
+            status: 'future',
+            statusLabel: 'PLANIFIÉE',
+
+            dateLabel: 'Déc. 2026',
+
+            title:
+                'Expérience client & Intelligence avancée',
+
+            description:
+                'Nouveaux outils pour automatiser et améliorer le pilotage.',
+
+            features: [
+                'Fidélité intelligente',
+                'Analyses prédictives IA',
+                'Room service',
+                'Marketplace fournisseurs'
+            ],
+
+            rolloutPercent: 12,
+
+            changeForYou:
+                'Plus d’automatisation et une expérience client personnalisée.',
+
+            impacts: [
+                'Fidélité',
+                'IA',
+                'Hôtellerie',
+                'Fournisseurs'
+            ]
+        }
+
+    ];
+}
+
+
+// ==========================================================
+// 🧩 MODULES SELON PLAN
+// ==========================================================
+
+function ichefRoadmapModules(tenant) {
+
+    const plan =
+        String(
+            tenant?.plan ||
+            'BUSINESS'
+        )
+        .trim()
+        .toUpperCase();
+
+
+    if (
+        [
+            'CHEF_CUISINE',
+            'CHEF'
+        ].includes(plan)
+    ) {
+
+        return {
+
+            'Cuisine / KDS': {
+                active: true,
+                status: 'Actif'
+            },
+
+            'Carte & Recettes': {
+                active: true,
+                status: 'Actif'
+            },
+
+            'Roadmap': {
+                active: true,
+                status: 'Actif'
+            }
+
+        };
+    }
+
+
+    if (
+        [
+            'CHEF_BAR',
+            'BAR'
+        ].includes(plan)
+    ) {
+
+        return {
+
+            'Bar': {
+                active: true,
+                status: 'Actif'
+            },
+
+            'Carte & Recettes': {
+                active: true,
+                status: 'Actif'
+            },
+
+            'Roadmap': {
+                active: true,
+                status: 'Actif'
+            }
+
+        };
+    }
+
+
+    return {
+
+        'Caisse & Finance': {
+            active: true,
+            status: 'Actif'
+        },
+
+        'Carte & Recettes': {
+            active: true,
+            status: 'Actif'
+        },
+
+        'Commandes / PAD': {
+            active: true,
+            status: 'Actif'
+        },
+
+        'Cuisine / KDS': {
+            active: true,
+            status: 'Actif'
+        },
+
+        'Stocks': {
+            active: true,
+            status: 'Actif'
+        },
+
+        'Réservations': {
+            active: true,
+            status: 'Actif'
+        },
+
+        'RH / Planning': {
+            active: true,
+            status: 'Actif'
+        },
+
+        'Académie': {
+            active: true,
+            status: 'Actif'
+        },
+
+        'Assistant IA': {
+            active: true,
+            status: 'Actif'
+        },
+
+        'Roadmap': {
+            active: true,
+            status: 'Actif'
+        }
+
+    };
+}
+
+
+// ==========================================================
+// 🏗️ CRÉATION AUTOMATIQUE ROADMAP RESTAURANT
+// ==========================================================
+
+async function ichefGetRoadmap(tenantID) {
+
+    const safeID =
+        cleanString(tenantID);
+
+
+    if (!safeID) {
+
+        const error =
+            new Error(
+                'tenantID manquant.'
+            );
+
+        error.status = 400;
+
+        throw error;
+    }
+
+
+    const tenant =
+        await Tenant.findOne({
+            tenantID: safeID
+        });
+
+
+    if (!tenant) {
+
+        const error =
+            new Error(
+                'Établissement inconnu.'
+            );
+
+        error.status = 404;
+
+        throw error;
+    }
+
+
+    let roadmap =
+        await IchefRoadmapState.findOne({
+            tenantID: safeID
+        });
+
+
+    if (!roadmap) {
+
+        roadmap =
+            await IchefRoadmapState.create({
+
+                tenantID:
+                    safeID,
+
+                currentVersion:
+                    '4.2.1',
+
+                lastUpdate:
+                    new Date(),
+
+                releases:
+                    ichefDefaultRoadmapReleases(),
+
+                modules:
+                    ichefRoadmapModules(
+                        tenant
+                    ),
+
+                actions: [],
+
+                beta: [
+                    {
+                        id:
+                            'beta-v4.3',
+
+                        releaseId:
+                            'v4.3',
+
+                        title:
+                            'Salle-Cuisine & NFC intelligent',
+
+                        description:
+                            'Programme pilote NFC / Anti-Rush.',
+
+                        requested:
+                            false
+                    }
+                ],
+
+                votes: [
+
+                    {
+                        id:
+                            'vote-marketplace',
+
+                        title:
+                            'Marketplace fournisseurs',
+
+                        counts: {
+                            very_useful: 0,
+                            useful: 0,
+                            low: 0
+                        }
+                    },
+
+                    {
+                        id:
+                            'vote-ia',
+
+                        title:
+                            'Prévision IA des commandes',
+
+                        counts: {
+                            very_useful: 0,
+                            useful: 0,
+                            low: 0
+                        }
+                    },
+
+                    {
+                        id:
+                            'vote-roomservice',
+
+                        title:
+                            'Room service / hôtellerie',
+
+                        counts: {
+                            very_useful: 0,
+                            useful: 0,
+                            low: 0
+                        }
+                    }
+
+                ],
+
+                issues: []
+
+            });
+    }
+
+
+    return {
+        roadmap,
+        tenant
+    };
+}
+
+
+// ==========================================================
+// 📡 SOCKET ROADMAP
+// ==========================================================
+
+function emitRoadmap(
+    tenantID,
+    eventName,
+    data = {}
+) {
+
+    io
+        .to(tenantID)
+        .emit(
+            eventName,
+            {
+                tenantID,
+                ...data,
+                timestamp:
+                    new Date()
+                        .toISOString()
+            }
+        );
+
+
+    if (
+        eventName !==
+        'roadmap:updated'
+    ) {
+
+        io
+            .to(tenantID)
+            .emit(
+                'roadmap:updated',
+                {
+                    tenantID,
+
+                    source:
+                        eventName,
+
+                    timestamp:
+                        new Date()
+                            .toISOString()
+                }
+            );
+    }
+}
+
+
+// ==========================================================
+// GET /api/roadmap/status
+// ==========================================================
+
+app.get(
+    '/api/roadmap/status',
+
     async (req, res) => {
 
         try {
 
-            /*
-             * Route conservée pour compatibilité.
-             * La vraie session Stripe Billing Portal
-             * pourra être branchée ici.
-             */
+            const tenantID =
+                ichefRoadmapTenantID(
+                    req
+                );
+
+
+            const {
+                roadmap
+            } =
+                await ichefGetRoadmap(
+                    tenantID
+                );
+
+
+            const releases =
+                roadmap.releases || [];
+
+
+            const deployingCount =
+                releases.filter(
+                    item =>
+                        String(
+                            item.status ||
+                            ''
+                        ) ===
+                        'current'
+                ).length;
+
+
+            const upcomingCount =
+                releases.filter(
+                    item =>
+                        String(
+                            item.status ||
+                            ''
+                        ) ===
+                        'future'
+                ).length;
+
 
             return res.json({
-                success: true,
-                url: 'https://billing.stripe.com/'
+
+                success:
+                    true,
+
+                tenantID,
+
+                currentVersion:
+                    roadmap.currentVersion,
+
+                state:
+                    'up_to_date',
+
+                stateLabel:
+                    'À jour',
+
+                lastUpdate:
+                    roadmap.lastUpdate,
+
+                newCount:
+                    releases.filter(
+                        item =>
+                            item.unread ===
+                            true
+                    ).length,
+
+                deployingCount,
+
+                upcomingCount
+
             });
+
 
         } catch (error) {
 
-            console.error(
-                '[iCHEF STRIPE] Erreur portail client :',
-                error
-            );
+            return res
+                .status(
+                    error.status ||
+                    500
+                )
+                .json({
 
-            return res.status(500).json({
-                success: false,
-                error:
-                    error?.message ||
-                    'Erreur lors de l’ouverture du portail Stripe.'
-            });
+                    success:
+                        false,
+
+                    error:
+                        error.message
+
+                });
         }
     }
 );
 
+
 // ==========================================================
-// 🚀 DÉMARRAGE OFFICIEL DU SERVEUR iCHEF
-// IMPORTANT : CE BLOC DOIT ÊTRE LE DERNIER DU server.js
+// GET /api/roadmap/releases
 // ==========================================================
 
-server.listen(
-    PORT,
-    () => {
+app.get(
+    '/api/roadmap/releases',
 
-        console.log('');
-        console.log('==========================================');
-        console.log('✅ iCHEF EMPIRE OS — SERVEUR EN LIGNE');
-        console.log('==========================================');
+    async (req, res) => {
 
-        console.log(
-            `✅ Port serveur : ${PORT}`
-        );
+        try {
 
-        console.log(
-            '✅ Socket.IO activé.'
-        );
+            const tenantID =
+                ichefRoadmapTenantID(
+                    req
+                );
 
-        console.log(
-            '✅ MongoDB / AppState activé.'
-        );
 
-        console.log(
+            const {
+                roadmap
+            } =
+                await ichefGetRoadmap(
+                    tenantID
+                );
 
-            '✅ Moteur fiscal MongoDB activé.'
-        );
 
-        console.log(
-            '✅ FINANCIAL_HISTORY activé.'
-        );
+            return res.json({
 
-        console.log(
-            '✅ FiscalRecord permanent activé.'
-        );
+                success:
+                    true,
 
-        console.log(
-            '✅ Fichier Fiscal Complet activé.'
-        );
+                tenantID,
 
-        console.log(
-            '✅ Audit cryptographique SHA-256 activé.'
-        );
+                releases:
+                    roadmap.releases ||
+                    []
 
-        console.log(
-            '✅ Paiements PAD / Caisse synchronisés.'
-        );
+            });
 
-        console.log(
-            '✅ Socket temps réel PAD / Caisse / Cuisine activé.'
-        );
 
-        console.log('==========================================');
+        } catch (error) {
+
+            return res
+                .status(
+                    error.status ||
+                    500
+                )
+                .json({
+
+                    success:
+                        false,
+
+                    error:
+                        error.message
+
+                });
+        }
+    }
+);
+
+
+// ==========================================================
+// GET /api/roadmap/modules
+// ==========================================================
+
+app.get(
+    '/api/roadmap/modules',
+
+    async (req, res) => {
+
+        try {
+
+            const tenantID =
+                ichefRoadmapTenantID(
+                    req
+                );
+
+
+            const {
+                roadmap,
+                tenant
+            } =
+                await ichefGetRoadmap(
+                    tenantID
+                );
+
+
+            roadmap.modules =
+                ichefRoadmapModules(
+                    tenant
+                );
+
+
+            roadmap.markModified(
+                'modules'
+            );
+
+
+            await roadmap.save();
+
+
+            return res.json({
+
+                success:
+                    true,
+
+                tenantID,
+
+                modules:
+                    roadmap.modules
+
+            });
+
+
+        } catch (error) {
+
+            return res
+                .status(
+                    error.status ||
+                    500
+                )
+                .json({
+
+                    success:
+                        false,
+
+                    error:
+                        error.message
+
+                });
+        }
+    }
+);
+
+
+// ==========================================================
+// GET /api/roadmap/actions
+// ==========================================================
+
+app.get(
+    '/api/roadmap/actions',
+
+    async (req, res) => {
+
+        try {
+
+            const tenantID =
+                ichefRoadmapTenantID(
+                    req
+                );
+
+
+            const {
+                roadmap
+            } =
+                await ichefGetRoadmap(
+                    tenantID
+                );
+
+
+            return res.json({
+
+                success:
+                    true,
+
+                tenantID,
+
+                actions:
+                    roadmap.actions ||
+                    []
+
+            });
+
+
+        } catch (error) {
+
+            return res
+                .status(
+                    error.status ||
+                    500
+                )
+                .json({
+
+                    success:
+                        false,
+
+                    error:
+                        error.message
+
+                });
+        }
+    }
+);
+
+
+// ==========================================================
+// GET /api/roadmap/beta
+// ==========================================================
+
+app.get(
+    '/api/roadmap/beta',
+
+    async (req, res) => {
+
+        try {
+
+            const tenantID =
+                ichefRoadmapTenantID(
+                    req
+                );
+
+
+            const {
+                roadmap
+            } =
+                await ichefGetRoadmap(
+                    tenantID
+                );
+
+
+            return res.json({
+
+                success:
+                    true,
+
+                tenantID,
+
+                beta:
+                    roadmap.beta ||
+                    []
+
+            });
+
+
+        } catch (error) {
+
+            return res
+                .status(
+                    error.status ||
+                    500
+                )
+                .json({
+
+                    success:
+                        false,
+
+                    error:
+                        error.message
+
+                });
+        }
+    }
+);
+
+
+// ==========================================================
+// POST /api/roadmap/beta/request
+// ==========================================================
+
+app.post(
+    '/api/roadmap/beta/request',
+
+    async (req, res) => {
+
+        try {
+
+            const tenantID =
+                ichefRoadmapTenantID(
+                    req
+                );
+
+
+            const releaseId =
+                String(
+                    req.body
+                        ?.releaseId ||
+                    ''
+                )
+                .trim();
+
+
+            if (!releaseId) {
+
+                return res
+                    .status(400)
+                    .json({
+
+                        success:
+                            false,
+
+                        error:
+                            'releaseId manquant.'
+
+                    });
+            }
+
+
+            const {
+                roadmap
+            } =
+                await ichefGetRoadmap(
+                    tenantID
+                );
+
+
+            const beta =
+                roadmap.beta ||
+                [];
+
+
+            let item =
+                beta.find(
+                    element =>
+                        String(
+                            element
+                                ?.releaseId ||
+                            ''
+                        ) ===
+                        releaseId
+                );
+
+
+            if (!item) {
+
+                item = {
+
+                    id:
+                        'beta-' +
+                        releaseId,
+
+                    releaseId,
+
+                    requested:
+                        true,
+
+                    requestedAt:
+                        new Date()
+                            .toISOString()
+
+                };
+
+
+                beta.push(
+                    item
+                );
+
+            } else {
+
+                item.requested =
+                    true;
+
+                item.requestedAt =
+                    new Date()
+                        .toISOString();
+            }
+
+
+            roadmap.beta =
+                beta;
+
+            roadmap.lastUpdate =
+                new Date();
+
+
+            roadmap.markModified(
+                'beta'
+            );
+
+
+            await roadmap.save();
+
+
+            emitRoadmap(
+                tenantID,
+                'roadmap:beta',
+                {
+                    releaseId
+                }
+            );
+
+
+            return res.json({
+
+                success:
+                    true,
+
+                persisted:
+                    true,
+
+                releaseId
+
+            });
+
+
+        } catch (error) {
+
+            return res
+                .status(
+                    error.status ||
+                    500
+                )
+                .json({
+
+                    success:
+                        false,
+
+                    error:
+                        error.message
+
+                });
+        }
+    }
+);
+
+
+// ==========================================================
+// GET /api/roadmap/votes
+// ==========================================================
+
+app.get(
+    '/api/roadmap/votes',
+
+    async (req, res) => {
+
+        try {
+
+            const tenantID =
+                ichefRoadmapTenantID(
+                    req
+                );
+
+
+            const {
+                roadmap
+            } =
+                await ichefGetRoadmap(
+                    tenantID
+                );
+
+
+            const votes =
+                (
+                    roadmap.votes ||
+                    []
+                )
+                .map(
+                    vote => {
+
+                        const counts =
+                            vote.counts ||
+                            {};
+
+                        const a =
+                            Number(
+                                counts
+                                    .very_useful ||
+                                0
+                            );
+
+                        const b =
+                            Number(
+                                counts
+                                    .useful ||
+                                0
+                            );
+
+                        const c =
+                            Number(
+                                counts
+                                    .low ||
+                                0
+                            );
+
+                        const total =
+                            a + b + c;
+
+
+                        const percent =
+                            total
+                                ? Math.round(
+                                    (
+                                        (
+                                            a * 3 +
+                                            b * 2 +
+                                            c
+                                        ) /
+                                        (
+                                            total *
+                                            3
+                                        )
+                                    ) *
+                                    100
+                                )
+                                : 0;
+
+
+                        return {
+
+                            ...vote,
+
+                            percent,
+
+                            totalVotes:
+                                total
+
+                        };
+                    }
+                );
+
+
+            return res.json({
+
+                success:
+                    true,
+
+                tenantID,
+
+                votes
+
+            });
+
+
+        } catch (error) {
+
+            return res
+                .status(
+                    error.status ||
+                    500
+                )
+                .json({
+
+                    success:
+                        false,
+
+                    error:
+                        error.message
+
+                });
+        }
+    }
+);
+
+
+// ==========================================================
+// POST /api/roadmap/votes
+// ==========================================================
+
+app.post(
+    '/api/roadmap/votes',
+
+    async (req, res) => {
+
+        try {
+
+            const tenantID =
+                ichefRoadmapTenantID(
+                    req
+                );
+
+
+            const voteId =
+                String(
+                    req.body?.voteId ||
+                    ''
+                );
+
+
+            const value =
+                String(
+                    req.body?.value ||
+                    ''
+                );
+
+
+            if (
+                ![
+                    'very_useful',
+                    'useful',
+                    'low'
+                ].includes(value)
+            ) {
+
+                return res
+                    .status(400)
+                    .json({
+
+                        success:
+                            false,
+
+                        error:
+                            'Vote invalide.'
+
+                    });
+            }
+
+
+            const {
+                roadmap
+            } =
+                await ichefGetRoadmap(
+                    tenantID
+                );
+
+
+            const item =
+                roadmap.votes.find(
+                    vote =>
+                        String(
+                            vote.id
+                        ) ===
+                        voteId
+                );
+
+
+            if (!item) {
+
+                return res
+                    .status(404)
+                    .json({
+
+                        success:
+                            false,
+
+                        error:
+                            'Vote inconnu.'
+
+                    });
+            }
+
+
+            item.counts =
+                item.counts ||
+                {
+                    very_useful: 0,
+                    useful: 0,
+                    low: 0
+                };
+
+
+            item.counts[value] =
+                Number(
+                    item.counts[
+                        value
+                    ] ||
+                    0
+                ) + 1;
+
+
+            roadmap.markModified(
+                'votes'
+            );
+
+
+            roadmap.lastUpdate =
+                new Date();
+
+
+            await roadmap.save();
+
+
+            emitRoadmap(
+                tenantID,
+                'roadmap:votes',
+                {
+                    voteId,
+                    value
+                }
+            );
+
+
+            return res.json({
+
+                success:
+                    true,
+
+                persisted:
+                    true
+
+            });
+
+
+        } catch (error) {
+
+            return res
+                .status(
+                    error.status ||
+                    500
+                )
+                .json({
+
+                    success:
+                        false,
+
+                    error:
+                        error.message
+
+                });
+        }
+    }
+);
+
+
+// ==========================================================
+// GET /api/roadmap/issues
+// ==========================================================
+
+app.get(
+    '/api/roadmap/issues',
+
+    async (req, res) => {
+
+        try {
+
+            const tenantID =
+                ichefRoadmapTenantID(
+                    req
+                );
+
+
+            const {
+                roadmap
+            } =
+                await ichefGetRoadmap(
+                    tenantID
+                );
+
+
+            return res.json({
+
+                success:
+                    true,
+
+                tenantID,
+
+                issues:
+                    roadmap.issues ||
+                    []
+
+            });
+
+
+        } catch (error) {
+
+            return res
+                .status(
+                    error.status ||
+                    500
+                )
+                .json({
+
+                    success:
+                        false,
+
+                    error:
+                        error.message
+
+                });
+        }
+    }
+);
+
+
+// ==========================================================
+// GET /api/roadmap/system-status
+// ==========================================================
+
+app.get(
+    '/api/roadmap/system-status',
+
+    async (req, res) => {
+
+        try {
+
+            const tenantID =
+                ichefRoadmapTenantID(
+                    req
+                );
+
+
+            await ichefGetRoadmap(
+                tenantID
+            );
+
+
+            const mongoOK =
+                mongoose
+                    .connection
+                    .readyState ===
+                1;
+
+
+            return res.json({
+
+                success:
+                    true,
+
+                tenantID,
+
+                services: {
+
+                    'Serveur API':
+                        'OK',
+
+                    'Socket.IO':
+                        'OK',
+
+                    'MongoDB':
+                        mongoOK
+                            ? 'OK'
+                            : 'Dégradé',
+
+                    'Roadmap CORE':
+                        'OK'
+
+                }
+
+            });
+
+
+        } catch (error) {
+
+            return res
+                .status(
+                    error.status ||
+                    500
+                )
+                .json({
+
+                    success:
+                        false,
+
+                    error:
+                        error.message
+
+                });
+        }
+    }
+);
+
+
+// ==========================================================
+// ✅ SIGNAL SOCKET APRÈS CHANGEMENT
+// ==========================================================
+
+app.post(
+    '/api/roadmap/refresh',
+
+    async (req, res) => {
+
+        try {
+
+            const tenantID =
+                ichefRoadmapTenantID(
+                    req
+                );
+
+
+            await ichefGetRoadmap(
+                tenantID
+            );
+
+
+            emitRoadmap(
+                tenantID,
+                'roadmap:updated',
+                {
+                    source:
+                        'MANUAL_REFRESH'
+                }
+            );
+
+
+            return res.json({
+
+                success:
+                    true
+
+            });
+
+
+        } catch (error) {
+
+            return res
+                .status(
+                    error.status ||
+                    500
+                )
+                .json({
+
+                    success:
+                        false,
+
+                    error:
+                        error.message
+
+                });
+        }
+    }
+);
+
+
+// ============================================================================
+// FIN ICHEF ROADMAP CORE
+// ============================================================================
         // =============================================================
 // QR FISCAL iCHEF — DOSSIER COMPLET DE TABLE
 // COLLER CE BLOC JUSTE AVANT : // 🤖 MOTEURS IA (GEMINI)
