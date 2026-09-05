@@ -762,86 +762,442 @@ app.get('/panel-ichef', (req, res) => {
     } else {
         res.status(403).send('🛑 Accès Refusé. Sécurité Empire iCHEF.');
     }
-});// =========================================================================
+});
+// =========================================================================
+// ⚙️ ANTI-RUSH V51 — MOTEUR D'EXÉCUTION SERVEUR RÉEL
+// Time-Shifting / Pace-Maker / Menu Caméléon
+// =========================================================================
+const ichefAntiRushReleaseTimers = new Map();
+
+function ichefAntiRushIsLiveOrderKey(key) {
+    const value = String(key || '').trim().toUpperCase();
+    if (!value) return false;
+    if (value === 'ARCHITECTURE') return false;
+    if (value.includes('MASTER') || value.includes('ARCHIVE') || value.includes('CATEGORIES')) return false;
+    if (value.startsWith('STAFF_') || value.startsWith('ROADMAP_') || value.startsWith('AUDIT_')) return false;
+    return true;
+}
+
+function ichefAntiRushSettings(state = {}) {
+    const raw = state?.activeOrders?.SETTINGS_MASTER?.data;
+    return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+}
+
+function ichefAntiRushOrderItems(order = {}) {
+    if (Array.isArray(order?.items)) return order.items;
+    if (Array.isArray(order?.lines)) return order.lines;
+    return [];
+}
+
+function ichefAntiRushStatusIsFinished(value) {
+    const s = String(value || '').trim().toUpperCase();
+    return /SERVI|TERMIN|CLOS|CLOSED|PAY[ÉE]|PAID|ANNUL|CANCEL/.test(s);
+}
+
+function ichefAntiRushStatusIsCooking(value) {
+    const s = String(value || '').trim().toUpperCase();
+    return /PR[ÉE]PAR|CUISSON|READY|PR[ÊE]T|ENVOI/.test(s);
+}
+
+function ichefAntiRushActiveProductionCount(state = {}, exceptKey = '') {
+    let count = 0;
+    for (const [key, order] of Object.entries(state?.activeOrders || {})) {
+        if (!ichefAntiRushIsLiveOrderKey(key) || String(key) === String(exceptKey)) continue;
+        if (!order || typeof order !== 'object') continue;
+        const status = String(order.status || order?.data?.status || '').toUpperCase();
+        if (ichefAntiRushStatusIsFinished(status)) continue;
+        if (/EN ATTENTE \(TIME-SHIFT\)|EN ATTENTE \(PACE-MAKER\)/.test(status)) continue;
+        if (ichefAntiRushOrderItems(order).length || order.total || order.couverts || order.pax) count++;
+    }
+    return count;
+}
+
+function ichefAntiRushSafeDelayMinutes(value, fallback = 15) {
+    return Math.max(1, Math.min(90, Number.parseInt(value, 10) || fallback));
+}
+
+async function ichefAntiRushPrepareIncomingOrder(tenantID, tableId, incomingOrder, previousOrder) {
+    if (!incomingOrder || typeof incomingOrder !== 'object' || Array.isArray(incomingOrder)) return incomingOrder;
+    if (!ichefAntiRushIsLiveOrderKey(tableId)) return incomingOrder;
+
+    // Ne remet jamais en attente une commande déjà engagée en production.
+    if (ichefAntiRushStatusIsCooking(incomingOrder.status) || ichefAntiRushStatusIsFinished(incomingOrder.status)) {
+        return incomingOrder;
+    }
+    if (incomingOrder?.antiRush?.managedByServer === true) return incomingOrder;
+
+    // Pour protéger le service existant, la temporisation serveur s'applique uniquement
+    // à une nouvelle commande / une nouvelle table, ou après clôture de l'ancienne commande.
+    if (previousOrder && !ichefAntiRushStatusIsFinished(previousOrder?.status)) {
+        return incomingOrder;
+    }
+
+    const state = await AppState.findOne({ tenantID }, { activeOrders: 1 }).lean();
+    if (!state) return incomingOrder;
+
+    const settings = ichefAntiRushSettings(state);
+    const autoEnabled = settings?.rushRules?.auto === true;
+    const rushLevel = Math.max(0, Math.min(5, Number(settings?.rushLevel || 0)));
+    const v3 = settings?.rushV3 && typeof settings.rushV3 === 'object' ? settings.rushV3 : {};
+
+    if (!autoEnabled || rushLevel < 2) return incomingOrder;
+
+    const reasons = [];
+    let waitMs = 0;
+    let status = String(incomingOrder.status || 'NOUVELLE COMMANDE');
+
+    const timeShift = v3?.timeShift || {};
+    if (timeShift.active === true) {
+        const delayMinutes = ichefAntiRushSafeDelayMinutes(timeShift.delay, 15);
+        waitMs = Math.max(waitMs, delayMinutes * 60_000);
+        reasons.push('TIME_SHIFT');
+        status = 'EN ATTENTE (TIME-SHIFT)';
+    }
+
+    const paceMaker = v3?.paceMaker || {};
+    if (paceMaker.active === true) {
+        const maxVisible = Math.max(1, Math.min(100, Number.parseInt(paceMaker.max, 10) || 10));
+        const activeCount = ichefAntiRushActiveProductionCount(state, tableId);
+        if (activeCount >= maxVisible) {
+            // Une première re-vérification rapide ; le serveur ne libère ensuite la commande
+            // que lorsqu'une place est disponible au Pace-Maker.
+            waitMs = Math.max(waitMs, 60_000);
+            reasons.push('PACE_MAKER');
+            if (!reasons.includes('TIME_SHIFT')) status = 'EN ATTENTE (PACE-MAKER)';
+        }
+    }
+
+    if (!waitMs || !reasons.length) return incomingOrder;
+
+    const now = Date.now();
+    return {
+        ...incomingOrder,
+        status,
+        antiRush: {
+            ...(incomingOrder.antiRush || {}),
+            managedByServer: true,
+            state: 'WAITING',
+            reasons,
+            originalStatus: String(incomingOrder.status || 'NOUVELLE COMMANDE'),
+            queuedAt: new Date(now).toISOString(),
+            releaseAt: new Date(now + waitMs).toISOString(),
+            timeShift: reasons.includes('TIME_SHIFT') ? {
+                delayMinutes: ichefAntiRushSafeDelayMinutes(timeShift.delay, 15),
+                discountType: String(timeShift.discountType || 'percent'),
+                discountValue: String(timeShift.discountValue ?? '10')
+            } : null,
+            paceMaker: reasons.includes('PACE_MAKER') ? {
+                maxVisible: Math.max(1, Math.min(100, Number.parseInt(paceMaker.max, 10) || 10))
+            } : null
+        }
+    };
+}
+
+function ichefAntiRushTimerKey(tenantID, tableId) {
+    return `${cleanString(tenantID)}::${String(tableId || '')}`;
+}
+
+function ichefScheduleAntiRushRelease(tenantID, tableId, releaseAt) {
+    const key = ichefAntiRushTimerKey(tenantID, tableId);
+    const previous = ichefAntiRushReleaseTimers.get(key);
+    if (previous) clearTimeout(previous);
+
+    const target = new Date(releaseAt || Date.now()).getTime();
+    const delay = Math.max(250, Math.min(2_147_000_000, target - Date.now()));
+    const timer = setTimeout(() => {
+        ichefAntiRushReleaseTimers.delete(key);
+        ichefReleaseAntiRushOrder(tenantID, tableId).catch(error =>
+            console.error('[iCHEF ANTI-RUSH release]', error)
+        );
+    }, delay);
+    timer.unref?.();
+    ichefAntiRushReleaseTimers.set(key, timer);
+}
+
+async function ichefReleaseAntiRushOrder(tenantID, tableId) {
+    const safeID = cleanString(tenantID);
+    const state = await AppState.findOne({ tenantID: safeID }, { activeOrders: 1 }).lean();
+    const order = state?.activeOrders?.[tableId];
+    if (!order || order?.antiRush?.managedByServer !== true || order?.antiRush?.state !== 'WAITING') return false;
+
+    const releaseAt = new Date(order.antiRush.releaseAt || 0).getTime();
+    if (releaseAt > Date.now()) {
+        ichefScheduleAntiRushRelease(safeID, tableId, releaseAt);
+        return false;
+    }
+
+    const settings = ichefAntiRushSettings(state);
+    const paceCfg = settings?.rushV3?.paceMaker || {};
+    const paceQueued = Array.isArray(order?.antiRush?.reasons) && order.antiRush.reasons.includes('PACE_MAKER');
+
+    if (paceQueued && paceCfg.active === true) {
+        const maxVisible = Math.max(1, Math.min(100, Number.parseInt(paceCfg.max, 10) || 10));
+        const activeCount = ichefAntiRushActiveProductionCount(state, tableId);
+        if (activeCount >= maxVisible) {
+            const nextRelease = new Date(Date.now() + 60_000).toISOString();
+            const delayed = {
+                ...order,
+                antiRush: {
+                    ...order.antiRush,
+                    releaseAt: nextRelease,
+                    paceMakerRecheckAt: new Date().toISOString()
+                }
+            };
+            await AppState.updateOne(
+                { tenantID: safeID },
+                { $set: { [`activeOrders.${tableId}`]: delayed } }
+            );
+            ichefScheduleAntiRushRelease(safeID, tableId, nextRelease);
+            return false;
+        }
+    }
+
+    const released = {
+        ...order,
+        status: String(order?.antiRush?.originalStatus || 'NOUVELLE COMMANDE'),
+        antiRush: {
+            ...order.antiRush,
+            state: 'RELEASED',
+            releasedAt: new Date().toISOString()
+        }
+    };
+
+    const newState = await AppState.findOneAndUpdate(
+        { tenantID: safeID },
+        { $set: { [`activeOrders.${tableId}`]: released } },
+        { new: true }
+    ).lean();
+
+    ichefEmitFullState(safeID, newState, {
+        tableId,
+        source: 'anti-rush-auto-release'
+    });
+    io.to(safeID).emit('anti-rush-order-released', {
+        tenantID: safeID,
+        tableId,
+        timestamp: new Date().toISOString()
+    });
+    return true;
+}
+
+async function ichefReleaseDueAntiRushOrders(tenantID) {
+    const safeID = cleanString(tenantID);
+    const state = await AppState.findOne({ tenantID: safeID }, { activeOrders: 1 }).lean();
+    if (!state?.activeOrders) return 0;
+
+    let scheduled = 0;
+    for (const [tableId, order] of Object.entries(state.activeOrders)) {
+        if (!ichefAntiRushIsLiveOrderKey(tableId)) continue;
+        if (order?.antiRush?.managedByServer !== true || order?.antiRush?.state !== 'WAITING') continue;
+        const when = new Date(order.antiRush.releaseAt || 0).getTime();
+        if (!Number.isFinite(when)) continue;
+        if (when <= Date.now()) {
+            await ichefReleaseAntiRushOrder(safeID, tableId);
+        } else {
+            ichefScheduleAntiRushRelease(safeID, tableId, when);
+        }
+        scheduled++;
+    }
+    return scheduled;
+}
+
+function ichefAntiRushMenuPrepTime(item = {}) {
+    return Number(
+        item.prepTime ?? item.prep_time ?? item.tempsPreparation ?? item.duration ?? item.temps ?? 0
+    ) || 0;
+}
+
+async function ichefApplyAntiRushCameleon(tenantID, stateInput = null) {
+    const safeID = cleanString(tenantID);
+    const state = stateInput || await AppState.findOne({ tenantID: safeID }).lean();
+    if (!state?.activeOrders) return state;
+
+    const settings = ichefAntiRushSettings(state);
+    const v3 = settings?.rushV3 || {};
+    const enabled = settings?.rushRules?.auto === true && v3?.cameleon === true && Number(settings?.rushLevel || 0) >= 3;
+    const minPrep = Math.max(10, Math.min(90, Number.parseInt(v3?.cameleonMinPrepMinutes, 10) || 18));
+    const menuKeys = ['MENU_MASTER', 'MENU_MASTER_BAR', 'MENU_MASTER_PATISSERIE', 'MENU_CUISINE', 'MENU_BAR', 'MENU_PATISSERIE'];
+    const update = {};
+    let changed = false;
+
+    for (const key of menuKeys) {
+        const node = state.activeOrders[key];
+        if (!node || typeof node !== 'object') continue;
+        const source = node?.data && typeof node.data === 'object' ? node.data : null;
+        if (!source || Array.isArray(source)) continue;
+        const cloned = JSON.parse(JSON.stringify(source));
+        let nodeChanged = false;
+
+        for (const items of Object.values(cloned)) {
+            if (!Array.isArray(items)) continue;
+            for (const item of items) {
+                if (!item || typeof item !== 'object') continue;
+                const managed = item._antiRushCameleon && typeof item._antiRushCameleon === 'object';
+                const shouldHide = enabled && ichefAntiRushMenuPrepTime(item) >= minPrep;
+
+                if (shouldHide && !managed) {
+                    item._antiRushCameleon = {
+                        previousHidden: item.hidden === true,
+                        appliedAt: new Date().toISOString()
+                    };
+                    item.antiRushHidden = true;
+                    item.hidden = true;
+                    nodeChanged = true;
+                } else if (!shouldHide && managed) {
+                    item.hidden = item._antiRushCameleon.previousHidden === true;
+                    delete item.antiRushHidden;
+                    delete item._antiRushCameleon;
+                    nodeChanged = true;
+                }
+            }
+        }
+
+        if (nodeChanged) {
+            update[`activeOrders.${key}.data`] = cloned;
+            update[`activeOrders.${key}.updatedAt`] = new Date().toISOString();
+            changed = true;
+        }
+    }
+
+    if (!changed) return state;
+    const newState = await AppState.findOneAndUpdate(
+        { tenantID: safeID },
+        { $set: update },
+        { new: true }
+    ).lean();
+
+    io.to(safeID).emit('anti-rush-cameleon-changed', {
+        tenantID: safeID,
+        active: enabled,
+        minPrepMinutes: minPrep,
+        timestamp: new Date().toISOString()
+    });
+    return newState;
+}
+
+function ichefAntiRushLevelFromPrediction(prediction = {}) {
+    const stationScores = prediction?.stationScores && typeof prediction.stationScores === 'object'
+        ? Object.values(prediction.stationScores).map(Number).filter(Number.isFinite)
+        : [];
+    const rawLoad = Number(prediction?.globalLoad);
+    const load = Number.isFinite(rawLoad) ? rawLoad : (stationScores.length ? Math.max(...stationScores) : 0);
+    if (load >= 95) return 5;
+    if (load >= 85) return 4;
+    if (load >= 70) return 3;
+    if (load >= 55) return 2;
+    if (load >= 35) return 1;
+    return 0;
+}
+
+// =========================================================================
 // 🚀 MOTEUR IA 5 : PRÉDICTION ANTI-RUSH AVANCÉE (SCORES PAR POSTE & AUTO)
 // =========================================================================
-const ROADMAP_SERVER_CATALOGUE = [
-    {
-        id: "v4_0", version: "4.0", status: "done",
-        title: "Sécurité Fiscale & Vision IA Haute Performance",
-        description: "Mise à niveau de l'assistant intelligent et renforcement des outils de traçabilité et de conformité fiscale.",
-        features: ["Registre anti-fraude et traçabilité renforcée", "Nouveau moteur de vision IA pour la numérisation des factures", "Cockpit de Direction optimisé"],
-        directClient: true, rolloutPercent: 100, globalStatus: "done", clientStatus: "done"
-    },
-    {
-        id: "v4_2", version: "4.2", status: "current",
-        title: "Centre d'Exports Réels & Académie",
-        description: "Connexion directe des modules d'apprentissage et extraction des données réelles du restaurant.",
-        features: ["Export du Z de caisse et historique des ventes", "Certificat de preuves et journal légal", "Académie de formation pour la brigade", "Synchronisation avec l'Assistant IA"],
-        directClient: true, rolloutPercent: 100, globalStatus: "current", clientStatus: "current"
-    },
-    {
-        id: "v4_3", version: "4.3", status: "current",
-        title: "Synchronisation Salle-Cuisine & Puces Intelligentes",
-        description: "Fluidité du service grâce à une communication instantanée entre tables, salle et production.",
-        features: ["Écrans de production tactiles et suivi du temps", "Puces NFC sur table", "Régulation automatique Anti-Rush"],
-        betaAvailable: false, directClient: true, rolloutPercent: 100, globalStatus: "current", clientStatus: "current"
-    },
-    {
-        id: "v5_0", version: "5.0", status: "future",
-        title: "Nouvelles expériences client & Intelligence avancée",
-        description: "Encore plus d'outils pour augmenter les marges et simplifier le quotidien.",
-        features: ["Programme de fidélité intelligent", "Analyses prédictives IA", "Intégration hôtellerie / room service", "Marketplace fournisseurs"],
-        directClient: true, rolloutPercent: 0, globalStatus: "future", clientStatus: "future"
+app.post('/api/anti-rush-predict', async (req, res) => {
+    const session = ichefRequireAntiRushSession(req);
+    if (!session.ok) {
+        return res.status(401).json({ success: false, error: 'Session Anti-Rush invalide ou expirée.' });
     }
-];
 
-app.get('/api/roadmap/status', async (req, res) => {
+    const isAutoPilotEnabled = req.body?.isAutoPilotEnabled === true;
+    const safeID = session.tenantID;
+
     try {
-        const tenantID = cleanString(req.query.tenantID);
-        if (!tenantID) return res.status(400).json({ error: "tenantID manquant." });
-        
-        res.json({
-            currentVersion: "4.3",
-            state: "up_to_date",
-            stateLabel: "Connecté et à jour",
-            lastUpdate: new Date().toISOString(),
-            newCount: 0,
-            deployingCount: 0,
-            upcomingCount: 1,
-            recentUpdates: [
-                { version: "4.3", dateLabel: "Sept. 2026", title: "Synchronisation Salle-Cuisine & Puces Intelligentes" },
-                { version: "4.2", dateLabel: "Sept. 2026", title: "Centre d'Exports Réels & Académie" },
-                { version: "4.0", dateLabel: "Août 2026", title: "Sécurité Fiscale & Vision IA Haute Performance" }
-            ]
-        });
-    } catch (e) {
-        res.status(500).json({ error: "Erreur de statut Roadmap" });
-    }
-});
+        let state = await AppState.findOne({ tenantID: safeID }).lean();
+        let reservations = state?.activeOrders?.RESERVATIONS_MASTER?.data || [];
+        let currentOrders = [];
+        for (const [key, value] of Object.entries(state?.activeOrders || {})) {
+            if (ichefAntiRushIsLiveOrderKey(key)) currentOrders.push(value);
+        }
 
-app.get('/api/roadmap/modules', async (req, res) => {
-    try {
-        const tenantID = cleanString(req.query.tenantID);
-        const tenant = await Tenant.findOne({ tenantID }).lean();
-        if (!tenant) return res.status(404).json({ error: "Restaurant inconnu." });
+        const settings = ichefAntiRushSettings(state || {});
+        const v3 = settings?.rushV3 || {};
 
-        const plan = String(tenant.plan || 'BUSINESS').toUpperCase();
-        const baseModules = {
-            "Caisse & Paiement": { active: true },
-            "Plan de Salle": { active: true },
-            "Écrans de production tactiles": { active: true },
-            "QR & NFC sur table": { active: true },
-            "Cockpit Anti-Rush": { active: ["EMPIRE", "PREMIUM", "BRIGADE", "BUSINESS"].includes(plan) },
-            "Régulation automatique Anti-Rush": { active: ["EMPIRE", "PREMIUM", "BRIGADE", "BUSINESS"].includes(plan) },
-            "Ressources Humaines": { active: ["EMPIRE", "PREMIUM", "BRIGADE"].includes(plan) },
-            "Assistant IA": { active: true },
-            "API Comptabilité": { active: ["EMPIRE", "PREMIUM", "RENTABILITE"].includes(plan) }
-        };
+        const prompt = `Tu es l'IA "Directeur des Opérations" d'iCHEF OS.
+Analyse uniquement la charge réelle du restaurant et propose des actions opérationnelles.
+- Réservations à venir : ${JSON.stringify(reservations.slice(-20))}
+- Commandes en cours : ${JSON.stringify(currentOrders)}
+- Heure actuelle : ${new Date().toLocaleTimeString('fr-FR', {timeZone: 'Europe/Paris'})}
+- Pilote automatique serveur : ${isAutoPilotEnabled ? 'ACTIVÉ' : 'DÉSACTIVÉ'}
+- Time-Shifting autorisé par le gérant : ${v3?.timeShift?.active === true ? 'OUI' : 'NON'}
+- Pace-Maker autorisé par le gérant : ${v3?.paceMaker?.active === true ? 'OUI' : 'NON'}
+- Menu Caméléon autorisé par le gérant : ${v3?.cameleon === true ? 'OUI' : 'NON'}
 
-        res.json({ modules: baseModules });
-    } catch (e) {
-        res.status(500).json({ error: "Erreur lecture des modules" });
+Ne présente jamais une action comme exécutée : le serveur iCHEF décidera ensuite ce qu'il applique réellement.
+RÉPONDS UNIQUEMENT AVEC CE JSON STRICT :
+{
+  "globalLoad": 0,
+  "minutesUntilRush": 0,
+  "stationScores": {"chaud":0,"froid":0,"desserts":0,"bar":0,"salle":0},
+  "forecastTimeline": [0,0,0,0],
+  "recommendations": [],
+  "autoActionsSuggested": []
+}`;
+
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+        const result = await model.generateContent(prompt);
+        let responseText = result.response.text();
+        responseText = responseText.replace(/```json/gi, '').replace(/```/g, '').trim();
+        const firstBrace = responseText.indexOf('{');
+        const lastBrace = responseText.lastIndexOf('}');
+        if (firstBrace === -1 || lastBrace < firstBrace) throw new Error('Format JSON non trouvé.');
+        const prediction = JSON.parse(responseText.substring(firstBrace, lastBrace + 1));
+
+        const executedActions = [];
+
+        if (isAutoPilotEnabled) {
+            const level = ichefAntiRushLevelFromPrediction(prediction);
+            const now = new Date().toISOString();
+
+            state = await AppState.findOneAndUpdate(
+                { tenantID: safeID },
+                {
+                    $set: {
+                        'activeOrders.SETTINGS_MASTER.data.rushRules.auto': true,
+                        'activeOrders.SETTINGS_MASTER.data.rushLevel': level,
+                        'activeOrders.SETTINGS_MASTER.data.antiRushRuntime': {
+                            autoPilot: true,
+                            lastPredictionAt: now,
+                            globalLoad: Number(prediction.globalLoad || 0),
+                            minutesUntilRush: Number(prediction.minutesUntilRush || 0),
+                            stationScores: prediction.stationScores || {},
+                            engine: 'SERVER_V51'
+                        },
+                        'activeOrders.SETTINGS_MASTER.updatedAt': now
+                    }
+                },
+                { upsert: true, new: true }
+            ).lean();
+
+            const latestSettings = ichefAntiRushSettings(state);
+            const latestV3 = latestSettings?.rushV3 || {};
+            executedActions.push(`Niveau Anti-Rush serveur réglé sur ${level}/5`);
+
+            if (latestV3?.timeShift?.active === true && level >= 2) {
+                executedActions.push(`Time-Shifting armé : +${ichefAntiRushSafeDelayMinutes(latestV3.timeShift.delay, 15)} min sur les nouvelles commandes`);
+            }
+            if (latestV3?.paceMaker?.active === true && level >= 2) {
+                executedActions.push(`Pace-Maker armé : maximum ${Math.max(1, Number.parseInt(latestV3.paceMaker.max, 10) || 10)} bons visibles en production`);
+            }
+
+            const cameleonShouldBeActive = latestV3?.cameleon === true && level >= 3;
+            state = await ichefApplyAntiRushCameleon(safeID, state);
+            if (latestV3?.cameleon === true) {
+                executedActions.push(cameleonShouldBeActive
+                    ? 'Menu Caméléon appliqué aux plats longs à préparer'
+                    : 'Menu Caméléon remis en disponibilité normale');
+            }
+
+            ichefEmitFullState(safeID, state, {
+                tableId: 'SETTINGS_MASTER',
+                source: 'anti-rush-ai-auto'
+            });
+        }
+
+        return res.json({ success: true, prediction, executedActions });
+
+    } catch (error) {
+        console.error('🚨 Erreur IA Anti-Rush:', error);
+        return res.status(500).json({ success: false, error: 'Analyse momentanément indisponible.' });
     }
 });
 // =========================================================================
@@ -2914,7 +3270,9 @@ app.get('/api/export-preuves-legales', async (req, res) => {
     }
 });
 // =========================================================================
-// 
+// 🗺️ ROADMAP & MISES À JOUR iCHEF OS — CONTRAT DE SYNCHRONISATION
+// =========================================================================
+
 // Données de base de la Roadmap Serveur (IDs sécurisés pour MongoDB avec "_")
 const ROADMAP_SERVER_CATALOGUE = [
     {
@@ -2932,11 +3290,11 @@ const ROADMAP_SERVER_CATALOGUE = [
         directClient: true, rolloutPercent: 100, globalStatus: "current", clientStatus: "current"
     },
     {
-        id: "v4_3", version: "4.3", status: "beta",
+        id: "v4_3", version: "4.3", status: "current",
         title: "Synchronisation Salle-Cuisine & Puces Intelligentes",
         description: "Fluidité du service grâce à une communication instantanée entre tables, salle et production.",
         features: ["Écrans de production tactiles et suivi du temps", "Puces NFC sur table", "Régulation automatique Anti-Rush"],
-        betaAvailable: true, directClient: true, rolloutPercent: 0, globalStatus: "beta", clientStatus: "future"
+        betaAvailable: false, directClient: true, rolloutPercent: 100, globalStatus: "current", clientStatus: "current"
     },
     {
         id: "v5_0", version: "5.0", status: "future",
@@ -2954,14 +3312,15 @@ app.get('/api/roadmap/status', async (req, res) => {
         if (!tenantID) return res.status(400).json({ error: "tenantID manquant." });
         
         res.json({
-            currentVersion: "4.2",
+            currentVersion: "4.3",
             state: "up_to_date",
             stateLabel: "Connecté et à jour",
             lastUpdate: new Date().toISOString(),
-            newCount: 1,
-            deployingCount: 1,
-            upcomingCount: 2,
+            newCount: 0,
+            deployingCount: 0,
+            upcomingCount: 1,
             recentUpdates: [
+                { version: "4.3", dateLabel: "Sept. 2026", title: "Synchronisation Salle-Cuisine & Puces Intelligentes" },
                 { version: "4.2", dateLabel: "Sept. 2026", title: "Centre d'Exports Réels & Académie" },
                 { version: "4.0", dateLabel: "Août 2026", title: "Sécurité Fiscale & Vision IA Haute Performance" }
             ]
@@ -3002,7 +3361,10 @@ app.get('/api/roadmap/modules', async (req, res) => {
         const baseModules = {
             "Caisse & Paiement": { active: true },
             "Plan de Salle": { active: true },
+            "Écrans de production tactiles": { active: true },
+            "QR & NFC sur table": { active: true },
             "Cockpit Anti-Rush": { active: ["EMPIRE", "PREMIUM", "BRIGADE", "BUSINESS"].includes(plan) },
+            "Régulation automatique Anti-Rush": { active: ["EMPIRE", "PREMIUM", "BRIGADE", "BUSINESS"].includes(plan) },
             "Ressources Humaines": { active: ["EMPIRE", "PREMIUM", "BRIGADE"].includes(plan) },
             "Assistant IA": { active: true },
             "API Comptabilité": { active: ["EMPIRE", "PREMIUM", "RENTABILITE"].includes(plan) }
@@ -3146,123 +3508,6 @@ app.get('/api/roadmap/system-status', async (req, res) => {
         }
     });
 });
-
-  // 3. Modules, actions, bêta, votes, incidents, système
-  const modulesForSummary = modulesR ? (modulesR.modules ?? modulesR) : [];
-  renderModules(modulesForSummary);
-  
-  const actionsForSummary = actionsR ? extractArray(actionsR, ["actions","items","tasks"]) : [];
-  renderActions(actionsForSummary);
-  
-  renderBeta(betaR || {});
-  renderVotes(votesR || {});
-  
-  const issuesForSummary = renderIssues(issuesR || {}) || [];
-  
-  const services = systemR ? (systemR.services ?? systemR) : {};
-  renderSystemStatus(services);
-
-  const statusForSummary = statusR || {};
-  renderPremiumSummary(statusForSummary, modulesForSummary, actionsForSummary, issuesForSummary);
-
-  // 4. Mise à jour de l'état système global
-  const releaseSource = document.getElementById("release-timeline")?.dataset?.source || "";
-  const serverSocketStatus = serviceStatusText(services, "Socket.IO");
-  const mongoStatus = serviceStatusText(services, "MongoDB");
-  const appStateStatus = serviceStatusText(services, "AppState client");
-  const roadmapCoreStatus = serviceStatusText(services, "Roadmap CORE");
-
-  updateCoreSync({
-    "tenantID reconnu": Boolean(tenantID),
-    "API statut": statusR !== null,
-    "API versions": serverReleases.length > 0 && releaseSource === "server",
-    "API modules": modulesR !== null,
-    "API actions": actionsR !== null,
-    "API bêta": betaR !== null,
-    "API votes": votesR !== null,
-    "API incidents": issuesR !== null,
-    "API état système": systemR !== null,
-    "MongoDB": statusIsOK(mongoStatus),
-    "AppState client": statusIsOK(appStateStatus),
-    "Roadmap CORE": statusIsOK(roadmapCoreStatus),
-    "Socket navigateur": roadmapSocketConnected === true,
-    "Room Socket tenant": statusIsOK(serverSocketStatus)
-  });
-}🗺️ ROADMAP & MISES À JOUR iCHEF OS — CONTRAT DE SYNCHRONISATION
-// =========================================================================
-app.post('/api/anti-rush-predict', async (req, res) => {
-    const session = ichefRequireAntiRushSession(req);
-    if (!session.ok) {
-        return res.status(401).json({ success: false, error: 'Session Anti-Rush invalide.' });
-    }
-
-    const isAutoPilotEnabled = req.body?.isAutoPilotEnabled === true;
-    const safeID = session.tenantID;
-
-    try {
-        let state = await AppState.findOne({ tenantID: safeID }).lean();
-        let reservations = state?.activeOrders?.RESERVATIONS_MASTER?.data || [];
-        let currentOrders = [];
-        for (const [key, value] of Object.entries(state?.activeOrders || {})) {
-            if (ichefAntiRushIsLiveOrderKey(key)) currentOrders.push(value);
-        }
-
-        const prompt = `Tu es l'IA "Directeur des Opérations" d'iCHEF OS.
-Analyse uniquement la charge réelle du restaurant et propose des actions.
-- Réservations : ${JSON.stringify(reservations.slice(-20))}
-- Commandes en cours : ${JSON.stringify(currentOrders)}
-- Heure : ${new Date().toLocaleTimeString('fr-FR', {timeZone: 'Europe/Paris'})}
-- Pilote auto : ${isAutoPilotEnabled ? 'OUI' : 'NON'}
-
-RÉPONDS EN JSON STRICT :
-{"globalLoad": 0, "minutesUntilRush": 0, "stationScores": {"chaud":0,"froid":0,"desserts":0,"bar":0,"salle":0}, "forecastTimeline": [0,0,0,0], "recommendations": [], "autoActionsSuggested": []}`;
-
-        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-        const result = await model.generateContent(prompt);
-        let responseText = result.response.text().replace(/```json/gi, '').replace(/```/g, '').trim();
-        const firstBrace = responseText.indexOf('{');
-        const lastBrace = responseText.lastIndexOf('}');
-        const prediction = JSON.parse(responseText.substring(firstBrace, lastBrace + 1));
-
-        const executedActions = [];
-
-        if (isAutoPilotEnabled) {
-            const level = ichefAntiRushLevelFromPrediction(prediction);
-            const now = new Date().toISOString();
-
-            state = await AppState.findOneAndUpdate(
-                { tenantID: safeID },
-                {
-                    $set: {
-                        'activeOrders.SETTINGS_MASTER.data.rushRules.auto': true,
-                        'activeOrders.SETTINGS_MASTER.data.rushLevel': level,
-                        'activeOrders.SETTINGS_MASTER.data.antiRushRuntime': {
-                            autoPilot: true,
-                            lastPredictionAt: now,
-                            globalLoad: Number(prediction.globalLoad || 0),
-                            minutesUntilRush: Number(prediction.minutesUntilRush || 0),
-                            stationScores: prediction.stationScores || {},
-                            engine: 'SERVER_V51'
-                        },
-                        'activeOrders.SETTINGS_MASTER.updatedAt': now
-                    }
-                },
-                { upsert: true, new: true }
-            ).lean();
-
-            executedActions.push(`Niveau Anti-Rush réglé sur ${level}/5`);
-            state = await ichefApplyAntiRushCameleon(safeID, state);
-            ichefEmitFullState(safeID, state, { tableId: 'SETTINGS_MASTER', source: 'anti-rush-auto' });
-        }
-
-        return res.json({ success: true, prediction, executedActions });
-
-    } catch (error) {
-        console.error('🚨 Erreur IA Anti-Rush:', error);
-        return res.status(500).json({ success: false, error: 'Analyse indisponible.' });
-    }
-});
-
 // ==========================================
 // 🤖 MOTEURS IA (GEMINI)
 // ==========================================
@@ -6467,12 +6712,9 @@ app.get('/get-current-state', async (req, res) => {
         const tenantID = cleanString(req.query.tenantID);
         if (!tenantID) return res.status(400).json({ success: false, error: 'tenantID manquant.' });
         res.setHeader('Cache-Control', 'no-store, max-age=0');
-        
-        // DÉCLENCHEUR ANTI-RUSH
         await ichefReleaseDueAntiRushOrders(tenantID).catch(error =>
             console.warn('[iCHEF ANTI-RUSH recovery]', error?.message || error)
         );
-        
         const state = await AppState.findOne({ tenantID }).lean();
         return res.json(state || { tenantID, activeOrders: {} });
     } catch(e) { 
@@ -6480,6 +6722,11 @@ app.get('/get-current-state', async (req, res) => {
         return res.status(500).json({ success: false, error: 'État serveur indisponible.' }); 
     }
 });
+
+
+// ==========================================================
+// 📱 QR / NFC — CONFIGURATION CENTRALE ATOMIQUE + CONFIRMATION
+
 
 // ==========================================================
 // 📱 QR / NFC — LECTURE OFFICIELLE / CONFIRMATION MONGODB
@@ -7010,6 +7257,15 @@ app.post('/update-order', async (req, res) => {
                 );
         }
 
+        if (orderToPersist && ichefAntiRushIsLiveOrderKey(tableId)) {
+            orderToPersist = await ichefAntiRushPrepareIncomingOrder(
+                tenantID,
+                tableId,
+                orderToPersist,
+                previousValueForHistory
+            );
+        }
+
         const centralHistoryEntries = ichefBuildCentralHistoryEntries(
             previousValueForHistory,
             orderToPersist,
@@ -7065,6 +7321,19 @@ app.post('/update-order', async (req, res) => {
             typeof newState?.toObject === 'function'
                 ? newState.toObject()
                 : newState;
+
+        const persistedAntiRushOrder = finalPersistedState?.activeOrders?.[tableId];
+        if (
+            persistedAntiRushOrder?.antiRush?.managedByServer === true &&
+            persistedAntiRushOrder?.antiRush?.state === 'WAITING' &&
+            persistedAntiRushOrder?.antiRush?.releaseAt
+        ) {
+            ichefScheduleAntiRushRelease(
+                tenantID,
+                tableId,
+                persistedAntiRushOrder.antiRush.releaseAt
+            );
+        }
 
         // Archive durable séparée de la table active.
         await ichefArchiveCentralHistory(tenantID, centralHistoryEntries);
@@ -12544,7 +12813,7 @@ app.post('/api/anti-rush/update', async (req, res) => {
                     }
                 };
 
-        const state =
+        let state =
             await AppState
                 .findOneAndUpdate(
                     {
@@ -12559,6 +12828,10 @@ app.post('/api/anti-rush/update', async (req, res) => {
                     }
                 )
                 .lean();
+
+        if (tableId === 'SETTINGS_MASTER') {
+            state = await ichefApplyAntiRushCameleon(session.tenantID, state);
+        }
 
         ichefEmitFullState(
             session.tenantID,
