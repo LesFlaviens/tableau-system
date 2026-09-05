@@ -3275,27 +3275,22 @@ app.get('/api/export-preuves-legales', async (req, res) => {
 
 // Données de base de la Roadmap Serveur (IDs sécurisés pour MongoDB avec "_")
 const ROADMAP_SERVER_CATALOGUE = [
-    {
-        id: "v4_2",
-        version: "4.2",
-        status: "done",
-
-        title: "Centre d'Exports Réels & Académie",
-
-        description:
-            "Connexion directe des modules d'apprentissage et extraction des données réelles du restaurant.",
-
+ {
+        id: "v4_3", 
+        version: "4.3", 
+        status: "done", // 👈 ICI : passe de "current" à "done"
+        title: "Synchronisation Salle-Cuisine & Puces Intelligentes",
+        description: "Fluidité du service grâce à une communication instantanée entre tables, salle et production.",
         features: [
-            "Export du Z de caisse et historique des ventes",
-            "Certificat de preuves et journal légal",
-            "Académie de formation pour la brigade",
-            "Synchronisation avec l'Assistant IA"
+            "Écrans de production tactiles et suivi du temps", 
+            "Puces NFC sur table", 
+            "Régulation automatique Anti-Rush"
         ],
-
-        directClient: true,
-        rolloutPercent: 100,
-        globalStatus: "done",
-        clientStatus: "done"
+        betaAvailable: false, 
+        directClient: true, 
+        rolloutPercent: 100, 
+        globalStatus: "done", // 👈 ICI : passe de "current" à "done"
+        clientStatus: "done"  // 👈 ICI : passe de "current" à "done"
     },
 
     {
