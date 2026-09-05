@@ -3272,71 +3272,34 @@ app.get('/api/export-preuves-legales', async (req, res) => {
 // =========================================================================
 // 🗺️ ROADMAP & MISES À JOUR iCHEF OS — CONTRAT DE SYNCHRONISATION
 // =========================================================================
-
-// Données de base de la Roadmap Serveur (IDs sécurisés pour MongoDB avec "_")
 const ROADMAP_SERVER_CATALOGUE = [
- {
-        id: "v4_3", 
-        version: "4.3", 
-        status: "done", // 👈 ICI : passe de "current" à "done"
+    {
+        id: "v4_0", version: "4.0", status: "done",
+        title: "Sécurité Fiscale & Vision IA Haute Performance",
+        description: "Mise à niveau de l'assistant intelligent et renforcement des outils de traçabilité et de conformité fiscale.",
+        features: ["Registre anti-fraude et traçabilité renforcée", "Nouveau moteur de vision IA pour la numérisation des factures", "Cockpit de Direction optimisé"],
+        directClient: true, rolloutPercent: 100, globalStatus: "done", clientStatus: "done"
+    },
+    {
+        id: "v4_2", version: "4.2", status: "done",
+        title: "Centre d'Exports Réels & Académie",
+        description: "Connexion directe des modules d'apprentissage et extraction des données réelles du restaurant.",
+        features: ["Export du Z de caisse et historique des ventes", "Certificat de preuves et journal légal", "Académie de formation pour la brigade", "Synchronisation avec l'Assistant IA"],
+        directClient: true, rolloutPercent: 100, globalStatus: "done", clientStatus: "done"
+    },
+    {
+        id: "v4_3", version: "4.3", status: "done",
         title: "Synchronisation Salle-Cuisine & Puces Intelligentes",
         description: "Fluidité du service grâce à une communication instantanée entre tables, salle et production.",
-        features: [
-            "Écrans de production tactiles et suivi du temps", 
-            "Puces NFC sur table", 
-            "Régulation automatique Anti-Rush"
-        ],
-        betaAvailable: false, 
-        directClient: true, 
-        rolloutPercent: 100, 
-        globalStatus: "done", // 👈 ICI : passe de "current" à "done"
-        clientStatus: "done"  // 👈 ICI : passe de "current" à "done"
+        features: ["Écrans de production tactiles et suivi du temps", "Puces NFC sur table", "Régulation automatique Anti-Rush"],
+        betaAvailable: false, directClient: true, rolloutPercent: 100, globalStatus: "done", clientStatus: "done"
     },
-
     {
-        id: "v4_3",
-        version: "4.3",
-        status: "current",
-
-        title: "Synchronisation Salle-Cuisine & Puces Intelligentes",
-
-        description:
-            "Fluidité du service grâce à une communication instantanée entre tables, salle et production.",
-
-        features: [
-            "Écrans de production tactiles et suivi du temps",
-            "Puces NFC sur table",
-            "Régulation automatique Anti-Rush"
-        ],
-
-        betaAvailable: false,
-        directClient: true,
-        rolloutPercent: 100,
-        globalStatus: "current",
-        clientStatus: "current"
-    },
-
-    {
-        id: "v5_0",
-        version: "5.0",
-        status: "future",
-
+        id: "v5_0", version: "5.0", status: "future",
         title: "Nouvelles expériences client & Intelligence avancée",
-
-        description:
-            "Encore plus d'outils pour augmenter les marges et simplifier le quotidien.",
-
-        features: [
-            "Programme de fidélité intelligent",
-            "Analyses prédictives IA",
-            "Intégration hôtellerie / room service",
-            "Marketplace fournisseurs"
-        ],
-
-        directClient: true,
-        rolloutPercent: 0,
-        globalStatus: "future",
-        clientStatus: "future"
+        description: "Encore plus d'outils pour augmenter les marges et simplifier le quotidien.",
+        features: ["Programme de fidélité intelligent", "Analyses prédictives IA", "Intégration hôtellerie / room service", "Marketplace fournisseurs"],
+        directClient: true, rolloutPercent: 0, globalStatus: "future", clientStatus: "future"
     }
 ];
 // 1. STATUT GLOBAL ROADMAP
