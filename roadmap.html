@@ -1460,45 +1460,43 @@ function updateCoreSync(checks){
 async function loadRoadmap(){
   if(!tenantID){
     setSyncStatus("offline","TENANT ABSENT");
-    renderReleases([]);
-    renderModules([]);
+    renderReleases(ROADMAP_FALLBACK_RELEASES);
+    renderModules({});
     renderActions([]);
     return;
   }
 
+  // Protection contre le blocage infini (Timeout de 5 secondes)
+  const fetchWithTimeout = async (path) => {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), 5000);
+    try {
+      const res = await secureFetch(path, { signal: controller.signal });
+      clearTimeout(id);
+      return await res.json();
+    } catch (err) {
+      clearTimeout(id);
+      throw err;
+    }
+  };
+
   const calls = [
-    secureFetch(`/api/roadmap/status?tenantID=${encodeURIComponent(tenantID)}`).then(r=>r.json()),
-    secureFetch(`/api/roadmap/releases?tenantID=${encodeURIComponent(tenantID)}`).then(r=>r.json()),
-    secureFetch(`/api/roadmap/modules?tenantID=${encodeURIComponent(tenantID)}`).then(r=>r.json()),
-    secureFetch(`/api/roadmap/actions?tenantID=${encodeURIComponent(tenantID)}`).then(r=>r.json()),
-    secureFetch(`/api/roadmap/beta?tenantID=${encodeURIComponent(tenantID)}`).then(r=>r.json()),
-    secureFetch(`/api/roadmap/votes?tenantID=${encodeURIComponent(tenantID)}`).then(r=>r.json()),
-    secureFetch(`/api/roadmap/issues?tenantID=${encodeURIComponent(tenantID)}`).then(r=>r.json()),
-    secureFetch(`/api/roadmap/system-status?tenantID=${encodeURIComponent(tenantID)}`).then(r=>r.json())
+    fetchWithTimeout(`/api/roadmap/status?tenantID=${encodeURIComponent(tenantID)}`).catch(() => null),
+    fetchWithTimeout(`/api/roadmap/releases?tenantID=${encodeURIComponent(tenantID)}`).catch(() => null),
+    fetchWithTimeout(`/api/roadmap/modules?tenantID=${encodeURIComponent(tenantID)}`).catch(() => null),
+    fetchWithTimeout(`/api/roadmap/actions?tenantID=${encodeURIComponent(tenantID)}`).catch(() => null),
+    fetchWithTimeout(`/api/roadmap/beta?tenantID=${encodeURIComponent(tenantID)}`).catch(() => null),
+    fetchWithTimeout(`/api/roadmap/votes?tenantID=${encodeURIComponent(tenantID)}`).catch(() => null),
+    fetchWithTimeout(`/api/roadmap/issues?tenantID=${encodeURIComponent(tenantID)}`).catch(() => null),
+    fetchWithTimeout(`/api/roadmap/system-status?tenantID=${encodeURIComponent(tenantID)}`).catch(() => null)
   ];
 
-  const [statusR,releasesR,modulesR,actionsR,betaR,votesR,issuesR,systemR] = await Promise.allSettled(calls);
+  const [statusR, releasesR, modulesR, actionsR, betaR, votesR, issuesR, systemR] = await Promise.all(calls);
 
-  let successCount = 0;
-
-  if(statusR.status === "fulfilled"){
-    successCount++;
-    const statusData = statusR.value || {};
-    const hasUsefulStatus = Boolean(statusData.currentVersion || statusData.version || statusData.latestVersion);
-    if(hasUsefulStatus){
-      renderStatus(statusData);
-    }else{
-      renderStatus({
-        currentVersion:"4.2.1",
-        state:"deploying",
-        stateLabel:"Roadmap locale",
-        newCount:3,
-        deployingCount:2,
-        upcomingCount:5
-      });
-    }
-  }else{
-    console.warn("[iCHEF ROADMAP] status", statusR.reason);
+  // 1. Statut
+  if(statusR && (statusR.currentVersion || statusR.version || statusR.latestVersion)){
+    renderStatus(statusR);
+  } else {
     renderStatus({
       currentVersion:"4.2.1",
       state:"deploying",
@@ -1508,6 +1506,46 @@ async function loadRoadmap(){
       upcomingCount:5
     });
   }
+
+  // 2. Releases (avec repli garanti sur le catalogue local si le serveur est muet)
+  const serverReleases = extractArray(releasesR, ["releases","items","roadmap"]);
+  if(serverReleases.length){
+    renderReleases(serverReleases);
+    const timelineEl = document.getElementById("release-timeline");
+    if(timelineEl) timelineEl.dataset.source = "server";
+  } else {
+    console.warn("[iCHEF ROADMAP] Utilisation du catalogue de secours local");
+    renderReleases(ROADMAP_FALLBACK_RELEASES);
+    const timelineEl = document.getElementById("release-timeline");
+    if(timelineEl) timelineEl.dataset.source = "fallback";
+    setSyncStatus("degraded","ROADMAP LOCALE — MODE SECOURS");
+  }
+
+  // 3. Modules, actions, bêta, votes, incidents, système
+  renderModules(modulesR?.modules ?? modulesR);
+  const actionsData = extractArray(actionsR, ["actions","items","tasks"]);
+  renderActions(actionsData);
+  renderBeta(betaR || {});
+  renderVotes(votesR || {});
+  const issuesData = renderIssues(issuesR || {}) || [];
+  renderSystemStatus(systemR?.services ?? systemR || {});
+
+  const modulesDataForSummary = modulesR?.modules ?? modulesR;
+  renderPremiumSummary(statusR || {}, modulesDataForSummary, actionsData, issuesData);
+
+  updateCoreSync({
+    "tenantID reconnu": Boolean(tenantID),
+    "API statut": statusR !== null,
+    "API versions": serverReleases.length > 0,
+    "API modules": modulesR !== null,
+    "API actions": actionsR !== null,
+    "API bêta": betaR !== null,
+    "API votes": votesR !== null,
+    "API incidents": issuesR !== null,
+    "API état système": systemR !== null,
+    "Socket navigateur": roadmapSocketConnected === true
+  });
+}
 
   if(releasesR.status === "fulfilled"){
     successCount++;
