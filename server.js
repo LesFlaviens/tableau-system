@@ -765,72 +765,83 @@ app.get('/panel-ichef', (req, res) => {
 });// =========================================================================
 // 🚀 MOTEUR IA 5 : PRÉDICTION ANTI-RUSH AVANCÉE (SCORES PAR POSTE & AUTO)
 // =========================================================================
-app.post('/api/anti-rush-predict', async (req, res) => {
-    const { tenantID, isAutoPilotEnabled } = req.body;
-    if (!tenantID) return res.status(400).json({ success: false, error: "ID Restaurant manquant" });
+const ROADMAP_SERVER_CATALOGUE = [
+    {
+        id: "v4_0", version: "4.0", status: "done",
+        title: "Sécurité Fiscale & Vision IA Haute Performance",
+        description: "Mise à niveau de l'assistant intelligent et renforcement des outils de traçabilité et de conformité fiscale.",
+        features: ["Registre anti-fraude et traçabilité renforcée", "Nouveau moteur de vision IA pour la numérisation des factures", "Cockpit de Direction optimisé"],
+        directClient: true, rolloutPercent: 100, globalStatus: "done", clientStatus: "done"
+    },
+    {
+        id: "v4_2", version: "4.2", status: "current",
+        title: "Centre d'Exports Réels & Académie",
+        description: "Connexion directe des modules d'apprentissage et extraction des données réelles du restaurant.",
+        features: ["Export du Z de caisse et historique des ventes", "Certificat de preuves et journal légal", "Académie de formation pour la brigade", "Synchronisation avec l'Assistant IA"],
+        directClient: true, rolloutPercent: 100, globalStatus: "current", clientStatus: "current"
+    },
+    {
+        id: "v4_3", version: "4.3", status: "current",
+        title: "Synchronisation Salle-Cuisine & Puces Intelligentes",
+        description: "Fluidité du service grâce à une communication instantanée entre tables, salle et production.",
+        features: ["Écrans de production tactiles et suivi du temps", "Puces NFC sur table", "Régulation automatique Anti-Rush"],
+        betaAvailable: false, directClient: true, rolloutPercent: 100, globalStatus: "current", clientStatus: "current"
+    },
+    {
+        id: "v5_0", version: "5.0", status: "future",
+        title: "Nouvelles expériences client & Intelligence avancée",
+        description: "Encore plus d'outils pour augmenter les marges et simplifier le quotidien.",
+        features: ["Programme de fidélité intelligent", "Analyses prédictives IA", "Intégration hôtellerie / room service", "Marketplace fournisseurs"],
+        directClient: true, rolloutPercent: 0, globalStatus: "future", clientStatus: "future"
+    }
+];
 
+app.get('/api/roadmap/status', async (req, res) => {
     try {
-        const safeID = cleanString(tenantID);
-        let state = await AppState.findOne({ tenantID: safeID });
+        const tenantID = cleanString(req.query.tenantID);
+        if (!tenantID) return res.status(400).json({ error: "tenantID manquant." });
         
-        let reservations = state?.activeOrders?.RESERVATIONS_MASTER?.data || [];
-        let currentOrders = [];
-        for (let key in state?.activeOrders) {
-            if (!key.includes('MASTER') && !key.includes('ARCHITECTURE')) {
-                currentOrders.push(state.activeOrders[key]);
-            }
-        }
-
-        const prompt = `Tu es l'IA "Directeur des Opérations" d'iCHEF OS.
-        Analyse la situation en temps réel :
-        - Réservations à venir : ${JSON.stringify(reservations.slice(-20))}
-        - Commandes en cours (plats à préparer) : ${JSON.stringify(currentOrders)}
-        - Heure actuelle : ${new Date().toLocaleTimeString('fr-FR', {timeZone: "Europe/Paris"})}
-        - Mode Pilote Automatique : ${isAutoPilotEnabled ? 'ACTIVÉ' : 'DÉSACTIVÉ'}
-
-        Évalue la tension par poste. 
-        RÉPONDS UNIQUEMENT AVEC CE JSON STRICT (SANS BALISE MARKDOWN) :
-        {
-            "globalLoad": 82,
-            "minutesUntilRush": 18,
-            "stationScores": {
-                "chaud": 85,
-                "froid": 40,
-                "desserts": 30,
-                "bar": 61,
-                "salle": 70
-            },
-            "forecastTimeline": [60, 82, 95, 75], 
-            "recommendations": [
-                "Préparer 12 burgers",
-                "Allumer la seconde friteuse"
-            ],
-            "autoActionsSuggested": [
-                "Activer Time-Shifting (+15min)",
-                "Désactiver temporairement les plats complexes"
+        res.json({
+            currentVersion: "4.3",
+            state: "up_to_date",
+            stateLabel: "Connecté et à jour",
+            lastUpdate: new Date().toISOString(),
+            newCount: 0,
+            deployingCount: 0,
+            upcomingCount: 1,
+            recentUpdates: [
+                { version: "4.3", dateLabel: "Sept. 2026", title: "Synchronisation Salle-Cuisine & Puces Intelligentes" },
+                { version: "4.2", dateLabel: "Sept. 2026", title: "Centre d'Exports Réels & Académie" },
+                { version: "4.0", dateLabel: "Août 2026", title: "Sécurité Fiscale & Vision IA Haute Performance" }
             ]
-        }`;
+        });
+    } catch (e) {
+        res.status(500).json({ error: "Erreur de statut Roadmap" });
+    }
+});
 
-        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-        const result = await model.generateContent(prompt);
-        let responseText = result.response.text();
-        
-        // --- NETTOYAGE INDESTRUCTIBLE DU JSON ---
-        responseText = responseText.replace(/```json/gi, "").replace(/```/g, "").trim();
-        const firstBrace = responseText.indexOf('{');
-        const lastBrace = responseText.lastIndexOf('}');
-        
-        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace >= firstBrace) {
-            responseText = responseText.substring(firstBrace, lastBrace + 1);
-        } else {
-            throw new Error("Format JSON non trouvé.");
-        }
-        
-        res.json({ success: true, prediction: JSON.parse(responseText) });
+app.get('/api/roadmap/modules', async (req, res) => {
+    try {
+        const tenantID = cleanString(req.query.tenantID);
+        const tenant = await Tenant.findOne({ tenantID }).lean();
+        if (!tenant) return res.status(404).json({ error: "Restaurant inconnu." });
 
-    } catch (error) {
-        console.error("🚨 Erreur IA Anti-Rush:", error);
-        res.status(500).json({ success: false, error: "Analyse momentanément indisponible." });
+        const plan = String(tenant.plan || 'BUSINESS').toUpperCase();
+        const baseModules = {
+            "Caisse & Paiement": { active: true },
+            "Plan de Salle": { active: true },
+            "Écrans de production tactiles": { active: true },
+            "QR & NFC sur table": { active: true },
+            "Cockpit Anti-Rush": { active: ["EMPIRE", "PREMIUM", "BRIGADE", "BUSINESS"].includes(plan) },
+            "Régulation automatique Anti-Rush": { active: ["EMPIRE", "PREMIUM", "BRIGADE", "BUSINESS"].includes(plan) },
+            "Ressources Humaines": { active: ["EMPIRE", "PREMIUM", "BRIGADE"].includes(plan) },
+            "Assistant IA": { active: true },
+            "API Comptabilité": { active: ["EMPIRE", "PREMIUM", "RENTABILITE"].includes(plan) }
+        };
+
+        res.json({ modules: baseModules });
+    } catch (e) {
+        res.status(500).json({ error: "Erreur lecture des modules" });
     }
 });
 // =========================================================================
