@@ -2914,9 +2914,7 @@ app.get('/api/export-preuves-legales', async (req, res) => {
     }
 });
 // =========================================================================
-// 🗺️ ROADMAP & MISES À JOUR iCHEF OS — CONTRAT DE SYNCHRONISATION
-// =========================================================================
-
+// 
 // Données de base de la Roadmap Serveur (IDs sécurisés pour MongoDB avec "_")
 const ROADMAP_SERVER_CATALOGUE = [
     {
@@ -3149,26 +3147,6 @@ app.get('/api/roadmap/system-status', async (req, res) => {
     });
 });
 
-// 2. Releases (avec repli garanti sur le catalogue local si le serveur est muet)
-  const serverReleases = releasesR ? extractArray(releasesR, ["releases","items","roadmap"]) : [];
-  
-  if (serverReleases.length > 0) {
-    renderReleases(serverReleases);
-    const timelineEl = document.getElementById("release-timeline");
-    if(timelineEl) timelineEl.dataset.source = "server";
-  } else {
-    console.warn("[iCHEF ROADMAP] Utilisation du catalogue de secours local");
-    renderReleases(ROADMAP_FALLBACK_RELEASES);
-    const timelineEl = document.getElementById("release-timeline");
-    if(timelineEl) timelineEl.dataset.source = "fallback";
-    document.querySelectorAll(".beta-request").forEach(btn => {
-      btn.textContent = "BÊTA BIENTÔT";
-      btn.classList.add("disabled-action");
-      btn.title = "Disponible lorsque le programme bêta sera connecté au serveur iCHEF";
-    });
-    setSyncStatus("degraded","ROADMAP LOCALE — MODE SECOURS");
-  }
-
   // 3. Modules, actions, bêta, votes, incidents, système
   const modulesForSummary = modulesR ? (modulesR.modules ?? modulesR) : [];
   renderModules(modulesForSummary);
@@ -3210,7 +3188,9 @@ app.get('/api/roadmap/system-status', async (req, res) => {
     "Socket navigateur": roadmapSocketConnected === true,
     "Room Socket tenant": statusIsOK(serverSocketStatus)
   });
-}
+}🗺️ ROADMAP & MISES À JOUR iCHEF OS — CONTRAT DE SYNCHRONISATION
+// =========================================================================
+
 
 // ==========================================
 // 🤖 MOTEURS IA (GEMINI)
@@ -6429,11 +6409,6 @@ app.get('/get-current-state', async (req, res) => {
         return res.status(500).json({ success: false, error: 'État serveur indisponible.' }); 
     }
 });
-
-
-// ==========================================================
-// 📱 QR / NFC — CONFIGURATION CENTRALE ATOMIQUE + CONFIRMATION
-
 
 // ==========================================================
 // 📱 QR / NFC — LECTURE OFFICIELLE / CONFIRMATION MONGODB
