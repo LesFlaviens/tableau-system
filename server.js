@@ -2979,7 +2979,7 @@ app.get('/api/roadmap/releases', async (req, res) => {
             clientStatusLabel: deployments[r.id] >= 100 ? "ACTIF CHEZ VOUS" : (deployments[r.id] > 0 ? "EN DÉPLOIEMENT" : "À CONFIGURER")
         }));
 
-        // CORRECTION : Le frontend attend un tableau direct sous la clé "releases" ou "roadmap"
+        // CORRECTION CRITIQUE : Le tableau est renvoyé directement sous la clé "releases"
         res.json({ releases: personalizedReleases });
         
     } catch (e) {
