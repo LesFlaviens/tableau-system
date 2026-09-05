@@ -3275,20 +3275,28 @@ app.get('/api/export-preuves-legales', async (req, res) => {
 
 // Données de base de la Roadmap Serveur (IDs sécurisés pour MongoDB avec "_")
 const ROADMAP_SERVER_CATALOGUE = [
-    {
-        id: "v4_0", version: "4.0", status: "done",
-        title: "Sécurité Fiscale & Vision IA Haute Performance",
-        description: "Mise à niveau de l'assistant intelligent et renforcement des outils de traçabilité et de conformité fiscale.",
-        features: ["Registre anti-fraude et traçabilité renforcée", "Nouveau moteur de vision IA pour la numérisation des factures", "Cockpit de Direction optimisé"],
-        directClient: true, rolloutPercent: 100, globalStatus: "done", clientStatus: "done"
-    },
-    {
-        id: "v4_2", version: "4.2", status: "current",
-        title: "Centre d'Exports Réels & Académie",
-        description: "Connexion directe des modules d'apprentissage et extraction des données réelles du restaurant.",
-        features: ["Export du Z de caisse et historique des ventes", "Certificat de preuves et journal légal", "Académie de formation pour la brigade", "Synchronisation avec l'Assistant IA"],
-        directClient: true, rolloutPercent: 100, globalStatus: "current", clientStatus: "current"
-    },
+   {
+    id: "v4_2",
+    version: "4.2",
+    status: "done",
+
+    title: "Centre d'Exports Réels & Académie",
+
+    description:
+        "Connexion directe des modules d'apprentissage et extraction des données réelles du restaurant.",
+
+    features: [
+        "Export du Z de caisse et historique des ventes",
+        "Certificat de preuves et journal légal",
+        "Académie de formation pour la brigade",
+        "Synchronisation avec l'Assistant IA"
+    ],
+
+    directClient: true,
+    rolloutPercent: 100,
+    globalStatus: "done",
+    clientStatus: "done"
+},
     {
         id: "v4_3", version: "4.3", status: "current",
         title: "Synchronisation Salle-Cuisine & Puces Intelligentes",
