@@ -14633,8 +14633,10 @@ process.on('uncaughtException', error => {
 });
 
 // ==========================================================
-// 🚀 DÉMARRAGE OFFICIEL — DERNIÈRE INSTRUCTION
+// 🚀 DÉMARRAGE OFFICIEL DU SERVEUR iCHEF
+// IMPORTANT : CE BLOC DOIT ÊTRE LE DERNIER DU server.js
 // ==========================================================
+
 server.on('error', error => {
     console.error(
         '❌ Erreur serveur HTTP :',
@@ -14642,20 +14644,26 @@ server.on('error', error => {
     );
 });
 
-server.listen(PORT, () => {
-    console.log('');
-    console.log('==========================================');
-    console.log('✅ iCHEF EMPIRE OS — CORE FROZEN 50 EN LIGNE');
-    console.log('==========================================');
-    console.log(`✅ Port serveur : ${PORT}`);
-    console.log('✅ Socket.IO activé.');
-    console.log(
-        `✅ MongoDB état initial : ${mongoose.connection.readyState}`
-    );
-    console.log('✅ QR/NFC synchronisation atomique activée.');
-    console.log('✅ Plan interactif protégé des écrasements QR/NFC.');
-    console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
-    console.log(`✅ Mongo pool cible : ${ICHEF_MONGO_MIN_POOL}-${ICHEF_MONGO_MAX_POOL}.`);
-    console.log(`✅ Cache financier AppState : ${ICHEF_FINANCIAL_CACHE_LIMIT} écritures max.`);
-    console.log('==========================================');
-});
+server.listen(
+    PORT,
+    () => {
+        console.log('');
+        console.log('==========================================');
+        console.log('✅ iCHEF EMPIRE OS — SERVEUR EN LIGNE');
+        console.log('==========================================');
+        console.log(`✅ Port serveur : ${PORT}`);
+        console.log('✅ Socket.IO activé.');
+        console.log('✅ MongoDB / AppState activé.');
+        console.log(`✅ Mongo pool cible : ${ICHEF_MONGO_MIN_POOL}-${ICHEF_MONGO_MAX_POOL}.`);
+        console.log('✅ Moteur fiscal MongoDB activé.');
+        console.log('✅ FINANCIAL_HISTORY activé.');
+        console.log('✅ FiscalRecord permanent activé.');
+        console.log('✅ Fichier Fiscal Complet activé.');
+        console.log('✅ Audit cryptographique SHA-256 activé.');
+        console.log('✅ Paiements PAD / Caisse synchronisés.');
+        console.log('✅ Socket temps réel PAD / Caisse / Cuisine activé.');
+        console.log('✅ Roadmap CORE MongoDB / API / Socket.IO activé.');
+        console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
+        console.log('==========================================');
+    }
+);
