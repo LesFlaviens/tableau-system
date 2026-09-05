@@ -3137,6 +3137,70 @@ app.get('/api/roadmap/system-status', async (req, res) => {
         }
     });
 });
+
+// 2. Releases (avec repli garanti sur le catalogue local si le serveur est muet)
+  const serverReleases = releasesR ? extractArray(releasesR, ["releases","items","roadmap"]) : [];
+  
+  if (serverReleases.length > 0) {
+    renderReleases(serverReleases);
+    const timelineEl = document.getElementById("release-timeline");
+    if(timelineEl) timelineEl.dataset.source = "server";
+  } else {
+    console.warn("[iCHEF ROADMAP] Utilisation du catalogue de secours local");
+    renderReleases(ROADMAP_FALLBACK_RELEASES);
+    const timelineEl = document.getElementById("release-timeline");
+    if(timelineEl) timelineEl.dataset.source = "fallback";
+    document.querySelectorAll(".beta-request").forEach(btn => {
+      btn.textContent = "BÊTA BIENTÔT";
+      btn.classList.add("disabled-action");
+      btn.title = "Disponible lorsque le programme bêta sera connecté au serveur iCHEF";
+    });
+    setSyncStatus("degraded","ROADMAP LOCALE — MODE SECOURS");
+  }
+
+  // 3. Modules, actions, bêta, votes, incidents, système
+  const modulesForSummary = modulesR ? (modulesR.modules ?? modulesR) : [];
+  renderModules(modulesForSummary);
+  
+  const actionsForSummary = actionsR ? extractArray(actionsR, ["actions","items","tasks"]) : [];
+  renderActions(actionsForSummary);
+  
+  renderBeta(betaR || {});
+  renderVotes(votesR || {});
+  
+  const issuesForSummary = renderIssues(issuesR || {}) || [];
+  
+  const services = systemR ? (systemR.services ?? systemR) : {};
+  renderSystemStatus(services);
+
+  const statusForSummary = statusR || {};
+  renderPremiumSummary(statusForSummary, modulesForSummary, actionsForSummary, issuesForSummary);
+
+  // 4. Mise à jour de l'état système global
+  const releaseSource = document.getElementById("release-timeline")?.dataset?.source || "";
+  const serverSocketStatus = serviceStatusText(services, "Socket.IO");
+  const mongoStatus = serviceStatusText(services, "MongoDB");
+  const appStateStatus = serviceStatusText(services, "AppState client");
+  const roadmapCoreStatus = serviceStatusText(services, "Roadmap CORE");
+
+  updateCoreSync({
+    "tenantID reconnu": Boolean(tenantID),
+    "API statut": statusR !== null,
+    "API versions": serverReleases.length > 0 && releaseSource === "server",
+    "API modules": modulesR !== null,
+    "API actions": actionsR !== null,
+    "API bêta": betaR !== null,
+    "API votes": votesR !== null,
+    "API incidents": issuesR !== null,
+    "API état système": systemR !== null,
+    "MongoDB": statusIsOK(mongoStatus),
+    "AppState client": statusIsOK(appStateStatus),
+    "Roadmap CORE": statusIsOK(roadmapCoreStatus),
+    "Socket navigateur": roadmapSocketConnected === true,
+    "Room Socket tenant": statusIsOK(serverSocketStatus)
+  });
+}
+
 // ==========================================
 // 🤖 MOTEURS IA (GEMINI)
 // ==========================================
