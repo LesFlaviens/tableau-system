@@ -6405,6 +6405,12 @@ app.get('/get-current-state', async (req, res) => {
         const tenantID = cleanString(req.query.tenantID);
         if (!tenantID) return res.status(400).json({ success: false, error: 'tenantID manquant.' });
         res.setHeader('Cache-Control', 'no-store, max-age=0');
+        
+        // DÉCLENCHEUR ANTI-RUSH
+        await ichefReleaseDueAntiRushOrders(tenantID).catch(error =>
+            console.warn('[iCHEF ANTI-RUSH recovery]', error?.message || error)
+        );
+        
         const state = await AppState.findOne({ tenantID }).lean();
         return res.json(state || { tenantID, activeOrders: {} });
     } catch(e) { 
