@@ -2909,30 +2909,31 @@ app.get('/api/export-preuves-legales', async (req, res) => {
 // =========================================================================
 
 // Données de base de la Roadmap Serveur
+// Données de base de la Roadmap Serveur
 const ROADMAP_SERVER_CATALOGUE = [
     {
-        id: "v4.0", version: "4.0", status: "done",
+        id: "v4_0", version: "4.0", status: "done",
         title: "Sécurité Fiscale & Vision IA Haute Performance",
         description: "Mise à niveau de l'assistant intelligent et renforcement des outils de traçabilité et de conformité fiscale.",
         features: ["Registre anti-fraude et traçabilité renforcée", "Nouveau moteur de vision IA pour la numérisation des factures", "Cockpit de Direction optimisé"],
         directClient: true, rolloutPercent: 100, globalStatus: "done", clientStatus: "done"
     },
     {
-        id: "v4.2", version: "4.2", status: "current",
+        id: "v4_2", version: "4.2", status: "current",
         title: "Centre d'Exports Réels & Académie",
         description: "Connexion directe des modules d'apprentissage et extraction des données réelles du restaurant.",
         features: ["Export du Z de caisse et historique des ventes", "Certificat de preuves et journal légal", "Académie de formation pour la brigade", "Synchronisation avec l'Assistant IA"],
         directClient: true, rolloutPercent: 100, globalStatus: "current", clientStatus: "current"
     },
     {
-        id: "v4.3", version: "4.3", status: "beta",
+        id: "v4_3", version: "4.3", status: "beta",
         title: "Synchronisation Salle-Cuisine & Puces Intelligentes",
         description: "Fluidité du service grâce à une communication instantanée entre tables, salle et production.",
         features: ["Écrans de production tactiles et suivi du temps", "Puces NFC sur table", "Régulation automatique Anti-Rush"],
         betaAvailable: true, directClient: true, rolloutPercent: 0, globalStatus: "beta", clientStatus: "future"
     },
     {
-        id: "v5.0", version: "5.0", status: "future",
+        id: "v5_0", version: "5.0", status: "future",
         title: "Nouvelles expériences client & Intelligence avancée",
         description: "Encore plus d'outils pour augmenter les marges et simplifier le quotidien.",
         features: ["Programme de fidélité intelligent", "Analyses prédictives IA", "Intégration hôtellerie / room service", "Marketplace fournisseurs"],
@@ -2940,30 +2941,29 @@ const ROADMAP_SERVER_CATALOGUE = [
     }
 ];
 
-// 1. STATUT GLOBAL ROADMAP
-app.get('/api/roadmap/status', async (req, res) => {
+// [...] Gardez les routes 1, 2, 3 intactes [...]
+
+// 4. ACTIONS REQUISES
+app.get('/api/roadmap/actions', async (req, res) => {
     try {
         const tenantID = cleanString(req.query.tenantID);
-        if (!tenantID) return res.status(400).json({ error: "tenantID manquant." });
+        const state = await AppState.findOne({ tenantID }).lean();
+        const betaRequests = state?.activeOrders?.ROADMAP_MASTER?.betaRequests || [];
         
-        res.json({
-            currentVersion: "4.2",
-            state: "up_to_date",
-            stateLabel: "Connecté et à jour",
-            lastUpdate: new Date().toISOString(),
-            newCount: 1,
-            deployingCount: 1,
-            upcomingCount: 2,
-            recentUpdates: [
-                { version: "4.2", dateLabel: "Sept. 2026", title: "Centre d'Exports Réels & Académie" },
-                { version: "4.0", dateLabel: "Août 2026", title: "Sécurité Fiscale & Vision IA Haute Performance" }
-            ]
-        });
+        let actions = [];
+        // CORRECTION : On vérifie avec le nouvel ID "v4_3"
+        if (betaRequests.includes("v4_3")) {
+            actions.push({
+                priority: "info",
+                title: "Bêta v4.3 en attente",
+                description: "Votre demande de participation est en cours d'analyse par nos équipes."
+            });
+        }
+        res.json({ actions: { items: { tasks: actions } } });
     } catch (e) {
-        res.status(500).json({ error: "Erreur de statut Roadmap" });
+        res.status(500).json({ error: "Erreur lecture des actions" });
     }
 });
-
 // 2. CATALOGUE DES RELEASES
 app.get('/api/roadmap/releases', async (req, res) => {
     try {
