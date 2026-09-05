@@ -3190,7 +3190,78 @@ app.get('/api/roadmap/system-status', async (req, res) => {
   });
 }🗺️ ROADMAP & MISES À JOUR iCHEF OS — CONTRAT DE SYNCHRONISATION
 // =========================================================================
+app.post('/api/anti-rush-predict', async (req, res) => {
+    const session = ichefRequireAntiRushSession(req);
+    if (!session.ok) {
+        return res.status(401).json({ success: false, error: 'Session Anti-Rush invalide.' });
+    }
 
+    const isAutoPilotEnabled = req.body?.isAutoPilotEnabled === true;
+    const safeID = session.tenantID;
+
+    try {
+        let state = await AppState.findOne({ tenantID: safeID }).lean();
+        let reservations = state?.activeOrders?.RESERVATIONS_MASTER?.data || [];
+        let currentOrders = [];
+        for (const [key, value] of Object.entries(state?.activeOrders || {})) {
+            if (ichefAntiRushIsLiveOrderKey(key)) currentOrders.push(value);
+        }
+
+        const prompt = `Tu es l'IA "Directeur des Opérations" d'iCHEF OS.
+Analyse uniquement la charge réelle du restaurant et propose des actions.
+- Réservations : ${JSON.stringify(reservations.slice(-20))}
+- Commandes en cours : ${JSON.stringify(currentOrders)}
+- Heure : ${new Date().toLocaleTimeString('fr-FR', {timeZone: 'Europe/Paris'})}
+- Pilote auto : ${isAutoPilotEnabled ? 'OUI' : 'NON'}
+
+RÉPONDS EN JSON STRICT :
+{"globalLoad": 0, "minutesUntilRush": 0, "stationScores": {"chaud":0,"froid":0,"desserts":0,"bar":0,"salle":0}, "forecastTimeline": [0,0,0,0], "recommendations": [], "autoActionsSuggested": []}`;
+
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+        const result = await model.generateContent(prompt);
+        let responseText = result.response.text().replace(/```json/gi, '').replace(/```/g, '').trim();
+        const firstBrace = responseText.indexOf('{');
+        const lastBrace = responseText.lastIndexOf('}');
+        const prediction = JSON.parse(responseText.substring(firstBrace, lastBrace + 1));
+
+        const executedActions = [];
+
+        if (isAutoPilotEnabled) {
+            const level = ichefAntiRushLevelFromPrediction(prediction);
+            const now = new Date().toISOString();
+
+            state = await AppState.findOneAndUpdate(
+                { tenantID: safeID },
+                {
+                    $set: {
+                        'activeOrders.SETTINGS_MASTER.data.rushRules.auto': true,
+                        'activeOrders.SETTINGS_MASTER.data.rushLevel': level,
+                        'activeOrders.SETTINGS_MASTER.data.antiRushRuntime': {
+                            autoPilot: true,
+                            lastPredictionAt: now,
+                            globalLoad: Number(prediction.globalLoad || 0),
+                            minutesUntilRush: Number(prediction.minutesUntilRush || 0),
+                            stationScores: prediction.stationScores || {},
+                            engine: 'SERVER_V51'
+                        },
+                        'activeOrders.SETTINGS_MASTER.updatedAt': now
+                    }
+                },
+                { upsert: true, new: true }
+            ).lean();
+
+            executedActions.push(`Niveau Anti-Rush réglé sur ${level}/5`);
+            state = await ichefApplyAntiRushCameleon(safeID, state);
+            ichefEmitFullState(safeID, state, { tableId: 'SETTINGS_MASTER', source: 'anti-rush-auto' });
+        }
+
+        return res.json({ success: true, prediction, executedActions });
+
+    } catch (error) {
+        console.error('🚨 Erreur IA Anti-Rush:', error);
+        return res.status(500).json({ success: false, error: 'Analyse indisponible.' });
+    }
+});
 
 // ==========================================
 // 🤖 MOTEURS IA (GEMINI)
