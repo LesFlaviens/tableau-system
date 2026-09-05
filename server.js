@@ -57,9 +57,9 @@ const ICHEF_DEFAULT_ORIGINS = [
     'http://localhost:10000',
     'http://localhost:3000',
     'http://127.0.0.1:10000',
-    'http://127.0.0.1:3000'
+    'http://127.0.0.1:3000',
+    'https://web-sandbox.oaiusercontent.com' // 👈 LIGNE À AJOUTER ICI
 ];
-
 const ICHEF_ALLOWED_ORIGINS = new Set([
     ...ICHEF_DEFAULT_ORIGINS,
     ...String(process.env.ICHEF_ALLOWED_ORIGINS || '')
