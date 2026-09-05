@@ -2911,6 +2911,7 @@ app.get('/api/export-preuves-legales', async (req, res) => {
 // 🗺️ ROADMAP & MISES À JOUR iCHEF OS — CONTRAT DE SYNCHRONISATION
 // =========================================================================
 
+// Données de base de la Roadmap Serveur (IDs sécurisés pour MongoDB avec "_")
 const ROADMAP_SERVER_CATALOGUE = [
     {
         id: "v4_0", version: "4.0", status: "done",
