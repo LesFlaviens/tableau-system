@@ -2896,7 +2896,7 @@ app.get('/api/export-preuves-legales', async (req, res) => {
             code:
                 "FISCAL_AUDIT_EXPORT_ERROR",
 
-            details:
+              details:
                 process.env.NODE_ENV === "development"
                     ? error.message
                     : undefined
@@ -2904,9 +2904,6 @@ app.get('/api/export-preuves-legales', async (req, res) => {
         });
     }
 });
-
-});
-
 // =========================================================================
 // 🗺️ ROADMAP & MISES À JOUR iCHEF OS — CONTRAT DE SYNCHRONISATION
 // =========================================================================
