@@ -2905,11 +2905,12 @@ app.get('/api/export-preuves-legales', async (req, res) => {
     }
 });
 
-});// =========================================================================
+});
+
+// =========================================================================
 // 🗺️ ROADMAP & MISES À JOUR iCHEF OS — CONTRAT DE SYNCHRONISATION
 // =========================================================================
 
-// Données de base de la Roadmap Serveur (IDs sécurisés pour MongoDB avec "_")
 const ROADMAP_SERVER_CATALOGUE = [
     {
         id: "v4_0", version: "4.0", status: "done",
@@ -2981,7 +2982,6 @@ app.get('/api/roadmap/releases', async (req, res) => {
         }));
 
         res.json({ releases: personalizedReleases });
-        
     } catch (e) {
         res.status(500).json({ error: "Erreur lecture des releases" });
     }
@@ -3068,7 +3068,6 @@ app.post('/api/roadmap/deployment', async (req, res) => {
         const { tenantID, releaseId, percent, pin } = req.body;
         const safeID = cleanString(tenantID);
         
-        // Sécurité par code PIN Gérant
         const auth = await ichefAuthorizePin(safeID, pin, { managerOnly: true });
         if (!auth.ok) return res.status(auth.status || 403).json({ error: auth.error || "Accès refusé. PIN Gérant requis." });
 
@@ -3085,10 +3084,8 @@ app.post('/api/roadmap/deployment', async (req, res) => {
             { new: true, upsert: true }
         ).lean();
 
-        // Audit cryptographique anti-fraude
         await scellerOperation(safeID, 'UPDATE', 'ROADMAP_DEPLOYMENT', releaseId, auth.name || 'MANAGER', { percent: safePercent });
 
-        // Synchronisation WebSocket
         io.to(safeID).emit('roadmap:deployment', { releaseId, percent: safePercent });
         
         res.json({ success: true, percent: safePercent });
