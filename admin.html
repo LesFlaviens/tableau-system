@@ -7403,32 +7403,7 @@ async function startAuthenticatedApplication() {
         }
     });
 
-    // 2. CHARGEMENT DES DONNÉES EN PARALLÈLE
-    // Une erreur HTTP/MongoDB ne doit JAMAIS empêcher le Socket de rester connecté.
-    fetchStateFromCloud().catch(error => {
-        console.error('[iCHEF CONFIG] Chargement initial des données impossible :', error);
-    });
-
-    socket.io.on('reconnect_attempt', attempt => {
-        console.info(
-            `[iCHEF CONFIG V28] Reconnexion WebSocket tentative ${attempt}`
-        );
-    });
-
-    socket.io.on('reconnect_error', error => {
-        console.warn(
-            '[iCHEF CONFIG V28] Reconnexion WebSocket échouée :',
-            error?.message || error
-        );
-    });
-
-    socket.io.on('reconnect', attempt => {
-        console.info(
-            `[iCHEF CONFIG V28] WebSocket rétabli après ${attempt} tentative(s)`
-        );
-    });
-
-    socket.on('connect', () => {
+socket.on('connect', () => {
         window.ICHEF_SECURITY.connectionState = 'online';
         console.info('[iCHEF CONFIG] ✅ Socket connecté', {
             id: socket.id,
@@ -7469,6 +7444,22 @@ async function startAuthenticatedApplication() {
                 '',
             page: 'CONFIGURATION'
         });
+    });
+
+    // 🗺️ ÉCOUTEUR TEMPS RÉEL ROADMAP 
+    socket.on('roadmap:deployment', (data) => {
+        console.info(`[iCHEF ROADMAP] Mise à jour reçue pour ${data.releaseId} : ${data.percent}%`);
+        
+        // Actualisation dynamique de la jauge sur la page active
+        const progressBar = document.querySelector(`[data-release-id="${data.releaseId}"] .progress-bar, .roadmap-progress-${data.releaseId}`);
+        if (progressBar) {
+            progressBar.style.width = `${data.percent}%`;
+        }
+        
+        // Rafraîchissement global silencieux des données client
+        if (typeof fetchStateFromCloud === 'function') {
+            fetchStateFromCloud(true, { preserveStaff: true }).catch(() => {});
+        }
     });
 
     socket.on('ichef-session-replaced', (info) => {
@@ -7688,7 +7679,6 @@ async function startAuthenticatedApplication() {
             }
         }
     });
-}
 
 // Filet de sécurité : si un navigateur rate un événement Socket pendant une micro-coupure,
 // la section QR/NFC se recale seule. Aucun appel si l'onglet QR/NFC n'est pas visible.
