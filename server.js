@@ -8060,7 +8060,6 @@ server.listen(
         );
 
         console.log(
-
             '✅ Moteur fiscal MongoDB activé.'
         );
 
@@ -8088,7 +8087,15 @@ server.listen(
             '✅ Socket temps réel PAD / Caisse / Cuisine activé.'
         );
 
-        console.log('==========================================');
+        console.log(
+            '✅ Roadmap CORE MongoDB / API / Socket.IO activé.'
+        );
+
+        console.log(
+            '=========================================='
+        );
+    }
+);
         // =============================================================
 // QR FISCAL iCHEF — DOSSIER COMPLET DE TABLE
 // COLLER CE BLOC JUSTE AVANT : // 🤖 MOTEURS IA (GEMINI)
