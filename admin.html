@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- ICHEF ADMIN V36 — STRUCTURE + SCROLL TOUTES SECTIONS + CONNEXION SÉCURISÉE -->
+<!-- ICHEF ADMIN V37 — ANALYSE IA ROBUSTE + FALLBACK FINANCIER RÉEL + V36 CONSERVÉE -->
 
 <html lang="fr">
 <head>
@@ -4020,57 +4020,221 @@ body { height:100dvh !important; }
             return String(value ?? "").replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
         }
 
-        async function chargerAnalysesIA() {
+        function ichefIaFormatMoney(amount) {
+    const currency = systemSettings?.taxConfig?.currency || systemSettings?.currency || '€';
+    const value = Number(amount || 0);
+    return `${value.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`;
+}
+
+function ichefIaTicketDate(ticket) {
+    const raw = ticket?.date || ticket?.createdAt || ticket?.paidAt || ticket?.time || ticket?.timestamp || ticket?.closedAt || ticket?.lockedAt;
+    if (!raw) return null;
+    const date = new Date(raw);
+    return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function ichefIaTicketTotal(ticket) {
+    return Number.parseFloat(ticket?.totalTTC || ticket?.total || ticket?.amount || ticket?.ttc || ticket?.revenue || 0) || 0;
+}
+
+function ichefIaTicketCovers(ticket) {
+    return Number.parseFloat(ticket?.covers || ticket?.couverts || ticket?.guests || ticket?.people || 0) || 0;
+}
+
+function ichefIaReadItemCost(item) {
+    const raw = item?.cost ?? item?.costPrice ?? item?.foodCost ?? item?.cout ?? item?.coutMatiere ?? item?.cout_matieres ?? item?.prixRevient;
+    const value = Number.parseFloat(raw);
+    return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function ichefIaReadItemPrice(item) {
+    return Number.parseFloat(item?.price || item?.p || item?.unitPrice || item?.prix || item?.priceTTC || item?.ttc || 0) || 0;
+}
+
+function ichefIaBuildLocalPulse() {
+    const history = Array.isArray(archiveCuisine) ? archiveCuisine : [];
+    const valid = history
+        .map(ticket => ({ ticket, date: ichefIaTicketDate(ticket) }))
+        .filter(row => row.date);
+
+    if (!valid.length) {
+        return {
+            noData: true,
+            previsionVentes: 'Aucun ticket clôturé disponible pour analyser le service.',
+            analyseCA: 'Le serveur est connecté, mais FINANCIAL_HISTORY ne contient pas encore de ventes exploitables.',
+            analyseMarges: 'Marge non calculable sans ventes clôturées et coûts matière réels.',
+            recommandations: [
+                'Encaissez au moins un ticket puis relancez l’analyse.',
+                'Vérifiez que la caisse enregistre les tickets clôturés dans FINANCIAL_HISTORY.'
+            ]
+        };
+    }
+
+    const now = new Date();
+    const todayStart = new Date(now);
+    todayStart.setHours(0, 0, 0, 0);
+    const yesterdayStart = new Date(todayStart);
+    yesterdayStart.setDate(yesterdayStart.getDate() - 1);
+    const yesterdaySameTime = new Date(now);
+    yesterdaySameTime.setDate(yesterdaySameTime.getDate() - 1);
+    const sevenDaysAgo = new Date(todayStart);
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+
+    const today = valid.filter(row => row.date >= todayStart && row.date <= now).map(row => row.ticket);
+    const yesterday = valid.filter(row => row.date >= yesterdayStart && row.date <= yesterdaySameTime).map(row => row.ticket);
+    const last7 = valid.filter(row => row.date >= sevenDaysAgo && row.date <= now).map(row => row.ticket);
+
+    const sum = rows => rows.reduce((acc, ticket) => acc + ichefIaTicketTotal(ticket), 0);
+    const covers = rows => rows.reduce((acc, ticket) => acc + ichefIaTicketCovers(ticket), 0);
+    const todayCA = sum(today);
+    const yesterdayCA = sum(yesterday);
+    const last7CA = sum(last7);
+    const todayCovers = covers(today);
+    const avgTicket = today.length ? todayCA / today.length : 0;
+    const avg7 = last7CA / 7;
+    const delta = yesterdayCA > 0 ? ((todayCA - yesterdayCA) / yesterdayCA) * 100 : null;
+
+    const trendText = delta === null
+        ? 'comparaison indisponible (pas de CA hier à la même heure)'
+        : `${delta >= 0 ? '+' : ''}${delta.toFixed(1)} % vs hier à la même heure`;
+
+    const itemStats = new Map();
+    let knownCostRevenue = 0;
+    let knownCostAmount = 0;
+    let knownCostLines = 0;
+    let allItemLines = 0;
+
+    today.forEach(ticket => {
+        const items = Array.isArray(ticket?.items) ? ticket.items : [];
+        items.forEach(item => {
+            allItemLines += 1;
+            const qty = Math.max(1, Number.parseFloat(item?.qty || item?.quantity || item?.qte || 1) || 1);
+            const name = String(item?.name || item?.n || item?.nom || item?.label || 'Article').trim();
+            const price = ichefIaReadItemPrice(item);
+            const cost = ichefIaReadItemCost(item);
+            const row = itemStats.get(name) || { qty: 0, revenue: 0 };
+            row.qty += qty;
+            row.revenue += price * qty;
+            itemStats.set(name, row);
+
+            if (cost !== null && price > 0) {
+                knownCostLines += 1;
+                knownCostRevenue += price * qty;
+                knownCostAmount += cost * qty;
+            }
+        });
+    });
+
+    const topItem = Array.from(itemStats.entries()).sort((a, b) => b[1].qty - a[1].qty)[0];
+    const marginPct = knownCostRevenue > 0 ? ((knownCostRevenue - knownCostAmount) / knownCostRevenue) * 100 : null;
+    const costCoverage = allItemLines > 0 ? (knownCostLines / allItemLines) * 100 : 0;
+
+    const recommendations = [];
+    if (delta !== null && delta < -10) recommendations.push(`CA en retrait de ${Math.abs(delta).toFixed(1)} % : surveillez le rythme de vente et le ticket moyen pendant le prochain créneau.`);
+    if (delta !== null && delta > 10) recommendations.push(`Le service progresse de ${delta.toFixed(1)} % : maintenez les articles les plus demandés disponibles et anticipez les ruptures.`);
+    if (topItem) recommendations.push(`Article le plus vendu aujourd’hui : ${topItem[0]} (${topItem[1].qty} unité${topItem[1].qty > 1 ? 's' : ''}).`);
+    if (today.length && todayCovers > 0) recommendations.push(`Ticket moyen : ${ichefIaFormatMoney(avgTicket)} pour ${todayCovers} couvert${todayCovers > 1 ? 's' : ''} enregistrés.`);
+    if (marginPct !== null && marginPct < 60) recommendations.push(`Marge brute connue à ${marginPct.toFixed(1)} % : vérifiez les coûts matière des ventes du jour.`);
+    if (marginPct === null) recommendations.push('Ajoutez les coûts matière réels aux articles/tickets pour activer l’analyse de marge sans estimation fictive.');
+    if (!recommendations.length) recommendations.push('Aucune anomalie évidente détectée dans les données disponibles du service.');
+
+    return {
+        noData: false,
+        previsionVentes: `Tendance ventes : ${trendText}. Repère moyen sur 7 jours : ${ichefIaFormatMoney(avg7)} / jour.`,
+        analyseCA: `CA aujourd’hui : ${ichefIaFormatMoney(todayCA)} · ${today.length} ticket${today.length > 1 ? 's' : ''} · ticket moyen ${ichefIaFormatMoney(avgTicket)}.`,
+        analyseMarges: marginPct === null
+            ? 'Marge : coûts matière réels absents des ventes du jour — aucun pourcentage inventé.'
+            : `Marge brute sur lignes avec coût réel : ${marginPct.toFixed(1)} % · couverture coûts ${costCoverage.toFixed(0)} %.`,
+        recommandations
+    };
+}
+
+function ichefIaRenderPulse(pulse, sourceMessage = '') {
     const gridContainer = document.getElementById('ia-cards-loading');
-    const refreshBtn = document.querySelector('.btn-ia-refresh');
-    
-    refreshBtn.innerText = "Calcul IA en cours...";
+    if (!gridContainer || !pulse) return;
+    const recommendations = Array.isArray(pulse.recommandations) ? pulse.recommandations : [];
+
+    gridContainer.innerHTML = `
+        ${sourceMessage ? `<div style="grid-column:1/-1;color:var(--text-muted);font-size:.76rem;text-align:right;margin-bottom:-6px;">${escapeHTML(sourceMessage)}</div>` : ''}
+        <div class="ia-pulse-card" style="border-left: 3px solid var(--gold);">${escapeHTML(pulse.previsionVentes || 'Prévision indisponible')}</div>
+        <div class="ia-pulse-card" style="border-left: 3px solid var(--accent);">${escapeHTML(pulse.analyseCA || 'Analyse CA indisponible')}</div>
+        <div class="ia-pulse-card" style="border-left: 3px solid var(--danger);">${escapeHTML(pulse.analyseMarges || 'Analyse marge indisponible')}</div>
+        <div class="ia-pulse-recos-card">
+            <strong>RECOMMANDATIONS COMPTABLES :</strong>
+            <ul>${recommendations.map(reco => `<li>${escapeHTML(reco)}</li>`).join('')}</ul>
+        </div>
+    `;
+}
+
+async function chargerAnalysesIA() {
+    const gridContainer = document.getElementById('ia-cards-loading');
+    const refreshBtn = document.querySelector('#panel-ia-business .btn-ia-refresh');
+    if (!gridContainer || !refreshBtn) return;
+
+    refreshBtn.innerText = 'CALCUL IA EN COURS...';
     refreshBtn.disabled = true;
-    gridContainer.innerHTML = `<div style="color: var(--gold); font-style: italic; grid-column: 1/-1; text-align: center; padding: 20px;"> iCHEF OS interroge les algorithmes prédictifs...</div>`;
-
-    const urlParams = new URLSearchParams(window.location.search);
-    const localTenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id') || localStorage.getItem('tenantID');
-
-    const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") 
-        ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+    gridContainer.innerHTML = `<div style="color: var(--gold); font-style: italic; grid-column: 1/-1; text-align: center; padding: 20px;">iCHEF OS analyse les données réelles du service...</div>`;
 
     try {
-        const response = await secureFetch(`${SERVER_URL}/api/ai-business-pulse`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ 
-                tenantID: localTenantID 
-            })
-        });
-        
-        const data = await response.json();
-        
-        if (data.success) {
-            const p = data.pulse;
-            
-            gridContainer.innerHTML = `
-                <div class="ia-pulse-card" style="border-left: 3px solid var(--gold);">${escapeHTML(p.previsionVentes)}</div>
-                <div class="ia-pulse-card" style="border-left: 3px solid var(--accent);">${escapeHTML(p.analyseCA)}</div>
-                <div class="ia-pulse-card" style="border-left: 3px solid var(--danger);">${escapeHTML(p.analyseMarges)}</div>
-                
-                <div class="ia-pulse-recos-card">
-                    <strong> RECOMMANDATIONS DE LA BRIGADE COMPTABLE :</strong>
-                    <ul>
-                        ${(p.recommandations || []).map(reco => `<li>${escapeHTML(reco)}</li>`).join('')}
-                    </ul>
-                </div>
-            `;
-        } else {
-            gridContainer.innerHTML = `<div style="color: var(--danger); grid-column: 1/-1; text-align: center; padding: 20px;"> Erreur : ${escapeHTML(data.error)}</div>`;
+        await window.ICHEF_SECURITY_READY;
+        const localTenantID = window.ICHEF_SECURITY?.tenantID || new URLSearchParams(window.location.search).get('tenantID') || localStorage.getItem('ichef_tenant_id');
+        if (!localTenantID) throw new Error('Établissement non identifié.');
+
+        // Rafraîchit d'abord FINANCIAL_HISTORY afin que l'analyse travaille sur les derniers tickets.
+        if (typeof fetchStateFromCloud === 'function') {
+            try { await fetchStateFromCloud(true, { preserveStaff: true }); } catch (_) {}
         }
+
+        let cloudError = null;
+        try {
+            // URL relative : secureFetch ajoute le serveur iCHEF, le tenant, le device et la session.
+            const response = await secureFetch('/api/ai-business-pulse', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    tenantID: localTenantID,
+                    deviceId: window.ICHEF_SECURITY?.deviceId || '',
+                    source: 'ADMIN_COMPTABLE_VIRTUEL'
+                })
+            });
+
+            const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+            let data = {};
+            if (contentType.includes('application/json')) {
+                data = await response.json().catch(() => ({}));
+            } else {
+                const text = await response.text().catch(() => '');
+                data = { error: text.slice(0, 180) || `Réponse HTTP ${response.status}` };
+            }
+
+            if (response.ok && data?.success === true && data?.pulse) {
+                ichefIaRenderPulse(data.pulse, 'Analyse IA Cloud iCHEF');
+                return;
+            }
+
+            cloudError = new Error(data?.error || data?.message || `IA Cloud indisponible (HTTP ${response.status})`);
+            cloudError.status = response.status;
+        } catch (error) {
+            cloudError = error;
+        }
+
+        // Ne jamais laisser le bouton mort : si la route IA n'est pas déployée ou refuse la requête,
+        // on fournit immédiatement un audit LOCAL basé uniquement sur FINANCIAL_HISTORY réel.
+        const localPulse = ichefIaBuildLocalPulse();
+        const detail = cloudError?.status
+            ? `IA Cloud indisponible HTTP ${cloudError.status} · audit local réel activé`
+            : 'IA Cloud momentanément indisponible · audit local réel activé';
+        console.warn('[iCHEF IA] Bascule audit local :', cloudError?.message || cloudError);
+        ichefIaRenderPulse(localPulse, detail);
     } catch (error) {
-        console.error("Erreur Pulse IA:", error);
-        gridContainer.innerHTML = `<div style="color: var(--danger); grid-column: 1/-1; text-align: center; padding: 20px;"> Impossible de joindre le serveur iCHEF Cloud.</div>`;
+        console.error('Erreur Pulse IA:', error);
+        gridContainer.innerHTML = `<div style="color: var(--danger); grid-column: 1/-1; text-align: center; padding: 20px;">${escapeHTML(error?.message || 'Analyse indisponible.')}</div>`;
     } finally {
-        refreshBtn.innerText = " ANALYSER LE SERVICE";
+        refreshBtn.innerText = 'ANALYSER LE SERVICE';
         refreshBtn.disabled = false;
     }
 }
+
         const urlParams = new URLSearchParams(window.location.search);
         let tenantID = window.ICHEF_SECURITY.tenantID;
         
@@ -7696,6 +7860,8 @@ setInterval(() => {
         }).catch(() => {});
     }
 }, 5000);
+
+} // fin startAuthenticatedApplication — fermeture manquante corrigée V37
 
 startAuthenticatedApplication().catch(error => {
     console.error("Initialisation sécurisée interrompue", error);
