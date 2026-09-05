@@ -1,7 +1,11 @@
 /**
  * ==============================================================
- * 🧠 iCHEF EMPIRE OS — ENGINE SERVER BACKEND (V. FORTERESSE)
+ * 🧠 iCHEF EMPIRE OS — CORE SERVER FROZEN 50 (2026.09.01)
  * ==============================================================
+ * Contrat central stable pour multi-établissements :
+ * Réservations · Plan/PAD/Téléphone · Cuisine/Bar/Pâtisserie · Anti-Rush
+ * RH · Paiement/Caisse/Fiscal · Administration · Socket.IO.
+ * Les évolutions UI doivent rester côté HTML tant que ce contrat suffit.
  */
 
 
@@ -20,13 +24,77 @@ const { Server } = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
+
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+    const incoming = String(req.headers['x-request-id'] || '').trim();
+    const requestId = incoming.slice(0, 120) ||
+        (crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'));
+    req.ichefRequestId = requestId;
+    res.setHeader('X-Request-ID', requestId);
+    next();
+});
+
+server.keepAliveTimeout = 65000;
+server.headersTimeout = 70000;
+server.requestTimeout = 120000;
+
+server.on('clientError', (err, socket) => {
+    console.warn('⚠️ HTTP clientError :', err?.message || err);
+    if (socket && !socket.destroyed) {
+        socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+    }
+});
+
 // ==========================================================
 // 🌐 CONFIGURATION CORS UNIFIÉE (API + WEBSOCKETS)
 // ==========================================================
+const ICHEF_DEFAULT_ORIGINS = [
+    'https://os.ichef.ch',
+    'https://ichef.ch',
+    'https://www.ichef.ch',
+    'https://tableau-system.onrender.com',
+    'http://localhost:10000',
+    'http://localhost:3000',
+    'http://127.0.0.1:10000',
+    'http://127.0.0.1:3000'
+];
+
+const ICHEF_ALLOWED_ORIGINS = new Set([
+    ...ICHEF_DEFAULT_ORIGINS,
+    ...String(process.env.ICHEF_ALLOWED_ORIGINS || '')
+        .split(',')
+        .map(v => v.trim())
+        .filter(Boolean)
+]);
+
+function ichefCorsOriginAllowed(origin) {
+    if (!origin || origin === 'null') return true;
+    if (ICHEF_ALLOWED_ORIGINS.has(origin)) return true;
+
+    try {
+        const u = new URL(origin);
+        if (
+            (u.hostname === 'localhost' || u.hostname === '127.0.0.1') &&
+            (u.protocol === 'http:' || u.protocol === 'https:')
+        ) return true;
+
+        if (
+            u.protocol === 'https:' &&
+            (u.hostname.endsWith('.ichef.ch') || u.hostname.endsWith('.onrender.com'))
+        ) return true;
+    } catch (_) {}
+
+    return false;
+}
+
 const corsOptions = {
     origin: function (origin, callback) {
-        // Accepte toutes les requêtes (pratique pour l'app PWA, Render, et os.ichef.ch)
-        callback(null, true);
+        if (ichefCorsOriginAllowed(origin)) {
+            return callback(null, true);
+        }
+        console.warn('[iCHEF CORS] Origine refusée :', origin);
+        return callback(new Error('Origine CORS non autorisée'));
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -49,16 +117,47 @@ const corsOptions = {
 app.use(cors(corsOptions));
 
 // Application du CORS pour le Temps Réel (Socket.io)
-const io = new Server(server, { 
+const io = new Server(server, {
     cors: corsOptions,
-    transports: ['websocket', 'polling'] // Force la compatibilité avec ton Pad
+    transports: ['websocket', 'polling'],
+    allowUpgrades: true,
+
+    // Tolérance réseau renforcée : évite les coupures sur micro-freezes,
+    // Wi-Fi instable, onglet momentanément ralenti ou proxy Render.
+    pingInterval: 25000,
+    pingTimeout: 70000,
+    upgradeTimeout: 30000,
+    connectTimeout: 45000,
+
+    // Les états iCHEF peuvent être volumineux.
+    maxHttpBufferSize: 20 * 1024 * 1024,
+    perMessageDeflate: false,
+
+    // Si Socket.IO >= 4.6 : restaure rooms/data et rejoue les paquets manqués
+    // après une coupure courte.
+    connectionStateRecovery: {
+        maxDisconnectionDuration: 2 * 60 * 1000,
+        skipMiddlewares: true
+    }
+});
+
+// Diagnostic bas niveau Engine.IO.
+io.engine.on('connection_error', (err) => {
+    console.error('[ENGINE.IO] connection_error', {
+        code: err?.code,
+        message: err?.message,
+        context: err?.context
+    });
 });
 
 // ==========================================
 // CONFIGURATION STRIPE iCHEF (Abonnements SaaS & Empreintes)
 // ==========================================
-const stripeKey = process.env.STRIPE_SECRET_KEY || 'sk_test_51TN80JQ9Dw3nOfA4I3XTxPl5FR4ddYmU9Jw2pGmfa0eABz2P6wAzK8RMzHw2XilulLXxFmY2oEDgau4TcScOf9WK00ajIEuweB'; 
-const stripe = require('stripe')(stripeKey);
+const stripeKey = String(process.env.STRIPE_SECRET_KEY || '').trim();
+const stripe = stripeKey ? require('stripe')(stripeKey) : null;
+if (!stripe) {
+    console.warn('⚠️ STRIPE_SECRET_KEY manquante : paiements Stripe désactivés, autres paiements iCHEF disponibles.');
+}
 
 // ==========================================
 // CONFIGURATION TWILIO UNIQUE & GLOBALE
@@ -87,36 +186,14 @@ if (twilioAccountSid && twilioAuthToken) {
 // 🌐 CONFIGURATION HTTP / CORS / CACHE
 // ==========================================================
 
-// CORS global.
-app.use(cors({
-    origin: function (origin, callback) {
-        callback(null, true);
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: [
-        'Content-Type',
-        'Authorization',
-
-        'Origin',
-        'Accept',
-        'X-CSRF-Token',
-        'X-iCHEF-Device',
-        'X-iCHEF-Master-Device',
-        'X-iCHEF-Tenant',
-        'X-iCHEF-PIN',
-        'Idempotency-Key',
-        'X-Requested-With'
-    ]
-}));
-
 // IMPORTANT : le webhook Stripe doit recevoir le corps BRUT
 // avant express.json().
 app.use('/webhook', express.raw({ type: 'application/json' }));
 
 // Parsers pour les autres routes.
-app.use(express.json({ limit: '100mb' }));
-app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+const ICHEF_HTTP_BODY_LIMIT = process.env.ICHEF_HTTP_BODY_LIMIT || '24mb';
+app.use(express.json({ limit: ICHEF_HTTP_BODY_LIMIT }));
+app.use(express.urlencoded({ extended: true, limit: ICHEF_HTTP_BODY_LIMIT }));
 
 
 // ==========================================================
@@ -198,7 +275,6 @@ const fiscalRecordSchema = new mongoose.Schema({
     details: {
         type: Object,
         default: {}
-
     },
 
     createdAt: {
@@ -219,6 +295,55 @@ fiscalRecordSchema.index(
 const FiscalRecord =
     mongoose.models.FiscalRecord ||
     mongoose.model('FiscalRecord', fiscalRecordSchema);
+
+
+// ==========================================================
+// 💳 DEMANDES DE PAIEMENT STRIPE — PERSISTANCE MONGODB
+// Evite de perdre le statut PENDING/PAID lors d'un redémarrage Render.
+// ==========================================================
+const paymentRequestSchema = new mongoose.Schema({
+    tenantID: { type: String, required: true, index: true },
+    paymentRequestId: { type: String, required: true, index: true },
+    tableId: { type: String, default: '', index: true },
+    status: { type: String, default: 'PENDING', index: true },
+    amount: { type: Number, default: 0 },
+    currency: { type: String, default: 'CHF' },
+    stripeSessionId: { type: String, default: '' },
+    stripeAccountId: { type: String, default: '' },
+    metadata: { type: Object, default: {} },
+    createdAt: { type: Date, default: Date.now },
+    updatedAt: { type: Date, default: Date.now, index: true }
+}, { minimize: false });
+
+paymentRequestSchema.index(
+    { tenantID: 1, paymentRequestId: 1 },
+    { unique: true }
+);
+
+paymentRequestSchema.index({ status: 1 });
+paymentRequestSchema.index(
+    { updatedAt: 1 },
+    { expireAfterSeconds: 60 * 60 * 24 * 30 }
+);
+
+const PaymentRequest =
+    mongoose.models.PaymentRequest ||
+    mongoose.model('PaymentRequest', paymentRequestSchema);
+
+// Archive RH séparée : protège AppState de la limite MongoDB de 16 Mo.
+const rhPunchRecordSchema = new mongoose.Schema({
+    tenantID: { type: String, required: true, index: true },
+    punchId: { type: String, required: true, index: true },
+    staffId: { type: String, required: true, index: true },
+    timestamp: { type: Number, required: true, index: true },
+    type: { type: String, required: true },
+    photo: { type: String, default: '' },
+    details: { type: Object, default: {} },
+    createdAt: { type: Date, default: Date.now, index: true }
+}, { minimize: false });
+rhPunchRecordSchema.index({ tenantID: 1, punchId: 1 }, { unique: true });
+rhPunchRecordSchema.index({ tenantID: 1, staffId: 1, timestamp: -1 });
+const RhPunchRecord = mongoose.models.RhPunchRecord || mongoose.model('RhPunchRecord', rhPunchRecordSchema);
 
 
 function ichefFiscalId(prefix = 'FISCAL') {
@@ -299,7 +424,6 @@ async function ichefWriteFiscalRecord(data = {}) {
                 ? new Date(data.createdAt)
                 : new Date()
     };
-
 
     try {
 
@@ -401,7 +525,6 @@ async function ichefFiscalDiagnostic(req, data = {}) {
                 req?.headers?.['x-ichef-device'] ||
                 '',
 
-
             details: {
                 severity:
                     data.severity ||
@@ -501,7 +624,6 @@ app.use(express.static(__dirname, { // 👈 OUVERTURE CORRECTE ICI
             res.setHeader('Pragma', 'no-cache');
             res.setHeader('Expires', '0');
             res.setHeader('Surrogate-Control', 'no-store');
-
         } else if (
             lower.endsWith('.js') ||
             lower.endsWith('.css') ||
@@ -517,13 +639,113 @@ app.use(express.static(__dirname, { // 👈 OUVERTURE CORRECTE ICI
 const PORT = process.env.PORT || 10000;
 
 // SÉCURITÉ MAÎTRE DE L'EMPIRE (Super Admin)
-const ADMIN_PASS = process.env.ADMIN_PASS || 'Empire2026';
+const ADMIN_PASS =
+    String(process.env.ADMIN_PASS || '').trim() ||
+    crypto.randomBytes(24).toString('hex');
+
+if (!process.env.ADMIN_PASS) {
+    console.warn('⚠️ ADMIN_PASS manquant : mot de passe Empire temporaire généré pour ce démarrage.');
+}
 
 
 
 // 🚨 SÉCURITÉ STRIPE : On utilise raw() uniquement pour la route webhook
 
 const cleanString = (str) => String(str || "").trim().toLowerCase();
+
+const ICHEF_FINANCIAL_CACHE_LIMIT = Math.max(200, Math.min(5000, Number(process.env.ICHEF_FINANCIAL_CACHE_LIMIT || 1200)));
+const ICHEF_MAX_STATE_NODE_BYTES = Math.max(512 * 1024, Math.min(12 * 1024 * 1024, Number(process.env.ICHEF_MAX_STATE_NODE_BYTES || 8 * 1024 * 1024)));
+
+function ichefValidStateKey(value) {
+    const key = String(value || '').trim();
+    return Boolean(key && key.length <= 180 && !/[.$\0]/.test(key));
+}
+
+function ichefJsonBytes(value) {
+    try { return Buffer.byteLength(JSON.stringify(value ?? null), 'utf8'); }
+    catch (_) { return Number.MAX_SAFE_INTEGER; }
+}
+
+function ichefBuildFiscalControlToken() {
+    return crypto.randomBytes(32).toString('hex');
+}
+
+function ichefBuildFiscalControlPath(tenantID, ticketNumber, token) {
+    return '/controle-fiscal.html' +
+        `?tenantID=${encodeURIComponent(cleanString(tenantID))}` +
+        `&ticket=${encodeURIComponent(String(ticketNumber || ''))}` +
+        `&token=${encodeURIComponent(String(token || ''))}`;
+}
+
+
+// 🔐 Écritures sérialisées par établissement sur une instance Node.
+// Deux restaurants restent parallèles ; un même restaurant ne peut pas avoir
+// deux sauvegardes lourdes qui se recouvrent accidentellement.
+const ICHEF_TENANT_MUTATION_PATHS = new Set([
+    '/update-order', '/api/voice-webhook', '/api/config/qr-nfc',
+    '/api/config/cash-register', '/api/rh/punch', '/api/rh/timesheet/correct',
+    '/api/rh/timesheet/status', '/api/anti-rush/update', '/api/fiscal/cash-in',
+    '/api/save-transaction', '/api/fiscal/correction', '/api/orders/close-paid'
+]);
+const ichefTenantMutationQueues = new Map();
+function ichefRequestTenantID(req) {
+    return cleanString(req.query?.tenantID || req.body?.tenantID || req.headers['x-ichef-tenant'] || '');
+}
+app.use((req, res, next) => {
+    if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(req.method || '').toUpperCase())) return next();
+    if (!ICHEF_TENANT_MUTATION_PATHS.has(req.path)) return next();
+    const tenantID = ichefRequestTenantID(req);
+    if (!tenantID) return next();
+    const previous = ichefTenantMutationQueues.get(tenantID) || Promise.resolve();
+    let releaseCurrent;
+    const currentGate = new Promise(resolve => { releaseCurrent = resolve; });
+    const currentChain = previous.catch(() => undefined).then(() => currentGate);
+    ichefTenantMutationQueues.set(tenantID, currentChain);
+    previous.catch(() => undefined).then(() => {
+        let released = false;
+        let safetyTimer = null;
+        const unlock = () => {
+            if (released) return;
+            released = true;
+            if (safetyTimer) clearTimeout(safetyTimer);
+            try { releaseCurrent(); } catch (_) {}
+            if (ichefTenantMutationQueues.get(tenantID) === currentChain) ichefTenantMutationQueues.delete(tenantID);
+        };
+        safetyTimer = setTimeout(() => {
+            console.error(`[iCHEF LOCK] libération sécurité tenant=${tenantID} path=${req.path}`);
+            unlock();
+        }, 125000);
+        safetyTimer.unref?.();
+        res.once('finish', unlock);
+        res.once('close', unlock);
+        next();
+    });
+});
+
+
+// ==========================================================
+// ❤️ SANTÉ DU SERVICE
+// ==========================================================
+app.get('/healthz', (req, res) => {
+    return res.status(200).json({
+        ok: true,
+        service: 'iCHEF',
+        uptimeSeconds: Math.round(process.uptime()),
+        mongoReadyState: mongoose.connection.readyState,
+        socketEngine: true,
+        timestamp: new Date().toISOString()
+    });
+});
+
+app.get('/readyz', (req, res) => {
+    const mongoReady = mongoose.connection.readyState === 1;
+
+    return res.status(mongoReady ? 200 : 503).json({
+        ready: mongoReady,
+        mongoReadyState: mongoose.connection.readyState,
+        timestamp: new Date().toISOString()
+    });
+});
 
 app.get('/', (req, res) => {
     res.setHeader(
@@ -602,7 +824,6 @@ app.post('/api/anti-rush-predict', async (req, res) => {
         
         if (firstBrace !== -1 && lastBrace !== -1 && lastBrace >= firstBrace) {
             responseText = responseText.substring(firstBrace, lastBrace + 1);
-
         } else {
             throw new Error("Format JSON non trouvé.");
         }
@@ -703,7 +924,6 @@ app.post('/api/ai-profitability', async (req, res) => {
                     pireRentable: "N/A",
                     margeMoyenne: "0",
                     recommandations: ["Créez vos premiers plats dans la carte pour que l'IA puisse analyser vos marges."]
-
                 }
             });
         }
@@ -804,7 +1024,6 @@ app.post('/api/ai-reservation-forecast', async (req, res) => {
             conseils = [
                 "Le cahier est vide pour ce soir. Partagez votre lien de réservation QR sur vos réseaux sociaux.",
                 "Vérifiez que votre Menu Web (Click & Collect) est bien activé pour compenser le manque en salle."
-
             ];
         } else if (couvertsAujourdhui <= 15) {
             tendance = "Calme";
@@ -905,80 +1124,305 @@ app.post('/api/ai-business-pulse', async (req, res) => {
 });
 
 /// Mémoire vive pour le statut des paiements à table (Stripe Connect)
-
 const activeStripePayments = new Map();
+// =========================================================================
+// 🚀 GESTION DES CANDIDATURES PARTENAIRES (DEMANDE DE DÉMO)
+// =========================================================================
+app.post('/api/nouvelle-demande-demo', async (req, res) => {
+    try {
+        const { tenantID, restaurant, phone, email, details } = req.body;
 
+        if (!tenantID || !restaurant || !phone || !email) {
+            return res.status(400).json({ 
+                success: false, 
+                error: "Veuillez fournir toutes les informations requises." 
+            });
+        }
+
+        const safeID = cleanString(tenantID);
+
+        const existingTenant = await Tenant.findOne({ tenantID: safeID });
+        if (existingTenant) {
+             return res.status(409).json({ 
+                success: false, 
+                error: "Ce nom d'établissement est déjà en cours de traitement." 
+            });
+        }
+
+        await Tenant.create({
+            tenantID: safeID,
+            clientName: String(restaurant).trim(),
+            email: String(email).trim(),
+            phone: String(phone).trim(),
+            status: 'SUSPENDU', 
+            plan: 'BUSINESS',
+            specialite: details?.type || 'resto',
+            pin: Math.floor(1000 + Math.random() * 9000).toString(),
+            maxScreens: 5,
+            maxStaff: 999
+        });
+
+        console.log(`✅ Nouvelle candidature enregistrée en base : ${restaurant} (${safeID})`);
+
+        // 📧 ENVOI DE L'EMAIL SÉCURISÉ (Isolé pour éviter l'erreur 500)
+        try {
+            const gmailUser = String(process.env.GMAIL_USER || '').trim();
+            const gmailPassword = String(process.env.GMAIL_APP_PASSWORD || '').trim();
+            const alertRecipient = String(process.env.ICHEF_ALERT_EMAIL || 'iche.flavien@ichef.ch').trim();
+
+            if (gmailUser && gmailPassword) {
+                const transporter = nodemailer.createTransport({ 
+                    service: 'gmail', 
+                    auth: { user: gmailUser, pass: gmailPassword } 
+                });
+                
+                await transporter.sendMail({
+                    from: gmailUser,
+                    to: alertRecipient,
+                    subject: `🚨 iCHEF OS - Nouvelle Candidature : ${restaurant}`,
+                    html: `
+                        <div style="font-family: Arial, sans-serif; color: #111;">
+                            <h2 style="color: #d4af37;">Nouvelle demande de déploiement iCHEF OS</h2>
+                            <ul style="font-size: 14px; line-height: 1.6;">
+                                <li><b>Établissement :</b> ${restaurant}</li>
+                                <li><b>ID Système (TenantID) :</b> ${safeID}</li>
+                                <li><b>Téléphone :</b> <a href="tel:${phone}">${phone}</a></li>
+                                <li><b>Email client :</b> <a href="mailto:${email}">${email}</a></li>
+                                <li><b>Secteur :</b> ${details?.type || 'Non spécifié'}</li>
+                            </ul>
+                        </div>
+                    `
+                });
+                console.log('📧 Email de notification envoyé avec succès.');
+            }
+        } catch (emailErr) {
+            console.error('⚠️ Avertissement : Échec de l\'envoi de l\'e-mail (le client est quand même enregistré) :', emailErr.message);
+        }
+
+        return res.status(200).json({ 
+            success: true, 
+            message: "Candidature enregistrée avec succès.",
+            tenantID: safeID
+        });
+
+    } catch (error) {
+        console.error("🚨 Erreur critique /api/nouvelle-demande-demo :", error);
+        return res.status(500).json({ 
+            success: false, 
+            error: "Erreur interne lors du traitement de votre candidature." 
+        });
+    }
+});
 // ==========================================
 // 💳 PAIEMENT DES COMMANDES (STRIPE CONNECT)
 // ==========================================
 app.post('/api/payments/stripe/checkout', async (req, res) => {
     try {
-        const { paymentRequestId, tableId, amount, currency, tenantID, successUrl, cancelUrl } = req.body;
-        const safeID = cleanString(tenantID);
-        
-        const tenant = await Tenant.findOne({ tenantID: safeID });
-        if (!tenant) return res.status(404).json({ success: false, error: "Restaurant introuvable" });
-
-        // 🚨 VÉRIFICATION STRIPE CONNECT
-        // L'ID du compte Stripe du restaurant doit être enregistré dans sa configuration
-        const stripeAccountId = tenant.config?.stripeAccountId;
-        if (!stripeAccountId) {
-            return res.status(400).json({ success: false, error: "Le compte Stripe du restaurant n'est pas configuré." });
+        if (!stripe) {
+            return res.status(503).json({
+                success: false,
+                error: 'Stripe n’est pas configuré sur le serveur.'
+            });
         }
 
-        // On enregistre la demande comme "EN ATTENTE"
-        activeStripePayments.set(paymentRequestId, 'PENDING');
+        const {
+            paymentRequestId,
+            tableId,
+            amount,
+            currency,
+            tenantID,
+            successUrl,
+            cancelUrl
+        } = req.body || {};
 
-        // Création de la session de paiement
+        const safeID = cleanString(tenantID);
+        const requestId = String(paymentRequestId || '').trim();
+        const safeTableId = String(tableId || '').trim();
+        const safeAmount = Number(amount || 0);
+
+        if (!safeID || !requestId || !safeTableId || !(safeAmount > 0)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Demande de paiement incomplète.'
+            });
+        }
+
+        const tenant = await Tenant.findOne({ tenantID: safeID }).lean();
+        if (!tenant) {
+            return res.status(404).json({
+                success: false,
+                error: 'Restaurant introuvable'
+            });
+        }
+
+        const stripeAccountId = tenant.config?.stripeAccountId;
+        if (!stripeAccountId) {
+            return res.status(400).json({
+                success: false,
+                error: 'Le compte Stripe du restaurant n’est pas configuré.'
+            });
+        }
+
+        const existing = await PaymentRequest.findOne({
+            tenantID: safeID,
+            paymentRequestId: requestId
+        }).lean();
+
+        if (existing?.status === 'PAID') {
+            return res.json({
+                success: true,
+                idempotent: true,
+                status: 'PAID',
+                paymentRequestId: requestId
+            });
+        }
+
         const session = await stripe.checkout.sessions.create({
-            payment_method_types: ['card'], // Ajoute 'twint' ici si ton compte Stripe est activé pour la Suisse
+            payment_method_types: ['card'],
             line_items: [{
                 price_data: {
-                    currency: currency || 'chf',
+                    currency: String(currency || 'chf').toLowerCase(),
                     product_data: {
-                        name: `Table ${tableId} - Restaurant ${tenant.clientName || safeID}`,
+                        name: `Table ${safeTableId} - Restaurant ${tenant.clientName || safeID}`
                     },
-                    unit_amount: Math.round(amount * 100), // Stripe attend des centimes
+                    unit_amount: Math.round(safeAmount * 100)
                 },
-                quantity: 1,
+                quantity: 1
             }],
             mode: 'payment',
             success_url: successUrl,
             cancel_url: cancelUrl,
-            client_reference_id: paymentRequestId,
+            client_reference_id: requestId,
             metadata: {
                 type: 'ORDER_PAYMENT',
                 tenantID: safeID,
-                tableId: tableId,
-                paymentRequestId: paymentRequestId
+                tableId: safeTableId,
+                paymentRequestId: requestId
             }
         }, {
-            stripeAccount: stripeAccountId // 👈 STRIPE CONNECT : Redirige les fonds vers le resto !
+            stripeAccount: stripeAccountId
         });
 
-        res.json({ success: true, url: session.url });
+        activeStripePayments.set(requestId, 'PENDING');
+
+        await PaymentRequest.findOneAndUpdate(
+            {
+                tenantID: safeID,
+                paymentRequestId: requestId
+            },
+            {
+                $set: {
+                    tableId: safeTableId,
+                    status: 'PENDING',
+                    amount: safeAmount,
+                    currency: String(currency || 'CHF').toUpperCase(),
+                    stripeSessionId: String(session.id || ''),
+                    stripeAccountId,
+                    updatedAt: new Date(),
+                    metadata: {
+                        successUrl: String(successUrl || ''),
+                        cancelUrl: String(cancelUrl || '')
+                    }
+                },
+                $setOnInsert: {
+                    createdAt: new Date()
+                }
+            },
+            {
+                upsert: true,
+                new: true
+            }
+        );
+
+        return res.json({
+            success: true,
+            url: session.url,
+            paymentRequestId: requestId,
+            status: 'PENDING'
+        });
+
     } catch (error) {
-        console.error("Erreur Stripe Checkout Client:", error);
-        res.status(500).json({ success: false, error: error.message });
+        console.error('Erreur Stripe Checkout Client:', error);
+        return res.status(500).json({
+            success: false,
+            error: error?.message || 'Erreur Stripe.'
+        });
     }
 });
 
-app.get('/api/payments/stripe/status', (req, res) => {
-    const { paymentRequestId } = req.query;
-    const status = activeStripePayments.get(paymentRequestId) || 'PENDING';
-    res.json({ success: true, status });
+app.get('/api/payments/stripe/status', async (req, res) => {
+    const paymentRequestId =
+        String(req.query?.paymentRequestId || '').trim();
+    const tenantID =
+        cleanString(
+            req.query?.tenantID ||
+            req.headers['x-ichef-tenant']
+        );
+
+    if (!paymentRequestId) {
+        return res.status(400).json({
+            success: false,
+            error: 'paymentRequestId manquant.'
+        });
+    }
+
+    try {
+        let stored = null;
+
+        if (tenantID) {
+            stored = await PaymentRequest.findOne({
+                tenantID,
+                paymentRequestId
+            }).lean();
+        } else {
+            stored = await PaymentRequest.findOne({
+                paymentRequestId
+            }).lean();
+        }
+
+        const status =
+            stored?.status ||
+            activeStripePayments.get(paymentRequestId) ||
+            'PENDING';
+
+        return res.json({
+            success: true,
+            status,
+            paymentRequestId
+        });
+    } catch (error) {
+        return res.json({
+            success: true,
+            status:
+                activeStripePayments.get(paymentRequestId) ||
+                'PENDING',
+            paymentRequestId,
+            degraded: true
+        });
+    }
 });
 
 // ==========================================
 // WEBHOOK STRIPE : SÉCURITÉ ANTI-IMPAYÉS & UPSELL 
 // ==========================================
 app.post('/webhook', async (req, res) => {
+    if (!stripe || !process.env.STRIPE_WEBHOOK_SECRET) {
+        return res.status(503).json({
+            received: false,
+            error: 'Stripe webhook non configuré.'
+        });
+    }
+
     const sig = req.headers['stripe-signature'];
     let event;
-    try { 
-        event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET); 
-    } catch (err) { 
-        return res.status(400).send(`Webhook Error: ${err.message}`); 
+    try {
+        event = stripe.webhooks.constructEvent(
+            req.body,
+            sig,
+            process.env.STRIPE_WEBHOOK_SECRET
+        );
+    } catch (err) {
+        return res.status(400).send(`Webhook Error: ${err.message}`);
     }
     
     if (event.type === 'checkout.session.completed') {
@@ -986,10 +1430,39 @@ app.post('/webhook', async (req, res) => {
 
         // 👈 NOUVEAU BLOC : Encaissement d'une commande client au restaurant
         if (session.metadata && session.metadata.type === 'ORDER_PAYMENT') {
-            const reqId = session.metadata.paymentRequestId;
+            const reqId = String(session.metadata.paymentRequestId || '');
+            const safeID = cleanString(session.metadata.tenantID);
+
             activeStripePayments.set(reqId, 'PAID');
+
+            if (reqId && safeID) {
+                await PaymentRequest.findOneAndUpdate(
+                    {
+                        tenantID: safeID,
+                        paymentRequestId: reqId
+                    },
+                    {
+                        $set: {
+                            status: 'PAID',
+                            stripeSessionId: String(session.id || ''),
+                            updatedAt: new Date()
+                        },
+                        $setOnInsert: {
+                            tableId: String(session.metadata.tableId || ''),
+                            amount: Number(session.amount_total || 0) / 100,
+                            currency: String(session.currency || 'CHF').toUpperCase(),
+                            createdAt: new Date()
+                        }
+                    },
+                    {
+                        upsert: true,
+                        new: true
+                    }
+                );
+            }
+
             console.log(`✅ Paiement Stripe Connect validé pour la commande : ${reqId}`);
-            return res.json({received: true});
+            return res.json({ received: true });
         }
 
         // Bloc existant pour tes abonnements iCHEF
@@ -1037,13 +1510,51 @@ app.post('/webhook', async (req, res) => {
     res.json({received: true});
 });
 
-const mongoURI =
-    process.env.MONGO_URI ||
-    "TON_MONGO_URI";
+const mongoURI = String(process.env.MONGO_URI || '').trim();
 
-mongoose.connect(mongoURI)
-    .then(() => console.log('✅ Base de donnees iCHEF Online'))
-    .catch(err => console.error(err.message));
+mongoose.set('bufferCommands', false);
+
+const ICHEF_MONGO_MAX_POOL =
+    Math.max(10, Math.min(100, Number(process.env.MONGO_MAX_POOL_SIZE || 50)));
+const ICHEF_MONGO_MIN_POOL =
+    Math.max(0, Math.min(ICHEF_MONGO_MAX_POOL, Number(process.env.MONGO_MIN_POOL_SIZE || 2)));
+
+if (!mongoURI) {
+    console.error('❌ MONGO_URI manquante : le serveur reste vivant mais /readyz restera en 503.');
+} else {
+    mongoose.connect(mongoURI, {
+        serverSelectionTimeoutMS: 15000,
+        socketTimeoutMS: 60000,
+        waitQueueTimeoutMS: 10000,
+        maxPoolSize: ICHEF_MONGO_MAX_POOL,
+        minPoolSize: ICHEF_MONGO_MIN_POOL,
+        maxIdleTimeMS: 60000,
+        heartbeatFrequencyMS: 10000,
+        retryWrites: true
+    })
+        .then(() => console.log(
+            `✅ Base de données iCHEF Online | pool=${ICHEF_MONGO_MIN_POOL}-${ICHEF_MONGO_MAX_POOL}`
+        ))
+        .catch(err => {
+            console.error('❌ MongoDB connexion initiale :', err.message);
+        });
+}
+
+mongoose.connection.on('connected', () => {
+    console.log('✅ MongoDB connecté.');
+});
+
+mongoose.connection.on('reconnected', () => {
+    console.log('✅ MongoDB reconnecté.');
+});
+
+mongoose.connection.on('disconnected', () => {
+    console.warn('⚠️ MongoDB déconnecté — reconnexion automatique en cours.');
+});
+
+mongoose.connection.on('error', err => {
+    console.error('❌ MongoDB erreur :', err?.message || err);
+});
 
 // ==========================================================
 // 🏢 TENANT / LICENCE
@@ -1106,7 +1617,6 @@ siret: { type: String, default: 'NON RENSEIGNÉ' },
         type: Number,
         default: 999
     },
-
 
     registeredDevices: {
         type: [String],
@@ -1309,7 +1819,6 @@ app.post('/api/security/bootstrap', async (req, res) => {
             await syncTenantScreenLimit(tenant);
 
 
-
         const registeredDevices =
             Array.isArray(tenant.registeredDevices)
                 ? tenant.registeredDevices
@@ -1381,23 +1890,508 @@ const auditLogSchema = new mongoose.Schema({
     previousHash: { type: String, required: true },
     currentHash: { type: String, required: true }  
 });
+auditLogSchema.index({ tenantID: 1, timestamp: 1, _id: 1 });
 const AuditLog = mongoose.model('AuditLog', auditLogSchema);
 
-async function scellerOperation(tenantID, action, entityType, entityId, authorPin, details) {
+
+// ==========================================================
+// 🧾 TRAÇABILITÉ CENTRALE iCHEF — TOUS LES TERMINAUX
+// ==========================================================
+// Objectifs :
+// 1) conserver un historique durable séparé de la table active ;
+// 2) garder un cache AUDIT_MASTER dans AppState pour les écrans iCHEF ;
+// 3) retransmettre immédiatement les nouvelles traces à tous les postes du tenant.
+const ICHEF_AUDIT_MASTER_LIMIT = Math.max(
+    100,
+    Math.min(2000, Number(process.env.ICHEF_AUDIT_MASTER_LIMIT || 600))
+);
+
+const systemHistorySchema = new mongoose.Schema({
+    tenantID: { type: String, required: true, index: true },
+    historyId: { type: String, required: true, index: true },
+    at: { type: Date, default: Date.now, index: true },
+    tableId: { type: String, default: '', index: true },
+    serviceId: { type: String, default: '', index: true },
+    entityType: { type: String, default: 'SYSTEME', index: true },
+    entityId: { type: String, default: '' },
+    action: { type: String, required: true },
+    detail: { type: String, default: '' },
+    operator: { type: String, default: '' },
+    role: { type: String, default: '' },
+    terminal: { type: String, default: '' },
+    deviceId: { type: String, default: '' },
+    source: { type: String, default: 'SERVEUR' },
+    line: { type: Object, default: null },
+    meta: { type: Object, default: {} }
+}, { minimize: false });
+
+systemHistorySchema.index({ tenantID: 1, historyId: 1 }, { unique: true });
+systemHistorySchema.index({ tenantID: 1, tableId: 1, at: -1 });
+
+const SystemHistoryRecord =
+    mongoose.models.SystemHistoryRecord ||
+    mongoose.model('SystemHistoryRecord', systemHistorySchema);
+
+function ichefHistoryId(prefix = 'HIST') {
+    return `${prefix}_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+}
+
+function ichefHistoryServiceId(order, tableId = '') {
+    if (!order || typeof order !== 'object') return '';
+    const explicit = String(
+        order.serviceId ||
+        order.orderSessionId ||
+        order.serviceSessionId ||
+        ''
+    ).trim();
+    if (explicit) return explicit;
+    const created = Number(order.createdAt || order.openedAt || 0);
+    return created ? `LEGACY_${String(tableId || '')}_${created}` : '';
+}
+
+function ichefHistoryItemId(item, index = 0) {
+    if (!item || typeof item !== 'object') return `IDX_${index}`;
+    return String(
+        item.lineId || item.itemId || item.id || item.uuid || item._id ||
+        `${item.name || item.n || item.label || 'ITEM'}_${item.seat || item.guestSeat || item.seatNumber || 0}_${item.createdAt || index}`
+    );
+}
+
+function ichefHistoryItemName(item) {
+    return String(item?.name || item?.n || item?.label || item?.title || 'Article').trim();
+}
+
+function ichefHistoryLineSnapshot(item) {
+    if (!item || typeof item !== 'object') return null;
+    return {
+        lineId: String(item.lineId || item.itemId || item.id || ''),
+        name: ichefHistoryItemName(item),
+        qty: Number(item.qty ?? item.quantity ?? 1) || 1,
+        seat: Number(item.seat ?? item.guestSeat ?? item.seatNumber ?? 0) || 0,
+        cooking: String(item.cooking || item.cuisson || ''),
+        observation: String(item.obs || item.observation || item.note || ''),
+        destination: String(item.dest || item.destination || item.station || ''),
+        status: String(item.status || ''),
+        ready: item.ready === true,
+        served: item.served === true,
+        cancelled: item.cancelled === true
+    };
+}
+
+function ichefHistoryActor(access = {}, body = {}) {
+    const staff = access?.staff && typeof access.staff === 'object' ? access.staff : {};
+    const operator = String(
+        body.operator ||
+        body.waiter ||
+        staff.name ||
+        staff.displayName ||
+        staff.id ||
+        access.role ||
+        staff.role ||
+        staff.dept ||
+        body.terminal ||
+        'SYSTEME'
+    ).trim();
+    const role = String(
+        access.role || staff.role || staff.dept || body.role || ''
+    ).trim();
+    return { operator, role };
+}
+
+function ichefCentralHistoryEntry(data = {}) {
+    const at = data.at || new Date().toISOString();
+    const id = String(data.id || data.historyId || ichefHistoryId('HIST'));
+    return {
+        id,
+        historyId: id,
+        at,
+        tableId: String(data.tableId || ''),
+        serviceId: String(data.serviceId || ''),
+        entityType: String(data.entityType || 'COMMANDE'),
+        entityId: String(data.entityId || data.tableId || ''),
+        action: String(data.action || 'MISE À JOUR'),
+        detail: String(data.detail || ''),
+        by: String(data.by || data.operator || 'SYSTEME'),
+        operator: String(data.operator || data.by || 'SYSTEME'),
+        role: String(data.role || ''),
+        terminal: String(data.terminal || 'INCONNU'),
+        deviceId: String(data.deviceId || ''),
+        source: String(data.source || 'SERVEUR'),
+        line: data.line && typeof data.line === 'object' ? data.line : null,
+        meta: data.meta && typeof data.meta === 'object' ? data.meta : {}
+    };
+}
+
+function ichefBuildCentralHistoryEntries(before, after, context = {}) {
+    const tableId = String(context.tableId || '');
+    if (!tableId || tableId === 'AUDIT_MASTER') return [];
+
+    const entries = [];
+    const serviceId = ichefHistoryServiceId(after || before, tableId);
+    const base = {
+        tableId,
+        serviceId,
+        operator: context.operator || 'SYSTEME',
+        by: context.operator || 'SYSTEME',
+        role: context.role || '',
+        terminal: context.terminal || 'INCONNU',
+        deviceId: context.deviceId || '',
+        source: context.source || 'update-order',
+        entityType: Array.isArray(after?.items) || Array.isArray(before?.items) ? 'COMMANDE' : 'ETAT',
+        entityId: tableId
+    };
+    const push = (action, detail = '', line = null, meta = {}) => {
+        entries.push(ichefCentralHistoryEntry({ ...base, action, detail, line, meta }));
+    };
+
+    if (after === null || after === undefined) {
+        push(
+            Array.isArray(before?.items) ? 'TABLE LIBÉRÉE / COMMANDE SUPPRIMÉE' : `SUPPRESSION ${tableId}`,
+            context.auditReason || ''
+        );
+        return entries;
+    }
+
+    if (!before || typeof before !== 'object') {
+        if (Array.isArray(after?.items)) {
+            push('TABLE / SERVICE OUVERT', context.auditReason || '');
+        } else {
+            push(context.auditReason || `CRÉATION / MISE À JOUR ${tableId}`);
+        }
+    }
+
+    const beforeItems = Array.isArray(before?.items) ? before.items : [];
+    const afterItems = Array.isArray(after?.items) ? after.items : [];
+
+    if (beforeItems.length || afterItems.length) {
+        const oldMap = new Map(beforeItems.map((item, idx) => [ichefHistoryItemId(item, idx), item]));
+        const newMap = new Map(afterItems.map((item, idx) => [ichefHistoryItemId(item, idx), item]));
+
+        for (const [key, item] of newMap.entries()) {
+            const previous = oldMap.get(key);
+            const line = ichefHistoryLineSnapshot(item);
+            const name = ichefHistoryItemName(item);
+
+            if (!previous) {
+                push(`AJOUT · ${name}`, context.auditReason || '', line);
+                continue;
+            }
+
+            const prevReady = previous.ready === true || String(previous.status || '').toUpperCase() === 'READY' || String(previous.status || '').toUpperCase() === 'PRÊT';
+            const nextReady = item.ready === true || String(item.status || '').toUpperCase() === 'READY' || String(item.status || '').toUpperCase() === 'PRÊT';
+            const prevServed = previous.served === true || String(previous.status || '').toUpperCase() === 'SERVED' || String(previous.status || '').toUpperCase() === 'SERVI';
+            const nextServed = item.served === true || String(item.status || '').toUpperCase() === 'SERVED' || String(item.status || '').toUpperCase() === 'SERVI';
+            const prevSent = previous.isSent === true || previous.fired === true || Boolean(previous.sentAt);
+            const nextSent = item.isSent === true || item.fired === true || Boolean(item.sentAt);
+            const prevCancelled = previous.cancelled === true;
+            const nextCancelled = item.cancelled === true;
+
+            if (!prevSent && nextSent) push(`ENVOYÉ · ${name}`, context.auditReason || '', line);
+            if (!prevReady && nextReady) push(`PRÊT · ${name}`, context.auditReason || '', line);
+            if (!prevServed && nextServed) push(`SERVICE EFFECTUÉ · ${name}`, context.auditReason || '', line);
+            if (!prevCancelled && nextCancelled) push(`ANNULÉ · ${name}`, context.auditReason || String(item.cancelReason || item.cancellationReason || ''), line);
+
+            const prevCooking = String(previous.cooking || previous.cuisson || '');
+            const nextCooking = String(item.cooking || item.cuisson || '');
+            if (prevCooking !== nextCooking && nextCooking) {
+                push(`CUISSON MODIFIÉE · ${name}`, `${prevCooking || '—'} → ${nextCooking}`, line);
+            }
+
+            const prevObs = String(previous.obs || previous.observation || previous.note || '');
+            const nextObs = String(item.obs || item.observation || item.note || '');
+            if (prevObs !== nextObs) {
+                push(`OBSERVATION MODIFIÉE · ${name}`, nextObs || 'Observation supprimée', line);
+            }
+
+            const prevQty = Number(previous.qty ?? previous.quantity ?? 1) || 1;
+            const nextQty = Number(item.qty ?? item.quantity ?? 1) || 1;
+            if (prevQty !== nextQty) {
+                push(`QUANTITÉ MODIFIÉE · ${name}`, `${prevQty} → ${nextQty}`, line);
+            }
+        }
+
+        for (const [key, item] of oldMap.entries()) {
+            if (!newMap.has(key)) {
+                push(`ARTICLE RETIRÉ · ${ichefHistoryItemName(item)}`, context.auditReason || '', ichefHistoryLineSnapshot(item));
+            }
+        }
+    }
+
+    const beforePax = Number(before?.pax ?? before?.guests ?? 0) || 0;
+    const afterPax = Number(after?.pax ?? after?.guests ?? 0) || 0;
+    if (before && beforePax !== afterPax) push('PAX MODIFIÉ', `${beforePax} → ${afterPax}`);
+
+    for (const field of ['status', 'paymentStatus', 'fiscalStatus']) {
+        const a = String(before?.[field] || '');
+        const b = String(after?.[field] || '');
+        if (before && a !== b && b) push(`${field.toUpperCase()} · ${b}`, a ? `${a} → ${b}` : b);
+    }
+
+    if (!entries.length && context.auditReason) {
+        push(context.auditReason);
+    }
+    if (!entries.length) {
+        push(`MISE À JOUR ${tableId}`);
+    }
+
+    // Une seule écriture client ne doit pas exploser la taille du journal.
+    return entries.slice(0, 40);
+}
+
+function ichefAuditMasterArray(raw) {
+    if (Array.isArray(raw)) return raw;
+    if (Array.isArray(raw?.data)) return raw.data;
+    return [];
+}
+
+function ichefBuildAuditMasterNode(raw, entries = []) {
+    const current = ichefAuditMasterArray(raw);
+    const merged = [...(Array.isArray(entries) ? entries : []), ...current];
+    const seen = new Set();
+    const unique = [];
+    for (const event of merged) {
+        if (!event || typeof event !== 'object') continue;
+        const id = String(event.id || event.historyId || '');
+        const sig = id || [event.at, event.tableId, event.action, event.deviceId].map(v => String(v || '')).join('|');
+        if (seen.has(sig)) continue;
+        seen.add(sig);
+        unique.push(event);
+        if (unique.length >= ICHEF_AUDIT_MASTER_LIMIT) break;
+    }
+    return {
+        version: 2,
+        updatedAt: new Date().toISOString(),
+        data: unique
+    };
+}
+
+function ichefAppendAuditMasterInMemory(state, entries = []) {
+    if (!state || !Array.isArray(entries) || !entries.length) return;
+    if (!state.activeOrders || typeof state.activeOrders !== 'object') state.activeOrders = {};
+    state.activeOrders.AUDIT_MASTER =
+        ichefBuildAuditMasterNode(state.activeOrders.AUDIT_MASTER, entries);
+}
+
+async function ichefArchiveCentralHistory(tenantID, entries = []) {
+    const safeID = cleanString(tenantID);
+    if (!safeID || !Array.isArray(entries) || !entries.length) return;
+    const ops = entries.map(event => ({
+        updateOne: {
+            filter: { tenantID: safeID, historyId: String(event.historyId || event.id) },
+            update: {
+                $setOnInsert: {
+                    tenantID: safeID,
+                    historyId: String(event.historyId || event.id),
+                    at: new Date(event.at || Date.now()),
+                    tableId: String(event.tableId || ''),
+                    serviceId: String(event.serviceId || ''),
+                    entityType: String(event.entityType || 'SYSTEME'),
+                    entityId: String(event.entityId || ''),
+                    action: String(event.action || 'MISE À JOUR'),
+                    detail: String(event.detail || ''),
+                    operator: String(event.operator || event.by || ''),
+                    role: String(event.role || ''),
+                    terminal: String(event.terminal || ''),
+                    deviceId: String(event.deviceId || ''),
+                    source: String(event.source || 'SERVEUR'),
+                    line: event.line && typeof event.line === 'object' ? event.line : null,
+                    meta: event.meta && typeof event.meta === 'object' ? event.meta : {}
+                }
+            },
+            upsert: true
+        }
+    }));
     try {
-        const safeID = cleanString(tenantID);
-        const lastLog = await AuditLog.findOne({ tenantID: safeID }).sort({ timestamp: -1 });
-        const previousHash = lastLog ? lastLog.currentHash : 'GENESIS_BLOCK_0000000000000000';
+        await SystemHistoryRecord.bulkWrite(ops, { ordered: false });
+    } catch (error) {
+        if (error?.code !== 11000) {
+            console.warn('[iCHEF HISTORIQUE CENTRAL] archivage :', error?.message || error);
+        }
+    }
+}
 
-        const dataString = JSON.stringify({ tenantID: safeID, action, entityType, entityId, authorPin, details, previousHash });
-        const currentHash = crypto.createHash('sha256').update(dataString).digest('hex');
+function ichefHistoryEntryFromSealedAudit(payload = {}, created = null) {
+    const details = payload.details && typeof payload.details === 'object' ? payload.details : {};
+    const tableId = String(
+        details.tableId || details.table || details.orderSnapshot?.tableId ||
+        (String(payload.entityType || '').toUpperCase().includes('TABLE') ? payload.entityId : '') || ''
+    );
+    const ticket = String(details.ticketNumber || details.originalTicketNumber || details.orderSnapshot?.ticketNumber || '');
+    const actor = String(
+        details.operator || details.waiter || details.staffName || details.actor?.name || details.actor?.role ||
+        (String(payload.authorPin || '').match(/^\d{4,12}$/) ? '' : payload.authorPin) ||
+        'SYSTEME'
+    );
+    return ichefCentralHistoryEntry({
+        id: created?._id ? `AUDIT_${String(created._id)}` : ichefHistoryId('AUDIT'),
+        at: created?.timestamp || new Date().toISOString(),
+        tableId,
+        serviceId: String(details.serviceId || details.orderSnapshot?.serviceId || ''),
+        entityType: String(payload.entityType || 'SYSTEME'),
+        entityId: String(payload.entityId || ''),
+        action: String(payload.action || 'AUDIT'),
+        detail: ticket ? `Ticket ${ticket}` : String(details.reason || details.auditReason || details.type || ''),
+        operator: actor,
+        by: actor,
+        role: String(details.role || details.dept || ''),
+        terminal: String(details.terminal || details.source || 'SERVEUR'),
+        deviceId: String(details.deviceId || ''),
+        source: 'AUDIT_CRYPTO',
+        meta: {
+            ticketNumber: ticket,
+            fiscal: String(payload.entityType || '').toUpperCase().includes('PAIEMENT')
+        }
+    });
+}
 
-        await AuditLog.create({
-            tenantID: safeID, action, entityType, entityId, authorPin, details, previousHash, currentHash
-        });
-        
-        console.log(`🔒 Opération scellée [${action}] pour ${safeID} (Hash: ${currentHash.substring(0,8)}...)`);
-    } catch (error) { console.error("🚨 ERREUR CRITIQUE DE SCELLÉ CRYPTOGRAPHIQUE :", error); }
+async function ichefMirrorCentralHistoryToState(tenantID, entries = []) {
+    const safeID = cleanString(tenantID);
+    if (!safeID || !Array.isArray(entries) || !entries.length) return null;
+    try {
+        const before = await AppState.findOne(
+            { tenantID: safeID },
+            { 'activeOrders.AUDIT_MASTER': 1 }
+        ).lean();
+        const auditNode = ichefBuildAuditMasterNode(
+            before?.activeOrders?.AUDIT_MASTER,
+            entries
+        );
+        const state = await AppState.findOneAndUpdate(
+            { tenantID: safeID },
+            { $set: { 'activeOrders.AUDIT_MASTER': auditNode } },
+            { upsert: true, new: true, setDefaultsOnInsert: true }
+        ).lean();
+
+        await ichefArchiveCentralHistory(safeID, entries);
+
+        if (state) {
+            io.to(safeID).emit('auditUpdated', {
+                tenantID: safeID,
+                entries,
+                timestamp: new Date().toISOString()
+            });
+
+            // Certaines routes continuent leur traitement après scellerOperation() et peuvent
+            // réémettre un ancien objet state. Ce rappel différé relit MongoDB afin que
+            // tous les terminaux finissent toujours avec l'état réellement persistant.
+            const timer = setTimeout(async () => {
+                try {
+                    const fresh = await AppState.findOne({ tenantID: safeID }).lean();
+                    if (!fresh) return;
+                    io.to(safeID).emit('updateState', fresh);
+                    io.to(safeID).emit('server-state-changed', {
+                        tenantID: safeID,
+                        tableId: String(entries[0]?.tableId || ''),
+                        source: 'audit-central',
+                        persisted: true,
+                        timestamp: new Date().toISOString()
+                    });
+                } catch (refreshError) {
+                    console.warn('[iCHEF HISTORIQUE CENTRAL] rediffusion :', refreshError?.message || refreshError);
+                }
+            }, 50);
+            timer.unref?.();
+        }
+        return state;
+    } catch (error) {
+        console.warn('[iCHEF HISTORIQUE CENTRAL] miroir AppState :', error?.message || error);
+        return null;
+    }
+}
+
+const ichefAuditWriteQueues = new Map();
+
+function ichefSerializeAuditWrite(tenantID, task) {
+    const key = String(tenantID || '');
+    const previous = ichefAuditWriteQueues.get(key) || Promise.resolve();
+
+    const current = previous
+        .catch(() => undefined)
+        .then(task);
+
+    ichefAuditWriteQueues.set(key, current);
+
+    current.finally(() => {
+        if (ichefAuditWriteQueues.get(key) === current) {
+            ichefAuditWriteQueues.delete(key);
+        }
+    }).catch(() => {});
+
+    return current;
+}
+
+async function scellerOperation(
+    tenantID,
+    action,
+    entityType,
+    entityId,
+    authorPin,
+    details
+) {
+    const safeID = cleanString(tenantID);
+
+    if (!safeID) return null;
+
+    return ichefSerializeAuditWrite(
+        safeID,
+        async () => {
+            try {
+                const lastLog = await AuditLog
+                    .findOne({ tenantID: safeID })
+                    .sort({ timestamp: -1, _id: -1 })
+                    .lean();
+
+                const previousHash =
+                    lastLog?.currentHash ||
+                    'GENESIS_BLOCK_0000000000000000';
+
+                const payload = {
+                    tenantID: safeID,
+                    action: String(action || 'EVENT'),
+                    entityType: String(entityType || 'SYSTEM'),
+                    entityId: String(entityId || ichefFiscalId('AUDIT')),
+                    authorPin: String(authorPin || 'SYSTEM'),
+                    details:
+                        details && typeof details === 'object'
+                            ? details
+                            : { value: details },
+                    previousHash
+                };
+
+                const currentHash = crypto
+                    .createHash('sha256')
+                    .update(JSON.stringify(payload))
+                    .digest('hex');
+
+                const created = await AuditLog.create({
+                    ...payload,
+                    currentHash
+                });
+
+                // Chaque opération scellée est aussi versée au journal central partagé.
+                // Aucun PIN numérique n'est recopié dans le journal lisible par les écrans.
+                try {
+                    const centralEntry = ichefHistoryEntryFromSealedAudit(payload, created);
+                    await ichefMirrorCentralHistoryToState(safeID, [centralEntry]);
+                } catch (historyError) {
+                    console.warn('[iCHEF HISTORIQUE CENTRAL] audit miroir non bloquant :', historyError?.message || historyError);
+                }
+
+                console.log(
+                    `🔒 Opération scellée [${payload.action}] pour ${safeID}` +
+                    ` (Hash: ${currentHash.substring(0, 8)}...)`
+                );
+
+                return created;
+            } catch (error) {
+                console.error(
+                    '🚨 ERREUR CRITIQUE DE SCELLÉ CRYPTOGRAPHIQUE :',
+                    error
+                );
+                return null;
+            }
+        }
+    );
 }
 
 app.get('/api/export-preuves-legales', async (req, res) => {
@@ -1408,7 +2402,6 @@ app.get('/api/export-preuves-legales', async (req, res) => {
         // =========================================================
         // 1. SÉCURITÉ
         // =========================================================
-
         const tenant = await Tenant.findOne({ tenantID: safeID });
 
         if (!tenant || String(tenant.pin) !== String(masterPin)) {
@@ -1509,7 +2502,6 @@ app.get('/api/export-preuves-legales', async (req, res) => {
                 payment?.orderSnapshot?.ticketNumber ||
                 payment?.snapshot?.ticketNumber ||
                 ""
-
             ).trim();
         }
 
@@ -1610,7 +2602,6 @@ app.get('/api/export-preuves-legales', async (req, res) => {
 
         res.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
         res.set("Pragma", "no-cache");
-
         res.set("Expires", "0");
 
         // ---------------------------------------------------------
@@ -1711,7 +2702,6 @@ app.get('/api/export-preuves-legales', async (req, res) => {
 
                 alerteFalsification:
                     isChainValid
-
                         ? "Aucune altération détectée"
                         : `ATTENTION : chaîne brisée à l'index ${brokenAtIndex}`,
 
@@ -1814,7 +2804,6 @@ app.get('/api/export-preuves-legales', async (req, res) => {
                     lastTableHash,
 
 
-
                 // ---------------------------------------------
                 // HISTOIRE COMPLÈTE
                 // ---------------------------------------------
@@ -1913,7 +2902,6 @@ app.get('/api/export-preuves-legales', async (req, res) => {
                     : undefined
 
         });
-
     }
 });
 // ==========================================
@@ -2017,60 +3005,6 @@ const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 // ==========================================
 // 🧠 IA DIRECTEUR OPÉRATIONNEL & FINANCIER (VISION 360°)
 // ==========================================
-app.post('/api/ai-executive-report', async (req, res) => {
-    const { tenantID, currentStock, recentSales, financialStats } = req.body;
-    const safeID = cleanString(tenantID);
-
-    try {
-        let state = await AppState.findOne({ tenantID: safeID });
-        let history = state?.activeOrders?.TRAFFIC_HISTORY?.data || [];
-        
-        const prompt = `Tu es l'IA "Directeur Financier et Supply Chain" d'iCHEF OS.
-        Analyse les données du restaurant suivantes :
-        - Ventes récentes : ${JSON.stringify(recentSales || history.slice(0, 30))}
-        - Stocks actuels : ${JSON.stringify(currentStock || 'Non spécifié')}
-        - Chiffres financiers : ${JSON.stringify(financialStats || 'Non spécifié')}
-
-        Ta mission est de fournir un rapport exécutif ultra-précis. 
-        RÉPONDS UNIQUEMENT AVEC CE JSON STRICT (SANS AUCUN TEXTE AUTOUR, AUCUNE BALISE MARKDOWN) :
-        {
-            "previsionVentes": "Explication courte.",
-            "alertesRupture": ["Produit A", "Produit B"],
-            "commandesFournisseurs": [
-                { "fournisseur": "Nom", "articles": ["10kg Tomates"] }
-            ],
-            "detectionAnomalies": "Explication courte.",
-            "recommandationMenu": ["Plat X"],
-            "analyseMarge": "Explication claire."
-        }`;
-
-const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-        const result = await model.generateContent(prompt);
-        let responseText = result.response.text();
-        
-        // --- LE NETTOYAGE INDESTRUCTIBLE ---
-        // 1. On enlève les balises markdown que l'IA rajoute souvent
-        responseText = responseText.replace(/```json/gi, "").replace(/```/g, "");
-        // 2. On enlève les espaces vides au début et à la fin
-        responseText = responseText.trim();
-        // 3. On repère la vraie première et dernière accolade du JSON
-        const firstBrace = responseText.indexOf('{');
-        const lastBrace = responseText.lastIndexOf('}');
-        
-        // 4. Si on a trouvé un JSON, on découpe exactement à cet endroit
-        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace >= firstBrace) {
-            responseText = responseText.substring(firstBrace, lastBrace + 1);
-        } else {
-            throw new Error("Impossible de trouver un format JSON dans la réponse de l'IA.");
-        }
-        
-        res.json({ success: true, report: JSON.parse(responseText) });
-    } catch (error) {
-        console.error("🚨 Erreur IA Executive Report:", error);
-        res.status(500).json({ success: false, error: "L'analyse IA est momentanément indisponible." });
-    }
-});
-// ==========================================
 // 🎙️ ASSISTANT VOCAL DU DIRECTEUR (CONVERSATION EN DIRECT)
 // ==========================================
 app.post('/api/voice-assistant', async (req, res) => {
@@ -2114,7 +3048,6 @@ app.post('/api/voice-assistant', async (req, res) => {
         res.status(500).json({ success: false, error: "Connexion vocale perdue." });
     }
 });
-
 
 // ==========================================
 // 🔴 ENGINE DE CALCUL DE TEMPS RH INTÉGRÉ
@@ -2215,7 +3148,6 @@ app.post('/api/smart-reservation', async (req, res) => {
         
         🔴 INFO CRITIQUE BRIGADE : Nous avons actuellement ${activeCooks} cuisinier(s) en poste. 
         RÈGLE DE PRODUCTION : 1 cuisinier peut gérer environ 15 couverts par tranche horaire.
-
         
         MISSION :
         1. Si la taille de la table dépasse la capacité de la brigade pour l'heure demandée, TU DOIS REFUSER l'heure initiale.
@@ -2241,22 +3173,9 @@ const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
         
         if (!responseText.startsWith("{")) responseText = responseText.substring(responseText.indexOf("{"));
         const decision = JSON.parse(responseText);
-        
-        if (decision.acceptee && decision.tableAllouee) {
-            const newResa = { 
-                id: 'resa_' + Date.now(), pax: decision.pax, heure: decision.heure, 
-                table: decision.tableAllouee, info: decision.optimisationInfo, timestamp: Date.now() 
-            };
-            
-            await AppState.findOneAndUpdate(
-                { tenantID: safeID },
-                { $push: { "activeOrders.RESERVATIONS_MASTER.data": newResa } },
-                { upsert: true }
-            );
-
-            await scellerOperation(safeID, 'CREATE', 'RESERVATION', newResa.id, 'IA_SYSTEM', newResa);
-        }
-        res.json({ success: true, decision });
+        // Cette route prend uniquement la décision. reservation.html persiste
+        // ensuite UNE réservation normalisée via /update-order : aucun doublon.
+        return res.json({ success: true, decision });
     } catch (error) { 
         console.error("Erreur Smart-Reservation:", error);
         res.status(500).json({ success: false, error: "L'IA du Maître d'Hôtel est momentanément indisponible." }); 
@@ -2267,32 +3186,29 @@ const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 // 📞 DEMANDE DE RAPPEL (VIA GMAIL DIRECT)
 // =========================================================================
 app.post('/api/twilio/call-me', async (req, res) => {
-    const { phone } = req.body;
-    
+    const phone = String(req.body?.phone || '').trim().slice(0, 80);
+    const gmailUser = String(process.env.GMAIL_USER || '').trim();
+    const gmailPassword = String(process.env.GMAIL_APP_PASSWORD || '').trim();
+    const alertRecipient = String(process.env.ICHEF_ALERT_EMAIL || 'iche.flavien@ichef.ch').trim();
+    if (!phone) return res.status(400).json({ success: false, error: 'Numéro manquant.' });
+    if (!gmailUser || !gmailPassword) {
+        return res.status(503).json({ success: false, error: 'Service de rappel email non configuré.' });
+    }
     try {
-        const transporter = nodemailer.createTransport({
-            service: 'gmail',
-            auth: {
-                user: 'flavieniche@gmail.com', // 👈 L'apostrophe est bien fermée ici !
-                pass: 'atebfwhijmgmavcy' // 👈 Ton code Google sans espaces
-            }
+        const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: gmailUser, pass: gmailPassword } });
+        await transporter.sendMail({
+            from: gmailUser,
+            to: alertRecipient,
+            subject: 'iCHEF OS - Demande de rappel',
+            text: `Un prospect demande à être rappelé.
+
+Numéro : ${phone}`
         });
-
-        const mailOptions = {
-            from: 'flavieniche@gmail.com',
-            to: 'iche.flavien@ichef.ch',
-            subject: '🚨 iCHEF OS - RAPPEL URGENT 🚨',
-            text: `Un prospect sur la vitrine demande à être rappelé immédiatement.\n\n📞 Numéro : ${phone}`
-        };
-
-        await transporter.sendMail(mailOptions);
-        
-        console.log(`✅ Alerte de rappel EMAIL envoyée pour le numéro : ${phone}`);
-        res.json({ success: true, message: "Demande traitée avec succès." });
-
+        console.log('✅ Demande de rappel email envoyée.');
+        return res.json({ success: true, message: 'Demande traitée avec succès.' });
     } catch (error) {
-        console.error("❌ Erreur Email Rappel :", error.message);
-        res.status(500).json({ success: false, error: "Erreur serveur email" });
+        console.error('❌ Erreur Email Rappel :', error?.message || error);
+        return res.status(500).json({ success: false, error: 'Erreur serveur email' });
     }
 });
 
@@ -2316,7 +3232,6 @@ app.get('/api/export-blockchain-json', async (req, res) => {
                 break;
             }
         }
-
 
         // FORMATAGE STRICT DGFIP (BOI-TVA-DECLA-30-10-30)
         const certificatCertifie = {
@@ -2417,7 +3332,6 @@ function ichefTerminalAccessKey(value = '') {
     return String(value || '')
         .normalize('NFD')
         .replace(/[\u0300-\u036f]/g, '')
-
         .toUpperCase()
         .replace(/[\s\-/]+/g, '_');
 }
@@ -2518,7 +3432,6 @@ async function ichefCheckServiceTerminalAccess({
             : [];
 
     const staff =
-
         staffAccess.find(s =>
             String(s?.pin || '').trim() ===
             submittedPin
@@ -2619,7 +3532,6 @@ app.post('/api/verify-pin', async (req, res) => {
                 success: false,
                 error: "Démonstration expirée (limite de 24h atteinte)."
             });
-
         }
 
         if (tenant.status === 'SUSPENDU') {
@@ -2720,7 +3632,6 @@ app.post('/api/verify-pin', async (req, res) => {
                 tenant.registeredDevices.length >=
                 screenLimit
             ) {
-
                 return res.status(403).json({
                     success: false,
                     error:
@@ -2921,7 +3832,6 @@ function ichefRhSafeNumber(
 
     return Number.isFinite(n)
         ? n
-
         : fallback;
 }
 
@@ -3122,7 +4032,6 @@ function ichefRhBuildWorkedTimesheets(
         if (
             !staffSheet.days[
                 dayKey
-
             ]
         ) {
 
@@ -3223,7 +4132,6 @@ function ichefRhBuildWorkedTimesheets(
                     openEntries.get(
                         staffKey
                     );
-
 
 
                 const previousParts =
@@ -3425,7 +4333,6 @@ function ichefRhBuildWorkedTimesheets(
                     code:
                         'LONG_SHIFT',
 
-
                     label:
                         'Durée de présence supérieure à 16 heures'
                 });
@@ -3525,7 +4432,6 @@ function ichefRhBuildWorkedTimesheets(
 
     for (
         const [
-
             monthKey,
             monthNode
         ]
@@ -3628,7 +4534,6 @@ function ichefRhBuildWorkedTimesheets(
                         ] || {};
 
 
-
                 // Correction manuelle existante
                 if (
                     previousDay
@@ -3727,7 +4632,6 @@ function ichefRhBuildWorkedTimesheets(
                         .totals
                         .validatedDays++;
                 }
-
             }
 
 
@@ -3928,7 +4832,6 @@ app.post(
 
                     tenantID:
                         safeID
-
                 });
 
 
@@ -4029,7 +4932,6 @@ app.post(
                         .PUNCHES_MASTER
                         .data
                         .slice()
-
                     : [];
 
 
@@ -4130,7 +5032,6 @@ app.post(
                     ).toISOString(),
 
                 deviceId:
-
                     String(
                         deviceId || ''
                     )
@@ -4144,18 +5045,12 @@ app.post(
                     'RH_POINTEUSE',
 
                 photo:
-                    (
-                        typeof photo ===
-                            'string' &&
-                        photo.startsWith(
-                            'data:image/'
-                        )
-                    )
-                        ? photo.slice(
-                            0,
-                            500000
-                        )
-                        : ''
+                    (typeof photo === 'string' && photo.startsWith('data:image/') && photo.length <= 700000)
+                        ? photo
+                        : '',
+
+                photoRejectedTooLarge:
+                    Boolean(typeof photo === 'string' && photo.startsWith('data:image/') && photo.length > 700000)
             };
 
 
@@ -4168,10 +5063,12 @@ app.post(
             // 11. CONSERVER L'HISTORIQUE
             // =================================================
 
-            const safePunches =
-                punches.slice(
-                    -50000
-                );
+            const punchWindow = punches.slice(-2500);
+            const safePunches = punchWindow.map((item, index) => {
+                const keepPhoto = index >= punchWindow.length - 12;
+                if (keepPhoto || !item?.photo) return item;
+                return { ...item, photo: '', photoArchived: true };
+            });
 
 
             state
@@ -4231,7 +5128,6 @@ app.post(
                 staffAccess.findIndex(
                     s =>
                         String(
-
                             s?.id
                         ) ===
                         String(
@@ -4292,6 +5188,27 @@ app.post(
 
             await state.save();
 
+            try {
+                const archiveDetails = { ...punch };
+                delete archiveDetails.photo;
+                await RhPunchRecord.updateOne(
+                    { tenantID: safeID, punchId: punch.id },
+                    { $setOnInsert: {
+                        tenantID: safeID,
+                        punchId: punch.id,
+                        staffId: String(punch.staffId),
+                        timestamp: Number(punch.timestamp),
+                        type: punch.type,
+                        photo: punch.photo || '',
+                        details: archiveDetails,
+                        createdAt: new Date()
+                    } },
+                    { upsert: true }
+                );
+            } catch (archiveError) {
+                console.warn('[iCHEF RH] archive pointage non bloquante :', archiveError?.message || archiveError);
+            }
+
 
             // =================================================
             // ACCÈS SERVICE ON / OFF EN TEMPS RÉEL
@@ -4332,7 +5249,6 @@ app.post(
             try {
 
                 await scellerOperation(
-
 
                     safeID,
 
@@ -4433,7 +5349,6 @@ app.post(
                 .to(
                     safeID
                 )
-
                 .emit(
 
                     'updateState',
@@ -4502,14 +5417,26 @@ console.log(
 // MASTER CONTROL API (EMPIRE SUPER ADMIN)
 // ==========================================
 app.post('/api/get-all-tenants-admin', async (req, res) => {
-    if (req.body.masterKey !== ADMIN_PASS) return res.status(401).json({ success: false, error: "Acces Refuse." });
+    // 🚨 1. VÉRIFICATION DE LA CLÉ MASTER SÉCURISÉE VIA VARIABLE D'ENVIRONNEMENT
+    const validKey = process.env.MASTER_KEY || "Empire2026";
+    if (req.body.masterKey !== validKey) {
+        console.warn("⚠️ Tentative d'accès non autorisée à la base Master.");
+        return res.status(401).json({ success: false, error: "Acces Refuse." });
+    }
+
     try {
         const tenantsData = await Tenant.find({});
         const formattedTenants = tenantsData.map(t => ({
-            id: t.tenantID, name: t.clientName || "Sans Nom", 
-            email: t.email || "Non renseigné", phone: t.phone || "Non renseigné",
-            pack: t.plan, specialite: t.specialite, pin: t.pin,
-            maxScreens: t.maxScreens, maxStaff: t.maxStaff,
+            id: t.tenantID, 
+            name: t.clientName || "Sans Nom", 
+            email: t.email || "Non renseigné", 
+            phone: t.phone || "Non renseigné",
+            pack: t.plan, 
+            specialite: t.specialite, 
+            pin: t.pin,
+            addons: t.addons || [], // Récupération des modules cochés
+            maxScreens: t.maxScreens, 
+            maxStaff: t.maxStaff,
             activeScreens: t.registeredDevices ? t.registeredDevices.length : 0, 
             status: t.status
         }));
@@ -4518,7 +5445,13 @@ app.post('/api/get-all-tenants-admin', async (req, res) => {
 });
 
 app.post('/api/admin-action', async (req, res) => {
-    if (req.body.masterKey !== ADMIN_PASS) return res.status(401).json({ success: false, error: "Acces Refuse." });
+    // 🚨 2. VÉRIFICATION DE LA CLÉ POUR BLOQUER LES ATTAQUES DE MODIFICATION
+    const validKey = process.env.MASTER_KEY || "Empire2026";
+    if (req.body.masterKey !== validKey) {
+        console.warn(`⚠️ Action d'administration bloquée (Clé invalide)`);
+        return res.status(401).json({ success: false, error: "Acces Refuse." });
+    }
+
     try {
         const { tenantID, action, newPlan, manualScreens, manualPin, manualMaxStaff, maxScreens, addons } = req.body;
         const safeID = cleanString(tenantID);
@@ -4534,7 +5467,6 @@ app.post('/api/admin-action', async (req, res) => {
         }
         else if (action === 'set_addons' && Array.isArray(addons)) {
             await Tenant.findOneAndUpdate({ tenantID: safeID }, { addons: addons });
-
         }
         else if (action === 'set_plan' && newPlan) { 
             let limit = 1; let staffLimit = 1;
@@ -4556,7 +5488,10 @@ app.post('/api/admin-action', async (req, res) => {
         else if (action === 'activate') {
             await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'ACTIF', $unset: { demoExpiration: "" } });
         }
-        else if (action === 'delete') { await Tenant.findOneAndDelete({ tenantID: safeID }); await AppState.findOneAndDelete({ tenantID: safeID }); }
+        else if (action === 'delete') { 
+            await Tenant.findOneAndDelete({ tenantID: safeID }); 
+            await AppState.findOneAndDelete({ tenantID: safeID }); 
+        }
         
         res.json({ success: true });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
@@ -4602,40 +5537,264 @@ function normalizeMenuDepartment(value) {
 
     return MENU_SYNC_KEYS[department] ? department : null;
 }
+// ==========================================================
+// 🔌 SOCKET.IO — UNE SESSION LOGIQUE PAR ÉTABLISSEMENT / APPAREIL / ÉCRAN
+// ==========================================================
+const ichefActiveLogicalSockets = new Map();
+
+function ichefSocketPageName(socket, payload = {}) {
+    const auth = socket?.handshake?.auth || {};
+    const query = socket?.handshake?.query || {};
+
+    let raw =
+        payload?.page ||
+        payload?.module ||
+        payload?.terminal ||
+        auth.page ||
+        auth.module ||
+        auth.terminal ||
+        query.page ||
+        query.module ||
+        query.terminal ||
+        '';
+
+    if (!raw) {
+        try {
+            const ref = String(socket?.handshake?.headers?.referer || '');
+            if (ref) {
+                const pathname = new URL(ref).pathname;
+                raw = pathname.split('/').pop() || '';
+            }
+        } catch (_) {}
+    }
+
+    return String(raw || 'GENERIC')
+        .replace(/\.html?$/i, '')
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9_-]+/g, '_')
+        .slice(0, 80) || 'GENERIC';
+}
+
+function ichefSocketLogicalKey(tenantID, deviceId, page) {
+    const tenant = cleanString(tenantID);
+    const device = String(deviceId || '').trim();
+    const screen = String(page || 'GENERIC').trim();
+
+    if (!tenant || !device) return '';
+    return `${tenant}::${device}::${screen}`;
+}
+
 // 🔥 LE SEUL ET UNIQUE BLOC io.on('connection') 🔥
 io.on("connection", socket => {
-    console.log(`✅ Nouvelle connexion écran détectée : ${socket.id}`);
+    const connectedAt = Date.now();
+    const currentTransport = () => socket?.conn?.transport?.name || 'unknown';
+
+    console.log(
+        `✅ Nouvelle connexion écran détectée : ${socket.id}` +
+        ` | transport=${currentTransport()}` +
+        ` | recovered=${socket.recovered === true}`
+    );
+
+    socket.conn.on('upgrade', transport => {
+        console.log(
+            `⬆️ Socket ${socket.id} transport amélioré : ${transport?.name || 'unknown'}`
+        );
+    });
+
+    socket.on('error', error => {
+        console.error(
+            `⚠️ Erreur Socket ${socket.id} :`,
+            error?.message || error
+        );
+    });
+
     // CORRECTION CRITIQUE DU BUG [object Object]
     socket.on("joinTenant", async (payload) => {
-        
-        let rawID = typeof payload === 'object' ? payload.tenantID : payload;
-        const safeID = cleanString(rawID);
+        const payloadObject =
+            payload && typeof payload === 'object'
+                ? payload
+                : {};
+
+        const rawID =
+            typeof payload === 'object'
+                ? payload.tenantID
+                : payload;
+
+        const safeID = cleanString(
+            rawID ||
+            socket.handshake?.auth?.tenantID ||
+            socket.handshake?.query?.tenantID
+        );
 
         if (!safeID) return;
 
-        socket.join(safeID);
-        socket.data.tenantID = safeID;
+        const page = ichefSocketPageName(socket, payloadObject);
+        let deviceId =
+            String(
+                payloadObject.deviceId ||
+                socket.handshake?.auth?.deviceId ||
+                socket.handshake?.query?.deviceId ||
+                ''
+            ).trim();
 
-        console.log(`📡 L'écran ${socket.id} est maintenant synchronisé sur le réseau du restaurant : ${safeID}`);
-
-        /*
-         * Envoie immédiatement l’état actuel au nouvel écran.
-         */
-        try {
-            const currentState = await AppState.findOne({
-                tenantID: safeID
-            });
-
-            if (currentState) {
-                socket.emit("updateState", currentState);
-            }
-        } catch (error) {
-            console.error(
-                "Erreur chargement initial Socket.IO :",
-                error.message
+        // Le cockpit Anti-Rush utilise une session signée côté serveur.
+        if (page === 'ANTI_RUSH') {
+            const claims = ichefVerifySignedSession(
+                socket.handshake?.auth?.token,
+                {
+                    tenantID: safeID,
+                    scope: 'ANTI_RUSH'
+                }
             );
+
+            if (!claims) {
+                socket.emit('ichef-auth-error', {
+                    success: false,
+                    error: 'Session Anti-Rush invalide ou expirée.'
+                });
+                return socket.disconnect(true);
+            }
+
+            if (!deviceId) {
+                deviceId = String(claims.deviceId || '').trim();
+            }
         }
 
+        socket.data.tenantID = safeID;
+        socket.data.deviceId = deviceId;
+        socket.data.page = page;
+
+        const logicalKey =
+            ichefSocketLogicalKey(
+                safeID,
+                deviceId,
+                page
+            );
+
+        if (logicalKey) {
+            const previousSocketId =
+                ichefActiveLogicalSockets.get(logicalKey);
+
+            if (
+                previousSocketId &&
+                previousSocketId !== socket.id
+            ) {
+                const previousSocket =
+                    io.sockets.sockets.get(previousSocketId);
+
+                if (previousSocket?.connected) {
+                    previousSocket.emit(
+                        'ichef-session-replaced',
+                        {
+                            tenantID: safeID,
+                            deviceId,
+                            page,
+                            replacedBy: socket.id,
+                            timestamp:
+                                new Date().toISOString()
+                        }
+                    );
+
+                    setTimeout(() => {
+                        try {
+                            if (previousSocket.connected) {
+                                previousSocket.disconnect(true);
+                            }
+                        } catch (_) {}
+                    }, 40);
+                }
+            }
+
+            ichefActiveLogicalSockets.set(
+                logicalKey,
+                socket.id
+            );
+
+            socket.data.logicalKey = logicalKey;
+        }
+
+        if (!socket.rooms.has(safeID)) {
+            await socket.join(safeID);
+        }
+
+        console.log(
+            `📡 L'écran ${socket.id} est synchronisé : ${safeID}` +
+            ` | device=${deviceId || 'non-renseigné'}` +
+            ` | page=${page}` +
+            ` | transport=${currentTransport()}` +
+            ` | recovered=${socket.recovered === true}`
+        );
+
+        socket.emit('tenant-joined', {
+            tenantID: safeID,
+            deviceId,
+            page,
+            socketId: socket.id,
+            recovered: socket.recovered === true,
+            serverTime: new Date().toISOString()
+        });
+
+        if (!socket.recovered) {
+            try {
+                const currentState = await AppState.findOne({
+                    tenantID: safeID
+                });
+
+                if (currentState) {
+                    socket.emit("updateState", currentState);
+                }
+            } catch (error) {
+                console.error(
+                    "Erreur chargement initial Socket.IO :",
+                    error.message
+                );
+            }
+        }
+    });
+
+    socket.on("requestArchitectureState", async (payload = {}) => {
+        try {
+            const safeID = cleanString(
+                payload?.tenantID ||
+                socket.data?.tenantID ||
+                socket.handshake?.auth?.tenantID
+            );
+
+            if (!safeID) return;
+
+            const state = await AppState
+                .findOne({ tenantID: safeID })
+                .lean();
+
+            const raw =
+                state?.activeOrders?.ARCHITECTURE;
+
+            const architecture =
+                raw &&
+                typeof raw === 'object' &&
+                raw.data &&
+                typeof raw.data === 'object'
+                    ? raw.data
+                    : (
+                        raw &&
+                        typeof raw === 'object'
+                            ? raw
+                            : {}
+                    );
+
+            socket.emit("architectureState", {
+                tenantID: safeID,
+                architecture,
+                serverTime: new Date().toISOString()
+            });
+
+        } catch (error) {
+            console.error(
+                '[iCHEF SOCKET] requestArchitectureState :',
+                error?.message || error
+            );
+        }
     });
 
     /*
@@ -4736,7 +5895,6 @@ io.on("connection", socket => {
 
                 /*
                  * Garde temporairement les anciennes clés
-
                  * pour ne pas casser les anciennes pages.
                  */
                 if (config.legacyMenuKey) {
@@ -4837,7 +5995,6 @@ io.on("connection", socket => {
                         success: false,
                         error:
                             "Erreur serveur pendant la synchronisation."
-
                     });
                 }
             }
@@ -4890,8 +6047,56 @@ io.on("connection", socket => {
         }
     );
 
-socket.on("disconnect", () => {
-        console.log(`❌ Écran déconnecté : ${socket.id}`);
+socket.on('orderUpdated', payload => {
+        const safeID = cleanString(payload?.tenantID || socket.data?.tenantID);
+        if (!safeID || safeID !== socket.data?.tenantID) return;
+        io.to(safeID).emit('server-state-changed', {
+            tenantID: safeID,
+            tableId: String(payload?.tableId || ''),
+            source: 'socket-orderUpdated',
+            timestamp: new Date().toISOString()
+        });
+    });
+
+    // Signal admin historique : aucune persistance de données via Socket client.
+    socket.on('updateState', payload => {
+        const safeID = cleanString(payload?.tenantID || socket.data?.tenantID);
+        if (!safeID || safeID !== socket.data?.tenantID) return;
+        socket.to(safeID).emit('server-state-changed', {
+            tenantID: safeID,
+            tableId: String(payload?.tableId || payload?.key || ''),
+            source: 'socket-client-signal',
+            timestamp: new Date().toISOString()
+        });
+    });
+
+socket.on("disconnect", (reason, details) => {
+        const logicalKey = socket.data?.logicalKey;
+
+        if (
+            logicalKey &&
+            ichefActiveLogicalSockets.get(logicalKey) === socket.id
+        ) {
+            ichefActiveLogicalSockets.delete(logicalKey);
+        }
+
+        const durationMs = Date.now() - connectedAt;
+
+        const detailMessage =
+            details?.message ||
+            details?.description ||
+            '';
+
+        console.log(
+            `❌ Écran déconnecté : ${socket.id}` +
+            ` | tenant=${socket.data?.tenantID || 'inconnu'}` +
+            ` | device=${socket.data?.deviceId || 'non-renseigné'}` +
+            ` | page=${socket.data?.page || 'non-renseignée'}` +
+            ` | raison=${reason || 'inconnue'}` +
+            ` | transport=${currentTransport()}` +
+            ` | durée=${Math.round(durationMs / 1000)}s` +
+            (detailMessage ? ` | détail=${detailMessage}` : '')
+        );
     });
 
 }); // 🔥 FERMETURE DÉFINITIVE DU BLOC DES CONNEXIONS ÉCRANS 🔥
@@ -4901,13 +6106,460 @@ socket.on("disconnect", () => {
 app.get('/get-current-state', async (req, res) => {
     try {
         const tenantID = cleanString(req.query.tenantID);
-        const state = await AppState.findOne({ tenantID });
-        res.json(state || { activeOrders: {} });
+        if (!tenantID) return res.status(400).json({ success: false, error: 'tenantID manquant.' });
+        res.setHeader('Cache-Control', 'no-store, max-age=0');
+        const state = await AppState.findOne({ tenantID }).lean();
+        return res.json(state || { tenantID, activeOrders: {} });
     } catch(e) { 
         console.error("Erreur /get-current-state:", e);
-        res.status(500).send('Error'); 
+        return res.status(500).json({ success: false, error: 'État serveur indisponible.' }); 
     }
 });
+
+
+// ==========================================================
+// 📱 QR / NFC — CONFIGURATION CENTRALE ATOMIQUE + CONFIRMATION
+
+
+// ==========================================================
+// 📱 QR / NFC — LECTURE OFFICIELLE / CONFIRMATION MONGODB
+// ==========================================================
+function ichefQrNfcExtractState(state) {
+    const activeOrders = state?.activeOrders || {};
+
+    const settingsNode =
+        activeOrders.SETTINGS_MASTER || { data: {} };
+
+    const settingsData =
+        settingsNode &&
+        typeof settingsNode.data === 'object' &&
+        settingsNode.data !== null
+            ? settingsNode.data
+            : (settingsNode || {});
+
+    const architectureNode =
+        activeOrders.ARCHITECTURE || { data: {} };
+
+    const architectureData =
+        architectureNode &&
+        typeof architectureNode.data === 'object' &&
+        architectureNode.data !== null
+            ? architectureNode.data
+            : (architectureNode || {});
+
+    return {
+        qrNfc:
+            settingsData.qrNfc &&
+            typeof settingsData.qrNfc === 'object'
+                ? settingsData.qrNfc
+                : {},
+
+        schedule:
+            settingsData.schedule &&
+            typeof settingsData.schedule === 'object'
+                ? settingsData.schedule
+                : {},
+
+        zones:
+            Array.isArray(architectureData.zones)
+                ? architectureData.zones
+                : [],
+
+        revision:
+            String(
+                settingsData.qrNfcServerRevision || ''
+            ),
+
+        updatedAt:
+            settingsData.qrNfcServerUpdatedAt || null
+    };
+}
+
+app.get('/api/config/qr-nfc', async (req, res) => {
+    try {
+        const safeID =
+            cleanString(req.query.tenantID);
+
+        if (!safeID) {
+            return res.status(400).json({
+                success: false,
+                persisted: false,
+                error: 'tenantID manquant.'
+            });
+        }
+
+        const state =
+            await AppState
+                .findOne({ tenantID: safeID })
+                .lean();
+
+        const current =
+            ichefQrNfcExtractState(state || {});
+
+        return res.json({
+            success: true,
+            persisted: true,
+            tenantID: safeID,
+            ...current
+        });
+
+    } catch (error) {
+        console.error(
+            '❌ Erreur GET /api/config/qr-nfc :',
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            persisted: false,
+            error:
+                'Impossible de lire la configuration QR/NFC.'
+        });
+    }
+});
+
+// ==========================================================
+// 📱 QR / NFC — ÉCRITURE ROBUSTE, SÉRIALISÉE ET NON DESTRUCTIVE
+// ==========================================================
+const ichefQrNfcWriteQueues = new Map();
+
+function ichefSerializeQrNfcWrite(tenantID, task) {
+    const key = String(tenantID || '');
+    const previous = ichefQrNfcWriteQueues.get(key) || Promise.resolve();
+
+    const current = previous
+        .catch(() => undefined)
+        .then(task);
+
+    ichefQrNfcWriteQueues.set(key, current);
+
+    current.finally(() => {
+        if (ichefQrNfcWriteQueues.get(key) === current) {
+            ichefQrNfcWriteQueues.delete(key);
+        }
+    }).catch(() => {});
+
+    return current;
+}
+
+function ichefQrNfcZoneIdentity(zone) {
+    if (!zone || typeof zone !== 'object') return null;
+
+    const candidates = [
+        ['id', zone.id],
+        ['zoneId', zone.zoneId],
+        ['label', zone.label],
+        ['name', zone.name]
+    ];
+
+    for (const [field, value] of candidates) {
+        const clean = String(value ?? '').trim();
+        if (clean) {
+            // Conserver le type MongoDB original (ex. id numérique).
+            return { field, value };
+        }
+    }
+
+    return null;
+}
+
+function ichefNormalizeZoneMode(value) {
+    const mode = String(value || 'standard').trim().toLowerCase();
+
+    if (mode === 'qr_nfc' || mode === 'bar' || mode === 'standard') {
+        return mode;
+    }
+
+    return 'standard';
+}
+
+app.post('/api/config/qr-nfc', async (req, res) => {
+    const safeID = cleanString(req.query.tenantID || req.body?.tenantID);
+
+    if (!safeID) {
+        return res.status(400).json({
+            success: false,
+            persisted: false,
+            error: 'tenantID manquant.'
+        });
+    }
+
+    try {
+        const result = await ichefSerializeQrNfcWrite(
+            safeID,
+            async () => {
+                const incomingQrNfc =
+                    req.body?.qrNfc &&
+                    typeof req.body.qrNfc === 'object' &&
+                    !Array.isArray(req.body.qrNfc)
+                        ? req.body.qrNfc
+                        : {};
+
+                const incomingSchedule =
+                    req.body?.schedule &&
+                    typeof req.body.schedule === 'object' &&
+                    !Array.isArray(req.body.schedule)
+                        ? req.body.schedule
+                        : {};
+
+                const incomingZones = Array.isArray(req.body?.zones)
+                    ? req.body.zones.slice(0, 500)
+                    : [];
+
+                const now = new Date().toISOString();
+                const revision =
+                    `qrnfc_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+
+                const nextQrNfc = {
+                    ...incomingQrNfc,
+                    source: 'qr_nfc',
+                    mode: 'commande',
+                    serverUpdatedAt: now
+                };
+
+                await AppState.findOneAndUpdate(
+                    { tenantID: safeID },
+                    {
+                        $set: {
+                            'activeOrders.SETTINGS_MASTER.data.qrNfc': nextQrNfc,
+                            'activeOrders.SETTINGS_MASTER.data.schedule': incomingSchedule,
+                            'activeOrders.SETTINGS_MASTER.data.qrNfcServerRevision': revision,
+                            'activeOrders.SETTINGS_MASTER.data.qrNfcServerUpdatedAt': now,
+                            'activeOrders.SETTINGS_MASTER.updatedAt': now
+                        }
+                    },
+                    {
+                        upsert: true,
+                        new: true,
+                        setDefaultsOnInsert: true
+                    }
+                );
+
+                let zonesUpdated = 0;
+
+                for (const incomingZone of incomingZones) {
+                    const identity = ichefQrNfcZoneIdentity(incomingZone);
+                    if (!identity) continue;
+
+                    const requestedMode = ichefNormalizeZoneMode(
+                        incomingZone.payMode ?? incomingZone.mode
+                    );
+
+                    const zoneField =
+                        `activeOrders.ARCHITECTURE.data.zones.${identity.field}`;
+
+                    const updateResult = await AppState.updateOne(
+                        {
+                            tenantID: safeID,
+                            [zoneField]: identity.value
+                        },
+                        {
+                            $set: {
+                                'activeOrders.ARCHITECTURE.data.zones.$.payMode':
+                                    requestedMode,
+                                'activeOrders.ARCHITECTURE.data.zones.$.mode':
+                                    requestedMode,
+                                'activeOrders.ARCHITECTURE.updatedAt':
+                                    now
+                            }
+                        }
+                    );
+
+                    if (updateResult.modifiedCount > 0) {
+                        zonesUpdated += 1;
+                    }
+                }
+
+                const confirmedState =
+                    await AppState
+                        .findOne({ tenantID: safeID })
+                        .lean();
+
+                if (!confirmedState) {
+                    throw new Error(
+                        'État introuvable après sauvegarde QR/NFC.'
+                    );
+                }
+
+                const confirmed =
+                    ichefQrNfcExtractState(confirmedState);
+
+                if (String(confirmed.revision || '') !== revision) {
+                    throw new Error(
+                        'Révision QR/NFC non confirmée par MongoDB.'
+                    );
+                }
+
+                io.to(safeID).emit(
+                    'qr-nfc-config-changed',
+                    {
+                        tenantID: safeID,
+                        revision,
+                        qrNfc: confirmed.qrNfc,
+                        schedule: confirmed.schedule,
+                        zones: confirmed.zones,
+                        zonesUpdated,
+                        updatedAt: now
+                    }
+                );
+
+                io.to(safeID).emit(
+                    'server-state-changed',
+                    {
+                        tableId: 'QR_NFC_CONFIG',
+                        source: 'api/config/qr-nfc',
+                        revision,
+                        updatedAt: now
+                    }
+                );
+
+                io.to(safeID).emit(
+                    'updateState',
+                    confirmedState
+                );
+
+                console.log(
+                    `✅ QR/NFC enregistré et relu : ${safeID}` +
+                    ` | revision=${revision}` +
+                    ` | zones=${confirmed.zones.length}` +
+                    ` | modes_modifiés=${zonesUpdated}`
+                );
+
+                return {
+                    revision,
+                    confirmed,
+                    zonesUpdated,
+                    updatedAt: now
+                };
+            }
+        );
+
+        return res.json({
+            success: true,
+            persisted: true,
+            tenantID: safeID,
+            revision: result.revision,
+            qrNfc: result.confirmed.qrNfc,
+            schedule: result.confirmed.schedule,
+            zones: result.confirmed.zones,
+            zonesUpdated: result.zonesUpdated,
+            updatedAt: result.updatedAt
+        });
+
+    } catch (error) {
+        console.error(
+            '❌ Erreur POST /api/config/qr-nfc :',
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            persisted: false,
+            error:
+                process.env.NODE_ENV === 'development'
+                    ? String(error?.message || error)
+                    : 'Impossible d’enregistrer la configuration QR/NFC.'
+        });
+    }
+});
+
+
+// 👥 STAFF_ACCESS — PROTECTION ANTI-ÉCRASEMENT DU POINTAGE
+// ==========================================================
+// La route officielle /api/rh/punch est la seule qui doit modifier
+// onDuty / lastPunchAt / lastPunchType.
+//
+// Les sauvegardes génériques de Configuration/RH peuvent modifier
+// nom, rôle, PIN, département, actif, etc., mais ne doivent pas
+// ramener un serveur déjà pointé à "Pointer" avec un vieux snapshot.
+async function ichefMergeStaffAccessPreservingDuty(tenantID, incomingOrder) {
+
+    const currentState =
+        await AppState
+            .findOne({ tenantID })
+            .lean();
+
+    const currentNode =
+        currentState?.activeOrders?.STAFF_ACCESS &&
+        typeof currentState.activeOrders.STAFF_ACCESS === 'object'
+            ? currentState.activeOrders.STAFF_ACCESS
+            : { data: [] };
+
+    const currentList =
+        Array.isArray(currentNode?.data)
+            ? currentNode.data
+            : [];
+
+    const incomingList =
+        Array.isArray(incomingOrder?.data)
+            ? incomingOrder.data
+            : [];
+
+    const staffKey = staff => {
+        const id = String(staff?.id || '').trim();
+        if (id) return `id:${id}`;
+
+        const pin = String(staff?.pin || '').trim();
+        if (pin) return `pin:${pin}`;
+
+        return '';
+    };
+
+    const currentByKey = new Map();
+
+    currentList.forEach(staff => {
+        const key = staffKey(staff);
+        if (key) currentByKey.set(key, staff);
+    });
+
+    const merged = incomingList.map(incomingStaff => {
+
+        const previous =
+            currentByKey.get(
+                staffKey(incomingStaff)
+            );
+
+        const next = {
+            ...(previous || {}),
+            ...(incomingStaff || {})
+        };
+
+        if (previous) {
+            next.onDuty =
+                previous.onDuty === true;
+
+            if (previous.lastPunchAt !== undefined) {
+                next.lastPunchAt =
+                    previous.lastPunchAt;
+            }
+
+            if (previous.lastPunchType !== undefined) {
+                next.lastPunchType =
+                    previous.lastPunchType;
+            }
+        } else {
+            next.onDuty = false;
+        }
+
+        // Désactiver un profil ferme toujours son accès service.
+        if (next.active === false) {
+            next.onDuty = false;
+        }
+
+        return next;
+    });
+
+    return {
+        ...incomingOrder,
+        data: merged,
+        updatedAt:
+            currentNode?.updatedAt ||
+            incomingOrder?.updatedAt ||
+            new Date().toISOString(),
+        profileUpdatedAt:
+            new Date().toISOString()
+    };
+}
 
 app.post('/update-order', async (req, res) => {
     try {
@@ -4920,8 +6572,28 @@ app.post('/update-order', async (req, res) => {
             tableId,
             order,
             pin,
-            terminal
+            terminal,
+            deviceId,
+            auditReason,
+            operator
         } = req.body || {};
+
+        if (!tenantID) {
+            return res.status(400).json({ success: false, persisted: false, error: 'tenantID manquant.' });
+        }
+
+        if (!ichefValidStateKey(tableId)) {
+            return res.status(400).json({ success: false, persisted: false, error: 'Clé de synchronisation invalide.' });
+        }
+
+        if (order !== null && ichefJsonBytes(order) > ICHEF_MAX_STATE_NODE_BYTES) {
+            return res.status(413).json({
+                success: false,
+                persisted: false,
+                code: 'STATE_NODE_TOO_LARGE',
+                error: 'Donnée trop volumineuse pour une synchronisation sûre.'
+            });
+        }
 
         const terminalAccess =
             await ichefCheckServiceTerminalAccess({
@@ -4938,7 +6610,6 @@ app.post('/update-order', async (req, res) => {
                     error:
                         terminalAccess.error ||
                         'Accès service refusé.',
-
                     code:
                         terminalAccess.requiresDuty === true &&
                         terminalAccess.onDuty !== true
@@ -4951,6 +6622,48 @@ app.post('/update-order', async (req, res) => {
                 });
         }
 
+        // Lecture ciblée de la valeur précédente pour produire un historique fiable
+        // sans charger tout AppState en mémoire.
+        const historyProjection = {
+            [`activeOrders.${tableId}`]: 1,
+            'activeOrders.AUDIT_MASTER': 1
+        };
+        const previousStateForHistory = await AppState
+            .findOne({ tenantID }, historyProjection)
+            .lean();
+        const previousValueForHistory =
+            previousStateForHistory?.activeOrders?.[tableId];
+
+        const actorForHistory = ichefHistoryActor(terminalAccess, req.body || {});
+
+        let orderToPersist = order;
+
+        if (
+            tableId === 'STAFF_ACCESS' &&
+            order &&
+            Array.isArray(order.data)
+        ) {
+            orderToPersist =
+                await ichefMergeStaffAccessPreservingDuty(
+                    tenantID,
+                    order
+                );
+        }
+
+        const centralHistoryEntries = ichefBuildCentralHistoryEntries(
+            previousValueForHistory,
+            orderToPersist,
+            {
+                tableId: String(tableId),
+                terminal: String(terminal || 'INCONNU'),
+                deviceId: String(deviceId || ''),
+                auditReason: String(auditReason || ''),
+                operator: actorForHistory.operator,
+                role: actorForHistory.role,
+                source: 'update-order'
+            }
+        );
+
         let updateQuery = {};
 
         if (order === null) {
@@ -4962,8 +6675,19 @@ app.post('/update-order', async (req, res) => {
         } else {
             updateQuery = {
                 $set: {
-                    [`activeOrders.${tableId}`]: order
+                    [`activeOrders.${tableId}`]: orderToPersist
                 }
+            };
+        }
+
+        if (centralHistoryEntries.length && String(tableId) !== 'AUDIT_MASTER') {
+            const nextAuditNode = ichefBuildAuditMasterNode(
+                previousStateForHistory?.activeOrders?.AUDIT_MASTER,
+                centralHistoryEntries
+            );
+            updateQuery.$set = {
+                ...(updateQuery.$set || {}),
+                'activeOrders.AUDIT_MASTER': nextAuditNode
             };
         }
 
@@ -4977,11 +6701,28 @@ app.post('/update-order', async (req, res) => {
                 }
             );
 
+        const finalPersistedState =
+            typeof newState?.toObject === 'function'
+                ? newState.toObject()
+                : newState;
+
+        // Archive durable séparée de la table active.
+        await ichefArchiveCentralHistory(tenantID, centralHistoryEntries);
+
+        if (centralHistoryEntries.length) {
+            io.to(tenantID).emit('auditUpdated', {
+                tenantID,
+                tableId: String(tableId),
+                entries: centralHistoryEntries,
+                timestamp: new Date().toISOString()
+            });
+        }
+
         io
             .to(tenantID)
             .emit(
                 "updateState",
-                newState
+                finalPersistedState
             );
 
         io
@@ -4989,14 +6730,61 @@ app.post('/update-order', async (req, res) => {
             .emit(
                 "server-state-changed",
                 {
+                    tenantID,
                     tableId,
-                    source: "update-order"
+                    source: "update-order",
+                    persisted: true,
+                    historyCount: centralHistoryEntries.length,
+                    timestamp: new Date().toISOString()
                 }
             );
 
+       if (String(tableId || '').toUpperCase() === 'ARCHITECTURE') {
+            const persistedArchitectureNode =
+                newState?.activeOrders?.ARCHITECTURE ?? orderToPersist ?? {};
+
+            const rawArchitecture =
+                persistedArchitectureNode &&
+                typeof persistedArchitectureNode === 'object' &&
+                persistedArchitectureNode.data &&
+                typeof persistedArchitectureNode.data === 'object'
+                    ? persistedArchitectureNode.data
+                    : persistedArchitectureNode;
+
+            const architecture = {
+                ...(rawArchitecture && typeof rawArchitecture === 'object' ? rawArchitecture : {}),
+                rooms: Array.isArray(rawArchitecture?.rooms) && rawArchitecture.rooms.length
+                    ? rawArchitecture.rooms
+                    : ['Salle Principale'],
+                tables: Array.isArray(rawArchitecture?.tables) ? rawArchitecture.tables : [],
+                zones: Array.isArray(rawArchitecture?.zones) ? rawArchitecture.zones : [],
+                elements: Array.isArray(rawArchitecture?.elements) ? rawArchitecture.elements : [],
+                canvas: rawArchitecture?.canvas && typeof rawArchitecture.canvas === 'object'
+                    ? rawArchitecture.canvas
+                    : {}
+            };
+
+            const architecturePacket = {
+                tenantID,
+                architecture,
+                source: 'update-order',
+                terminal: String(terminal || '').trim(),
+                updatedAt: architecture?.updatedAt || Date.now(),
+                serverTime: Date.now()
+            };
+
+            // Le même plan complet part immédiatement vers ADMIN, PACK-ECO et TELEPHONE.
+            io.to(tenantID).emit('architectureState', architecturePacket);
+            io.to(tenantID).emit('architecture-changed', architecturePacket);
+        }
+
         return res.json({
             success: true,
-            persisted: true
+            persisted: true,
+            symbiose: true,
+            historyCount: centralHistoryEntries.length,
+            order: order === null ? null : (finalPersistedState?.activeOrders?.[tableId] ?? orderToPersist),
+            serverTime: new Date().toISOString()
         });
 
     } catch (e) {
@@ -5005,13 +6793,79 @@ app.post('/update-order', async (req, res) => {
             e
         );
 
+        const tooLarge = e?.code === 10334 || /BSONObjectTooLarge|object to insert too large|document.*larger than/i.test(String(e?.message || ''));
+
         return res
-            .status(500)
+            .status(tooLarge ? 413 : 500)
             .json({
                 success: false,
                 persisted: false,
-                error: "Erreur serveur pendant l'enregistrement de la commande."
+                code: tooLarge ? 'APP_STATE_TOO_LARGE' : 'UPDATE_ORDER_FAILED',
+                error: tooLarge
+                    ? 'État du restaurant trop volumineux. Le serveur a protégé MongoDB contre un document dépassant sa limite.'
+                    : "Erreur serveur pendant l'enregistrement de la commande."
             });
+    }
+
+});
+
+// ==========================================================
+// 🧾 LECTURE HISTORIQUE CENTRAL — MANAGER / STAFF AUTORISÉ
+// ==========================================================
+app.get('/api/audit/history', async (req, res) => {
+    try {
+        const tenantID = cleanString(
+            req.query?.tenantID || req.headers['x-ichef-tenant'] || ''
+        );
+        const pin = String(
+            req.query?.pin || req.headers['x-ichef-pin'] || ''
+        ).trim();
+
+        const auth = await ichefAuthorizePin(tenantID, pin);
+        if (!auth.ok) {
+            return res.status(auth.status || 403).json({
+                success: false,
+                error: auth.error || 'Historique non autorisé.'
+            });
+        }
+
+        const tableId = String(req.query?.tableId || '').trim();
+        const serviceId = String(req.query?.serviceId || '').trim();
+        const source = String(req.query?.source || '').trim();
+        const requestedLimit = Number(req.query?.limit || 500);
+        const limit = Math.max(1, Math.min(5000, Number.isFinite(requestedLimit) ? requestedLimit : 500));
+
+        const filter = { tenantID };
+        if (tableId) filter.tableId = tableId;
+        if (serviceId) filter.serviceId = serviceId;
+        if (source) filter.source = source;
+
+        let rows = await SystemHistoryRecord
+            .find(filter)
+            .sort({ at: -1, _id: -1 })
+            .limit(limit)
+            .lean();
+
+        // Compatibilité immédiate si l'archive séparée vient juste d'être activée.
+        if (!rows.length) {
+            const state = await AppState.findOne({ tenantID }, { 'activeOrders.AUDIT_MASTER': 1 }).lean();
+            rows = ichefAuditMasterArray(state?.activeOrders?.AUDIT_MASTER)
+                .filter(e => !tableId || String(e?.tableId || '') === tableId)
+                .slice(0, limit);
+        }
+
+        return res.json({
+            success: true,
+            tenantID,
+            count: rows.length,
+            data: rows
+        });
+    } catch (error) {
+        console.error('[iCHEF HISTORIQUE CENTRAL] lecture :', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Historique central indisponible.'
+        });
     }
 });
 
@@ -5039,7 +6893,6 @@ app.post(['/api/kill-switch', '/api/admin-reset-devices'], async (req, res) => {
             registeredScreens: 0,
             availableScreens: screenLimit
         });
-
     } catch (error) {
         console.error("Erreur reset appareils :", error);
         return res.status(500).json({ success: false, error: "Erreur serveur." });
@@ -5089,67 +6942,6 @@ async function creerNouveauClient(nomRestaurant, emailContact, planChoisi) {
 
 // ==========================================
 // 💳 PAIEMENT DES COMMANDES (STRIPE CONNECT)
-// ==========================================
-
-app.post('/api/payments/stripe/checkout', async (req, res) => {
-    try {
-        const { paymentRequestId, tableId, amount, currency, tenantID, successUrl, cancelUrl } = req.body;
-        const safeID = cleanString(tenantID);
-        
-        const tenant = await Tenant.findOne({ tenantID: safeID });
-        if (!tenant) return res.status(404).json({ success: false, error: "Restaurant introuvable" });
-
-        // 🚨 VÉRIFICATION STRIPE CONNECT
-        const stripeAccountId = tenant.config?.stripeAccountId;
-        if (!stripeAccountId) {
-            return res.status(400).json({ success: false, error: "Le compte Stripe du restaurant n'est pas configuré." });
-        }
-
-        // On enregistre la demande comme "EN ATTENTE"
-        activeStripePayments.set(paymentRequestId, 'PENDING');
-
-        // Création de la session de paiement
-        const session = await stripe.checkout.sessions.create({
-            payment_method_types: ['card', 'twint', 'apple_pay', 'google_pay'],
-            line_items: [{
-                price_data: {
-                    currency: currency || 'chf',
-                    product_data: {
-                        name: `Table ${tableId} - Restaurant ${tenant.clientName}`,
-                    },
-                    unit_amount: Math.round(amount * 100), // Stripe attend des centimes
-                },
-                quantity: 1,
-            }],
-            mode: 'payment',
-            success_url: successUrl,
-            cancel_url: cancelUrl,
-            client_reference_id: paymentRequestId,
-            metadata: {
-                type: 'ORDER_PAYMENT',
-                tenantID: safeID,
-                tableId: tableId,
-                paymentRequestId: paymentRequestId
-            }
-        }, {
-            stripeAccount: stripeAccountId // 👈 STRIPE CONNECT : Redirige les fonds vers le resto !
-        });
-
-        res.json({ success: true, url: session.url });
-    } catch (error) {
-        console.error("Erreur Stripe Checkout Client:", error);
-        res.status(500).json({ success: false, error: error.message });
-    }
-
-});
-
-app.get('/api/payments/stripe/status', (req, res) => {
-    const { paymentRequestId } = req.query;
-    // Retourne 'PENDING', 'PAID', ou 'FAILED' au PAD
-    const status = activeStripePayments.get(paymentRequestId) || 'PENDING';
-    res.json({ success: true, status });
-});
-
 // ==========================================================
 // ENCAISSEMENT FISCAL OFFICIEL
 // MongoDB = source de vérité
@@ -5342,7 +7134,6 @@ app.post('/api/fiscal/cash-in', async (req, res) => {
                 tenantID
             });
 
-
         if (!state) {
 
             state =
@@ -5419,6 +7210,28 @@ app.post('/api/fiscal/cash-in', async (req, res) => {
                     publicReceiptUrl:
                         previous.receipt
                             ?.publicUrl ||
+                        null,
+
+                    serverTimestamp:
+                        previous.createdAt ||
+                        previous.date ||
+                        null,
+
+                    vatSummary:
+                        previous.vatSummary ||
+                        null,
+
+                    fiscalControlToken:
+                        previous.fiscalControl?.token ||
+                        null,
+
+                    fiscalControlPath:
+                        previous.fiscalControl?.token
+                            ? ichefBuildFiscalControlPath(tenantID, previous.ticketNumber, previous.fiscalControl.token)
+                            : null,
+
+                    fiscalControlVersion:
+                        previous.fiscalControl?.version ||
                         null
                 });
             }
@@ -5442,7 +7255,6 @@ app.post('/api/fiscal/cash-in', async (req, res) => {
             Array.isArray(payment.details) &&
             payment.details.length
                 ? payment.details.map(p => ({
-
                     method:
                         String(
                             p?.method ||
@@ -5509,6 +7321,15 @@ app.post('/api/fiscal/cash-in', async (req, res) => {
                 ''
             );
 
+        const vatSummary =
+            ichefFrozenBuildVatSummary(
+                orderSnapshot,
+                amount
+            );
+
+        const fiscalControlToken =
+            ichefBuildFiscalControlToken();
+
         const ticketBase = {
 
             id:
@@ -5543,7 +7364,6 @@ app.post('/api/fiscal/cash-in', async (req, res) => {
             amount,
 
             total:
-
                 Number(
                     orderSnapshot.total ??
                     amount
@@ -5573,6 +7393,15 @@ app.post('/api/fiscal/cash-in', async (req, res) => {
             tva:
                 orderSnapshot.tva ||
                 {},
+
+            vatSummary,
+
+            fiscalControl: {
+                version: 1,
+                token: fiscalControlToken,
+                issuedAt: now,
+                purpose: 'FISCAL_CONTROL'
+            },
 
             pax:
                 Number(
@@ -5638,13 +7467,19 @@ app.post('/api/fiscal/cash-in', async (req, res) => {
             ticketHash
         };
 
+        transaction.fiscalControlUrl =
+            ichefBuildFiscalControlPath(
+                tenantID,
+                ticketNumber,
+                fiscalControlToken
+            );
+
         // ---------------------------------------
         // URL TICKET CLIENT
         // ---------------------------------------
 
         if (
             transaction.receipt
-
                 .requested &&
             receiptToken
         ) {
@@ -5681,7 +7516,7 @@ app.post('/api/fiscal/cash-in', async (req, res) => {
             .FINANCIAL_HISTORY.data =
             history.slice(
                 0,
-                20000
+                ICHEF_FINANCIAL_CACHE_LIMIT
             );
 
         // ---------------------------------------
@@ -5739,7 +7574,10 @@ app.post('/api/fiscal/cash-in', async (req, res) => {
             fiscalTicket: {
                 ticketNumber,
                 ticketHash,
-                date: now
+                date: now,
+                controlToken: fiscalControlToken,
+                controlPath: transaction.fiscalControlUrl,
+                vatSummary
             },
 
             paymentDraft: {
@@ -5930,7 +7768,20 @@ app.post('/api/fiscal/cash-in', async (req, res) => {
             publicReceiptUrl:
                 transaction.receipt
                     ?.publicUrl ||
-                null
+                null,
+
+            serverTimestamp:
+                now,
+
+            vatSummary,
+
+            fiscalControlToken,
+
+            fiscalControlPath:
+                transaction.fiscalControlUrl,
+
+            fiscalControlVersion:
+                1
         });
 
     } catch (error) {
@@ -5945,7 +7796,6 @@ app.post('/api/fiscal/cash-in', async (req, res) => {
             {
                 type:
                     'PAYMENT_ERROR',
-
 
                 status:
                     'ERROR',
@@ -6105,7 +7955,7 @@ app.post('/api/save-transaction', async (req, res) => {
             .FINANCIAL_HISTORY.data =
             history.slice(
                 0,
-                20000
+                ICHEF_FINANCIAL_CACHE_LIMIT
             );
 
         state.markModified(
@@ -6146,7 +7996,6 @@ app.post('/api/save-transaction', async (req, res) => {
             status:
                 stored.status ||
                 '',
-
 
             amount:
                 Number(
@@ -6248,7 +8097,6 @@ app.post('/api/save-transaction', async (req, res) => {
                     stored.ticketNumber ||
                     null,
 
-
                 chainHash:
                     stored.chainHash ||
                     stored.ticketHash ||
@@ -6348,7 +8196,6 @@ app.get('/api/public-receipt', async (req, res) => {
             String(
                 tx.currency ||
                 'CHF'
-
             );
 
         const esc =
@@ -6449,7 +8296,6 @@ body{
     background:white;
     padding:24px;
     border-radius:12px;
-
 }
 h1{
     text-align:center;
@@ -6650,7 +8496,6 @@ app.post('/api/fiscal-file/full', async (req, res) => {
             String(
                 req.body?.pin ||
                 req.headers['x-ichef-pin'] ||
-
                 ''
             ).trim();
 
@@ -6751,7 +8596,6 @@ app.post('/api/fiscal-file/full', async (req, res) => {
 
         // ==================================================
         // 3. ÉTAT COMPLET DU RESTAURANT
-
         // ==================================================
 
         const state =
@@ -6852,7 +8696,6 @@ app.post('/api/fiscal-file/full', async (req, res) => {
 
 
             const expectedHash =
-
                 crypto
                     .createHash('sha256')
                     .update(
@@ -6953,7 +8796,6 @@ app.post('/api/fiscal-file/full', async (req, res) => {
 
 
         permanentRecords
-
             .filter(record => {
 
                 const type =
@@ -7054,7 +8896,6 @@ app.post('/api/fiscal-file/full', async (req, res) => {
                         const db =
                             new Date(
                                 b.serverRecordedAt ||
-
                                 b.createdAt ||
                                 b.date ||
                                 b.timestamp ||
@@ -7155,7 +8996,6 @@ app.post('/api/fiscal-file/full', async (req, res) => {
                 tableId,
 
                 status:
-
                     order.status ||
                     meta.status ||
                     '',
@@ -7256,7 +9096,6 @@ app.post('/api/fiscal-file/full', async (req, res) => {
                 const order =
                     tx.orderSnapshot ||
                     tx.snapshot ||
-
                     tx.order ||
                     null;
 
@@ -7457,7 +9296,6 @@ app.post('/api/fiscal-file/full', async (req, res) => {
 
 
         permanentRecords
-
             .filter(record => {
 
                 const type =
@@ -7658,7 +9496,6 @@ app.post('/api/fiscal-file/full', async (req, res) => {
 
                 'CHF'
             )
-
                 .toUpperCase();
 
 
@@ -7860,7 +9697,6 @@ app.post('/api/fiscal-file/full', async (req, res) => {
                 cancelledItemCount:
                     cancelledItems.length,
 
-
                 errorCount,
 
                 validationCount,
@@ -8032,1646 +9868,8 @@ app.post(
         }
     }
 );
-// ============================================================================
-// 🗺️ ICHEF ROADMAP CORE — MONGODB + API + SOCKET.IO
-// ============================================================================
 
-const ichefRoadmapSchema = new mongoose.Schema(
-    {
-        tenantID: {
-            type: String,
-            required: true,
-            unique: true,
-            index: true
-        },
-
-        currentVersion: {
-            type: String,
-            default: '4.2.1'
-        },
-
-        lastUpdate: {
-            type: Date,
-            default: Date.now
-        },
-
-        releases: {
-            type: [mongoose.Schema.Types.Mixed],
-            default: []
-        },
-
-        modules: {
-            type: mongoose.Schema.Types.Mixed,
-            default: () => ({})
-        },
-
-        actions: {
-            type: [mongoose.Schema.Types.Mixed],
-            default: []
-        },
-
-        beta: {
-            type: [mongoose.Schema.Types.Mixed],
-            default: []
-        },
-
-        votes: {
-            type: [mongoose.Schema.Types.Mixed],
-            default: []
-        },
-
-        issues: {
-            type: [mongoose.Schema.Types.Mixed],
-            default: []
-        }
-    },
-    {
-        minimize: false,
-        timestamps: true
-    }
-);
-
-const IchefRoadmapState =
-    mongoose.models.IchefRoadmapState ||
-    mongoose.model(
-        'IchefRoadmapState',
-        ichefRoadmapSchema
-    );
-
-
-// ==========================================================
-// 🔑 RÉCUPÉRATION TENANT
-// ==========================================================
-
-function ichefRoadmapTenantID(req) {
-
-    return cleanString(
-        req.query?.tenantID ||
-        req.body?.tenantID ||
-        req.headers['x-ichef-tenant'] ||
-        ''
-    );
-}
-
-
-// ==========================================================
-// 📦 ROADMAP PAR DÉFAUT
-// ==========================================================
-
-function ichefDefaultRoadmapReleases() {
-
-    return [
-
-        {
-            id: 'v4.0',
-            version: '4.0',
-
-            status: 'done',
-            statusLabel: 'DÉPLOYÉE',
-
-            dateLabel: 'Août 2026',
-
-            title:
-                'Sécurité Fiscale & Vision IA Haute Performance',
-
-            description:
-                'Renforcement de la traçabilité et évolution de l’assistant intelligent.',
-
-            features: [
-                'Registre anti-fraude et traçabilité renforcée',
-                'Vision IA pour les factures',
-                'Cockpit de Direction optimisé'
-            ],
-
-            rolloutPercent: 100,
-
-            changeForYou:
-                'Plus de traçabilité et un pilotage plus rapide.',
-
-            impacts: [
-                'Conformité',
-                'Direction',
-                'IA'
-            ]
-        },
-
-
-        {
-            id: 'v4.2',
-            version: '4.2',
-
-            status: 'current',
-            statusLabel: 'EN COURS',
-
-            dateLabel: 'Sept. 2026',
-
-            title:
-                'Centre d’Exports Réels & Académie',
-
-            description:
-                'Connexion des formations et des exports iCHEF.',
-
-            features: [
-                'Export Z de caisse',
-                'Historique des ventes',
-                'Académie iCHEF',
-                'Synchronisation Assistant IA'
-            ],
-
-            rolloutPercent: 72,
-
-            changeForYou:
-                'Formation, exports et informations sont centralisés.',
-
-            impacts: [
-                'Formation',
-                'Exports',
-                'Équipe',
-                'IA'
-            ],
-
-            actionLabel:
-                'OUVRIR L’ACADÉMIE',
-
-            actionUrl:
-                'formation.html'
-        },
-
-
-        {
-            id: 'v4.3',
-            version: '4.3',
-
-            status: 'future',
-            statusLabel: 'À VENIR',
-
-            dateLabel: 'Oct. 2026',
-
-            title:
-                'Synchronisation Salle-Cuisine & Puces Intelligentes',
-
-            description:
-                'Communication instantanée entre salle, tables et production.',
-
-            features: [
-                'Écrans de production tactiles',
-                'Puces NFC sur table',
-                'Anti-Rush intelligent',
-                'Suivi des temps de service'
-            ],
-
-            rolloutPercent: 35,
-
-            changeForYou:
-                'Moins d’attente entre salle et cuisine.',
-
-            impacts: [
-                'Service',
-                'Cuisine',
-                'NFC',
-                'Anti-Rush'
-            ],
-
-            betaAvailable: true
-        },
-
-
-        {
-            id: 'v5.0',
-            version: '5.0',
-
-            status: 'future',
-            statusLabel: 'PLANIFIÉE',
-
-            dateLabel: 'Déc. 2026',
-
-            title:
-                'Expérience client & Intelligence avancée',
-
-            description:
-                'Nouveaux outils pour automatiser et améliorer le pilotage.',
-
-            features: [
-                'Fidélité intelligente',
-                'Analyses prédictives IA',
-                'Room service',
-                'Marketplace fournisseurs'
-            ],
-
-            rolloutPercent: 12,
-
-            changeForYou:
-                'Plus d’automatisation et une expérience client personnalisée.',
-
-            impacts: [
-                'Fidélité',
-                'IA',
-                'Hôtellerie',
-                'Fournisseurs'
-            ]
-        }
-
-    ];
-}
-
-
-// ==========================================================
-// 🧩 MODULES SELON PLAN
-// ==========================================================
-
-function ichefRoadmapModules(tenant) {
-
-    const plan =
-        String(
-            tenant?.plan ||
-            'BUSINESS'
-        )
-        .trim()
-        .toUpperCase();
-
-
-    if (
-        [
-            'CHEF_CUISINE',
-            'CHEF'
-        ].includes(plan)
-    ) {
-
-        return {
-
-            'Cuisine / KDS': {
-                active: true,
-                status: 'Actif'
-            },
-
-            'Carte & Recettes': {
-                active: true,
-                status: 'Actif'
-            },
-
-            'Roadmap': {
-                active: true,
-                status: 'Actif'
-            }
-
-        };
-    }
-
-
-    if (
-        [
-            'CHEF_BAR',
-            'BAR'
-        ].includes(plan)
-    ) {
-
-        return {
-
-            'Bar': {
-                active: true,
-                status: 'Actif'
-            },
-
-            'Carte & Recettes': {
-                active: true,
-                status: 'Actif'
-            },
-
-            'Roadmap': {
-                active: true,
-                status: 'Actif'
-            }
-
-        };
-    }
-
-
-    return {
-
-        'Caisse & Finance': {
-            active: true,
-            status: 'Actif'
-        },
-
-        'Carte & Recettes': {
-            active: true,
-            status: 'Actif'
-        },
-
-        'Commandes / PAD': {
-            active: true,
-            status: 'Actif'
-        },
-
-        'Cuisine / KDS': {
-            active: true,
-            status: 'Actif'
-        },
-
-        'Stocks': {
-            active: true,
-            status: 'Actif'
-        },
-
-        'Réservations': {
-            active: true,
-            status: 'Actif'
-        },
-
-        'RH / Planning': {
-            active: true,
-            status: 'Actif'
-        },
-
-        'Académie': {
-            active: true,
-            status: 'Actif'
-        },
-
-        'Assistant IA': {
-            active: true,
-            status: 'Actif'
-        },
-
-        'Roadmap': {
-            active: true,
-            status: 'Actif'
-        }
-
-    };
-}
-
-
-// ==========================================================
-// 🏗️ CRÉATION AUTOMATIQUE ROADMAP RESTAURANT
-// ==========================================================
-
-async function ichefGetRoadmap(tenantID) {
-
-    const safeID =
-        cleanString(tenantID);
-
-
-    if (!safeID) {
-
-        const error =
-            new Error(
-                'tenantID manquant.'
-            );
-
-        error.status = 400;
-
-        throw error;
-    }
-
-
-    const tenant =
-        await Tenant.findOne({
-            tenantID: safeID
-        });
-
-
-    if (!tenant) {
-
-        const error =
-            new Error(
-                'Établissement inconnu.'
-            );
-
-        error.status = 404;
-
-        throw error;
-    }
-
-
-    let roadmap =
-        await IchefRoadmapState.findOne({
-            tenantID: safeID
-        });
-
-
-    if (!roadmap) {
-
-        roadmap =
-            await IchefRoadmapState.create({
-
-                tenantID:
-                    safeID,
-
-                currentVersion:
-                    '4.2.1',
-
-                lastUpdate:
-                    new Date(),
-
-                releases:
-                    ichefDefaultRoadmapReleases(),
-
-                modules:
-                    ichefRoadmapModules(
-                        tenant
-                    ),
-
-                actions: [],
-
-                beta: [
-                    {
-                        id:
-                            'beta-v4.3',
-
-                        releaseId:
-                            'v4.3',
-
-                        title:
-                            'Salle-Cuisine & NFC intelligent',
-
-                        description:
-                            'Programme pilote NFC / Anti-Rush.',
-
-                        requested:
-                            false
-                    }
-                ],
-
-                votes: [
-
-                    {
-                        id:
-                            'vote-marketplace',
-
-                        title:
-                            'Marketplace fournisseurs',
-
-                        counts: {
-                            very_useful: 0,
-                            useful: 0,
-                            low: 0
-                        }
-                    },
-
-                    {
-                        id:
-                            'vote-ia',
-
-                        title:
-                            'Prévision IA des commandes',
-
-                        counts: {
-                            very_useful: 0,
-                            useful: 0,
-                            low: 0
-                        }
-                    },
-
-                    {
-                        id:
-                            'vote-roomservice',
-
-                        title:
-                            'Room service / hôtellerie',
-
-                        counts: {
-                            very_useful: 0,
-                            useful: 0,
-                            low: 0
-                        }
-                    }
-
-                ],
-
-                issues: []
-
-            });
-    }
-
-
-    return {
-        roadmap,
-        tenant
-    };
-}
-
-
-// ==========================================================
-// 📡 SOCKET ROADMAP
-// ==========================================================
-
-function emitRoadmap(
-    tenantID,
-    eventName,
-    data = {}
-) {
-
-    io
-        .to(tenantID)
-        .emit(
-            eventName,
-            {
-                tenantID,
-                ...data,
-                timestamp:
-                    new Date()
-                        .toISOString()
-            }
-        );
-
-
-    if (
-        eventName !==
-        'roadmap:updated'
-    ) {
-
-        io
-            .to(tenantID)
-            .emit(
-                'roadmap:updated',
-                {
-                    tenantID,
-
-                    source:
-                        eventName,
-
-                    timestamp:
-                        new Date()
-                            .toISOString()
-                }
-            );
-    }
-}
-
-
-// ==========================================================
-// GET /api/roadmap/status
-// ==========================================================
-
-app.get(
-    '/api/roadmap/status',
-
-    async (req, res) => {
-
-        try {
-
-            const tenantID =
-                ichefRoadmapTenantID(
-                    req
-                );
-
-
-            const {
-                roadmap
-            } =
-                await ichefGetRoadmap(
-                    tenantID
-                );
-
-
-            const releases =
-                roadmap.releases || [];
-
-
-            const deployingCount =
-                releases.filter(
-                    item =>
-                        String(
-                            item.status ||
-                            ''
-                        ) ===
-                        'current'
-                ).length;
-
-
-            const upcomingCount =
-                releases.filter(
-                    item =>
-                        String(
-                            item.status ||
-                            ''
-                        ) ===
-                        'future'
-                ).length;
-
-
-            return res.json({
-
-                success:
-                    true,
-
-                tenantID,
-
-                currentVersion:
-                    roadmap.currentVersion,
-
-                state:
-                    'up_to_date',
-
-                stateLabel:
-                    'À jour',
-
-                lastUpdate:
-                    roadmap.lastUpdate,
-
-                newCount:
-                    releases.filter(
-                        item =>
-                            item.unread ===
-                            true
-                    ).length,
-
-                deployingCount,
-
-                upcomingCount
-
-            });
-
-
-        } catch (error) {
-
-            return res
-                .status(
-                    error.status ||
-                    500
-                )
-                .json({
-
-                    success:
-                        false,
-
-                    error:
-                        error.message
-
-                });
-        }
-    }
-);
-
-
-// ==========================================================
-// GET /api/roadmap/releases
-// ==========================================================
-
-app.get(
-    '/api/roadmap/releases',
-
-    async (req, res) => {
-
-        try {
-
-            const tenantID =
-                ichefRoadmapTenantID(
-                    req
-                );
-
-
-            const {
-                roadmap
-            } =
-                await ichefGetRoadmap(
-                    tenantID
-                );
-
-
-            return res.json({
-
-                success:
-                    true,
-
-                tenantID,
-
-                releases:
-                    roadmap.releases ||
-                    []
-
-            });
-
-
-        } catch (error) {
-
-            return res
-                .status(
-                    error.status ||
-                    500
-                )
-                .json({
-
-                    success:
-                        false,
-
-                    error:
-                        error.message
-
-                });
-        }
-    }
-);
-
-
-// ==========================================================
-// GET /api/roadmap/modules
-// ==========================================================
-
-app.get(
-    '/api/roadmap/modules',
-
-    async (req, res) => {
-
-        try {
-
-            const tenantID =
-                ichefRoadmapTenantID(
-                    req
-                );
-
-
-            const {
-                roadmap,
-                tenant
-            } =
-                await ichefGetRoadmap(
-                    tenantID
-                );
-
-
-            roadmap.modules =
-                ichefRoadmapModules(
-                    tenant
-                );
-
-
-            roadmap.markModified(
-                'modules'
-            );
-
-
-            await roadmap.save();
-
-
-            return res.json({
-
-                success:
-                    true,
-
-                tenantID,
-
-                modules:
-                    roadmap.modules
-
-            });
-
-
-        } catch (error) {
-
-            return res
-                .status(
-                    error.status ||
-                    500
-                )
-                .json({
-
-                    success:
-                        false,
-
-                    error:
-                        error.message
-
-                });
-        }
-    }
-);
-
-
-// ==========================================================
-// GET /api/roadmap/actions
-// ==========================================================
-
-app.get(
-    '/api/roadmap/actions',
-
-    async (req, res) => {
-
-        try {
-
-            const tenantID =
-                ichefRoadmapTenantID(
-                    req
-                );
-
-
-            const {
-                roadmap
-            } =
-                await ichefGetRoadmap(
-                    tenantID
-                );
-
-
-            return res.json({
-
-                success:
-                    true,
-
-                tenantID,
-
-                actions:
-                    roadmap.actions ||
-                    []
-
-            });
-
-
-        } catch (error) {
-
-            return res
-                .status(
-                    error.status ||
-                    500
-                )
-                .json({
-
-                    success:
-                        false,
-
-                    error:
-                        error.message
-
-                });
-        }
-    }
-);
-
-
-// ==========================================================
-// GET /api/roadmap/beta
-// ==========================================================
-
-app.get(
-    '/api/roadmap/beta',
-
-    async (req, res) => {
-
-        try {
-
-            const tenantID =
-                ichefRoadmapTenantID(
-                    req
-                );
-
-
-            const {
-                roadmap
-            } =
-                await ichefGetRoadmap(
-                    tenantID
-                );
-
-
-            return res.json({
-
-                success:
-                    true,
-
-                tenantID,
-
-                beta:
-                    roadmap.beta ||
-                    []
-
-            });
-
-
-        } catch (error) {
-
-            return res
-                .status(
-                    error.status ||
-                    500
-                )
-                .json({
-
-                    success:
-                        false,
-
-                    error:
-                        error.message
-
-                });
-        }
-    }
-);
-
-
-// ==========================================================
-// POST /api/roadmap/beta/request
-// ==========================================================
-
-app.post(
-    '/api/roadmap/beta/request',
-
-    async (req, res) => {
-
-        try {
-
-            const tenantID =
-                ichefRoadmapTenantID(
-                    req
-                );
-
-
-            const releaseId =
-                String(
-                    req.body
-                        ?.releaseId ||
-                    ''
-                )
-                .trim();
-
-
-            if (!releaseId) {
-
-                return res
-                    .status(400)
-                    .json({
-
-                        success:
-                            false,
-
-                        error:
-                            'releaseId manquant.'
-
-                    });
-            }
-
-
-            const {
-                roadmap
-            } =
-                await ichefGetRoadmap(
-                    tenantID
-                );
-
-
-            const beta =
-                roadmap.beta ||
-                [];
-
-
-            let item =
-                beta.find(
-                    element =>
-                        String(
-                            element
-                                ?.releaseId ||
-                            ''
-                        ) ===
-                        releaseId
-                );
-
-
-            if (!item) {
-
-                item = {
-
-                    id:
-                        'beta-' +
-                        releaseId,
-
-                    releaseId,
-
-                    requested:
-                        true,
-
-                    requestedAt:
-                        new Date()
-                            .toISOString()
-
-                };
-
-
-                beta.push(
-                    item
-                );
-
-            } else {
-
-                item.requested =
-                    true;
-
-                item.requestedAt =
-                    new Date()
-                        .toISOString();
-            }
-
-
-            roadmap.beta =
-                beta;
-
-            roadmap.lastUpdate =
-                new Date();
-
-
-            roadmap.markModified(
-                'beta'
-            );
-
-
-            await roadmap.save();
-
-
-            emitRoadmap(
-                tenantID,
-                'roadmap:beta',
-                {
-                    releaseId
-                }
-            );
-
-
-            return res.json({
-
-                success:
-                    true,
-
-                persisted:
-                    true,
-
-                releaseId
-
-            });
-
-
-        } catch (error) {
-
-            return res
-                .status(
-                    error.status ||
-                    500
-                )
-                .json({
-
-                    success:
-                        false,
-
-                    error:
-                        error.message
-
-                });
-        }
-    }
-);
-
-
-// ==========================================================
-// GET /api/roadmap/votes
-// ==========================================================
-
-app.get(
-    '/api/roadmap/votes',
-
-    async (req, res) => {
-
-        try {
-
-            const tenantID =
-                ichefRoadmapTenantID(
-                    req
-                );
-
-
-            const {
-                roadmap
-            } =
-                await ichefGetRoadmap(
-                    tenantID
-                );
-
-
-            const votes =
-                (
-                    roadmap.votes ||
-                    []
-                )
-                .map(
-                    vote => {
-
-                        const counts =
-                            vote.counts ||
-                            {};
-
-                        const a =
-                            Number(
-                                counts
-                                    .very_useful ||
-                                0
-                            );
-
-                        const b =
-                            Number(
-                                counts
-                                    .useful ||
-                                0
-                            );
-
-                        const c =
-                            Number(
-                                counts
-                                    .low ||
-                                0
-                            );
-
-                        const total =
-                            a + b + c;
-
-
-                        const percent =
-                            total
-                                ? Math.round(
-                                    (
-                                        (
-                                            a * 3 +
-                                            b * 2 +
-                                            c
-                                        ) /
-                                        (
-                                            total *
-                                            3
-                                        )
-                                    ) *
-                                    100
-                                )
-                                : 0;
-
-
-                        return {
-
-                            ...vote,
-
-                            percent,
-
-                            totalVotes:
-                                total
-
-                        };
-                    }
-                );
-
-
-            return res.json({
-
-                success:
-                    true,
-
-                tenantID,
-
-                votes
-
-            });
-
-
-        } catch (error) {
-
-            return res
-                .status(
-                    error.status ||
-                    500
-                )
-                .json({
-
-                    success:
-                        false,
-
-                    error:
-                        error.message
-
-                });
-        }
-    }
-);
-
-
-// ==========================================================
-// POST /api/roadmap/votes
-// ==========================================================
-
-app.post(
-    '/api/roadmap/votes',
-
-    async (req, res) => {
-
-        try {
-
-            const tenantID =
-                ichefRoadmapTenantID(
-                    req
-                );
-
-
-            const voteId =
-                String(
-                    req.body?.voteId ||
-                    ''
-                );
-
-
-            const value =
-                String(
-                    req.body?.value ||
-                    ''
-                );
-
-
-            if (
-                ![
-                    'very_useful',
-                    'useful',
-                    'low'
-                ].includes(value)
-            ) {
-
-                return res
-                    .status(400)
-                    .json({
-
-                        success:
-                            false,
-
-                        error:
-                            'Vote invalide.'
-
-                    });
-            }
-
-
-            const {
-                roadmap
-            } =
-                await ichefGetRoadmap(
-                    tenantID
-                );
-
-
-            const item =
-                roadmap.votes.find(
-                    vote =>
-                        String(
-                            vote.id
-                        ) ===
-                        voteId
-                );
-
-
-            if (!item) {
-
-                return res
-                    .status(404)
-                    .json({
-
-                        success:
-                            false,
-
-                        error:
-                            'Vote inconnu.'
-
-                    });
-            }
-
-
-            item.counts =
-                item.counts ||
-                {
-                    very_useful: 0,
-                    useful: 0,
-                    low: 0
-                };
-
-
-            item.counts[value] =
-                Number(
-                    item.counts[
-                        value
-                    ] ||
-                    0
-                ) + 1;
-
-
-            roadmap.markModified(
-                'votes'
-            );
-
-
-            roadmap.lastUpdate =
-                new Date();
-
-
-            await roadmap.save();
-
-
-            emitRoadmap(
-                tenantID,
-                'roadmap:votes',
-                {
-                    voteId,
-                    value
-                }
-            );
-
-
-            return res.json({
-
-                success:
-                    true,
-
-                persisted:
-                    true
-
-            });
-
-
-        } catch (error) {
-
-            return res
-                .status(
-                    error.status ||
-                    500
-                )
-                .json({
-
-                    success:
-                        false,
-
-                    error:
-                        error.message
-
-                });
-        }
-    }
-);
-
-
-// ==========================================================
-// GET /api/roadmap/issues
-// ==========================================================
-
-app.get(
-    '/api/roadmap/issues',
-
-    async (req, res) => {
-
-        try {
-
-            const tenantID =
-                ichefRoadmapTenantID(
-                    req
-                );
-
-
-            const {
-                roadmap
-            } =
-                await ichefGetRoadmap(
-                    tenantID
-                );
-
-
-            return res.json({
-
-                success:
-                    true,
-
-                tenantID,
-
-                issues:
-                    roadmap.issues ||
-                    []
-
-            });
-
-
-        } catch (error) {
-
-            return res
-                .status(
-                    error.status ||
-                    500
-                )
-                .json({
-
-                    success:
-                        false,
-
-                    error:
-                        error.message
-
-                });
-        }
-    }
-);
-
-
-// ==========================================================
-// GET /api/roadmap/system-status
-// ==========================================================
-
-app.get(
-    '/api/roadmap/system-status',
-
-    async (req, res) => {
-
-        try {
-
-            const tenantID =
-                ichefRoadmapTenantID(
-                    req
-                );
-
-
-            await ichefGetRoadmap(
-                tenantID
-            );
-
-
-            const mongoOK =
-                mongoose
-                    .connection
-                    .readyState ===
-                1;
-
-
-            return res.json({
-
-                success:
-                    true,
-
-                tenantID,
-
-                services: {
-
-                    'Serveur API':
-                        'OK',
-
-                    'Socket.IO':
-                        'OK',
-
-                    'MongoDB':
-                        mongoOK
-                            ? 'OK'
-                            : 'Dégradé',
-
-                    'Roadmap CORE':
-                        'OK'
-
-                }
-
-            });
-
-
-        } catch (error) {
-
-            return res
-                .status(
-                    error.status ||
-                    500
-                )
-                .json({
-
-                    success:
-                        false,
-
-                    error:
-                        error.message
-
-                });
-        }
-    }
-);
-
-
-// ==========================================================
-// ✅ SIGNAL SOCKET APRÈS CHANGEMENT
-// ==========================================================
-
-app.post(
-    '/api/roadmap/refresh',
-
-    async (req, res) => {
-
-        try {
-
-            const tenantID =
-                ichefRoadmapTenantID(
-                    req
-                );
-
-
-            await ichefGetRoadmap(
-                tenantID
-            );
-
-
-            emitRoadmap(
-                tenantID,
-                'roadmap:updated',
-                {
-                    source:
-                        'MANUAL_REFRESH'
-                }
-            );
-
-
-            return res.json({
-
-                success:
-                    true
-
-            });
-
-
-        } catch (error) {
-
-            return res
-                .status(
-                    error.status ||
-                    500
-                )
-                .json({
-
-                    success:
-                        false,
-
-                    error:
-                        error.message
-
-                });
-        }
-    }
-);
-
-
-// ============================================================================
-// FIN ICHEF ROADMAP CORE
-// ============================================================================
-// ==========================================================
-// 🚀 DÉMARRAGE OFFICIEL DU SERVEUR iCHEF
-// IMPORTANT : CE BLOC DOIT ÊTRE LE DERNIER DU server.js
-// ==========================================================
-
-server.listen(
-    PORT,
-    () => {
-
-        console.log('');
-        console.log('==========================================');
-        console.log('✅ iCHEF EMPIRE OS — SERVEUR EN LIGNE');
-        console.log('==========================================');
-
-        console.log(
-            `✅ Port serveur : ${PORT}`
-        );
-
-        console.log(
-            '✅ Socket.IO activé.'
-        );
-
-        console.log(
-            '✅ MongoDB / AppState activé.'
-        );
-
-        console.log(
-            '✅ Moteur fiscal MongoDB activé.'
-        );
-
-        console.log(
-            '✅ FINANCIAL_HISTORY activé.'
-        );
-
-        console.log(
-            '✅ FiscalRecord permanent activé.'
-        );
-
-        console.log(
-            '✅ Fichier Fiscal Complet activé.'
-        );
-
-        console.log(
-            '✅ Audit cryptographique SHA-256 activé.'
-        );
-
-        console.log(
-            '✅ Paiements PAD / Caisse synchronisés.'
-        );
-
-        console.log(
-            '✅ Socket temps réel PAD / Caisse / Cuisine activé.'
-        );
-
-        console.log(
-            '✅ Roadmap CORE MongoDB / API / Socket.IO activé.'
-        );
-
-        console.log(
-            '=========================================='
-        );
-    }
-);
-        // =============================================================
+// =============================================================
 // QR FISCAL iCHEF — DOSSIER COMPLET DE TABLE
 // COLLER CE BLOC JUSTE AVANT : // 🤖 MOTEURS IA (GEMINI)
 // =============================================================
@@ -9743,7 +9941,6 @@ function ichefFiscalSanitize(value) {
             if ([
                 'masterpin',
                 'sessionpin',
-
                 'password',
                 'passwordhash',
                 'secret',
@@ -9944,7 +10141,6 @@ function ichefFiscalBuildPage(share) {
             ? dossier.paiements
             : Array.isArray(
                 payload?.payments
-
             )
                 ? payload.payments
                 : [];
@@ -10146,7 +10342,6 @@ function ichefFiscalBuildPage(share) {
                                 p
                             )}</pre>
 
-
                         </details>
 
                     </article>
@@ -10247,7 +10442,6 @@ ${ichefFiscalEsc(tableId)}
     --red:#ef4444;
 }
 
-
 *{
     box-sizing:border-box;
 }
@@ -10347,7 +10541,6 @@ main{
 
 .card > h2{
     margin:0;
-
     padding:16px 18px;
     color:var(--gold);
     border-bottom:
@@ -10448,7 +10641,6 @@ details summary{
     }
 
     .top{
-
         border-bottom:
             1px solid #aaa;
     }
@@ -10549,7 +10741,6 @@ details summary{
                 ERREURS / ANNULATIONS
             </small>
             <strong>
-
                 ${incidents.length}
             </strong>
         </div>
@@ -10651,7 +10842,6 @@ details summary{
                             Afficher le dossier technique
                         </summary>
 
-
                         <pre>${ichefFiscalRaw(
                             payload
                         )}</pre>
@@ -10751,7 +10941,6 @@ async function ichefHandleFiscalTableShare(
         const contentHash =
             crypto
                 .createHash(
-
                     'sha256'
                 )
                 .update(
@@ -10852,7 +11041,6 @@ async function ichefHandleFiscalTableShare(
         const forwardedHost =
             String(
                 req.headers[
-
                     'x-forwarded-host'
                 ] || ''
             )
@@ -10953,7 +11141,6 @@ app.get(
                 'iCHEF fiscal table dossier QR',
 
             version:
-
                 '2026-08-28-green-qr1'
         });
     }
@@ -11054,7 +11241,6 @@ app.get(
             console.error(
                 'Erreur lecture dossier fiscal QR :',
                 error
-
             );
 
             return res
@@ -11155,7 +11341,6 @@ app.get(
                 .trim();
 
             const share =
-
                 await IchefFiscalTableShare
                     .findOne({
 
@@ -11237,6 +11422,3240 @@ app.get(
         }
     }
 );
-        console.log('');
+
+
+
+// ============================================================================
+// 🔒 iCHEF CORE FROZEN 50 — CONTRAT DE COMPATIBILITÉ DES MODULES
+// ============================================================================
+
+const ICHEF_SESSION_SECRET =
+    String(
+        process.env.ICHEF_SESSION_SECRET ||
+        process.env.ADMIN_PASS ||
+        ''
+    ).trim() ||
+    crypto.randomBytes(32).toString('hex');
+
+if (!process.env.ICHEF_SESSION_SECRET && !process.env.ADMIN_PASS) {
+    console.warn(
+        '⚠️ ICHEF_SESSION_SECRET manquant : sessions signées temporaires jusqu’au prochain redémarrage.'
+    );
+}
+
+function ichefBase64UrlJson(value) {
+    return Buffer
+        .from(JSON.stringify(value))
+        .toString('base64url');
+}
+
+function ichefSignSession(payload = {}, ttlSeconds = 8 * 60 * 60) {
+    const now = Math.floor(Date.now() / 1000);
+
+    const claims = {
+        ...payload,
+        iat: now,
+        exp: now + Math.max(60, Number(ttlSeconds || 0)),
+        jti: crypto.randomBytes(12).toString('hex')
+    };
+
+    const body = ichefBase64UrlJson(claims);
+    const signature = crypto
+        .createHmac('sha256', ICHEF_SESSION_SECRET)
+        .update(body)
+        .digest('base64url');
+
+    return `v1.${body}.${signature}`;
+}
+
+function ichefVerifySignedSession(token, expected = {}) {
+    try {
+        const parts = String(token || '').split('.');
+        if (parts.length !== 3 || parts[0] !== 'v1') return null;
+
+        const [, body, signature] = parts;
+
+        const expectedSignature = crypto
+            .createHmac('sha256', ICHEF_SESSION_SECRET)
+            .update(body)
+            .digest('base64url');
+
+        const a = Buffer.from(signature);
+        const b = Buffer.from(expectedSignature);
+
+        if (
+            a.length !== b.length ||
+            !crypto.timingSafeEqual(a, b)
+        ) return null;
+
+        const claims =
+            JSON.parse(
+                Buffer.from(body, 'base64url').toString('utf8')
+            );
+
+        const now = Math.floor(Date.now() / 1000);
+
+        if (
+            !claims ||
+            Number(claims.exp || 0) <= now
+        ) return null;
+
+        if (
+            expected.tenantID &&
+            cleanString(claims.tenantID) !==
+            cleanString(expected.tenantID)
+        ) return null;
+
+        if (
+            expected.scope &&
+            String(claims.scope || '').toUpperCase() !==
+            String(expected.scope || '').toUpperCase()
+        ) return null;
+
+        return claims;
+
+    } catch (_) {
+        return null;
     }
-);
+}
+
+function ichefBearerToken(req) {
+    const raw = String(req.headers?.authorization || '').trim();
+    const match = raw.match(/^Bearer\s+(.+)$/i);
+    return match ? match[1].trim() : '';
+}
+
+async function ichefAuthorizePin(
+    tenantID,
+    pin,
+    {
+        managerOnly = false
+    } = {}
+) {
+    const safeID = cleanString(tenantID);
+    const submittedPin = String(pin || '').trim();
+
+    if (!safeID || !/^\d{4,12}$/.test(submittedPin)) {
+        return {
+            ok: false,
+            status: 401,
+            error: 'Authentification invalide.'
+        };
+    }
+
+    const tenant =
+        await Tenant.findOne({ tenantID: safeID }).lean();
+
+    if (!tenant) {
+        return {
+            ok: false,
+            status: 404,
+            error: 'Établissement inconnu.'
+        };
+    }
+
+    if (tenant.status === 'SUSPENDU') {
+        return {
+            ok: false,
+            status: 403,
+            error: 'Licence suspendue.'
+        };
+    }
+
+    if (
+        String(tenant.pin || '').trim() ===
+        submittedPin
+    ) {
+        return {
+            ok: true,
+            tenant,
+            role: 'MASTER',
+            name: tenant.clientName || 'Direction',
+            isManager: true
+        };
+    }
+
+    const state =
+        await AppState.findOne({ tenantID: safeID }).lean();
+
+    const staff =
+        Array.isArray(
+            state?.activeOrders?.STAFF_ACCESS?.data
+        )
+            ? state.activeOrders.STAFF_ACCESS.data
+            : [];
+
+    const member =
+        staff.find(item =>
+            item?.active !== false &&
+            String(item?.pin || '').trim() === submittedPin
+        );
+
+    if (!member) {
+        return {
+            ok: false,
+            status: 403,
+            error: 'PIN invalide.'
+        };
+    }
+
+    const isManager =
+        ichefTerminalStaffIsManager(member);
+
+    if (managerOnly && !isManager) {
+        return {
+            ok: false,
+            status: 403,
+            error: 'Action réservée à la Direction / au Manager.'
+        };
+    }
+
+    return {
+        ok: true,
+        tenant,
+        state,
+        staff: member,
+        role:
+            member.role ||
+            member.dept ||
+            'STAFF',
+        name:
+            member.name ||
+            member.nom ||
+            'Collaborateur',
+        isManager
+    };
+}
+
+function ichefEmitFullState(
+    tenantID,
+    state,
+    {
+        tableId = '',
+        source = 'core-frozen-50',
+        extra = {}
+    } = {}
+) {
+    const safeID = cleanString(tenantID);
+    if (!safeID || !state) return;
+
+    io.to(safeID).emit('updateState', state);
+    io.to(safeID).emit('server-state-changed', {
+        tenantID: safeID,
+        tableId,
+        source,
+        timestamp: new Date().toISOString(),
+        ...extra
+    });
+}
+
+
+// ==========================================================
+// 💳 CAISSE — CONFIGURATION CENTRALE
+// ==========================================================
+const ichefCashConfigWriteQueues = new Map();
+
+function ichefSerializeCashConfigWrite(tenantID, task) {
+    const key = cleanString(tenantID);
+    const previous =
+        ichefCashConfigWriteQueues.get(key) ||
+        Promise.resolve();
+
+    const current =
+        previous
+            .catch(() => undefined)
+            .then(task);
+
+    ichefCashConfigWriteQueues.set(key, current);
+
+    current.finally(() => {
+        if (ichefCashConfigWriteQueues.get(key) === current) {
+            ichefCashConfigWriteQueues.delete(key);
+        }
+    }).catch(() => {});
+
+    return current;
+}
+
+function ichefNormalizeCashRegisterConfig(value = {}) {
+    const source =
+        value &&
+        typeof value === 'object' &&
+        !Array.isArray(value)
+            ? value
+            : {};
+
+    const taxConfig =
+        source.taxConfig &&
+        typeof source.taxConfig === 'object' &&
+        !Array.isArray(source.taxConfig)
+            ? source.taxConfig
+            : {};
+
+    return {
+        ...source,
+        enabled: true,
+        fiscalMode: true,
+        automatic: true,
+        backendUrl: '/api/fiscal/cash-in',
+
+        fiscalConnectivity: {
+            ...(source.fiscalConnectivity || {}),
+            continuousServerSyncRequired: true,
+            offlineFiscalizationAllowed: false,
+            auditServerSideRequired: true
+        },
+
+        separation: {
+            ...(source.separation || {}),
+            qrNfc: 'commande',
+            caisse: 'encaissement_fiscal'
+        },
+
+        taxConfig,
+
+        source:
+            String(
+                source.source ||
+                'SYSTEM_AUTO_CONFIGURATION'
+            ).slice(0, 80),
+
+        updatedAt:
+            new Date().toISOString()
+    };
+}
+
+function ichefExtractCashConfig(state) {
+    const data =
+        state?.activeOrders
+            ?.SETTINGS_MASTER
+            ?.data;
+
+    const settings =
+        data &&
+        typeof data === 'object' &&
+        !Array.isArray(data)
+            ? data
+            : {};
+
+    return {
+        cashRegister:
+            settings.cashRegister &&
+            typeof settings.cashRegister === 'object'
+                ? settings.cashRegister
+                : {},
+
+        taxConfig:
+            settings.taxConfig &&
+            typeof settings.taxConfig === 'object'
+                ? settings.taxConfig
+                : {},
+
+        revision:
+            String(
+                settings.cashRegisterServerRevision ||
+                ''
+            ),
+
+        updatedAt:
+            settings.cashRegisterServerUpdatedAt ||
+            null
+    };
+}
+
+app.get('/api/config/cash-register', async (req, res) => {
+    try {
+        const tenantID =
+            cleanString(req.query?.tenantID);
+
+        if (!tenantID) {
+            return res.status(400).json({
+                success: false,
+                persisted: false,
+                error: 'tenantID manquant.'
+            });
+        }
+
+        const state =
+            await AppState
+                .findOne({ tenantID })
+                .lean();
+
+        return res.json({
+            success: true,
+            persisted: true,
+            tenantID,
+            ...ichefExtractCashConfig(state || {})
+        });
+
+    } catch (error) {
+        console.error(
+            '[iCHEF CASH CONFIG] lecture :',
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            persisted: false,
+            error:
+                'Impossible de lire la configuration caisse.'
+        });
+    }
+});
+
+app.post('/api/config/cash-register', async (req, res) => {
+    const tenantID =
+        cleanString(
+            req.query?.tenantID ||
+            req.body?.tenantID
+        );
+
+    if (!tenantID) {
+        return res.status(400).json({
+            success: false,
+            persisted: false,
+            error: 'tenantID manquant.'
+        });
+    }
+
+    try {
+        const result =
+            await ichefSerializeCashConfigWrite(
+                tenantID,
+                async () => {
+                    const incomingCash =
+                        req.body?.cashRegister &&
+                        typeof req.body.cashRegister === 'object' &&
+                        !Array.isArray(req.body.cashRegister)
+                            ? req.body.cashRegister
+                            : {};
+
+                    const incomingTax =
+                        req.body?.taxConfig &&
+                        typeof req.body.taxConfig === 'object' &&
+                        !Array.isArray(req.body.taxConfig)
+                            ? req.body.taxConfig
+                            : (
+                                incomingCash.taxConfig &&
+                                typeof incomingCash.taxConfig === 'object'
+                                    ? incomingCash.taxConfig
+                                    : {}
+                            );
+
+                    const normalized =
+                        ichefNormalizeCashRegisterConfig({
+                            ...incomingCash,
+                            taxConfig: incomingTax
+                        });
+
+                    const now =
+                        new Date().toISOString();
+
+                    const revision =
+                        `cash_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+
+                    const confirmedState =
+                        await AppState
+                            .findOneAndUpdate(
+                                { tenantID },
+                                {
+                                    $set: {
+                                        'activeOrders.SETTINGS_MASTER.data.cashRegister':
+                                            normalized,
+
+                                        'activeOrders.SETTINGS_MASTER.data.taxConfig':
+                                            normalized.taxConfig,
+
+                                        'activeOrders.SETTINGS_MASTER.data.cashRegisterServerRevision':
+                                            revision,
+
+                                        'activeOrders.SETTINGS_MASTER.data.cashRegisterServerUpdatedAt':
+                                            now,
+
+                                        'activeOrders.SETTINGS_MASTER.updatedAt':
+                                            now
+                                    }
+                                },
+                                {
+                                    upsert: true,
+                                    new: true,
+                                    setDefaultsOnInsert: true
+                                }
+                            )
+                            .lean();
+
+                    return {
+                        confirmedState,
+                        revision,
+                        now,
+                        confirmed:
+                            ichefExtractCashConfig(
+                                confirmedState || {}
+                            )
+                    };
+                }
+            );
+
+        io.to(tenantID).emit(
+            'cashRegisterConfigChanged',
+            {
+                tenantID,
+                revision: result.revision,
+                cashRegister:
+                    result.confirmed.cashRegister,
+                taxConfig:
+                    result.confirmed.taxConfig,
+                updatedAt:
+                    result.now
+            }
+        );
+
+        // Compatibilité avec les anciennes branches.
+        io.to(tenantID).emit(
+            'cash-register-config-changed',
+            {
+                tenantID,
+                revision: result.revision,
+                cashRegister:
+                    result.confirmed.cashRegister,
+                taxConfig:
+                    result.confirmed.taxConfig,
+                updatedAt:
+                    result.now
+            }
+        );
+
+        ichefEmitFullState(
+            tenantID,
+            result.confirmedState,
+            {
+                tableId: 'SETTINGS_MASTER',
+                source: 'cash-register-config',
+                extra: {
+                    revision:
+                        result.revision
+                }
+            }
+        );
+
+        await scellerOperation(
+            tenantID,
+            'CONFIG_UPDATE',
+            'CASH_REGISTER',
+            result.revision,
+            String(
+                req.body?.operator ||
+                'ADMIN'
+            ),
+            {
+                deviceId:
+                    String(req.body?.deviceId || ''),
+                cashRegister:
+                    result.confirmed.cashRegister,
+                taxConfig:
+                    result.confirmed.taxConfig
+            }
+        );
+
+        return res.json({
+            success: true,
+            persisted: true,
+            tenantID,
+            revision:
+                result.revision,
+            cashRegister:
+                result.confirmed.cashRegister,
+            taxConfig:
+                result.confirmed.taxConfig,
+            updatedAt:
+                result.now
+        });
+
+    } catch (error) {
+        console.error(
+            '[iCHEF CASH CONFIG] écriture :',
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            persisted: false,
+            error:
+                'Impossible d’enregistrer la configuration caisse.'
+        });
+    }
+});
+
+
+// ==========================================================
+// 🚦 ANTI-RUSH — SESSION SIGNÉE ET ÉTAT CENTRAL
+// ==========================================================
+function ichefRequireAntiRushSession(req) {
+    const tenantID =
+        cleanString(
+            req.query?.tenantID ||
+            req.body?.tenantID ||
+            req.headers['x-ichef-tenant']
+        );
+
+    const claims =
+        ichefVerifySignedSession(
+            ichefBearerToken(req),
+            {
+                tenantID,
+                scope: 'ANTI_RUSH'
+            }
+        );
+
+    return {
+        tenantID,
+        claims,
+        ok: Boolean(tenantID && claims)
+    };
+}
+
+app.post('/api/anti-rush/login', async (req, res) => {
+    try {
+        const tenantID =
+            cleanString(req.body?.tenantID);
+
+        const pin =
+            String(req.body?.pin || '').trim();
+
+        const auth =
+            await ichefAuthorizePin(
+                tenantID,
+                pin,
+                {
+                    managerOnly: true
+                }
+            );
+
+        if (!auth.ok) {
+            return res
+                .status(auth.status || 403)
+                .json({
+                    success: false,
+                    error:
+                        auth.error ||
+                        'Accès Anti-Rush refusé.'
+                });
+        }
+
+        const deviceId =
+            String(
+                req.body?.deviceId ||
+                ''
+            ).slice(0, 180);
+
+        const token =
+            ichefSignSession({
+                tenantID,
+                scope: 'ANTI_RUSH',
+                role:
+                    auth.role ||
+                    'MANAGER',
+                name:
+                    auth.name ||
+                    '',
+                deviceId
+            });
+
+        return res.json({
+            success: true,
+            token,
+            role:
+                auth.role ||
+                'MANAGER',
+            tenantID
+        });
+
+    } catch (error) {
+        console.error(
+            '[iCHEF ANTI-RUSH] login :',
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            error:
+                'Impossible d’ouvrir la session Anti-Rush.'
+        });
+    }
+});
+
+app.get('/api/anti-rush/state', async (req, res) => {
+    const session =
+        ichefRequireAntiRushSession(req);
+
+    if (!session.ok) {
+        return res.status(401).json({
+            success: false,
+            error:
+                'Session Anti-Rush invalide ou expirée.'
+        });
+    }
+
+    try {
+        const state =
+            await AppState
+                .findOne({
+                    tenantID:
+                        session.tenantID
+                })
+                .lean();
+
+        return res.json(
+            state || {
+                tenantID:
+                    session.tenantID,
+                activeOrders: {}
+            }
+        );
+
+    } catch (error) {
+        return res.status(500).json({
+            success: false,
+            error:
+                'État Anti-Rush indisponible.'
+        });
+    }
+});
+
+app.post('/api/anti-rush/update', async (req, res) => {
+    const session =
+        ichefRequireAntiRushSession(req);
+
+    if (!session.ok) {
+        return res.status(401).json({
+            success: false,
+            error:
+                'Session Anti-Rush invalide ou expirée.'
+        });
+    }
+
+    const tableId =
+        String(
+            req.body?.tableId ||
+            ''
+        ).trim();
+
+    if (
+        ![
+            'STAFF_ACCESS',
+            'SETTINGS_MASTER',
+            'ALERTS_MASTER'
+        ].includes(tableId)
+    ) {
+        return res.status(400).json({
+            success: false,
+            error:
+                'Clé Anti-Rush non autorisée.'
+        });
+    }
+
+    try {
+        const order =
+            req.body?.order === null
+                ? null
+                : (
+                    req.body?.order &&
+                    typeof req.body.order === 'object'
+                        ? req.body.order
+                        : { data: {} }
+                );
+
+        const update =
+            order === null
+                ? {
+                    $unset: {
+                        [`activeOrders.${tableId}`]:
+                            ''
+                    }
+                }
+                : {
+                    $set: {
+                        [`activeOrders.${tableId}`]:
+                            {
+                                ...order,
+                                updatedAt:
+                                    new Date().toISOString()
+                            }
+                    }
+                };
+
+        const state =
+            await AppState
+                .findOneAndUpdate(
+                    {
+                        tenantID:
+                            session.tenantID
+                    },
+                    update,
+                    {
+                        upsert: true,
+                        new: true,
+                        setDefaultsOnInsert: true
+                    }
+                )
+                .lean();
+
+        ichefEmitFullState(
+            session.tenantID,
+            state,
+            {
+                tableId,
+                source:
+                    'anti-rush-update'
+            }
+        );
+
+        if (tableId === 'STAFF_ACCESS') {
+            io.to(session.tenantID).emit(
+                'staffDutyChanged',
+                {
+                    tenantID:
+                        session.tenantID,
+                    source:
+                        'anti-rush-update',
+                    timestamp:
+                        new Date().toISOString()
+                }
+            );
+        }
+
+        await scellerOperation(
+            session.tenantID,
+            'UPDATE',
+            'ANTI_RUSH',
+            tableId,
+            session.claims?.name ||
+            session.claims?.role ||
+            'MANAGER',
+            {
+                tableId,
+                deviceId:
+                    session.claims?.deviceId ||
+                    ''
+            }
+        );
+
+        return res.json({
+            success: true,
+            persisted: true
+        });
+
+    } catch (error) {
+        console.error(
+            '[iCHEF ANTI-RUSH] update :',
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            persisted: false,
+            error:
+                'Sauvegarde Anti-Rush impossible.'
+        });
+    }
+});
+
+
+// ==========================================================
+// 🧾 AUDIT — ÉVÉNEMENTS CLIENT NON BLOQUANTS
+// ==========================================================
+app.post('/api/audit/events', async (req, res) => {
+    const tenantID =
+        cleanString(req.body?.tenantID);
+
+    if (!tenantID) {
+        return res.status(400).json({
+            success: false,
+            error:
+                'tenantID manquant.'
+        });
+    }
+
+    try {
+        const action =
+            String(
+                req.body?.action ||
+                'CLIENT_EVENT'
+            )
+                .trim()
+                .toUpperCase()
+                .slice(0, 120);
+
+        const moduleName =
+            String(
+                req.body?.module ||
+                'CLIENT'
+            )
+                .trim()
+                .toUpperCase()
+                .slice(0, 120);
+
+        const entityId =
+            String(
+                req.body?.details?.id ||
+                req.body?.details?.tableId ||
+                req.body?.page ||
+                ichefFiscalId('AUDIT')
+            ).slice(0, 180);
+
+        const record =
+            await scellerOperation(
+                tenantID,
+                action,
+                moduleName,
+                entityId,
+                'CLIENT',
+                {
+                    details:
+                        req.body?.details || {},
+                    page:
+                        String(req.body?.page || ''),
+                    clientTime:
+                        req.body?.clientTime ||
+                        null,
+                    serverTime:
+                        new Date().toISOString()
+                }
+            );
+
+        io.to(tenantID).emit(
+            'history-event',
+            {
+                tenantID,
+                action,
+                module:
+                    moduleName,
+                timestamp:
+                    new Date().toISOString()
+            }
+        );
+
+        return res.status(202).json({
+            success: true,
+            accepted: true,
+            id:
+                record?._id ||
+                null
+        });
+
+    } catch (error) {
+        return res.status(500).json({
+            success: false,
+            error:
+                'Journalisation indisponible.'
+        });
+    }
+});
+
+
+// ==========================================================
+// 👥 RH — CORRECTIONS / VALIDATION / CLÔTURE
+// ==========================================================
+async function ichefPersistRealTimesheets(
+    tenantID,
+    timesheets,
+    source,
+    extra = {}
+) {
+    const now =
+        new Date().toISOString();
+
+    const state =
+        await AppState
+            .findOneAndUpdate(
+                {
+                    tenantID:
+                        cleanString(tenantID)
+                },
+                {
+                    $set: {
+                        'activeOrders.RH_TIMESHEET_REAL':
+                            {
+                                data:
+                                    timesheets,
+                                updatedAt:
+                                    now
+                            }
+                    }
+                },
+                {
+                    upsert: true,
+                    new: true,
+                    setDefaultsOnInsert: true
+                }
+            )
+            .lean();
+
+    ichefEmitFullState(
+        tenantID,
+        state,
+        {
+            tableId:
+                'RH_TIMESHEET_REAL',
+            source,
+            extra
+        }
+    );
+
+    io.to(cleanString(tenantID)).emit(
+        'rhTimesheetUpdated',
+        {
+            tenantID:
+                cleanString(tenantID),
+            timesheets,
+            source,
+            updatedAt:
+                now,
+            ...extra
+        }
+    );
+
+    return state;
+}
+
+app.post('/api/rh/timesheet/correct', async (req, res) => {
+    const tenantID =
+        cleanString(req.body?.tenantID);
+
+    const managerPin =
+        String(
+            req.body?.managerPin ||
+            ''
+        ).trim();
+
+    const auth =
+        await ichefAuthorizePin(
+            tenantID,
+            managerPin,
+            {
+                managerOnly: true
+            }
+        );
+
+    if (!auth.ok) {
+        return res
+            .status(auth.status || 403)
+            .json({
+                success: false,
+                error:
+                    auth.error ||
+                    'Correction RH refusée.'
+            });
+    }
+
+    const staffId =
+        String(
+            req.body?.staffId ||
+            ''
+        ).trim();
+
+    const date =
+        String(
+            req.body?.date ||
+            ''
+        ).trim();
+
+    const workedHours =
+        Number(req.body?.workedHours);
+
+    const reason =
+        String(
+            req.body?.reason ||
+            ''
+        ).trim();
+
+    if (
+        !staffId ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+        !Number.isFinite(workedHours) ||
+        workedHours < 0 ||
+        workedHours > 24 ||
+        reason.length < 3
+    ) {
+        return res.status(400).json({
+            success: false,
+            error:
+                'Correction RH invalide.'
+        });
+    }
+
+    try {
+        const state =
+            await AppState
+                .findOne({
+                    tenantID
+                })
+                .lean();
+
+        const punches =
+            Array.isArray(
+                state?.activeOrders
+                    ?.PUNCHES_MASTER
+                    ?.data
+            )
+                ? state.activeOrders
+                    .PUNCHES_MASTER.data
+                : [];
+
+        const previous =
+            state?.activeOrders
+                ?.RH_TIMESHEET_REAL
+                ?.data &&
+            typeof state.activeOrders
+                .RH_TIMESHEET_REAL.data ===
+                'object'
+                ? JSON.parse(
+                    JSON.stringify(
+                        state.activeOrders
+                            .RH_TIMESHEET_REAL.data
+                    )
+                )
+                : ichefRhBuildWorkedTimesheets(
+                    punches,
+                    {}
+                );
+
+        const month =
+            date.slice(0, 7);
+
+        const dayKey =
+            date.slice(8, 10);
+
+        const monthNode =
+            previous?.months?.[month];
+
+        const staffNode =
+            monthNode?.staff?.[staffId];
+
+        const dayNode =
+            staffNode?.days?.[dayKey];
+
+        if (!monthNode || !staffNode || !dayNode) {
+            return res.status(404).json({
+                success: false,
+                error:
+                    'Journée RH introuvable.'
+            });
+        }
+
+        if (
+            monthNode.status === 'LOCKED' ||
+            staffNode.status === 'LOCKED' ||
+            dayNode.status === 'LOCKED'
+        ) {
+            return res.status(409).json({
+                success: false,
+                error:
+                    'Cette feuille d’heures est clôturée.'
+            });
+        }
+
+        const previousWorkedHours = Number(
+            dayNode.workedHours ??
+            dayNode.manualWorkedHours ??
+            dayNode.rawWorkedHours ??
+            0
+        );
+        dayNode.manualWorkedHours = Math.round(workedHours * 100) / 100;
+        dayNode.workedHours = dayNode.manualWorkedHours;
+        dayNode.status = 'TO_VERIFY';
+        dayNode.correction = {
+            reason,
+            previousWorkedHours,
+            correctedWorkedHours:
+                dayNode.manualWorkedHours,
+            correctedAt:
+                new Date().toISOString(),
+            correctedBy:
+                auth.name ||
+                auth.role ||
+                'MANAGER'
+        };
+
+        staffNode.status =
+            staffNode.status === 'VALIDATED'
+                ? 'TO_VERIFY'
+                : staffNode.status;
+
+        monthNode.status =
+            monthNode.status === 'VALIDATED'
+                ? 'TO_VERIFY'
+                : monthNode.status;
+
+        const timesheets =
+            ichefRhBuildWorkedTimesheets(
+                punches,
+                previous
+            );
+
+        await ichefPersistRealTimesheets(
+            tenantID,
+            timesheets,
+            'rh-timesheet-correct',
+            {
+                staffId,
+                date
+            }
+        );
+
+        await scellerOperation(
+            tenantID,
+            'CORRECT',
+            'RH_TIMESHEET',
+            `${staffId}:${date}`,
+            auth.name ||
+            auth.role ||
+            'MANAGER',
+            {
+                workedHours:
+                    dayNode.manualWorkedHours,
+                reason
+            }
+        );
+
+        return res.json({
+            success: true,
+            persisted: true,
+            timesheets
+        });
+
+    } catch (error) {
+        console.error(
+            '[iCHEF RH] correction :',
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            error:
+                'Correction RH impossible.'
+        });
+    }
+});
+
+app.post('/api/rh/timesheet/status', async (req, res) => {
+    const tenantID =
+        cleanString(req.body?.tenantID);
+
+    const managerPin =
+        String(
+            req.body?.managerPin ||
+            ''
+        ).trim();
+
+    const auth =
+        await ichefAuthorizePin(
+            tenantID,
+            managerPin,
+            {
+                managerOnly: true
+            }
+        );
+
+    if (!auth.ok) {
+        return res
+            .status(auth.status || 403)
+            .json({
+                success: false,
+                error:
+                    auth.error ||
+                    'Action RH refusée.'
+            });
+    }
+
+    const month =
+        String(
+            req.body?.month ||
+            ''
+        ).trim();
+
+    const staffId =
+        String(
+            req.body?.staffId ||
+            ''
+        ).trim();
+
+    const action =
+        String(
+            req.body?.action ||
+            ''
+        )
+            .trim()
+            .toUpperCase();
+
+    if (
+        !/^\d{4}-\d{2}$/.test(month) ||
+        ![
+            'VALIDATE',
+            'LOCK_MONTH'
+        ].includes(action)
+    ) {
+        return res.status(400).json({
+            success: false,
+            error:
+                'Action RH invalide.'
+        });
+    }
+
+    try {
+        const state =
+            await AppState
+                .findOne({
+                    tenantID
+                })
+                .lean();
+
+        const punches =
+            Array.isArray(
+                state?.activeOrders
+                    ?.PUNCHES_MASTER
+                    ?.data
+            )
+                ? state.activeOrders
+                    .PUNCHES_MASTER.data
+                : [];
+
+        const previous =
+            state?.activeOrders
+                ?.RH_TIMESHEET_REAL
+                ?.data &&
+            typeof state.activeOrders
+                .RH_TIMESHEET_REAL.data ===
+                'object'
+                ? JSON.parse(
+                    JSON.stringify(
+                        state.activeOrders
+                            .RH_TIMESHEET_REAL.data
+                    )
+                )
+                : ichefRhBuildWorkedTimesheets(
+                    punches,
+                    {}
+                );
+
+        const monthNode =
+            previous?.months?.[month];
+
+        if (!monthNode) {
+            return res.status(404).json({
+                success: false,
+                error:
+                    'Mois RH introuvable.'
+            });
+        }
+
+        const now =
+            new Date().toISOString();
+
+        const author =
+            auth.name ||
+            auth.role ||
+            'MANAGER';
+
+        if (action === 'VALIDATE') {
+            const staffNode =
+                monthNode?.staff?.[staffId];
+
+            if (!staffNode) {
+                return res.status(404).json({
+                    success: false,
+                    error:
+                        'Collaborateur RH introuvable.'
+                });
+            }
+
+            if (
+                monthNode.status === 'LOCKED' ||
+                staffNode.status === 'LOCKED'
+            ) {
+                return res.status(409).json({
+                    success: false,
+                    error:
+                        'Cette feuille d’heures est clôturée.'
+                });
+            }
+
+            staffNode.status =
+                'VALIDATED';
+            staffNode.validatedAt =
+                now;
+            staffNode.validatedBy =
+                author;
+
+            Object.values(
+                staffNode.days || {}
+            ).forEach(day => {
+                if (day.status !== 'LOCKED') {
+                    day.status =
+                        'VALIDATED';
+                    day.validatedAt =
+                        now;
+                    day.validatedBy =
+                        author;
+                }
+            });
+        }
+
+        if (action === 'LOCK_MONTH') {
+            monthNode.status =
+                'LOCKED';
+            monthNode.lockedAt =
+                now;
+            monthNode.lockedBy =
+                author;
+
+            Object.values(
+                monthNode.staff || {}
+            ).forEach(staffNode => {
+                staffNode.status =
+                    'LOCKED';
+                staffNode.lockedAt =
+                    now;
+                staffNode.lockedBy =
+                    author;
+
+                Object.values(
+                    staffNode.days || {}
+                ).forEach(day => {
+                    day.status =
+                        'LOCKED';
+                    day.lockedAt =
+                        now;
+                    day.lockedBy =
+                        author;
+                });
+            });
+        }
+
+        const timesheets =
+            ichefRhBuildWorkedTimesheets(
+                punches,
+                previous
+            );
+
+        await ichefPersistRealTimesheets(
+            tenantID,
+            timesheets,
+            'rh-timesheet-status',
+            {
+                month,
+                staffId,
+                action
+            }
+        );
+
+        await scellerOperation(
+            tenantID,
+            action,
+            'RH_TIMESHEET',
+            staffId
+                ? `${month}:${staffId}`
+                : month,
+            author,
+            {
+                month,
+                staffId,
+                action
+            }
+        );
+
+        return res.json({
+            success: true,
+            persisted: true,
+            timesheets
+        });
+
+    } catch (error) {
+        console.error(
+            '[iCHEF RH] statut :',
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            error:
+                'Action RH impossible.'
+        });
+    }
+});
+
+
+// ==========================================================
+// 🧮 FISCAL — OUTILS COMMUNS
+// ==========================================================
+function ichefFrozenBuildVatSummary(
+    orderSnapshot = {},
+    fallbackTotal = 0
+) {
+    const items =
+        Array.isArray(orderSnapshot?.items)
+            ? orderSnapshot.items
+            : [];
+
+    const groups = new Map();
+
+    let calculatedHT = 0;
+    let calculatedVAT = 0;
+    let calculatedTTC = 0;
+    let hasRate = false;
+
+    const round2 =
+        value =>
+            Math.round(
+                Number(value || 0) * 100
+            ) / 100;
+
+    for (const item of items) {
+        if (item?.cancelled === true) continue;
+
+        const qty =
+            Math.max(
+                0,
+                Number(
+                    item?.qty ??
+                    item?.quantity ??
+                    1
+                ) || 0
+            );
+
+        const unitTTC =
+            Number(
+                item?.price ??
+                item?.p ??
+                item?.unitPrice ??
+                0
+            ) || 0;
+
+        const lineTTC =
+            round2(unitTTC * qty);
+
+        const rawRate =
+            item?.vatRate ??
+            item?.tva ??
+            item?.taxRate ??
+            null;
+
+        const rate =
+            rawRate === null ||
+            rawRate === undefined ||
+            rawRate === ''
+                ? null
+                : Number(rawRate);
+
+        calculatedTTC +=
+            lineTTC;
+
+        if (
+            Number.isFinite(rate) &&
+            rate >= 0 &&
+            rate <= 100
+        ) {
+            hasRate = true;
+
+            const lineHT =
+                rate === 0
+                    ? lineTTC
+                    : lineTTC /
+                        (1 + rate / 100);
+
+            const lineVAT =
+                lineTTC -
+                lineHT;
+
+            calculatedHT +=
+                lineHT;
+            calculatedVAT +=
+                lineVAT;
+
+            const key =
+                Number(rate)
+                    .toFixed(3);
+
+            const current =
+                groups.get(key) || {
+                    rate:
+                        Number(rate),
+                    baseHT:
+                        0,
+                    vat:
+                        0,
+                    totalTTC:
+                        0
+                };
+
+            current.baseHT +=
+                lineHT;
+            current.vat +=
+                lineVAT;
+            current.totalTTC +=
+                lineTTC;
+
+            groups.set(
+                key,
+                current
+            );
+        }
+    }
+
+    const totalTTC =
+        round2(
+            Number(
+                orderSnapshot?.totalTTC ??
+                orderSnapshot?.total ??
+                fallbackTotal ??
+                calculatedTTC
+            ) || 0
+        );
+
+    const totalHT =
+        hasRate
+            ? round2(calculatedHT)
+            : round2(
+                Number(
+                    orderSnapshot?.totalHT ??
+                    0
+                ) || 0
+            );
+
+    const totalVAT =
+        hasRate
+            ? round2(calculatedVAT)
+            : round2(
+                Number(
+                    orderSnapshot?.totalTVA ??
+                    orderSnapshot?.vatTotal ??
+                    0
+                ) || 0
+            );
+
+    return {
+        calculated:
+            hasRate,
+        totalTTC,
+        totalHT,
+        totalVAT,
+        rates:
+            Array.from(
+                groups.values()
+            )
+                .map(group => ({
+                    rate:
+                        Number(group.rate),
+                    baseHT:
+                        round2(group.baseHT),
+                    vat:
+                        round2(group.vat),
+                    totalTTC:
+                        round2(group.totalTTC)
+                }))
+                .sort(
+                    (a, b) =>
+                        Number(a.rate) -
+                        Number(b.rate)
+                )
+    };
+}
+
+function ichefFrozenFiscalHashBase(transaction = {}) {
+    const clone =
+        JSON.parse(
+            JSON.stringify(
+                transaction || {}
+            )
+        );
+
+    delete clone.ticketHash;
+    delete clone.fiscalControlUrl;
+    delete clone.serverControlVerifiedAt;
+
+    if (
+        clone.receipt &&
+        typeof clone.receipt === 'object'
+    ) {
+        delete clone.receipt.publicUrl;
+    }
+
+    return clone;
+}
+
+function ichefFrozenVerifyTicketHash(transaction = {}) {
+    const stored =
+        String(
+            transaction?.ticketHash ||
+            ''
+        );
+
+    if (!stored) {
+        return {
+            available: false,
+            valid: false,
+            stored: '',
+            recomputed: ''
+        };
+    }
+
+    const recomputed =
+        crypto
+            .createHash('sha256')
+            .update(
+                JSON.stringify(
+                    ichefFrozenFiscalHashBase(
+                        transaction
+                    )
+                )
+            )
+            .digest('hex');
+
+    return {
+        available: true,
+        valid:
+            stored === recomputed,
+        stored,
+        recomputed
+    };
+}
+
+async function ichefFrozenVerifyAuditChainForTicket(
+    tenantID,
+    ticketNumber
+) {
+    const safeID =
+        cleanString(tenantID);
+
+    const logs =
+        await AuditLog
+            .find({
+                tenantID:
+                    safeID
+            })
+            .sort({
+                timestamp: 1,
+                _id: 1
+            })
+            .lean();
+
+    let chainValid = true;
+    let brokenAt = null;
+
+    for (
+        let index = 0;
+        index < logs.length;
+        index += 1
+    ) {
+        const log =
+            logs[index];
+
+        const expectedPrevious =
+            index === 0
+                ? 'GENESIS_BLOCK_0000000000000000'
+                : String(
+                    logs[index - 1]
+                        ?.currentHash ||
+                    ''
+                );
+
+        if (
+            String(
+                log?.previousHash ||
+                ''
+            ) !==
+            expectedPrevious
+        ) {
+            chainValid = false;
+            brokenAt = index;
+            break;
+        }
+
+        const dataString =
+            JSON.stringify({
+                tenantID:
+                    safeID,
+                action:
+                    log.action,
+                entityType:
+                    log.entityType,
+                entityId:
+                    log.entityId,
+                authorPin:
+                    log.authorPin,
+                details:
+                    log.details,
+                previousHash:
+                    log.previousHash
+            });
+
+        const recomputed =
+            crypto
+                .createHash('sha256')
+                .update(dataString)
+                .digest('hex');
+
+        if (
+            String(
+                log?.currentHash ||
+                ''
+            ) !==
+            recomputed
+        ) {
+            chainValid = false;
+            brokenAt = index;
+            break;
+        }
+    }
+
+    const targetIndex =
+        logs.findIndex(log =>
+            String(
+                log?.entityId ||
+                ''
+            ) ===
+            String(
+                ticketNumber ||
+                ''
+            ) &&
+            String(
+                log?.action ||
+                ''
+            ).toUpperCase() ===
+            'CASH_IN'
+        );
+
+    const target =
+        targetIndex >= 0
+            ? logs[targetIndex]
+            : null;
+
+    return {
+        recordFound:
+            Boolean(target),
+        chainValid,
+        brokenAt,
+        position:
+            targetIndex >= 0
+                ? targetIndex + 1
+                : null,
+        totalRecords:
+            logs.length,
+        timestamp:
+            target?.timestamp ||
+            null,
+        previousHash:
+            target?.previousHash ||
+            null,
+        currentHash:
+            target?.currentHash ||
+            null,
+        action:
+            target?.action ||
+            null,
+        entityType:
+            target?.entityType ||
+            null
+    };
+}
+
+function ichefFiscalPeriodRange(
+    period,
+    key
+) {
+    const kind =
+        String(period || '')
+            .trim()
+            .toLowerCase();
+
+    const rawKey =
+        String(key || '')
+            .trim();
+
+    let start = null;
+    let end = null;
+
+    if (
+        kind === 'day' &&
+        /^\d{4}-\d{2}-\d{2}$/.test(rawKey)
+    ) {
+        start =
+            new Date(
+                `${rawKey}T00:00:00.000Z`
+            );
+
+        end =
+            new Date(
+                start.getTime() +
+                24 * 60 * 60 * 1000
+            );
+    }
+
+    if (
+        kind === 'month' &&
+        /^\d{4}-\d{2}$/.test(rawKey)
+    ) {
+        const [year, month] =
+            rawKey
+                .split('-')
+                .map(Number);
+
+        start =
+            new Date(
+                Date.UTC(
+                    year,
+                    month - 1,
+                    1
+                )
+            );
+
+        end =
+            new Date(
+                Date.UTC(
+                    year,
+                    month,
+                    1
+                )
+            );
+    }
+
+    if (
+        kind === 'year' &&
+        /^\d{4}$/.test(rawKey)
+    ) {
+        const year =
+            Number(rawKey);
+
+        start =
+            new Date(
+                Date.UTC(
+                    year,
+                    0,
+                    1
+                )
+            );
+
+        end =
+            new Date(
+                Date.UTC(
+                    year + 1,
+                    0,
+                    1
+                )
+            );
+    }
+
+    return {
+        start,
+        end
+    };
+}
+
+
+// ==========================================================
+// 🧾 FISCAL EVENT — JOURNAL SERVEUR
+// ==========================================================
+app.post('/api/fiscal/event', async (req, res) => {
+    const tenantID =
+        cleanString(
+            req.body?.tenantID ||
+            req.headers['x-ichef-tenant']
+        );
+
+    const pin =
+        String(
+            req.body?.pin ||
+            req.headers['x-ichef-pin'] ||
+            ''
+        ).trim();
+
+    const auth =
+        await ichefAuthorizePin(
+            tenantID,
+            pin
+        );
+
+    if (!auth.ok) {
+        return res
+            .status(auth.status || 403)
+            .json({
+                success: false,
+                error:
+                    auth.error ||
+                    'Événement fiscal refusé.'
+            });
+    }
+
+    try {
+        const event =
+            req.body?.event &&
+            typeof req.body.event === 'object'
+                ? req.body.event
+                : {};
+
+        const subtype =
+            String(
+                event.type ||
+                'CLIENT_EVENT'
+            )
+                .trim()
+                .toUpperCase()
+                .slice(0, 100);
+
+        const recordId =
+            String(
+                event.ref ||
+                event.id ||
+                req.headers['idempotency-key'] ||
+                ichefFiscalId('EVENT')
+            ).slice(0, 180);
+
+        const amount =
+            Number(
+                event.signedTotal ??
+                event.amount ??
+                0
+            ) || 0;
+
+        const record =
+            await ichefWriteFiscalRecord({
+                tenantID,
+                recordId,
+                operationId:
+                    recordId,
+                type:
+                    'EVENT',
+                subtype,
+                tableId:
+                    String(
+                        event.tableId ||
+                        ''
+                    ),
+                status:
+                    String(
+                        event.status ||
+                        'INFO'
+                    ),
+                amount,
+                currency:
+                    String(
+                        event.currency ||
+                        'CHF'
+                    ),
+                operator:
+                    String(
+                        event.operator ||
+                        auth.name ||
+                        auth.role ||
+                        ''
+                    ),
+                terminal:
+                    String(
+                        req.body?.terminal ||
+                        event.terminal ||
+                        'CLIENT'
+                    ),
+                deviceId:
+                    String(
+                        req.body?.deviceId ||
+                        event.deviceId ||
+                        ''
+                    ),
+                details:
+                    event,
+                createdAt:
+                    event.clientTime ||
+                    new Date()
+            });
+
+        await scellerOperation(
+            tenantID,
+            subtype,
+            'FISCAL_EVENT',
+            recordId,
+            auth.name ||
+            auth.role ||
+            'STAFF',
+            event
+        );
+
+        io.to(tenantID).emit(
+            'history-event',
+            {
+                tenantID,
+                type:
+                    subtype,
+                recordId,
+                timestamp:
+                    new Date().toISOString()
+            }
+        );
+
+        return res.json({
+            success: true,
+            persisted: true,
+            recordId:
+                record?.recordId ||
+                recordId
+        });
+
+    } catch (error) {
+        console.error(
+            '[iCHEF FISCAL EVENT] :',
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            persisted: false,
+            error:
+                'Journal fiscal indisponible.'
+        });
+    }
+});
+
+
+// ==========================================================
+// 📚 HISTORIQUE FISCAL JOUR / MOIS / ANNÉE
+// ==========================================================
+app.get('/api/fiscal/history', async (req, res) => {
+    const tenantID =
+        cleanString(
+            req.query?.tenantID ||
+            req.headers['x-ichef-tenant']
+        );
+
+    const pin =
+        String(
+            req.headers['x-ichef-pin'] ||
+            req.query?.pin ||
+            ''
+        ).trim();
+
+    const auth =
+        await ichefAuthorizePin(
+            tenantID,
+            pin
+        );
+
+    if (!auth.ok) {
+        return res
+            .status(auth.status || 403)
+            .json({
+                success: false,
+                error:
+                    auth.error ||
+                    'Historique fiscal refusé.'
+            });
+    }
+
+    try {
+        const range =
+            ichefFiscalPeriodRange(
+                req.query?.period,
+                req.query?.key
+            );
+
+        const filter = {
+            tenantID
+        };
+
+        if (
+            range.start &&
+            range.end
+        ) {
+            filter.createdAt = {
+                $gte:
+                    range.start,
+                $lt:
+                    range.end
+            };
+        }
+
+        const records =
+            await FiscalRecord
+                .find(filter)
+                .sort({
+                    createdAt: -1,
+                    _id: -1
+                })
+                .limit(5000)
+                .lean();
+
+        const data =
+            records.map(record => {
+                const details =
+                    record?.details &&
+                    typeof record.details === 'object'
+                        ? record.details
+                        : {};
+
+                return {
+                    ...details,
+                    recordId:
+                        record.recordId,
+                    type:
+                        details.type ||
+                        record.type,
+                    subtype:
+                        details.subtype ||
+                        record.subtype,
+                    tableId:
+                        details.tableId ||
+                        record.tableId,
+                    ticketNumber:
+                        details.ticketNumber ||
+                        record.ticketNumber,
+                    operationId:
+                        details.operationId ||
+                        record.operationId,
+                    status:
+                        details.status ||
+                        record.status,
+                    amount:
+                        details.amount ??
+                        record.amount,
+                    total:
+                        details.total ??
+                        record.amount,
+                    currency:
+                        details.currency ||
+                        record.currency,
+                    createdAt:
+                        details.createdAt ||
+                        record.createdAt
+                };
+            });
+
+        return res.json({
+            success: true,
+            data,
+            period:
+                String(req.query?.period || ''),
+            key:
+                String(req.query?.key || '')
+        });
+
+    } catch (error) {
+        console.error(
+            '[iCHEF FISCAL HISTORY] :',
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            error:
+                'Historique fiscal indisponible.'
+        });
+    }
+});
+
+
+// ==========================================================
+// ✅ CLÔTURE D'UNE TABLE DÉJÀ ENCAISSÉE
+// ==========================================================
+app.post('/api/orders/close-paid', async (req, res) => {
+    const tenantID =
+        cleanString(
+            req.body?.tenantID ||
+            req.headers['x-ichef-tenant']
+        );
+
+    const pin =
+        String(
+            req.body?.pin ||
+            req.headers['x-ichef-pin'] ||
+            ''
+        ).trim();
+
+    const auth =
+        await ichefAuthorizePin(
+            tenantID,
+            pin
+        );
+
+    if (!auth.ok) {
+        return res
+            .status(auth.status || 403)
+            .json({
+                success: false,
+                error:
+                    auth.error ||
+                    'Clôture refusée.'
+            });
+    }
+
+    const tableId =
+        String(
+            req.body?.tableId ||
+            ''
+        ).trim();
+
+    const ticketNumber =
+        String(
+            req.body?.ticketNumber ||
+            ''
+        ).trim();
+
+    if (!tableId || !ticketNumber) {
+        return res.status(400).json({
+            success: false,
+            error:
+                'Table ou ticket manquant.'
+        });
+    }
+
+    try {
+        const currentState =
+            await AppState
+                .findOne({
+                    tenantID
+                })
+                .lean();
+
+        const order =
+            currentState
+                ?.activeOrders
+                ?.[tableId];
+
+        if (!order) {
+            return res.json({
+                success: true,
+                persisted: true,
+                idempotent: true,
+                alreadyClosed: true
+            });
+        }
+
+        const actualTicket =
+            String(
+                order?.fiscalTicket
+                    ?.ticketNumber ||
+                order?.fiscalReceiptReference ||
+                order?.paymentDraft
+                    ?.receiptReference ||
+                ''
+            ).trim();
+
+        const paid =
+            order?.paymentStatus === 'PAID' ||
+            order?.fiscalStatus === 'FISCALIZED' ||
+            order?.status === 'FISCALIZED' ||
+            order?.isArchived === true;
+
+        if (
+            !paid ||
+            actualTicket !== ticketNumber
+        ) {
+            return res.status(409).json({
+                success: false,
+                error:
+                    'La table n’est pas fiscalisée avec ce ticket.'
+            });
+        }
+
+        const state =
+            await AppState
+                .findOneAndUpdate(
+                    { tenantID },
+                    {
+                        $unset: {
+                            [`activeOrders.${tableId}`]: ''
+                        }
+                    },
+                    { new: true }
+                )
+                .lean();
+
+        ichefEmitFullState(
+            tenantID,
+            state,
+            {
+                tableId,
+                source:
+                    'close-paid',
+                extra: {
+                    ticketNumber
+                }
+            }
+        );
+
+        await scellerOperation(
+            tenantID,
+            'CLOSE_PAID',
+            'TABLE',
+            ticketNumber,
+            auth.name ||
+            auth.role ||
+            'STAFF',
+            {
+                tableId,
+                ticketNumber
+            }
+        );
+
+        return res.json({
+            success: true,
+            persisted: true,
+            ticketNumber,
+            tableId
+        });
+
+    } catch (error) {
+        console.error(
+            '[iCHEF CLOSE PAID] :',
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            persisted: false,
+            error:
+                'Clôture de table impossible.'
+        });
+    }
+});
+
+
+// ==========================================================
+// ↩️ CORRECTION FISCALE — CONTRE-ÉCRITURE, ORIGINAL CONSERVÉ
+// ==========================================================
+app.post('/api/fiscal/correction', async (req, res) => {
+    const tenantID =
+        cleanString(
+            req.body?.tenantID ||
+            req.headers['x-ichef-tenant']
+        );
+
+    const pin =
+        String(
+            req.body?.pin ||
+            req.headers['x-ichef-pin'] ||
+            ''
+        ).trim();
+
+    const auth =
+        await ichefAuthorizePin(
+            tenantID,
+            pin
+        );
+
+    if (!auth.ok) {
+        return res
+            .status(auth.status || 403)
+            .json({
+                success: false,
+                error:
+                    auth.error ||
+                    'Correction fiscale refusée.'
+            });
+    }
+
+    const ticketNumber =
+        String(
+            req.body?.ticketNumber ||
+            ''
+        ).trim();
+
+    const tableId =
+        String(
+            req.body?.tableId ||
+            ''
+        ).trim();
+
+    const reason =
+        String(
+            req.body?.reason ||
+            ''
+        ).trim();
+
+    const mode =
+        String(
+            req.body?.mode ||
+            'FULL_VOID'
+        )
+            .trim()
+            .toUpperCase();
+
+    const requestId =
+        String(
+            req.body?.correctionRequestId ||
+            req.headers['idempotency-key'] ||
+            ''
+        ).trim() ||
+        ichefFiscalId('CORRECTION');
+
+    if (
+        !ticketNumber ||
+        reason.length < 3 ||
+        mode !== 'FULL_VOID'
+    ) {
+        return res.status(400).json({
+            success: false,
+            error:
+                'Correction fiscale incomplète.'
+        });
+    }
+
+    try {
+        const existing =
+            await FiscalRecord
+                .findOne({
+                    tenantID,
+                    recordId:
+                        requestId
+                })
+                .lean();
+
+        if (existing) {
+            return res.json({
+                success: true,
+                persisted: true,
+                idempotent: true,
+                correctionTicketNumber:
+                    existing.ticketNumber,
+                ticketNumber:
+                    existing.ticketNumber
+            });
+        }
+
+        const original =
+            await FiscalRecord
+                .findOne({
+                    tenantID,
+                    ticketNumber,
+                    type:
+                        'SALE'
+                })
+                .sort({
+                    createdAt: 1
+                })
+                .lean();
+
+        if (!original) {
+            return res.status(404).json({
+                success: false,
+                error:
+                    'Ticket fiscal original introuvable.'
+            });
+        }
+
+        const originalTx =
+            original.details &&
+            typeof original.details === 'object'
+                ? original.details
+                : {};
+
+        const correctionTicketNumber =
+            'COR-' +
+            ticketNumber
+                .replace(
+                    /[^A-Za-z0-9_-]/g,
+                    ''
+                )
+                .slice(-36) +
+            '-' +
+            Date.now()
+                .toString()
+                .slice(-6);
+
+        const now =
+            new Date().toISOString();
+
+        const amount =
+            -Math.abs(
+                Number(
+                    original.amount ||
+                    originalTx.amount ||
+                    originalTx.total ||
+                    0
+                ) || 0
+            );
+
+        const correctionTx = {
+            id:
+                requestId,
+            operationId:
+                requestId,
+            correctionRequestId:
+                requestId,
+            ticketNumber:
+                correctionTicketNumber,
+            correctionOf:
+                ticketNumber,
+            correctionType:
+                mode,
+            type:
+                'CORRECTION',
+            status:
+                'POSTED',
+            tenantID,
+            tableId:
+                tableId ||
+                original.tableId ||
+                originalTx.tableId ||
+                '',
+            method:
+                originalTx.method ||
+                'CORRECTION',
+            amount,
+            total:
+                amount,
+            totalHT:
+                -Math.abs(
+                    Number(
+                        originalTx.totalHT ||
+                        0
+                    ) || 0
+                ),
+            currency:
+                original.currency ||
+                originalTx.currency ||
+                'CHF',
+            tva:
+                originalTx.tva ||
+                {},
+            reason,
+            originalTicketNumber:
+                ticketNumber,
+            createdAt:
+                now,
+            date:
+                now,
+            timestamp:
+                Date.now(),
+            operator:
+                auth.name ||
+                auth.role ||
+                'STAFF',
+            orderSnapshot:
+                originalTx.orderSnapshot ||
+                {}
+        };
+
+        const update = {
+            $push: {
+                'activeOrders.FINANCIAL_HISTORY.data': {
+                    $each: [correctionTx],
+                    $position: 0,
+                    $slice: ICHEF_FINANCIAL_CACHE_LIMIT
+                }
+            }
+        };
+
+        if (tableId) {
+            update.$unset = {
+                [`activeOrders.${tableId}`]: ''
+            };
+        }
+
+        const state =
+            await AppState
+                .findOneAndUpdate(
+                    {
+                        tenantID
+                    },
+                    update,
+                    {
+                        upsert: true,
+                        new: true,
+                        setDefaultsOnInsert: true
+                    }
+                )
+                .lean();
+
+        await ichefWriteFiscalRecord({
+            tenantID,
+            recordId:
+                requestId,
+            operationId:
+                requestId,
+            type:
+                'CORRECTION',
+            subtype:
+                mode,
+            tableId:
+                correctionTx.tableId,
+            ticketNumber:
+                correctionTicketNumber,
+            status:
+                'POSTED',
+            amount,
+            currency:
+                correctionTx.currency,
+            operator:
+                correctionTx.operator,
+            terminal:
+                String(
+                    req.body?.terminal ||
+                    'PAD'
+                ),
+            deviceId:
+                String(
+                    req.body?.deviceId ||
+                    req.headers['x-ichef-device'] ||
+                    ''
+                ),
+            createdAt:
+                now,
+            details:
+                correctionTx
+        });
+
+        await scellerOperation(
+            tenantID,
+            'CORRECTION',
+            'PAIEMENT',
+            correctionTicketNumber,
+            correctionTx.operator,
+            correctionTx
+        );
+
+        ichefEmitFullState(
+            tenantID,
+            state,
+            {
+                tableId:
+                    tableId ||
+                    correctionTx.tableId,
+                source:
+                    'fiscal-correction',
+                extra: {
+                    correctionTicketNumber,
+                    correctionOf:
+                        ticketNumber
+                }
+            }
+        );
+
+        io.to(tenantID).emit(
+            'paymentUpdated',
+            {
+                tenantID,
+                transaction:
+                    correctionTx
+            }
+        );
+
+        return res.json({
+            success: true,
+            persisted: true,
+            correctionTicketNumber,
+            ticketNumber:
+                correctionTicketNumber,
+            correctionOf:
+                ticketNumber,
+            amount
+        });
+
+    } catch (error) {
+        console.error(
+            '[iCHEF FISCAL CORRECTION] :',
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            persisted: false,
+            error:
+                'Correction fiscale impossible.'
+        });
+    }
+});
+
+
+// ==========================================================
+// 🔎 CONTRÔLE FISCAL PUBLIC PAR TOKEN
+// ==========================================================
+app.get('/api/fiscal/control', async (req, res) => {
+    try {
+        const tenantID =
+            cleanString(
+                req.query?.tenantID
+            );
+
+        const ticketNumber =
+            String(
+                req.query?.ticket ||
+                req.query?.ticketNumber ||
+                ''
+            ).trim();
+
+        const token =
+            String(
+                req.query?.token ||
+                ''
+            ).trim();
+
+        if (
+            !tenantID ||
+            !ticketNumber ||
+            token.length < 32
+        ) {
+            return res.status(400).json({
+                success: false,
+                verified: false,
+                error:
+                    'QR de contrôle fiscal incomplet.'
+            });
+        }
+
+        const state =
+            await AppState
+                .findOne({
+                    tenantID
+                })
+                .lean();
+
+        const history =
+            Array.isArray(
+                state?.activeOrders
+                    ?.FINANCIAL_HISTORY
+                    ?.data
+            )
+                ? state.activeOrders
+                    .FINANCIAL_HISTORY.data
+                : [];
+
+        let transaction =
+            history.find(tx =>
+                String(
+                    tx?.ticketNumber ||
+                    ''
+                ) === ticketNumber &&
+                String(
+                    tx?.fiscalControl
+                        ?.token ||
+                    ''
+                ) === token
+            );
+
+        const fiscalRecord =
+            await FiscalRecord
+                .findOne({
+                    tenantID,
+                    ticketNumber
+                })
+                .sort({
+                    createdAt: 1
+                })
+                .lean();
+
+        if (
+            !transaction &&
+            fiscalRecord?.details &&
+            String(
+                fiscalRecord.details
+                    ?.fiscalControl
+                    ?.token ||
+                ''
+            ) === token
+        ) {
+            transaction =
+                fiscalRecord.details;
+        }
+
+        if (!transaction) {
+            return res.status(404).json({
+                success: false,
+                verified: false,
+                error:
+                    'Ticket fiscal introuvable ou QR invalide.'
+            });
+        }
+
+        const tenant =
+            await Tenant
+                .findOne({
+                    tenantID
+                })
+                .lean();
+
+        const ticketHash =
+            ichefFrozenVerifyTicketHash(
+                transaction
+            );
+
+        const audit =
+            await ichefFrozenVerifyAuditChainForTicket(
+                tenantID,
+                ticketNumber
+            );
+
+        const snapshot =
+            transaction.orderSnapshot ||
+            {};
+
+        const vatSummary =
+            transaction.vatSummary ||
+            ichefFrozenBuildVatSummary(
+                snapshot,
+                transaction.amount
+            );
+
+        const items =
+            Array.isArray(
+                snapshot.items
+            )
+                ? snapshot.items
+                    .filter(
+                        item =>
+                            item?.cancelled !== true
+                    )
+                    .map(item => ({
+                        name:
+                            String(
+                                item?.name ||
+                                item?.n ||
+                                'Article'
+                            ),
+                        quantity:
+                            Number(
+                                item?.qty ??
+                                item?.quantity ??
+                                1
+                            ),
+                        unitPriceTTC:
+                            Number(
+                                item?.price ??
+                                item?.p ??
+                                item?.unitPrice ??
+                                0
+                            ),
+                        vatRate:
+                            item?.vatRate ??
+                            item?.tva ??
+                            item?.taxRate ??
+                            null
+                    }))
+                : [];
+
+        const fiscalJournalValid =
+            Boolean(
+                fiscalRecord &&
+                (
+                    String(
+                        fiscalRecord.status ||
+                        ''
+                    ).toUpperCase() ===
+                        'PAID' ||
+                    String(
+                        fiscalRecord.status ||
+                        ''
+                    ).toUpperCase() ===
+                        'POSTED'
+                )
+            );
+
+        const verified =
+            ticketHash.valid === true &&
+            audit.recordFound === true &&
+            audit.chainValid === true &&
+            fiscalJournalValid;
+
+        res.setHeader(
+            'Cache-Control',
+            'no-store, no-cache, must-revalidate'
+        );
+
+        res.setHeader(
+            'X-Robots-Tag',
+            'noindex,nofollow'
+        );
+
+        return res.json({
+            success: true,
+            verified,
+
+            control: {
+                version:
+                    transaction
+                        ?.fiscalControl
+                        ?.version ||
+                    1,
+                checkedAt:
+                    new Date().toISOString(),
+                source:
+                    'iCHEF OS — Fiscal Control',
+                readOnly:
+                    true
+            },
+
+            restaurant: {
+                tenantID,
+                name:
+                    String(
+                        tenant?.clientName ||
+                        tenantID
+                    ),
+                country:
+                    String(
+                        transaction.country ||
+                        ''
+                    ),
+                currency:
+                    String(
+                        transaction.currency ||
+                        ''
+                    )
+            },
+
+            ticket: {
+                ticketNumber:
+                    transaction.ticketNumber,
+                fiscalId:
+                    transaction.ticketNumber,
+                operationId:
+                    transaction.operationId ||
+                    transaction.paymentRequestId ||
+                    '',
+                status:
+                    transaction.status ||
+                    '',
+                tableId:
+                    transaction.tableId ||
+                    '',
+                zone:
+                    transaction.zone ||
+                    '',
+                pax:
+                    Number(
+                        transaction.pax ||
+                        snapshot.pax ||
+                        0
+                    ),
+                createdAt:
+                    transaction.createdAt ||
+                    transaction.date ||
+                    null,
+                amountTTC:
+                    Number(
+                        transaction.total ??
+                        transaction.amount ??
+                        0
+                    ),
+                amountHT:
+                    Number(
+                        vatSummary.totalHT ||
+                        transaction.totalHT ||
+                        0
+                    ),
+                vatTotal:
+                    Number(
+                        vatSummary.totalVAT ||
+                        0
+                    ),
+                vatSummary,
+                paymentMethod:
+                    transaction.method ||
+                    '',
+                operator:
+                    transaction.waiter ||
+                    transaction.operator ||
+                    '',
+                terminal:
+                    transaction.terminal ||
+                    '',
+                device:
+                    transaction.deviceId ||
+                    '',
+                items
+            },
+
+            proof: {
+                ticketHash: {
+                    algorithm:
+                        'SHA-256',
+                    valid:
+                        ticketHash.valid,
+                    stored:
+                        ticketHash.stored,
+                    recomputed:
+                        ticketHash.recomputed
+                },
+
+                auditChain: {
+                    recordFound:
+                        audit.recordFound,
+                    valid:
+                        audit.chainValid,
+                    position:
+                        audit.position,
+                    totalRecords:
+                        audit.totalRecords,
+                    action:
+                        audit.action,
+                    timestamp:
+                        audit.timestamp,
+                    previousHash:
+                        audit.previousHash,
+                    currentHash:
+                        audit.currentHash,
+                    brokenAt:
+                        audit.brokenAt
+                },
+
+                fiscalJournal: {
+                    found:
+                        Boolean(
+                            fiscalRecord
+                        ),
+                    recordId:
+                        fiscalRecord
+                            ?.recordId ||
+                        null,
+                    type:
+                        fiscalRecord
+                            ?.type ||
+                        null,
+                    subtype:
+                        fiscalRecord
+                            ?.subtype ||
+                        null,
+                    status:
+                        fiscalRecord
+                            ?.status ||
+                        null,
+                    amount:
+                        fiscalRecord
+                            ?.amount ??
+                        null,
+                    createdAt:
+                        fiscalRecord
+                            ?.createdAt ||
+                        null
+                }
+            }
+        });
+
+    } catch (error) {
+        console.error(
+            '[iCHEF FISCAL CONTROL] :',
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            verified: false,
+            error:
+                'Contrôle fiscal indisponible.'
+        });
+    }
+});
+
+
+// ==========================================================
+// 🧯 DERNIER FILET EXPRESS — UNE ERREUR HTTP NE DOIT PAS TUER NODE
+// ==========================================================
+app.use((error, req, res, next) => {
+    console.error('[iCHEF HTTP]', {
+        requestId: req?.ichefRequestId || '',
+        method: req?.method || '',
+        path: req?.originalUrl || req?.url || '',
+        error: error?.message || String(error || 'Erreur inconnue')
+    });
+
+    if (res.headersSent) return next(error);
+
+    const bodyTooLarge = error?.type === 'entity.too.large' || Number(error?.status) === 413;
+    return res.status(bodyTooLarge ? 413 : (Number(error?.status) || 500)).json({
+        success: false,
+        error: bodyTooLarge ? 'Requête trop volumineuse.' : 'Erreur serveur interne.',
+        requestId: req?.ichefRequestId || undefined
+    });
+});
+
+// ==========================================================
+// 🛡️ ARRÊT PROPRE / SURVEILLANCE PROCESS
+// ==========================================================
+let ichefShuttingDown = false;
+
+async function ichefGracefulShutdown(signal, exitCode = 0) {
+    if (ichefShuttingDown) return;
+    ichefShuttingDown = true;
+
+    console.warn(`⚠️ Arrêt iCHEF demandé : ${signal}`);
+
+    const forceTimer = setTimeout(() => {
+        console.error('❌ Arrêt forcé après délai de sécurité.');
+        process.exit(exitCode || 1);
+    }, 10000);
+
+    forceTimer.unref?.();
+
+    try {
+        await new Promise(resolve => {
+            io.close(() => resolve());
+        });
+    } catch (_) {}
+
+    try {
+        await new Promise(resolve => {
+            server.close(() => resolve());
+        });
+    } catch (_) {}
+
+    try {
+        await mongoose.connection.close(false);
+    } catch (error) {
+        console.error(
+            'Erreur fermeture MongoDB :',
+            error?.message || error
+        );
+    }
+
+    clearTimeout(forceTimer);
+    process.exit(exitCode);
+}
+
+process.on('SIGTERM', () => {
+    ichefGracefulShutdown('SIGTERM', 0);
+});
+
+process.on('SIGINT', () => {
+    ichefGracefulShutdown('SIGINT', 0);
+});
+
+process.on('unhandledRejection', reason => {
+    console.error(
+        '❌ Promise rejetée non gérée :',
+        reason
+    );
+});
+
+process.on('uncaughtException', error => {
+    console.error(
+        '❌ Exception Node non interceptée :',
+        error
+    );
+
+    ichefGracefulShutdown('uncaughtException', 1);
+});
+
+// ==========================================================
+// 🚀 DÉMARRAGE OFFICIEL — DERNIÈRE INSTRUCTION
+// ==========================================================
+server.on('error', error => {
+    console.error(
+        '❌ Erreur serveur HTTP :',
+        error
+    );
+});
+
+server.listen(PORT, () => {
+    console.log('');
+    console.log('==========================================');
+    console.log('✅ iCHEF EMPIRE OS — CORE FROZEN 50 EN LIGNE');
+    console.log('==========================================');
+    console.log(`✅ Port serveur : ${PORT}`);
+    console.log('✅ Socket.IO activé.');
+    console.log(
+        `✅ MongoDB état initial : ${mongoose.connection.readyState}`
+    );
+    console.log('✅ QR/NFC synchronisation atomique activée.');
+    console.log('✅ Plan interactif protégé des écrasements QR/NFC.');
+    console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
+    console.log(`✅ Mongo pool cible : ${ICHEF_MONGO_MIN_POOL}-${ICHEF_MONGO_MAX_POOL}.`);
+    console.log(`✅ Cache financier AppState : ${ICHEF_FINANCIAL_CACHE_LIMIT} écritures max.`);
+    console.log('==========================================');
+});
