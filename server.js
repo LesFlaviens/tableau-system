@@ -2971,6 +2971,7 @@ app.get('/api/roadmap/releases', async (req, res) => {
         const state = await AppState.findOne({ tenantID }).lean();
         const deployments = state?.activeOrders?.ROADMAP_MASTER?.deployments || {};
 
+        const personalizedReleases = ROADMAP_SERVER_CATALOGUE.map(r => ({
             ...r,
             rolloutPercent: deployments[r.id] !== undefined ? deployments[r.id] : r.rolloutPercent,
             clientStatusLabel: deployments[r.id] >= 100 ? "ACTIF CHEZ VOUS" : (deployments[r.id] > 0 ? "EN DÉPLOIEMENT" : "À CONFIGURER")
@@ -2981,7 +2982,6 @@ app.get('/api/roadmap/releases', async (req, res) => {
         res.status(500).json({ error: "Erreur lecture des releases" });
     }
 });
-
 // 3. STATUT DES MODULES
 app.get('/api/roadmap/modules', async (req, res) => {
     try {
