@@ -10,7 +10,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="theme-color" content="#0f172a">
-    <title>iCHEF OS - HACCP connecté</title>
+    <title>iCHEF OS - HACCP connecté V3.1</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 
@@ -714,12 +714,13 @@ window.ICHEF_HACCP = {
 
 
         function systemHeaders(extra = {}) {
+            // IMPORTANT : ces en-têtes correspondent exactement à ceux autorisés
+            // par le serveur iCHEF. Les métadonnées HACCP/pays restent dans les
+            // données enregistrées, pas dans des headers CORS non autorisés.
             const headers = Object.assign({
                 "Accept": "application/json",
                 "X-iCHEF-Tenant": tenantID,
-                "X-iCHEF-Device": deviceId,
-                "X-iCHEF-HACCP-Profile": currentRegulatoryProfile.id,
-                "X-iCHEF-Country": currentRegulatoryProfile.countryCode || "UNKNOWN"
+                "X-iCHEF-Device": deviceId
             }, extra);
 
             const accessToken = sessionStorage.getItem("ichef_access_token");
@@ -1001,7 +1002,12 @@ window.ICHEF_HACCP = {
                     method: "POST",
                     credentials: "include",
                     cache: "no-store",
-                    headers: systemHeaders({ "Content-Type": "application/json" }),
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Accept": "application/json",
+                        "X-iCHEF-Device": deviceId,
+                        "X-iCHEF-Tenant": tenantID
+                    },
                     body: JSON.stringify({
                         tenantID,
                         pin,
@@ -1016,7 +1022,17 @@ window.ICHEF_HACCP = {
                 const data = await response.json().catch(() => ({}));
 
                 if (!response.ok || data.success !== true) {
-                    throw new Error(data.error || data.message || "PIN refusé");
+                    if (data.error === "NETWORK_UNAVAILABLE" || data.offline === true) {
+                        throw new Error("Connexion au serveur iCHEF impossible. Vérifiez le réseau puis réessayez.");
+                    }
+                    throw new Error(data.error || data.message || `PIN refusé (${response.status})`);
+                }
+
+                const safeTenantID = String(data.safeTenantID || tenantID).trim();
+                if (safeTenantID) {
+                    localStorage.setItem("ichef_tenant_id", safeTenantID);
+                    localStorage.setItem("tenantID", safeTenantID);
+                    window.ICHEF_HACCP.tenantID = safeTenantID;
                 }
 
                 currentUser = {
