@@ -32,7 +32,7 @@ upgrade-insecure-requests;
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="theme-color" content="#0a0a0a">
     
-    <title>Réservation & Service - iChef OS</title>
+    <title>Réservation & Service - iChef OS · Portail Client Sync</title>
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800&family=Playfair+Display:ital,wght@0,600;0,900;1,400&display=swap" rel="stylesheet">
     
     <style>
@@ -423,7 +423,10 @@ upgrade-insecure-requests;
                 </div>
                 <h2 style="color:var(--gold); font-size: 1.6rem; margin-bottom: 10px; text-transform: uppercase; font-family: var(--font-title);">Demande envoyée</h2>
                 <div id="success-message" style="color:var(--text-main); line-height: 1.5; font-size: 0.95rem;">Confirmation en cours...</div>
-                <button class="btn-next" style="margin-top: 30px; width: auto; padding: 12px 24px;" onclick="location.reload()">Nouvelle réservation</button>
+                <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:30px;">
+                    <button class="btn-next" style="width:auto;padding:12px 24px;" onclick="openClientPortalReservations()">Mes réservations</button>
+                    <button class="btn-next" style="width:auto;padding:12px 24px;background:transparent;color:var(--gold);border:1px solid var(--gold);" onclick="location.reload()">Nouvelle réservation</button>
+                </div>
             </div>
         </div>
 
@@ -510,12 +513,18 @@ upgrade-insecure-requests;
             }
 
             try {
-                let r = await fetch(`${window.SERVER_URL}/get-current-state?tenantID=${getTenantParam()}`);
-                let state = await r.json();
-                if (state.activeOrders && state.activeOrders['SETTINGS_MASTER'] && state.activeOrders['SETTINGS_MASTER'].data) {
-                    let settings = state.activeOrders['SETTINGS_MASTER'].data;
-                    if (settings.name) document.getElementById('display-resto-name').innerText = settings.name;
-                    if (settings.currency || settings.devise) window.ICHEF_CURRENCY = settings.currency || settings.devise;
+                const response = await fetch(
+                    `${window.SERVER_URL}/api/client-portal/public-config?tenantID=${getTenantParam()}`,
+                    { cache: 'no-store' }
+                );
+                const data = await response.json();
+                if (data?.success) {
+                    if (data?.restaurant?.name) {
+                        document.getElementById('display-resto-name').innerText = data.restaurant.name;
+                    }
+                    if (data?.restaurant?.currency) {
+                        window.ICHEF_CURRENCY = data.restaurant.currency;
+                    }
                 }
             } catch(e) {}
         });
@@ -541,6 +550,37 @@ upgrade-insecure-requests;
 
         function getTenantParam() {
             return encodeURIComponent(window.tenantID || '');
+        }
+
+        function clientPortalTokenKey() {
+            return `ichef_client_portal_token::${String(window.tenantID || '').trim()}`;
+        }
+
+        function getClientPortalToken() {
+            try {
+                return String(
+                    localStorage.getItem(clientPortalTokenKey()) || ''
+                ).trim();
+            } catch (_) {
+                return '';
+            }
+        }
+
+        function saveClientPortalToken(token) {
+            const value = String(token || '').trim();
+            if (!value) return;
+            try {
+                localStorage.setItem(
+                    clientPortalTokenKey(),
+                    value
+                );
+            } catch (_) {}
+        }
+
+        function openClientPortalReservations() {
+            const tenant = getTenantParam();
+            window.location.href =
+                `portail-client.html?tenantID=${tenant}&view=reservations`;
         }
 
         // ========================================================
@@ -813,101 +853,196 @@ upgrade-insecure-requests;
         function prevSlide() { if (currentSlide > 0) { currentSlide--; updateUI(); } }
 
         async function submitFinalToAPI() {
-            btnNext.innerHTML = `Vérification des disponibilités...`; btnNext.disabled = true;
-            let finalObs = reservation.obs ? `[${reservation.occasion.toUpperCase()}] ${reservation.obs}` : `[${reservation.occasion.toUpperCase()}]`;
+            btnNext.innerHTML = `Vérification des disponibilités...`;
+            btnNext.disabled = true;
 
             try {
-                let rState = await fetch(`${window.SERVER_URL}/get-current-state?tenantID=${getTenantParam()}`);
-                let state = await rState.json();
-                let availableTables = state.activeOrders?.ARCHITECTURE?.data?.tables?.map(t => ({ id: t.label, maxPax: t.pax })) || [{ id: "T1", maxPax: 4 }];
+                const contextResponse = await fetch(
+                    `${window.SERVER_URL}/api/client-portal/reservation-context?tenantID=${getTenantParam()}`,
+                    { cache: 'no-store' }
+                );
+                const context = await contextResponse.json();
 
-                let customerRequest = `Nom: ${reservation.name}. Tél: ${reservation.phone}. Réservation pour ${reservation.guests} pax, le ${reservation.date} à ${reservation.time}.`;
-
-                let response = await fetch(`${window.SERVER_URL}/api/smart-reservation`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tenantID: window.tenantID, customerRequest: customerRequest, availableTables: availableTables })
-                });
-                let result = await response.json();
-
-                if (result.success && result.decision.acceptee) {
-                    let resas = state.activeOrders?.RESERVATIONS_MASTER?.data || [];
-                    const newReservation = {
-                        id: Date.now(),
-                        reservationId: null,
-                        name: reservation.name,
-                        phone: reservation.phone,
-                        date: reservation.date,
-                        time: reservation.time,
-                        couverts: parseInt(reservation.guests) || 2,
-                        obs: finalObs,
-                        assignedTable: result.decision.tableAllouee || "",
-                        tableId: result.decision.tableAllouee || "",
-                        table: result.decision.tableAllouee || "",
-                        status: 'confirmed'
-                    };
-
-                    newReservation.reservationId = String(newReservation.id);
-                    resas.push(newReservation);
-
-                    await fetch(`${window.SERVER_URL}/update-order?tenantID=${getTenantParam()}`, {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({
-                            tableId: 'RESERVATIONS_MASTER',
-                            order: { data: resas }
-                        })
-                    });
-
-                    if(newReservation.assignedTable){
-                        await fetch(`${window.SERVER_URL}/update-order?tenantID=${getTenantParam()}`,{
-                            method:'POST',
-                            headers:{'Content-Type':'application/json'},
-                            body:JSON.stringify({
-                                tableId:newReservation.assignedTable,
-                                order:{
-                                    status:'reserved',
-                                    reservationStatus:'confirmed',
-                                    reservationId:newReservation.reservationId,
-                                    bookingId:newReservation.reservationId,
-                                    date:newReservation.date,
-                                    time:newReservation.time,
-                                    clientName:newReservation.name,
-                                    phone:newReservation.phone,
-                                    pax:newReservation.couverts,
-                                    observations:newReservation.obs,
-                                    reservation:{
-                                        id:newReservation.reservationId,
-                                        reservationId:newReservation.reservationId,
-                                        status:'confirmed',
-                                        name:newReservation.name,
-                                        phone:newReservation.phone,
-                                        date:newReservation.date,
-                                        time:newReservation.time,
-                                        pax:newReservation.couverts,
-                                        observations:newReservation.obs,
-                                        assignedTable:newReservation.assignedTable
-                                    },
-                                    items:[]
-                                }
-                            })
-                        });
-                    }
-
-                    document.getElementById('main-header').style.display = 'none';
-                    document.getElementById('main-slider').style.display = 'none';
-                    document.getElementById('main-footer').style.display = 'none';
-                    document.getElementById('success-screen').style.display = 'flex';
-                    document.getElementById('success-message').innerHTML = `${escapeHTML(result.decision.messageClient || 'Votre demande a bien été envoyée au restaurant.')}<br><br><i style="color:var(--accent);">Table proposée : ${escapeHTML(result.decision.tableAllouee || 'à confirmer')}</i>`;
-                    
-                    if(document.getElementById('b2b-panel').style.display === 'flex') {
-                        loadB2BAnalytics();
-                        loadAIForecast(); // On recharge les prévisions après une nouvelle résa !
-                    }
-                } else {
-                    alert(`Message du Restaurant :\n\n${result.decision?.messageClient || "Plus de disponibilité."}`);
-                    btnNext.innerText = "Confirmer la réservation"; btnNext.disabled = false;
+                if (!contextResponse.ok || !context?.success) {
+                    throw new Error(
+                        context?.error ||
+                        'Disponibilités indisponibles.'
+                    );
                 }
-            } catch (e) { alert("Erreur de communication réseau."); btnNext.disabled = false; }
+
+                const availableTables =
+                    Array.isArray(context.availableTables)
+                        ? context.availableTables
+                        : [];
+
+                const customerRequest =
+                    `Nom: ${reservation.name}. ` +
+                    `Tél: ${reservation.phone}. ` +
+                    `Réservation pour ${reservation.guests} pax, ` +
+                    `le ${reservation.date} à ${reservation.time}.`;
+
+                const aiResponse = await fetch(
+                    `${window.SERVER_URL}/api/smart-reservation`,
+                    {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            tenantID: window.tenantID,
+                            customerRequest,
+                            availableTables
+                        })
+                    }
+                );
+
+                const aiResult = await aiResponse.json();
+
+                if (
+                    !aiResponse.ok ||
+                    !aiResult?.success
+                ) {
+                    throw new Error(
+                        aiResult?.error ||
+                        'Le moteur de réservation est indisponible.'
+                    );
+                }
+
+                if (!aiResult?.decision?.acceptee) {
+                    alert(
+                        `Message du Restaurant :\n\n${
+                            aiResult?.decision?.messageClient ||
+                            'Ce créneau n’est pas disponible.'
+                        }`
+                    );
+                    btnNext.innerText =
+                        "Confirmer la réservation";
+                    btnNext.disabled = false;
+                    return;
+                }
+
+                const existingToken =
+                    getClientPortalToken();
+
+                const headers = {
+                    'Content-Type': 'application/json'
+                };
+
+                if (existingToken) {
+                    headers.Authorization =
+                        `Bearer ${existingToken}`;
+                }
+
+                const createResponse = await fetch(
+                    `${window.SERVER_URL}/api/client-portal/reservations/create`,
+                    {
+                        method: 'POST',
+                        headers,
+                        credentials: 'include',
+                        body: JSON.stringify({
+                            tenantID: window.tenantID,
+                            reservation: {
+                                name: reservation.name,
+                                phone: reservation.phone,
+                                date: reservation.date,
+                                time: reservation.time,
+                                couverts:
+                                    parseInt(
+                                        reservation.guests,
+                                        10
+                                    ) || 2,
+                                occasion:
+                                    reservation.occasion ||
+                                    'Classique',
+                                obs:
+                                    reservation.obs ||
+                                    ''
+                            },
+                            proposal: {
+                                assignedTable:
+                                    aiResult?.decision?.tableAllouee ||
+                                    '',
+                                messageClient:
+                                    aiResult?.decision?.messageClient ||
+                                    ''
+                            }
+                        })
+                    }
+                );
+
+                const created =
+                    await createResponse.json();
+
+                if (
+                    !createResponse.ok ||
+                    !created?.success
+                ) {
+                    throw new Error(
+                        created?.error ||
+                        'Réservation non enregistrée.'
+                    );
+                }
+
+                if (created.clientToken) {
+                    saveClientPortalToken(
+                        created.clientToken
+                    );
+                }
+
+                const savedReservation =
+                    created.reservation || {};
+
+                document.getElementById(
+                    'main-header'
+                ).style.display = 'none';
+                document.getElementById(
+                    'main-slider'
+                ).style.display = 'none';
+                document.getElementById(
+                    'main-footer'
+                ).style.display = 'none';
+                document.getElementById(
+                    'success-screen'
+                ).style.display = 'flex';
+
+                const tableText =
+                    savedReservation.assignedTable
+                        ? `Table proposée : ${escapeHTML(
+                            savedReservation.assignedTable
+                          )}`
+                        : `Table à confirmer par le restaurant`;
+
+                document.getElementById(
+                    'success-message'
+                ).innerHTML =
+                    `${escapeHTML(
+                        created.messageClient ||
+                        'Votre demande a bien été enregistrée.'
+                    )}<br><br>` +
+                    `<i style="color:var(--accent);">${tableText}</i>`;
+
+                if (
+                    document.getElementById(
+                        'b2b-panel'
+                    ).style.display === 'flex'
+                ) {
+                    loadB2BAnalytics();
+                    loadAIForecast();
+                }
+
+            } catch (e) {
+                console.error(
+                    '[iCHEF réservation client]',
+                    e
+                );
+                alert(
+                    e?.message ||
+                    'Erreur de communication réseau.'
+                );
+                btnNext.innerText =
+                    "Confirmer la réservation";
+                btnNext.disabled = false;
+            }
         }
 
         // FULLSCREEN MANAGEMENT
