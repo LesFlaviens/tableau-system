@@ -10,7 +10,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="theme-color" content="#0f172a">
-    <title>iCHEF OS - HACCP V5.6 BARRE UNIQUE HORIZONTALE</title>
+    <title>iCHEF OS - HACCP V5.7 SYMBIOSE STOCK</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 
@@ -1385,12 +1385,12 @@ pointer-events:none;opacity:.75
 
     <div class="nav-haccp">
         <div class="ichef-nav-core" style="display:flex;gap:6px;align-items:center;flex-wrap:nowrap;">
-        <div class="haccp-brand-mini">iCHEF <span>HACCP PRO · V5.6</span></div>
+        <div class="haccp-brand-mini">iCHEF <span>HACCP PRO · V5.7</span></div>
         <button class="nav-btn system-hub-btn" type="button" onclick="openIchefModule('chef.html')">CUISINE</button>
         <button class="nav-btn system-hub-btn" type="button" onclick="openIchefModule('chef-bar.html')">BAR</button>
         <button class="nav-btn system-hub-btn" type="button" onclick="openIchefModule('chef-patissier.html')">PÂTISSERIE</button>
         <button class="nav-btn system-hub-btn" type="button" onclick="openIchefModule('pack-eco.html')">SERVICE / CAISSE</button>
-        <button class="nav-btn system-hub-btn" type="button" onclick="openIchefModule('administration.html', {section:'economat'})">ÉCONOMAT</button>
+        <button class="nav-btn system-hub-btn" type="button" onclick="openIchefModule('economat.html')">ÉCONOMAT</button>
         </div>
 
         <button id="link-cuisine" class="pad-link cuisine" onclick="retourAccueilApp()">🔪 RETOUR PAD CUISINE</button>
@@ -1547,7 +1547,7 @@ pointer-events:none;opacity:.75
                         </div>
                         <div class="inventory-actions">
                             <button class="inventory-secondary-btn" type="button" onclick="refreshInventoryFromSystem(this)">ACTUALISER LE STOCK</button>
-                            <button class="inventory-secondary-btn" type="button" onclick="openIchefModule('administration.html', {section:'economat'})">OUVRIR L’ÉCONOMAT</button>
+                            <button class="inventory-secondary-btn" type="button" onclick="openIchefModule('economat.html')">OUVRIR L’ÉCONOMAT</button>
                         </div>
                     </div>
 
@@ -1880,6 +1880,24 @@ pointer-events:none;opacity:.75
             } catch (_) {}
         }
 
+        async function getHaccpServerStateStrict() {
+            const r = await fetch(
+                `${SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(tenantID)}&_t=${Date.now()}&haccpBuild=5700`,
+                {
+                    method:"GET",
+                    credentials:"include",
+                    cache:"no-store",
+                    headers:systemHeaders()
+                }
+            );
+            if (!r.ok) {
+                let err = {};
+                try { err = await r.json(); } catch (_) {}
+                throw new Error(err.error || err.message || `Lecture serveur refusée (${r.status})`);
+            }
+            return await r.json();
+        }
+
         const API = {
             getState: async () => {
                 try {
@@ -1911,20 +1929,13 @@ pointer-events:none;opacity:.75
             },
 
             update: async (key, data) => {
-                const cache = readHaccpCache();
-                cache.activeOrders = cache.activeOrders || {};
-
-                if (data === null) delete cache.activeOrders[key];
-                else cache.activeOrders[key] = { data };
-                writeHaccpCache(cache);
-
                 const r = await fetch(
-                    `${SERVER_URL}/update-order?tenantID=${encodeURIComponent(tenantID)}&haccpBuild=4101`,
+                    `${SERVER_URL}/update-order?tenantID=${encodeURIComponent(tenantID)}&haccpBuild=5700`,
                     {
                         method: "POST",
                         credentials: "include",
                         cache: "no-store",
-                        headers: systemHeaders({ "Content-Type": "application/json" }),
+                        headers: systemHeaders({ "Content-Type": "application/json", "Accept": "application/json" }),
                         body: JSON.stringify({
                             tableId: key,
                             order: data === null ? null : { data }
@@ -1932,15 +1943,34 @@ pointer-events:none;opacity:.75
                     }
                 );
 
-                if (!r.ok) {
-                    let err = {};
-                    try { err = await r.json(); } catch (_) {}
+                let payload = {};
+                try { payload = await r.json(); } catch (_) {}
+
+                if (!r.ok || payload?.success === false) {
                     setSyncStatus("degraded", "SYSTÈME · SAUVEGARDE À REFAIRE");
-                    throw new Error(err.error || err.message || `Sauvegarde serveur refusée (${r.status})`);
+                    throw new Error(payload.error || payload.message || `Sauvegarde serveur refusée (${r.status})`);
                 }
 
+                // Le cache n'est mis à jour qu'après confirmation réelle du serveur.
+                const cache = readHaccpCache();
+                cache.activeOrders = cache.activeOrders || {};
+                if (data === null) delete cache.activeOrders[key];
+                else cache.activeOrders[key] = { data };
+                writeHaccpCache(cache);
+
+                // Signal commun ; le polling reste le filet de sécurité si le serveur
+                // ne relaie pas un événement spécifique.
+                try {
+                    if (haccpSocket?.connected) {
+                        haccpSocket.emit("orderUpdated", { tenantID, tableId:key, source:"HACCP" });
+                        if (key === "INVENTORY_MASTER") {
+                            haccpSocket.emit("inventory-updated", { tenantID, source:"HACCP" });
+                        }
+                    }
+                } catch (_) {}
+
                 setSyncStatus("online", "SYSTÈME · SAUVEGARDÉ");
-                return r;
+                return payload;
             }
         };
 
@@ -2082,6 +2112,21 @@ pointer-events:none;opacity:.75
                 console.warn("[iCHEF HACCP] Socket indisponible :", e);
                 setSyncStatus("degraded", "SYSTÈME · TEMPS RÉEL INDISPONIBLE");
             }
+        }
+
+        let haccpPollTimer = null;
+        function startHaccpSharedPolling() {
+            if (haccpPollTimer) return;
+            haccpPollTimer = setInterval(async () => {
+                if (!window.ICHEF_HACCP?.authenticated) return;
+                const active = document.activeElement;
+                if (active && ['INPUT','TEXTAREA','SELECT'].includes(active.tagName)) return;
+                if (document.querySelector('.modal.open')) return;
+                try {
+                    await loadData();
+                    await flushPendingInventoryAudits();
+                } catch (_) {}
+            }, 12000);
         }
 
         let EMPIRE_LISTS = {
@@ -2268,7 +2313,9 @@ function retourAccueilApp() {
                 document.getElementById("pin-display").innerText = "";
 
                 connectHaccpRealtime();
+                startHaccpSharedPolling();
                 await loadData();
+                flushPendingInventoryAudits().catch(() => {});
                 generateArchiveFolders();
                 setSyncStatus("online", "SYSTÈME · " + userAuditLabel().toUpperCase());
             } catch (e) {
@@ -2604,81 +2651,154 @@ function retourAccueilApp() {
             }
         }
 
+        const HACCP_PENDING_AUDIT_KEY = `ICHEF_HACCP_PENDING_AUDIT_${tenantID}`;
+
+        function readPendingInventoryAudits() {
+            try {
+                const rows = JSON.parse(localStorage.getItem(HACCP_PENDING_AUDIT_KEY) || "[]");
+                return Array.isArray(rows) ? rows : [];
+            } catch (_) { return []; }
+        }
+
+        function queuePendingInventoryAudit(entry) {
+            const rows = readPendingInventoryAudits();
+            if (!rows.some(x => String(x.id) === String(entry.id))) rows.unshift(entry);
+            try { localStorage.setItem(HACCP_PENDING_AUDIT_KEY, JSON.stringify(rows.slice(0,100))); } catch (_) {}
+        }
+
+        async function flushPendingInventoryAudits() {
+            const pending = readPendingInventoryAudits();
+            if (!pending.length || !window.ICHEF_HACCP?.authenticated) return;
+            try {
+                const state = await getHaccpServerStateStrict();
+                const current = Array.isArray(state?.activeOrders?.['HACCP_INV_LOGS']?.data)
+                    ? state.activeOrders['HACCP_INV_LOGS'].data
+                    : [];
+                const ids = new Set(current.map(x => String(x?.id ?? "")));
+                const merged = [...pending.filter(x => !ids.has(String(x.id))), ...current];
+                await API.update('HACCP_INV_LOGS', merged);
+                db.inventoryLogs = merged;
+                localStorage.removeItem(HACCP_PENDING_AUDIT_KEY);
+            } catch (_) {
+                // La prochaine resynchronisation réessaiera.
+            }
+        }
         async function saveInventoryCount() {
             const name = document.getElementById('inv-name')?.value.trim() || '';
             const qtyStr = document.getElementById('inv-qty')?.value || '';
 
-            if (!name || qtyStr === '') return alert('Veuillez sélectionner un produit iCHEF et saisir la quantité réelle.');
+            if (!name || qtyStr === '') {
+                return alert('Veuillez sélectionner un produit iCHEF et saisir la quantité réelle.');
+            }
 
             const realQty = Number(String(qtyStr).replace(',', '.'));
             if (!Number.isFinite(realQty) || realQty < 0) return alert('Quantité réelle invalide.');
 
-            if (!Array.isArray(db.inventoryMaster)) db.inventoryMaster = [];
-            if (!Array.isArray(db.inventoryLogs)) db.inventoryLogs = [];
-
-            const stockItem = findInventoryMasterItem(name);
-            if (!stockItem) {
-                return alert('Ce produit n’existe pas dans le stock central iCHEF. Créez-le d’abord dans l’Économat avec son prix d’achat et son fournisseur.');
+            const localItem = findInventoryMasterItem(name);
+            if (!localItem) {
+                return alert('Ce produit n’existe pas dans le stock central iCHEF. Créez-le d’abord dans l’Économat.');
             }
-
-            const theoreticalQty = getInventoryCurrentQty(stockItem);
-            const unit = stockItem.unit || 'u';
-            const unitPrice = getInventoryUnitPrice(stockItem);
-            const diff = realQty - theoreticalQty;
-            const theoreticalValue = theoreticalQty * unitPrice;
-            const realValue = realQty * unitPrice;
-            const diffValue = diff * unitPrice;
-            const now = new Date();
-
-            const logEntry = {
-                id: Date.now(),
-                timestamp: now.toISOString(),
-                date: now.toLocaleDateString('fr-FR'),
-                time: now.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}),
-                dept: currentDept,
-                name: stockItem.name,
-                sourceInventoryId: stockItem.id ?? null,
-                inventorySource: 'INVENTORY_MASTER',
-                supplier: stockItem.fournisseur || '',
-                category: stockItem.cat || '',
-                theo: theoreticalQty,
-                real: realQty,
-                diff,
-                unit,
-                unitPrice,
-                theoreticalValue,
-                realValue,
-                diffValue,
-                currency: getInventoryCurrency(),
-                audit: 'Compté par ' + userAuditLabel(),
-                ...regulatoryAuditMeta()
-            };
-
-            db.inventoryLogs.unshift(logEntry);
-
-            // Le comptage HACCP met à jour le même INVENTORY_MASTER utilisé par le système.
-            stockItem.currentQty = realQty;
-            stockItem.qtyStr = `${realQty} ${unit}`;
-            stockItem.lastPhysicalCountAt = now.toISOString();
-            stockItem.lastPhysicalCountBy = userAuditLabel();
-            stockItem.lastPhysicalCountDept = currentDept;
 
             const btn = document.getElementById('inv-count-btn');
             const previousText = btn?.textContent;
-            if (btn) { btn.disabled = true; btn.textContent = 'ENREGISTREMENT…'; }
+            if (btn) { btn.disabled = true; btn.textContent = 'SYNCHRONISATION…'; }
 
             try {
-                await API.update('HACCP_INV_LOGS', db.inventoryLogs);
-                await API.update('INVENTORY_MASTER', db.inventoryMaster);
+                // Relire la source maître juste avant le comptage pour ne pas écraser
+                // une réception ou modification faite dans Économat sur un autre poste.
+                const freshState = await getHaccpServerStateStrict();
+                const freshOrders = freshState?.activeOrders || {};
+                const latestInventory = Array.isArray(freshOrders['INVENTORY_MASTER']?.data)
+                    ? freshOrders['INVENTORY_MASTER'].data.map(x => ({...x}))
+                    : [];
+                const latestLogs = Array.isArray(freshOrders['HACCP_INV_LOGS']?.data)
+                    ? freshOrders['HACCP_INV_LOGS'].data.slice()
+                    : [];
+
+                const localId = localItem.id;
+                let idx = localId !== undefined && localId !== null
+                    ? latestInventory.findIndex(x => String(x?.id ?? '') === String(localId))
+                    : -1;
+
+                if (idx < 0) {
+                    const target = String(localItem.name || name).trim().toLowerCase();
+                    idx = latestInventory.findIndex(x => String(x?.name || '').trim().toLowerCase() === target);
+                }
+
+                if (idx < 0) {
+                    throw new Error('Article supprimé ou renommé dans l’Économat. Actualisez puis recommencez.');
+                }
+
+                const stockItem = {...latestInventory[idx]};
+                const theoreticalQty = getInventoryCurrentQty(stockItem);
+                const unit = stockItem.unit || 'u';
+                const unitPrice = getInventoryUnitPrice(stockItem);
+                const diff = realQty - theoreticalQty;
+                const theoreticalValue = theoreticalQty * unitPrice;
+                const realValue = realQty * unitPrice;
+                const diffValue = diff * unitPrice;
+                const now = new Date();
+
+                const logEntry = {
+                    id: `haccp_count_${now.getTime()}_${String(stockItem.id ?? 'item')}`,
+                    timestamp: now.toISOString(),
+                    date: now.toLocaleDateString('fr-FR'),
+                    time: now.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}),
+                    dept: currentDept,
+                    name: stockItem.name,
+                    sourceInventoryId: stockItem.id ?? null,
+                    inventorySource: 'INVENTORY_MASTER',
+                    supplier: stockItem.fournisseur || '',
+                    category: stockItem.cat || '',
+                    theo: theoreticalQty,
+                    real: realQty,
+                    diff,
+                    unit,
+                    unitPrice,
+                    theoreticalValue,
+                    realValue,
+                    diffValue,
+                    currency: getInventoryCurrency(),
+                    audit: 'Compté par ' + userAuditLabel(),
+                    sourceModule: 'HACCP',
+                    ...regulatoryAuditMeta()
+                };
+
+                latestInventory[idx] = {
+                    ...stockItem,
+                    currentQty: realQty,
+                    qtyStr: `${realQty} ${unit}`,
+                    lastPhysicalCountAt: now.toISOString(),
+                    lastPhysicalCountBy: userAuditLabel(),
+                    lastPhysicalCountDept: currentDept,
+                    updatedAt: now.toISOString(),
+                    updatedByModule: 'HACCP'
+                };
+
+                // 1. Le stock central est prioritaire.
+                await API.update('INVENTORY_MASTER', latestInventory);
+                db.inventoryMaster = latestInventory;
+
+                // 2. L'audit suit. S'il échoue, il est mis en file locale et
+                // automatiquement réessayé, sans annuler le stock déjà confirmé.
+                const mergedLogs = [logEntry, ...latestLogs.filter(x => String(x?.id) !== String(logEntry.id))];
+                try {
+                    await API.update('HACCP_INV_LOGS', mergedLogs);
+                    db.inventoryLogs = mergedLogs;
+                } catch (auditError) {
+                    queuePendingInventoryAudit(logEntry);
+                    console.warn('[iCHEF HACCP] Audit en attente de resynchronisation :', auditError);
+                }
 
                 document.getElementById('inv-name').value = '';
                 document.getElementById('inv-qty').value = '';
                 renderLogs();
                 populateInventoryDatalist();
-                setSyncStatus('online', 'SYSTÈME · INVENTAIRE SYNCHRONISÉ');
+                setSyncStatus('online', 'SYSTÈME · STOCK HACCP SYNCHRONISÉ');
+                flushPendingInventoryAudits().catch(() => {});
             } catch (e) {
                 console.error('[iCHEF HACCP] Comptage non synchronisé :', e);
-                alert('Le comptage n’a pas été confirmé par le serveur. Réessayez avant de quitter la page.');
+                alert(e?.message || 'Le comptage n’a pas été confirmé par le serveur.');
                 throw e;
             } finally {
                 if (btn) { btn.disabled = false; btn.textContent = previousText || 'VALIDER LE COMPTAGE'; }
@@ -3179,7 +3299,7 @@ function retourAccueilApp() {
         }
 
         function openInventoryEconomat() {
-            openIchefModule('administration.html', {section:'economat'});
+            openIchefModule('economat.html');
         }
 
         function scrollToInventoryRegister(highlightDiff = false) {
