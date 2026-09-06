@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>iCHEF Empire OS - Connexion</title>
+    <title>iCHEF OS — Partenaire & Création Client</title>
     
     <!-- 🛡️ BOUCLIER CSP STRICT : Interdit l'exécution de scripts pirates externes -->
     <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://tableau-system.onrender.com; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://upload.wikimedia.org https://via.placeholder.com;">
@@ -165,6 +165,39 @@
         <button onclick="switchScreen('login')" style="background:#111; color:#fff; border:1px solid #333; box-shadow:none;">Retour à l'accueil</button>
     </div>
 
+    <!-- ÉCRAN CRÉATION FUTUR CLIENT — MASTER ICHEF -->
+    <div class="login-box" id="screen-create" style="display:none;max-width:500px;">
+        <div class="subtitle" style="margin-bottom:20px;">Création futur client iCHEF</div>
+        <div class="input-group"><label>Clé Master iCHEF *</label><input type="password" id="master-create-key" autocomplete="off" placeholder="Clé Master"></div>
+        <div class="input-group"><label>Nom de l'établissement *</label><input type="text" id="client-resto" autocomplete="organization" placeholder="Le Bistrot du Lac"></div>
+        <div class="input-group"><label>Identifiant souhaité (facultatif)</label><input type="text" id="client-tenant-wanted" autocomplete="off" placeholder="lebistrotdulac"></div>
+        <div class="input-group"><label>Email du gérant *</label><input type="email" id="client-email" autocomplete="email" placeholder="gerant@restaurant.ch"></div>
+        <div class="input-group"><label>Téléphone *</label><input type="tel" id="client-phone" autocomplete="tel" placeholder="+41 / +33…"></div>
+        <div class="input-group"><label>Pack / plan</label><select id="client-plan" style="width:100%;padding:15px;background:#111;border:1px solid #333;color:#fff;border-radius:8px;font-size:1rem;"><option value="BUSINESS">BUSINESS</option><option value="ECO">ECO</option><option value="PREMIUM">PREMIUM</option><option value="ICHEF_OS">ICHEF OS</option><option value="CHEF">CHEF</option><option value="BAR">BAR</option><option value="PATISSIER">PÂTISSIER</option></select></div>
+        <div class="input-group"><label>Spécialité</label><input type="text" id="client-specialite" value="cuisine" autocomplete="off" placeholder="cuisine, pizzeria, hôtel…"></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+            <div class="input-group"><label>Écrans</label><input type="number" id="client-max-screens" min="1" max="100" placeholder="Auto"></div>
+            <div class="input-group"><label>Staff max.</label><input type="number" id="client-max-staff" min="1" max="5000" value="999"></div>
+        </div>
+        <button type="button" id="btn-create-client" onclick="creerClientMaster()">Créer le client</button>
+        <div class="toggle-link" onclick="switchScreen('login')">🔙 Retour connexion</div>
+    </div>
+
+    <div class="login-box" id="screen-created" style="display:none;max-width:500px;">
+        <h1 style="font-size:2.5rem;margin-bottom:8px;">✅</h1>
+        <h2 style="font-family:'Playfair Display',serif;margin:0 0 8px;">Client créé</h2>
+        <p style="color:#aaa;font-size:.9rem;line-height:1.5;margin:0 0 18px;text-transform:none;letter-spacing:0;">Les accès sont affichés au moment de la création. Transmettez-les ensuite au client par un canal sécurisé.</p>
+        <div class="badge-attente" style="text-align:left;">
+            <div><b>Restaurant :</b> <span id="created-name">—</span></div>
+            <div style="margin-top:8px;"><b>Identifiant :</b> <span id="created-tenant">—</span></div>
+            <div style="margin-top:8px;"><b>PIN initial :</b> <span id="created-pin" style="font-family:monospace;font-size:1.2rem;">—</span></div>
+            <div style="margin-top:8px;"><b>Plan :</b> <span id="created-plan">—</span></div>
+        </div>
+        <button type="button" onclick="copierAccesClient()">Copier les accès</button>
+        <button type="button" class="btn-demo" onclick="ouvrirClientCree()">Ouvrir l'espace client</button>
+        <div class="toggle-link" onclick="resetCreationClient()">➕ Créer un autre client</div>
+    </div>
+
     <!-- ÉCRAN EXPIRÉ -->
     <div class="login-box" id="screen-expired" style="display: none;">
         <h1 style="font-size: 3rem; margin-bottom: 10px;">⚠️</h1>
@@ -256,8 +289,10 @@ function getDeviceFingerprint() {
 }
 
 window.onload = function() {
-    localStorage.removeItem('ichef_tenant_id');
     localStorage.removeItem('ichef_master_pin');
+    localStorage.removeItem('pin');
+    const params = new URLSearchParams(window.location.search);
+    if (String(params.get('mode') || '').toLowerCase() === 'master') switchScreen('create');
 };
 
 const SERVER_URL = "https://tableau-system.onrender.com";
@@ -267,7 +302,7 @@ let failedAttempts = 0;
 // 🔄 3. NAVIGATION ET FONCTIONS MÉTIER
 // ==========================================
 function switchScreen(screen) {
-    ['login', 'demo', 'result', 'expired'].forEach(id => {
+    ['login', 'demo', 'result', 'create', 'created', 'expired'].forEach(id => {
         const el = document.getElementById('screen-' + id);
         if (el) el.style.display = screen === id ? 'block' : 'none';
     });
@@ -284,11 +319,6 @@ async function genererDemo(e) {
     const email = document.getElementById('lead-email').value.trim();
     const phone = document.getElementById('lead-phone').value.trim();
 
-    // 2. Génération du tenantID (Identifiant unique)
-    const cleanName = resto.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
-    const randomNum = Math.floor(1000 + Math.random() * 9000);
-    const tenantID = cleanName + randomNum;
-
     btn.innerText = "Création en cours..."; 
     btn.disabled = true;
 
@@ -298,11 +328,10 @@ async function genererDemo(e) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                tenantID: tenantID,
                 restaurant: resto,
-                phone: phone,
-                email: email,
-                details: { type: "Démo 48h", siret: siret }
+                phone,
+                email,
+                details: { type: "Démo 48h", siret }
             })
         });
 
@@ -347,11 +376,22 @@ async function login() {
         
         if(data.success) {
             failedAttempts = 0;
-            // 🛑 LIGNES VITALES POUR L'APPLICATION MOBILE
             localStorage.setItem('ichef_tenant_id', tenant);
-            localStorage.setItem('ichef_master_pin', pin); 
-            localStorage.setItem('ichef_csrf_token', data.csrfToken);
-            
+            localStorage.removeItem('ichef_master_pin');
+            localStorage.removeItem('pin');
+            localStorage.removeItem('ichef_csrf_token');
+
+            try {
+                sessionStorage.setItem('ichef_login_context', JSON.stringify({
+                    tenantID: tenant,
+                    role: data.role || '',
+                    plan: data.plan || '',
+                    authenticatedAt: new Date().toISOString()
+                }));
+                if (data.csrfToken) sessionStorage.setItem('ichef_csrf_token', String(data.csrfToken));
+            } catch (_) {}
+
+            document.getElementById('pinCode').value = '';
             window.location.href = `administration.html?tenantID=${encodeURIComponent(tenant)}`;
         } else {
             failedAttempts++;
@@ -363,6 +403,76 @@ async function login() {
         btn.innerText = "Se Connecter"; btn.disabled = false;
     }
 }
+
+let dernierClientCree = null;
+function creationNumber(id, fallback, min, max) {
+    const raw = document.getElementById(id)?.value;
+    if (raw === '' || raw === null || raw === undefined) return fallback;
+    const value = Number(raw);
+    if (!Number.isFinite(value)) return fallback;
+    return Math.max(min, Math.min(max, Math.round(value)));
+}
+async function creerClientMaster() {
+    const btn = document.getElementById('btn-create-client');
+    const masterKey = String(document.getElementById('master-create-key')?.value || '').trim();
+    const restaurant = String(document.getElementById('client-resto')?.value || '').trim();
+    const requestedTenantID = String(document.getElementById('client-tenant-wanted')?.value || '').trim();
+    const email = String(document.getElementById('client-email')?.value || '').trim();
+    const phone = String(document.getElementById('client-phone')?.value || '').trim();
+    const plan = String(document.getElementById('client-plan')?.value || 'BUSINESS').trim().toUpperCase();
+    const specialite = String(document.getElementById('client-specialite')?.value || 'cuisine').trim();
+    if (!masterKey) return alert('Clé Master requise.');
+    if (restaurant.length < 2 || !email || phone.length < 6) return alert('Nom du restaurant, email et téléphone requis.');
+    btn.disabled = true; btn.innerText = 'Création sécurisée…';
+    try {
+        const response = await fetch(`${SERVER_URL}/api/master/clients/create`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+                masterKey, restaurant, requestedTenantID, email, phone, plan, specialite,
+                maxScreens: creationNumber('client-max-screens', null, 1, 100),
+                maxStaff: creationNumber('client-max-staff', 999, 1, 5000)
+            })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.success === false) throw new Error(data.error || `Création refusée (${response.status})`);
+        dernierClientCree = data.client || null;
+        if (!dernierClientCree?.tenantID || !dernierClientCree?.pin) throw new Error('Identifiants non retournés par le serveur.');
+        document.getElementById('created-name').textContent = dernierClientCree.name || restaurant;
+        document.getElementById('created-tenant').textContent = dernierClientCree.tenantID;
+        document.getElementById('created-pin').textContent = dernierClientCree.pin;
+        document.getElementById('created-plan').textContent = dernierClientCree.plan || plan;
+        document.getElementById('master-create-key').value = '';
+        switchScreen('created');
+    } catch (error) {
+        console.error('[iCHEF création client]', error);
+        alert(error.message || 'Création du client impossible.');
+    } finally {
+        btn.disabled = false; btn.innerText = 'Créer le client';
+    }
+}
+async function copierAccesClient() {
+    if (!dernierClientCree) return;
+    const text = `iCHEF OS\nRestaurant : ${dernierClientCree.name || ''}\nIdentifiant : ${dernierClientCree.tenantID}\nPIN : ${dernierClientCree.pin}\nAccès : ${dernierClientCree.loginUrl || 'https://os.ichef.ch/'}`;
+    try { await navigator.clipboard.writeText(text); alert('Accès copiés.'); }
+    catch (_) { prompt('Copiez les accès :', text); }
+}
+function ouvrirClientCree() {
+    if (!dernierClientCree?.tenantID) return;
+    window.location.href = `administration.html?tenantID=${encodeURIComponent(dernierClientCree.tenantID)}`;
+}
+function resetCreationClient() {
+    dernierClientCree = null;
+    ['client-resto','client-tenant-wanted','client-email','client-phone'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+    document.getElementById('client-plan').value = 'BUSINESS';
+    document.getElementById('client-specialite').value = 'cuisine';
+    document.getElementById('client-max-screens').value = '';
+    document.getElementById('client-max-staff').value = '999';
+    document.getElementById('master-create-key').value = '';
+    switchScreen('create');
+}
+
 </script>
 </body>
 </html>
