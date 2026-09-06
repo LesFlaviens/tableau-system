@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#090b0c">
-<title>iCHEF — Portail Client V3 · Fidélité personnalisée</title>
+<title>iCHEF — Portail Client V4 · Synchronisation temps réel</title>
 <style>
 :root{
   --bg:#080a0b;--panel:#111416;--panel2:#171b1d;--line:#2b3235;
@@ -419,6 +419,10 @@ h1{margin:8px 0 8px;font-size:clamp(28px,5vw,44px);line-height:1.02;letter-spaci
     client: null,
     dashboard: null,
     publicConfig: null,
+    clientReservations: [],
+    reservationToken: "",
+    socket: null,
+    currentPrivateView: "",
     authenticated: false,
     fromAdmin: String(params.get("from") || "").toLowerCase() === "admin"
   };
@@ -433,6 +437,268 @@ h1{margin:8px 0 8px;font-size:clamp(28px,5vw,44px);line-height:1.02;letter-spaci
     const tenant = encodeURIComponent(STATE.tenantID || "");
     return page + (tenant ? `?tenantID=${tenant}` : "");
   }
+
+  function reservationTokenKey() {
+    return `ichef_client_portal_token::${String(STATE.tenantID || "").trim()}`;
+  }
+
+  function loadReservationToken() {
+    try {
+      STATE.reservationToken = String(
+        localStorage.getItem(reservationTokenKey()) || ""
+      ).trim();
+    } catch (_) {
+      STATE.reservationToken = "";
+    }
+    return STATE.reservationToken;
+  }
+
+  function hasReservationAccess() {
+    return Boolean(STATE.tenantID && STATE.reservationToken);
+  }
+
+  function reservationStatusLabel(status) {
+    return ({
+      pending:"À confirmer",
+      confirmed:"Confirmée",
+      reserved:"Confirmée",
+      arrived:"Arrivé",
+      seated:"Installé",
+      completed:"Terminée",
+      done:"Terminée",
+      cancelled:"Annulée",
+      canceled:"Annulée",
+      rejected:"Refusée",
+      noshow:"Non présenté"
+    })[String(status || "").toLowerCase()] || String(status || "Confirmée");
+  }
+
+  function reservationMoment(r) {
+    const ts = Date.parse(`${r?.date || ""}T${r?.time || "00:00"}:00`);
+    return Number.isFinite(ts) ? ts : 0;
+  }
+
+  function renderReservationCards() {
+    const data = Array.isArray(STATE.clientReservations)
+      ? STATE.clientReservations
+      : [];
+
+    const now = Date.now();
+    const upcoming = data
+      .filter(r => {
+        const s = String(r.status || "").toLowerCase();
+        return !["completed","done","cancelled","canceled","rejected","noshow"].includes(s) &&
+          reservationMoment(r) >= now - 3 * 60 * 60 * 1000;
+      })
+      .sort((a,b) => reservationMoment(a) - reservationMoment(b));
+
+    const past = data
+      .filter(r => !upcoming.includes(r))
+      .sort((a,b) => reservationMoment(b) - reservationMoment(a));
+
+    const card = r => `
+      <div class="row">
+        <div>
+          <strong>${esc(r.date || "")} · ${esc(r.time || "")}</strong>
+          <p>
+            ${esc(r.pax || 1)} personne(s)
+            ${r.assignedTable ? ` · Table ${esc(r.assignedTable)}` : ""}
+          </p>
+        </div>
+        <div class="right">${esc(reservationStatusLabel(r.status))}</div>
+      </div>`;
+
+    $("panelBody").innerHTML = `
+      <div style="margin-bottom:9px;color:var(--gold);font-size:9px;font-weight:950;">
+        À VENIR
+      </div>
+      ${upcoming.length
+        ? `<div class="list">${upcoming.map(card).join("")}</div>`
+        : `<div class="empty">Aucune réservation à venir.</div>`}
+
+      <div style="margin:16px 0 9px;color:var(--muted);font-size:9px;font-weight:950;">
+        PASSÉES / CLÔTURÉES
+      </div>
+      ${past.length
+        ? `<div class="list">${past.map(card).join("")}</div>`
+        : `<div class="empty">Aucun historique disponible.</div>`}
+    `;
+  }
+
+  async function reservationApi(path, options = {}) {
+    if (!STATE.reservationToken) {
+      const error = new Error("Session réservation requise.");
+      error.status = 401;
+      throw error;
+    }
+
+    const response = await fetch(SERVER_URL + path, {
+      ...options,
+      headers: {
+        "Accept":"application/json",
+        "Content-Type":"application/json",
+        "Authorization":`Bearer ${STATE.reservationToken}`,
+        ...(options.headers || {})
+      },
+      credentials:"include",
+      cache:"no-store"
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.success === false) {
+      const error = new Error(
+        data.error ||
+        data.message ||
+        `Serveur ${response.status}`
+      );
+      error.status = response.status;
+      throw error;
+    }
+    return data;
+  }
+
+  async function loadClientReservations({silent = false} = {}) {
+    if (!hasReservationAccess()) {
+      STATE.clientReservations = [];
+      return false;
+    }
+
+    try {
+      const data = await reservationApi(
+        `/api/client-portal/reservations?tenantID=${encodeURIComponent(STATE.tenantID)}`,
+        { method:"GET" }
+      );
+
+      STATE.clientReservations =
+        Array.isArray(data.reservations)
+          ? data.reservations
+          : [];
+
+      if (STATE.currentPrivateView === "reservations") {
+        renderReservationCards();
+      }
+
+      const moduleButton =
+        document.querySelector('[data-private-view="reservations"]');
+      const status = moduleButton
+        ?.closest(".module")
+        ?.querySelector(".status");
+
+      if (status) {
+        status.textContent = "SYNCHRO";
+        status.classList.add("public");
+      }
+
+      return true;
+    } catch (error) {
+      if (!silent) {
+        console.warn(
+          "[iCHEF PORTAIL] réservations indisponibles",
+          error?.message || error
+        );
+      }
+      return false;
+    }
+  }
+
+  function loadSocketClientLibrary() {
+    return new Promise((resolve, reject) => {
+      if (typeof window.io === "function") {
+        resolve();
+        return;
+      }
+
+      const existing =
+        document.querySelector('script[data-ichef-socket-client="1"]');
+
+      if (existing) {
+        existing.addEventListener("load", () => resolve(), {once:true});
+        existing.addEventListener("error", () => reject(new Error("SOCKET_LOAD")), {once:true});
+        return;
+      }
+
+      const script = document.createElement("script");
+      script.src = `${SERVER_URL}/socket.io/socket.io.js`;
+      script.async = true;
+      script.dataset.ichefSocketClient = "1";
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error("SOCKET_LOAD"));
+      document.head.appendChild(script);
+    });
+  }
+
+  async function startClientPortalSync() {
+    if (!STATE.tenantID) return;
+
+    try {
+      await loadSocketClientLibrary();
+
+      if (STATE.socket?.connected) {
+        STATE.socket.disconnect();
+      }
+
+      const socket = window.io(SERVER_URL, {
+        transports:["polling","websocket"],
+        reconnection:true,
+        reconnectionAttempts:Infinity,
+        auth:{
+          tenantID:STATE.tenantID,
+          page:"CLIENT_PORTAL"
+        }
+      });
+
+      STATE.socket = socket;
+
+      socket.on("connect", () => {
+        socket.emit("joinClientPublic", {
+          tenantID:STATE.tenantID
+        });
+
+        if (hasReservationAccess()) {
+          socket.emit("joinClientPortal", {
+            tenantID:STATE.tenantID,
+            token:STATE.reservationToken
+          });
+        }
+      });
+
+      socket.on("client-public-config-updated", data => {
+        if (
+          String(data?.tenantID || "") ===
+          String(STATE.tenantID || "")
+        ) {
+          applyPublicClientConfig(data);
+        }
+      });
+
+      socket.on("client-reservations-updated", data => {
+        if (
+          String(data?.tenantID || "") !==
+          String(STATE.tenantID || "")
+        ) return;
+
+        STATE.clientReservations =
+          Array.isArray(data?.reservations)
+            ? data.reservations
+            : [];
+
+        if (STATE.currentPrivateView === "reservations") {
+          renderReservationCards();
+        }
+      });
+
+      socket.on("client-portal-auth-error", () => {
+        loadClientReservations({silent:true});
+      });
+
+    } catch (error) {
+      console.warn(
+        "[iCHEF PORTAIL] Socket indisponible, polling actif",
+        error?.message || error
+      );
+    }
+  }
+
 
   function adminUrl() {
     const tenant = encodeURIComponent(STATE.tenantID || "");
@@ -487,7 +753,7 @@ h1{margin:8px 0 8px;font-size:clamp(28px,5vw,44px);line-height:1.02;letter-spaci
   function publicAction(type) {
     if (!requireTenant()) return;
     if (type === "reservation") {
-      location.href = tenantUrl("reservation.html");
+      location.href = tenantUrl("reservation.html") + "&from=portal";
       return;
     }
     if (type === "menu") {
@@ -624,26 +890,42 @@ h1{margin:8px 0 8px;font-size:clamp(28px,5vw,44px);line-height:1.02;letter-spaci
       preferences:"Préférences & allergies"
     };
 
-    if (!STATE.authenticated && view !== "loyalty") {
+    STATE.currentPrivateView = view;
+
+    const reservationAccess =
+      view === "reservations" &&
+      hasReservationAccess();
+
+    if (
+      !STATE.authenticated &&
+      view !== "loyalty" &&
+      !reservationAccess
+    ) {
       lockedPanel(titles[view] || "Mon espace");
       return;
     }
 
     $("panelTitle").textContent = titles[view] || "Mon espace";
-    $("panelStatus").textContent = STATE.authenticated ? "Connecté" : "Programme public";
+    $("panelStatus").textContent =
+      STATE.authenticated
+        ? "Connecté"
+        : (
+            reservationAccess
+              ? "Synchronisé"
+              : "Programme public"
+          );
 
     if (view === "reservations") {
-      const data = Array.isArray(STATE.dashboard?.reservations) ? STATE.dashboard.reservations : [];
-      $("panelBody").innerHTML = data.length
-        ? `<div class="list">${data.map(r => `
-            <div class="row">
-              <div>
-                <strong>${esc(r.title || r.restaurant || "Réservation")}</strong>
-                <p>${esc(r.date || "")} ${esc(r.time || "")} · ${esc(r.guests || r.pax || "")} personne(s)</p>
-              </div>
-              <div class="right">${esc(r.status || "")}</div>
-            </div>`).join("")}</div>`
-        : `<div class="empty">Aucune réservation client disponible pour ce compte.</div>`;
+      if (!hasReservationAccess()) {
+        lockedPanel("Mes réservations");
+        return;
+      }
+
+      $("panelBody").innerHTML =
+        `<div class="empty">Synchronisation des réservations…</div>`;
+
+      loadClientReservations({silent:true})
+        .then(() => renderReservationCards());
     }
 
     if (view === "loyalty") {
@@ -910,9 +1192,12 @@ h1{margin:8px 0 8px;font-size:clamp(28px,5vw,44px);line-height:1.02;letter-spaci
     if (!value) return;
     STATE.tenantID = value;
     localStorage.setItem("ichef_tenant_id", value);
+    loadReservationToken();
     updateTenantUI();
     closeModal($("tenantModal"));
     loadPublicClientConfig();
+    loadClientReservations({silent:true});
+    startClientPortalSync();
     const u = new URL(location.href);
     u.searchParams.set("tenantID", value);
     history.replaceState({}, "", u);
@@ -930,11 +1215,22 @@ h1{margin:8px 0 8px;font-size:clamp(28px,5vw,44px);line-height:1.02;letter-spaci
     sessionStorage.setItem("ichef_client_session", urlToken);
   }
 
+  loadReservationToken();
   updateTenantUI();
   setAccountState(false);
 
   if (STATE.tenantID) {
     loadPublicClientConfig();
+    loadClientReservations({silent:true});
+    startClientPortalSync();
+
+    // Secours si Socket.IO n’est pas disponible.
+    setInterval(() => {
+      loadPublicClientConfig();
+      if (hasReservationAccess()) {
+        loadClientReservations({silent:true});
+      }
+    }, 30000);
   }
 
   if (STATE.fromAdmin) {
@@ -955,6 +1251,19 @@ h1{margin:8px 0 8px;font-size:clamp(28px,5vw,44px);line-height:1.02;letter-spaci
     setTimeout(() => openModal("tenantModal"), 250);
   } else if (STATE.sessionToken) {
     loadDashboard();
+  }
+
+  const requestedView =
+    String(params.get("view") || "").toLowerCase();
+
+  if (
+    requestedView === "reservations" &&
+    hasReservationAccess()
+  ) {
+    setTimeout(
+      () => renderPrivateView("reservations"),
+      180
+    );
   }
 })();
 </script>
