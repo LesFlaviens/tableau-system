@@ -1,6 +1,6 @@
 /**
  * ==============================================================
- * 🧠 iCHEF EMPIRE OS — CORE SERVER V55 · CLIENT PORTAL SYNC (2026.09.06)
+ * 🧠 iCHEF EMPIRE OS — CORE SERVER V56 · REMOTE ORDER DELIVERY/TAKEAWAY (2026.09.07)
  * ==============================================================
  * Contrat central stable pour multi-établissements :
  * Réservations · Plan/PAD/Téléphone · Cuisine/Bar/Pâtisserie · Anti-Rush
@@ -1815,6 +1815,107 @@ function ichefClientPortalReservationsForHash(reservations, tokenHash) {
         });
 }
 
+
+function ichefRemoteOrderPublicConfig(raw = {}) {
+    const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+    const clamp = (value, fallback, min, max) => {
+        const n = Number(value);
+        const safe = Number.isFinite(n) ? n : fallback;
+        return Math.max(min, Math.min(max, safe));
+    };
+    return {
+        deliveryEnabled: source.deliveryEnabled === true,
+        takeawayEnabled: source.takeawayEnabled === true,
+        scheduledEnabled: source.scheduledEnabled === true,
+        deliveryAddressRequired: true,
+        minOrder: clamp(source.minOrder, 0, 0, 100000),
+        deliveryFee: clamp(source.deliveryFee, 0, 0, 10000),
+        freeDeliveryFrom: clamp(source.freeDeliveryFrom, 0, 0, 100000),
+        leadMinutes: Math.round(clamp(source.leadMinutes, 30, 5, 240)),
+        slotMinutes: Math.round(clamp(source.slotMinutes, 15, 10, 60)),
+        country: String(source.country || 'CH').trim().toUpperCase().slice(0, 2),
+        postalCodes: Array.isArray(source.postalCodes)
+            ? source.postalCodes.map(v => String(v || '').trim()).filter(Boolean).slice(0, 100)
+            : [],
+        onlinePayment: source.onlinePayment === true,
+        payOnReceipt: source.payOnReceipt !== false,
+        allowSaveAddress: source.allowSaveAddress === true
+    };
+}
+
+function ichefRemoteOrderAddress(raw = {}) {
+    const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+    return {
+        street: String(source.street || '').trim().slice(0, 120),
+        number: String(source.number || '').trim().slice(0, 30),
+        postalCode: String(source.postalCode || '').trim().slice(0, 20),
+        city: String(source.city || '').trim().slice(0, 100),
+        country: String(source.country || '').trim().toUpperCase().slice(0, 2),
+        extra: String(source.extra || '').trim().slice(0, 160),
+        instructions: String(source.instructions || '').trim().slice(0, 300)
+    };
+}
+
+function ichefRemoteOrderPublicView(order = {}) {
+    const rawStatus = String(order.status || order.remoteStatus || 'RECEIVED').trim().toUpperCase();
+    return {
+        id: String(order.remoteOrderId || order.orderId || order.tableId || order.orderKey || '').slice(0,120),
+        orderKey: String(order.tableId || order.orderKey || '').slice(0,160),
+        orderType: String(order.orderType || '').trim().toUpperCase().slice(0,20),
+        status: rawStatus,
+        scheduledAt: order.scheduledAt || null,
+        subtotal: Number(order.subtotal ?? order.total ?? 0) || 0,
+        deliveryFee: Number(order.deliveryFee || 0) || 0,
+        total: Number(order.total || 0) || 0,
+        currency: String(order.currency || 'CHF').slice(0,3),
+        createdAt: order.createdAtISO || order.createdAt || null,
+        updatedAt: order.updatedAt || null
+    };
+}
+
+function ichefRemoteOrdersForHash(activeOrders, tokenHash) {
+    const source = activeOrders && typeof activeOrders === 'object' ? activeOrders : {};
+    return Object.entries(source)
+        .filter(([key, order]) =>
+            String(key).startsWith('REMOTE_') &&
+            key !== 'REMOTE_ORDER_CONTEXTS' &&
+            order &&
+            typeof order === 'object' &&
+            String(order.clientPortalHash || '') === String(tokenHash || '') &&
+            String(order.status || '').toUpperCase() !== 'DRAFT'
+        )
+        .map(([, order]) => ichefRemoteOrderPublicView(order))
+        .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+}
+
+async function ichefEmitClientRemoteOrderSnapshots(tenantID, activeOrders) {
+    const safeID = cleanString(tenantID);
+    if (!safeID || !activeOrders || typeof activeOrders !== 'object') return;
+
+    const hashes = new Set(
+        Object.entries(activeOrders)
+            .filter(([key, order]) =>
+                String(key).startsWith('REMOTE_') &&
+                key !== 'REMOTE_ORDER_CONTEXTS' &&
+                order &&
+                typeof order === 'object' &&
+                String(order.clientPortalHash || '')
+            )
+            .map(([, order]) => String(order.clientPortalHash))
+    );
+
+    for (const tokenHash of hashes) {
+        const room = ichefClientPortalPrivateRoom(safeID, tokenHash);
+        if (!room) continue;
+        io.to(room).emit('client-remote-orders-updated', {
+            success: true,
+            tenantID: safeID,
+            orders: ichefRemoteOrdersForHash(activeOrders, tokenHash),
+            serverTimestamp: new Date().toISOString()
+        });
+    }
+}
+
 function ichefClientPortalPublicConfigFromState(tenant, state) {
     const settings =
         state?.activeOrders?.SETTINGS_MASTER?.data &&
@@ -1823,6 +1924,7 @@ function ichefClientPortalPublicConfigFromState(tenant, state) {
             : {};
 
     const loyalty = ichefPublicLoyaltyConfig(settings.loyalty || {});
+    const remoteOrder = ichefRemoteOrderPublicConfig(settings.remoteOrder || {});
 
     return {
         success: true,
@@ -1844,9 +1946,11 @@ function ichefClientPortalPublicConfigFromState(tenant, state) {
         },
         features: {
             loyalty: loyalty.active === true,
-            preferences: settings?.clientPortal?.preferences === true
+            preferences: settings?.clientPortal?.preferences === true,
+            remoteOrder: remoteOrder.deliveryEnabled === true || remoteOrder.takeawayEnabled === true
         },
         loyalty,
+        remoteOrder,
         serverTimestamp: new Date().toISOString()
     };
 }
@@ -2441,6 +2545,204 @@ app.get('/api/client-portal/reservations', async (req, res) => {
         return res.status(500).json({
             success: false,
             error: 'Réservations momentanément indisponibles.'
+        });
+    }
+});
+
+
+// ==========================================================
+// 👤 PORTAIL CLIENT — COMMANDE À DISTANCE
+// ==========================================================
+app.post('/api/client-portal/remote-orders/draft', async (req, res) => {
+    try {
+        const tenantID = cleanString(
+            req.body?.tenantID ||
+            req.headers['x-ichef-tenant'] ||
+            ''
+        );
+
+        if (!tenantID) {
+            return res.status(400).json({ success:false, error:'tenantID manquant.' });
+        }
+
+        const [tenant, state] = await Promise.all([
+            Tenant.findOne(
+                { tenantID },
+                { tenantID:1, clientName:1, status:1 }
+            ).lean(),
+            AppState.findOne(
+                { tenantID },
+                { 'activeOrders.SETTINGS_MASTER.data':1 }
+            ).lean()
+        ]);
+
+        if (!tenant) {
+            return res.status(404).json({ success:false, error:'Établissement inconnu.' });
+        }
+        if (tenant.status === 'SUSPENDU') {
+            return res.status(403).json({ success:false, error:'Établissement momentanément indisponible.' });
+        }
+
+        const settings = state?.activeOrders?.SETTINGS_MASTER?.data || {};
+        const config = ichefRemoteOrderPublicConfig(settings.remoteOrder || {});
+        const orderType = String(req.body?.orderType || '').trim().toUpperCase();
+
+        if (!['DELIVERY','TAKEAWAY'].includes(orderType)) {
+            return res.status(400).json({ success:false, error:'Type de commande invalide.' });
+        }
+        if (orderType === 'DELIVERY' && config.deliveryEnabled !== true) {
+            return res.status(403).json({ success:false, error:'La livraison n’est pas activée.' });
+        }
+        if (orderType === 'TAKEAWAY' && config.takeawayEnabled !== true) {
+            return res.status(403).json({ success:false, error:'La vente à emporter n’est pas activée.' });
+        }
+
+        const customerRaw = req.body?.customer || {};
+        const customer = {
+            name: String(customerRaw.name || '').trim().slice(0,120),
+            phone: String(customerRaw.phone || '').trim().slice(0,40),
+            email: String(customerRaw.email || '').trim().slice(0,160)
+        };
+        if (customer.name.length < 2 || customer.phone.length < 6) {
+            return res.status(400).json({ success:false, error:'Nom et téléphone requis.' });
+        }
+
+        let deliveryAddress = null;
+        if (orderType === 'DELIVERY') {
+            deliveryAddress = ichefRemoteOrderAddress(req.body?.deliveryAddress || {});
+            if (!deliveryAddress.street || !deliveryAddress.number || !deliveryAddress.postalCode || !deliveryAddress.city) {
+                return res.status(400).json({
+                    success:false,
+                    error:'Rue, numéro, code postal et ville sont requis pour la livraison.'
+                });
+            }
+            if (!deliveryAddress.country) deliveryAddress.country = config.country;
+            if (
+                config.postalCodes.length &&
+                !config.postalCodes.includes(deliveryAddress.postalCode)
+            ) {
+                return res.status(400).json({
+                    success:false,
+                    error:'Cette adresse est hors de la zone de livraison.'
+                });
+            }
+        }
+
+        let scheduledAt = null;
+        if (req.body?.scheduledAt) {
+            if (config.scheduledEnabled !== true) {
+                return res.status(403).json({ success:false, error:'Les commandes programmées ne sont pas activées.' });
+            }
+            const ts = Date.parse(String(req.body.scheduledAt));
+            if (!Number.isFinite(ts)) {
+                return res.status(400).json({ success:false, error:'Créneau programmé invalide.' });
+            }
+            const minTs = Date.now() + config.leadMinutes * 60 * 1000;
+            if (ts < minTs) {
+                return res.status(400).json({
+                    success:false,
+                    error:`Le créneau doit respecter un délai minimum de ${config.leadMinutes} minutes.`
+                });
+            }
+            scheduledAt = new Date(ts).toISOString();
+        }
+
+        let clientToken = ichefClientPortalBearer(req);
+        if (!clientToken || clientToken.length < 20) {
+            clientToken = crypto.randomBytes(32).toString('base64url');
+        }
+        const clientPortalHash = ichefClientPortalTokenHash(clientToken);
+
+        const remoteOrderId = `RO_${Date.now()}_${crypto.randomBytes(5).toString('hex')}`;
+        const orderKey = `REMOTE_${remoteOrderId}`;
+        const now = new Date().toISOString();
+
+        const draft = {
+            tableId: orderKey,
+            orderKey,
+            remoteOrderId,
+            orderType,
+            source:'PORTAIL_CLIENT',
+            channel:'REMOTE_ORDER',
+            customer,
+            deliveryAddress: orderType === 'DELIVERY' ? deliveryAddress : null,
+            scheduledAt,
+            clientPortalHash,
+            currency: String(
+                settings?.taxConfig?.currency ||
+                settings?.currency ||
+                settings?.devise ||
+                'CHF'
+            ).toUpperCase().slice(0,3),
+            deliveryFeeRule: Number(config.deliveryFee || 0),
+            freeDeliveryFrom: Number(config.freeDeliveryFrom || 0),
+            minOrder: Number(config.minOrder || 0),
+            onlinePayment: config.onlinePayment === true,
+            payOnReceipt: config.payOnReceipt !== false,
+            status:'DRAFT',
+            remoteStatus:'DRAFT',
+            items:[],
+            createdAtISO:now,
+            updatedAt:now
+        };
+
+        await AppState.findOneAndUpdate(
+            { tenantID },
+            { $set: { [`activeOrders.${orderKey}`]: draft } },
+            { upsert:true, new:true }
+        );
+
+        return res.status(201).json({
+            success:true,
+            tenantID,
+            clientToken,
+            remoteOrderId,
+            orderKey,
+            orderType,
+            menuUrl:
+                `menu-qr.html?tenantID=${encodeURIComponent(tenantID)}` +
+                `&table=${encodeURIComponent(orderKey)}` +
+                `&orderType=${encodeURIComponent(orderType)}` +
+                `&remote=1&from=portal`,
+            serverTimestamp:now
+        });
+
+    } catch (error) {
+        console.error('[iCHEF remote order draft]', error);
+        return res.status(500).json({
+            success:false,
+            error:'Impossible de préparer la commande à distance.'
+        });
+    }
+});
+
+app.get('/api/client-portal/remote-orders', async (req, res) => {
+    try {
+        const tenantID = cleanString(
+            req.query?.tenantID ||
+            req.headers['x-ichef-tenant'] ||
+            ''
+        );
+        const clientToken = ichefClientPortalBearer(req);
+
+        if (!tenantID || !clientToken) {
+            return res.status(401).json({ success:false, error:'Session client requise.' });
+        }
+
+        const tokenHash = ichefClientPortalTokenHash(clientToken);
+        const state = await AppState.findOne({ tenantID }, { activeOrders:1 }).lean();
+
+        return res.json({
+            success:true,
+            tenantID,
+            orders:ichefRemoteOrdersForHash(state?.activeOrders || {}, tokenHash),
+            serverTimestamp:new Date().toISOString()
+        });
+    } catch (error) {
+        console.error('[iCHEF remote orders read]', error);
+        return res.status(500).json({
+            success:false,
+            error:'Commandes momentanément indisponibles.'
         });
     }
 });
@@ -7501,9 +7803,7 @@ io.on("connection", socket => {
             const state = await AppState
                 .findOne(
                     { tenantID },
-                    {
-                        'activeOrders.RESERVATIONS_MASTER.data': 1
-                    }
+                    { activeOrders: 1 }
                 )
                 .lean();
 
@@ -7521,10 +7821,19 @@ io.on("connection", socket => {
                         ) === tokenHash
                 );
 
-            if (!ownsReservation) {
+            const ownsRemoteOrder =
+                Object.entries(state?.activeOrders || {})
+                    .some(([key, remoteOrder]) =>
+                        String(key).startsWith('REMOTE_') &&
+                        remoteOrder &&
+                        typeof remoteOrder === 'object' &&
+                        String(remoteOrder.clientPortalHash || '') === tokenHash
+                    );
+
+            if (!ownsReservation && !ownsRemoteOrder) {
                 socket.emit('client-portal-auth-error', {
                     success: false,
-                    error: 'Session réservation inconnue.'
+                    error: 'Session client inconnue.'
                 });
                 return;
             }
@@ -7552,6 +7861,21 @@ io.on("connection", socket => {
                     reservations:
                         ichefClientPortalReservationsForHash(
                             allReservations,
+                            tokenHash
+                        ),
+                    serverTimestamp:
+                        new Date().toISOString()
+                }
+            );
+
+            socket.emit(
+                'client-remote-orders-updated',
+                {
+                    success: true,
+                    tenantID,
+                    orders:
+                        ichefRemoteOrdersForHash(
+                            state?.activeOrders || {},
                             tokenHash
                         ),
                     serverTimestamp:
@@ -8610,6 +8934,100 @@ app.post('/update-order', async (req, res) => {
                 );
         }
 
+        if (
+            String(tableId || '').startsWith('REMOTE_') &&
+            order !== null
+        ) {
+            const previousRemote =
+                previousValueForHistory &&
+                typeof previousValueForHistory === 'object'
+                    ? previousValueForHistory
+                    : null;
+
+            if (
+                !previousRemote ||
+                !previousRemote.clientPortalHash ||
+                !['DELIVERY','TAKEAWAY'].includes(
+                    String(previousRemote.orderType || '').toUpperCase()
+                )
+            ) {
+                return res.status(409).json({
+                    success:false,
+                    persisted:false,
+                    code:'REMOTE_ORDER_CONTEXT_MISSING',
+                    error:'Contexte de commande à distance introuvable ou expiré.'
+                });
+            }
+
+            const incoming =
+                orderToPersist &&
+                typeof orderToPersist === 'object'
+                    ? orderToPersist
+                    : {};
+
+            const subtotal = Number(
+                incoming.subtotal ??
+                incoming.total ??
+                0
+            ) || 0;
+
+            const freeFrom = Number(previousRemote.freeDeliveryFrom || 0);
+            const configuredFee = Number(previousRemote.deliveryFeeRule || 0);
+            const deliveryFee =
+                String(previousRemote.orderType).toUpperCase() === 'DELIVERY'
+                    ? (
+                        freeFrom > 0 && subtotal >= freeFrom
+                            ? 0
+                            : configuredFee
+                    )
+                    : 0;
+
+            const remoteStatus =
+                String(
+                    incoming.remoteStatus ||
+                    incoming.status ||
+                    'RECEIVED'
+                ).toUpperCase() === 'DRAFT'
+                    ? 'RECEIVED'
+                    : String(
+                        incoming.remoteStatus ||
+                        incoming.status ||
+                        'RECEIVED'
+                    ).toUpperCase();
+
+            orderToPersist = {
+                ...incoming,
+                tableId:String(tableId),
+                orderKey:String(tableId),
+                remoteOrderId:previousRemote.remoteOrderId,
+                orderType:previousRemote.orderType,
+                source:'PORTAIL_CLIENT',
+                channel:'REMOTE_ORDER',
+                customer:previousRemote.customer,
+                deliveryAddress:
+                    String(previousRemote.orderType).toUpperCase() === 'DELIVERY'
+                        ? previousRemote.deliveryAddress
+                        : null,
+                scheduledAt:previousRemote.scheduledAt || null,
+                clientPortalHash:previousRemote.clientPortalHash,
+                currency:previousRemote.currency || incoming.currency || 'CHF',
+                deliveryFee,
+                minOrder:Number(previousRemote.minOrder || 0),
+                onlinePayment:previousRemote.onlinePayment === true,
+                payOnReceipt:previousRemote.payOnReceipt !== false,
+                status:
+                    incoming.status && String(incoming.status).toUpperCase() !== 'DRAFT'
+                        ? incoming.status
+                        : 'RECEIVED',
+                remoteStatus,
+                createdAtISO:
+                    previousRemote.createdAtISO ||
+                    incoming.createdAtISO ||
+                    new Date().toISOString(),
+                updatedAt:new Date().toISOString()
+            };
+        }
+
         if (orderToPersist && ichefAntiRushIsLiveOrderKey(tableId)) {
             orderToPersist = await ichefAntiRushPrepareIncomingOrder(
                 tenantID,
@@ -8720,6 +9138,26 @@ app.post('/update-order', async (req, res) => {
                     timestamp: new Date().toISOString()
                 }
             );
+
+        if (
+            String(tableId || '').startsWith('REMOTE_') &&
+            String(tableId || '') !== 'REMOTE_ORDER_CONTEXTS'
+        ) {
+            await ichefEmitClientRemoteOrderSnapshots(
+                tenantID,
+                finalPersistedState?.activeOrders || {}
+            );
+
+            io.to(tenantID).emit('remote-order-updated', {
+                tenantID,
+                orderKey:String(tableId),
+                orderType:
+                    finalPersistedState?.activeOrders?.[tableId]?.orderType || '',
+                status:
+                    finalPersistedState?.activeOrders?.[tableId]?.status || '',
+                timestamp:new Date().toISOString()
+            });
+        }
 
         if (
             String(tableId || '').toUpperCase() ===
