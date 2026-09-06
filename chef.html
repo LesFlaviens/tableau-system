@@ -10,7 +10,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="theme-color" content="#0f172a">
-    <title>iChef OS - Chef de Cuisine</title>
+    <title>iChef OS - Chef de Cuisine · Recettes liées au stock V4</title>
 
      <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
      <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
@@ -711,7 +711,7 @@
     <div id="annuaire-modal" class="modal">
         <div class="modal-content" style="max-width: 700px; height: 85vh;">
             <h3> Annuaire Fournisseurs</h3>
-            <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 20px; flex-shrink: 0;">Cliquez sur un dossier pour modifier les coordonnées.</p>
+            <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 20px; flex-shrink: 0;">Lecture seule depuis le stock central. Les coordonnées se modifient dans l’Économat.</p>
             <div id="supplier-directory-list" style="flex: 1; display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 15px; overflow-y: auto; padding-right: 5px; margin-bottom: 15px; align-content: start;"></div>
             <button class="add-btn" style="flex-shrink: 0;" onclick="closeInvModal('annuaire-modal')">Fermer l'annuaire</button>
         </div>
@@ -1044,36 +1044,48 @@
     </div>
 
     <div id="mod-inventaire" class="module">
+        <div class="chef-note-card" style="margin-bottom:14px;">
+            <strong>STOCK CENTRAL — LECTURE CHEF.</strong>
+            Les articles, fournisseurs, prix, unités et réceptions sont gérés par <b>Économat</b>.
+            Les comptages physiques et écarts sont gérés par <b>HACCP</b>.
+            Chef lit la même source <b>INVENTORY_MASTER</b> et relie les ingrédients par <b>inventoryItemId</b> pour sécuriser recettes, food cost et potentiel de production.
+            <div class="flex-mobile-col" style="display:flex;gap:10px;margin-top:12px;">
+                <button class="add-btn primary" style="flex:1;" onclick="openEconomatFromChef()">OUVRIR ÉCONOMAT</button>
+                <button class="add-btn" style="flex:1;" onclick="openHaccpFromChef()">OUVRIR HACCP</button>
+                <button class="add-btn" style="flex:1;" onclick="refreshChefSharedData()">ACTUALISER</button>
+            </div>
+        </div>
+
         <div class="bento-grid">
 
-            <div class="bento-card" onclick="openInvModal('ia-scan-modal')">
+            <div class="bento-card" onclick="openEconomatFromChef()">
                 <div class="bento-icon">📸</div>
-                <div class="bento-title">Scan IA<br>Facture</div>
+                <div class="bento-title">Factures / Réceptions<br>Économat</div>
             </div>
 
-            <div class="bento-card" onclick="openInvModal('manual-stock-modal')">
+            <div class="bento-card" onclick="openEconomatFromChef()">
                 <div class="bento-icon">✍️</div>
-                <div class="bento-title">Saisie<br>Manuelle</div>
+                <div class="bento-title">Créer / Modifier article<br>Économat</div>
             </div>
 
             <div class="bento-card" onclick="openInvModal('annuaire-modal')">
                 <div class="bento-icon">📒</div>
-                <div class="bento-title">Annuaire<br>Fournisseurs</div>
+                <div class="bento-title">Annuaire fournisseurs<br>Lecture seule</div>
             </div>
 
             <div class="bento-card" onclick="openInvModal('matrice-modal')">
                 <div class="bento-icon">📦</div>
-                <div class="bento-title">Matrice<br>Globale</div>
+                <div class="bento-title">Stock central<br>Lecture seule</div>
             </div>
 
             <div class="bento-card" onclick="openInvModal('orders-modal')">
                 <div class="bento-icon">🧾</div>
-                <div class="bento-title">Bons de<br>Commande</div>
+                <div class="bento-title">Bons de commande<br>Préparation Chef</div>
             </div>
 
             <div class="bento-card" onclick="openInvModal('capital-modal')">
                 <div class="bento-icon">💰</div>
-                <div class="bento-title">Capital<br>Immobilisé</div>
+                <div class="bento-title">Capital immobilisé<br>Lecture seule</div>
                 <div class="bento-value" id="bento-capital-total">0.00 €</div>
             </div>
 
@@ -1177,7 +1189,7 @@
                 module: "CHEF_CUISINE",
                 role: "production",
                 fiscalScope: "none",
-                message: "Le module Chef gère la carte, les fiches techniques, les stocks et la production. L'encaissement fiscal est réservé au module caisse."
+                message: "Le module Chef gère la carte, les fiches techniques et la production. Le stock central est géré par Économat et contrôlé physiquement par HACCP."
             };
         }
 
@@ -1213,29 +1225,54 @@
             return { val: val, unit: unit };
         }
 
-        // === MOTEUR RÉSEAU ===
+        // === MOTEUR RÉSEAU — SERVEUR MAÎTRE ===
         const API = {
             get: async () => {
                 try {
-                    let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(tenantID)}&_t=${Date.now()}`, { cache:'no-store', credentials:'include', headers:ichefAuthHeaders() });
-                    if(r.ok) return await r.json();
-                    throw new Error("Serveur injoignable");
+                    const r = await fetch(
+                        `${SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(tenantID)}&_t=${Date.now()}&chefBuild=200`,
+                        { cache:'no-store', credentials:'include', headers:ichefAuthHeaders() }
+                    );
+                    if (!r.ok) throw new Error(`Lecture serveur refusée (${r.status})`);
+                    const fresh = await r.json();
+                    try { localStorage.setItem('EMPIRE_CHEF_SYNC', JSON.stringify(fresh)); } catch (_) {}
+                    return fresh;
                 } catch(e) {
+                    console.warn("[iCHEF CHEF] Lecture serveur indisponible, cache de secours :", e);
                     return JSON.parse(localStorage.getItem('EMPIRE_CHEF_SYNC')) || { activeOrders: {} };
                 }
             },
             save: async (k, d) => {
-                let state = JSON.parse(localStorage.getItem('EMPIRE_CHEF_SYNC')) || { activeOrders: {} };
-                state.activeOrders[k] = { data: d };
-                localStorage.setItem('EMPIRE_CHEF_SYNC', JSON.stringify(state));
-
-                try {
-                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
-                        method:'POST', headers:ichefAuthHeaders({'Content-Type':'application/json'}), credentials:'include', cache:'no-store',
+                const r = await fetch(
+                    `${SERVER_URL}/update-order?tenantID=${encodeURIComponent(tenantID)}&chefBuild=200`,
+                    {
+                        method:'POST',
+                        headers:ichefAuthHeaders({'Content-Type':'application/json','Accept':'application/json'}),
+                        credentials:'include',
+                        cache:'no-store',
                         body: JSON.stringify({ tableId:k, order:{data:d} })
-                    });
-                    if (window.ichefSocket) window.ichefSocket.emit('orderUpdated', { tableId: k, tenantID: tenantID });
-                } catch(e) { console.warn("Réseau lent. Données sécurisées localement."); }
+                    }
+                );
+
+                let payload = {};
+                try { payload = await r.json(); } catch (_) {}
+
+                if (!r.ok || payload?.success === false) {
+                    throw new Error(payload?.error || payload?.message || `Sauvegarde serveur refusée (${r.status})`);
+                }
+
+                // Le cache n'est mis à jour qu'après confirmation du serveur.
+                try {
+                    let state = JSON.parse(localStorage.getItem('EMPIRE_CHEF_SYNC')) || { activeOrders: {} };
+                    state.activeOrders = state.activeOrders || {};
+                    state.activeOrders[k] = { data: d };
+                    localStorage.setItem('EMPIRE_CHEF_SYNC', JSON.stringify(state));
+                } catch (_) {}
+
+                if (window.ichefSocket) {
+                    window.ichefSocket.emit('orderUpdated', { tableId:k, tenantID });
+                }
+                return payload;
             }
         };
 
@@ -1260,6 +1297,71 @@
             if(menu && menu.style.display === 'flex') menu.style.display = 'none';
         });
 
+
+        function openEconomatFromChef() {
+            const q = tenantID ? `?tenantID=${encodeURIComponent(tenantID)}&from=chef` : '';
+            window.location.href = `economat.html${q}`;
+        }
+
+        function openHaccpFromChef() {
+            const q = tenantID ? `?tenantID=${encodeURIComponent(tenantID)}&from=chef` : '';
+            window.location.href = `haccp.html${q}`;
+        }
+
+        async function refreshChefSharedData(options = {}) {
+            const includeMenu = options.includeMenu === true;
+            try {
+                const state = await API.get();
+                const aO = state?.activeOrders || {};
+
+                if (Array.isArray(aO['INVENTORY_MASTER']?.data)) {
+                    stockGlobalData = aO['INVENTORY_MASTER'].data;
+                }
+                if (Array.isArray(aO['RECIPES_MASTER']?.data)) {
+                    recipesData = aO['RECIPES_MASTER'].data;
+                }
+                if (aO['SETTINGS_MASTER']?.data && typeof aO['SETTINGS_MASTER'].data === 'object') {
+                    systemSettings = aO['SETTINGS_MASTER'].data || {};
+                    if (systemSettings.currency) currentCurrency = systemSettings.currency;
+                }
+                if (Array.isArray(aO['STOCK_CATS']?.data)) {
+                    stockCategories = aO['STOCK_CATS'].data;
+                }
+
+                if (includeMenu) {
+                    const menuOrder = aO['MENU_MASTER'] || aO['MENU_CUISINE'];
+                    if (menuOrder?.data && typeof menuOrder.data === 'object' && !Array.isArray(menuOrder.data)) {
+                        menuData = JSON.parse(JSON.stringify(menuOrder.data));
+                    }
+                }
+
+                renderAll();
+                const syncDot = document.getElementById('sync-dot');
+                const syncText = document.getElementById('sync-text');
+                if (syncDot) syncDot.style.background = 'var(--success)';
+                if (syncText) syncText.innerText = 'SYNCHRONISÉ';
+                return state;
+            } catch (e) {
+                console.warn('[iCHEF CHEF] Actualisation partagée impossible :', e);
+                const syncDot = document.getElementById('sync-dot');
+                const syncText = document.getElementById('sync-text');
+                if (syncDot) syncDot.style.background = 'var(--alert)';
+                if (syncText) syncText.innerText = 'SYNC À REFAIRE';
+                throw e;
+            }
+        }
+
+        let chefSharedPollTimer = null;
+        function startChefSharedPolling() {
+            if (chefSharedPollTimer) return;
+            chefSharedPollTimer = setInterval(async () => {
+                if (!window.ICHEF_SECURITY?.ready) return;
+                if (isTyping || isSyncingMenu) return;
+                const active = document.activeElement;
+                if (active && ['INPUT','TEXTAREA','SELECT'].includes(active.tagName)) return;
+                try { await refreshChefSharedData({ includeMenu:false }); } catch (_) {}
+            }, 12000);
+        }
 
         function ichefReturnToAdministration() {
             const params = new URLSearchParams(window.location.search);
@@ -1309,7 +1411,9 @@
                         tenantID: tenantID,
                         pin: pin,
                         deviceId: getDeviceFingerprint(),
-                        source: 'chef-cuisine'
+                        terminal: 'CHEF',
+                        module: 'CHEF_CUISINE',
+                        source: 'chef.html'
                     })
                 });
                 const pinData = await pinRes.json().catch(() => ({}));
@@ -1319,7 +1423,7 @@
                 }
 
                 ichefPinFailures = 0;
-                window.ICHEF_RUNTIME_PIN = pin;
+                window.ICHEF_RUNTIME_PIN = ''; // Le PIN n'est jamais conservé après validation serveur.
                 window.ICHEF_SECURITY = Object.assign(window.ICHEF_SECURITY || {}, {
                     tenantID: tenantID,
                     deviceId: getDeviceFingerprint(),
@@ -1355,6 +1459,7 @@
                 }
 
                 await bootSystem();
+                startChefSharedPolling();
             } catch (e) {
                 ichefPinFailures += 1;
                 if (input) input.value = '';
@@ -1412,6 +1517,15 @@
                 if(!Array.isArray(recipesData)) recipesData = [];
                 if(!Array.isArray(stockGlobalData)) stockGlobalData = [];
 
+                // Migration douce : les anciennes fiches reçoivent un inventoryItemId
+                // uniquement quand le rapprochement est suffisamment fiable.
+                try {
+                    const linksChanged = migrateRecipeInventoryLinks();
+                    if (linksChanged) await API.save('RECIPES_MASTER', recipesData);
+                } catch (linkError) {
+                    console.warn('[iCHEF CHEF] Migration liens stock reportée :', linkError);
+                }
+
                 renderAll();
 
                 let syncDot = document.getElementById('sync-dot');
@@ -1452,10 +1566,7 @@
         const socket = window.ichefSocket;
 
         socket.on('connect', () => {
-            socket.emit('joinTenant', {
-                tenantID: tenantID,
-                deviceId: getDeviceFingerprint()
-            });
+            socket.emit('joinTenant', tenantID);
             let syncDot = document.getElementById('sync-dot');
             let syncText = document.getElementById('sync-text');
             if(syncDot) syncDot.style.background = 'var(--success)';
@@ -1499,6 +1610,30 @@
             }
         });
 
+        // Économat / HACCP / Admin peuvent modifier les données centrales sans passer
+        // par l'événement historique updateState. Chef relit alors les sources maîtres.
+        ['state-updated','inventory-updated','recipes-updated','settings-updated','ichef:core:update']
+            .forEach(evt => {
+                socket.on(evt, async (payload) => {
+                    if (isTyping || isSyncingMenu) return;
+                    try {
+                        if (payload?.activeOrders) {
+                            const aO = payload.activeOrders;
+                            if (Array.isArray(aO['INVENTORY_MASTER']?.data)) stockGlobalData = aO['INVENTORY_MASTER'].data;
+                            if (Array.isArray(aO['RECIPES_MASTER']?.data)) recipesData = aO['RECIPES_MASTER'].data;
+                            if (aO['SETTINGS_MASTER']?.data) {
+                                systemSettings = aO['SETTINGS_MASTER'].data || {};
+                                if (systemSettings.currency) currentCurrency = systemSettings.currency;
+                            }
+                            if (Array.isArray(aO['STOCK_CATS']?.data)) stockCategories = aO['STOCK_CATS'].data;
+                            renderAll();
+                        } else {
+                            await refreshChefSharedData({ includeMenu:false });
+                        }
+                    } catch (_) {}
+                });
+            });
+
         //  SAUVEGARDE MENU SECURISEE ANTI-SPAM
         let isSyncingMenu = false;
         let menuSavePending = false;
@@ -1533,7 +1668,7 @@
                     socket.emit('syncMenu', {
                         tenantID: tenantID, department: 'CUISINE',
                         menu: menuData, categories: categoriesCuisine,
-                        source: 'chef.html', pin: window.ICHEF_RUNTIME_PIN
+                        source: 'chef.html'
                     }, (response) => {
                         if(response && response.success) {
                             if(syncDot) syncDot.style.background = 'var(--success)';
@@ -1654,14 +1789,14 @@
             select.innerHTML = stockCategories.map(c => `<option value="${c}">${c}</option>`).join('');
         }
         async function addStockCategory() {
-            let newCat = prompt(" Nom de la catégorie d'économat :");
-            if(newCat && newCat.trim() !== "" && !stockCategories.includes(newCat.trim())) {
-                stockCategories.push(newCat.trim()); renderAll(); await API.save('STOCK_CATS', stockCategories);
+            if (confirm("Les catégories du stock central sont gérées par l’Économat. Ouvrir l’Économat ?")) {
+                openEconomatFromChef();
             }
         }
         async function removeStockCategory() {
-            let cat = document.getElementById('manual-stock-cat').value;
-            if(confirm(` Supprimer la catégorie "${cat}" ?`)) { stockCategories = stockCategories.filter(c => c !== cat); renderAll(); await API.save('STOCK_CATS', stockCategories); }
+            if (confirm("La suppression d’une catégorie de stock se fait dans l’Économat. Ouvrir l’Économat ?")) {
+                openEconomatFromChef();
+            }
         }
 
         function renderAll() {
@@ -2214,85 +2349,17 @@
             pendingAIItems.splice(idx, 1);
             renderAIValidationTable();
         }
-
         function confirmAIValidation() {
-            let fournisseur = document.getElementById('ai-supplier-input').value.trim();
-            let adresseFournisseur = document.getElementById('ai-address-input').value.trim();
-            let telephoneFournisseur = document.getElementById('ai-phone-input').value.trim();
-            let newCurrency = document.getElementById('ai-currency-input').value.trim() || "€";
-
-            if (newCurrency !== currentCurrency) {
-                currentCurrency = newCurrency;
-                API.get().then(state => {
-                    let settings = state.activeOrders['SETTINGS_MASTER']?.data || {};
-                    settings.currency = currentCurrency;
-                    API.save('SETTINGS_MASTER', settings);
-                });
-            }
-
-            pendingAIItems.forEach((_, idx) => {
-                let name = document.getElementById(`ai-name-${idx}`).value.trim();
-                let catRaw = document.getElementById(`ai-cat-${idx}`).value;
-                let qtyStr = document.getElementById(`ai-qty-${idx}`).value.trim();
-                let price = parseFloat(document.getElementById(`ai-price-${idx}`).value) || 0;
-
-                const dicoCategories = {
-                    'Viande': ' Viandes & Volailles', 'Poisson': ' Poissons & Crustacés', 'Légumes': ' Légumes & Herbes',
-                    'Féculents': ' Épicerie Sèche', 'Laiterie': ' Crèmerie & B.O.F', 'Surgelés': ' Surgelés'
-                };
-                let finalCat = stockCategories.includes(catRaw) ? catRaw : (dicoCategories[catRaw] || (' ' + (catRaw || 'NON CLASSÉ')));
-
-                let parsedQty = parseQuantity(qtyStr);
-                let unitPrice = parsedQty.val > 0 ? (price / parsedQty.val) : price;
-
-                stockGlobalData.unshift({
-                    id: Date.now() + Math.random(),
-                    name: name,
-                    cat: finalCat,
-                    fournisseur: fournisseur,
-                    adresse: adresseFournisseur,
-                    telephone: telephoneFournisseur,
-                    qtyStr: qtyStr,
-                    initialQty: parsedQty.val,
-                    currentQty: parsedQty.val,
-                    unit: parsedQty.unit,
-                    totalPrice: price,
-                    unitPrice: unitPrice,
-                    date: new Date().toLocaleDateString()
-                });
-            });
-
             closeInvModal('ai-validation-modal');
-            renderAll();
-            API.save('INVENTORY_MASTER', stockGlobalData);
+            if (confirm("Les factures et réceptions doivent alimenter le stock maître depuis l’Économat. Ouvrir l’Économat ?")) {
+                openEconomatFromChef();
+            }
         }
-
         async function addManualStock() {
-            const name = document.getElementById('manual-stock-name').value.trim();
-            const qtyStr = document.getElementById('manual-stock-qty').value.trim();
-            const price = parseFloat(document.getElementById('manual-stock-price').value);
-            const cat = document.getElementById('manual-stock-cat').value;
-            const supplier = document.getElementById('manual-stock-supplier').value.trim();
-
-            if(!name || !qtyStr || isNaN(price)) return alert("Remplissez les champs obligatoires (Nom, Qté, Prix).");
-
-            let parsedQty = parseQuantity(qtyStr);
-            let unitPrice = parsedQty.val > 0 ? (price / parsedQty.val) : price;
-
-            stockGlobalData.unshift({
-                id: Date.now(), name, cat, fournisseur: supplier,
-                qtyStr: qtyStr, initialQty: parsedQty.val, currentQty: parsedQty.val, unit: parsedQty.unit,
-                totalPrice: price, unitPrice: unitPrice, date: new Date().toLocaleDateString()
-            });
-
-            document.getElementById('manual-stock-name').value = '';
-            document.getElementById('manual-stock-qty').value = '';
-            document.getElementById('manual-stock-price').value = '';
-            document.getElementById('manual-stock-supplier').value = '';
-
             closeInvModal('manual-stock-modal');
-            renderAll();
-            await API.save('INVENTORY_MASTER', stockGlobalData);
+            if (confirm("La création d’un article appartient à l’Économat. Ouvrir l’Économat ?")) {
+                openEconomatFromChef();
+            }
         }
 
         function renderSuppliers() {
@@ -2321,7 +2388,7 @@
                 let safeName = s.nom.replace(/'/g, "\\'").replace(/"/g, '&quot;');
                 return `
                 <div class="folder-card" style="background:var(--bg); border:1px solid var(--border-strong); justify-content:center; text-align:center;"
-                     onclick="editSupplier('${safeName}')" title="Modifier les coordonnées">
+                     title="Lecture seule — gérer dans l’Économat">
                     <div style="font-size: 1.8rem; margin-bottom: 5px;"></div>
                     <div style="font-weight:700; color:var(--text-main); font-size:0.85rem; line-height:1.2; text-transform:uppercase;">${s.nom}</div>
                     ${s.tel ? `<div style="font-size:0.75rem; color:var(--accent); margin-top:8px; font-weight:600;"> ${s.tel}</div>` : ''}
@@ -2329,50 +2396,16 @@
                 `;
             }).join('');
         }
-
-        function editSupplier(supplierName) {
-            let supplierItems = stockGlobalData.filter(i => i.fournisseur === supplierName);
-            if (supplierItems.length === 0) return;
-
-            let tel = ""; let adr = "";
-            for (let item of supplierItems) {
-                if (!tel && item.telephone) tel = item.telephone;
-                if (!adr && item.adresse) adr = item.adresse;
-            }
-
-            document.getElementById('edit-supplier-old-name').value = supplierName;
-            document.getElementById('edit-supplier-name').value = supplierName;
-            document.getElementById('edit-supplier-phone').value = tel;
-            document.getElementById('edit-supplier-address').value = adr;
-
+        function editSupplier() {
             closeInvModal('annuaire-modal');
-            openInvModal('edit-supplier-modal');
+            if (confirm("Les coordonnées fournisseur sont gérées par l’Économat. Ouvrir l’Économat ?")) {
+                openEconomatFromChef();
+            }
         }
-
         async function saveSupplierEdit() {
-            let oldName = document.getElementById('edit-supplier-old-name').value;
-            let newName = document.getElementById('edit-supplier-name').value.trim();
-            let newTel = document.getElementById('edit-supplier-phone').value.trim();
-            let newAdr = document.getElementById('edit-supplier-address').value.trim();
-
-            if (!newName) return alert("Le nom du fournisseur est obligatoire.");
-
-            let updatedCount = 0;
-            stockGlobalData.forEach(item => {
-                if (item.fournisseur === oldName) {
-                    item.fournisseur = newName;
-                    item.telephone = newTel;
-                    item.adresse = newAdr;
-                    updatedCount++;
-                }
-            });
-
             closeInvModal('edit-supplier-modal');
-
-            if (updatedCount > 0) {
-                renderAll();
-                await API.save('INVENTORY_MASTER', stockGlobalData);
-                openInvModal('annuaire-modal');
+            if (confirm("Les fournisseurs sont gérés par l’Économat. Ouvrir l’Économat ?")) {
+                openEconomatFromChef();
             }
         }
 
@@ -2530,12 +2563,12 @@
                         ${fournisseurHtml}
                     </td>
                     <td data-label="Unitaire" style="padding: 12px 15px; border-bottom: 1px solid var(--border-strong); color: var(--text-muted); font-size: 0.8rem; white-space: nowrap;">${i.uPrice.toFixed(2)} ${currentCurrency} / ${i.unit}</td>
-                    <td data-label="Quantité" style="padding: 12px 15px; border-bottom: 1px solid var(--border-strong); cursor: pointer;" onclick="editStockQty(${i.originalIndex})" title="Modifier la quantité">
+                    <td data-label="Quantité" style="padding: 12px 15px; border-bottom: 1px solid var(--border-strong);" title="Lecture seule — comptage dans HACCP">
                         <span style="${alertStyle}">${i.currentQ} ${i.unit}${alertIcon}</span>
                     </td>
                     <td data-label="Total" style="padding: 12px 15px; border-bottom: 1px solid var(--border-strong); color: var(--text-main); font-weight: 800; font-size: 0.85rem; white-space: nowrap;">${i.currentActualValue.toFixed(2)} ${currentCurrency}</td>
                     <td style="padding: 12px 15px; border-bottom: none; text-align: right;">
-                        <button onclick="deleteStockItem(${i.originalIndex})" title="Supprimer du stock" aria-label="Supprimer du stock" style="background: transparent; border: none; color: var(--alert); font-size: 1rem; cursor: pointer; padding: 5px;">🗑️</button>
+                        <button onclick="openEconomatFromChef()" title="Gérer dans l’Économat" aria-label="Gérer dans l’Économat" style="background: transparent; border: 1px solid var(--border-strong); color: var(--gold); font-size: .68rem; font-weight:800; cursor: pointer; padding: 6px 8px; border-radius:6px;">ÉCONOMAT</button>
                     </td>
                 </tr>`;
             });
@@ -2592,38 +2625,101 @@
             document.getElementById('orders-folder-container').style.display = 'block';
             document.getElementById('orders-detail-container').style.display = 'none';
         };
-
-        async function editStockQty(idx) {
-            let item = stockGlobalData[idx];
-            let parsed = parseQuantity(item.qtyStr);
-            let initialQ = item.initialQty !== undefined ? item.initialQty : parsed.val;
-            let currentQ = item.currentQty !== undefined ? item.currentQty : initialQ;
-            let unit = item.unit !== undefined ? item.unit : parsed.unit;
-
-            let newQty = prompt(` Quantité RESTANTE en stock pour ${item.name} (en ${unit}) :`, currentQ);
-            if (newQty !== null && newQty.trim() !== "") {
-                let parsedNew = parseFloat(newQty.replace(',', '.'));
-                if (!isNaN(parsedNew) && parsedNew >= 0) {
-                    if (item.initialQty === undefined) item.initialQty = initialQ;
-                    if (item.unitPrice === undefined) {
-                        let tPrice = parseFloat(String(item.lastPrice).replace(',', '.').replace(/[^\d.-]/g, '')) || 0;
-                        item.totalPrice = tPrice;
-                        item.unitPrice = initialQ > 0 ? tPrice / initialQ : tPrice;
-                        item.unit = unit;
-                    }
-
-                    item.currentQty = parsedNew;
-                    item.qtyStr = parsedNew + " " + unit;
-                    renderAll();
-                    await API.save('INVENTORY_MASTER', stockGlobalData);
-                } else alert(" Quantité invalide.");
+        async function editStockQty() {
+            if (confirm("Le comptage physique du stock se fait dans HACCP. Ouvrir HACCP ?")) {
+                openHaccpFromChef();
+            }
+        }
+        async function deleteStockItem() {
+            if (confirm("La suppression d’un article du stock central se fait dans l’Économat. Ouvrir l’Économat ?")) {
+                openEconomatFromChef();
             }
         }
 
-        async function deleteStockItem(idx) {
-            if(confirm("Supprimer ce produit de l'économat ?")) {
-                stockGlobalData.splice(idx, 1); renderAll(); await API.save('INVENTORY_MASTER', stockGlobalData);
+        // === LIEN PERMANENT RECETTE ↔ INVENTORY_MASTER ===
+        function normalizeChefInventoryText(value) {
+            return String(value || "")
+                .trim()
+                .toLowerCase()
+                .normalize("NFD")
+                .replace(/[\u0300-\u036f]/g, "")
+                .replace(/[^\p{L}\p{N}]+/gu, " ")
+                .replace(/\s+/g, " ")
+                .trim();
+        }
+
+        function resolveInventoryItemByText(value) {
+            const wanted = normalizeChefInventoryText(value);
+            if (!wanted || !Array.isArray(stockGlobalData)) return null;
+
+            const exact = stockGlobalData.filter(item =>
+                normalizeChefInventoryText(item?.name) === wanted
+            );
+            if (exact.length === 1) return exact[0];
+
+            const wantedWords = wanted.split(" ").filter(w => w.length > 2);
+            if (!wantedWords.length) return null;
+
+            const ranked = stockGlobalData.map(item => {
+                const itemNorm = normalizeChefInventoryText(item?.name);
+                const score = wantedWords.reduce((s,w) => s + (itemNorm.includes(w) ? 1 : 0), 0);
+                return {item, score, itemNorm};
+            }).filter(x => x.score > 0)
+              .sort((a,b) => b.score - a.score || a.itemNorm.length - b.itemNorm.length);
+
+            if (!ranked.length) return null;
+            if (ranked.length > 1 && ranked[0].score === ranked[1].score) return null;
+            return ranked[0].item;
+        }
+
+        function linkStructuredIngredientToInventory(ingredient) {
+            const source = ingredient && typeof ingredient === "object" ? ingredient : {};
+            let item = null;
+
+            if (source.inventoryItemId !== undefined && source.inventoryItemId !== null) {
+                item = stockGlobalData.find(x =>
+                    String(x?.id ?? "") === String(source.inventoryItemId)
+                ) || null;
             }
+            if (!item) item = resolveInventoryItemByText(source.name || source.inventoryItemName || "");
+
+            return {
+                ...source,
+                inventoryItemId: item?.id ?? null,
+                inventoryItemName: item?.name || source.inventoryItemName || source.name || "",
+                inventoryUnit: item?.unit || source.inventoryUnit || "",
+                unitPriceSnapshot: item ? Number(item.unitPrice || 0) : Number(source.unitPriceSnapshot || 0),
+                linkedAt: item ? new Date().toISOString() : (source.linkedAt || null),
+                linkStatus: item ? "linked" : "unlinked"
+            };
+        }
+
+        function migrateRecipeInventoryLinks() {
+            if (!Array.isArray(recipesData) || !Array.isArray(stockGlobalData)) return false;
+            let changed = false;
+
+            recipesData = recipesData.map(recipe => {
+                if (!Array.isArray(recipe?.structuredIngs)) return recipe;
+                const nextIngs = recipe.structuredIngs.map(ing => {
+                    const before = JSON.stringify({
+                        inventoryItemId: ing?.inventoryItemId ?? null,
+                        inventoryItemName: ing?.inventoryItemName ?? "",
+                        inventoryUnit: ing?.inventoryUnit ?? "",
+                        linkStatus: ing?.linkStatus ?? ""
+                    });
+                    const linked = linkStructuredIngredientToInventory(ing);
+                    const after = JSON.stringify({
+                        inventoryItemId: linked.inventoryItemId ?? null,
+                        inventoryItemName: linked.inventoryItemName ?? "",
+                        inventoryUnit: linked.inventoryUnit ?? "",
+                        linkStatus: linked.linkStatus ?? ""
+                    });
+                    if (before !== after) changed = true;
+                    return linked;
+                });
+                return {...recipe, structuredIngs: nextIngs};
+            });
+            return changed;
         }
 
         // === IA PRÉDICTIVE : POTENTIEL DE PRODUCTION ===
@@ -2642,16 +2738,7 @@
                 let requiredGram = parseFloat(document.getElementById(`gram-${box}`).value) || 0;
                 if (requiredGram <= 0) return;
 
-                let matchedStock = null;
-                let bestMatchScore = 0;
-
-                stockGlobalData.forEach(item => {
-                    let score = 0;
-                    let itemName = item.name.toLowerCase();
-                    let words = txt.split(/[\s,]+/);
-                    words.forEach(w => { if (w.length > 2 && itemName.includes(w)) score++; });
-                    if (score > bestMatchScore) { bestMatchScore = score; matchedStock = item; }
-                });
+                const matchedStock = resolveInventoryItemByText(txt);
 
                 if (matchedStock && box !== 'eco') {
                     foundAny = true;
@@ -2812,7 +2899,20 @@
                         let cleanLine = line.replace(/\([^)]+\)/g, '').replace(/dispo:.*$/i, '').trim();
                         if(cleanLine === "") return;
                         let nameOnly = cleanLine.replace(/(\d+(?:\.\d+)?)\s*(?:€|euros?|\$|chf|mad|£|¥).*/i, '').trim();
-                        if (nameOnly) structuredIngs.push({ name: nameOnly, qtyPerPortion: portion, cat: k });
+                        if (nameOnly) {
+                            const matchedInventory = resolveInventoryItemByText(nameOnly);
+                            structuredIngs.push({
+                                name: nameOnly,
+                                qtyPerPortion: portion,
+                                cat: k,
+                                inventoryItemId: matchedInventory?.id ?? null,
+                                inventoryItemName: matchedInventory?.name || nameOnly,
+                                inventoryUnit: matchedInventory?.unit || "",
+                                unitPriceSnapshot: Number(matchedInventory?.unitPrice || 0),
+                                linkedAt: matchedInventory ? new Date().toISOString() : null,
+                                linkStatus: matchedInventory ? "linked" : "unlinked"
+                            });
+                        }
                     });
                 }
             });
@@ -2890,7 +2990,7 @@
             document.getElementById('current-folder-title').innerText = cat.toUpperCase();
             document.getElementById('recipes-list').innerHTML = recipesData.filter(r=>r.cat===cat).map(r=>`
                 <div class="menu-item" style="display:flex; justify-content:space-between; align-items:center; background:var(--panel); padding:15px; border-radius:8px; border:1px solid var(--border-strong);">
-                    <div><b style="font-size:1.1rem; color:var(--text-main);">${r.name}</b><br><small style="color:var(--text-muted); font-weight:bold;">FoodCost: <span style="color:var(--accent);">${r.fc !== undefined ? r.fc : 0}%</span> | Coût: <span style="color:var(--gold);">${r.cost} ${currentCurrency}</span></small></div>
+                    <div><b style="font-size:1.1rem; color:var(--text-main);">${r.name}</b><br><small style="color:var(--text-muted); font-weight:bold;">FoodCost: <span style="color:var(--accent);">${r.fc !== undefined ? r.fc : 0}%</span> | Coût: <span style="color:var(--gold);">${r.cost} ${currentCurrency}</span> | Stock lié: <span style="color:var(--ordered);">${Array.isArray(r.structuredIngs) ? r.structuredIngs.filter(i=>i.inventoryItemId).length : 0}/${Array.isArray(r.structuredIngs) ? r.structuredIngs.length : 0}</span></small></div>
                     <button onclick="deleteRecipe(${r.id})" title="Supprimer la recette" aria-label="Supprimer la recette" style="background:var(--bg); border:1px solid var(--border-strong); color:var(--alert); cursor:pointer; font-weight:bold; font-size:1.1rem; padding: 10px 15px; border-radius:8px;">🗑️</button>
                 </div>
             `).join('');
