@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-<!-- ICHEF ADMIN V29 — DOSSIERS CLIENTS + RÉSERVATIONS + 2 SERVICES -->
+<!-- ICHEF ADMIN V30 — DOSSIERS CLIENTS + CONSOMMATIONS + CLASSEMENT -->
 <!-- ICHEF ADMIN V19 — SOCKET STABLE POLLING→WEBSOCKET -->
 <!-- ICHEF ADMIN FINAL V18.1 — CARTE & CATEGORIES PRO -->
 <!-- ICHEF ADMIN V18 — CARTE & CATEGORIES PRO -->
@@ -2156,6 +2156,56 @@ input, select, textarea, button {
     border-color:rgba(212,175,55,.5);
     background:rgba(212,175,55,.08);color:var(--gold)
 }
+.ichef-client-rank{
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    min-width:34px;
+    height:28px;
+    padding:0 8px;
+    border-radius:999px;
+    border:1px solid rgba(212,175,55,.38);
+    background:rgba(212,175,55,.08);
+    color:var(--gold);
+    font-size:.72rem;
+    font-weight:950
+}
+.ichef-client-consumption-grid{
+    display:grid;
+    grid-template-columns:repeat(4,minmax(0,1fr));
+    gap:7px;
+    padding:10px 14px 0
+}
+.ichef-client-consumption-stat{
+    padding:9px 10px;
+    border:1px solid rgba(255,255,255,.055);
+    border-radius:10px;
+    background:rgba(0,0,0,.10)
+}
+.ichef-client-consumption-stat small{
+    display:block;
+    color:var(--text-muted);
+    font-size:.61rem;
+    text-transform:uppercase;
+    font-weight:850
+}
+.ichef-client-consumption-stat strong{
+    display:block;
+    color:var(--text-main);
+    margin-top:3px;
+    font-size:.82rem
+}
+.ichef-client-top-items{
+    padding:8px 14px 4px;
+    color:var(--text-muted);
+    font-size:.7rem;
+    line-height:1.5
+}
+.ichef-client-top-items b{color:var(--text-main)}
+@media(max-width:900px){
+    .ichef-client-consumption-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+
 .ichef-client-reservation-list{
     padding:10px 14px 14px;display:flex;flex-direction:column;gap:7px
 }
@@ -3259,8 +3309,8 @@ input, select, textarea, button {
                             <div>
                                 <h3 class="section-title" style="margin-bottom:5px;">Clients & réservations</h3>
                                 <p style="margin:0;color:var(--text-muted);font-size:.82rem;line-height:1.5;">
-                                    Dossiers issus de <strong>RESERVATIONS_MASTER</strong> :
-                                    historique, prochaine réservation, clients fidèles et placement des tables.
+                                    Dossiers issus de <strong>RESERVATIONS_MASTER</strong> et des tickets clôturés :
+                                    historique, prochaine réservation, fidélité, placement des tables et consommation attribuée au client.
                                 </p>
                             </div>
                             <button class="btn-outline" type="button"
@@ -3287,14 +3337,35 @@ input, select, textarea, button {
                                 <small>À placer</small>
                                 <strong id="ichef-crm-unplaced-reservations">0</strong>
                             </div>
+                            <div class="ichef-client-crm-kpi">
+                                <small>CA clients identifiés</small>
+                                <strong id="ichef-crm-identified-spend">0</strong>
+                            </div>
+                            <div class="ichef-client-crm-kpi">
+                                <small>Tickets attribués</small>
+                                <strong id="ichef-crm-identified-tickets">0</strong>
+                            </div>
                         </div>
 
                         <div class="ichef-client-crm-toolbar">
-                            <input class="input-field"
-                                   id="ichef-client-crm-search"
-                                   type="search"
-                                   placeholder="Rechercher nom ou téléphone…"
-                                   oninput="renderClientReservationCRM()">
+                            <div style="display:grid;grid-template-columns:minmax(220px,1fr) minmax(210px,.5fr);gap:8px;">
+                                <input class="input-field"
+                                       id="ichef-client-crm-search"
+                                       type="search"
+                                       placeholder="Rechercher nom ou téléphone…"
+                                       oninput="renderClientReservationCRM()">
+
+                                <select class="input-field"
+                                        id="ichef-client-consumption-sort"
+                                        onchange="setIchefClientConsumptionSort(this.value)">
+                                    <option value="SPEND_DESC">Consommation : + au −</option>
+                                    <option value="SPEND_ASC">Consommation : − au +</option>
+                                    <option value="TICKETS_DESC">Nombre de tickets : + au −</option>
+                                    <option value="AVERAGE_DESC">Panier moyen : + au −</option>
+                                    <option value="NEXT_RESERVATION">Prochaine réservation</option>
+                                    <option value="LOYALTY">Fidélité</option>
+                                </select>
+                            </div>
 
                             <div class="ichef-client-crm-filters">
                                 <button type="button" class="ichef-client-crm-filter active"
@@ -3305,6 +3376,8 @@ input, select, textarea, button {
                                         onclick="setIchefClientReservationFilter('UPCOMING',this)">À venir</button>
                                 <button type="button" class="ichef-client-crm-filter"
                                         onclick="setIchefClientReservationFilter('UNPLACED',this)">À placer</button>
+                                <button type="button" class="ichef-client-crm-filter"
+                                        onclick="setIchefClientReservationFilter('CONSUMED',this)">Avec consommation</button>
                             </div>
                         </div>
 
@@ -3834,6 +3907,7 @@ input, select, textarea, button {
         let globalArchitecture = { rooms: ['Salle Principale'], tables: [], zones: [] };
         let clientReservationsMaster = [];
         let ichefClientReservationFilter = 'ALL';
+        let ichefClientConsumptionSort = 'SPEND_DESC';
         let ichefLastReservationState = null;
         let menuCuisine = {}; 
         let menuBar = {}; 
@@ -8604,6 +8678,230 @@ function ichefFormatReservationMoment(r){
     });
     return `${date} · ${String(r?.time||'').slice(0,5)}`;
 }
+
+function ichefClientMoney(amount){
+    const currency=
+        systemSettings?.taxConfig?.currency ||
+        systemSettings?.currency ||
+        systemSettings?.devise ||
+        'CHF';
+    return `${(Number(amount)||0).toFixed(2)} ${String(currency)}`;
+}
+function ichefTicketDate(ticket){
+    const raw=
+        ticket?.paidAt ||
+        ticket?.closedAt ||
+        ticket?.createdAt ||
+        ticket?.date ||
+        ticket?.serverRecordedAt ||
+        ticket?.timestamp ||
+        ticket?.orderSnapshot?.closedAt ||
+        ticket?.orderSnapshot?.createdAt;
+    const d=new Date(raw||0);
+    return Number.isFinite(d.getTime())?d:null;
+}
+function ichefTicketTotal(ticket){
+    const raw=
+        ticket?.totalTTC ??
+        ticket?.total ??
+        ticket?.amount ??
+        ticket?.ttc ??
+        ticket?.revenue ??
+        ticket?.orderSnapshot?.total ??
+        0;
+    const n=Number(raw);
+    return Number.isFinite(n)&&n>0?n:0;
+}
+function ichefTicketCustomerPhone(ticket){
+    return String(
+        ticket?.orderSnapshot?.customer?.phone ||
+        ticket?.orderSnapshot?.phone ||
+        ticket?.orderSnapshot?.clientPhone ||
+        ticket?.customer?.phone ||
+        ticket?.customerPhone ||
+        ticket?.phone ||
+        ''
+    ).trim();
+}
+function ichefTicketCustomerName(ticket){
+    return String(
+        ticket?.orderSnapshot?.customer?.name ||
+        ticket?.orderSnapshot?.clientName ||
+        ticket?.orderSnapshot?.name ||
+        ticket?.customer?.name ||
+        ticket?.customerName ||
+        ''
+    ).trim();
+}
+function ichefNormalizePhone(value){
+    return String(value||'').replace(/[^\d+]/g,'').trim();
+}
+function ichefTicketMatchesClient(ticket,file){
+    const filePhone=ichefNormalizePhone(file?.phone);
+    const ticketPhone=ichefNormalizePhone(ichefTicketCustomerPhone(ticket));
+
+    if(filePhone && ticketPhone){
+        return filePhone===ticketPhone;
+    }
+
+    // Si le ticket contient un téléphone différent, ne pas retomber sur le nom.
+    if(ticketPhone && filePhone && ticketPhone!==filePhone){
+        return false;
+    }
+
+    const fileName=ichefReservationNorm(file?.name);
+    const ticketName=ichefReservationNorm(ichefTicketCustomerName(ticket));
+
+    if(
+        !fileName ||
+        !ticketName ||
+        ['client','inconnu','anonyme','anonymous'].includes(ticketName)
+    ){
+        return false;
+    }
+
+    return fileName===ticketName;
+}
+function ichefTicketItems(ticket){
+    const sources=[
+        ticket?.orderSnapshot?.items,
+        ticket?.items
+    ];
+    return sources.find(Array.isArray)||[];
+}
+function ichefTicketItemName(item){
+    return String(
+        item?.name ||
+        item?.nom ||
+        item?.title ||
+        item?.label ||
+        item?.productName ||
+        ''
+    ).trim();
+}
+function ichefTicketItemQty(item){
+    return Math.max(
+        1,
+        Number.parseFloat(
+            item?.qty ??
+            item?.quantity ??
+            item?.quantite ??
+            1
+        )||1
+    );
+}
+function ichefConsumptionForClient(file){
+    const tickets=(Array.isArray(archiveCuisine)?archiveCuisine:[])
+        .filter(ticket=>{
+            if(!ticket||typeof ticket!=='object')return false;
+
+            const status=ichefReservationNorm(
+                ticket?.status ||
+                ticket?.paymentStatus ||
+                'paid'
+            );
+
+            if(
+                status &&
+                ['cancelled','canceled','void','refunded','annule','annulee']
+                    .includes(status)
+            ){
+                return false;
+            }
+
+            return ichefTicketMatchesClient(ticket,file);
+        });
+
+    const itemMap=new Map();
+    let total=0;
+    let lastDate=null;
+
+    for(const ticket of tickets){
+        total+=ichefTicketTotal(ticket);
+
+        const d=ichefTicketDate(ticket);
+        if(d && (!lastDate || d>lastDate)) lastDate=d;
+
+        for(const item of ichefTicketItems(ticket)){
+            const name=ichefTicketItemName(item);
+            if(!name)continue;
+            const qty=ichefTicketItemQty(item);
+            const key=ichefReservationNorm(name);
+            const row=itemMap.get(key)||{name,qty:0};
+            row.qty+=qty;
+            itemMap.set(key,row);
+        }
+    }
+
+    const topItems=[...itemMap.values()]
+        .sort((a,b)=>b.qty-a.qty)
+        .slice(0,3);
+
+    return {
+        ticketCount:tickets.length,
+        total:Math.round(total*100)/100,
+        average:tickets.length
+            ? Math.round((total/tickets.length)*100)/100
+            : 0,
+        lastDate,
+        topItems
+    };
+}
+function setIchefClientConsumptionSort(mode){
+    const allowed=[
+        'SPEND_DESC','SPEND_ASC','TICKETS_DESC',
+        'AVERAGE_DESC','NEXT_RESERVATION','LOYALTY'
+    ];
+    ichefClientConsumptionSort=allowed.includes(String(mode))
+        ? String(mode)
+        : 'SPEND_DESC';
+    renderClientReservationCRM();
+}
+function ichefSortClientFiles(files){
+    const rows=[...files];
+
+    if(ichefClientConsumptionSort==='SPEND_ASC'){
+        return rows.sort((a,b)=>
+            (a.consumption.total-b.consumption.total) ||
+            b.validCount-a.validCount
+        );
+    }
+    if(ichefClientConsumptionSort==='TICKETS_DESC'){
+        return rows.sort((a,b)=>
+            (b.consumption.ticketCount-a.consumption.ticketCount) ||
+            (b.consumption.total-a.consumption.total)
+        );
+    }
+    if(ichefClientConsumptionSort==='AVERAGE_DESC'){
+        return rows.sort((a,b)=>
+            (b.consumption.average-a.consumption.average) ||
+            (b.consumption.total-a.consumption.total)
+        );
+    }
+    if(ichefClientConsumptionSort==='NEXT_RESERVATION'){
+        return rows.sort((a,b)=>{
+            if(a.next&&b.next)return ichefReservationTs(a.next)-ichefReservationTs(b.next);
+            if(a.next)return -1;
+            if(b.next)return 1;
+            return b.consumption.total-a.consumption.total;
+        });
+    }
+    if(ichefClientConsumptionSort==='LOYALTY'){
+        return rows.sort((a,b)=>
+            Number(b.loyal)-Number(a.loyal) ||
+            b.validCount-a.validCount ||
+            b.consumption.total-a.consumption.total
+        );
+    }
+
+    // Par défaut : plus gros consommateur -> plus petit.
+    return rows.sort((a,b)=>
+        (b.consumption.total-a.consumption.total) ||
+        (b.consumption.ticketCount-a.consumption.ticketCount) ||
+        b.validCount-a.validCount
+    );
+}
+
 function ichefBuildClientFiles(){
     const map=new Map();
     for(const r of (clientReservationsMaster||[])){
@@ -8622,7 +8920,7 @@ function ichefBuildClientFiles(){
         if(!f.phone)f.phone=ichefReservationClientPhone(r);
     }
     const now=Date.now(),threshold=ichefLoyalRepeatThreshold();
-    return [...map.values()].map(f=>{
+    const files=[...map.values()].map(f=>{
         const valid=f.reservations.filter(r=>!ichefReservationIsCancelled(r));
         const upcoming=valid.filter(r=>
             ichefReservationIsActive(r) &&
@@ -8638,16 +8936,32 @@ function ichefBuildClientFiles(){
             past,
             next:upcoming[0]||null,
             last:past[0]||null,
-            unplaced:upcoming.filter(r=>!ichefReservationTable(r)).length
+            unplaced:upcoming.filter(r=>!ichefReservationTable(r)).length,
+            consumption:ichefConsumptionForClient(f)
         };
-    }).sort((a,b)=>{
-        if(a.next&&b.next)return ichefReservationTs(a.next)-ichefReservationTs(b.next);
-        if(a.next)return -1;if(b.next)return 1;
-        return b.validCount-a.validCount;
     });
+
+    const bySpend=[...files]
+        .sort((a,b)=>
+            (b.consumption.total-a.consumption.total) ||
+            (b.consumption.ticketCount-a.consumption.ticketCount)
+        );
+
+    const rankMap=new Map();
+    let rank=0;
+    for(const file of bySpend){
+        if(file.consumption.total<=0 && file.consumption.ticketCount<=0)continue;
+        rank+=1;
+        rankMap.set(file.key,rank);
+    }
+
+    return files.map(file=>({
+        ...file,
+        consumptionRank:rankMap.get(file.key)||null
+    }));
 }
 function setIchefClientReservationFilter(mode,button){
-    ichefClientReservationFilter=['ALL','LOYAL','UPCOMING','UNPLACED']
+    ichefClientReservationFilter=['ALL','LOYAL','UPCOMING','UNPLACED','CONSUMED']
         .includes(String(mode))?String(mode):'ALL';
     document.querySelectorAll('.ichef-client-crm-filter')
         .forEach(btn=>btn.classList.remove('active'));
@@ -8693,10 +9007,17 @@ function ichefReservationRowHtml(r){
 }
 function renderClientReservationCRM(){
     const list=document.getElementById('ichef-client-crm-list');
+
+    const sortSelect=document.getElementById('ichef-client-consumption-sort');
+    if(sortSelect && sortSelect.value!==ichefClientConsumptionSort){
+        sortSelect.value=ichefClientConsumptionSort;
+    }
     updateReservationServiceCounters();
     if(!list)return;
 
-    const files=ichefBuildClientFiles();
+    const files=ichefSortClientFiles(
+        ichefBuildClientFiles()
+    );
     const now=Date.now();
     const upcoming=(clientReservationsMaster||[]).filter(r=>
         ichefReservationIsActive(r)&&
@@ -8713,6 +9034,24 @@ function renderClientReservationCRM(){
     setText('ichef-crm-upcoming-reservations',upcoming.length);
     setText('ichef-crm-unplaced-reservations',unplaced.length);
 
+    const identifiedSpend=files.reduce(
+        (sum,f)=>sum+Number(f.consumption?.total||0),
+        0
+    );
+    const identifiedTickets=files.reduce(
+        (sum,f)=>sum+Number(f.consumption?.ticketCount||0),
+        0
+    );
+
+    setText(
+        'ichef-crm-identified-spend',
+        ichefClientMoney(identifiedSpend)
+    );
+    setText(
+        'ichef-crm-identified-tickets',
+        identifiedTickets
+    );
+
     const q=ichefReservationNorm(
         document.getElementById('ichef-client-crm-search')?.value||''
     );
@@ -8721,6 +9060,10 @@ function renderClientReservationCRM(){
         if(ichefClientReservationFilter==='LOYAL'&&!f.loyal)return false;
         if(ichefClientReservationFilter==='UPCOMING'&&!f.upcoming.length)return false;
         if(ichefClientReservationFilter==='UNPLACED'&&!f.unplaced)return false;
+        if(
+            ichefClientReservationFilter==='CONSUMED' &&
+            f.consumption.ticketCount<=0
+        )return false;
         return true;
     });
     if(!visible.length){
@@ -8741,6 +9084,9 @@ function renderClientReservationCRM(){
             </span>
           </div>
           <div class="ichef-client-badges">
+            ${f.consumptionRank
+              ? `<span class="ichef-client-rank">#${f.consumptionRank}</span>`
+              : ''}
             ${f.loyal
               ? '<span class="ichef-client-badge loyal">★ Client fidèle</span>'
               : `<span class="ichef-client-badge">${f.validCount}/${threshold} fidélité</span>`}
@@ -8748,6 +9094,45 @@ function renderClientReservationCRM(){
             ${f.unplaced?`<span class="ichef-client-badge" style="border-color:rgba(56,189,248,.45);color:var(--accent);">${f.unplaced} à placer</span>`:''}
           </div>
         </div>
+        <div class="ichef-client-consumption-grid">
+          <div class="ichef-client-consumption-stat">
+            <small>Total consommé</small>
+            <strong>${ichefClientMoney(f.consumption.total)}</strong>
+          </div>
+          <div class="ichef-client-consumption-stat">
+            <small>Tickets</small>
+            <strong>${f.consumption.ticketCount}</strong>
+          </div>
+          <div class="ichef-client-consumption-stat">
+            <small>Panier moyen</small>
+            <strong>${ichefClientMoney(f.consumption.average)}</strong>
+          </div>
+          <div class="ichef-client-consumption-stat">
+            <small>Dernière consommation</small>
+            <strong>${
+              f.consumption.lastDate
+                ? ichefCrmEsc(
+                    f.consumption.lastDate.toLocaleDateString(
+                      'fr-FR',
+                      {day:'2-digit',month:'2-digit',year:'2-digit'}
+                    )
+                  )
+                : '—'
+            }</strong>
+          </div>
+        </div>
+
+        ${f.consumption.topItems.length
+          ? `<div class="ichef-client-top-items">
+               <b>Plus consommé :</b>
+               ${f.consumption.topItems
+                 .map(item=>`${ichefCrmEsc(item.name)} × ${Number(item.qty).toFixed(item.qty%1?1:0)}`)
+                 .join(' · ')}
+             </div>`
+          : `<div class="ichef-client-top-items">
+               Aucune consommation attribuée à ce client.
+             </div>`}
+
         <div class="ichef-client-reservation-list">
           ${f.upcoming.length
             ? `<div style="color:var(--gold);font-size:.68rem;font-weight:900;text-transform:uppercase;">À venir</div>
