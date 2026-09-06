@@ -1,6 +1,6 @@
 /**
  * ==============================================================
- * 🧠 iCHEF EMPIRE OS — CORE SERVER PAYMENT TERMINALS V53 (2026.09.06)
+ * 🧠 iCHEF EMPIRE OS — CORE SERVER V55 · CLIENT PORTAL SYNC (2026.09.06)
  * ==============================================================
  * Contrat central stable pour multi-établissements :
  * Réservations · Plan/PAD/Téléphone · Cuisine/Bar/Pâtisserie · Anti-Rush
@@ -721,7 +721,8 @@ const ICHEF_TENANT_MUTATION_PATHS = new Set([
     '/api/config/cash-register', '/api/rh/punch', '/api/rh/timesheet/correct',
     '/api/rh/timesheet/status', '/api/anti-rush/update', '/api/fiscal/cash-in',
     '/api/save-transaction', '/api/fiscal/correction', '/api/orders/close-paid',
-    '/api/admin-action'
+    '/api/admin-action',
+    '/api/client-portal/reservations/create'
 ]);
 const ichefTenantMutationQueues = new Map();
 function ichefRequestTenantID(req) {
@@ -1671,6 +1672,775 @@ app.post('/api/payments/config/read', async (req, res) => {
         return res.status(500).json({
             success: false,
             error: 'Configuration paiement momentanément indisponible.'
+        });
+    }
+});
+
+
+// ==========================================================
+// 👤 PORTAIL CLIENT — CONFIGURATION PUBLIQUE SANITISÉE
+// Aucune donnée personnelle, PIN, staff, finance ou AppState complet.
+// ==========================================================
+function ichefPublicLoyaltyConfig(raw = {}) {
+    const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+
+    const modeRaw = String(source.mode || 'CASHBACK').trim().toUpperCase();
+    const mode = ['POINTS', 'CASHBACK', 'VISITS', 'MIXED'].includes(modeRaw)
+        ? modeRaw
+        : 'CASHBACK';
+
+    const clampNumber = (value, fallback, min, max) => {
+        const n = Number(value);
+        const safe = Number.isFinite(n) ? n : fallback;
+        return Math.max(min, Math.min(max, safe));
+    };
+
+    return {
+        active: source.active === true,
+        mode,
+        label: String(source.label || 'Programme fidélité').trim().slice(0, 80),
+        percent: clampNumber(source.percent, 5, 0, 100),
+        pointsPerCurrency: clampNumber(source.pointsPerCurrency, 1, 0, 1000),
+        pointsThreshold: Math.round(clampNumber(source.pointsThreshold, 100, 1, 1000000)),
+        pointsReward: String(source.pointsReward || '').trim().slice(0, 120),
+        visitsRequired: Math.round(clampNumber(source.visitsRequired, 10, 1, 10000)),
+        visitReward: String(source.visitReward || '').trim().slice(0, 120),
+        birthdayActive: source.birthdayActive === true,
+        birthdayReward: String(source.birthdayReward || '').trim().slice(0, 120),
+        expirationMonths: Math.round(clampNumber(source.expirationMonths, 12, 0, 120)),
+        terms: String(source.terms || '').trim().slice(0, 500),
+        configuredByRestaurant: source.configuredByRestaurant === true
+    };
+}
+
+
+function ichefClientPortalBearer(req) {
+    const raw = String(req.headers?.authorization || '').trim();
+    if (!raw.toLowerCase().startsWith('bearer ')) return '';
+    return raw.slice(7).trim().slice(0, 512);
+}
+
+function ichefClientPortalTokenHash(token) {
+    const value = String(token || '').trim();
+    if (!value) return '';
+    return crypto
+        .createHash('sha256')
+        .update(value)
+        .digest('hex');
+}
+
+function ichefClientPortalPrivateRoom(tenantID, tokenHash) {
+    const safeID = cleanString(tenantID);
+    const safeHash = String(tokenHash || '').replace(/[^a-f0-9]/gi, '').slice(0, 40);
+    return safeID && safeHash
+        ? `client-portal:${safeID}:${safeHash}`
+        : '';
+}
+
+function ichefClientPortalPublicRoom(tenantID) {
+    const safeID = cleanString(tenantID);
+    return safeID ? `client-public:${safeID}` : '';
+}
+
+function ichefClientPortalReservationListFromState(state) {
+    const raw = state?.activeOrders?.RESERVATIONS_MASTER?.data;
+    return Array.isArray(raw) ? raw : [];
+}
+
+function ichefClientPortalReservationStatus(raw) {
+    const status = String(raw || 'confirmed').trim().toLowerCase();
+    const allowed = new Set([
+        'pending','confirmed','reserved','arrived','seated',
+        'completed','done','cancelled','canceled','rejected','noshow'
+    ]);
+    return allowed.has(status) ? status : 'confirmed';
+}
+
+function ichefClientPortalReservationPublicView(reservation = {}) {
+    return {
+        id: String(
+            reservation.reservationId ||
+            reservation.id ||
+            reservation.bookingId ||
+            ''
+        ).slice(0, 120),
+        reservationId: String(
+            reservation.reservationId ||
+            reservation.id ||
+            reservation.bookingId ||
+            ''
+        ).slice(0, 120),
+        date: String(reservation.date || '').slice(0, 20),
+        time: String(reservation.time || '').slice(0, 10),
+        pax: Math.max(
+            1,
+            Math.min(
+                50,
+                Number.parseInt(
+                    reservation.couverts ||
+                    reservation.pax ||
+                    reservation.guests ||
+                    1,
+                    10
+                ) || 1
+            )
+        ),
+        assignedTable: String(
+            reservation.assignedTable ||
+            reservation.tableId ||
+            reservation.table ||
+            ''
+        ).slice(0, 80),
+        status: ichefClientPortalReservationStatus(
+            reservation.status ||
+            reservation.reservationStatus
+        ),
+        occasion: String(reservation.occasion || '').slice(0, 80),
+        note: String(reservation.clientNote || '').slice(0, 300),
+        createdAt: reservation.createdAt || null,
+        updatedAt: reservation.updatedAt || null
+    };
+}
+
+function ichefClientPortalReservationsForHash(reservations, tokenHash) {
+    const hash = String(tokenHash || '');
+    if (!hash) return [];
+    return (Array.isArray(reservations) ? reservations : [])
+        .filter(r => String(r?.clientPortalHash || '') === hash)
+        .map(ichefClientPortalReservationPublicView)
+        .sort((a, b) => {
+            const ad = `${a.date || ''}T${a.time || '00:00'}`;
+            const bd = `${b.date || ''}T${b.time || '00:00'}`;
+            return ad.localeCompare(bd);
+        });
+}
+
+function ichefClientPortalPublicConfigFromState(tenant, state) {
+    const settings =
+        state?.activeOrders?.SETTINGS_MASTER?.data &&
+        typeof state.activeOrders.SETTINGS_MASTER.data === 'object'
+            ? state.activeOrders.SETTINGS_MASTER.data
+            : {};
+
+    const loyalty = ichefPublicLoyaltyConfig(settings.loyalty || {});
+
+    return {
+        success: true,
+        tenantID: cleanString(tenant?.tenantID || state?.tenantID || ''),
+        restaurant: {
+            name: String(
+                settings.name ||
+                tenant?.clientName ||
+                tenant?.tenantID ||
+                state?.tenantID ||
+                ''
+            ).slice(0, 120),
+            currency: String(
+                settings?.taxConfig?.currency ||
+                settings?.currency ||
+                settings?.devise ||
+                'CHF'
+            ).toUpperCase().slice(0, 3)
+        },
+        features: {
+            loyalty: loyalty.active === true,
+            preferences: settings?.clientPortal?.preferences === true
+        },
+        loyalty,
+        serverTimestamp: new Date().toISOString()
+    };
+}
+
+async function ichefEmitClientReservationSnapshots(tenantID, reservations) {
+    const safeID = cleanString(tenantID);
+    if (!safeID || !Array.isArray(reservations)) return;
+
+    const hashes = new Set(
+        reservations
+            .map(r => String(r?.clientPortalHash || ''))
+            .filter(Boolean)
+    );
+
+    for (const tokenHash of hashes) {
+        const room = ichefClientPortalPrivateRoom(safeID, tokenHash);
+        if (!room) continue;
+
+        io.to(room).emit('client-reservations-updated', {
+            success: true,
+            tenantID: safeID,
+            reservations:
+                ichefClientPortalReservationsForHash(
+                    reservations,
+                    tokenHash
+                ),
+            serverTimestamp: new Date().toISOString()
+        });
+    }
+}
+
+app.get('/api/client-portal/public-config', async (req, res) => {
+    try {
+        const tenantID = cleanString(
+            req.query?.tenantID ||
+            req.headers['x-ichef-tenant'] ||
+            ''
+        );
+
+        if (!tenantID) {
+            return res.status(400).json({
+                success: false,
+                error: 'tenantID manquant.'
+            });
+        }
+
+        const [tenant, state] = await Promise.all([
+            Tenant.findOne(
+                { tenantID },
+                { clientName: 1, status: 1, plan: 1, specialite: 1 }
+            ).lean(),
+            AppState.findOne(
+                { tenantID },
+                { 'activeOrders.SETTINGS_MASTER.data': 1 }
+            ).lean()
+        ]);
+
+        if (!tenant) {
+            return res.status(404).json({
+                success: false,
+                error: 'Établissement inconnu.'
+            });
+        }
+
+        if (tenant.status === 'SUSPENDU') {
+            return res.status(403).json({
+                success: false,
+                error: 'Établissement momentanément indisponible.'
+            });
+        }
+
+        return res.json(
+            ichefClientPortalPublicConfigFromState(
+                { ...tenant, tenantID },
+                state
+            )
+        );
+
+    } catch (error) {
+        console.error('[iCHEF client portal public config]', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Configuration client momentanément indisponible.'
+        });
+    }
+});
+
+
+// ==========================================================
+// 👤 PORTAIL CLIENT — CONTEXTE RÉSERVATION SANITISÉ
+// ==========================================================
+app.get('/api/client-portal/reservation-context', async (req, res) => {
+    try {
+        const tenantID = cleanString(
+            req.query?.tenantID ||
+            req.headers['x-ichef-tenant'] ||
+            ''
+        );
+
+        if (!tenantID) {
+            return res.status(400).json({
+                success: false,
+                error: 'tenantID manquant.'
+            });
+        }
+
+        const [tenant, state] = await Promise.all([
+            Tenant.findOne(
+                { tenantID },
+                { tenantID: 1, clientName: 1, status: 1 }
+            ).lean(),
+            AppState.findOne(
+                { tenantID },
+                {
+                    'activeOrders.ARCHITECTURE.data.tables': 1,
+                    'activeOrders.SETTINGS_MASTER.data.name': 1,
+                    'activeOrders.SETTINGS_MASTER.data.currency': 1,
+                    'activeOrders.SETTINGS_MASTER.data.devise': 1
+                }
+            ).lean()
+        ]);
+
+        if (!tenant) {
+            return res.status(404).json({
+                success: false,
+                error: 'Établissement inconnu.'
+            });
+        }
+
+        if (tenant.status === 'SUSPENDU') {
+            return res.status(403).json({
+                success: false,
+                error: 'Établissement momentanément indisponible.'
+            });
+        }
+
+        const tablesRaw =
+            state?.activeOrders?.ARCHITECTURE?.data?.tables;
+
+        const tables = (Array.isArray(tablesRaw) ? tablesRaw : [])
+            .map(table => ({
+                id: String(
+                    table?.label ||
+                    table?.id ||
+                    ''
+                ).trim().slice(0, 80),
+                maxPax: Math.max(
+                    1,
+                    Math.min(
+                        100,
+                        Number.parseInt(
+                            table?.pax ||
+                            table?.capacity ||
+                            table?.seats ||
+                            1,
+                            10
+                        ) || 1
+                    )
+                )
+            }))
+            .filter(table => table.id);
+
+        return res.json({
+            success: true,
+            tenantID,
+            restaurant: {
+                name: String(
+                    state?.activeOrders?.SETTINGS_MASTER?.data?.name ||
+                    tenant.clientName ||
+                    tenantID
+                ).slice(0, 120)
+            },
+            availableTables: tables,
+            serverTimestamp: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error(
+            '[iCHEF client reservation context]',
+            error
+        );
+        return res.status(500).json({
+            success: false,
+            error: 'Contexte réservation indisponible.'
+        });
+    }
+});
+
+// ==========================================================
+// 👤 PORTAIL CLIENT — CRÉATION RÉSERVATION ATOMIQUE / PRIVÉE
+// ==========================================================
+app.post('/api/client-portal/reservations/create', async (req, res) => {
+    try {
+        const tenantID = cleanString(
+            req.body?.tenantID ||
+            req.headers['x-ichef-tenant'] ||
+            ''
+        );
+
+        if (!tenantID) {
+            return res.status(400).json({
+                success: false,
+                error: 'tenantID manquant.'
+            });
+        }
+
+        const tenant = await Tenant
+            .findOne(
+                { tenantID },
+                { tenantID: 1, clientName: 1, status: 1 }
+            )
+            .lean();
+
+        if (!tenant) {
+            return res.status(404).json({
+                success: false,
+                error: 'Établissement inconnu.'
+            });
+        }
+
+        if (tenant.status === 'SUSPENDU') {
+            return res.status(403).json({
+                success: false,
+                error: 'Établissement momentanément indisponible.'
+            });
+        }
+
+        const raw = req.body?.reservation || {};
+        const name = String(raw.name || '').trim().slice(0, 120);
+        const phone = String(raw.phone || '').trim().slice(0, 40);
+        const date = String(raw.date || '').trim().slice(0, 10);
+        const time = String(raw.time || '').trim().slice(0, 5);
+        const occasion = String(raw.occasion || 'Classique').trim().slice(0, 80);
+        const clientNote = String(raw.obs || raw.note || '').trim().slice(0, 300);
+        const pax = Math.max(
+            1,
+            Math.min(
+                50,
+                Number.parseInt(
+                    raw.couverts ||
+                    raw.pax ||
+                    raw.guests ||
+                    1,
+                    10
+                ) || 1
+            )
+        );
+
+        if (name.length < 2 || phone.length < 6) {
+            return res.status(400).json({
+                success: false,
+                error: 'Nom et téléphone requis.'
+            });
+        }
+
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Date de réservation invalide.'
+            });
+        }
+
+        if (!/^\d{2}:\d{2}$/.test(time)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Heure de réservation invalide.'
+            });
+        }
+
+        const requestedTs = Date.parse(`${date}T${time}:00`);
+        if (!Number.isFinite(requestedTs)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Date ou heure de réservation invalide.'
+            });
+        }
+
+        let clientToken = ichefClientPortalBearer(req);
+        if (!clientToken || clientToken.length < 20) {
+            clientToken =
+                crypto.randomBytes(32).toString('base64url');
+        }
+        const clientPortalHash =
+            ichefClientPortalTokenHash(clientToken);
+
+        let state = await AppState.findOne({ tenantID });
+        if (!state) {
+            state = new AppState({
+                tenantID,
+                activeOrders: {}
+            });
+        }
+
+        if (!state.activeOrders || typeof state.activeOrders !== 'object') {
+            state.activeOrders = {};
+        }
+
+        const reservations =
+            ichefClientPortalReservationListFromState(state)
+                .map(item => ({ ...item }));
+
+        const tablesRaw =
+            state?.activeOrders?.ARCHITECTURE?.data?.tables;
+
+        const architectureTables =
+            (Array.isArray(tablesRaw) ? tablesRaw : [])
+                .map(table => ({
+                    id: String(
+                        table?.label ||
+                        table?.id ||
+                        ''
+                    ).trim().slice(0, 80),
+                    maxPax: Math.max(
+                        1,
+                        Math.min(
+                            100,
+                            Number.parseInt(
+                                table?.pax ||
+                                table?.capacity ||
+                                table?.seats ||
+                                1,
+                                10
+                            ) || 1
+                        )
+                    )
+                }))
+                .filter(table => table.id);
+
+        const normalizedStatus = value =>
+            String(value || '')
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '')
+                .trim()
+                .toLowerCase();
+
+        const activeReservation = r => {
+            const s = normalizedStatus(
+                r?.status ||
+                r?.reservationStatus
+            );
+            return ![
+                'rejected','cancelled','canceled',
+                'annule','annulee',
+                'completed','done','noshow','no show'
+            ].includes(s);
+        };
+
+        const conflictForTable = tableID =>
+            reservations.some(existing => {
+                if (!activeReservation(existing)) return false;
+
+                const existingTable = String(
+                    existing?.assignedTable ||
+                    existing?.tableId ||
+                    existing?.table ||
+                    ''
+                ).trim();
+
+                if (!existingTable || existingTable !== tableID) {
+                    return false;
+                }
+
+                const existingTs = Date.parse(
+                    `${existing?.date || ''}T${existing?.time || '00:00'}:00`
+                );
+
+                if (!Number.isFinite(existingTs)) return false;
+
+                // Fenêtre de protection de 90 minutes autour du créneau.
+                return Math.abs(existingTs - requestedTs) < 90 * 60 * 1000;
+            });
+
+        const proposedTable = String(
+            req.body?.proposal?.assignedTable ||
+            req.body?.proposal?.tableAllouee ||
+            ''
+        ).trim().slice(0, 80);
+
+        const usableTables = architectureTables
+            .filter(table => table.maxPax >= pax)
+            .filter(table => !conflictForTable(table.id))
+            .sort((a, b) => a.maxPax - b.maxPax);
+
+        let assignedTable = '';
+
+        if (
+            proposedTable &&
+            usableTables.some(table => table.id === proposedTable)
+        ) {
+            assignedTable = proposedTable;
+        } else if (usableTables.length) {
+            assignedTable = usableTables[0].id;
+        }
+
+        const reservationId =
+            `RESA_${Date.now()}_${crypto
+                .randomBytes(5)
+                .toString('hex')}`;
+
+        const now = new Date().toISOString();
+        const status = assignedTable
+            ? 'confirmed'
+            : 'pending';
+
+        const newReservation = {
+            id: reservationId,
+            reservationId,
+            bookingId: reservationId,
+            name,
+            phone,
+            date,
+            time,
+            couverts: pax,
+            pax,
+            occasion,
+            obs: clientNote
+                ? `[${occasion.toUpperCase()}] ${clientNote}`
+                : `[${occasion.toUpperCase()}]`,
+            clientNote,
+            assignedTable,
+            tableId: assignedTable,
+            table: assignedTable,
+            status,
+            reservationStatus: status,
+            clientPortalHash,
+            source: 'PORTAIL_CLIENT',
+            createdAt: now,
+            updatedAt: now
+        };
+
+        reservations.push(newReservation);
+
+        state.activeOrders.RESERVATIONS_MASTER = {
+            data: reservations
+        };
+
+        if (assignedTable) {
+            const previousTable =
+                state.activeOrders?.[assignedTable];
+
+            const previousItems =
+                Array.isArray(previousTable?.items)
+                    ? previousTable.items
+                    : [];
+
+            // Ne jamais écraser une commande réelle déjà ouverte.
+            if (!previousItems.length) {
+                state.activeOrders[assignedTable] = {
+                    ...(previousTable &&
+                    typeof previousTable === 'object'
+                        ? previousTable
+                        : {}),
+                    status: 'reserved',
+                    reservationStatus: status,
+                    reservationId,
+                    bookingId: reservationId,
+                    date,
+                    time,
+                    clientName: name,
+                    phone,
+                    pax,
+                    observations: newReservation.obs,
+                    reservation: {
+                        id: reservationId,
+                        reservationId,
+                        status,
+                        name,
+                        phone,
+                        date,
+                        time,
+                        pax,
+                        observations:
+                            newReservation.obs,
+                        assignedTable
+                    },
+                    items: []
+                };
+            }
+        }
+
+        state.markModified?.('activeOrders');
+        await state.save();
+
+        // Interne restaurant : état complet uniquement vers les écrans autorisés
+        // déjà présents dans la room tenant.
+        io.to(tenantID).emit(
+            'updateState',
+            state
+        );
+
+        io.to(tenantID).emit(
+            'server-state-changed',
+            {
+                tenantID,
+                tableId: 'RESERVATIONS_MASTER',
+                source: 'client-portal-reservation-create',
+                persisted: true,
+                timestamp: now
+            }
+        );
+
+        // Client : UNIQUEMENT ses réservations filtrées par token.
+        await ichefEmitClientReservationSnapshots(
+            tenantID,
+            reservations
+        );
+
+        return res.status(201).json({
+            success: true,
+            tenantID,
+            clientToken,
+            reservation:
+                ichefClientPortalReservationPublicView(
+                    newReservation
+                ),
+            messageClient:
+                String(
+                    req.body?.proposal?.messageClient ||
+                    (
+                        assignedTable
+                            ? 'Votre réservation est confirmée.'
+                            : 'Votre demande est enregistrée et reste à confirmer par le restaurant.'
+                    )
+                ).slice(0, 300),
+            serverTimestamp: now
+        });
+
+    } catch (error) {
+        console.error(
+            '[iCHEF client reservation create]',
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            error: 'Impossible d’enregistrer la réservation.'
+        });
+    }
+});
+
+// ==========================================================
+// 👤 PORTAIL CLIENT — MES RÉSERVATIONS PAR TOKEN PRIVÉ
+// ==========================================================
+app.get('/api/client-portal/reservations', async (req, res) => {
+    try {
+        const tenantID = cleanString(
+            req.query?.tenantID ||
+            req.headers['x-ichef-tenant'] ||
+            ''
+        );
+
+        const clientToken =
+            ichefClientPortalBearer(req);
+
+        if (!tenantID || !clientToken) {
+            return res.status(401).json({
+                success: false,
+                error: 'Session réservation requise.'
+            });
+        }
+
+        const tokenHash =
+            ichefClientPortalTokenHash(clientToken);
+
+        const state = await AppState
+            .findOne(
+                { tenantID },
+                { 'activeOrders.RESERVATIONS_MASTER.data': 1 }
+            )
+            .lean();
+
+        const reservations =
+            ichefClientPortalReservationsForHash(
+                ichefClientPortalReservationListFromState(
+                    state
+                ),
+                tokenHash
+            );
+
+        return res.json({
+            success: true,
+            tenantID,
+            reservations,
+            serverTimestamp: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error(
+            '[iCHEF client reservations read]',
+            error
+        );
+        return res.status(500).json({
+            success: false,
+            error: 'Réservations momentanément indisponibles.'
         });
     }
 });
@@ -6633,6 +7403,170 @@ io.on("connection", socket => {
     });
 
     // CORRECTION CRITIQUE DU BUG [object Object]
+
+    // ==========================================================
+    // PORTAIL CLIENT — ROOM PUBLIQUE SANITISÉE
+    // Ne rejoint JAMAIS la room tenant interne.
+    // ==========================================================
+    socket.on('joinClientPublic', async (payload = {}) => {
+        try {
+            const tenantID = cleanString(
+                payload?.tenantID ||
+                socket.handshake?.auth?.tenantID ||
+                ''
+            );
+
+            if (!tenantID) return;
+
+            const [tenant, state] = await Promise.all([
+                Tenant.findOne(
+                    { tenantID },
+                    {
+                        tenantID: 1,
+                        clientName: 1,
+                        status: 1
+                    }
+                ).lean(),
+                AppState.findOne(
+                    { tenantID },
+                    {
+                        'activeOrders.SETTINGS_MASTER.data': 1
+                    }
+                ).lean()
+            ]);
+
+            if (!tenant || tenant.status === 'SUSPENDU') {
+                socket.emit('client-public-error', {
+                    success: false,
+                    error: 'Établissement indisponible.'
+                });
+                return;
+            }
+
+            const room =
+                ichefClientPortalPublicRoom(
+                    tenantID
+                );
+
+            if (!room) return;
+
+            await socket.join(room);
+            socket.data.clientPublicTenantID =
+                tenantID;
+
+            socket.emit(
+                'client-public-config-updated',
+                ichefClientPortalPublicConfigFromState(
+                    tenant,
+                    state
+                )
+            );
+
+        } catch (error) {
+            console.error(
+                '[iCHEF SOCKET client public]',
+                error?.message || error
+            );
+        }
+    });
+
+    // ==========================================================
+    // PORTAIL CLIENT — ROOM PRIVÉE RÉSERVATIONS
+    // Validation par token opaque. Aucun updateState complet.
+    // ==========================================================
+    socket.on('joinClientPortal', async (payload = {}) => {
+        try {
+            const tenantID = cleanString(
+                payload?.tenantID ||
+                socket.handshake?.auth?.tenantID ||
+                ''
+            );
+
+            const token =
+                String(payload?.token || '')
+                    .trim()
+                    .slice(0, 512);
+
+            if (!tenantID || !token) {
+                socket.emit('client-portal-auth-error', {
+                    success: false,
+                    error: 'Session client manquante.'
+                });
+                return;
+            }
+
+            const tokenHash =
+                ichefClientPortalTokenHash(token);
+
+            const state = await AppState
+                .findOne(
+                    { tenantID },
+                    {
+                        'activeOrders.RESERVATIONS_MASTER.data': 1
+                    }
+                )
+                .lean();
+
+            const allReservations =
+                ichefClientPortalReservationListFromState(
+                    state
+                );
+
+            const ownsReservation =
+                allReservations.some(
+                    reservation =>
+                        String(
+                            reservation?.clientPortalHash ||
+                            ''
+                        ) === tokenHash
+                );
+
+            if (!ownsReservation) {
+                socket.emit('client-portal-auth-error', {
+                    success: false,
+                    error: 'Session réservation inconnue.'
+                });
+                return;
+            }
+
+            const room =
+                ichefClientPortalPrivateRoom(
+                    tenantID,
+                    tokenHash
+                );
+
+            if (!room) return;
+
+            await socket.join(room);
+
+            socket.data.clientPortalTenantID =
+                tenantID;
+            socket.data.clientPortalHash =
+                tokenHash;
+
+            socket.emit(
+                'client-reservations-updated',
+                {
+                    success: true,
+                    tenantID,
+                    reservations:
+                        ichefClientPortalReservationsForHash(
+                            allReservations,
+                            tokenHash
+                        ),
+                    serverTimestamp:
+                        new Date().toISOString()
+                }
+            );
+
+        } catch (error) {
+            console.error(
+                '[iCHEF SOCKET client portal]',
+                error?.message || error
+            );
+        }
+    });
+
     socket.on("joinTenant", async (payload) => {
         const payloadObject =
             payload && typeof payload === 'object'
@@ -7786,6 +8720,67 @@ app.post('/update-order', async (req, res) => {
                     timestamp: new Date().toISOString()
                 }
             );
+
+        if (
+            String(tableId || '').toUpperCase() ===
+            'RESERVATIONS_MASTER'
+        ) {
+            const reservations =
+                finalPersistedState
+                    ?.activeOrders
+                    ?.RESERVATIONS_MASTER
+                    ?.data;
+
+            await ichefEmitClientReservationSnapshots(
+                tenantID,
+                Array.isArray(reservations)
+                    ? reservations
+                    : []
+            );
+        }
+
+        if (
+            String(tableId || '').toUpperCase() ===
+            'SETTINGS_MASTER'
+        ) {
+            try {
+                const tenantForClient =
+                    await Tenant.findOne(
+                        { tenantID },
+                        {
+                            tenantID: 1,
+                            clientName: 1,
+                            status: 1
+                        }
+                    ).lean();
+
+                if (
+                    tenantForClient &&
+                    tenantForClient.status !== 'SUSPENDU'
+                ) {
+                    const publicRoom =
+                        ichefClientPortalPublicRoom(
+                            tenantID
+                        );
+
+                    if (publicRoom) {
+                        io.to(publicRoom).emit(
+                            'client-public-config-updated',
+                            ichefClientPortalPublicConfigFromState(
+                                tenantForClient,
+                                finalPersistedState
+                            )
+                        );
+                    }
+                }
+            } catch (clientConfigError) {
+                console.warn(
+                    '[iCHEF client public sync]',
+                    clientConfigError?.message ||
+                    clientConfigError
+                );
+            }
+        }
 
        if (String(tableId || '').toUpperCase() === 'ARCHITECTURE') {
             const persistedArchitectureNode =
