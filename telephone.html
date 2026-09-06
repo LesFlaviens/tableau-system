@@ -1,10 +1,11 @@
 <!doctype html>
 <html lang="fr">
 <head>
+<!-- ICHEF TÉLÉPHONE V7 — MULTI-TPE -->
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<title>iCHEF TÉLÉPHONE — DEVISE LIÉE AU COMPTE CLIENT</title>
+<title>iCHEF TÉLÉPHONE — MULTI-TPE · DEVISE LIÉE AU COMPTE CLIENT</title>
 <style>
 :root{
   --bg:#050607;--panel:#0b0e0f;--panel2:#111516;--line:#293033;--line2:#3a4346;
@@ -4321,6 +4322,30 @@ html body.order-open .ticket-tags .line-state.served,
 }
 .reclame-btn.action-now small { color: #ffe6ee; }
 </style>
+
+<style id="ichef-telephone-multi-tpe-v7">
+.pay-section-title{margin:12px 0 7px;color:#111;font-size:10px;font-weight:1000;letter-spacing:.7px;text-transform:uppercase}
+.pay-section-title.secondary{margin-top:16px}
+.pay-terminal-grid{display:grid;grid-template-columns:1fr;gap:8px}
+.pay-terminal{width:100%;min-height:86px;padding:10px 12px;border:2px solid #b9bfc1;border-radius:12px;background:#fff;color:#111;text-align:left;font:inherit;touch-action:manipulation}
+.pay-terminal.connected{border-color:#35a866;background:#effff4}
+.pay-terminal.configured,.pay-terminal.test{border-color:#d4a52f;background:#fff9e8}
+.pay-terminal.offline,.pay-terminal.disabled{border-color:#dd5555;background:#fff0f0}
+.pay-terminal:disabled{opacity:.45}
+.pay-terminal-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.pay-terminal-top strong{min-width:0;font-size:13px;font-weight:1000;overflow-wrap:anywhere}
+.pay-terminal-top em{flex:0 0 auto;padding:2px 6px;border:1px solid #b48616;border-radius:999px;color:#8a6500;font-style:normal;font-size:7px;font-weight:1000}
+.pay-terminal-sub{display:block;margin-top:4px;color:#333;font-size:10px;font-weight:900}
+.pay-terminal-meta{display:block;margin-top:4px;color:#555;font-size:8px;font-weight:850;line-height:1.35}
+.pay-terminal-status{display:block;margin-top:5px;color:#27864f;font-size:8px;font-weight:1000}
+.pay-terminal.configured .pay-terminal-status,.pay-terminal.test .pay-terminal-status{color:#8a6500}
+.pay-terminal.offline .pay-terminal-status,.pay-terminal.disabled .pay-terminal-status{color:#b62e2e}
+.pay-terminal-empty{padding:13px 10px;border:2px dashed #b9bfc1;border-radius:11px;background:#fff;color:#555;text-align:center;font-size:9px;font-weight:850;line-height:1.45}
+.pay-refresh{width:100%;min-height:42px;margin-top:8px;border:1px solid #b9bfc1;border-radius:10px;background:#f5f5f5;color:#333;font-size:9px;font-weight:1000}
+.pay-security-note{margin-top:10px;padding:8px 9px;border:1px solid #d5d9da;border-radius:9px;background:#f7f8f8;color:#666;font-size:7px;line-height:1.4;font-weight:800}
+@media (orientation:landscape) and (min-width:600px){.pay-terminal-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+</style>
+
 </head>
 <body>
 
@@ -4600,11 +4625,18 @@ const STATE={
   activeOrders:{},architecture:{rooms:["Salle Principale"],tables:[],zones:[]},
   rooms:["Salle Principale"],tables:[],zones:[],room:"Salle Principale",
   menu:[],categories:[],category:"TOUT",reservations:[],settings:{},
+  paymentConfig:{enabled:true,defaultCurrency:"CHF",defaultTerminalId:"",terminals:[],updatedAt:null},
+  paymentConfigLoadedAt:0,
   currentTable:null,currentOrder:null,currentScreen:"tables",display:STORAGE.get("ichef_phone_display","auto")||"auto",
   renderPending:false,loginPin:"",lastAlertSignature:"",lastWriteAt:0,activeSeat:1,lastLineKey:"",pendingCookingLine:"",undoStack:[]
 };
 STORAGE.set("ichef_device_id",STATE.deviceId);
 if(STATE.tenantID)STORAGE.set("ichef_tenant_id",STATE.tenantID);
+try{
+  localStorage.removeItem("ichef_master_pin");
+  localStorage.removeItem("pin");
+}catch(_){}
+
 
 
 /* ---------------- SERVICE RAPIDE / SYNCHRO ANTI-ERREUR ---------------- */
@@ -5271,7 +5303,14 @@ async function verifyPin(){
   try{
     const r=await serverFetch("/api/verify-pin",{
       method:"POST",
-      body:JSON.stringify({tenantID:STATE.tenantID,pin:STATE.loginPin,deviceId:STATE.deviceId,terminal:"TELEPHONE"})
+      body:JSON.stringify({
+        tenantID:STATE.tenantID,
+        pin:STATE.loginPin,
+        deviceId:STATE.deviceId,
+        terminal:"TELEPHONE",
+        module:"TELEPHONE",
+        source:"telephone.html"
+      })
     });
     const j=await r.json().catch(()=>({}));
     if(!r.ok||!j.success){
@@ -5419,7 +5458,7 @@ async function connectSocket(){
   try{await loadSocket();if(STATE.socket)return;
     const socket=window.io(APP_SERVER_URL,{
       withCredentials:false,
-      transports:["websocket","polling"],
+      transports:["polling","websocket"],
       upgrade:true,
       reconnection:true,
       reconnectionAttempts:Infinity,
@@ -5433,6 +5472,11 @@ async function connectSocket(){
     });STATE.socket=socket;
     socket.on("connect",()=>{STATE.connected=true;setConnection("TEMPS RÉEL","good");socket.emit("joinTenant",String(STATE.tenantID));retryFailedWrites();if(!STATE.lastServerAt||now()-STATE.lastServerAt>5000)syncFull("reconnect")});
     socket.on("updateState",s=>{STATE.connected=true;STATE.lastServerAt=now();setConnection("TEMPS RÉEL","good");applyServerState(s,"socket")});
+    socket.on("paymentConfigUpdated",packet=>{
+      if(packet?.tenantID && text(packet.tenantID)!==text(STATE.tenantID))return;
+      if(packet?.paymentConfig)applyTelephonePaymentConfig(packet.paymentConfig);
+      else STATE.paymentConfigLoadedAt=0;
+    });
     socket.on("disconnect",()=>{STATE.connected=false;setConnection(navigator.onLine?"RECONNEXION":"HORS LIGNE",navigator.onLine?"warn":"bad")});
     socket.on("connect_error",err=>{
       STATE.connected=false;
@@ -8888,8 +8932,9 @@ function openManagerAdmin(){
     return;
   }
   const tenant=String(STATE.tenantID||localStorage.getItem("ichef_tenant_id")||"").trim();
-  /* admin.html revérifie le PIN et le rôle côté serveur. */
-  if(STATE.pin) localStorage.setItem("ichef_master_pin",String(STATE.pin));
+  /* admin.html revérifie lui-même le PIN et le rôle côté serveur. */
+  localStorage.removeItem("ichef_master_pin");
+  localStorage.removeItem("pin");
   const target="admin.html"+(tenant?"?tenantID="+encodeURIComponent(tenant):"");
   window.location.href=target;
 }
@@ -9276,6 +9321,134 @@ function editNote(){if(!STATE.currentTable)return;const o=ensureOrder(STATE.curr
 
 let ICHEF_PAYMENT_OPEN_AT=0;
 let ICHEF_PAYMENT_PROCESSING=false;
+
+/* ===== MULTI-TPE TELEPHONE V7 ===== */
+function emptyTelephonePaymentConfig(){
+  let currency="CHF";
+  try{ currency=fiscalProfile()?.currency||STATE.settings?.currency||"CHF"; }catch(_){}
+  return {enabled:true,defaultCurrency:text(currency).toUpperCase()||"CHF",defaultTerminalId:"",terminals:[],updatedAt:null};
+}
+function normalizeTelephonePaymentTerminal(raw={}){
+  const t=raw&&typeof raw==="object"&&!Array.isArray(raw)?raw:{};
+  return {
+    ownership:text(t.ownership||"CLIENT").toUpperCase(),
+    provider:text(t.provider||"OTHER").toUpperCase(),
+    terminalId:text(t.terminalId).slice(0,120),
+    terminalModel:text(t.terminalModel).slice(0,120),
+    integrationMode:text(t.integrationMode||t.mode||"EXTERNAL_MANUAL").toUpperCase(),
+    currency:text(t.currency||STATE.paymentConfig?.defaultCurrency||"CHF").toUpperCase(),
+    zone:text(t.zone||"SALLE").slice(0,80),
+    status:text(t.status||"CONFIGURED").toUpperCase(),
+    enabled:t.enabled!==false,
+    isDefault:t.isDefault===true,
+    smartposApp:t.smartposApp===true
+  };
+}
+function applyTelephonePaymentConfig(raw){
+  const cfg=raw&&typeof raw==="object"&&!Array.isArray(raw)?raw:emptyTelephonePaymentConfig();
+  STATE.paymentConfig={
+    enabled:cfg.enabled!==false,
+    defaultCurrency:text(cfg.defaultCurrency||"CHF").toUpperCase(),
+    defaultTerminalId:text(cfg.defaultTerminalId),
+    terminals:Array.isArray(cfg.terminals)?cfg.terminals.map(normalizeTelephonePaymentTerminal).filter(t=>t.terminalId):[],
+    updatedAt:cfg.updatedAt||null
+  };
+  STATE.paymentConfigLoadedAt=Date.now();
+  return STATE.paymentConfig;
+}
+async function loadTelephonePaymentConfig(force=false){
+  if(STATE.demo){
+    return applyTelephonePaymentConfig({
+      enabled:true,
+      defaultCurrency:fiscalProfile()?.currency||"CHF",
+      defaultTerminalId:"DEMO-TPE",
+      terminals:[{ownership:"CLIENT",provider:"DEMO",terminalId:"DEMO-TPE",terminalModel:"TPE externe démo",integrationMode:"EXTERNAL_MANUAL",currency:fiscalProfile()?.currency||"CHF",zone:"SALLE",status:"TEST",enabled:true,isDefault:true}]
+    });
+  }
+  if(!STATE.authenticated)throw new Error("Session non authentifiée");
+  if(!navigator.onLine)throw new Error("Configuration TPE indisponible hors ligne");
+
+  const age=Date.now()-Number(STATE.paymentConfigLoadedAt||0);
+  if(!force && age<30000 && Array.isArray(STATE.paymentConfig?.terminals)) return STATE.paymentConfig;
+
+  const r=await serverFetch("/api/payments/config/read",{
+    method:"POST",
+    headers:{
+      "X-iCHEF-Tenant":STATE.tenantID,
+      "X-iCHEF-PIN":STATE.pin||"",
+      "X-iCHEF-Device":STATE.deviceId||""
+    },
+    body:JSON.stringify({tenantID:STATE.tenantID,pin:STATE.pin,deviceId:STATE.deviceId})
+  });
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok||j.success===false)throw new Error(j.error||j.message||(`Configuration TPE ${r.status}`));
+  return applyTelephonePaymentConfig(j.paymentConfig||emptyTelephonePaymentConfig());
+}
+function telephoneTerminalModeLabel(mode){
+  const m=text(mode).toUpperCase();
+  if(m==="API_CLOUD")return "API CLOUD";
+  if(m==="SMARTPOS_APP")return "SMARTPOS";
+  return "TPE EXTERNE";
+}
+function telephoneTerminalOwnerLabel(owner){
+  const o=text(owner).toUpperCase();
+  if(o==="ICHEF")return "iCHEF";
+  if(o==="PARTNER")return "PARTENAIRE";
+  return "CLIENT";
+}
+function telephoneTerminalStatusMeta(status){
+  const s=text(status).toUpperCase();
+  if(s==="CONNECTED")return {label:"CONNECTÉ",cls:"connected"};
+  if(s==="TEST")return {label:"TEST",cls:"test"};
+  if(s==="DISCONNECTED")return {label:"HORS LIGNE",cls:"offline"};
+  if(s==="DISABLED")return {label:"DÉSACTIVÉ",cls:"disabled"};
+  return {label:"CONFIGURÉ",cls:"configured"};
+}
+function telephoneCurrentPaymentZones(){
+  const table=(STATE.tables||[]).find(x=>text(x.label)===text(STATE.currentTable));
+  let zone=null; try{ zone=getZone(table); }catch(_){}
+  return [text(zone?.label),text(table?.zone),text(table?.room),text(STATE.room),"SALLE"]
+    .filter(Boolean).map(v=>v.normalize("NFD").replace(/[\u0300-\u036f]/g,"").toUpperCase());
+}
+function availableTelephonePaymentTerminals(){
+  const zones=telephoneCurrentPaymentZones();
+  const all=Array.isArray(STATE.paymentConfig?.terminals)?STATE.paymentConfig.terminals:[];
+  return all.filter(t=>t&&t.terminalId&&t.enabled!==false&&text(t.status).toUpperCase()!=="DISABLED")
+    .slice().sort((a,b)=>{
+      if(a.isDefault!==b.isDefault)return a.isDefault?-1:1;
+      const az=text(a.zone||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toUpperCase();
+      const bz=text(b.zone||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toUpperCase();
+      const ai=zones.indexOf(az), bi=zones.indexOf(bz);
+      const as=ai<0?0:100-ai, bs=bi<0?0:100-bi;
+      if(as!==bs)return bs-as;
+      return text(a.terminalId).localeCompare(text(b.terminalId),"fr");
+    });
+}
+function telephoneTerminalButtonHTML(t,needsCountry=false){
+  const st=telephoneTerminalStatusMeta(t.status);
+  const model=t.terminalModel?` · ${esc(t.terminalModel)}`:"";
+  return `<button type="button" class="pay-terminal ${esc(st.cls)}" data-payment-terminal="${esc(t.terminalId)}" ${needsCountry?"disabled":""}>
+    <span class="pay-terminal-top"><strong>${esc(t.terminalId)}</strong>${t.isDefault?'<em>DÉFAUT</em>':""}</span>
+    <span class="pay-terminal-sub">${esc(t.provider)}${model}</span>
+    <span class="pay-terminal-meta">${esc(t.zone||"SALLE")} · ${esc(telephoneTerminalModeLabel(t.integrationMode))} · ${esc(telephoneTerminalOwnerLabel(t.ownership))}</span>
+    <span class="pay-terminal-status">${esc(st.label)}</span>
+  </button>`;
+}
+async function configuredTelephoneTerminalPayment(terminal){
+  if(!terminal)throw new Error("Terminal introuvable");
+  const mode=text(terminal.integrationMode||"EXTERNAL_MANUAL").toUpperCase();
+  if(mode==="EXTERNAL_MANUAL")return recordPayment("CARTE / TPE",terminal);
+
+  const fallback=confirm(
+    `${terminal.terminalId} · ${terminal.provider}\n\n`+
+    `Mode configuré : ${telephoneTerminalModeLabel(mode)}.\n`+
+    `Le connecteur bancaire automatique n'est pas encore activé pour ce terminal.\n\n`+
+    `Utiliser ce TPE en mode externe manuel pour ce paiement ?`
+  );
+  if(!fallback)return false;
+  return recordPayment("CARTE / TPE",{...terminal,fallbackFrom:mode,integrationMode:"EXTERNAL_MANUAL"});
+}
+
 let ICHEF_PAYMENT_LAST_ERROR="";
 
 function ichefPaymentFail(message){
@@ -9331,7 +9504,7 @@ async function saveFiscalProfileFromPayment(country){
   return true;
 }
 
-function openPayment(force=false){
+async function openPayment(force=false){
   /* Un Event transmis par onclick n'est jamais interprété comme force=true. */
   force = force === true;
 
@@ -9378,6 +9551,22 @@ function openPayment(force=false){
     ? "Paiement bloqué : "+validation.errors.join(" · ")
     : "";
 
+  let paymentConfigError="";
+  if(!finalized){
+    try{ await loadTelephonePaymentConfig(false); }
+    catch(err){ paymentConfigError=err?.message||"Configuration TPE indisponible"; }
+  }
+
+  const terminals=availableTelephonePaymentTerminals();
+  const terminalBlock=!finalized ? `
+    <div class="pay-section-title">TPE DU RESTAURANT</div>
+    <div class="pay-terminal-grid">
+      ${terminals.length
+        ? terminals.map(t=>telephoneTerminalButtonHTML(t,needsCountry)).join("")
+        : `<div class="pay-terminal-empty">${paymentConfigError?esc(paymentConfigError):"Aucun TPE configuré pour cet établissement."}<br>La carte manuelle reste disponible ci-dessous.</div>`}
+    </div>
+    <button type="button" class="pay-refresh" data-payment-refresh ${needsCountry?"disabled":""}>ACTUALISER LES TPE</button>` : "";
+
   const paymentStatusBlock=finalized ? `
     <div style="margin:0 0 12px;padding:12px;border:3px solid ${pendingLedger?'#dcae39':'#35a866'};border-radius:14px;background:${pendingLedger?'#fff9df':'#ecfff3'};font-size:14px;font-weight:900;line-height:1.3;">
       ${pendingLedger
@@ -9394,9 +9583,9 @@ function openPayment(force=false){
       <button type="button" ${needsCountry?"disabled":""}>0</button>
       <button type="button" class="del-btn" ${needsCountry?"disabled":""}>⌫</button>
     </div>
-    <button type="button" class="pay-method" data-pay-fixed="CARTE / TPE" ${needsCountry?"disabled":""}>CARTE / TPE</button>
+    <div class="pay-section-title secondary">AUTRES MOYENS</div><button type="button" class="pay-method" data-pay-fixed="CARTE / TPE" ${needsCountry?"disabled":""}>CARTE MANUELLE / TPE EXTERNE</button>
     <button type="button" class="pay-method" data-pay-fixed="ESPÈCES" ${needsCountry?"disabled":""}>ESPÈCES</button>
-    <button type="button" class="pay-method" data-pay-fixed="STRIPE" ${needsCountry?"disabled":""}>STRIPE · OFF</button>
+    <button type="button" class="pay-method" data-pay-fixed="STRIPE" data-payment-disabled="1" disabled>STRIPE · OFF</button>
     <button type="button" class="pay-method" data-pay-fixed="TWINT" ${needsCountry?"disabled":""}>TWINT</button>
     <button type="button" class="pay-method" data-pay-fixed="QR CODE" ${needsCountry?"disabled":""}>QR CODE</button>
     <button type="button" class="pay-method" data-pay-fixed="" ${needsCountry?"disabled":""}>RETOUR / ATTENTE</button>`;
@@ -9438,7 +9627,9 @@ function openPayment(force=false){
           </div>
         </div>` : ""}
 
+      ${terminalBlock}
       <div class="pay-grid">${paymentButtons}</div>
+      <div class="pay-security-note">Les TPE sont chargés depuis server.js. Un TPE API/SmartPOS n’est jamais considéré payé sans confirmation bancaire réelle.</div>
 
       <div id="ichefPaymentError" class="pay-error ${validationMessage?"show":""}">
         ${esc(validationMessage)}
@@ -9457,6 +9648,57 @@ function openPayment(force=false){
       await saveFiscalProfileFromPayment(btn.dataset.fiscalCountry);
       openPayment(true);
     });
+  });
+
+
+  overlay.querySelector("[data-payment-refresh]")?.addEventListener("click",async e=>{
+    if(ICHEF_PAYMENT_PROCESSING)return;
+    const btn=e.currentTarget, old=btn.textContent;
+    btn.disabled=true; btn.textContent="ACTUALISATION…";
+    try{
+      await loadTelephonePaymentConfig(true);
+      toast(`${availableTelephonePaymentTerminals().length} TPE disponible(s)`);
+      await openPayment(true);
+    }catch(err){
+      toast("TPE : "+(err?.message||"configuration indisponible"),true);
+      btn.disabled=false; btn.textContent=old;
+    }
+  });
+
+  overlay.querySelectorAll("[data-payment-terminal]").forEach(btn=>{
+    btn.addEventListener("click",async e=>{
+      e.preventDefault(); e.stopPropagation();
+      if(btn.disabled||ICHEF_PAYMENT_PROCESSING)return;
+
+      const terminal=terminals.find(t=>t.terminalId===btn.dataset.paymentTerminal);
+      if(!terminal)return;
+
+      ICHEF_PAYMENT_PROCESSING=true;
+      ICHEF_PAYMENT_LAST_ERROR="";
+      const old=btn.innerHTML;
+      btn.disabled=true;
+      btn.innerHTML="<strong>PAIEMENT…</strong>";
+
+      try{
+        const current=ensureOrder(STATE.currentTable);
+        const check=fiscalValidateOrder(current,{forPayment:true});
+        if(!check.ok)throw new Error(check.errors.join(" · "));
+        const ok=await configuredTelephoneTerminalPayment(terminal);
+        if(!ok){
+          btn.disabled=false;
+          btn.innerHTML=old;
+          return;
+        }
+        closePaymentOverlay();
+        closeSheet();
+      }catch(err){
+        toast("Paiement TPE impossible : "+(err?.message||err),true);
+        btn.disabled=false;
+        btn.innerHTML=old;
+      }finally{
+        ICHEF_PAYMENT_PROCESSING=false;
+      }
+    },{passive:false});
   });
 
   overlay.querySelectorAll("[data-pay-fixed]").forEach(btn=>{
@@ -9506,7 +9748,8 @@ function openPayment(force=false){
         if(overlay.classList.contains("open")){
           payButtons.forEach(b=>{
             b.classList.remove("busy");
-            b.disabled=(fiscalProfile().country==="UNSET" && !fiscalOrderFinalized(ensureOrder(STATE.currentTable)));
+            b.disabled=b.dataset.paymentDisabled==="1" ||
+              (fiscalProfile().country==="UNSET" && !fiscalOrderFinalized(ensureOrder(STATE.currentTable)));
           });
           btn.textContent=old;
         }
@@ -10941,7 +11184,7 @@ function renderSummary(){
 }
 
 
-async function recordPayment(method){
+async function recordPayment(method,terminal=null){
   ICHEF_PAYMENT_LAST_ERROR="";
   if(!STATE.currentTable)return ichefPaymentFail("Aucune table ouverte");
 
@@ -11073,9 +11316,16 @@ async function recordPayment(method){
 
   const payments=[{
     method:paymentMethod,
+    provider:terminal?.provider || (paymentMethod==="CARTE / TPE"?"TPE_EXTERNE":paymentMethod),
+    terminalId:terminal?.terminalId||"",
+    terminalModel:terminal?.terminalModel||"",
+    ownership:terminal?.ownership||"",
+    integrationMode:terminal?.integrationMode||"",
+    zone:terminal?.zone||"",
+    currency:terminal?.currency||fiscal.profile.currency,
     amount:total,
     createdAt:paidAt,
-    source:"TELEPHONE"
+    source:terminal?"PAYMENT_CONFIG_TELEPHONE":"TELEPHONE"
   }];
 
   o.paymentDraft={
@@ -11110,6 +11360,14 @@ async function recordPayment(method){
     updatedBy:STATE.role||"SERVEUR",
     deviceId:STATE.deviceId,
     terminal:"TELEPHONE",
+    paymentTerminal:terminal ? {
+      provider:terminal.provider||"",
+      terminalId:terminal.terminalId||"",
+      terminalModel:terminal.terminalModel||"",
+      ownership:terminal.ownership||"",
+      integrationMode:terminal.integrationMode||"",
+      zone:terminal.zone||""
+    } : null,
     fiscalCountry:fiscal.profile.country,
     fiscalReceiptReference:receiptRef
   };
@@ -11123,6 +11381,12 @@ async function recordPayment(method){
   const snapshot=fiscalTransactionSnapshot(o);
   const trace=await fiscalEvent("PAYMENT",{
     method:paymentMethod,
+    provider:terminal?.provider||"",
+    terminalId:terminal?.terminalId||"",
+    terminalModel:terminal?.terminalModel||"",
+    ownership:terminal?.ownership||"",
+    integrationMode:terminal?.integrationMode||"",
+    zone:terminal?.zone||"",
     total,
     remaining:0,
     receiptReference:receiptRef,
@@ -12040,7 +12304,7 @@ function buildDemoState(){
   STATE.demo=true;
   STATE.authenticated=true;
   STATE.tenantID="DEMO_ICHEF";
-  STATE.pin="0000";
+  STATE.pin="";
   STATE.role="SERVEUR";
   STATE.plan="ESSENTIEL";
   STATE.settings={currency:"CHF",fiscalCountry:"CH"};
@@ -12161,6 +12425,10 @@ async function bootApp(){
 
   /* Le temps réel démarre en parallèle. */
   connectSocket();
+
+  loadTelephonePaymentConfig(true).catch(err=>{
+    console.warn("[iCHEF TELEPHONE TPE] chargement initial",err?.message||err);
+  });
 
   /* Suppression du "await" : la lecture HTTP se fait en tâche de fond sans bloquer l'écran. */
   syncFull("initial");
