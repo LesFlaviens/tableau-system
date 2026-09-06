@@ -608,6 +608,153 @@ async function ichefFiscalDiagnostic(req, data = {}) {
 // HTML/PWA : toujours vérifier/charger la version actuelle.
 // JS/CSS/JSON : revalidation automatique.
 
+const ICHEF_OFFICIAL_MODULES = Object.freeze([
+    "admin.html",
+    "administration.html",
+    "anti-rush.html",
+    "assistant-ia.html",
+    "bar.html",
+    "caissetactile.html",
+    "chef-bar.html",
+    "chef-patissier.html",
+    "chef.html",
+    "economat.html",
+    "haccp.html",
+    "pack-eco.html",
+    "portail-client.html",
+    "portail-staff.html",
+    "reservation.html",
+    "rh.html",
+    "roadmap.html",
+    "runner-pass1.html"
+]);
+const ICHEF_OFFICIAL_MODULE_SET = new Set(ICHEF_OFFICIAL_MODULES);
+
+function ichefNormalizeModuleAccess(raw = {}) {
+    const source =
+        raw && typeof raw === 'object' && !Array.isArray(raw)
+            ? raw
+            : {};
+
+    const result = {};
+
+    for (const moduleID of ICHEF_OFFICIAL_MODULES) {
+        // Compatibilité anciens clients : module actif sauf false explicite.
+        result[moduleID] = source[moduleID] !== false;
+    }
+
+    return result;
+}
+
+function ichefModuleIsEnabled(tenant, moduleID) {
+    const safeModule =
+        String(moduleID || '')
+            .trim()
+            .toLowerCase();
+
+    if (!ICHEF_OFFICIAL_MODULE_SET.has(safeModule)) {
+        return true;
+    }
+
+    const raw =
+        tenant?.moduleAccess &&
+        typeof tenant.moduleAccess === 'object' &&
+        !Array.isArray(tenant.moduleAccess)
+            ? (
+                tenant.moduleAccess instanceof Map
+                    ? Object.fromEntries(tenant.moduleAccess)
+                    : tenant.moduleAccess
+              )
+            : {};
+
+    return raw[safeModule] !== false;
+}
+
+
+// ==========================================================
+// 🔒 CONTRÔLE DES 18 MODULES AVANT express.static
+// ==========================================================
+app.use(async (req, res, next) => {
+    try {
+        const requestModule =
+            String(req.path || '')
+                .split('/')
+                .filter(Boolean)
+                .pop()
+                ?.toLowerCase() || '';
+
+        if (!ICHEF_OFFICIAL_MODULE_SET.has(requestModule)) {
+            return next();
+        }
+
+        const tenantID =
+            cleanString(
+                req.query?.tenantID ||
+                req.headers['x-ichef-tenant'] ||
+                ''
+            );
+
+        // Compatibilité avec les vieux écrans qui choisissent le tenant
+        // après chargement. Ils peuvent ensuite appeler /api/module-access/check.
+        if (!tenantID) {
+            return next();
+        }
+
+        const tenant =
+            await Tenant.findOne(
+                { tenantID },
+                {
+                    tenantID: 1,
+                    status: 1,
+                    archivedAt: 1,
+                    moduleAccess: 1
+                }
+            ).lean();
+
+        if (!tenant) {
+            return res.status(404).send(
+                '<!doctype html><meta charset="utf-8">' +
+                '<body style="background:#080a0b;color:#fff;font-family:Arial;padding:40px">' +
+                '<h2>Établissement inconnu</h2></body>'
+            );
+        }
+
+        if (
+            tenant.archivedAt ||
+            String(tenant.status || '').toUpperCase() !== 'ACTIF'
+        ) {
+            return res.status(403).send(
+                '<!doctype html><meta charset="utf-8">' +
+                '<body style="background:#080a0b;color:#fff;font-family:Arial;padding:40px">' +
+                '<h2>Accès iCHEF suspendu</h2>' +
+                '<p>Contactez votre administrateur iCHEF.</p></body>'
+            );
+        }
+
+        if (!ichefModuleIsEnabled(tenant, requestModule)) {
+            return res.status(403).send(
+                '<!doctype html><meta charset="utf-8">' +
+                '<body style="background:#080a0b;color:#fff;font-family:Arial;padding:40px">' +
+                '<h2>Module bloqué</h2><p>' +
+                requestModule +
+                ' n’est pas autorisé pour cet établissement.</p></body>'
+            );
+        }
+
+        return next();
+
+    } catch (error) {
+        console.error(
+            '[iCHEF module access middleware]',
+            error?.message || error
+        );
+
+        return res
+            .status(500)
+            .send('Erreur de contrôle des modules.');
+    }
+});
+
 app.use((req, res, next) => {
     const requestPath = String(req.path || '').toLowerCase();
 
@@ -1534,24 +1681,16 @@ const activeStripePayments = new Map();
 // =========================================================================
 app.post('/api/nouvelle-demande-demo', async (req, res) => {
     try {
-        const { tenantID, restaurant, phone, email, details } = req.body;
+        const { restaurant, phone, email, details } = req.body;
 
-        if (!tenantID || !restaurant || !phone || !email) {
-            return res.status(400).json({ 
-                success: false, 
-                error: "Veuillez fournir toutes les informations requises." 
+        if (!restaurant || !phone || !email) {
+            return res.status(400).json({
+                success: false,
+                error: "Veuillez fournir toutes les informations requises."
             });
         }
 
-        const safeID = cleanString(tenantID);
-
-        const existingTenant = await Tenant.findOne({ tenantID: safeID });
-        if (existingTenant) {
-             return res.status(409).json({ 
-                success: false, 
-                error: "Ce nom d'établissement est déjà en cours de traitement." 
-            });
-        }
+        const safeID = await ichefGenerateUniqueTenantID(restaurant);
 
         await Tenant.create({
             tenantID: safeID,
@@ -1561,7 +1700,7 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
             status: 'SUSPENDU', 
             plan: 'BUSINESS',
             specialite: details?.type || 'resto',
-            pin: Math.floor(1000 + Math.random() * 9000).toString(),
+            pin: ichefGenerateInitialClientPin(),
             maxScreens: 5,
             maxStaff: 999
         });
@@ -3278,6 +3417,16 @@ config: {
             type: Date,
             default: null
         }
+    },
+
+    moduleAccess: {
+        type: mongoose.Schema.Types.Mixed,
+        default: {}
+    },
+
+    archivedAt: {
+        type: Date,
+        default: null
     },
 
     demoExpiration: {
@@ -5617,6 +5766,26 @@ app.post('/api/verify-pin', async (req, res) => {
                     0,
                     screenLimit -
                     tenant.registeredDevices.length
+                ),
+            moduleAccess:
+                ichefNormalizeModuleAccess(
+                    tenant.moduleAccess || {}
+                ),
+            allowedModules:
+                ICHEF_OFFICIAL_MODULES.filter(
+                    moduleID =>
+                        ichefModuleIsEnabled(
+                            tenant,
+                            moduleID
+                        )
+                ),
+            blockedModules:
+                ICHEF_OFFICIAL_MODULES.filter(
+                    moduleID =>
+                        !ichefModuleIsEnabled(
+                            tenant,
+                            moduleID
+                        )
                 )
         });
 
@@ -5703,8 +5872,11 @@ function ichefIsForbiddenDefaultPin(pin) {
 
     return [
         '0000',
-        '9999',
-        '11111'
+        '1234',
+        '4321',
+        '5678',
+        '7777',
+        '9999'
     ].includes(safePin);
 }
 
@@ -7468,15 +7640,110 @@ function ichefNormalizePaymentConfig(input = {}) {
     };
 }
 
+
+// ==========================================================
+// 🔎 MODULE ACCESS CHECK
+// ==========================================================
+app.get('/api/module-access/check', async (req, res) => {
+    try {
+        const tenantID =
+            cleanString(
+                req.query?.tenantID ||
+                req.headers['x-ichef-tenant'] ||
+                ''
+            );
+
+        const moduleID =
+            String(req.query?.module || '')
+                .trim()
+                .toLowerCase();
+
+        if (
+            !tenantID ||
+            !ICHEF_OFFICIAL_MODULE_SET.has(moduleID)
+        ) {
+            return res.status(400).json({
+                success: false,
+                allowed: false,
+                error: 'tenantID ou module invalide.'
+            });
+        }
+
+        const tenant =
+            await Tenant.findOne(
+                { tenantID },
+                {
+                    tenantID:1,
+                    status:1,
+                    archivedAt:1,
+                    moduleAccess:1
+                }
+            ).lean();
+
+        if (!tenant) {
+            return res.status(404).json({
+                success:false,
+                allowed:false,
+                error:'Restaurant introuvable.'
+            });
+        }
+
+        const active =
+            !tenant.archivedAt &&
+            String(tenant.status || '').toUpperCase() === 'ACTIF';
+
+        return res.json({
+            success:true,
+            tenantID,
+            module:moduleID,
+            allowed:
+                active &&
+                ichefModuleIsEnabled(
+                    tenant,
+                    moduleID
+                ),
+            accountStatus:
+                tenant.archivedAt
+                    ? 'ARCHIVE'
+                    : String(tenant.status || 'INCONNU'),
+            moduleAccess:
+                ichefNormalizeModuleAccess(
+                    tenant.moduleAccess || {}
+                )
+        });
+
+    } catch (error) {
+        console.error(
+            '[iCHEF module-access check]',
+            error?.message || error
+        );
+
+        return res.status(500).json({
+            success:false,
+            allowed:false,
+            error:'Contrôle module indisponible.'
+        });
+    }
+});
+
 // ==========================================
 // MASTER CONTROL API (EMPIRE SUPER ADMIN)
 // ==========================================
 app.post('/api/get-all-tenants-admin', async (req, res) => {
     // 🚨 1. VÉRIFICATION DE LA CLÉ MASTER SÉCURISÉE VIA VARIABLE D'ENVIRONNEMENT
-    const validKey = process.env.MASTER_KEY || "Empire2026";
-    if (req.body.masterKey !== validKey) {
+    if (!process.env.MASTER_KEY) {
+        return res.status(503).json({
+            success:false,
+            error:'MASTER_KEY non configurée.'
+        });
+    }
+
+    if (!ichefMasterKeyIsValid(req.body?.masterKey)) {
         console.warn("⚠️ Tentative d'accès non autorisée à la base Master.");
-        return res.status(401).json({ success: false, error: "Acces Refuse." });
+        return res.status(401).json({
+            success:false,
+            error:'Accès refusé.'
+        });
     }
 
     try {
@@ -7486,10 +7753,14 @@ app.post('/api/get-all-tenants-admin', async (req, res) => {
             name: t.clientName || "Sans Nom", 
             email: t.email || "Non renseigné", 
             phone: t.phone || "Non renseigné",
-            pack: t.plan, 
-            specialite: t.specialite, 
-            pin: t.pin,
-            addons: t.addons || [], // Récupération des modules cochés
+            pack: t.plan,
+            specialite: t.specialite,
+            moduleAccess: ichefNormalizeModuleAccess(
+                t.moduleAccess instanceof Map
+                    ? Object.fromEntries(t.moduleAccess)
+                    : (t.moduleAccess || {})
+            ),
+            archivedAt: t.archivedAt || null,
             maxScreens: t.maxScreens, 
             maxStaff: t.maxStaff,
             activeScreens: t.registeredDevices ? t.registeredDevices.length : 0,
@@ -7507,10 +7778,19 @@ app.post('/api/get-all-tenants-admin', async (req, res) => {
 
 app.post('/api/admin-action', async (req, res) => {
     // 🚨 2. VÉRIFICATION DE LA CLÉ POUR BLOQUER LES ATTAQUES DE MODIFICATION
-    const validKey = process.env.MASTER_KEY || "Empire2026";
-    if (req.body.masterKey !== validKey) {
+    if (!process.env.MASTER_KEY) {
+        return res.status(503).json({
+            success:false,
+            error:'MASTER_KEY non configurée.'
+        });
+    }
+
+    if (!ichefMasterKeyIsValid(req.body?.masterKey)) {
         console.warn(`⚠️ Action d'administration bloquée (Clé invalide)`);
-        return res.status(401).json({ success: false, error: "Acces Refuse." });
+        return res.status(401).json({
+            success:false,
+            error:'Accès refusé.'
+        });
     }
 
     try {
@@ -7523,7 +7803,13 @@ app.post('/api/admin-action', async (req, res) => {
             manualMaxStaff,
             maxScreens,
             addons,
-            paymentConfig
+            moduleAccess,
+            paymentConfig,
+            clientName,
+            email,
+            phone,
+            specialite,
+            confirmDelete
         } = req.body;
         const safeID = cleanString(tenantID);
 
@@ -7537,7 +7823,135 @@ app.post('/api/admin-action', async (req, res) => {
             await Tenant.findOneAndUpdate({ tenantID: safeID }, { pin: manualPin.trim(), registeredDevices: [] });
         }
         else if (action === 'set_addons' && Array.isArray(addons)) {
-            await Tenant.findOneAndUpdate({ tenantID: safeID }, { addons: addons });
+            const tenant =
+                await Tenant.findOne({
+                    tenantID:safeID
+                }).lean();
+
+            if (!tenant) {
+                return res.status(404).json({
+                    success:false,
+                    error:'Restaurant introuvable.'
+                });
+            }
+
+            const nextAccess =
+                ichefNormalizeModuleAccess(
+                    tenant.moduleAccess || {}
+                );
+
+            for (const addon of addons) {
+                const moduleID =
+                    String(addon || '')
+                        .toLowerCase();
+
+                if (
+                    ICHEF_OFFICIAL_MODULE_SET.has(moduleID)
+                ) {
+                    nextAccess[moduleID] = true;
+                }
+            }
+
+            await Tenant.findOneAndUpdate(
+                { tenantID:safeID },
+                { $set:{ moduleAccess:nextAccess } }
+            );
+        }
+        else if (action === 'set_modules') {
+            const normalizedModules =
+                ichefNormalizeModuleAccess(
+                    moduleAccess
+                );
+
+            const updatedTenant =
+                await Tenant.findOneAndUpdate(
+                    { tenantID:safeID },
+                    { $set:{ moduleAccess:normalizedModules } },
+                    { new:true }
+                ).lean();
+
+            if (!updatedTenant) {
+                return res.status(404).json({
+                    success:false,
+                    error:'Restaurant introuvable.'
+                });
+            }
+
+            io.to(safeID).emit(
+                'moduleAccessUpdated',
+                {
+                    tenantID:safeID,
+                    moduleAccess:normalizedModules,
+                    timestamp:new Date().toISOString()
+                }
+            );
+        }
+        else if (action === 'update_client') {
+            const current =
+                await Tenant.findOne({
+                    tenantID:safeID
+                });
+
+            if (!current) {
+                return res.status(404).json({
+                    success:false,
+                    error:'Restaurant introuvable.'
+                });
+            }
+
+            const update = {};
+
+            if (
+                String(clientName || '')
+                    .trim()
+                    .length >= 2
+            ) {
+                update.clientName =
+                    String(clientName)
+                        .trim()
+                        .slice(0,160);
+            }
+
+            update.email =
+                String(email || '')
+                    .trim()
+                    .slice(0,180);
+
+            update.phone =
+                String(phone || '')
+                    .trim()
+                    .slice(0,50);
+
+            update.specialite =
+                String(specialite || '')
+                    .trim()
+                    .slice(0,80);
+
+            if (newPlan) {
+                const requestedPlan =
+                    String(newPlan)
+                        .trim()
+                        .toUpperCase();
+
+                const allowedPlans =
+                    current.schema
+                        .path('plan')
+                        .enumValues;
+
+                if (
+                    allowedPlans.includes(
+                        requestedPlan
+                    )
+                ) {
+                    update.plan =
+                        requestedPlan;
+                }
+            }
+
+            await Tenant.findOneAndUpdate(
+                { tenantID:safeID },
+                { $set:update }
+            );
         }
         else if (action === 'set_payment_config') {
             if (!safeID) {
@@ -7578,14 +7992,108 @@ app.post('/api/admin-action', async (req, res) => {
             }
             await Tenant.findOneAndUpdate({ tenantID: safeID }, { maxScreens: parseInt(maxScreens) });
         }
-        else if (action === 'reset_devices') await Tenant.findOneAndUpdate({ tenantID: safeID }, { registeredDevices: [] });
-        else if (action === 'suspend') await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'SUSPENDU', registeredDevices: [] });
-        else if (action === 'activate') {
-            await Tenant.findOneAndUpdate({ tenantID: safeID }, { status: 'ACTIF', $unset: { demoExpiration: "" } });
+        else if (action === 'reset_devices') {
+            await Tenant.findOneAndUpdate(
+                { tenantID:safeID },
+                { $set:{ registeredDevices:[] } }
+            );
         }
-        else if (action === 'delete') { 
-            await Tenant.findOneAndDelete({ tenantID: safeID }); 
-            await AppState.findOneAndDelete({ tenantID: safeID }); 
+        else if (action === 'suspend') {
+            await Tenant.findOneAndUpdate(
+                { tenantID:safeID },
+                {
+                    $set:{
+                        status:'SUSPENDU',
+                        registeredDevices:[]
+                    }
+                }
+            );
+        }
+        else if (action === 'activate') {
+            const tenant =
+                await Tenant.findOne({
+                    tenantID:safeID
+                }).lean();
+
+            if (!tenant) {
+                return res.status(404).json({
+                    success:false,
+                    error:'Restaurant introuvable.'
+                });
+            }
+
+            if (tenant.archivedAt) {
+                return res.status(409).json({
+                    success:false,
+                    error:'Le compte est archivé. Utilisez Restaurer.'
+                });
+            }
+
+            await Tenant.findOneAndUpdate(
+                { tenantID:safeID },
+                {
+                    $set:{ status:'ACTIF' },
+                    $unset:{ demoExpiration:"" }
+                }
+            );
+        }
+        else if (action === 'archive') {
+            await Tenant.findOneAndUpdate(
+                { tenantID:safeID },
+                {
+                    $set:{
+                        status:'SUSPENDU',
+                        archivedAt:new Date(),
+                        registeredDevices:[]
+                    }
+                }
+            );
+        }
+        else if (action === 'restore_archive') {
+            await Tenant.findOneAndUpdate(
+                { tenantID:safeID },
+                {
+                    $set:{
+                        status:'ACTIF',
+                        archivedAt:null
+                    },
+                    $unset:{ demoExpiration:"" }
+                }
+            );
+        }
+        else if (action === 'delete') {
+            if (
+                String(confirmDelete || '')
+                    .trim() !== safeID
+            ) {
+                return res.status(400).json({
+                    success:false,
+                    error:'Confirmation de suppression incorrecte.'
+                });
+            }
+
+            const tenant =
+                await Tenant.findOne({
+                    tenantID:safeID
+                }).lean();
+
+            if (!tenant) {
+                return res.status(404).json({
+                    success:false,
+                    error:'Restaurant introuvable.'
+                });
+            }
+
+            await Promise.all([
+                Tenant.findOneAndDelete({
+                    tenantID:safeID
+                }),
+                AppState.findOneAndDelete({
+                    tenantID:safeID
+                })
+            ]);
+
+            // Les journaux fiscaux / audits scellés restent conservés.
         }
         
         res.json({ success: true });
@@ -9381,45 +9889,72 @@ app.post(['/api/kill-switch', '/api/admin-reset-devices'], async (req, res) => {
 }); // <--- LA PARENTHÈSE MANQUANTE ÉTAIT ICI !
 
 // ==========================================
-// 🛠️ CRÉATION MANUELLE D'UN NOUVEAU CLIENT
+// 🛠️ CRÉATION SÉCURISÉE D'UN NOUVEAU CLIENT
+// tenantID + PIN générés côté serveur uniquement.
 // ==========================================
-async function creerNouveauClient(nomRestaurant, emailContact, planChoisi) {
-    try {
-        // 1. Génération d'un tenantID propre et unique (ex: "le-bistrot-9f4a")
-        const baseId = nomRestaurant.toLowerCase().trim().replace(/[^a-z0-9]/g, '-');
-        const uniqueSuffix = Math.random().toString(36).substring(2, 6);
-        const tenantID = `${baseId}-${uniqueSuffix}`;
-
-        // 2. Génération d'un code PIN maître sécurisé à 4 chiffres
-        const pin = Math.floor(1000 + Math.random() * 9000).toString();
-
-        // 3. Définition des limites selon le plan (utilise ta fonction existante)
-        const limitScreens = getPlanScreenLimit(planChoisi);
-        const limitStaff = ['CHEF', 'PATISSIER', 'BAR'].includes(planChoisi) ? 1 : 999;
-
-        // 4. Inscription dans la base de données
-        const nouveauClient = await Tenant.create({
-            tenantID: tenantID,
-            clientName: nomRestaurant,
-            email: emailContact,
-            status: 'ACTIF',
-            plan: planChoisi, 
-            pin: pin,
-            maxScreens: limitScreens,
-            maxStaff: limitStaff
-        });
-
-        console.log(`✅ Client créé avec succès : ${nomRestaurant}`);
-        console.log(`🔑 URL d'accès : https://os.iche.fr/administration.html?tenantID=${tenantID}`);
-        console.log(`🔒 PIN Maître : ${pin}`);
-
-        return nouveauClient;
-
-    } catch (e) {
-        console.error("❌ Erreur lors de la création du client :", e);
-        return null;
-    }
+function ichefTenantSlug(value) {
+    const normalized = String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32);
+    return normalized.length >= 3 ? normalized : `client-${crypto.randomBytes(2).toString('hex')}`;
 }
+async function ichefGenerateUniqueTenantID(value) {
+    const base = ichefTenantSlug(value);
+    let candidate = base;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+        const exists = await Tenant.exists({ tenantID: candidate });
+        if (!exists) return candidate;
+        candidate = `${base.slice(0, 26)}-${crypto.randomBytes(2).toString('hex')}`;
+    }
+    throw new Error('Impossible de générer un tenantID unique.');
+}
+function ichefGenerateInitialClientPin() {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+        const pin = crypto.randomInt(100000, 1000000).toString();
+        const repeated = /^(\d)\1+$/.test(pin);
+        const sequential = ['123456','654321','012345','987654'].includes(pin);
+        if (!ichefIsForbiddenDefaultPin(pin) && !repeated && !sequential) return pin;
+    }
+    throw new Error('Impossible de générer un PIN sécurisé.');
+}
+function ichefMasterKeyIsValid(submitted) {
+    const configured = String(process.env.MASTER_KEY || '');
+    const provided = String(submitted || '');
+    if (!configured || !provided) return false;
+    const a = Buffer.from(configured, 'utf8');
+    const b = Buffer.from(provided, 'utf8');
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+}
+async function creerNouveauClient({ nomRestaurant, emailContact, phoneContact, planChoisi='BUSINESS', specialite='cuisine', requestedTenantID='', maxScreens=null, maxStaff=999 }) {
+    const restaurant = String(nomRestaurant || '').trim().slice(0,160);
+    const email = String(emailContact || '').trim().toLowerCase().slice(0,180);
+    const phone = String(phoneContact || '').trim().slice(0,50);
+    if (restaurant.length < 2 || !email.includes('@') || phone.length < 6) throw new Error('Restaurant, email et téléphone valides requis.');
+    const allowedPlans = new Set(['CHEF_CUISINE','CHEF_PATISSERIE','CHEF_BAR','ICHEF_OS','RENTABILITE','BRIGADES','BRIGADE','BUSINESS','ECO','PREMIUM','CHEF','PATISSIER','BAR','EMPIRE','PACK_A']);
+    const requestedPlan = String(planChoisi || '').trim().toUpperCase();
+    const plan = allowedPlans.has(requestedPlan) ? requestedPlan : 'BUSINESS';
+    const tenantID = await ichefGenerateUniqueTenantID(String(requestedTenantID || '').trim() || restaurant);
+    const pin = ichefGenerateInitialClientPin();
+    const fallbackScreens = Math.max(1, Number(getPlanScreenLimit(plan) || 5));
+    const hasManualScreens = maxScreens !== null && maxScreens !== undefined && String(maxScreens).trim() !== '' && Number.isFinite(Number(maxScreens));
+    const screenLimit = hasManualScreens ? Math.max(1, Math.min(100, Math.round(Number(maxScreens)))) : fallbackScreens;
+    const staffLimit = Math.max(1, Math.min(5000, Math.round(Number(maxStaff) || 999)));
+    const tenant = await Tenant.create({ tenantID, clientName: restaurant, email, phone, status:'ACTIF', plan, specialite:String(specialite || 'cuisine').trim().slice(0,80), pin, maxScreens:screenLimit, maxStaff:staffLimit, registeredDevices:[] });
+    await AppState.findOneAndUpdate({ tenantID }, { $setOnInsert: { tenantID, activeOrders: { SETTINGS_MASTER:{data:{name:restaurant}}, RESERVATIONS_MASTER:{data:[]} } } }, { upsert:true, new:true, setDefaultsOnInsert:true });
+    console.log(`✅ Nouveau client iCHEF créé : ${restaurant} (${tenantID})`);
+    return { tenant, credentials:{ name:restaurant, tenantID, pin, plan, loginUrl:`https://os.ichef.ch/?tenantID=${encodeURIComponent(tenantID)}`, administrationUrl:`https://os.ichef.ch/administration.html?tenantID=${encodeURIComponent(tenantID)}` } };
+}
+app.post('/api/master/clients/create', async (req, res) => {
+    try {
+        if (!process.env.MASTER_KEY) return res.status(503).json({ success:false, error:'MASTER_KEY n’est pas configurée sur le serveur.' });
+        if (!ichefMasterKeyIsValid(req.body?.masterKey)) return res.status(401).json({ success:false, error:'Clé Master invalide.' });
+        const result = await creerNouveauClient({ nomRestaurant:req.body?.restaurant, emailContact:req.body?.email, phoneContact:req.body?.phone, planChoisi:req.body?.plan, specialite:req.body?.specialite, requestedTenantID:req.body?.requestedTenantID, maxScreens:req.body?.maxScreens, maxStaff:req.body?.maxStaff });
+        return res.status(201).json({ success:true, client:result.credentials });
+    } catch (error) {
+        console.error('[iCHEF création client Master]', error?.message || error);
+        if (error?.code === 11000) return res.status(409).json({ success:false, error:'Cet identifiant est déjà utilisé.' });
+        return res.status(400).json({ success:false, error:error?.message || 'Création client impossible.' });
+    }
+});
 
 // ==========================================
 // 💳 PAIEMENT DES COMMANDES (STRIPE CONNECT)
