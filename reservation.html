@@ -32,7 +32,7 @@ upgrade-insecure-requests;
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="theme-color" content="#0a0a0a">
     
-    <title>Réservation & Service - iChef OS · Portail Client Sync</title>
+    <title>Réservation & Service - iChef OS · Admin Sync V3</title>
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800&family=Playfair+Display:ital,wght@0,600;0,900;1,400&display=swap" rel="stylesheet">
     
     <style>
@@ -495,23 +495,62 @@ upgrade-insecure-requests;
 
         window.addEventListener('load', async () => {
             const urlParams = new URLSearchParams(window.location.search);
-            const viewMode = urlParams.get('view'); 
-            const hasMasterPin = localStorage.getItem('ichef_master_pin');
+            const viewMode = String(urlParams.get('view') || '').toLowerCase();
+            const fromAdmin = String(urlParams.get('from') || '').toLowerCase() === 'admin';
 
-            if (viewMode === 'admin' && hasMasterPin) {
-                document.getElementById('back-to-admin').href = `admin.html?tenantID=${getTenantParam()}`;
-                document.getElementById('back-to-admin').style.display = 'inline-flex';
-                document.getElementById('b2b-panel').style.display = 'flex'; 
+            let adminPreviewTenant = '';
+            try {
+                adminPreviewTenant = String(
+                    sessionStorage.getItem('ichef_reservation_admin_preview') || ''
+                ).trim();
+            } catch (_) {}
+
+            const currentTenant = String(window.tenantID || '').trim();
+
+            const isAdminPreview =
+                viewMode === 'admin' &&
+                fromAdmin &&
+                currentTenant &&
+                adminPreviewTenant === currentTenant;
+
+            if (isAdminPreview) {
+                const backAdmin = document.getElementById('back-to-admin');
+
+                if (backAdmin) {
+                    backAdmin.href = '#';
+                    backAdmin.onclick = (event) => {
+                        event.preventDefault();
+                        leaveReservationAdminPreview();
+                    };
+                    backAdmin.style.display = 'inline-flex';
+                }
+
+                const panel = document.getElementById('b2b-panel');
+                if (panel) panel.style.display = 'flex';
+
+                const kioskBtn = document.getElementById('btn-kiosk');
+                if (kioskBtn) kioskBtn.style.display = '';
+
                 loadB2BAnalytics();
-                loadAIForecast(); // 🔥 Chargement de l'IA
+                loadAIForecast();
             } else {
-                document.getElementById('back-to-admin').style.display = 'none';
-                document.getElementById('back-to-admin').removeAttribute('href');
-                document.getElementById('btn-kiosk').style.display = 'none';
-                document.getElementById('b2b-panel').style.display = 'none';
-                document.querySelector('.app-layout').style.justifyContent = 'center';
-            }
+                const backAdmin = document.getElementById('back-to-admin');
 
+                if (backAdmin) {
+                    backAdmin.style.display = 'none';
+                    backAdmin.removeAttribute('href');
+                    backAdmin.onclick = null;
+                }
+
+                const kioskBtn = document.getElementById('btn-kiosk');
+                if (kioskBtn) kioskBtn.style.display = 'none';
+
+                const panel = document.getElementById('b2b-panel');
+                if (panel) panel.style.display = 'none';
+
+                const layout = document.querySelector('.app-layout');
+                if (layout) layout.style.justifyContent = 'center';
+            }
             try {
                 const response = await fetch(
                     `${window.SERVER_URL}/api/client-portal/public-config?tenantID=${getTenantParam()}`,
@@ -550,6 +589,17 @@ upgrade-insecure-requests;
 
         function getTenantParam() {
             return encodeURIComponent(window.tenantID || '');
+        }
+
+        function leaveReservationAdminPreview() {
+            try {
+                sessionStorage.removeItem(
+                    'ichef_reservation_admin_preview'
+                );
+            } catch (_) {}
+
+            window.location.href =
+                `admin.html?tenantID=${getTenantParam()}`;
         }
 
         function clientPortalTokenKey() {
