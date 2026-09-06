@@ -10,7 +10,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="theme-color" content="#0f172a">
-    <title>iCHEF OS - HACCP V5.7 SYMBIOSE STOCK</title>
+    <title>iCHEF OS - HACCP V5.8 · Comptage + mouvements</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 
@@ -1385,7 +1385,7 @@ pointer-events:none;opacity:.75
 
     <div class="nav-haccp">
         <div class="ichef-nav-core" style="display:flex;gap:6px;align-items:center;flex-wrap:nowrap;">
-        <div class="haccp-brand-mini">iCHEF <span>HACCP PRO · V5.7</span></div>
+        <div class="haccp-brand-mini">iCHEF <span>HACCP PRO · V5.8</span></div>
         <button class="nav-btn system-hub-btn" type="button" onclick="openIchefModule('chef.html')">CUISINE</button>
         <button class="nav-btn system-hub-btn" type="button" onclick="openIchefModule('chef-bar.html')">BAR</button>
         <button class="nav-btn system-hub-btn" type="button" onclick="openIchefModule('chef-patissier.html')">PÂTISSERIE</button>
@@ -1882,7 +1882,7 @@ pointer-events:none;opacity:.75
 
         async function getHaccpServerStateStrict() {
             const r = await fetch(
-                `${SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(tenantID)}&_t=${Date.now()}&haccpBuild=5700`,
+                `${SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(tenantID)}&_t=${Date.now()}&haccpBuild=5800`,
                 {
                     method:"GET",
                     credentials:"include",
@@ -1930,7 +1930,7 @@ pointer-events:none;opacity:.75
 
             update: async (key, data) => {
                 const r = await fetch(
-                    `${SERVER_URL}/update-order?tenantID=${encodeURIComponent(tenantID)}&haccpBuild=5700`,
+                    `${SERVER_URL}/update-order?tenantID=${encodeURIComponent(tenantID)}&haccpBuild=5800`,
                     {
                         method: "POST",
                         credentials: "include",
@@ -1975,7 +1975,7 @@ pointer-events:none;opacity:.75
         };
 
         let db = {
-            temp: [], cleaning: [], trace: [], inventoryMaster: [], inventoryLogs: [],
+            temp: [], cleaning: [], trace: [], inventoryMaster: [], inventoryLogs: [], inventoryMovements: [],
             recipesMaster: [], staffAccess: [], menuCuisine: {}, menuBar: {}, menuPatisserie: {},
             systemSettings: {}, haccpLists: null
         };
@@ -2125,6 +2125,7 @@ pointer-events:none;opacity:.75
                 try {
                     await loadData();
                     await flushPendingInventoryAudits();
+                    await flushPendingHaccpMovements();
                 } catch (_) {}
             }, 12000);
         }
@@ -2316,6 +2317,7 @@ function retourAccueilApp() {
                 startHaccpSharedPolling();
                 await loadData();
                 flushPendingInventoryAudits().catch(() => {});
+                flushPendingHaccpMovements().catch(() => {});
                 generateArchiveFolders();
                 setSyncStatus("online", "SYSTÈME · " + userAuditLabel().toUpperCase());
             } catch (e) {
@@ -2471,6 +2473,7 @@ function retourAccueilApp() {
             db.cleaning = aO['HACCP_CLEANING']?.data || [];
             db.trace = aO['HACCP_TRACE']?.data || [];
             db.inventoryLogs = aO['HACCP_INV_LOGS']?.data || [];
+            db.inventoryMovements = Array.isArray(aO['INVENTORY_MOVEMENTS']?.data) ? aO['INVENTORY_MOVEMENTS'].data : [];
 
             db.inventoryMaster = Array.isArray(aO['INVENTORY_MASTER']?.data) ? aO['INVENTORY_MASTER'].data : [];
             db.recipesMaster = Array.isArray(aO['RECIPES_MASTER']?.data) ? aO['RECIPES_MASTER'].data : [];
@@ -2683,6 +2686,56 @@ function retourAccueilApp() {
                 // La prochaine resynchronisation réessaiera.
             }
         }
+
+        const HACCP_PENDING_MOVEMENTS_KEY = `ICHEF_HACCP_PENDING_MOVEMENTS_${tenantID}`;
+
+        function readPendingHaccpMovements() {
+            try {
+                const rows = JSON.parse(localStorage.getItem(HACCP_PENDING_MOVEMENTS_KEY) || "[]");
+                return Array.isArray(rows) ? rows : [];
+            } catch (_) { return []; }
+        }
+
+        function queuePendingHaccpMovement(entry) {
+            const rows = readPendingHaccpMovements();
+            if (!rows.some(x => String(x.id) === String(entry.id))) rows.unshift(entry);
+            try { localStorage.setItem(HACCP_PENDING_MOVEMENTS_KEY, JSON.stringify(rows.slice(0,200))); } catch (_) {}
+        }
+
+        async function appendHaccpInventoryMovement(entry) {
+            try {
+                const state = await getHaccpServerStateStrict();
+                const current = Array.isArray(state?.activeOrders?.['INVENTORY_MOVEMENTS']?.data)
+                    ? state.activeOrders['INVENTORY_MOVEMENTS'].data
+                    : [];
+                const ids = new Set(current.map(x => String(x?.id ?? "")));
+                const merged = ids.has(String(entry.id)) ? current : [entry, ...current];
+                await API.update('INVENTORY_MOVEMENTS', merged);
+                db.inventoryMovements = merged;
+                return true;
+            } catch (e) {
+                queuePendingHaccpMovement(entry);
+                console.warn('[iCHEF HACCP] Mouvement stock en attente :', e);
+                return false;
+            }
+        }
+
+        async function flushPendingHaccpMovements() {
+            const pending = readPendingHaccpMovements();
+            if (!pending.length || !window.ICHEF_HACCP?.authenticated) return;
+            try {
+                const state = await getHaccpServerStateStrict();
+                const current = Array.isArray(state?.activeOrders?.['INVENTORY_MOVEMENTS']?.data)
+                    ? state.activeOrders['INVENTORY_MOVEMENTS'].data
+                    : [];
+                const ids = new Set(current.map(x => String(x?.id ?? "")));
+                const merged = [...pending.filter(x => !ids.has(String(x.id))), ...current];
+                await API.update('INVENTORY_MOVEMENTS', merged);
+                db.inventoryMovements = merged;
+                localStorage.removeItem(HACCP_PENDING_MOVEMENTS_KEY);
+            } catch (_) {}
+        }
+
         async function saveInventoryCount() {
             const name = document.getElementById('inv-name')?.value.trim() || '';
             const qtyStr = document.getElementById('inv-qty')?.value || '';
@@ -2764,6 +2817,29 @@ function retourAccueilApp() {
                     ...regulatoryAuditMeta()
                 };
 
+                const stockMovement = {
+                    id: `count_${now.getTime()}_${String(stockItem.id ?? 'item')}`,
+                    timestamp: now.toISOString(),
+                    type: 'COUNT_ADJUSTMENT',
+                    inventoryItemId: stockItem.id ?? null,
+                    productName: stockItem.name || '',
+                    category: stockItem.cat || '',
+                    supplier: stockItem.fournisseur || '',
+                    unit,
+                    beforeQty: theoreticalQty,
+                    deltaQty: diff,
+                    afterQty: realQty,
+                    unitPrice,
+                    valueDelta: diffValue,
+                    currency: getInventoryCurrency(),
+                    sourceModule: 'HACCP',
+                    actorRole: currentUser.role || '',
+                    actorName: userAuditLabel(),
+                    department: currentDept,
+                    deviceId,
+                    note: 'Comptage physique HACCP'
+                };
+
                 latestInventory[idx] = {
                     ...stockItem,
                     currentQty: realQty,
@@ -2779,7 +2855,10 @@ function retourAccueilApp() {
                 await API.update('INVENTORY_MASTER', latestInventory);
                 db.inventoryMaster = latestInventory;
 
-                // 2. L'audit suit. S'il échoue, il est mis en file locale et
+                // Le même événement est également tracé dans le journal central des mouvements.
+                await appendHaccpInventoryMovement(stockMovement);
+
+                // 2. L'audit HACCP détaillé suit. S'il échoue, il est mis en file locale et
                 // automatiquement réessayé, sans annuler le stock déjà confirmé.
                 const mergedLogs = [logEntry, ...latestLogs.filter(x => String(x?.id) !== String(logEntry.id))];
                 try {
@@ -2796,6 +2875,7 @@ function retourAccueilApp() {
                 populateInventoryDatalist();
                 setSyncStatus('online', 'SYSTÈME · STOCK HACCP SYNCHRONISÉ');
                 flushPendingInventoryAudits().catch(() => {});
+                flushPendingHaccpMovements().catch(() => {});
             } catch (e) {
                 console.error('[iCHEF HACCP] Comptage non synchronisé :', e);
                 alert(e?.message || 'Le comptage n’a pas été confirmé par le serveur.');
