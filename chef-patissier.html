@@ -10,7 +10,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="theme-color" content="#0f172a">
-    <title>iChef OS - Chef Pâtissier</title>
+    <title>iChef OS - Chef Pâtissier · Stock Économat V5</title>
 
      <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
      <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
@@ -826,6 +826,11 @@
             
             <button class="nav-btn" style="background: rgba(239, 68, 68, 0.1); color: var(--danger); border: 1px solid var(--danger); margin-left: 10px;" onclick="window.location.href='anti-rush.html?tenantID=' + tenantID">🚨 ALERTES</button>
             
+            <button class="nav-btn" style="color:var(--gold);border-color:var(--gold);" onclick="openEconomatFromPatissier()">ÉCONOMAT</button>
+            <div id="stock-master-pill" class="sync-status" title="Source maître : INVENTORY_MASTER dans Économat">
+                <div id="stock-master-dot" class="sync-dot"></div>
+                <span id="stock-master-text" style="color:var(--text-muted);">STOCK ÉCONOMAT · VÉRIFICATION</span>
+            </div>
             <div class="sync-status">
                 <div id="sync-dot" class="sync-dot"></div>
                 <span id="sync-text" style="color: var(--text-muted);">CONNEXION...</span>
@@ -965,39 +970,22 @@
     </div>
 
     <div id="mod-inventaire" class="module">
+        <div class="chef-note-card" style="margin-bottom:14px;">
+            <strong>STOCK CENTRAL — LECTURE CHEF PÂTISSIER.</strong>
+            Le stock vient uniquement de <b>INVENTORY_MASTER</b> dans Économat. Réceptions, prix, fournisseurs et créations se font dans Économat ; les comptages physiques dans HACCP.
+            <div class="flex-mobile-col" style="display:flex;gap:10px;margin-top:12px;">
+                <button class="add-btn primary" style="flex:1;" onclick="openEconomatFromPatissier()">OUVRIR ÉCONOMAT</button>
+                <button class="add-btn" style="flex:1;" onclick="openHaccpFromPatissier()">OUVRIR HACCP</button>
+                <button class="add-btn" style="flex:1;" onclick="refreshPatissierCentralStock()">ACTUALISER STOCK</button>
+            </div>
+        </div>
         <div class="bento-grid">
-            
-            <div class="bento-card" onclick="openInvModal('ia-scan-modal')">
-                <div class="bento-icon">📸</div>
-                <div class="bento-title">Scan IA<br>Facture</div>
-            </div>
-            
-            <div class="bento-card" onclick="openInvModal('manual-stock-modal')">
-                <div class="bento-icon">✍️</div>
-                <div class="bento-title">Saisie<br>Manuelle</div>
-            </div>
-
-            <div class="bento-card" onclick="openInvModal('annuaire-modal')">
-                <div class="bento-icon">📒</div>
-                <div class="bento-title">Annuaire<br>Fournisseurs</div>
-            </div>
-
-            <div class="bento-card" onclick="openInvModal('matrice-modal')">
-                <div class="bento-icon">📦</div>
-                <div class="bento-title">Matrice<br>Globale</div>
-            </div>
-
-            <div class="bento-card" onclick="openInvModal('orders-modal')">
-                <div class="bento-icon">🧾</div>
-                <div class="bento-title">Bons de<br>Commande</div>
-            </div>
-
-            <div class="bento-card" onclick="openInvModal('capital-modal')">
-                <div class="bento-icon">💰</div>
-                <div class="bento-title">Capital<br>Immobilisé</div>
-                <div class="bento-value" id="bento-capital-total">0.00 €</div>
-            </div>
-
+            <div class="bento-card" onclick="openEconomatFromPatissier()"><div class="bento-icon">+</div><div class="bento-title">Réceptions / Factures<br>Économat</div></div>
+            <div class="bento-card" onclick="openEconomatFromPatissier()"><div class="bento-icon">↗</div><div class="bento-title">Créer / Modifier article<br>Économat</div></div>
+            <div class="bento-card" onclick="openInvModal('annuaire-modal')"><div class="bento-icon">F</div><div class="bento-title">Fournisseurs<br>Lecture seule</div></div>
+            <div class="bento-card" onclick="openInvModal('matrice-modal')"><div class="bento-icon">S</div><div class="bento-title">Stock central<br>Lecture seule</div></div>
+            <div class="bento-card" onclick="openInvModal('orders-modal')"><div class="bento-icon">B</div><div class="bento-title">Bons de commande<br>Préparation pâtisserie</div></div>
+            <div class="bento-card" onclick="openInvModal('capital-modal')"><div class="bento-icon">€</div><div class="bento-title">Capital immobilisé<br>Lecture seule</div><div class="bento-value" id="bento-capital-total">0.00 €</div></div>
         </div>
     </div>
 
@@ -1171,30 +1159,34 @@
         const API = {
             get: async () => {
                 try {
-                    let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(tenantID)}&_t=${Date.now()}`, {
+                    const r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(tenantID)}&_t=${Date.now()}&patissierBuild=500`, {
                         cache:'no-store', credentials:'include', headers:ichefAuthHeaders()
                     });
-                    if(r.ok) return await r.json();
-                    throw new Error("Serveur injoignable");
+                    if (!r.ok) throw new Error(`Lecture serveur refusée (${r.status})`);
+                    const fresh = await r.json();
+                    try { localStorage.setItem('EMPIRE_CHEF_SYNC', JSON.stringify(fresh)); } catch (_) {}
+                    fresh.__ichefOffline=false;
+                    return fresh;
                 } catch(e) {
-                    return JSON.parse(localStorage.getItem('EMPIRE_CHEF_SYNC')) || { activeOrders: {} };
+                    const fallback=JSON.parse(localStorage.getItem('EMPIRE_CHEF_SYNC') || 'null') || {activeOrders:{}};
+                    fallback.__ichefOffline=true;
+                    return fallback;
                 }
             },
-            save: async (k, d) => {
-                let state = JSON.parse(localStorage.getItem('EMPIRE_CHEF_SYNC')) || { activeOrders: {} };
-                state.activeOrders[k] = { data: d };
-                localStorage.setItem('EMPIRE_CHEF_SYNC', JSON.stringify(state));
-
+            save: async (k,d) => {
+                const r=await fetch(`${SERVER_URL}/update-order?tenantID=${encodeURIComponent(tenantID)}&patissierBuild=500`, {
+                    method:'POST', headers:ichefAuthHeaders({'Content-Type':'application/json','Accept':'application/json'}),
+                    credentials:'include', cache:'no-store', body:JSON.stringify({tableId:k,order:{data:d},deviceId:getDeviceFingerprint(),terminal:'CHEF_PATISSERIE'})
+                });
+                let payload={}; try { payload=await r.json(); } catch (_) {}
+                if (!r.ok || payload?.success===false) throw new Error(payload?.error || `Sauvegarde refusée (${r.status})`);
                 try {
-                    await fetch(`${SERVER_URL}/update-order?tenantID=${encodeURIComponent(tenantID)}`, {
-                        method:'POST',
-                        headers:ichefAuthHeaders({'Content-Type':'application/json'}),
-                        credentials:'include',
-                        cache:'no-store',
-                        body: JSON.stringify({ tableId:k, order:{data:d} })
-                    });
-                    if (window.ichefSocket) window.ichefSocket.emit('orderUpdated', { tableId: k, tenantID: tenantID });
-                } catch(e) { console.warn("Réseau lent. Données sécurisées localement."); }
+                    const state=JSON.parse(localStorage.getItem('EMPIRE_CHEF_SYNC') || 'null') || {activeOrders:{}};
+                    state.activeOrders=state.activeOrders || {}; state.activeOrders[k]={data:d};
+                    localStorage.setItem('EMPIRE_CHEF_SYNC',JSON.stringify(state));
+                } catch (_) {}
+                try { if (window.ichefSocket?.connected) window.ichefSocket.emit('orderUpdated',{tableId:k,tenantID,source:'CHEF_PATISSERIE'}); } catch (_) {}
+                return payload;
             }
         };
 
@@ -1219,6 +1211,30 @@
             if(menu && menu.style.display === 'flex') menu.style.display = 'none';
         });
 
+
+        function setPatissierStockMasterStatus(ok,label) {
+            const dot=document.getElementById('stock-master-dot');
+            const text=document.getElementById('stock-master-text');
+            if (dot) dot.style.background=ok ? 'var(--success)' : 'var(--alert)';
+            if (text) { text.innerText=label || (ok ? 'STOCK ÉCONOMAT · CONNECTÉ' : 'STOCK ÉCONOMAT · NON SYNCHRONISÉ'); text.style.color=ok ? 'var(--success)' : 'var(--alert)'; }
+        }
+
+        function openEconomatFromPatissier() { window.location.href=`economat.html?tenantID=${encodeURIComponent(tenantID)}&from=chef-patissier`; }
+        function openHaccpFromPatissier() { window.location.href=`haccp.html?tenantID=${encodeURIComponent(tenantID)}&from=chef-patissier`; }
+
+        async function refreshPatissierCentralStock() {
+            try {
+                const state=await API.get();
+                if (state?.__ichefOffline) throw new Error('offline');
+                const central=state?.activeOrders?.INVENTORY_MASTER?.data;
+                if (!Array.isArray(central)) throw new Error('INVENTORY_MASTER absent');
+                stockGlobalData=central;
+                if (Array.isArray(state?.activeOrders?.STOCK_CATS?.data)) stockCategories=state.activeOrders.STOCK_CATS.data;
+                setPatissierStockMasterStatus(true,`STOCK ÉCONOMAT · ${stockGlobalData.length} ARTICLE(S)`);
+                renderAll();
+                return true;
+            } catch (_) { setPatissierStockMasterStatus(false,'STOCK ÉCONOMAT · NON SYNCHRONISÉ'); return false; }
+        }
 
         function ichefReturnToAdministration() {
             const params = new URLSearchParams(window.location.search);
@@ -1265,10 +1281,8 @@
                     credentials: 'include',
                     cache: 'no-store',
                     body: JSON.stringify({
-                        tenantID: tenantID,
-                        pin: pin,
-                        deviceId: getDeviceFingerprint(),
-                        source: 'chef-patissier'
+                        tenantID: tenantID, pin: pin, deviceId: getDeviceFingerprint(),
+                        terminal:'CHEF', module:'CHEF_PATISSERIE', source:'chef-patissier.html'
                     })
                 });
                 const pinData = await pinRes.json().catch(() => ({}));
@@ -1278,7 +1292,7 @@
                 }
 
                 ichefPinFailures = 0;
-                window.ICHEF_RUNTIME_PIN = pin;
+                window.ICHEF_RUNTIME_PIN = ''; // PIN non conservé après validation serveur.
                 window.ICHEF_SECURITY = Object.assign(window.ICHEF_SECURITY || {}, {
                     tenantID: tenantID,
                     deviceId: getDeviceFingerprint(),
@@ -1314,6 +1328,7 @@
                 }
 
                 await bootSystem();
+                if (!window.__patStockPoll) window.__patStockPoll=setInterval(()=>refreshPatissierCentralStock(),12000);
             } catch (e) {
                 ichefPinFailures += 1;
                 window.ICHEF_RUNTIME_PIN = '';
@@ -1340,7 +1355,13 @@
             try {
                 const state = await API.get();
                 if(state && state.activeOrders) {
-                    if(state.activeOrders['INVENTORY_MASTER']) stockGlobalData = state.activeOrders['INVENTORY_MASTER'].data || [];
+                    if (Array.isArray(state.activeOrders['INVENTORY_MASTER']?.data) && !state?.__ichefOffline) {
+                        stockGlobalData = state.activeOrders['INVENTORY_MASTER'].data;
+                        setPatissierStockMasterStatus(true, `STOCK ÉCONOMAT · ${stockGlobalData.length} ARTICLE(S)`);
+                    } else {
+                        stockGlobalData = Array.isArray(state.activeOrders['INVENTORY_MASTER']?.data) ? state.activeOrders['INVENTORY_MASTER'].data : [];
+                        setPatissierStockMasterStatus(false, 'STOCK ÉCONOMAT · NON SYNCHRONISÉ');
+                    }
                     if (state.activeOrders['RECIPES_MASTER_PATISSERIE'] && Array.isArray(state.activeOrders['RECIPES_MASTER_PATISSERIE'].data)) {
                         recipesData = state.activeOrders['RECIPES_MASTER_PATISSERIE'].data;
                     } else if (state.activeOrders['RECIPES_MASTER'] && Array.isArray(state.activeOrders['RECIPES_MASTER'].data)) {
@@ -1372,6 +1393,7 @@
                 
                 if(!Array.isArray(recipesData)) recipesData = [];
                 if(!Array.isArray(stockGlobalData)) stockGlobalData = [];
+                try { if (migratePatRecipeLinks()) await API.save('RECIPES_MASTER_PATISSERIE', recipesData); } catch(e) { console.warn('[iCHEF PÂTISSERIE] Migration liens stock reportée',e); }
 
                 renderAll();
                 
@@ -1413,7 +1435,7 @@
         const socket = window.ichefSocket;
 
         socket.on('connect', () => {
-            socket.emit('joinTenant', { tenantID: tenantID, deviceId: getDeviceFingerprint() });
+            socket.emit('joinTenant', tenantID);
             let syncDot = document.getElementById('sync-dot');
             let syncText = document.getElementById('sync-text');
             if(syncDot) syncDot.style.background = 'var(--success)';
@@ -1444,6 +1466,7 @@
             }
             if (aO['INVENTORY_MASTER'] && Array.isArray(aO['INVENTORY_MASTER'].data)) {
                 stockGlobalData = aO['INVENTORY_MASTER'].data;
+                setPatissierStockMasterStatus(true, `STOCK ÉCONOMAT · ${stockGlobalData.length} ARTICLE(S)`);
                 updated = true;
             }
             if (aO['RECIPES_MASTER_PATISSERIE'] && Array.isArray(aO['RECIPES_MASTER_PATISSERIE'].data)) {
@@ -1455,6 +1478,15 @@
                 let t = document.getElementById('toast');
                 if(t) { t.innerText = " Données synchronisées"; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'), 2000); }
             }
+        });
+
+        ['state-updated','inventory-updated','haccp-updated','ichef:core:update'].forEach(evt => {
+            socket.on(evt, payload => {
+                const central=payload?.activeOrders?.INVENTORY_MASTER?.data;
+                if (Array.isArray(central)) {
+                    stockGlobalData=central; setPatissierStockMasterStatus(true,`STOCK ÉCONOMAT · ${stockGlobalData.length} ARTICLE(S)`); renderAll();
+                } else refreshPatissierCentralStock();
+            });
         });
 
         // SAUVEGARDE MENU SECURISEE ANTI-SPAM
@@ -1483,7 +1515,7 @@
                     socket.emit('syncMenu', {
                         tenantID: tenantID, department: 'PATISSERIE',
                         menu: menuData, categories: categoriesPatisserie,
-                        source: 'chef-patissier.html', pin: window.ICHEF_RUNTIME_PIN
+                        source: 'chef-patissier.html'
                     }, (response) => {
                         if(response && response.success) {
                             if(syncDot) syncDot.style.background = 'var(--success)';
@@ -1604,16 +1636,8 @@
             const select = document.getElementById('manual-stock-cat'); if(!select) return;
             select.innerHTML = stockCategories.map(c => `<option value="${c}">${c}</option>`).join('');
         }
-        async function addStockCategory() {
-            let newCat = prompt(" Nom de la catégorie d'économat :");
-            if(newCat && newCat.trim() !== "" && !stockCategories.includes(newCat.trim())) { 
-                stockCategories.push(newCat.trim()); renderAll(); await API.save('STOCK_CATS', stockCategories); 
-            }
-        }
-        async function removeStockCategory() {
-            let cat = document.getElementById('manual-stock-cat').value;
-            if(confirm(` Supprimer la catégorie "${cat}" ?`)) { stockCategories = stockCategories.filter(c => c !== cat); renderAll(); await API.save('STOCK_CATS', stockCategories); }
-        }
+        async function addStockCategory() { if (confirm("Les catégories sont gérées dans l'Économat. Ouvrir l'Économat ?")) openEconomatFromPatissier(); }
+        async function removeStockCategory() { if (confirm("Les catégories sont gérées dans l'Économat. Ouvrir l'Économat ?")) openEconomatFromPatissier(); }
 
         function renderAll() {
             if (typeof renderMenu === 'function') renderMenu();
@@ -1929,86 +1953,8 @@
             pendingAIItems.splice(idx, 1);
             renderAIValidationTable();
         }
-
-        function confirmAIValidation() {
-            let fournisseur = document.getElementById('ai-supplier-input').value.trim();
-            let adresseFournisseur = document.getElementById('ai-address-input').value.trim();
-            let telephoneFournisseur = document.getElementById('ai-phone-input').value.trim();
-            let newCurrency = document.getElementById('ai-currency-input').value.trim() || "€";
-            
-            if (newCurrency !== currentCurrency) {
-                currentCurrency = newCurrency;
-                API.get().then(state => {
-                    let settings = state.activeOrders['SETTINGS_MASTER']?.data || {};
-                    settings.currency = currentCurrency;
-                    API.save('SETTINGS_MASTER', settings);
-                });
-            }
-            
-            pendingAIItems.forEach((_, idx) => {
-                let name = document.getElementById(`ai-name-${idx}`).value.trim();
-                let catRaw = document.getElementById(`ai-cat-${idx}`).value;
-                let qtyStr = document.getElementById(`ai-qty-${idx}`).value.trim();
-                let price = parseFloat(document.getElementById(`ai-price-${idx}`).value) || 0;
-                
-                const dicoCategories = {
-                    'Viande': ' Viandes & Volailles', 'Poisson': ' Poissons & Crustacés', 'Légumes': ' Légumes & Herbes', 
-                    'Féculents': ' Épicerie Sèche', 'Laiterie': ' Crèmerie & B.O.F', 'Surgelés': ' Surgelés'
-                };
-                let finalCat = stockCategories.includes(catRaw) ? catRaw : (dicoCategories[catRaw] || (' ' + (catRaw || 'NON CLASSÉ')));
-                
-                let parsedQty = parseQuantity(qtyStr);
-                let unitPrice = parsedQty.val > 0 ? (price / parsedQty.val) : price;
-
-                stockGlobalData.unshift({
-                    id: Date.now() + Math.random(), 
-                    name: name, 
-                    cat: finalCat,
-                    fournisseur: fournisseur,
-                    adresse: adresseFournisseur, 
-                    telephone: telephoneFournisseur, 
-                    qtyStr: qtyStr, 
-                    initialQty: parsedQty.val, 
-                    currentQty: parsedQty.val, 
-                    unit: parsedQty.unit,
-                    totalPrice: price, 
-                    unitPrice: unitPrice, 
-                    date: new Date().toLocaleDateString()
-                });
-            });
-
-            closeInvModal('ai-validation-modal');
-            renderAll();
-            API.save('INVENTORY_MASTER', stockGlobalData);
-        }
-
-        async function addManualStock() {
-            const name = document.getElementById('manual-stock-name').value.trim();
-            const qtyStr = document.getElementById('manual-stock-qty').value.trim();
-            const price = parseFloat(document.getElementById('manual-stock-price').value);
-            const cat = document.getElementById('manual-stock-cat').value;
-            const supplier = document.getElementById('manual-stock-supplier').value.trim();
-
-            if(!name || !qtyStr || isNaN(price)) return alert("Remplissez les champs obligatoires (Nom, Qté, Prix).");
-
-            let parsedQty = parseQuantity(qtyStr);
-            let unitPrice = parsedQty.val > 0 ? (price / parsedQty.val) : price;
-
-            stockGlobalData.unshift({ 
-                id: Date.now(), name, cat, fournisseur: supplier,
-                qtyStr: qtyStr, initialQty: parsedQty.val, currentQty: parsedQty.val, unit: parsedQty.unit,
-                totalPrice: price, unitPrice: unitPrice, date: new Date().toLocaleDateString() 
-            });
-
-            document.getElementById('manual-stock-name').value = ''; 
-            document.getElementById('manual-stock-qty').value = ''; 
-            document.getElementById('manual-stock-price').value = '';
-            document.getElementById('manual-stock-supplier').value = '';
-            
-            closeInvModal('manual-stock-modal');
-            renderAll(); 
-            await API.save('INVENTORY_MASTER', stockGlobalData);
-        }
+        function confirmAIValidation() { closeInvModal('ai-validation-modal'); if (confirm("Les factures et réceptions se gèrent dans l'Économat. Ouvrir l'Économat ?")) openEconomatFromPatissier(); }
+        async function addManualStock() { closeInvModal('manual-stock-modal'); if (confirm("La création d'un article se fait dans l'Économat. Ouvrir l'Économat ?")) openEconomatFromPatissier(); }
 
         function renderSuppliers() {
             const container = document.getElementById('supplier-directory-list');
@@ -2036,7 +1982,7 @@
                 let safeName = s.nom.replace(/'/g, "\\'").replace(/"/g, '&quot;');
                 return `
                 <div class="folder-card" style="background:var(--bg); border:1px solid var(--border-strong); justify-content:center; text-align:center;" 
-                     onclick="editSupplier('${safeName}')" title="Modifier les coordonnées">
+                     title="Lecture seule — gérer dans l'Économat">
                     <div style="font-size: 1.8rem; margin-bottom: 5px;"></div>
                     <div style="font-weight:700; color:var(--text-main); font-size:0.85rem; line-height:1.2; text-transform:uppercase;">${s.nom}</div>
                     ${s.tel ? `<div style="font-size:0.75rem; color:var(--accent); margin-top:8px; font-weight:600;"> ${s.tel}</div>` : ''}
@@ -2044,52 +1990,8 @@
                 `;
             }).join('');
         }
-
-        function editSupplier(supplierName) {
-            let supplierItems = stockGlobalData.filter(i => i.fournisseur === supplierName);
-            if (supplierItems.length === 0) return;
-            
-            let tel = ""; let adr = "";
-            for (let item of supplierItems) {
-                if (!tel && item.telephone) tel = item.telephone;
-                if (!adr && item.adresse) adr = item.adresse;
-            }
-
-            document.getElementById('edit-supplier-old-name').value = supplierName;
-            document.getElementById('edit-supplier-name').value = supplierName;
-            document.getElementById('edit-supplier-phone').value = tel;
-            document.getElementById('edit-supplier-address').value = adr;
-            
-            closeInvModal('annuaire-modal');
-            openInvModal('edit-supplier-modal');
-        }
-
-        async function saveSupplierEdit() {
-            let oldName = document.getElementById('edit-supplier-old-name').value;
-            let newName = document.getElementById('edit-supplier-name').value.trim();
-            let newTel = document.getElementById('edit-supplier-phone').value.trim();
-            let newAdr = document.getElementById('edit-supplier-address').value.trim();
-
-            if (!newName) return alert("Le nom du fournisseur est obligatoire.");
-
-            let updatedCount = 0;
-            stockGlobalData.forEach(item => {
-                if (item.fournisseur === oldName) {
-                    item.fournisseur = newName;
-                    item.telephone = newTel;
-                    item.adresse = newAdr;
-                    updatedCount++;
-                }
-            });
-
-            closeInvModal('edit-supplier-modal');
-            
-            if (updatedCount > 0) {
-                renderAll();
-                await API.save('INVENTORY_MASTER', stockGlobalData);
-                openInvModal('annuaire-modal');
-            }
-        }
+        function editSupplier() { closeInvModal('annuaire-modal'); if (confirm("Les fournisseurs sont gérés dans l'Économat. Ouvrir l'Économat ?")) openEconomatFromPatissier(); }
+        async function saveSupplierEdit() { closeInvModal('edit-supplier-modal'); if (confirm("Les fournisseurs sont gérés dans l'Économat. Ouvrir l'Économat ?")) openEconomatFromPatissier(); }
 
         window.copySupplierOrder = function(suppName) {
             let text = ` BON DE COMMANDE - ${suppName}\nDate : ${new Date().toLocaleDateString('fr-FR')}\n\n`;
@@ -2307,41 +2209,10 @@
             document.getElementById('orders-folder-container').style.display = 'block';
             document.getElementById('orders-detail-container').style.display = 'none';
         };
+        async function editStockQty() { if (confirm("Le comptage physique se fait dans HACCP. Ouvrir HACCP ?")) openHaccpFromPatissier(); }
+        async function deleteStockItem() { if (confirm("La suppression d'un article se fait dans l'Économat. Ouvrir l'Économat ?")) openEconomatFromPatissier(); }
 
-        async function editStockQty(idx) {
-            let item = stockGlobalData[idx];
-            let parsed = parseQuantity(item.qtyStr);
-            let initialQ = item.initialQty !== undefined ? item.initialQty : parsed.val;
-            let currentQ = item.currentQty !== undefined ? item.currentQty : initialQ;
-            let unit = item.unit !== undefined ? item.unit : parsed.unit;
-            
-            let newQty = prompt(` Quantité RESTANTE en stock pour ${item.name} (en ${unit}) :`, currentQ);
-            if (newQty !== null && newQty.trim() !== "") {
-                let parsedNew = parseFloat(newQty.replace(',', '.'));
-                if (!isNaN(parsedNew) && parsedNew >= 0) {
-                    if (item.initialQty === undefined) item.initialQty = initialQ; 
-                    if (item.unitPrice === undefined) {
-                        let tPrice = parseFloat(String(item.lastPrice).replace(',', '.').replace(/[^\d.-]/g, '')) || 0;
-                        item.totalPrice = tPrice;
-                        item.unitPrice = initialQ > 0 ? tPrice / initialQ : tPrice;
-                        item.unit = unit;
-                    }
-                    
-                    item.currentQty = parsedNew;
-                    item.qtyStr = parsedNew + " " + unit;
-                    renderAll();
-                    await API.save('INVENTORY_MASTER', stockGlobalData);
-                } else alert(" Quantité invalide.");
-            }
-        }
-
-        async function deleteStockItem(idx) {
-            if(confirm("Supprimer ce produit de l'économat ?")) {
-                stockGlobalData.splice(idx, 1); renderAll(); await API.save('INVENTORY_MASTER', stockGlobalData);
-            }
-        }
-
-        // === IA PRÉDICTIVE : POTENTIEL DE PRODUCTION ===
+        // === LIEN PERMANENT RECETTE PÂTISSERIE ↔ INVENTORY_MASTER ===\n        function normalizePatInventoryText(value) {\n            return String(value || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^\p{L}\p{N}]+/gu,' ').replace(/\s+/g,' ').trim();\n        }\n        function resolvePatInventoryItem(value) {\n            const wanted=normalizePatInventoryText(value); if (!wanted || !Array.isArray(stockGlobalData)) return null;\n            const exact=stockGlobalData.filter(x => normalizePatInventoryText(x?.name)===wanted); if (exact.length===1) return exact[0];\n            const words=wanted.split(' ').filter(w=>w.length>2); if (!words.length) return null;\n            const ranked=stockGlobalData.map(item=>{const text=normalizePatInventoryText(item?.name);const score=words.reduce((s,w)=>s+(text.includes(w)?1:0),0);return {item,score,text};})\n                .filter(x=>x.score>0).sort((a,b)=>b.score-a.score || a.text.length-b.text.length);\n            if (!ranked.length || (ranked.length>1 && ranked[0].score===ranked[1].score)) return null; return ranked[0].item;\n        }\n        function migratePatRecipeLinks() {\n            let changed=false; if (!Array.isArray(recipesData)) return false;\n            recipesData=recipesData.map(r=>{ if(!Array.isArray(r?.structuredIngs)) return r; const next=r.structuredIngs.map(ing=>{\n                let item=ing?.inventoryItemId!=null ? stockGlobalData.find(x=>String(x?.id??'')===String(ing.inventoryItemId))||null : null;\n                if(!item) item=resolvePatInventoryItem(ing?.name || ing?.inventoryItemName || '');\n                const linked={...ing,inventoryItemId:item?.id??null,inventoryItemName:item?.name||ing?.inventoryItemName||ing?.name||'',inventoryUnit:item?.unit||ing?.inventoryUnit||'',unitPriceSnapshot:item?Number(item.unitPrice||0):Number(ing?.unitPriceSnapshot||0),linkStatus:item?'linked':'unlinked'};\n                if(String(ing?.inventoryItemId??'')!==String(linked.inventoryItemId??'') || ing?.linkStatus!==linked.linkStatus) changed=true; return linked; }); return {...r,structuredIngs:next}; });\n            return changed;\n        }\n\n        // === IA PRÉDICTIVE : POTENTIEL DE PRODUCTION ===
         function calculatePotential() {
             const boxes = ['viande', 'legume', 'sauce', 'bof', 'sec', 'eco'];
             let bottlenecks = [];
@@ -2356,17 +2227,7 @@
 
                 let requiredGram = parseFloat(document.getElementById(`gram-${box}`).value) || 0;
                 if (requiredGram <= 0) return;
-
-                let matchedStock = null;
-                let bestMatchScore = 0;
-
-                stockGlobalData.forEach(item => {
-                    let score = 0;
-                    let itemName = item.name.toLowerCase();
-                    let words = txt.split(/[\s,]+/);
-                    words.forEach(w => { if (w.length > 2 && itemName.includes(w)) score++; });
-                    if (score > bestMatchScore) { bestMatchScore = score; matchedStock = item; }
-                });
+                const matchedStock = resolvePatInventoryItem(txt);
 
                 if (matchedStock && box !== 'eco') {
                     foundAny = true;
@@ -2527,7 +2388,7 @@
                         let cleanLine = line.replace(/\([^)]+\)/g, '').replace(/dispo:.*$/i, '').trim();
                         if(cleanLine === "") return;
                         let nameOnly = cleanLine.replace(/(\d+(?:\.\d+)?)\s*(?:€|euros?|\$|chf|mad|£|¥).*/i, '').trim();
-                        if (nameOnly) structuredIngs.push({ name: nameOnly, qtyPerPortion: portion, cat: k }); 
+                        if (nameOnly) { const inv=resolvePatInventoryItem(nameOnly); structuredIngs.push({name:nameOnly,qtyPerPortion:portion,cat:k,inventoryItemId:inv?.id??null,inventoryItemName:inv?.name||nameOnly,inventoryUnit:inv?.unit||'',unitPriceSnapshot:Number(inv?.unitPrice||0),linkStatus:inv?'linked':'unlinked'}); } 
                     });
                 }
             });
