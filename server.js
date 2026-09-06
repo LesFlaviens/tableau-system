@@ -10536,10 +10536,12 @@ const paymentTransactionSchema = new mongoose.Schema({
         enum: ['NONE', 'PARTIAL', 'FULL', 'PENDING'],
         default: 'NONE'
     },
-    refundedAmount: { type: Number, default: 0 },
+  refundedAmount: { type: Number, default: 0 },
     refundedAt: { type: Date, default: null },
 
-    idempotencyKey: { type: String, default: '', index: true },
+    // CORRECTION CRITIQUE : Suppression du 'default: ''' pour la compatibilité avec l'index sparse
+    idempotencyKey: { type: String, index: true },
+    
     lastProviderCheckAt: { type: Date, default: null },
     failureCode: { type: String, default: null },
     failureMessage: { type: String, default: null },
@@ -10547,6 +10549,15 @@ const paymentTransactionSchema = new mongoose.Schema({
     deviceId: { type: String, default: '' },
     operatorId: { type: String, default: '' }
 }, { minimize: false });
+
+// 🛡️ SÉCURITÉ : Index composé pour bloquer les doubles facturations au niveau de la base
+paymentTransactionSchema.index(
+    { tenantID: 1, idempotencyKey: 1 }, 
+    { unique: true, sparse: true }
+);
+
+// ⚡ OPTIMISATION RENDER : Désactivation de l'autoIndex en production pour éviter les crashs de surcharge CPU/RAM au démarrage
+paymentTransactionSchema.set('autoIndex', process.env.NODE_ENV !== 'production');
 
 // 🛡️ SÉCURITÉ : Index composé pour bloquer les doubles facturations au niveau de la base
 paymentTransactionSchema.index(
