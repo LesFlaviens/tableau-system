@@ -10,102 +10,69 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="theme-color" content="#0f172a">
-    <title>iChef - Audit DDPP & Étiquettes</title>
+    <title>iCHEF OS - HACCP connecté</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 
    <script>
-    // 🛡️ BOUCLIER 1 : DOMAIN LOCK
-    if (window.location.hostname !== "os.ichef.ch" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
-        document.documentElement.innerHTML = "<h1 style='color:red; text-align:center; margin-top:20%; font-family:sans-serif;'>🛑 VIOLATION DE LICENCE iCHEF OS</h1>";
-        throw new Error("Exécution non autorisée hors du domaine officiel.");
+"use strict";
+
+if (!["os.ichef.ch", "localhost", "127.0.0.1"].includes(window.location.hostname)
+    && !window.location.hostname.includes("render.com")
+    && window.location.protocol !== "file:") {
+    document.documentElement.innerHTML =
+        "<h1 style='color:red;text-align:center;margin-top:20%;font-family:sans-serif'>ACCÈS iCHEF OS NON AUTORISÉ</h1>";
+    throw new Error("Exécution non autorisée hors du domaine officiel.");
+}
+
+document.addEventListener("contextmenu", event => event.preventDefault());
+
+function getDeviceFingerprint() {
+    let deviceId =
+        localStorage.getItem("ichef_device_id") ||
+        localStorage.getItem("ichef_device_fingerprint");
+
+    if (!deviceId) {
+        deviceId = (window.crypto && crypto.randomUUID)
+            ? crypto.randomUUID()
+            : "device_" + Math.random().toString(36).slice(2, 11) + "_" + Date.now();
     }
 
-    // 🛡️ BOUCLIER 2 : ANTI-SNOOPING (Bloque F12, Inspecteur, Clic-droit)
-    document.addEventListener('contextmenu', event => event.preventDefault());
-    document.onkeydown = function(e) {
-        if(e.keyCode == 123) return false; 
-        if(e.ctrlKey && e.shiftKey && e.keyCode == 'I'.charCodeAt(0)) return false; 
-        if(e.ctrlKey && e.shiftKey && e.keyCode == 'J'.charCodeAt(0)) return false; 
-        if(e.ctrlKey && e.keyCode == 'U'.charCodeAt(0)) return false; 
-    }
+    localStorage.setItem("ichef_device_id", deviceId);
+    localStorage.setItem("ichef_device_fingerprint", deviceId);
+    return deviceId;
+}
 
-        // 1. SÉCURITÉ : Générateur d'empreinte numérique
-        function getDeviceFingerprint() {
-            let deviceId = localStorage.getItem('ichef_device_fingerprint');
-            if (!deviceId) {
-                deviceId = 'device_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
-                localStorage.setItem('ichef_device_fingerprint', deviceId);
-            }
-            return deviceId;
-        }
+const ICHEF_PARAMS = new URLSearchParams(window.location.search);
+const ICHEF_URL_TENANT = String(ICHEF_PARAMS.get("tenantID") || "").trim();
+const ICHEF_STORED_TENANT = String(localStorage.getItem("ichef_tenant_id") || "").trim();
 
-        // 2. GARDE DU CORPS SECURITE UNIVERSEL (VERSION ISOLATION STRICTE 🔒)
-        (async function enforceSecurity() {
-            const urlParams = new URLSearchParams(window.location.search);
-            let urlTenantID = urlParams.get('tenantID');
-            let storedTenantID = localStorage.getItem('ichef_tenant_id');
+if (ICHEF_URL_TENANT && ICHEF_STORED_TENANT && ICHEF_URL_TENANT !== ICHEF_STORED_TENANT) {
+    localStorage.removeItem("EMPIRE_HACCP_SYNC_" + ICHEF_STORED_TENANT);
+    sessionStorage.removeItem("ichef_access_token");
+    sessionStorage.removeItem("ichef_csrf_token");
+}
 
-            if (urlTenantID && urlTenantID !== storedTenantID) {
-                localStorage.removeItem('EMPIRE_GLOBAL_SYNC');
-                localStorage.removeItem('ichef_master_pin');
-                if (urlTenantID) localStorage.setItem('ichef_tenant_id', urlTenantID);
-                storedTenantID = urlTenantID;
-            }
+const ICHEF_TENANT_ID = ICHEF_URL_TENANT || ICHEF_STORED_TENANT;
 
-            let tenantID = urlTenantID || storedTenantID;
-            let pin = localStorage.getItem('ichef_master_pin'); 
-            
-            if(!tenantID) {
-                window.location.href = 'connexionpartenaire.html';
-                return;
-            }
+if (!ICHEF_TENANT_ID) {
+    window.location.replace("connexionpartenaire.html");
+} else {
+    localStorage.setItem("ichef_tenant_id", ICHEF_TENANT_ID);
+}
 
-            const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-                ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+localStorage.removeItem("ichef_master_pin");
+localStorage.removeItem("pin");
 
-            const accessMatrix = {
-                 'CHEF': ['chef.html', 'administration.html'],
-                'CHEF_CUISINE': ['chef.html', 'administration.html'],
-                'PATISSIER': ['chef-patissier.html', 'administration.html'],
-                'CHEF_PATISSERIE': ['chef-patissier.html', 'administration.html'],
-                'BAR': ['chef-bar.html', 'administration.html'],
-                'CHEF_BAR': ['chef-bar.html', 'administration.html'],
-                'ICHEF_OS': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
-                'ECO': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
-                'BUSINESS': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
-                'RENTABILITE': ['admin.html', 'pack-eco.html', 'minipass.html', 'menu-qr.html', 'administration.html'],
-                'EMPIRE': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
-                'BRIGADE': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
-                'BRIGADES': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html'],
-                'PREMIUM': ['admin.html', 'pack-eco.html', 'menu-qr.html', 'chef.html', 'menu-pure.html', 'chef-bar.html', 'menu-bar.html', 'rh.html', 'haccp.html', 'reservation.html', 'minipass.html', 'chef-patissier.html', 'administration.html', 'production.html', 'chef-production.html']
-            };
-
-            try {
-                const res = await fetch(`${SERVER_URL}/api/verify-pin`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tenantID: tenantID, pin: pin || "0000", deviceId: getDeviceFingerprint() })
-                });
-                const data = await res.json();
-
-                if(!data.success) {
-                    alert(data.error || "ACCÈS REFUSÉ (Limite d'écrans atteinte ou compte invalide).");
-                    window.location.href = 'connexionpartenaire.html';
-                    return;
-                }
-
-                const currentPlan = data.plan ? data.plan.toUpperCase() : 'CHEF';
-                let currentPage = window.location.pathname.split('/').pop().toLowerCase();
-                if(currentPage === '') currentPage = 'index.html';
-
-                const allowedPages = accessMatrix[currentPlan] || [];
-                if (!allowedPages.includes(currentPage)) {
-                    alert(`ACCÈS REFUSÉ : Votre forfait (${currentPlan}) n'inclut pas ce module.`);
-                    window.location.href = `administration.html?tenantID=${tenantID}`;
-                }
-            } catch (e) { console.error("Erreur de securite reseau", e); }
-        })();
-    </script>
+window.ICHEF_HACCP = {
+    tenantID: ICHEF_TENANT_ID,
+    deviceId: getDeviceFingerprint(),
+    authenticated: false,
+    role: "",
+    userName: "",
+    socket: null
+};
+</script>
 
     <style>
         :root { --bg: #050505; --gold: #ffb300; --accent: #00e676; --alert: #ff1744; --panel: #111; --ordered: #2979ff;}
@@ -115,6 +82,74 @@
         .nav-haccp { background: var(--panel); padding: 10px 20px; display: flex; gap: 10px; border-bottom: 1px solid #333; align-items: center; z-index: 100; flex-wrap: wrap;}
         .nav-btn { background: transparent; border: 1px solid #333; color: #888; padding: 10px 15px; cursor: pointer; font-weight: bold; border-radius: 4px; font-size: 0.75rem; text-transform: uppercase; transition: 0.2s;}
         .nav-btn.active { border-color: var(--gold); color: var(--gold); background: rgba(255, 179, 0, 0.05); }
+
+        .admin-return { border-color: var(--alert) !important; color: #ff637a !important; }
+        .admin-return:hover { background: rgba(255,23,68,.08) !important; }
+        .sync-pill {
+            border:1px solid #333; color:#888; padding:8px 11px; border-radius:999px;
+            font-size:.68rem; font-weight:900; white-space:nowrap;
+        }
+        .sync-pill.online { color:var(--accent); border-color:rgba(0,230,118,.45); }
+        .sync-pill.degraded { color:var(--gold); border-color:rgba(255,179,0,.45); }
+
+        .reg-profile-pill {
+            border:1px solid #333;
+            color:#cbd5e1;
+            padding:8px 11px;
+            border-radius:999px;
+            font-size:.68rem;
+            font-weight:900;
+            white-space:nowrap;
+            background:rgba(255,255,255,.025);
+        }
+        .reg-profile-pill.fr { color:#60a5fa; border-color:rgba(96,165,250,.45); }
+        .reg-profile-pill.ch { color:#ff6b6b; border-color:rgba(255,107,107,.45); }
+        .reg-profile-pill.eu { color:#facc15; border-color:rgba(250,204,21,.45); }
+        .reg-profile-pill.intl { color:#c4b5fd; border-color:rgba(196,181,253,.45); }
+
+        .regulatory-banner {
+            display:flex;
+            align-items:flex-start;
+            justify-content:space-between;
+            gap:18px;
+            padding:14px 16px;
+            border:1px solid #2d3748;
+            border-radius:10px;
+            background:linear-gradient(135deg, rgba(15,23,42,.92), rgba(10,10,10,.92));
+            box-shadow:0 8px 24px rgba(0,0,0,.18);
+        }
+        .regulatory-banner-main { min-width:0; }
+        .regulatory-banner-kicker {
+            color:var(--gold); font-size:.66rem; font-weight:900; letter-spacing:1.2px;
+            text-transform:uppercase; margin-bottom:4px;
+        }
+        .regulatory-banner-title { font-size:.98rem; font-weight:900; color:#fff; }
+        .regulatory-banner-text { margin-top:5px; color:#9ca3af; font-size:.74rem; line-height:1.45; }
+        .regulatory-banner-authority { margin-top:4px; color:#64748b; font-size:.68rem; line-height:1.4; }
+        .regulatory-country-chip {
+            flex:0 0 auto; border:1px solid #334155; border-radius:8px; padding:9px 12px;
+            min-width:112px; text-align:center; font-size:.72rem; font-weight:900; letter-spacing:.8px;
+        }
+        .regulatory-country-chip.fr { color:#60a5fa; border-color:rgba(96,165,250,.5); background:rgba(96,165,250,.06); }
+        .regulatory-country-chip.ch { color:#ff7b7b; border-color:rgba(255,123,123,.5); background:rgba(255,123,123,.06); }
+        .regulatory-country-chip.eu { color:#facc15; border-color:rgba(250,204,21,.5); background:rgba(250,204,21,.06); }
+        .regulatory-country-chip.intl { color:#c4b5fd; border-color:rgba(196,181,253,.5); background:rgba(196,181,253,.06); }
+
+        .login-reg-profile {
+            margin:12px auto 0;
+            width:min(520px, calc(100vw - 40px));
+            color:#94a3b8;
+            border:1px solid #273244;
+            background:rgba(15,23,42,.55);
+            border-radius:9px;
+            padding:10px 14px;
+            text-align:center;
+            font-size:.72rem;
+            font-weight:800;
+            line-height:1.45;
+        }
+
+
 
         .pad-link { display: none; padding: 10px 20px; border-radius: 4px; border: 2px solid; font-weight: 900; font-size: 0.8rem; cursor: pointer; background: #000; text-transform: uppercase; }
         .pad-link.cuisine { border-color: var(--gold); color: var(--gold); }
@@ -265,6 +300,7 @@
         <div class="logo-container">
             <h2 class="ichef-title">ichef.ch</h2>
             <span class="ichef-subtitle">HACCP</span>
+            <div id="login-reg-profile" class="login-reg-profile">Référentiel sanitaire automatique selon le pays enregistré dans l’établissement iCHEF.</div>
         </div>
 
         <div id="login-step-1" style="display: flex; gap: 15px; flex-wrap: wrap; justify-content: center; max-width: 800px;">
@@ -275,7 +311,7 @@
             
             <button class="dept-choice-btn admin" style="color: #D4AF37; border-color: #D4AF37;" onclick="showPinPad('ADMIN')">⚙️ PARAMÈTRES</button>
             
-            <button class="dept-choice-btn" style="border-color: var(--alert); color: var(--alert);" id="btn-escape-admin">❌ PORTAIL</button>
+            <button class="dept-choice-btn admin-return" id="btn-escape-admin" type="button" onclick="returnToAdmin()">← RETOUR ADMIN</button>
         </div>
 
         <div id="login-step-2" style="display: none; flex-direction: column; align-items: center;">
@@ -289,7 +325,10 @@
                 <button class="pin-btn" onclick="addPin('0')">0</button>
                 <button class="pin-btn" onclick="submitPin()" style="background:var(--accent); color:#000; border:none;">OK</button>
             </div>
-            <button class="nav-btn" style="margin-top: 30px; padding: 15px 30px; font-size: 1rem;" onclick="location.reload()">🔙 RETOUR</button>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:30px;">
+                <button class="nav-btn" style="padding:15px 30px;font-size:1rem;" onclick="location.reload()">← RETOUR</button>
+                <button class="nav-btn admin-return" style="padding:15px 30px;font-size:1rem;" type="button" onclick="returnToAdmin()">← RETOUR ADMIN</button>
+            </div>
         </div>
     </div>
 
@@ -299,7 +338,6 @@
         <button id="link-bar" class="pad-link bar" onclick="retourAccueilApp()">🍸 RETOUR PAD BAR</button>
         <button id="link-service" class="pad-link service" onclick="retourAccueilApp()">🛎️ RETOUR PAD SERVICE</button>
         <button id="link-admin" class="pad-link admin" style="color: #D4AF37; border-color: #D4AF37;" onclick="retourAccueilApp()">⚙️ RETOUR PARAMÈTRES</button>
-</button>
         
         <div style="flex-grow: 1;"></div>
         
@@ -309,10 +347,22 @@
         <button class="nav-btn" onclick="showModule('inventaire')">📦 INVENTAIRE</button>
         <button class="nav-btn" style="border-color: var(--ordered); color: var(--ordered);" onclick="showModule('archive')">🗄️ ARCHIVES</button>
         
+        <span id="haccp-sync-status" class="sync-pill degraded">SYSTÈME · PIN REQUIS</span>
+        <span id="haccp-reg-profile" class="reg-profile-pill">RÉFÉRENTIEL · AUTO</span>
+        <button class="nav-btn admin-return" type="button" onclick="returnToAdmin()">← RETOUR ADMIN</button>
         <button class="nav-btn" style="border-color:var(--alert); color:var(--alert);" onclick="location.reload()">🔒 VERROUILLER</button>
     </div>
 
     <div class="content">
+        <div id="haccp-regulatory-banner" class="regulatory-banner">
+            <div class="regulatory-banner-main">
+                <div class="regulatory-banner-kicker">Référentiel sanitaire iCHEF</div>
+                <div id="regulatory-banner-title" class="regulatory-banner-title">Détection automatique après connexion</div>
+                <div id="regulatory-banner-text" class="regulatory-banner-text">Le pays fiscal enregistré dans SETTINGS_MASTER détermine le profil HACCP utilisé par cet établissement.</div>
+                <div id="regulatory-banner-authority" class="regulatory-banner-authority">Aucun profil n’est imposé avant lecture des paramètres du tenant.</div>
+            </div>
+            <div id="regulatory-country-chip" class="regulatory-country-chip intl">AUTO</div>
+        </div>
         <div id="mod-temp" class="module active">
             <div class="card">
                 <h2 style="margin:0 0 15px 0; font-size: 0.9rem; color: var(--gold); text-transform: uppercase;">RELEVÉ DE TEMPÉRATURE : <span class="display-dept"></span></h2>
@@ -458,8 +508,8 @@
         <div id="mod-archive" class="module">
             <div class="archive-layout" style="display: flex; gap: 20px; height: 100%;">
                 <div class="card" style="flex: 0 0 250px; display: flex; flex-direction: column;">
-                    <h2 style="margin:0 0 15px 0; font-size: 0.9rem; color: var(--ordered); text-transform: uppercase;">SAUVEGARDES LÉGALES</h2>
-                    <div style="margin-bottom: 15px; font-size: 0.8rem; color: #888; line-height: 1.5;">Conformément à la loi, vos relevés HACCP doivent être conservés 5 ans.</div>
+                    <h2 style="margin:0 0 15px 0; font-size: 0.9rem; color: var(--ordered); text-transform: uppercase;">DOSSIER DE PREUVES HACCP</h2>
+                    <div style="margin-bottom: 15px; font-size: 0.8rem; color: #888; line-height: 1.5;"><span id="archive-retention-note">La conservation des preuves est adaptée au référentiel de l’établissement et au type de document.</span></div>
                     
                     <button class="btn-backup" style="border-color: var(--accent); color: var(--accent); margin-bottom: 20px;" onclick="document.getElementById('import-file').click()">📥 RESTAURER UNE SAUVEGARDE</button>
                     <input type="file" id="import-file" style="display:none;" accept=".json" onchange="importArchive(this)">
@@ -505,43 +555,363 @@
     </div>
 
     <script>
-        const tenantID = localStorage.getItem('ichef_tenant_id') || 'MASTER_STATE';
-        const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
-        ? "http://localhost:10000" : "https://tableau-system.onrender.com";
-        
+        const tenantID = String(window.ICHEF_HACCP?.tenantID || "").trim();
+        const deviceId = String(window.ICHEF_HACCP?.deviceId || getDeviceFingerprint());
+        const SERVER_URL =
+            (window.location.hostname === "localhost" ||
+             window.location.hostname === "127.0.0.1" ||
+             window.location.protocol === "file:")
+                ? "http://localhost:10000"
+                : "https://tableau-system.onrender.com";
+
+        const HACCP_CACHE_KEY = "EMPIRE_HACCP_SYNC_" + tenantID;
+
+        const EU_COUNTRY_CODES = new Set([
+            "AT","BE","BG","HR","CY","CZ","DK","EE","FI","FR","DE","GR","HU","IE",
+            "IT","LV","LT","LU","MT","NL","PL","PT","RO","SK","SI","ES","SE"
+        ]);
+
+        const HACCP_REGULATORY_PROFILES = {
+            FR: {
+                id: "FR",
+                css: "fr",
+                countryCode: "FR",
+                countryLabel: "FRANCE",
+                shortLabel: "HACCP · FRANCE",
+                title: "PMS / HACCP — France",
+                framework: "Socle HACCP européen + exigences françaises applicables à l’établissement.",
+                authority: "Contrôle sanitaire : autorité française compétente (notamment DDPP / DDETSPP selon le territoire).",
+                exportTitle: "DOSSIER DE PREUVES PMS / HACCP — FRANCE",
+                archiveNote: "Conserver les preuves selon leur nature, le PMS de l’établissement et les durées réglementaires applicables en France."
+            },
+            CH: {
+                id: "CH",
+                css: "ch",
+                countryCode: "CH",
+                countryLabel: "SUISSE",
+                shortLabel: "HACCP · SUISSE",
+                title: "Autocontrôle / HACCP — Suisse",
+                framework: "Autocontrôle suisse, bonnes pratiques d’hygiène et principes HACCP applicables à l’établissement.",
+                authority: "Contrôle officiel : autorité cantonale compétente en matière de denrées alimentaires.",
+                exportTitle: "DOSSIER D’AUTOCONTRÔLE HACCP — SUISSE",
+                archiveNote: "Conserver les preuves d’autocontrôle selon leur nature et les exigences applicables dans le canton et à l’activité."
+            },
+            EU: {
+                id: "EU",
+                css: "eu",
+                countryCode: "EU",
+                countryLabel: "UNION EUROPÉENNE",
+                shortLabel: "HACCP · EUROPE",
+                title: "HACCP — Union européenne",
+                framework: "Socle HACCP européen ; les exigences nationales du pays d’implantation restent applicables.",
+                authority: "Contrôle officiel : autorité compétente du pays où se situe l’établissement.",
+                exportTitle: "DOSSIER DE PREUVES HACCP — UNION EUROPÉENNE",
+                archiveNote: "Conserver les preuves selon les règles du pays d’implantation et le type de document ; le profil UE ne remplace pas les exigences nationales."
+            },
+            INTL: {
+                id: "INTL",
+                css: "intl",
+                countryCode: "",
+                countryLabel: "À CONFIGURER",
+                shortLabel: "HACCP · À CONFIGURER",
+                title: "Référentiel sanitaire à confirmer",
+                framework: "Le pays enregistré ne permet pas d’appliquer automatiquement un profil France, Suisse ou Union européenne.",
+                authority: "Vérifier le pays fiscal dans Administration avant d’utiliser ce dossier comme référentiel réglementaire.",
+                exportTitle: "DOSSIER DE PREUVES HACCP — PROFIL À CONFIRMER",
+                archiveNote: "Définir le pays de l’établissement afin d’adapter les mentions et règles de conservation."
+            }
+        };
+
+        let currentRegulatoryProfile = HACCP_REGULATORY_PROFILES.INTL;
+        let currentSystemSettings = {};
+
+        function normalizeCountryCode(value) {
+            const raw = String(value || "")
+                .trim()
+                .toUpperCase()
+                .normalize("NFD")
+                .replace(/[\u0300-\u036f]/g, "");
+
+            const aliases = {
+                "SUISSE":"CH", "SWITZERLAND":"CH", "SCHWEIZ":"CH", "SVIZZERA":"CH",
+                "FRANCE":"FR", "FRANCAISE":"FR",
+                "BELGIQUE":"BE", "BELGIUM":"BE",
+                "ESPAGNE":"ES", "SPAIN":"ES",
+                "ITALIE":"IT", "ITALY":"IT",
+                "ALLEMAGNE":"DE", "GERMANY":"DE",
+                "PORTUGAL":"PT", "PAYS-BAS":"NL", "NETHERLANDS":"NL",
+                "LUXEMBOURG":"LU", "AUTRICHE":"AT", "AUSTRIA":"AT"
+            };
+
+            return aliases[raw] || raw;
+        }
+
+        function resolveRegulatoryProfile(settings = {}) {
+            const taxConfig = settings.taxConfig || {};
+            const rawCountry =
+                taxConfig.country ||
+                settings.countryCode ||
+                settings.country ||
+                settings.fiscalCountry ||
+                settings.address?.countryCode ||
+                settings.address?.country ||
+                "";
+
+            const country = normalizeCountryCode(rawCountry);
+            const currency = String(taxConfig.currency || settings.currency || "").trim().toUpperCase();
+
+            if (country === "CH" || currency === "CHF") return HACCP_REGULATORY_PROFILES.CH;
+            if (country === "FR") return HACCP_REGULATORY_PROFILES.FR;
+            if (EU_COUNTRY_CODES.has(country)) return country === "FR" ? HACCP_REGULATORY_PROFILES.FR : HACCP_REGULATORY_PROFILES.EU;
+
+            // Dans l'Admin iCHEF actuel, CUSTOM + EUR permet de conserver un profil UE
+            // lorsqu'un pays européen hors France/Suisse est configuré par une extension future.
+            if (country === "CUSTOM" && (currency === "€" || currency === "EUR")) return HACCP_REGULATORY_PROFILES.EU;
+
+            // Compatibilité avec les anciens tenants : CHF = Suisse ; EUR sans pays = France.
+            if (!country && (currency === "€" || currency === "EUR")) return HACCP_REGULATORY_PROFILES.FR;
+
+            return HACCP_REGULATORY_PROFILES.INTL;
+        }
+
+        function applyRegulatoryProfile(settings = {}) {
+            currentSystemSettings = settings && typeof settings === "object" ? settings : {};
+            currentRegulatoryProfile = resolveRegulatoryProfile(currentSystemSettings);
+            window.ICHEF_HACCP.regulatoryProfile = currentRegulatoryProfile.id;
+            window.ICHEF_HACCP.countryCode = currentRegulatoryProfile.countryCode;
+
+            const pill = document.getElementById("haccp-reg-profile");
+            if (pill) {
+                pill.className = "reg-profile-pill " + currentRegulatoryProfile.css;
+                pill.textContent = "RÉFÉRENTIEL · " + currentRegulatoryProfile.countryLabel;
+            }
+
+            const title = document.getElementById("regulatory-banner-title");
+            const text = document.getElementById("regulatory-banner-text");
+            const authority = document.getElementById("regulatory-banner-authority");
+            const chip = document.getElementById("regulatory-country-chip");
+            const archiveNote = document.getElementById("archive-retention-note");
+
+            if (title) title.textContent = currentRegulatoryProfile.title;
+            if (text) text.textContent = currentRegulatoryProfile.framework;
+            if (authority) authority.textContent = currentRegulatoryProfile.authority;
+            if (chip) {
+                chip.className = "regulatory-country-chip " + currentRegulatoryProfile.css;
+                chip.textContent = currentRegulatoryProfile.countryLabel;
+            }
+            if (archiveNote) archiveNote.textContent = currentRegulatoryProfile.archiveNote;
+        }
+
+        function regulatoryAuditMeta() {
+            return {
+                tenantID,
+                regulatoryProfile: currentRegulatoryProfile.id,
+                regulatoryCountry: currentRegulatoryProfile.countryCode,
+                regulatoryLabel: currentRegulatoryProfile.title,
+                regulatoryFramework: currentRegulatoryProfile.framework
+            };
+        }
+
+
+        function systemHeaders(extra = {}) {
+            const headers = Object.assign({
+                "Accept": "application/json",
+                "X-iCHEF-Tenant": tenantID,
+                "X-iCHEF-Device": deviceId,
+                "X-iCHEF-HACCP-Profile": currentRegulatoryProfile.id,
+                "X-iCHEF-Country": currentRegulatoryProfile.countryCode || "UNKNOWN"
+            }, extra);
+
+            const accessToken = sessionStorage.getItem("ichef_access_token");
+            const csrfToken = sessionStorage.getItem("ichef_csrf_token");
+            if (accessToken) headers["Authorization"] = "Bearer " + accessToken;
+            if (csrfToken) headers["X-CSRF-Token"] = csrfToken;
+            return headers;
+        }
+
+        function setSyncStatus(state, text) {
+            const el = document.getElementById("haccp-sync-status");
+            if (!el) return;
+            el.className = "sync-pill " + (state || "degraded");
+            el.textContent = text || "SYSTÈME";
+        }
+
+        function readHaccpCache() {
+            try {
+                return JSON.parse(localStorage.getItem(HACCP_CACHE_KEY)) || { activeOrders: {} };
+            } catch (_) {
+                return { activeOrders: {} };
+            }
+        }
+
+        function writeHaccpCache(state) {
+            try {
+                localStorage.setItem(HACCP_CACHE_KEY, JSON.stringify(state || { activeOrders: {} }));
+            } catch (_) {}
+        }
+
         const API = {
             getState: async () => {
-                let state = { activeOrders: {} };
                 try {
-                    let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
-                    if(r.ok) state = await r.json();
-                } catch(e) {
-                    state = JSON.parse(localStorage.getItem('EMPIRE_HACCP_SYNC')) || { activeOrders: {} };
+                    const r = await fetch(
+                        `${SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(tenantID)}&_t=${Date.now()}`,
+                        {
+                            method: "GET",
+                            credentials: "include",
+                            cache: "no-store",
+                            headers: systemHeaders()
+                        }
+                    );
+
+                    if (!r.ok) {
+                        let err = {};
+                        try { err = await r.json(); } catch (_) {}
+                        throw new Error(err.error || err.message || `Lecture serveur refusée (${r.status})`);
+                    }
+
+                    const state = await r.json();
+                    writeHaccpCache(state);
+                    setSyncStatus("online", "SYSTÈME · SYNCHRONISÉ");
+                    return state;
+                } catch (e) {
+                    console.warn("[iCHEF HACCP] Lecture serveur indisponible :", e);
+                    setSyncStatus("degraded", "SYSTÈME · MODE SECOURS");
+                    return readHaccpCache();
                 }
-                return state;
             },
+
             update: async (key, data) => {
-                let state = JSON.parse(localStorage.getItem('EMPIRE_HACCP_SYNC')) || { activeOrders: {} };
-                if (data === null) delete state.activeOrders[key];
-                else state.activeOrders[key] = { data: data };
-                localStorage.setItem('EMPIRE_HACCP_SYNC', JSON.stringify(state));
-                
-                try {
-                    await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
-                        method: 'POST', 
-                        headers: {'Content-Type': 'application/json'}, 
-                        body: JSON.stringify({ tableId: key, order: data === null ? null : { data: data } }) 
-                    });
-                } catch(e) {}
+                const cache = readHaccpCache();
+                cache.activeOrders = cache.activeOrders || {};
+
+                if (data === null) delete cache.activeOrders[key];
+                else cache.activeOrders[key] = { data };
+                writeHaccpCache(cache);
+
+                const r = await fetch(
+                    `${SERVER_URL}/update-order?tenantID=${encodeURIComponent(tenantID)}`,
+                    {
+                        method: "POST",
+                        credentials: "include",
+                        cache: "no-store",
+                        headers: systemHeaders({ "Content-Type": "application/json" }),
+                        body: JSON.stringify({
+                            tableId: key,
+                            order: data === null ? null : { data }
+                        })
+                    }
+                );
+
+                if (!r.ok) {
+                    let err = {};
+                    try { err = await r.json(); } catch (_) {}
+                    setSyncStatus("degraded", "SYSTÈME · SAUVEGARDE À REFAIRE");
+                    throw new Error(err.error || err.message || `Sauvegarde serveur refusée (${r.status})`);
+                }
+
+                setSyncStatus("online", "SYSTÈME · SAUVEGARDÉ");
+                return r;
             }
         };
 
         let db = { temp: [], cleaning: [], trace: [], inventoryMaster: [], inventoryLogs: [] };
-        let currentDept = ""; let pin = ""; let rectifiedId = null; let rectifiedType = null;
+        let currentDept = "";
+        let pin = "";
+        let rectifiedId = null;
+        let rectifiedType = null;
         let currentCatalogCategory = "";
         let selectedArchiveData = { temp: [], cleaning: [], trace: [] };
-        
-        const USERS = { "1234": "Serveur", "5678": "Cuisinier", "4321": "Barman", "3333": "Patissier", "7777": "Chef", "9999": "Manager" };
+        let currentUser = { name: "", role: "", permissions: [] };
+
+        function normalizedRole(role) {
+            return String(role || "")
+                .trim()
+                .toUpperCase()
+                .normalize("NFD")
+                .replace(/[\u0300-\u036f]/g, "");
+        }
+
+        function isAdminRole() {
+            return ["MASTER","ADMIN","MANAGER","DIRECTION","GERANT","OWNER","PATRON"]
+                .includes(normalizedRole(currentUser.role));
+        }
+
+        function isBoss() {
+            return [
+                "MASTER","ADMIN","MANAGER","DIRECTION","GERANT","OWNER","PATRON",
+                "CHEF","CHEF_CUISINE","CHEF_BAR","CHEF_PATISSERIE","CHEF_PATISSIER"
+            ].includes(normalizedRole(currentUser.role));
+        }
+
+        function userAuditLabel() {
+            return currentUser.name || currentUser.role || "Utilisateur iCHEF";
+        }
+
+        function returnToAdmin() {
+            const target = tenantID
+                ? `https://os.ichef.ch/admin.html?tenantID=${encodeURIComponent(tenantID)}`
+                : "https://os.ichef.ch/admin.html";
+            window.location.href = target;
+        }
+
+        let haccpSocket = null;
+        let haccpRefreshTimer = null;
+
+        function connectHaccpRealtime() {
+            if (haccpSocket || !tenantID || typeof io !== "function") {
+                if (typeof io !== "function") {
+                    setSyncStatus("degraded", "SYSTÈME · TEMPS RÉEL INDISPONIBLE");
+                }
+                return;
+            }
+
+            try {
+                haccpSocket = io(SERVER_URL, {
+                    transports: ["polling", "websocket"],
+                    upgrade: true,
+                    withCredentials: true,
+                    reconnection: true,
+                    reconnectionAttempts: Infinity,
+                    reconnectionDelay: 1000,
+                    reconnectionDelayMax: 8000,
+                    timeout: 20000,
+                    auth: { tenantID, deviceId, page: "HACCP" }
+                });
+
+                window.ICHEF_HACCP.socket = haccpSocket;
+
+                haccpSocket.on("connect", () => {
+                    setSyncStatus("online", "SYSTÈME · TEMPS RÉEL");
+                });
+
+                haccpSocket.on("disconnect", () => {
+                    setSyncStatus("degraded", "SYSTÈME · RECONNEXION…");
+                });
+
+                haccpSocket.on("connect_error", () => {
+                    setSyncStatus("degraded", "SYSTÈME · TEMPS RÉEL DÉGRADÉ");
+                });
+
+                [
+                    "updateState",
+                    "state-updated",
+                    "haccp-updated",
+                    "inventory-updated",
+                    "ichef:core:update"
+                ].forEach(evt => {
+                    haccpSocket.on(evt, () => {
+                        if (!window.ICHEF_HACCP?.authenticated) return;
+                        clearTimeout(haccpRefreshTimer);
+                        haccpRefreshTimer = setTimeout(() => {
+                            loadData().catch(() => {});
+                        }, 350);
+                    });
+                });
+            } catch (e) {
+                console.warn("[iCHEF HACCP] Socket indisponible :", e);
+                setSyncStatus("degraded", "SYSTÈME · TEMPS RÉEL INDISPONIBLE");
+            }
+        }
 
         let EMPIRE_LISTS = {
             "CUISINE": {
@@ -600,18 +970,17 @@
         // --- GESTION DU BOUTON RETOUR INTELLIGENT ---
         function retourAccueilApp() {
             const urlParams = new URLSearchParams(window.location.search);
-            const fromPage = urlParams.get('from');
+            const fromPage = urlParams.get("from");
+            const q = tenantID ? "?tenantID=" + encodeURIComponent(tenantID) : "";
 
-            if (fromPage === 'admin') window.location.href = 'admin.html?tenantID=' + tenantID;
-            else if (fromPage === 'caisse') window.location.href = 'pack-eco.html?tenantID=' + tenantID;
-            else if (fromPage === 'portail') window.location.href = 'administration.html?tenantID=' + tenantID;
-            else {
-                if (currentDept === 'CUISINE') window.location.href = 'chef.html?tenantID=' + tenantID;
-                else if (currentDept === 'PATISSERIE') window.location.href = 'chef-patissier.html?tenantID=' + tenantID;
-                else if (currentDept === 'BAR') window.location.href = 'chef-bar.html?tenantID=' + tenantID;
-                else if (currentDept === 'SERVICE') window.location.href = 'pack-eco.html?tenantID=' + tenantID;
-                else window.location.href = 'admin.html?tenantID=' + tenantID;
-            }
+            if (fromPage === "admin") window.location.href = "admin.html" + q;
+            else if (fromPage === "caisse") window.location.href = "pack-eco.html" + q;
+            else if (fromPage === "portail") window.location.href = "administration.html" + q;
+            else if (currentDept === "CUISINE") window.location.href = "chef.html" + q;
+            else if (currentDept === "PATISSERIE") window.location.href = "chef-patissier.html" + q;
+            else if (currentDept === "BAR") window.location.href = "chef-bar.html" + q;
+            else if (currentDept === "SERVICE") window.location.href = "pack-eco.html" + q;
+            else window.location.href = "admin.html" + q;
         }
 
         function showPinPad(d) { currentDept = d; document.getElementById('login-step-1').style.display = 'none'; document.getElementById('login-step-2').style.display = 'flex'; document.getElementById('login-instruction').innerText = "CODE " + d + " REQUIS"; }
@@ -619,25 +988,85 @@
         function clearPin() { pin = ""; document.getElementById('pin-display').innerText = ""; }
 
         async function submitPin() {
-            let masterPin = localStorage.getItem('ichef_master_pin');
-            if(pin === masterPin || pin === "9999" || pin === "7777" || USERS[pin]) {
-                if(!USERS[pin]) USERS[pin] = "Directeur";
-                document.querySelectorAll('.display-dept').forEach(el => el.innerText = currentDept);
-                document.querySelectorAll('.pad-link').forEach(l => l.style.display = 'none');
-                
-                let linkId = 'link-' + currentDept.toLowerCase();
-                if(currentDept === 'PATISSERIE') linkId = 'link-patisserie';
-                
-                let btnLink = document.getElementById(linkId);
-                if (btnLink) btnLink.style.display = 'block';
+            if (!/^\d{4,12}$/.test(pin)) {
+                alert("CODE PIN INVALIDE.");
+                clearPin();
+                return;
+            }
 
-                document.getElementById('login-screen').style.display = 'none';
-                populateSelects(); 
-                document.getElementById('trace-open').valueAsDate = new Date();
-                
+            try {
+                setSyncStatus("degraded", "SYSTÈME · VÉRIFICATION PIN…");
+
+                const response = await fetch(`${SERVER_URL}/api/verify-pin`, {
+                    method: "POST",
+                    credentials: "include",
+                    cache: "no-store",
+                    headers: systemHeaders({ "Content-Type": "application/json" }),
+                    body: JSON.stringify({
+                        tenantID,
+                        pin,
+                        deviceId,
+                        terminal: "HACCP",
+                        module: "HACCP",
+                        department: currentDept,
+                        source: "haccp.html"
+                    })
+                });
+
+                const data = await response.json().catch(() => ({}));
+
+                if (!response.ok || data.success !== true) {
+                    throw new Error(data.error || data.message || "PIN refusé");
+                }
+
+                currentUser = {
+                    name: data.staffName || data.user?.name || data.name || "",
+                    role: data.role || data.user?.role || "",
+                    permissions: Array.isArray(data.permissions) ? data.permissions : []
+                };
+
+                if (currentDept === "ADMIN" && !isAdminRole()) {
+                    sessionStorage.removeItem("ichef_access_token");
+                    sessionStorage.removeItem("ichef_csrf_token");
+                    throw new Error("Accès Paramètres réservé à la Direction / Gérant.");
+                }
+
+                const accessToken = data.accessToken || data.token || "";
+                const csrfToken = data.csrfToken || "";
+                if (accessToken) sessionStorage.setItem("ichef_access_token", accessToken);
+                if (csrfToken) sessionStorage.setItem("ichef_csrf_token", csrfToken);
+
+                window.ICHEF_HACCP.authenticated = true;
+                window.ICHEF_HACCP.role = currentUser.role;
+                window.ICHEF_HACCP.userName = currentUser.name;
+
+                document.querySelectorAll(".display-dept").forEach(el => el.innerText = currentDept);
+                document.querySelectorAll(".pad-link").forEach(el => el.style.display = "none");
+
+                let linkId = "link-" + currentDept.toLowerCase();
+                if (currentDept === "PATISSERIE") linkId = "link-patisserie";
+                const btnLink = document.getElementById(linkId);
+                if (btnLink) btnLink.style.display = "block";
+
+                document.getElementById("login-screen").style.display = "none";
+                populateSelects();
+
+                const traceOpen = document.getElementById("trace-open");
+                if (traceOpen) traceOpen.valueAsDate = new Date();
+
+                pin = "";
+                document.getElementById("pin-display").innerText = "";
+
+                connectHaccpRealtime();
                 await loadData();
-                generateArchiveFolders(); 
-            } else { alert("❌ CODE PIN INVALIDE."); clearPin(); }
+                generateArchiveFolders();
+                setSyncStatus("online", "SYSTÈME · " + userAuditLabel().toUpperCase());
+            } catch (e) {
+                console.warn("[iCHEF HACCP] Accès refusé :", e);
+                setSyncStatus("degraded", "SYSTÈME · ACCÈS À VÉRIFIER");
+                alert("ACCÈS REFUSÉ : " + e.message);
+                clearPin();
+            }
         }
 
         function populateSelects() {
@@ -655,9 +1084,9 @@
             currentCatalogCategory = category;
             let data = EMPIRE_LISTS[currentDept][category];
             let html = "";
-            let isBoss = (USERS[pin] === "Manager" || USERS[pin] === "Chef" || USERS[pin] === "Directeur");
+            let isBossUser = isBoss();
 
-            document.getElementById('catalog-admin-tools').style.display = isBoss ? 'block' : 'none';
+            document.getElementById('catalog-admin-tools').style.display = isBossUser ? 'block' : 'none';
 
             let folderIndex = 0;
             for (let folder in data) {
@@ -665,7 +1094,7 @@
                 html += `<div class="catalog-folder-title" onclick="toggleFolder('${safeId}')"><span>📁 ${folder}</span><span id="icon-${safeId}" class="folder-icon">▼</span></div>`;
                 html += `<div class="catalog-grid" id="${safeId}">`;
                 
-                if (isBoss) {
+                if (isBossUser) {
                     html += `<div class="folder-admin-actions">
                                 <button class="btn-folder-edit" onclick="event.stopPropagation(); renameFolder('${category}', '${folder.replace(/'/g, "\\'")}')">✏️ RENOMMER</button>
                                 <button class="btn-folder-del" onclick="event.stopPropagation(); deleteFolder('${category}', '${folder.replace(/'/g, "\\'")}')">✖ SUPPRIMER</button>
@@ -673,7 +1102,7 @@
                 }
 
                 data[folder].forEach(item => {
-                    html += `<div class="catalog-item" data-name="${item.toLowerCase()}"><span onclick="selectFromCatalog('${item.replace(/'/g, "\\'")}')" style="flex:1;">${item}</span><div class="catalog-action print" title="Imprimer Étiquettes (5x3cm)" onclick="event.stopPropagation(); printDossier('${category}', '${item.replace(/'/g, "\\'")}')">🖨️</div>${isBoss ? `<div class="catalog-action del" onclick="event.stopPropagation(); deleteFromCatalog('${category}', '${folder.replace(/'/g, "\\'")}', '${item.replace(/'/g, "\\'")}')">✖</div>` : ''}</div>`;
+                    html += `<div class="catalog-item" data-name="${item.toLowerCase()}"><span onclick="selectFromCatalog('${item.replace(/'/g, "\\'")}')" style="flex:1;">${item}</span><div class="catalog-action print" title="Imprimer Étiquettes (5x3cm)" onclick="event.stopPropagation(); printDossier('${category}', '${item.replace(/'/g, "\\'")}')">🖨️</div>${isBossUser ? `<div class="catalog-action del" onclick="event.stopPropagation(); deleteFromCatalog('${category}', '${folder.replace(/'/g, "\\'")}', '${item.replace(/'/g, "\\'")}')">✖</div>` : ''}</div>`;
                 });
                 html += `</div>`;
                 folderIndex++;
@@ -775,12 +1204,16 @@
         async function loadData() {
             const state = await API.getState();
             if(state.activeOrders) {
+                const settings = state.activeOrders['SETTINGS_MASTER']?.data || {};
+                applyRegulatoryProfile(settings);
+
                 db.temp = state.activeOrders['HACCP_TEMP']?.data || [];
                 db.cleaning = state.activeOrders['HACCP_CLEANING']?.data || [];
                 db.trace = state.activeOrders['HACCP_TRACE']?.data || [];
-                
                 db.inventoryMaster = state.activeOrders['INVENTORY_MASTER']?.data || [];
                 db.inventoryLogs = state.activeOrders['HACCP_INV_LOGS']?.data || [];
+            } else {
+                applyRegulatoryProfile({});
             }
             renderLogs();
             populateInventoryDatalist(); 
@@ -818,7 +1251,8 @@
             const now = new Date();
             let logEntry = {
                 id: Date.now(), date: now.toLocaleDateString('fr-FR'), time: now.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}),
-                dept: currentDept, name: name, theo: theoreticalQty, real: realQty, diff: ecart, unit: unit, audit: "Compté par " + USERS[pin]
+                dept: currentDept, name: name, theo: theoreticalQty, real: realQty, diff: ecart, unit: unit, audit: "Compté par " + userAuditLabel(),
+                ...regulatoryAuditMeta()
             };
             db.inventoryLogs.unshift(logEntry);
 
@@ -896,11 +1330,19 @@
 
         async function saveEntry(type) {
             const now = new Date();
-            let entry = { id: Date.now(), timestamp: now.toISOString(), date: now.toLocaleDateString('fr-FR'), time: now.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}), dept: currentDept, audit: "Saisi par " + USERS[pin] };
+            let entry = {
+                id: Date.now(),
+                timestamp: now.toISOString(),
+                date: now.toLocaleDateString('fr-FR'),
+                time: now.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}),
+                dept: currentDept,
+                audit: "Saisi par " + userAuditLabel(),
+                ...regulatoryAuditMeta()
+            };
 
             if (rectifiedId) {
-                if(USERS[pin] !== "Manager" && USERS[pin] !== "Chef" && USERS[pin] !== "Directeur") return alert("⛔ ACCÈS REFUSÉ : Chef ou Manager requis pour rectifier.");
-                entry.rectified = `[CORRIGÉ PAR ${USERS[pin].toUpperCase()}] le ${entry.date} à ${entry.time}`;
+                if(!isBoss()) return alert("⛔ ACCÈS REFUSÉ : Chef ou Direction requis pour rectifier.");
+                entry.rectified = `[CORRIGÉ PAR ${userAuditLabel().toUpperCase()}] le ${entry.date} à ${entry.time}`;
                 const oldIndex = db[type].findIndex(x => x.id === rectifiedId);
                 if(oldIndex > -1) db[type][oldIndex].originalId = entry.id; 
             }
@@ -945,7 +1387,7 @@
         function closePhoto() { document.getElementById('photo-modal').classList.remove('open'); }
 
         function initRectify(type, id) {
-            if(USERS[pin] !== "Manager" && USERS[pin] !== "Chef" && USERS[pin] !== "Directeur") return alert("⛔ MANAGER OU CHEF UNIQUEMENT.");
+            if(!isBoss()) return alert("⛔ CHEF OU DIRECTION UNIQUEMENT.");
             const item = db[type].find(x => x.id === id);
             rectifiedId = id; rectifiedType = type;
             if(type === 'temp') { document.getElementById('temp-eq').value = item.eq; document.getElementById('temp-val').value = item.val; }
@@ -1051,10 +1493,20 @@
         }
 
         function downloadSelectedMonth() {
-            const fileName = `EMPIRE_BACKUP_${currentDept}_${document.getElementById('archive-title').innerText.replace(/ /g, '_')}.json`;
-            const blob = new Blob([JSON.stringify(selectedArchiveData, null, 2)], { type: 'application/json' });
+            const fileName = `ICHEF_HACCP_${currentRegulatoryProfile.id}_${currentDept}_${document.getElementById('archive-title').innerText.replace(/ /g, '_')}.json`;
+            const exportData = {
+                ...selectedArchiveData,
+                _meta: {
+                    exportedAt: new Date().toISOString(),
+                    tenantID,
+                    department: currentDept,
+                    ...regulatoryAuditMeta()
+                }
+            };
+            const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a'); a.href = url; a.download = fileName; a.click();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
         }
 
         function printArchiveMonth() {
@@ -1074,8 +1526,11 @@
             </style>`;
 
             html += `<div class="print-header">
-                <h1>RAPPORT OFFICIEL D'INSPECTION DDPP</h1>
+                <h1>${currentRegulatoryProfile.exportTitle}</h1>
+                <p><strong>ÉTABLISSEMENT :</strong> ${tenantID} | <strong>PAYS / PROFIL :</strong> ${currentRegulatoryProfile.countryLabel}</p>
                 <p><strong>PÉRIODE :</strong> ${title} | <strong>DATE D'ÉDITION :</strong> ${new Date().toLocaleString('fr-FR')}</p>
+                <p style="margin-top:5px;font-size:11px;"><strong>RÉFÉRENTIEL :</strong> ${currentRegulatoryProfile.framework}</p>
+                <p style="margin-top:3px;font-size:11px;"><strong>AUTORITÉ :</strong> ${currentRegulatoryProfile.authority}</p>
             </div>`;
 
             if(selectedArchiveData.temp.length > 0) {
@@ -1162,8 +1617,13 @@
 
                 const response = await fetch(`${SERVER_URL}/analyse-ticket`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: systemHeaders({ "Content-Type": "application/json" }),
+                    credentials: "include",
+                    cache: "no-store",
                     body: JSON.stringify({ 
+                        tenantID,
+                        regulatoryProfile: currentRegulatoryProfile.id,
+                        regulatoryCountry: currentRegulatoryProfile.countryCode,
                         image: base64Data, 
                         mimeType: file.type || "image/jpeg",
                         isLabelScan: true
@@ -1210,52 +1670,23 @@
             }
         }
 
-        // --- SCRIPTS DE DÉMARRAGE ET D'AUTO-SÉLECTION SILENCIEUSE ---
-        window.addEventListener('DOMContentLoaded', () => {
-            const savedPin = localStorage.getItem('ichef_master_pin');
-            const tenantID = localStorage.getItem('ichef_tenant_id');
-            
-            // 🚨 SÉCURISATION DU BOUTON D'ÉCHAPPEMENT
-            const escapeAdminBtn = document.getElementById('btn-escape-admin');
-            if (escapeAdminBtn) {
-                escapeAdminBtn.onclick = () => {
-                    window.location.href = `admin.html?tenantID=${tenantID}`;
-                };
-            }
-            
-            const urlParams = new URLSearchParams(window.location.search);
-            const fromPage = urlParams.get('from');
-            
-            // Moteur d'auto-connexion (ZÉRO CLIGNOTEMENT)
-            if (savedPin) {
-                pin = savedPin;
-                let deptToOpen = 'CUISINE'; // Par défaut
-                
-                let ref = document.referrer.toLowerCase();
-                
-                // Analyse de la provenance pour ouvrir le bon classeur HACCP
-                if (fromPage === 'bar' || ref.includes('chef-bar.html')) {
-                    deptToOpen = 'BAR';
-                } else if (fromPage === 'patisserie' || ref.includes('chef-patissier.html')) {
-                    deptToOpen = 'PATISSERIE';
-                } else if (fromPage === 'cuisine' || ref.includes('chef.html')) {
-                    deptToOpen = 'CUISINE';
-                } else if (fromPage === 'caisse' || ref.includes('pack-eco.html') || ref.includes('caissetactile.html')) {
-                    deptToOpen = 'SERVICE';
-                } else if (fromPage === 'admin' || ref.includes('admin.html') || ref.includes('administration.html')) {
-                    deptToOpen = 'ADMIN';
-                } else {
-                    // Si on ne sait pas d'où on vient, on devine grâce au métier lié au PIN
-                    if (USERS[savedPin] === "Barman") deptToOpen = 'BAR';
-                    else if (USERS[savedPin] === "Serveur") deptToOpen = 'SERVICE';
-                    else if (USERS[savedPin] === "Patissier") deptToOpen = 'PATISSERIE';
-                    else if (USERS[savedPin] === "Manager" || USERS[savedPin] === "Directeur") deptToOpen = 'ADMIN';
-                }
+        // --- DÉMARRAGE iCHEF HACCP ---
+        window.addEventListener("DOMContentLoaded", () => {
+            setSyncStatus("degraded", "SYSTÈME · PIN REQUIS");
+            applyRegulatoryProfile({});
 
-                // MASQUAGE IMMÉDIAT (Auto-login silencieux)
-                document.getElementById('login-screen').style.display = 'none';
-                currentDept = deptToOpen;
-                submitPin();
+            const urlParams = new URLSearchParams(window.location.search);
+            const fromPage = String(urlParams.get("from") || "").toLowerCase();
+            const ref = String(document.referrer || "").toLowerCase();
+
+            if (fromPage === "bar" || ref.includes("chef-bar.html")) {
+                showPinPad("BAR");
+            } else if (fromPage === "patisserie" || ref.includes("chef-patissier.html")) {
+                showPinPad("PATISSERIE");
+            } else if (fromPage === "cuisine" || ref.includes("chef.html")) {
+                showPinPad("CUISINE");
+            } else if (fromPage === "caisse" || ref.includes("pack-eco.html") || ref.includes("caissetactile.html")) {
+                showPinPad("SERVICE");
             }
         });
     </script>
