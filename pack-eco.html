@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="fr">
-<!-- ICHEF PLAN INTERACTIF V26 — PACK-ECO + PLAN ARCHITECTURAL SYNCHRONISÉS -->
+<!-- ICHEF PACK-ECO PAYMENT TERMINALS V54 — MULTI-TPE CLIENT / ICHEF / PARTNER -->
 <head>
 <!-- ICHEF PLAN SOCKET UNIQUE V25 -->
 <!-- ICHEF PAD PRINCIPAL STABLE V1 — PIN + WS DIRECT + RETOUR ADMIN -->
@@ -5751,6 +5751,24 @@ body.order-open #btnHeadWho .head-sub-v20{
 }
 </style>
 
+
+<style id="ichef-payment-terminals-v54">
+.payment-terminal-btn{
+  width:100%;
+  overflow:hidden;
+  white-space:normal;
+  word-break:break-word;
+}
+.payment-terminal-btn[disabled]{opacity:.45;filter:grayscale(.35)}
+@media(max-width:480px){
+  [data-terminal-grid]{grid-template-columns:1fr!important}
+  .payment-terminal-btn{min-height:92px!important;font-size:12px!important}
+}
+@media(min-width:481px) and (max-width:900px){
+  [data-terminal-grid]{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+}
+</style>
+
 </head>
 
 <body>
@@ -6051,6 +6069,8 @@ const STATE={
   activeOrders:{},architecture:{rooms:["Salle Principale"],tables:[],zones:[],elements:[],canvas:{}},
   rooms:["Salle Principale"],tables:[],zones:[],elements:[],room:"Salle Principale",
   menu:[],categories:[],category:"TOUT",reservations:[],settings:{},
+  paymentConfig:{enabled:true,defaultCurrency:"CHF",defaultTerminalId:"",terminals:[],updatedAt:null},
+  paymentConfigLoadedAt:0,
   currentTable:null,currentOrder:null,currentScreen:"tables",display:STORAGE.get("ichef_phone_display","auto")||"auto",
   renderPending:false,loginPin:"",lastAlertSignature:"",lastWriteAt:0,activeSeat:1,lastLineKey:"",pendingCookingLine:"",undoStack:[]
 };
@@ -6827,6 +6847,12 @@ async function verifyPin(){
     STATE.authenticated=true;
     STATE.deviceReplaced=false;
 
+    /* Précharge les TPE de cet établissement depuis server.js.
+       L'échec ne bloque jamais la prise de commande. */
+    loadPaymentConfig(true).catch(err=>{
+      console.warn("[iCHEF TPE] configuration indisponible au login",err?.message||err);
+    });
+
     /*
        DÉMARRAGE SANS TRANSITION : on garde l'écran PIN au-dessus pendant
        toute la synchro. Le plan architectural (z-index supérieur) est ouvert
@@ -7072,6 +7098,18 @@ async function connectSocket(){
       setConnection("TEMPS RÉEL","good");
       hidePadNetworkOverlay();
       applyServerState(s,"socket");
+    });
+
+    socket.on("paymentConfigUpdated",packet=>{
+      if(packet?.paymentConfig){
+        applyPaymentConfig(packet.paymentConfig);
+        console.info("[iCHEF TPE] configuration actualisée en temps réel",{
+          tenantID:STATE.tenantID,
+          terminals:STATE.paymentConfig.terminals.length
+        });
+      }else{
+        STATE.paymentConfigLoadedAt=0;
+      }
     });
 
     const onSessionReplaced=info=>{
@@ -10122,7 +10160,7 @@ function editNote(){if(!STATE.currentTable)return;const o=ensureOrder(STATE.curr
    - Espèces / carte TPE / TWINT / autre : ticket fiscal créé côté serveur
    - Aucun ticket fiscal n'est créé uniquement dans le navigateur
    ========================================================= */
-const ICHEF_PAYMENT_SERVER_VERSION="FRCH-STRIPE-2026.08.25";
+const ICHEF_PAYMENT_SERVER_VERSION="FRCH-MULTI-TPE-V54-2026.09.06";
 let ICHEF_STRIPE_WATCH=null;
 
 function paymentServerHeaders(idempotencyKey=""){
@@ -10151,6 +10189,188 @@ async function paymentServerRequest(path,{method="GET",body=null,idempotencyKey=
   const j=await r.json().catch(()=>({}));
   if(!r.ok||j.success===false)throw new Error(j.error||j.message||(`Serveur paiement ${r.status}`));
   return j;
+}
+
+function emptyPaymentConfig(){
+  return {
+    enabled:true,
+    defaultCurrency:paymentCurrency?.()||"CHF",
+    defaultTerminalId:"",
+    terminals:[],
+    updatedAt:null
+  };
+}
+
+function normalizePaymentTerminalClient(raw={}){
+  const t=raw&&typeof raw==="object"?raw:{};
+  return {
+    ownership:text(t.ownership||"CLIENT").toUpperCase(),
+    provider:text(t.provider||"OTHER").toUpperCase(),
+    terminalId:text(t.terminalId).slice(0,120),
+    terminalModel:text(t.terminalModel).slice(0,120),
+    integrationMode:text(t.integrationMode||t.mode||"EXTERNAL_MANUAL").toUpperCase(),
+    currency:text(t.currency||paymentCurrency?.()||"CHF").toUpperCase(),
+    zone:text(t.zone||"SALLE"),
+    status:text(t.status||"CONFIGURED").toUpperCase(),
+    enabled:t.enabled!==false,
+    isDefault:t.isDefault===true,
+    smartposApp:t.smartposApp===true,
+    configuredAt:t.configuredAt||null,
+    updatedAt:t.updatedAt||null
+  };
+}
+
+function applyPaymentConfig(raw){
+  const cfg=raw&&typeof raw==="object"&&!Array.isArray(raw)?raw:emptyPaymentConfig();
+  STATE.paymentConfig={
+    enabled:cfg.enabled!==false,
+    defaultCurrency:text(cfg.defaultCurrency||paymentCurrency?.()||"CHF").toUpperCase(),
+    defaultTerminalId:text(cfg.defaultTerminalId),
+    terminals:Array.isArray(cfg.terminals)
+      ? cfg.terminals.map(normalizePaymentTerminalClient).filter(t=>t.terminalId)
+      : [],
+    updatedAt:cfg.updatedAt||null
+  };
+  STATE.paymentConfigLoadedAt=Date.now();
+  return STATE.paymentConfig;
+}
+
+async function loadPaymentConfig(force=false){
+  if(STATE.demo){
+    return applyPaymentConfig({
+      enabled:true,
+      defaultCurrency:paymentCurrency?.()||"CHF",
+      defaultTerminalId:"DEMO-TPE",
+      terminals:[{
+        ownership:"CLIENT",
+        provider:"DEMO",
+        terminalId:"DEMO-TPE",
+        terminalModel:"TPE externe démo",
+        integrationMode:"EXTERNAL_MANUAL",
+        currency:paymentCurrency?.()||"CHF",
+        zone:"SALLE",
+        status:"TEST",
+        enabled:true,
+        isDefault:true
+      }]
+    });
+  }
+
+  const age=Date.now()-Number(STATE.paymentConfigLoadedAt||0);
+  if(!force && age<30000 && STATE.paymentConfig && Array.isArray(STATE.paymentConfig.terminals)){
+    return STATE.paymentConfig;
+  }
+
+  const result=await paymentServerRequest("/api/payments/config/read",{
+    method:"POST",
+    body:{}
+  });
+
+  return applyPaymentConfig(result?.paymentConfig||emptyPaymentConfig());
+}
+
+function paymentTerminalModeLabel(mode){
+  const m=text(mode).toUpperCase();
+  if(m==="API_CLOUD")return "API CLOUD";
+  if(m==="SMARTPOS_APP")return "APP SMARTPOS";
+  return "TPE EXTERNE";
+}
+
+function paymentTerminalOwnerLabel(owner){
+  const o=text(owner).toUpperCase();
+  if(o==="ICHEF")return "TPE iCHEF";
+  if(o==="PARTNER")return "TPE PARTENAIRE";
+  return "TPE DU CLIENT";
+}
+
+function paymentTerminalStatusInfo(status){
+  const s=text(status).toUpperCase();
+  if(s==="CONNECTED")return {label:"CONNECTÉ",kind:"good"};
+  if(s==="TEST")return {label:"TEST",kind:"warn"};
+  if(s==="DISCONNECTED")return {label:"HORS LIGNE",kind:"bad"};
+  if(s==="DISABLED")return {label:"DÉSACTIVÉ",kind:"bad"};
+  return {label:"CONFIGURÉ",kind:"warn"};
+}
+
+function paymentCurrentZoneNames(){
+  const table=STATE.tables.find(x=>x.label===STATE.currentTable);
+  const z=getZone(table);
+  return [
+    text(z?.label),
+    text(table?.zone),
+    text(table?.room),
+    text(STATE.room),
+    "SALLE"
+  ].filter(Boolean).map(v=>v.normalize("NFD").replace(/[\u0300-\u036f]/g,"").toUpperCase());
+}
+
+function paymentTerminalZoneScore(t){
+  const zones=paymentCurrentZoneNames();
+  const z=text(t?.zone||"SALLE").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toUpperCase();
+  if(!z)return 0;
+  const idx=zones.indexOf(z);
+  return idx<0?0:(100-idx);
+}
+
+function availablePaymentTerminals(){
+  const all=Array.isArray(STATE.paymentConfig?.terminals)
+    ? STATE.paymentConfig.terminals
+    : [];
+  return all
+    .filter(t=>t&&t.terminalId&&t.enabled!==false&&text(t.status).toUpperCase()!=="DISABLED")
+    .slice()
+    .sort((a,b)=>{
+      if(a.isDefault!==b.isDefault)return a.isDefault?-1:1;
+      const zoneDiff=paymentTerminalZoneScore(b)-paymentTerminalZoneScore(a);
+      if(zoneDiff)return zoneDiff;
+      return text(a.terminalId).localeCompare(text(b.terminalId),"fr");
+    });
+}
+
+function terminalButtonHTML(t){
+  const status=paymentTerminalStatusInfo(t.status);
+  const compatible=t.integrationMode==="EXTERNAL_MANUAL" || t.status==="CONNECTED" || t.status==="TEST" || t.status==="CONFIGURED";
+  const model=t.terminalModel?` · ${esc(t.terminalModel)}`:"";
+  const defaultBadge=t.isDefault?`<span style="margin-left:6px;color:#e2b84e">DÉFAUT</span>`:"";
+  return `
+    <button type="button"
+            class="action-btn payment-terminal-btn ${status.kind==="good"?"green":status.kind==="bad"?"red":"gold"}"
+            data-terminal-id="${esc(t.terminalId)}"
+            ${compatible?"":"disabled"}
+            style="min-height:82px;text-align:left;padding:11px 13px">
+      <span style="display:block;font-size:13px;font-weight:1000">${esc(t.terminalId)}${defaultBadge}</span>
+      <span style="display:block;margin-top:5px;font-size:10px;line-height:1.35;color:inherit">
+        ${esc(t.provider)}${model}<br>
+        ${esc(t.zone||"SALLE")} · ${esc(paymentTerminalModeLabel(t.integrationMode))} · ${esc(paymentTerminalOwnerLabel(t.ownership))}
+      </span>
+      <span style="display:block;margin-top:5px;font-size:9px;font-weight:950">${esc(status.label)}</span>
+    </button>`;
+}
+
+async function configuredTerminalPayment(order,terminal){
+  if(!terminal)throw new Error("Terminal introuvable");
+
+  const mode=text(terminal.integrationMode||"EXTERNAL_MANUAL").toUpperCase();
+  const provider=text(terminal.provider||"OTHER").toUpperCase();
+
+  if(mode==="EXTERNAL_MANUAL"){
+    return recordPayment("CARTE",terminal);
+  }
+
+  /*
+    V54 sait sélectionner le bon terminal par tenant/zone.
+    Le pilotage automatique d'un TPE physique exige ensuite l'adaptateur
+    officiel du prestataire dans server.js. On ne simule jamais un débit.
+  */
+  const fallback=confirm(
+    `${terminal.terminalId} · ${provider}\n\n`+
+    `Ce terminal est configuré en ${paymentTerminalModeLabel(mode)}.\n`+
+    `Le connecteur bancaire ${provider} n'est pas encore activé dans ce Pack-Eco.\n\n`+
+    `Voulez-vous utiliser ce TPE en mode externe manuel pour ce paiement ?`
+  );
+
+  if(!fallback)return false;
+  return recordPayment("CARTE",{...terminal,integrationMode:"EXTERNAL_MANUAL",fallbackFrom:mode});
 }
 
 function serverPaymentId(prefix="PAY"){
@@ -10319,50 +10539,167 @@ async function openServerFiscalHistory(period="day",key=""){
   }catch(err){toast("Historique fiscal : "+err.message,true)}
 }
 
-function openPayment(){
+async function openPayment(){
   if(!STATE.currentTable){toast("Ouvrez d’abord une table",true);return;}
-  const o=ensureOrder(STATE.currentTable),total=orderTotal(o),profile=fiscalProfile();
+
+  const o=ensureOrder(STATE.currentTable);
+  const total=orderTotal(o);
+  const profile=fiscalProfile();
   const paid=fiscalOrderFinalized(o);
   const stripeOn=stripeEnabledForRestaurant();
   const twint=profile.country==="CH";
+
+  let cfg=STATE.paymentConfig||emptyPaymentConfig();
+  let configError="";
+
+  if(!paid){
+    try{
+      cfg=await loadPaymentConfig(false);
+    }catch(err){
+      configError=err?.message||"Configuration TPE indisponible";
+      console.warn("[iCHEF TPE] lecture",err);
+    }
+  }
+
+  const terminals=availablePaymentTerminals();
+  const terminalList=terminals.length
+    ? `<div style="margin:11px 0 7px;font-size:11px;font-weight:1000;color:var(--gold)">TERMINAUX DISPONIBLES</div>
+       <div class="action-grid" data-terminal-grid>
+         ${terminals.map(terminalButtonHTML).join("")}
+       </div>`
+    : `<div class="list-row" style="margin-top:10px">
+         <div class="grow">
+           <div class="title">AUCUN TPE ENREGISTRÉ</div>
+           <div class="sub">${configError?esc(configError):"Le restaurant peut continuer avec un TPE externe manuel. La configuration multi-TPE se fait depuis Empire / Admin."}</div>
+         </div>
+       </div>`;
+
   openSheet("CAISSE · TABLE "+STATE.currentTable,`
-    <div class="big-state"><div class="big gold">${money(total)}</div><div class="small">Profil fiscal ${esc(profile.label)} · ${esc(profile.currency)} · serveur officiel</div></div>
+    <div class="big-state">
+      <div class="big gold">${money(total)}</div>
+      <div class="small">Profil fiscal ${esc(profile.label)} · ${esc(profile.currency)} · serveur officiel</div>
+    </div>
+
     ${paid?`<div class="list-row"><div class="grow"><div class="title">VENTE FISCALISÉE</div><div class="sub">Ticket ${esc(o.fiscalTicket?.ticketNumber||o.fiscalReceiptReference||o.paymentDraft?.receiptReference||"—")}</div></div></div>`:""}
+
+    ${!paid?terminalList:""}
+
+    <div style="margin:11px 0 7px;font-size:11px;font-weight:1000;color:var(--gold)">AUTRES MOYENS</div>
     <div class="action-grid">
-      <button class="action-btn green" data-pay="CARTE" ${paid?"disabled":""}>CARTE / TPE</button>
+      <button class="action-btn green" data-pay="CARTE" ${paid?"disabled":""}>TPE EXTERNE MANUEL</button>
       <button class="action-btn gold" data-pay="ESPÈCES" ${paid?"disabled":""}>ESPÈCES</button>
-      <button class="action-btn" data-pay="STRIPE" ${paid||!stripeOn?"disabled":""}>STRIPE${stripeOn?"":" · OFF"}</button>
+      <button class="action-btn" data-pay="STRIPE" ${paid||!stripeOn?"disabled":""}>STRIPE ONLINE${stripeOn?"":" · OFF"}</button>
       ${twint?`<button class="action-btn purple" data-pay="TWINT" ${paid?"disabled":""}>TWINT</button>`:`<button class="action-btn purple" data-pay="AUTRE" ${paid?"disabled":""}>AUTRE</button>`}
       ${twint?`<button class="action-btn" data-pay="AUTRE" ${paid?"disabled":""}>AUTRE</button>`:""}
       <button class="action-btn" data-pay="" ${paid?"disabled":""}>EN ATTENTE</button>
     </div>
+
     <div class="action-grid" style="margin-top:9px">
+      <button class="action-btn gold" data-payment-refresh ${paid?"disabled":""}>ACTUALISER LES TPE</button>
       <button class="action-btn gold" data-cash-receipt ${paid?"":"disabled"}>TICKET CLIENT</button>
       <button class="action-btn green" data-fiscal-ticket-print ${paid?"":"disabled"}>IMPRIMER FISCAL</button>
-      <button class="action-btn" data-fiscal-history style="grid-column:1/-1">HISTORIQUE FISCAL</button>
+      <button class="action-btn" data-fiscal-history>HISTORIQUE FISCAL</button>
     </div>
-    <div style="margin-top:8px;color:#98a1a4;font-size:9px;text-align:center">Stripe n'est fiscalisé qu'après confirmation serveur du webhook. Les autres moyens créent le ticket fiscal côté serveur avant verrouillage.</div>`);
-  $("sheetBody").querySelectorAll("[data-pay]").forEach(b=>b.onclick=async()=>{
+
+    <div style="margin-top:9px;color:#98a1a4;font-size:9px;line-height:1.4;text-align:center">
+      iCHEF charge les TPE du restaurant depuis <strong>server.js</strong>.
+      Un TPE en mode externe est confirmé manuellement.
+      Un TPE API/SmartPOS n'est jamais considéré payé sans confirmation du connecteur bancaire.
+    </div>`);
+
+  const body=$("sheetBody");
+
+  body?.querySelectorAll("[data-terminal-id]").forEach(btn=>{
+    btn.onclick=async()=>{
+      const terminal=terminals.find(t=>t.terminalId===btn.dataset.terminalId);
+      if(!terminal)return;
+      btn.disabled=true;
+      const old=btn.innerHTML;
+      btn.innerHTML=`<span style="font-weight:1000">PAIEMENT…</span>`;
+      try{
+        const ok=await configuredTerminalPayment(o,terminal);
+        if(ok){
+          closeSheet();
+          if(document.body.classList.contains("summary-open"))renderSummary();
+        }else{
+          btn.disabled=false;
+          btn.innerHTML=old;
+        }
+      }catch(err){
+        toast(err?.message||"Paiement TPE impossible",true);
+        btn.disabled=false;
+        btn.innerHTML=old;
+      }
+    };
+  });
+
+  body?.querySelectorAll("[data-pay]").forEach(b=>b.onclick=async()=>{
     const m=b.dataset.pay||null;
+
     if(m==="STRIPE"){
-      b.disabled=true;const old=b.textContent;b.textContent="OUVERTURE…";
-      try{await startStripePayment(o)}catch(e){toast(e.message||"Stripe impossible",true);b.disabled=false;b.textContent=old}
+      b.disabled=true;
+      const old=b.textContent;
+      b.textContent="OUVERTURE…";
+      try{
+        await startStripePayment(o);
+      }catch(e){
+        toast(e.message||"Stripe impossible",true);
+        b.disabled=false;
+        b.textContent=old;
+      }
       return;
     }
+
     b.disabled=true;
-    try{const ok=await recordPayment(m);if(ok){closeSheet();if(document.body.classList.contains("summary-open"))renderSummary()}}
-    catch(e){toast(e.message||"Paiement refusé",true)}finally{b.disabled=false}
+    try{
+      const ok=await recordPayment(m);
+      if(ok){
+        closeSheet();
+        if(document.body.classList.contains("summary-open"))renderSummary();
+      }
+    }catch(e){
+      toast(e.message||"Paiement refusé",true);
+    }finally{
+      b.disabled=false;
+    }
   });
-  $("sheetBody").querySelector("[data-cash-receipt]")?.addEventListener("click",async()=>{
+
+  body?.querySelector("[data-payment-refresh]")?.addEventListener("click",async e=>{
+    const b=e.currentTarget;
+    const old=b.textContent;
+    b.disabled=true;
+    b.textContent="ACTUALISATION…";
+    try{
+      await loadPaymentConfig(true);
+      toast(`${availablePaymentTerminals().length} TPE disponible(s)`);
+      await openPayment();
+    }catch(err){
+      toast(err?.message||"Configuration TPE indisponible",true);
+      b.disabled=false;
+      b.textContent=old;
+    }
+  });
+
+  body?.querySelector("[data-cash-receipt]")?.addEventListener("click",async()=>{
     const target=STATE.currentOrder||o;
-    try{await printCashReceipt(target,{duplicate:true});toast("Ticket client envoyé à la caisse")}
-    catch(e){toast("Ticket caisse : "+(e?.message||"échec"),true)}
+    try{
+      await printCashReceipt(target,{duplicate:true});
+      toast("Ticket client envoyé à la caisse");
+    }catch(e){
+      toast("Ticket caisse : "+(e?.message||"échec"),true);
+    }
   });
-  $("sheetBody").querySelector("[data-fiscal-ticket-print]")?.addEventListener("click",async()=>{
-    try{const ref=await printCurrentFiscalTicket();toast(` Copie fiscale ${ref} envoyée à l'impression`)}
-    catch(e){toast("Impression fiscale : "+(e?.message||"échec"),true)}
+
+  body?.querySelector("[data-fiscal-ticket-print]")?.addEventListener("click",async()=>{
+    try{
+      const ref=await printCurrentFiscalTicket();
+      toast(` Copie fiscale ${ref} envoyée à l'impression`);
+    }catch(e){
+      toast("Impression fiscale : "+(e?.message||"échec"),true);
+    }
   });
-  $("sheetBody").querySelector("[data-fiscal-history]")?.addEventListener("click",()=>openServerFiscalHistory("day",""));
+
+  body?.querySelector("[data-fiscal-history]")?.addEventListener("click",()=>openServerFiscalHistory("day",""));
 }
 
 
@@ -11376,7 +11713,7 @@ function renderSummary(){
 }
 
 
-async function recordPayment(method){
+async function recordPayment(method,terminal=null){
   if(!STATE.currentTable)return false;
   const o=ensureOrder(STATE.currentTable);
   const paymentMethod=method||null;
@@ -11393,9 +11730,25 @@ async function recordPayment(method){
   const validation=fiscalValidateOrder(o,{forPayment:true});
   if(!validation.ok){toast("Fiscal : "+validation.errors[0],true);return false;}
   if(!["CARTE","ESPÈCES","TWINT","AUTRE"].includes(paymentMethod))throw new Error("Moyen de paiement inconnu");
-  const ok=confirm(`Confirmer ${money(orderTotal(o))} réglé par ${paymentMethod} ?\n\nLe serveur créera immédiatement le ticket fiscal et verrouillera la vente.`);
+  const terminalLabel=terminal?.terminalId?` sur ${terminal.terminalId}`:"";
+  const providerLabel=terminal?.provider?` · ${terminal.provider}`:"";
+  const ok=confirm(`Confirmer ${money(orderTotal(o))} réglé par ${paymentMethod}${terminalLabel}${providerLabel} ?\n\nLe serveur créera immédiatement le ticket fiscal et verrouillera la vente.`);
   if(!ok)return false;
-  const details=[{method:paymentMethod,provider:paymentMethod==="CARTE"?"TPE_EXTERNE":paymentMethod,amount:orderTotal(o),confirmedBy:STATE.role||"SERVEUR",confirmedAt:new Date().toISOString()}];
+
+  const details=[{
+    method:paymentMethod,
+    provider:terminal?.provider || (paymentMethod==="CARTE"?"TPE_EXTERNE":paymentMethod),
+    terminalId:terminal?.terminalId||"",
+    terminalModel:terminal?.terminalModel||"",
+    ownership:terminal?.ownership||"",
+    integrationMode:terminal?.integrationMode||"",
+    zone:terminal?.zone||"",
+    currency:terminal?.currency||paymentCurrency(),
+    amount:orderTotal(o),
+    confirmedBy:STATE.role||"SERVEUR",
+    confirmedAt:new Date().toISOString(),
+    source:terminal?"PAYMENT_CONFIG":"PAD_MANUAL"
+  }];
   const result=await fiscalizeWithServer(o,paymentMethod,details,serverPaymentId("FISCAL"));
   applyServerFiscalResult(o,result,paymentMethod);
   await syncFull("payment-fiscalized").catch(()=>{});
@@ -12255,7 +12608,7 @@ function buildDemoState(){
   STATE.demo=true;
   STATE.authenticated=true;
   STATE.tenantID="DEMO_ICHEF";
-  STATE.pin="0000";
+  STATE.pin=""; /* démo : aucun PIN fixe */
   STATE.role="SERVEUR";
   STATE.plan="ESSENTIEL";
   STATE.settings={currency:"CHF",fiscalCountry:"CH"};
