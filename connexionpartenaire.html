@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>iCHEF OS — Partenaire & Création Client</title>
+    <title>iCHEF OS — Connexion Partenaire V3</title>
     
     <!-- 🛡️ BOUCLIER CSP STRICT : Interdit l'exécution de scripts pirates externes -->
     <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://tableau-system.onrender.com; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://upload.wikimedia.org https://via.placeholder.com;">
@@ -123,11 +123,24 @@
         </div>
         
         <div class="input-group">
-            <label>Code PIN</label>
-            <input type="password" id="pinCode" placeholder="••••" autocomplete="off" pattern="[0-9]*" inputmode="numeric">
+            <label>Code PIN restaurant <span style="color:#777;font-weight:500;">(4 à 12 chiffres)</span></label>
+            <input type="password" id="pinCode" placeholder="••••" autocomplete="off" pattern="[0-9]*" inputmode="numeric" maxlength="12">
         </div>
         
         <button id="login-btn" onclick="login()">Se Connecter</button>
+
+        <div id="login-server-error"
+             style="display:none;margin-top:12px;padding:10px 12px;border:1px solid rgba(239,68,68,.35);border-radius:8px;background:rgba(239,68,68,.06);color:#ff7676;font-size:.82rem;line-height:1.45;text-align:left;">
+        </div>
+
+        <div style="margin-top:12px;color:#777;font-size:.72rem;line-height:1.45;">
+            Le PIN restaurant est différent de la clé Master de la Tour de Contrôle.
+        </div>
+
+        <a href="trour.de.control.html"
+           style="display:block;margin-top:9px;color:#d4af37;font-size:.76rem;text-decoration:none;font-weight:800;">
+            🔐 Accès Master · Tour de Contrôle
+        </a>
         <div id="lock-msg" style="color: #ef4444; font-size: 0.8rem; margin-top: 10px; display: none; font-weight: bold;"></div>
         
         <div class="separator">
@@ -352,55 +365,285 @@ async function genererDemo(e) {
     }
 }
 
-// 🔐 FONCTION DE CONNEXION SÉCURISÉE (AVEC SAUVEGARDE DU PIN)
-async function login() {
-    if (failedAttempts >= 3) return;
-    let tenant = document.getElementById('tenantID').value.toLowerCase().replace(/[^a-z0-9]/g, '');
-    let pin = document.getElementById('pinCode').value.replace(/[^0-9]/g, '');
+// 🔐 CONNEXION PARTENAIRE — PIN RESTAURANT, SANS STOCKAGE DU PIN
+function normalizeRestaurantTenant(value) {
+    return String(value || '')
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, '')
+        .replace(/[^a-z0-9_-]/g, '');
+}
+
+function showLoginServerError(message, isWarning = false) {
+    const box = document.getElementById('login-server-error');
+    if (!box) return;
+
+    const text = String(message || '').trim();
+
+    if (!text) {
+        box.style.display = 'none';
+        box.textContent = '';
+        return;
+    }
+
+    box.textContent = text;
+    box.style.display = 'block';
+    box.style.color = isWarning ? '#fbbf24' : '#ff7676';
+    box.style.borderColor = isWarning
+        ? 'rgba(245,158,11,.35)'
+        : 'rgba(239,68,68,.35)';
+    box.style.background = isWarning
+        ? 'rgba(245,158,11,.06)'
+        : 'rgba(239,68,68,.06)';
+}
+
+let loginCooldownTimer = null;
+
+function startLoginCooldown(seconds = 15) {
     const btn = document.getElementById('login-btn');
+    let remaining = Math.max(1, Number(seconds) || 15);
 
-    if(!tenant || !pin) { alert("Identifiant ou PIN invalide."); return; }
+    if (loginCooldownTimer) {
+        clearInterval(loginCooldownTimer);
+    }
 
-    btn.innerText = "Authentification..."; btn.disabled = true;
+    btn.disabled = true;
+
+    const render = () => {
+        btn.innerText = `Réessayer dans ${remaining}s`;
+    };
+
+    render();
+
+    loginCooldownTimer = setInterval(() => {
+        remaining -= 1;
+
+        if (remaining <= 0) {
+            clearInterval(loginCooldownTimer);
+            loginCooldownTimer = null;
+            failedAttempts = 0;
+            btn.disabled = false;
+            btn.innerText = 'Se Connecter';
+            showLoginServerError('');
+            return;
+        }
+
+        render();
+    }, 1000);
+}
+
+async function login() {
+    const tenantInput =
+        document.getElementById('tenantID');
+
+    const pinInput =
+        document.getElementById('pinCode');
+
+    const btn =
+        document.getElementById('login-btn');
+
+    const tenant =
+        normalizeRestaurantTenant(
+            tenantInput?.value
+        );
+
+    const pin =
+        String(
+            pinInput?.value || ''
+        )
+        .replace(/\D/g, '')
+        .slice(0, 12);
+
+    showLoginServerError('');
+
+    if (!tenant) {
+        showLoginServerError(
+            'Identifiant restaurant manquant.'
+        );
+        tenantInput?.focus();
+        return;
+    }
+
+    if (!/^\d{4,12}$/.test(pin)) {
+        showLoginServerError(
+            'Le PIN restaurant doit contenir entre 4 et 12 chiffres. ' +
+            'La clé Master Empire2026 ne se saisit pas ici.'
+        );
+        pinInput?.focus();
+        return;
+    }
+
+    if (failedAttempts >= 3) {
+        startLoginCooldown(15);
+        return;
+    }
+
+    btn.innerText =
+        'Authentification…';
+    btn.disabled = true;
 
     try {
-        const res = await fetch(`${SERVER_URL}/api/verify-pin`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include', 
-            body: JSON.stringify({ tenantID: tenant, pin: pin, deviceId: getDeviceFingerprint() })
-        });
-        
-        if (!res.ok && res.status === 404) throw new Error("Route introuvable.");
-        const data = await res.json();
-        
-        if(data.success) {
+        const res =
+            await fetch(
+                `${SERVER_URL}/api/verify-pin`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type':
+                            'application/json',
+                        'Accept':
+                            'application/json'
+                    },
+                    credentials: 'include',
+                    body: JSON.stringify({
+                        tenantID: tenant,
+                        pin,
+                        deviceId:
+                            getDeviceFingerprint(),
+                        terminal: 'ADMIN'
+                    })
+                }
+            );
+
+        let data = {};
+
+        try {
+            data = await res.json();
+        } catch (_) {
+            data = {};
+        }
+
+        if (
+            res.ok &&
+            data.success === true
+        ) {
             failedAttempts = 0;
-            localStorage.setItem('ichef_tenant_id', tenant);
-            localStorage.removeItem('ichef_master_pin');
+
+            const safeTenant =
+                String(
+                    data.safeTenantID ||
+                    tenant
+                ).trim();
+
+            localStorage.setItem(
+                'ichef_tenant_id',
+                safeTenant
+            );
+
+            localStorage.removeItem(
+                'ichef_master_pin'
+            );
             localStorage.removeItem('pin');
-            localStorage.removeItem('ichef_csrf_token');
+            localStorage.removeItem(
+                'ichef_csrf_token'
+            );
 
             try {
-                sessionStorage.setItem('ichef_login_context', JSON.stringify({
-                    tenantID: tenant,
-                    role: data.role || '',
-                    plan: data.plan || '',
-                    authenticatedAt: new Date().toISOString()
-                }));
-                if (data.csrfToken) sessionStorage.setItem('ichef_csrf_token', String(data.csrfToken));
+                sessionStorage.setItem(
+                    'ichef_login_context',
+                    JSON.stringify({
+                        tenantID:
+                            safeTenant,
+                        role:
+                            data.role || '',
+                        plan:
+                            data.plan || '',
+                        allowedModules:
+                            Array.isArray(
+                                data.allowedModules
+                            )
+                                ? data.allowedModules
+                                : [],
+                        blockedModules:
+                            Array.isArray(
+                                data.blockedModules
+                            )
+                                ? data.blockedModules
+                                : [],
+                        authenticatedAt:
+                            new Date()
+                                .toISOString()
+                    })
+                );
+
+                if (data.csrfToken) {
+                    sessionStorage.setItem(
+                        'ichef_csrf_token',
+                        String(
+                            data.csrfToken
+                        )
+                    );
+                }
             } catch (_) {}
 
-            document.getElementById('pinCode').value = '';
-            window.location.href = `administration.html?tenantID=${encodeURIComponent(tenant)}`;
-        } else {
-            failedAttempts++;
-            alert("Code PIN incorrect ou accès refusé.");
-            btn.innerText = "Se Connecter"; btn.disabled = false;
+            pinInput.value = '';
+
+            window.location.href =
+                `administration.html?tenantID=${encodeURIComponent(
+                    safeTenant
+                )}`;
+
+            return;
         }
-    } catch(e) {
-        alert("Erreur de connexion au serveur.");
-        btn.innerText = "Se Connecter"; btn.disabled = false;
+
+        failedAttempts += 1;
+        pinInput.value = '';
+
+        const serverMessage =
+            String(
+                data.error ||
+                ''
+            ).trim();
+
+        let message =
+            serverMessage ||
+            `Connexion refusée (${res.status}).`;
+
+        if (res.status === 401) {
+            message =
+                serverMessage ||
+                'Code PIN incorrect.';
+        } else if (res.status === 404) {
+            message =
+                serverMessage ||
+                'Restaurant introuvable. Vérifiez le tenantID.';
+        } else if (res.status === 403) {
+            message =
+                serverMessage ||
+                'Accès refusé : licence, écran ou permission.';
+        } else if (res.status >= 500) {
+            message =
+                'Le serveur iCHEF rencontre une erreur. Réessayez dans quelques instants.';
+        }
+
+        showLoginServerError(message);
+
+        if (failedAttempts >= 3) {
+            showLoginServerError(
+                `${message} Trois essais ont échoué : nouvel essai possible dans 15 secondes.`,
+                true
+            );
+            startLoginCooldown(15);
+        } else {
+            btn.innerText =
+                'Se Connecter';
+            btn.disabled = false;
+            pinInput.focus();
+        }
+
+    } catch (error) {
+        console.error(
+            '[iCHEF connexion partenaire]',
+            error
+        );
+
+        showLoginServerError(
+            'Impossible de joindre le serveur iCHEF. Vérifiez la connexion réseau ou le déploiement du serveur.'
+        );
+
+        btn.innerText =
+            'Se Connecter';
+        btn.disabled = false;
     }
 }
 
