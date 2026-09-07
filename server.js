@@ -3192,34 +3192,158 @@ app.post('/webhook', async (req, res) => {
     res.json({received: true});
 });
 
-const mongoURI = String(process.env.MONGO_URI || '').trim();
+const mongoURI =
+    String(
+        process.env.MONGO_URI || ''
+    ).trim();
 
-mongoose.set('bufferCommands', false);
+mongoose.set(
+    'bufferCommands',
+    false
+);
 
 const ICHEF_MONGO_MAX_POOL =
-    Math.max(10, Math.min(100, Number(process.env.MONGO_MAX_POOL_SIZE || 50)));
+    Math.max(
+        10,
+        Math.min(
+            100,
+            Number(
+                process.env.MONGO_MAX_POOL_SIZE ||
+                50
+            )
+        )
+    );
+
 const ICHEF_MONGO_MIN_POOL =
-    Math.max(0, Math.min(ICHEF_MONGO_MAX_POOL, Number(process.env.MONGO_MIN_POOL_SIZE || 2)));
+    Math.max(
+        0,
+        Math.min(
+            ICHEF_MONGO_MAX_POOL,
+            Number(
+                process.env.MONGO_MIN_POOL_SIZE ||
+                2
+            )
+        )
+    );
+
+let ichefMongoRetryTimer = null;
+let ichefMongoConnectRunning = false;
+let ichefMongoRetryAttempt = 0;
+
+function ichefMongoRetryDelay() {
+    return Math.min(
+        30000,
+        2500 *
+        Math.max(
+            1,
+            ichefMongoRetryAttempt
+        )
+    );
+}
+
+function ichefScheduleMongoReconnect(
+    reason = 'retry'
+) {
+    if (
+        !mongoURI ||
+        ichefMongoRetryTimer ||
+        ichefShuttingDown
+    ) {
+        return;
+    }
+
+    const delay =
+        ichefMongoRetryDelay();
+
+    console.warn(
+        `⚠️ MongoDB reconnexion programmée dans ${delay} ms (${reason}).`
+    );
+
+    ichefMongoRetryTimer =
+        setTimeout(
+            () => {
+                ichefMongoRetryTimer = null;
+                ichefConnectMongo(
+                    'scheduled-retry'
+                );
+            },
+            delay
+        );
+
+    ichefMongoRetryTimer.unref?.();
+}
+
+async function ichefConnectMongo(
+    reason = 'startup'
+) {
+    if (
+        !mongoURI ||
+        ichefMongoConnectRunning ||
+        mongoose.connection.readyState === 1
+    ) {
+        return;
+    }
+
+    ichefMongoConnectRunning = true;
+
+    try {
+        console.log(
+            `⏳ Connexion MongoDB iCHEF (${reason})…`
+        );
+
+        await mongoose.connect(
+            mongoURI,
+            {
+                serverSelectionTimeoutMS:
+                    15000,
+                socketTimeoutMS:
+                    60000,
+                waitQueueTimeoutMS:
+                    10000,
+                maxPoolSize:
+                    ICHEF_MONGO_MAX_POOL,
+                minPoolSize:
+                    ICHEF_MONGO_MIN_POOL,
+                maxIdleTimeMS:
+                    60000,
+                heartbeatFrequencyMS:
+                    10000,
+                retryWrites:
+                    true
+            }
+        );
+
+        ichefMongoRetryAttempt = 0;
+
+        console.log(
+            `✅ Base de données iCHEF Online | pool=${ICHEF_MONGO_MIN_POOL}-${ICHEF_MONGO_MAX_POOL}`
+        );
+
+    } catch (error) {
+        ichefMongoRetryAttempt += 1;
+
+        console.error(
+            '❌ MongoDB connexion :',
+            error?.message || error
+        );
+
+        ichefScheduleMongoReconnect(
+            'connect-failed'
+        );
+
+    } finally {
+        ichefMongoConnectRunning = false;
+    }
+}
 
 if (!mongoURI) {
-    console.error('❌ MONGO_URI manquante : le serveur reste vivant mais /readyz restera en 503.');
+    console.error(
+        '❌ MONGO_URI manquante : authentification restaurant indisponible.'
+    );
 } else {
-    mongoose.connect(mongoURI, {
-        serverSelectionTimeoutMS: 15000,
-        socketTimeoutMS: 60000,
-        waitQueueTimeoutMS: 10000,
-        maxPoolSize: ICHEF_MONGO_MAX_POOL,
-        minPoolSize: ICHEF_MONGO_MIN_POOL,
-        maxIdleTimeMS: 60000,
-        heartbeatFrequencyMS: 10000,
-        retryWrites: true
-    })
-        .then(() => console.log(
-            `✅ Base de données iCHEF Online | pool=${ICHEF_MONGO_MIN_POOL}-${ICHEF_MONGO_MAX_POOL}`
-        ))
-        .catch(err => {
-            console.error('❌ MongoDB connexion initiale :', err.message);
-        });
+    ichefConnectMongo(
+        'startup'
+    );
 }
 
 mongoose.connection.on('connected', () => {
@@ -3231,7 +3355,15 @@ mongoose.connection.on('reconnected', () => {
 });
 
 mongoose.connection.on('disconnected', () => {
-    console.warn('⚠️ MongoDB déconnecté — reconnexion automatique en cours.');
+    console.warn(
+        '⚠️ MongoDB déconnecté — reconnexion automatique en cours.'
+    );
+
+    ichefMongoRetryAttempt += 1;
+
+    ichefScheduleMongoReconnect(
+        'mongoose-disconnected'
+    );
 });
 
 mongoose.connection.on('error', err => {
@@ -5596,6 +5728,34 @@ app.post('/api/verify-pin', async (req, res) => {
     const safeID = cleanString(tenantID);
     const submittedPin = String(pin || '').trim();
 
+    if (
+        !mongoURI ||
+        mongoose.connection.readyState !== 1
+    ) {
+        res.setHeader(
+            'Retry-After',
+            '3'
+        );
+
+        // Réveille / relance la connexion si nécessaire.
+        ichefConnectMongo(
+            'verify-pin'
+        );
+
+        return res.status(503).json({
+            success: false,
+            code: 'MONGO_NOT_READY',
+            error:
+                !mongoURI
+                    ? 'MONGO_URI n’est pas configurée sur le serveur.'
+                    : 'MongoDB n’est pas encore connecté.',
+            mongoReadyState:
+                mongoose.connection.readyState,
+            retryAfterMs:
+                3000
+        });
+    }
+
     try {
         const tenant = await Tenant.findOne({
             tenantID: safeID
@@ -5790,10 +5950,44 @@ app.post('/api/verify-pin', async (req, res) => {
         });
 
     } catch (error) {
-        console.error("Erreur verify-pin :", error);
+        console.error(
+            "Erreur verify-pin :",
+            error
+        );
+
+        const mongoUnavailable =
+            mongoose.connection.readyState !== 1 ||
+            /mongo|server selection|topology|connection/i.test(
+                String(
+                    error?.message || ''
+                )
+            );
+
+        if (mongoUnavailable) {
+            ichefConnectMongo(
+                'verify-pin-error'
+            );
+
+            res.setHeader(
+                'Retry-After',
+                '3'
+            );
+
+            return res.status(503).json({
+                success: false,
+                code: 'DATABASE_UNAVAILABLE',
+                error:
+                    'Base MongoDB momentanément indisponible.',
+                mongoReadyState:
+                    mongoose.connection.readyState,
+                retryAfterMs:
+                    3000
+            });
+        }
 
         return res.status(500).json({
             success: false,
+            code: 'VERIFY_PIN_ERROR',
             error: "Erreur serveur."
         });
     }
