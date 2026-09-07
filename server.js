@@ -786,59 +786,46 @@ app.use((req, res, next) => {
 // ==========================================================
 // 🌟 FAVICON GLOBAL iCHEF — TOUS LES MODULES · V2
 // ==========================================================
-// IMPORTANT : ce fichier PNG doit être présent dans le même dossier
-// public/racine que server.js et les fichiers HTML.
-const ICHEF_GLOBAL_FAVICON_FILENAME =
-    'Gemini_Generated_Image_q748ueq748ueq748-Photoroom(1)(1)(1).png';
+// IMPORTANT : ce fichier PNG doit être présent dans le même dossier public/racine que server.js
+const ICHEF_GLOBAL_FAVICON_FILENAME = 'Gemini_Generated_Image_q748ueq748ueq748-Photoroom(1)(1)(1).png';
 
-const ICHEF_GLOBAL_FAVICON_FILE =
-    path.join(
-        __dirname,
-        ICHEF_GLOBAL_FAVICON_FILENAME
-    );
+const ICHEF_GLOBAL_FAVICON_FILE = path.join(__dirname, ICHEF_GLOBAL_FAVICON_FILENAME);
 
 function ichefSendGlobalFavicon(req, res) {
     // Le favicon est très fortement mis en cache par les navigateurs.
-    // On force donc la revalidation pendant le déploiement.
-    res.setHeader(
-        'Cache-Control',
-        'no-store, no-cache, must-revalidate, proxy-revalidate'
-    );
+    // On force donc la revalidation stricte.
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
     res.type('png');
 
-    return res.sendFile(
-        ICHEF_GLOBAL_FAVICON_FILE,
-        (error) => {
-            if (!error) {
-                return;
-            }
+    return res.sendFile(ICHEF_GLOBAL_FAVICON_FILE, (error) => {
+        if (!error) return;
 
-            console.error(
-                '[iCHEF FAVICON] Image introuvable :',
-                ICHEF_GLOBAL_FAVICON_FILE,
-                error?.message || error
-            );
+        console.error(
+            '[iCHEF FAVICON] Image introuvable :',
+            ICHEF_GLOBAL_FAVICON_FILE,
+            error?.message || error
+        );
 
-            if (!res.headersSent) {
-                return res
-                    .status(error?.statusCode || 404)
-                    .end();
-            }
+        if (!res.headersSent) {
+            return res.status(error?.statusCode || 404).end();
         }
-    );
+    });
 }
 
-// Le navigateur demande automatiquement /favicon.ico
-// lorsqu'aucun <link rel="icon"> n'est défini dans une page.
+// Le navigateur demande automatiquement /favicon.ico lorsqu'aucun <link rel="icon"> n'est défini.
 app.get('/favicon.ico', ichefSendGlobalFavicon);
 
 // Alias explicite utilisé par les pages iCHEF si nécessaire.
 app.get('/favicon.png', ichefSendGlobalFavicon);
 
+
+// ==========================================================
+// 📁 SERVEUR DE FICHIERS STATIQUES & ANTI-CACHE (HTML, CSS, JS)
+// ==========================================================
 // Une seule déclaration des fichiers statiques.
-app.use(express.static(__dirname, { // 👈 OUVERTURE CORRECTE ICI
+app.use(express.static(__dirname, { 
     etag: true,
     lastModified: true,
     setHeaders: (res, filePath) => {
@@ -852,10 +839,7 @@ app.use(express.static(__dirname, { // 👈 OUVERTURE CORRECTE ICI
             lower.endsWith('manifest.json') ||
             lower.endsWith('manifest.webmanifest')
         ) {
-            res.setHeader(
-                'Cache-Control',
-                'no-store, no-cache, must-revalidate, proxy-revalidate'
-            );
+            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
             res.setHeader('Pragma', 'no-cache');
             res.setHeader('Expires', '0');
             res.setHeader('Surrogate-Control', 'no-store');
@@ -867,7 +851,8 @@ app.use(express.static(__dirname, { // 👈 OUVERTURE CORRECTE ICI
             res.setHeader('Cache-Control', 'no-cache, must-revalidate');
         }
     }
-})); // 👈 FERMETURE CORRECTE ICI
+}));
+
 
 // 👇 DÉBLOCAGE DES VIDÉOS & RESSOURCES 👇
 
