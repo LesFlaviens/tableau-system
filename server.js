@@ -730,13 +730,72 @@ app.use(async (req, res, next) => {
             );
         }
 
-        if (!ichefModuleIsEnabled(tenant, requestModule)) {
+            if (!ichefModuleIsEnabled(tenant, requestModule)) {
+            const fallbackURL =
+                '/administration.html?tenantID=' +
+                encodeURIComponent(tenantID);
+
             return res.status(403).send(
-                '<!doctype html><meta charset="utf-8">' +
-                '<body style="background:#080a0b;color:#fff;font-family:Arial;padding:40px">' +
-                '<h2>Module bloqué</h2><p>' +
+                '<!doctype html>' +
+                '<html lang="fr">' +
+                '<head>' +
+                '<meta charset="utf-8">' +
+                '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+                '<meta name="robots" content="noindex,nofollow">' +
+                '<title>Module bloqué · iCHEF</title>' +
+                '<style>' +
+                'html,body{margin:0;min-height:100%;background:#080a0b;color:#fff;font-family:Inter,Arial,sans-serif}' +
+                'body{display:flex;align-items:center;justify-content:center;padding:24px}' +
+                '.box{width:min(620px,100%);border:1px solid #27313a;border-radius:16px;padding:28px;background:#0d1115;box-shadow:0 24px 70px rgba(0,0,0,.35)}' +
+                'h2{margin:0 0 10px;font-size:1.55rem}' +
+                'p{margin:6px 0;color:#b9c2cb;line-height:1.55}' +
+                '.module{color:#fff;font-weight:900}' +
+                '.return{margin-top:18px;color:#d4af37;font-weight:850}' +
+                'button{margin-top:18px;border:1px solid #6b571d;background:rgba(212,175,55,.1);color:#d4af37;border-radius:10px;padding:11px 15px;font-weight:900;cursor:pointer}' +
+                '</style>' +
+                '</head>' +
+                '<body>' +
+                '<main class="box">' +
+                '<h2>Module bloqué</h2>' +
+                '<p><span class="module">' +
                 requestModule +
-                ' n’est pas autorisé pour cet établissement.</p></body>'
+                '</span> n’est pas autorisé pour cet établissement.</p>' +
+                '<p class="return">Retour automatique à la dernière page iCHEF visitée…</p>' +
+                '<button type="button" id="back-now">RETOUR MAINTENANT</button>' +
+                '</main>' +
+                '<script>' +
+                '(function(){' +
+                'const fallback=' + JSON.stringify(fallbackURL) + ';' +
+                'let redirected=false;' +
+                'function sameOriginPrevious(){' +
+                'try{' +
+                'if(!document.referrer)return "";' +
+                'const u=new URL(document.referrer,location.href);' +
+                'if(u.origin!==location.origin)return "";' +
+                'if(u.href===location.href)return "";' +
+                'return u.href;' +
+                '}catch(_){return "";}' +
+                '}' +
+                'function goBack(){' +
+                'if(redirected)return;' +
+                'redirected=true;' +
+                'const previous=sameOriginPrevious();' +
+                'if(previous){location.replace(previous);return;}' +
+                'if(history.length>1){' +
+                'history.back();' +
+                'setTimeout(function(){' +
+                'if(document.visibilityState==="visible"){location.replace(fallback);}' +
+                '},900);' +
+                'return;' +
+                '}' +
+                'location.replace(fallback);' +
+                '}' +
+                'document.getElementById("back-now").addEventListener("click",goBack);' +
+                'setTimeout(goBack,1400);' +
+                '})();' +
+                '</script>' +
+                '</body>' +
+                '</html>'
             );
         }
 
@@ -753,66 +812,6 @@ app.use(async (req, res, next) => {
             .send('Erreur de contrôle des modules.');
     }
 });
-
-app.use((req, res, next) => {
-    const requestPath = String(req.path || '').toLowerCase();
-
-    if (
-        requestPath.endsWith('.html') ||
-        requestPath.endsWith('.htm') ||
-        requestPath.endsWith('service-worker.js') ||
-        requestPath.endsWith('sw.js') ||
-        requestPath.endsWith('manifest.json') ||
-        requestPath.endsWith('manifest.webmanifest')
-    ) {
-        res.setHeader(
-            'Cache-Control',
-            'no-store, no-cache, must-revalidate, proxy-revalidate'
-        );
-        res.setHeader('Pragma', 'no-cache');
-        res.setHeader('Expires', '0');
-        res.setHeader('Surrogate-Control', 'no-store');
-    } else if (
-        requestPath.endsWith('.js') ||
-        requestPath.endsWith('.css') ||
-        requestPath.endsWith('.json')
-    ) {
-        res.setHeader('Cache-Control', 'no-cache, must-revalidate');
-    }
-
-    next();
-});
-
-// Une seule déclaration des fichiers statiques.
-app.use(express.static(__dirname, { // 👈 OUVERTURE CORRECTE ICI
-    etag: true,
-    lastModified: true,
-    setHeaders: (res, filePath) => {
-        const lower = String(filePath || '').toLowerCase();
-
-        if (
-            lower.endsWith('.html') ||
-            lower.endsWith('.htm') ||
-            lower.endsWith('service-worker.js') ||
-            lower.endsWith('sw.js') ||
-            lower.endsWith('manifest.json') ||
-            lower.endsWith('manifest.webmanifest')
-        ) {
-            res.setHeader(
-                'Cache-Control',
-                'no-store, no-cache, must-revalidate, proxy-revalidate'
-            );
-            res.setHeader('Pragma', 'no-cache');
-            res.setHeader('Expires', '0');
-            res.setHeader('Surrogate-Control', 'no-store');
-        } else if (
-            lower.endsWith('.js') ||
-            lower.endsWith('.css') ||
-            lower.endsWith('.json')
-        ) {
-            res.setHeader('Cache-Control', 'no-cache, must-revalidate');
-        }
-    }
 })); // 👈 FERMETURE CORRECTE ICI
 
 // 👇 DÉBLOCAGE DES VIDÉOS & RESSOURCES 👇
