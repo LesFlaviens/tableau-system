@@ -6,7 +6,7 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>iCHEF OS — Connexion Partenaire V4</title>
+    <title>iCHEF OS — Connexion Partenaire V5</title>
     
     <!-- 🛡️ BOUCLIER CSP STRICT : Interdit l'exécution de scripts pirates externes -->
     <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://tableau-system.onrender.com; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://upload.wikimedia.org https://via.placeholder.com;">
@@ -241,7 +241,7 @@
         <div style="margin-top:18px;text-align:center;font-family:'Inter',sans-serif;">
             <span id="ichef-login-build"
                   style="display:inline-flex;align-items:center;gap:7px;padding:6px 10px;border-radius:999px;border:1px solid rgba(212,175,55,.28);color:#d4af37;font-size:.68rem;font-weight:900;letter-spacing:.8px;">
-                LOGIN V4
+                LOGIN V5
                 <span id="ichef-server-health"
                       style="color:#999;font-weight:700;letter-spacing:0;">
                     · serveur…
@@ -262,7 +262,7 @@ if ('serviceWorker' in navigator) {
     window.addEventListener('load', async () => {
         try {
             const reg = await navigator.serviceWorker.register(
-                '/service-worker.js?v=19',
+                '/service-worker.js?v=20',
                 {
                     scope: '/',
                     updateViaCache: 'none'
@@ -281,7 +281,7 @@ if ('serviceWorker' in navigator) {
                                 name.startsWith('ichef-cache-') ||
                                 name.startsWith('ichef-dynamic-')
                             ) &&
-                            !name.endsWith('v19')
+                            !name.endsWith('v20')
                         )
                         .map(name => caches.delete(name))
                 );
@@ -290,7 +290,7 @@ if ('serviceWorker' in navigator) {
             navigator.serviceWorker.addEventListener(
                 'controllerchange',
                 () => {
-                    const key = 'ichef_sw_v19_reloaded';
+                    const key = 'ichef_sw_v20_reloaded';
 
                     if (sessionStorage.getItem(key) !== '1') {
                         sessionStorage.setItem(key, '1');
@@ -524,6 +524,109 @@ function startLoginCooldown(seconds = 15) {
     }, 1000);
 }
 
+
+function ichefSleep(ms) {
+    return new Promise(resolve =>
+        setTimeout(resolve, ms)
+    );
+}
+
+async function ichefProbeBackend() {
+    try {
+        const response =
+            await fetch(
+                `${SERVER_URL}/healthz?_t=${Date.now()}`,
+                {
+                    method: 'GET',
+                    cache: 'no-store',
+                    credentials: 'include'
+                }
+            );
+
+        let data = {};
+        try {
+            data = await response.json();
+        } catch (_) {}
+
+        return {
+            ok: response.ok,
+            status: response.status,
+            data
+        };
+
+    } catch (error) {
+        return {
+            ok: false,
+            status: 0,
+            data: {
+                error: 'NETWORK_UNAVAILABLE',
+                message:
+                    error?.message || ''
+            }
+        };
+    }
+}
+
+async function ichefEnsureBackendReady() {
+    const btn =
+        document.getElementById(
+            'login-btn'
+        );
+
+    const delays =
+        [0, 2500, 4000, 6000];
+
+    let last = null;
+
+    for (
+        let attempt = 0;
+        attempt < delays.length;
+        attempt += 1
+    ) {
+        if (delays[attempt]) {
+            btn.innerText =
+                `Serveur iCHEF · tentative ${attempt + 1}/${delays.length}`;
+            await ichefSleep(
+                delays[attempt]
+            );
+        }
+
+        last =
+            await ichefProbeBackend();
+
+        if (last.ok) {
+            const mongoReady =
+                Number(
+                    last.data?.mongoReadyState
+                ) === 1;
+
+            if (mongoReady) {
+                return {
+                    ok: true,
+                    detail: last
+                };
+            }
+
+            showLoginServerError(
+                'Le serveur iCHEF est en ligne mais la base MongoDB n’est pas encore prête. Reconnexion automatique en cours…',
+                true
+            );
+        } else {
+            showLoginServerError(
+                last.status
+                    ? `Serveur iCHEF indisponible (HTTP ${last.status}). Nouvelle tentative automatique…`
+                    : 'Impossible de joindre le serveur iCHEF / Render. Nouvelle tentative automatique…',
+                true
+            );
+        }
+    }
+
+    return {
+        ok: false,
+        detail: last
+    };
+}
+
 async function login() {
     const tenantInput =
         document.getElementById('tenantID');
@@ -571,10 +674,26 @@ async function login() {
     }
 
     btn.innerText =
-        'Authentification…';
+        'Vérification serveur…';
     btn.disabled = true;
 
     try {
+        const backend =
+            await ichefEnsureBackendReady();
+
+        if (!backend.ok) {
+            showLoginServerError(
+                'Le backend iCHEF / Render reste indisponible. Le PIN n’a pas encore été vérifié.'
+            );
+            btn.innerText =
+                'Se Connecter';
+            btn.disabled = false;
+            return;
+        }
+
+        btn.innerText =
+            'Authentification…';
+
         const res =
             await fetch(
                 `${SERVER_URL}/api/verify-pin`,
@@ -704,8 +823,29 @@ async function login() {
                 serverMessage ||
                 'Accès refusé : licence, écran ou permission.';
         } else if (res.status >= 500) {
-            message =
-                'Le serveur iCHEF rencontre une erreur. Réessayez dans quelques instants.';
+            const code =
+                String(
+                    data.code ||
+                    data.error ||
+                    ''
+                );
+
+            if (
+                code === 'NETWORK_UNAVAILABLE'
+            ) {
+                message =
+                    'Le navigateur n’arrive pas à joindre le backend Render. Le PIN n’a pas été refusé : le serveur est inaccessible.';
+            } else if (
+                code === 'MONGO_NOT_READY' ||
+                code === 'DATABASE_UNAVAILABLE'
+            ) {
+                message =
+                    'Le serveur iCHEF répond, mais MongoDB n’est pas prêt. La reconnexion automatique est en cours.';
+            } else {
+                message =
+                    serverMessage ||
+                    `Erreur serveur iCHEF (${res.status}).`;
+            }
         }
 
         showLoginServerError(message);
