@@ -1,6 +1,6 @@
 /**
  * ==============================================================
- * 🧠 iCHEF EMPIRE OS — CORE SERVER V56.1 · MODULE BLOCK AUTO-RETURN (2026.09.07)
+ * 🧠 iCHEF EMPIRE OS — CORE SERVER V56.2 · GLOBAL FAVICON ICHEF (2026.09.07)
  * ==============================================================
  * Contrat central stable pour multi-établissements :
  * Réservations · Plan/PAD/Téléphone · Cuisine/Bar/Pâtisserie · Anti-Rush
@@ -731,71 +731,12 @@ app.use(async (req, res, next) => {
         }
 
         if (!ichefModuleIsEnabled(tenant, requestModule)) {
-            const fallbackURL =
-                '/administration.html?tenantID=' +
-                encodeURIComponent(tenantID);
-
             return res.status(403).send(
-                '<!doctype html>' +
-                '<html lang="fr">' +
-                '<head>' +
-                '<meta charset="utf-8">' +
-                '<meta name="viewport" content="width=device-width,initial-scale=1">' +
-                '<meta name="robots" content="noindex,nofollow">' +
-                '<title>Module bloqué · iCHEF</title>' +
-                '<style>' +
-                'html,body{margin:0;min-height:100%;background:#080a0b;color:#fff;font-family:Inter,Arial,sans-serif}' +
-                'body{display:flex;align-items:center;justify-content:center;padding:24px}' +
-                '.box{width:min(620px,100%);border:1px solid #27313a;border-radius:16px;padding:28px;background:#0d1115;box-shadow:0 24px 70px rgba(0,0,0,.35)}' +
-                'h2{margin:0 0 10px;font-size:1.55rem}' +
-                'p{margin:6px 0;color:#b9c2cb;line-height:1.55}' +
-                '.module{color:#fff;font-weight:900}' +
-                '.return{margin-top:18px;color:#d4af37;font-weight:850}' +
-                'button{margin-top:18px;border:1px solid #6b571d;background:rgba(212,175,55,.1);color:#d4af37;border-radius:10px;padding:11px 15px;font-weight:900;cursor:pointer}' +
-                '</style>' +
-                '</head>' +
-                '<body>' +
-                '<main class="box">' +
-                '<h2>Module bloqué</h2>' +
-                '<p><span class="module">' +
+                '<!doctype html><meta charset="utf-8">' +
+                '<body style="background:#080a0b;color:#fff;font-family:Arial;padding:40px">' +
+                '<h2>Module bloqué</h2><p>' +
                 requestModule +
-                '</span> n’est pas autorisé pour cet établissement.</p>' +
-                '<p class="return">Retour automatique à la dernière page iCHEF visitée…</p>' +
-                '<button type="button" id="back-now">RETOUR MAINTENANT</button>' +
-                '</main>' +
-                '<script>' +
-                '(function(){' +
-                'const fallback=' + JSON.stringify(fallbackURL) + ';' +
-                'let redirected=false;' +
-                'function previousIchefPage(){' +
-                'try{' +
-                'if(!document.referrer)return "";' +
-                'const u=new URL(document.referrer,location.href);' +
-                'if(u.origin!==location.origin)return "";' +
-                'if(u.href===location.href)return "";' +
-                'return u.href;' +
-                '}catch(_){return "";}' +
-                '}' +
-                'function goBack(){' +
-                'if(redirected)return;' +
-                'redirected=true;' +
-                'const previous=previousIchefPage();' +
-                'if(previous){location.replace(previous);return;}' +
-                'if(history.length>1){' +
-                'history.back();' +
-                'setTimeout(function(){' +
-                'if(document.visibilityState==="visible"){location.replace(fallback);}' +
-                '},900);' +
-                'return;' +
-                '}' +
-                'location.replace(fallback);' +
-                '}' +
-                'document.getElementById("back-now").addEventListener("click",goBack);' +
-                'setTimeout(goBack,1400);' +
-                '})();' +
-                '</script>' +
-                '</body>' +
-                '</html>'
+                ' n’est pas autorisé pour cet établissement.</p></body>'
             );
         }
 
@@ -840,6 +781,37 @@ app.use((req, res, next) => {
     }
 
     next();
+});
+
+// ==========================================================
+// 🌟 FAVICON GLOBAL iCHEF — TOUS LES MODULES
+// ==========================================================
+const ICHEF_GLOBAL_FAVICON =
+    '/Gemini_Generated_Image_q748ueq748ueq748-Photoroom (1) (1) (1).png';
+
+app.get('/favicon.ico', (req, res) => {
+    res.setHeader(
+        'Cache-Control',
+        'public, max-age=86400'
+    );
+
+    return res.redirect(
+        302,
+        ICHEF_GLOBAL_FAVICON
+    );
+});
+
+// Alias PNG explicite si une page souhaite l'utiliser directement.
+app.get('/favicon.png', (req, res) => {
+    res.setHeader(
+        'Cache-Control',
+        'public, max-age=86400'
+    );
+
+    return res.redirect(
+        302,
+        ICHEF_GLOBAL_FAVICON
+    );
 });
 
 // Une seule déclaration des fichiers statiques.
