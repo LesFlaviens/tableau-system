@@ -6,15 +6,19 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>iCHEF OS — Connexion Partenaire V7</title>
+    <title>iCHEF OS — Connexion Partenaire V8 · PWA</title>
     
     <!-- 🛡️ BOUCLIER CSP STRICT : Interdit l'exécution de scripts pirates externes -->
     <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://tableau-system.onrender.com; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://upload.wikimedia.org https://via.placeholder.com;">
 
     <!-- 📲 LIENS PWA OBLIGATOIRES -->
-    <link rel="manifest" href="/manifest.json">
+    <link rel="manifest" href="/manifest.json?v=8">
     <link rel="apple-touch-icon" href="/icon-512.png">
     <meta name="theme-color" content="#050505">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="iCHEF OS">
     
     <!-- 🎨 POLICES ET STYLES -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -151,7 +155,10 @@
             <button class="btn-demo" onclick="switchScreen('demo')">✨ Créer une démo privée</button>
         </div>
 
-        <button id="pwa-install-btn" style="display:none" onclick="ouvrirGuideInstallation()" style="background: #111; color: #aaa; border: 1px solid #333; box-shadow: none; margin-top: 15px; padding: 12px; font-size: 0.85rem;">
+        <button id="pwa-install-btn"
+                type="button"
+                onclick="ouvrirGuideInstallation()"
+                style="display:block;background:#111;color:#d4af37;border:1px solid rgba(212,175,55,.45);box-shadow:none;margin-top:15px;padding:12px;font-size:.85rem;">
             📲 Installer l'App iCHEF OS
         </button>
 
@@ -241,7 +248,7 @@
         <div style="margin-top:18px;text-align:center;font-family:'Inter',sans-serif;">
             <span id="ichef-login-build"
                   style="display:inline-flex;align-items:center;gap:7px;padding:6px 10px;border-radius:999px;border:1px solid rgba(212,175,55,.28);color:#d4af37;font-size:.68rem;font-weight:900;letter-spacing:.8px;">
-                LOGIN V7
+                LOGIN V8 · PWA
                 <span id="ichef-server-health"
                       style="color:#999;font-weight:700;letter-spacing:0;">
                     · serveur…
@@ -259,85 +266,240 @@
 // 🚨 1. SERVICE WORKER & PWA
 // ==========================================
 // ==========================================================
-// 🔥 LOGIN V7 — AUCUN SERVICE WORKER PENDANT LA CONNEXION
+// 📲 LOGIN V8 — PWA SAFE
+// Le Service Worker ne gère que les ressources statiques.
+// Il n'intercepte jamais :
+// - connexionpartenaire.html
+// - les navigations HTML
+// - /api/*
+// - le backend Render cross-origin
 // ==========================================================
-async function purgeIchefLoginServiceWorkers() {
+async function registerIchefPWA() {
     if (!('serviceWorker' in navigator)) {
-        return false;
-    }
-
-    const hadController = Boolean(navigator.serviceWorker.controller);
-
-    try {
-        const registrations = await navigator.serviceWorker.getRegistrations();
-        await Promise.all(registrations.map(reg => reg.unregister()));
-    } catch (error) {
-        console.warn('[iCHEF LOGIN V7] Unregister SW', error);
+        return null;
     }
 
     try {
-        if ('caches' in window) {
-            const keys = await caches.keys();
-            await Promise.all(
-                keys.filter(name => name.startsWith('ichef-'))
-                    .map(name => caches.delete(name))
+        const registration =
+            await navigator.serviceWorker.register(
+                '/service-worker.js?v=22',
+                {
+                    scope: '/',
+                    updateViaCache: 'none'
+                }
             );
-        }
+
+        registration.update().catch(() => {});
+
+        console.log(
+            '✅ iCHEF PWA · Service Worker V22 enregistré'
+        );
+
+        return registration;
+
     } catch (error) {
-        console.warn('[iCHEF LOGIN V7] Nettoyage cache', error);
-    }
+        console.warn(
+            '[iCHEF PWA] Service Worker indisponible',
+            error
+        );
 
-    // Si cette page était encore contrôlée par un ancien SW,
-    // un seul rechargement immédiat est nécessaire.
-    if (hadController && sessionStorage.getItem('ichef_login_v7_sw_purged') !== '1') {
-        sessionStorage.setItem('ichef_login_v7_sw_purged', '1');
-        const url = new URL(window.location.href);
-        url.searchParams.set('_loginbuild', '7');
-        window.location.replace(url.toString());
-        return true;
+        return null;
     }
-
-    return false;
 }
 
-window.addEventListener('load', async () => {
-    const reloading = await purgeIchefLoginServiceWorkers();
-    if (reloading) {
+function ichefIsStandalone() {
+    return (
+        window.matchMedia(
+            '(display-mode: standalone)'
+        ).matches ||
+        window.navigator.standalone === true
+    );
+}
+
+function ichefIsIOS() {
+    return /iphone|ipad|ipod/i.test(
+        navigator.userAgent || ''
+    );
+}
+
+function refreshPwaInstallButton() {
+    const button =
+        document.getElementById(
+            'pwa-install-btn'
+        );
+
+    if (!button) {
         return;
     }
 
-    const badge = document.getElementById('ichef-login-build');
-    if (badge) {
-        badge.title = 'Connexion directe sans Service Worker';
+    if (ichefIsStandalone()) {
+        button.style.display = 'none';
+        return;
     }
-});
 
-let deferredPrompt;
-window.addEventListener('beforeinstallprompt', (e) => {
-    e.preventDefault();
-    deferredPrompt = e;
-    document.getElementById('ios-guide').style.display = 'none'; 
-});
+    button.style.display = 'block';
 
-function ouvrirGuideInstallation() {
-    const modal = document.getElementById('pwa-modal');
     if (deferredPrompt) {
-        deferredPrompt.prompt();
-        deferredPrompt.userChoice.then((choiceResult) => {
-            if (choiceResult.outcome === 'accepted') {
-                document.getElementById('pwa-install-btn').style.display = 'none';
+        button.textContent =
+            '📲 Installer l’App iCHEF OS';
+        return;
+    }
+
+    if (ichefIsIOS()) {
+        button.textContent =
+            '📲 Installer iCHEF sur iPhone / iPad';
+        return;
+    }
+
+    button.textContent =
+        '📲 Installer l’App iCHEF OS';
+}
+
+window.addEventListener(
+    'load',
+    async () => {
+        await registerIchefPWA();
+        refreshPwaInstallButton();
+
+        const badge =
+            document.getElementById(
+                'ichef-login-build'
+            );
+
+        if (badge) {
+            badge.title =
+                'PWA installable · Service Worker sans interception du login';
+        }
+    }
+);
+let deferredPrompt = null;
+
+window.addEventListener(
+    'beforeinstallprompt',
+    (event) => {
+        // Chrome/Edge/Android :
+        // on garde le prompt pour le bouton iCHEF.
+        event.preventDefault();
+        deferredPrompt = event;
+        refreshPwaInstallButton();
+    }
+);
+
+window.addEventListener(
+    'appinstalled',
+    () => {
+        deferredPrompt = null;
+
+        const button =
+            document.getElementById(
+                'pwa-install-btn'
+            );
+
+        if (button) {
+            button.style.display =
+                'none';
+        }
+
+        console.log(
+            '✅ iCHEF OS installé comme PWA'
+        );
+    }
+);
+
+async function ouvrirGuideInstallation() {
+    const modal =
+        document.getElementById(
+            'pwa-modal'
+        );
+
+    if (ichefIsStandalone()) {
+        if (modal) {
+            modal.style.display =
+                'none';
+        }
+
+        return;
+    }
+
+    // Chrome / Edge / Android :
+    // déclenche le vrai dialogue natif d'installation.
+    if (deferredPrompt) {
+        try {
+            deferredPrompt.prompt();
+
+            const choice =
+                await deferredPrompt.userChoice;
+
+            if (
+                choice?.outcome ===
+                'accepted'
+            ) {
+                const button =
+                    document.getElementById(
+                        'pwa-install-btn'
+                    );
+
+                if (button) {
+                    button.style.display =
+                        'none';
+                }
             }
+
+        } catch (error) {
+            console.warn(
+                '[iCHEF PWA install]',
+                error
+            );
+
+        } finally {
             deferredPrompt = null;
-        });
-    } 
-    else {
-        modal.style.display = 'flex';
+        }
+
+        return;
+    }
+
+    // iPhone/iPad : Safari n'expose pas beforeinstallprompt.
+    // On affiche donc le guide "Partager > Sur l'écran d'accueil".
+    if (modal) {
+        const guide =
+            document.getElementById(
+                'ios-guide'
+            );
+
+        const instructions =
+            document.getElementById(
+                'pwa-instructions'
+            );
+
+        if (ichefIsIOS()) {
+            if (instructions) {
+                instructions.textContent =
+                    'Sur iPhone/iPad, installez iCHEF OS depuis Safari :';
+            }
+
+            if (guide) {
+                guide.style.display =
+                    'block';
+            }
+
+        } else {
+            if (instructions) {
+                instructions.textContent =
+                    'Si le bouton natif d’installation n’apparaît pas encore, ouvrez le menu du navigateur puis choisissez « Installer l’application » ou « Ajouter à l’écran d’accueil ».';
+            }
+
+            if (guide) {
+                guide.style.display =
+                    'none';
+            }
+        }
+
+        modal.style.display =
+            'flex';
     }
 }
 
-if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone) {
-    document.getElementById('pwa-install-btn').style.display = 'none';
-}
+refreshPwaInstallButton();
 
 // ==========================================
 // 🛡️ 2. SÉCURITÉ ET VERROUILLAGES
@@ -371,15 +533,19 @@ window.onload = function() {
 const SERVER_URL = "https://tableau-system.onrender.com";
 let failedAttempts = 0;
 
+
 async function updateIchefServerHealth() {
     const status = document.getElementById('ichef-server-health');
     if (!status) return;
 
     try {
-        const response = await fetch(`${SERVER_URL}/healthz?_t=${Date.now()}`, {
-            cache: 'no-store',
-            credentials: 'include'
-        });
+        const response = await fetch(
+            `${SERVER_URL}/healthz?_t=${Date.now()}`,
+            {
+                cache: 'no-store',
+                credentials: 'include'
+            }
+        );
 
         if (!response.ok) {
             status.textContent = `· serveur HTTP ${response.status}`;
@@ -390,8 +556,13 @@ async function updateIchefServerHealth() {
         const data = await response.json().catch(() => ({}));
         const mongoOK = Number(data.mongoReadyState) === 1;
 
-        status.textContent = mongoOK ? '· SERVEUR OK' : '· BASE INDISPONIBLE';
-        status.style.color = mongoOK ? '#4ade80' : '#fbbf24';
+        status.textContent = mongoOK
+            ? '· SERVEUR OK'
+            : '· BASE INDISPONIBLE';
+
+        status.style.color = mongoOK
+            ? '#4ade80'
+            : '#fbbf24';
 
     } catch (_) {
         status.textContent = '· SERVEUR HORS LIGNE';
@@ -411,10 +582,12 @@ function switchScreen(screen) {
     });
 }
 
+// 🚀 FONCTION RÉELLE DE CRÉATION DE DÉMO (CONNECTÉE AU SERVEUR)
 async function genererDemo(e) {
     e.preventDefault();
     const btn = document.getElementById('btn-submit');
     
+    // 1. Récupération des données du formulaire
     const resto = document.getElementById('lead-resto').value.trim();
     const siret = document.getElementById('lead-siret').value.trim();
     const email = document.getElementById('lead-email').value.trim();
@@ -424,6 +597,7 @@ async function genererDemo(e) {
     btn.disabled = true;
 
     try {
+        // 3. Appel à ton API Render
         const res = await fetch(`${SERVER_URL}/api/nouvelle-demande-demo`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -437,6 +611,7 @@ async function genererDemo(e) {
 
         const data = await res.json();
 
+        // 4. Traitement de la réponse
         if (data.success) {
             switchScreen('result');
         } else {
@@ -451,6 +626,7 @@ async function genererDemo(e) {
     }
 }
 
+// 🔐 CONNEXION PARTENAIRE — PIN RESTAURANT, SANS STOCKAGE DU PIN
 function normalizeRestaurantTenant(value) {
     return String(value || '')
         .trim()
@@ -474,8 +650,12 @@ function showLoginServerError(message, isWarning = false) {
     box.textContent = text;
     box.style.display = 'block';
     box.style.color = isWarning ? '#fbbf24' : '#ff7676';
-    box.style.borderColor = isWarning ? 'rgba(245,158,11,.35)' : 'rgba(239,68,68,.35)';
-    box.style.background = isWarning ? 'rgba(245,158,11,.06)' : 'rgba(239,68,68,.06)';
+    box.style.borderColor = isWarning
+        ? 'rgba(245,158,11,.35)'
+        : 'rgba(239,68,68,.35)';
+    box.style.background = isWarning
+        ? 'rgba(245,158,11,.06)'
+        : 'rgba(239,68,68,.06)';
 }
 
 let loginCooldownTimer = null;
@@ -508,21 +688,29 @@ function startLoginCooldown(seconds = 15) {
             showLoginServerError('');
             return;
         }
+
         render();
     }, 1000);
 }
 
+
 function ichefSleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise(resolve =>
+        setTimeout(resolve, ms)
+    );
 }
 
 async function ichefProbeBackend() {
     try {
-        const response = await fetch(`${SERVER_URL}/healthz?_t=${Date.now()}`, {
-            method: 'GET',
-            cache: 'no-store',
-            credentials: 'include'
-        });
+        const response =
+            await fetch(
+                `${SERVER_URL}/healthz?_t=${Date.now()}`,
+                {
+                    method: 'GET',
+                    cache: 'no-store',
+                    credentials: 'include'
+                }
+            );
 
         let data = {};
         try {
@@ -539,32 +727,59 @@ async function ichefProbeBackend() {
         return {
             ok: false,
             status: 0,
-            data: { error: 'NETWORK_UNAVAILABLE', message: error?.message || '' }
+            data: {
+                error: 'NETWORK_UNAVAILABLE',
+                message:
+                    error?.message || ''
+            }
         };
     }
 }
 
 async function ichefEnsureBackendReady() {
-    const btn = document.getElementById('login-btn');
-    const delays = [0, 2500, 4000, 6000];
+    const btn =
+        document.getElementById(
+            'login-btn'
+        );
+
+    const delays =
+        [0, 2500, 4000, 6000];
+
     let last = null;
 
-    for (let attempt = 0; attempt < delays.length; attempt += 1) {
+    for (
+        let attempt = 0;
+        attempt < delays.length;
+        attempt += 1
+    ) {
         if (delays[attempt]) {
-            btn.innerText = `Serveur iCHEF · tentative ${attempt + 1}/${delays.length}`;
-            await ichefSleep(delays[attempt]);
+            btn.innerText =
+                `Serveur iCHEF · tentative ${attempt + 1}/${delays.length}`;
+            await ichefSleep(
+                delays[attempt]
+            );
         }
 
-        last = await ichefProbeBackend();
+        last =
+            await ichefProbeBackend();
 
         if (last.ok) {
-            const mongoReady = Number(last.data?.mongoReadyState) === 1;
+            const mongoReady =
+                Number(
+                    last.data?.mongoReadyState
+                ) === 1;
 
             if (mongoReady) {
-                return { ok: true, detail: last };
+                return {
+                    ok: true,
+                    detail: last
+                };
             }
 
-            showLoginServerError('Le serveur iCHEF est en ligne mais la base MongoDB n’est pas encore prête. Reconnexion automatique en cours…', true);
+            showLoginServerError(
+                'Le serveur iCHEF est en ligne mais la base MongoDB n’est pas encore prête. Reconnexion automatique en cours…',
+                true
+            );
         } else {
             showLoginServerError(
                 last.status
@@ -575,7 +790,10 @@ async function ichefEnsureBackendReady() {
         }
     }
 
-    return { ok: false, detail: last };
+    return {
+        ok: false,
+        detail: last
+    };
 }
 
 let ichefLoginInProgress = false;
@@ -585,23 +803,42 @@ async function login() {
         return;
     }
 
-    const tenantInput = document.getElementById('tenantID');
-    const pinInput = document.getElementById('pinCode');
-    const btn = document.getElementById('login-btn');
+    const tenantInput =
+        document.getElementById('tenantID');
 
-    const tenant = normalizeRestaurantTenant(tenantInput?.value);
-    const pin = String(pinInput?.value || '').replace(/\D/g, '').slice(0, 12);
+    const pinInput =
+        document.getElementById('pinCode');
+
+    const btn =
+        document.getElementById('login-btn');
+
+    const tenant =
+        normalizeRestaurantTenant(
+            tenantInput?.value
+        );
+
+    const pin =
+        String(
+            pinInput?.value || ''
+        )
+        .replace(/\D/g, '')
+        .slice(0, 12);
 
     showLoginServerError('');
 
     if (!tenant) {
-        showLoginServerError('Identifiant restaurant manquant.');
+        showLoginServerError(
+            'Identifiant restaurant manquant.'
+        );
         tenantInput?.focus();
         return;
     }
 
     if (!/^\d{4,12}$/.test(pin)) {
-        showLoginServerError('Le PIN restaurant doit contenir entre 4 et 12 chiffres. La clé Master Empire2026 ne se saisit pas ici.');
+        showLoginServerError(
+            'Le PIN restaurant doit contenir entre 4 et 12 chiffres. ' +
+            'La clé Master Empire2026 ne se saisit pas ici.'
+        );
         pinInput?.focus();
         return;
     }
@@ -611,56 +848,78 @@ async function login() {
         return;
     }
 
-    btn.innerText = 'Vérification serveur…';
+    btn.innerText =
+        'Vérification serveur…';
     btn.disabled = true;
     ichefLoginInProgress = true;
 
     try {
-        const backend = await ichefEnsureBackendReady();
+        const backend =
+            await ichefEnsureBackendReady();
 
         if (!backend.ok) {
-            showLoginServerError('Le backend iCHEF / Render reste indisponible. Le PIN n’a pas encore été vérifié.');
-            btn.innerText = 'Se Connecter';
+            showLoginServerError(
+                'Le backend iCHEF / Render reste indisponible. Le PIN n’a pas encore été vérifié.'
+            );
+            btn.innerText =
+                'Se Connecter';
             btn.disabled = false;
             ichefLoginInProgress = false;
             return;
         }
 
-        btn.innerText = 'Authentification…';
+        btn.innerText =
+            'Authentification…';
 
-        const res = await fetch(`${SERVER_URL}/api/verify-pin`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Accept': 'application/json'
-            },
-            credentials: 'include',
-            body: JSON.stringify({
-                tenantID: tenant,
-                pin,
-                deviceId: getDeviceFingerprint(),
-                terminal: 'ADMIN'
-            })
-        });
+        const res =
+            await fetch(
+                `${SERVER_URL}/api/verify-pin`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type':
+                            'application/json',
+                        'Accept':
+                            'application/json'
+                    },
+                    credentials: 'include',
+                    body: JSON.stringify({
+                        tenantID: tenant,
+                        pin,
+                        deviceId:
+                            getDeviceFingerprint(),
+                        terminal: 'ADMIN'
+                    })
+                }
+            );
 
         let data = {};
+
         try {
             data = await res.json();
         } catch (_) {
             data = {};
         }
 
-        // ==========================================
-        // ✅ SUCCÈS DE L'AUTHENTIFICATION
-        // ==========================================
-        if (res.ok && data.success === true) {
+        if (
+            res.ok &&
+            data.success === true
+        ) {
             failedAttempts = 0;
 
-            const safeTenant = String(data.safeTenantID || tenant).trim();
+            const safeTenant =
+                String(
+                    data.safeTenantID ||
+                    tenant
+                ).trim();
 
-            localStorage.setItem('ichef_tenant_id', safeTenant);
+            localStorage.setItem(
+                'ichef_tenant_id',
+                safeTenant
+            );
 
-            // 🟢 CORRECTION CRITIQUE : Stockage du PIN requis par administration.html
+            // Comportement conservé depuis ton code actuel :
+            // administration.html utilise encore le PIN de session côté navigateur.
             if (data.isManager) {
                 localStorage.setItem('ichef_master_pin', pin);
                 localStorage.setItem('pin', pin);
@@ -672,69 +931,132 @@ async function login() {
             localStorage.removeItem('ichef_csrf_token');
 
             try {
-                sessionStorage.setItem('ichef_login_context', JSON.stringify({
-                    tenantID: safeTenant,
-                    role: data.role || '',
-                    plan: data.plan || '',
-                    allowedModules: Array.isArray(data.allowedModules) ? data.allowedModules : [],
-                    blockedModules: Array.isArray(data.blockedModules) ? data.blockedModules : [],
-                    authenticatedAt: new Date().toISOString()
-                }));
+                sessionStorage.setItem(
+                    'ichef_login_context',
+                    JSON.stringify({
+                        tenantID:
+                            safeTenant,
+                        role:
+                            data.role || '',
+                        plan:
+                            data.plan || '',
+                        allowedModules:
+                            Array.isArray(
+                                data.allowedModules
+                            )
+                                ? data.allowedModules
+                                : [],
+                        blockedModules:
+                            Array.isArray(
+                                data.blockedModules
+                            )
+                                ? data.blockedModules
+                                : [],
+                        authenticatedAt:
+                            new Date()
+                                .toISOString()
+                    })
+                );
 
                 if (data.csrfToken) {
-                    sessionStorage.setItem('ichef_csrf_token', String(data.csrfToken));
+                    sessionStorage.setItem(
+                        'ichef_csrf_token',
+                        String(
+                            data.csrfToken
+                        )
+                    );
                 }
             } catch (_) {}
 
             pinInput.value = '';
 
-            // Redirection
-            window.location.href = `administration.html?tenantID=${encodeURIComponent(safeTenant)}`;
+            window.location.href =
+                `administration.html?tenantID=${encodeURIComponent(
+                    safeTenant
+                )}`;
+
             return;
         }
 
-        // ==========================================
-        // ❌ ÉCHEC DE L'AUTHENTIFICATION
-        // ==========================================
         failedAttempts += 1;
         pinInput.value = '';
         ichefLoginInProgress = false;
 
-        const serverMessage = String(data.error || '').trim();
-        let message = serverMessage || `Connexion refusée (${res.status}).`;
+        const serverMessage =
+            String(
+                data.error ||
+                ''
+            ).trim();
+
+        let message =
+            serverMessage ||
+            `Connexion refusée (${res.status}).`;
 
         if (res.status === 401) {
-            message = serverMessage || 'Code PIN incorrect.';
+            message =
+                serverMessage ||
+                'Code PIN incorrect.';
         } else if (res.status === 404) {
-            message = serverMessage || 'Restaurant introuvable. Vérifiez le tenantID.';
+            message =
+                serverMessage ||
+                'Restaurant introuvable. Vérifiez le tenantID.';
         } else if (res.status === 403) {
-            message = serverMessage || 'Accès refusé : licence, écran ou permission.';
+            message =
+                serverMessage ||
+                'Accès refusé : licence, écran ou permission.';
         } else if (res.status >= 500) {
-            const code = String(data.code || data.error || '');
-            if (code === 'NETWORK_UNAVAILABLE') {
-                message = 'Le navigateur n’arrive pas à joindre le backend Render. Le PIN n’a pas été refusé : le serveur est inaccessible.';
-            } else if (code === 'MONGO_NOT_READY' || code === 'DATABASE_UNAVAILABLE') {
-                message = 'Le serveur iCHEF répond, mais MongoDB n’est pas prêt. La reconnexion automatique est en cours.';
+            const code =
+                String(
+                    data.code ||
+                    data.error ||
+                    ''
+                );
+
+            if (
+                code === 'NETWORK_UNAVAILABLE'
+            ) {
+                message =
+                    'Le navigateur n’arrive pas à joindre le backend Render. Le PIN n’a pas été refusé : le serveur est inaccessible.';
+            } else if (
+                code === 'MONGO_NOT_READY' ||
+                code === 'DATABASE_UNAVAILABLE'
+            ) {
+                message =
+                    'Le serveur iCHEF répond, mais MongoDB n’est pas prêt. La reconnexion automatique est en cours.';
             } else {
-                message = serverMessage || `Erreur serveur iCHEF (${res.status}).`;
+                message =
+                    serverMessage ||
+                    `Erreur serveur iCHEF (${res.status}).`;
             }
         }
 
         showLoginServerError(message);
 
         if (failedAttempts >= 3) {
-            showLoginServerError(`${message} Trois essais ont échoué : nouvel essai possible dans 15 secondes.`, true);
+            showLoginServerError(
+                `${message} Trois essais ont échoué : nouvel essai possible dans 15 secondes.`,
+                true
+            );
             startLoginCooldown(15);
         } else {
-            btn.innerText = 'Se Connecter';
+            btn.innerText =
+                'Se Connecter';
             btn.disabled = false;
             pinInput.focus();
         }
 
     } catch (error) {
-        console.error('[iCHEF connexion partenaire]', error);
-        showLoginServerError('Impossible de joindre le serveur iCHEF. Vérifiez la connexion réseau ou le déploiement du serveur.');
-        btn.innerText = 'Se Connecter';
+        console.error(
+            '[iCHEF connexion partenaire]',
+            error
+        );
+
+        showLoginServerError(
+            'Impossible de joindre le serveur iCHEF. Vérifiez la connexion réseau ou le déploiement du serveur.'
+        );
+
+        btn.innerText =
+            'Se Connecter';
         btn.disabled = false;
         ichefLoginInProgress = false;
     }
@@ -748,7 +1070,6 @@ function creationNumber(id, fallback, min, max) {
     if (!Number.isFinite(value)) return fallback;
     return Math.max(min, Math.min(max, Math.round(value)));
 }
-
 async function creerClientMaster() {
     const btn = document.getElementById('btn-create-client');
     const masterKey = String(document.getElementById('master-create-key')?.value || '').trim();
@@ -758,10 +1079,8 @@ async function creerClientMaster() {
     const phone = String(document.getElementById('client-phone')?.value || '').trim();
     const plan = String(document.getElementById('client-plan')?.value || 'BUSINESS').trim().toUpperCase();
     const specialite = String(document.getElementById('client-specialite')?.value || 'cuisine').trim();
-    
     if (!masterKey) return alert('Clé Master requise.');
     if (restaurant.length < 2 || !email || phone.length < 6) return alert('Nom du restaurant, email et téléphone requis.');
-    
     btn.disabled = true; btn.innerText = 'Création sécurisée…';
     try {
         const response = await fetch(`${SERVER_URL}/api/master/clients/create`, {
@@ -776,16 +1095,13 @@ async function creerClientMaster() {
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok || data.success === false) throw new Error(data.error || `Création refusée (${response.status})`);
-        
         dernierClientCree = data.client || null;
         if (!dernierClientCree?.tenantID || !dernierClientCree?.pin) throw new Error('Identifiants non retournés par le serveur.');
-        
         document.getElementById('created-name').textContent = dernierClientCree.name || restaurant;
         document.getElementById('created-tenant').textContent = dernierClientCree.tenantID;
         document.getElementById('created-pin').textContent = dernierClientCree.pin;
         document.getElementById('created-plan').textContent = dernierClientCree.plan || plan;
         document.getElementById('master-create-key').value = '';
-        
         switchScreen('created');
     } catch (error) {
         console.error('[iCHEF création client]', error);
@@ -794,19 +1110,16 @@ async function creerClientMaster() {
         btn.disabled = false; btn.innerText = 'Créer le client';
     }
 }
-
 async function copierAccesClient() {
     if (!dernierClientCree) return;
     const text = `iCHEF OS\nRestaurant : ${dernierClientCree.name || ''}\nIdentifiant : ${dernierClientCree.tenantID}\nPIN : ${dernierClientCree.pin}\nAccès : ${dernierClientCree.loginUrl || 'https://os.ichef.ch/'}`;
     try { await navigator.clipboard.writeText(text); alert('Accès copiés.'); }
     catch (_) { prompt('Copiez les accès :', text); }
 }
-
 function ouvrirClientCree() {
     if (!dernierClientCree?.tenantID) return;
     window.location.href = `administration.html?tenantID=${encodeURIComponent(dernierClientCree.tenantID)}`;
 }
-
 function resetCreationClient() {
     dernierClientCree = null;
     ['client-resto','client-tenant-wanted','client-email','client-phone'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
@@ -817,6 +1130,7 @@ function resetCreationClient() {
     document.getElementById('master-create-key').value = '';
     switchScreen('create');
 }
+
 </script>
 </body>
 </html>
