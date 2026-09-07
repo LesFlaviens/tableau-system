@@ -1,11 +1,14 @@
-const CACHE_NAME = 'ichef-cache-v18'; // On passe en v18 pour être sûr que tout le monde se mette à jour
-const DYNAMIC_CACHE = 'ichef-dynamic-v18';
+const CACHE_NAME = 'ichef-cache-v23';
+const DYNAMIC_CACHE = 'ichef-dynamic-v23';
 
-// ROUTAGE STRICT : Remplacement des "./" par "/" et ajout obligatoire de "/index.html"
+// ==========================================================
+// 📦 ASSETS iCHEF — PWA
+// connexionpartenaire.html n'est volontairement PAS précaché.
+// Le login doit toujours être récupéré depuis le réseau.
+// ==========================================================
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
-  '/connexionpartenaire.html',
   '/administration.html',
   '/pack-eco.html',
   '/chef-bar.html',
@@ -16,84 +19,317 @@ const ASSETS_TO_CACHE = [
   '/icon-192.png',
   '/icon-512.png',
   '/logo-ichef.png',
-  '/mockup-ichef.png'
+  '/mockup-ichef.png',
+  '/Gemini_Generated_Image_q748ueq748ueq748-Photoroom (1) (1) (1).png'
 ];
 
+// ==========================================================
+// INSTALL
+// ==========================================================
 self.addEventListener('install', (event) => {
-    self.skipWaiting(); 
-    event.waitUntil(
-        caches.open(CACHE_NAME).then((cache) => {
-            return Promise.allSettled(
-                ASSETS_TO_CACHE.map(url => cache.add(url).catch(err => console.log(`[iCHEF SW] Fichier ignoré : ${url}`)))
+  self.skipWaiting();
+
+  event.waitUntil(
+    (async () => {
+      const cache = await caches.open(CACHE_NAME);
+
+      for (const url of ASSETS_TO_CACHE) {
+        try {
+          const response = await fetch(
+            new Request(url, { cache: 'reload' })
+          );
+
+          if (response && response.ok) {
+            await cache.put(url, response.clone());
+          } else {
+            console.warn(
+              `[iCHEF SW V23] Ressource ignorée : ${url}`
             );
-        })
-    );
+          }
+
+        } catch (error) {
+          console.warn(
+            `[iCHEF SW V23] Ressource non précachée : ${url}`
+          );
+        }
+      }
+    })()
+  );
 });
 
+// ==========================================================
+// ACTIVATE
+// ==========================================================
 self.addEventListener('activate', (event) => {
-    event.waitUntil(
-        caches.keys().then((cacheNames) => {
-            return Promise.all(
-                cacheNames.map((cacheName) => {
-                    if (cacheName !== CACHE_NAME && cacheName !== DYNAMIC_CACHE) {
-                        console.log(`🧹 Nettoyage de l'ancien cache: ${cacheName}`);
-                        return caches.delete(cacheName); 
-                    }
-                })
+  event.waitUntil(
+    (async () => {
+      const cacheNames = await caches.keys();
+
+      await Promise.all(
+        cacheNames
+          .filter(
+            name =>
+              (
+                name.startsWith('ichef-cache-') ||
+                name.startsWith('ichef-dynamic-')
+              ) &&
+              name !== CACHE_NAME &&
+              name !== DYNAMIC_CACHE
+          )
+          .map(name => {
+            console.log(
+              `🧹 Nettoyage ancien cache : ${name}`
             );
-        }).then(() => self.clients.claim()) // Prend le contrôle immédiat des clients
-    );
+            return caches.delete(name);
+          })
+      );
+
+      await self.clients.claim();
+    })()
+  );
 });
 
+// ==========================================================
+// FETCH
+// ==========================================================
 self.addEventListener('fetch', (event) => {
-    // 1. PATCH VIDÉO : Exclusion des requêtes de flux (évite le crash 206)
-    if (event.request.headers.get('range')) {
-        return; 
-    }
+  const request = event.request;
 
-    // 2. REQUÊTES API (Réseau seulement, interception en cas de coupure)
-    if (event.request.method !== 'GET' || 
-        event.request.url.includes('/api/') || 
-        event.request.url.includes('/get-current-state') || 
-        event.request.url.includes('/update-order')) {
-        
-        event.respondWith(
-            fetch(event.request).catch(() => {
-                // 🛡️ MAGIE HORS-LIGNE : Renvoi d'un statut 503 propre pour la file d'attente
-                return new Response(
-                    JSON.stringify({ success: false, error: "NETWORK_UNAVAILABLE", offline: true }),
-                    { headers: { 'Content-Type': 'application/json' }, status: 503 }
-                );
-            })
-        );
-        return; 
-    }
+  if (!request) {
+    return;
+  }
 
-    // 3. FICHIERS STATIQUES -> NETWORK FIRST (Réseau en priorité, Cache en secours)
-    // C'est LA solution pour que les mises à jour HTML s'appliquent automatiquement !
+  // 1. Flux vidéo / audio / fichiers partiels :
+  // le navigateur les gère directement.
+  if (request.headers.get('range')) {
+    return;
+  }
+
+  let url;
+
+  try {
+    url = new URL(request.url);
+  } catch (_) {
+    return;
+  }
+
+  // 2. IMPORTANT :
+  // aucune interception des domaines externes.
+  // tableau-system.onrender.com passe directement au navigateur.
+  if (url.origin !== self.location.origin) {
+    return;
+  }
+
+  const pathname = String(url.pathname || '');
+
+  // 3. API / écritures iCHEF :
+  // réseau uniquement, avec une vraie Response 503 si coupure.
+  const isAPI =
+    request.method !== 'GET' ||
+    pathname.startsWith('/api/') ||
+    pathname.includes('/get-current-state') ||
+    pathname.includes('/update-order');
+
+  if (isAPI) {
     event.respondWith(
-        fetch(event.request).then((networkResponse) => {
-            // Si le réseau fonctionne, on met à jour le cache dynamique discrètement avec la nouvelle version
-            if(networkResponse && networkResponse.status === 200 && networkResponse.type === 'basic') {
-                const responseClone = networkResponse.clone();
-                caches.open(DYNAMIC_CACHE).then((cache) => {
-                    cache.put(event.request, responseClone);
-                });
+      (async () => {
+        try {
+          const response = await fetch(request);
+
+          if (response instanceof Response) {
+            return response;
+          }
+
+        } catch (_) {}
+
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: 'NETWORK_UNAVAILABLE',
+            offline: true
+          }),
+          {
+            status: 503,
+            headers: {
+              'Content-Type':
+                'application/json; charset=utf-8'
             }
-            return networkResponse; // On renvoie la version toute fraîche
-            
-        }).catch(() => {
-            // 🛡️ HORS-LIGNE : Si le réseau est coupé, on sert ce qu'on a gardé en mémoire !
-            return caches.match(event.request).then((cachedResponse) => {
-                if (cachedResponse) {
-                    return cachedResponse;
-                }
-                
-                // Si pas de réseau et fichier non trouvé dans le cache : retour page connexion
-                if (event.request.headers.get('accept') && event.request.headers.get('accept').includes('text/html')) {
-                    return caches.match('/connexionpartenaire.html');
-                }
-            });
-        })
+          }
+        );
+      })()
     );
+
+    return;
+  }
+
+  // 4. LOGIN :
+  // jamais depuis le cache.
+  if (
+    pathname === '/connexionpartenaire.html' ||
+    pathname.endsWith('/connexionpartenaire.html')
+  ) {
+    event.respondWith(
+      (async () => {
+        try {
+          const response = await fetch(
+            request,
+            { cache: 'reload' }
+          );
+
+          if (response instanceof Response) {
+            return response;
+          }
+
+        } catch (_) {}
+
+        return new Response(
+          '<!doctype html>' +
+          '<html lang="fr">' +
+          '<meta charset="utf-8">' +
+          '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+          '<body style="margin:0;background:#050505;color:#fff;font-family:Arial;padding:40px">' +
+          '<h2>Connexion Internet requise</h2>' +
+          '<p>iCHEF doit joindre le serveur pour vérifier votre identifiant et votre PIN.</p>' +
+          '<button onclick="location.reload()" style="padding:12px 18px">Réessayer</button>' +
+          '</body></html>',
+          {
+            status: 503,
+            headers: {
+              'Content-Type':
+                'text/html; charset=utf-8'
+            }
+          }
+        );
+      })()
+    );
+
+    return;
+  }
+
+  // 5. Pages HTML :
+  // NETWORK FIRST, puis cache en secours.
+  const acceptsHTML =
+    request.mode === 'navigate' ||
+    (
+      request.headers.get('accept') ||
+      ''
+    ).includes('text/html');
+
+  if (acceptsHTML) {
+    event.respondWith(
+      (async () => {
+        try {
+          const networkResponse = await fetch(
+            request,
+            { cache: 'no-cache' }
+          );
+
+          if (
+            networkResponse instanceof Response
+          ) {
+            if (networkResponse.ok) {
+              try {
+                const cache =
+                  await caches.open(
+                    DYNAMIC_CACHE
+                  );
+
+                await cache.put(
+                  request,
+                  networkResponse.clone()
+                );
+              } catch (_) {}
+            }
+
+            return networkResponse;
+          }
+
+        } catch (_) {}
+
+        const cached =
+          await caches.match(request);
+
+        if (cached instanceof Response) {
+          return cached;
+        }
+
+        return new Response(
+          '<!doctype html>' +
+          '<html lang="fr">' +
+          '<meta charset="utf-8">' +
+          '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+          '<body style="margin:0;background:#050505;color:#fff;font-family:Arial;padding:40px">' +
+          '<h2>iCHEF hors ligne</h2>' +
+          '<p>Cette page n’est pas encore disponible dans le cache local.</p>' +
+          '<button onclick="history.back()" style="padding:12px 18px">Retour</button>' +
+          '</body></html>',
+          {
+            status: 503,
+            headers: {
+              'Content-Type':
+                'text/html; charset=utf-8'
+            }
+          }
+        );
+      })()
+    );
+
+    return;
+  }
+
+  // 6. Autres fichiers statiques :
+  // réseau d'abord, cache dynamique en secours.
+  event.respondWith(
+    (async () => {
+      try {
+        const networkResponse =
+          await fetch(
+            request,
+            { cache: 'no-cache' }
+          );
+
+        if (
+          networkResponse instanceof Response
+        ) {
+          if (
+            networkResponse.ok &&
+            networkResponse.type === 'basic'
+          ) {
+            try {
+              const cache =
+                await caches.open(
+                  DYNAMIC_CACHE
+                );
+
+              await cache.put(
+                request,
+                networkResponse.clone()
+              );
+            } catch (_) {}
+          }
+
+          return networkResponse;
+        }
+
+      } catch (_) {}
+
+      const cached =
+        await caches.match(request);
+
+      if (cached instanceof Response) {
+        return cached;
+      }
+
+      // IMPORTANT :
+      // respondWith() reçoit toujours une vraie Response.
+      return new Response(
+        '',
+        {
+          status: 504,
+          statusText:
+            'Resource unavailable'
+        }
+      );
+    })()
+  );
 });
