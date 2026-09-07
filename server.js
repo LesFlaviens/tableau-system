@@ -1,6 +1,6 @@
 /**
  * ==============================================================
- * 🧠 iCHEF EMPIRE OS — CORE SERVER V56 · REMOTE ORDER DELIVERY/TAKEAWAY (2026.09.07)
+ * 🧠 iCHEF EMPIRE OS — CORE SERVER V56.1 · MODULE BLOCK AUTO-RETURN (2026.09.07)
  * ==============================================================
  * Contrat central stable pour multi-établissements :
  * Réservations · Plan/PAD/Téléphone · Cuisine/Bar/Pâtisserie · Anti-Rush
@@ -730,7 +730,7 @@ app.use(async (req, res, next) => {
             );
         }
 
-            if (!ichefModuleIsEnabled(tenant, requestModule)) {
+        if (!ichefModuleIsEnabled(tenant, requestModule)) {
             const fallbackURL =
                 '/administration.html?tenantID=' +
                 encodeURIComponent(tenantID);
@@ -767,7 +767,7 @@ app.use(async (req, res, next) => {
                 '(function(){' +
                 'const fallback=' + JSON.stringify(fallbackURL) + ';' +
                 'let redirected=false;' +
-                'function sameOriginPrevious(){' +
+                'function previousIchefPage(){' +
                 'try{' +
                 'if(!document.referrer)return "";' +
                 'const u=new URL(document.referrer,location.href);' +
@@ -779,7 +779,7 @@ app.use(async (req, res, next) => {
                 'function goBack(){' +
                 'if(redirected)return;' +
                 'redirected=true;' +
-                'const previous=sameOriginPrevious();' +
+                'const previous=previousIchefPage();' +
                 'if(previous){location.replace(previous);return;}' +
                 'if(history.length>1){' +
                 'history.back();' +
@@ -812,6 +812,66 @@ app.use(async (req, res, next) => {
             .send('Erreur de contrôle des modules.');
     }
 });
+
+app.use((req, res, next) => {
+    const requestPath = String(req.path || '').toLowerCase();
+
+    if (
+        requestPath.endsWith('.html') ||
+        requestPath.endsWith('.htm') ||
+        requestPath.endsWith('service-worker.js') ||
+        requestPath.endsWith('sw.js') ||
+        requestPath.endsWith('manifest.json') ||
+        requestPath.endsWith('manifest.webmanifest')
+    ) {
+        res.setHeader(
+            'Cache-Control',
+            'no-store, no-cache, must-revalidate, proxy-revalidate'
+        );
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+        res.setHeader('Surrogate-Control', 'no-store');
+    } else if (
+        requestPath.endsWith('.js') ||
+        requestPath.endsWith('.css') ||
+        requestPath.endsWith('.json')
+    ) {
+        res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+    }
+
+    next();
+});
+
+// Une seule déclaration des fichiers statiques.
+app.use(express.static(__dirname, { // 👈 OUVERTURE CORRECTE ICI
+    etag: true,
+    lastModified: true,
+    setHeaders: (res, filePath) => {
+        const lower = String(filePath || '').toLowerCase();
+
+        if (
+            lower.endsWith('.html') ||
+            lower.endsWith('.htm') ||
+            lower.endsWith('service-worker.js') ||
+            lower.endsWith('sw.js') ||
+            lower.endsWith('manifest.json') ||
+            lower.endsWith('manifest.webmanifest')
+        ) {
+            res.setHeader(
+                'Cache-Control',
+                'no-store, no-cache, must-revalidate, proxy-revalidate'
+            );
+            res.setHeader('Pragma', 'no-cache');
+            res.setHeader('Expires', '0');
+            res.setHeader('Surrogate-Control', 'no-store');
+        } else if (
+            lower.endsWith('.js') ||
+            lower.endsWith('.css') ||
+            lower.endsWith('.json')
+        ) {
+            res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+        }
+    }
 })); // 👈 FERMETURE CORRECTE ICI
 
 // 👇 DÉBLOCAGE DES VIDÉOS & RESSOURCES 👇
