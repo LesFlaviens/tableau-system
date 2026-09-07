@@ -1,6 +1,6 @@
 /**
  * ==============================================================
- * 🧠 iCHEF EMPIRE OS — CORE SERVER V56.2 · GLOBAL FAVICON ICHEF (2026.09.07)
+ * 🧠 iCHEF EMPIRE OS — CORE SERVER V56.3 · GLOBAL FAVICON DIRECT (2026.09.07)
  * ==============================================================
  * Contrat central stable pour multi-établissements :
  * Réservations · Plan/PAD/Téléphone · Cuisine/Bar/Pâtisserie · Anti-Rush
@@ -784,35 +784,58 @@ app.use((req, res, next) => {
 });
 
 // ==========================================================
-// 🌟 FAVICON GLOBAL iCHEF — TOUS LES MODULES
+// 🌟 FAVICON GLOBAL iCHEF — TOUS LES MODULES · V2
 // ==========================================================
-const ICHEF_GLOBAL_FAVICON =
-    '/Gemini_Generated_Image_q748ueq748ueq748-Photoroom (1) (1) (1).png';
+// IMPORTANT : ce fichier PNG doit être présent dans le même dossier
+// public/racine que server.js et les fichiers HTML.
+const ICHEF_GLOBAL_FAVICON_FILENAME =
+    'Gemini_Generated_Image_q748ueq748ueq748-Photoroom (1) (1) (1).png';
 
-app.get('/favicon.ico', (req, res) => {
+const ICHEF_GLOBAL_FAVICON_FILE =
+    path.join(
+        __dirname,
+        ICHEF_GLOBAL_FAVICON_FILENAME
+    );
+
+function ichefSendGlobalFavicon(req, res) {
+    // Le favicon est très fortement mis en cache par les navigateurs.
+    // On force donc la revalidation pendant le déploiement.
     res.setHeader(
         'Cache-Control',
-        'public, max-age=86400'
+        'no-store, no-cache, must-revalidate, proxy-revalidate'
     );
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.type('png');
 
-    return res.redirect(
-        302,
-        ICHEF_GLOBAL_FAVICON
-    );
-});
+    return res.sendFile(
+        ICHEF_GLOBAL_FAVICON_FILE,
+        (error) => {
+            if (!error) {
+                return;
+            }
 
-// Alias PNG explicite si une page souhaite l'utiliser directement.
-app.get('/favicon.png', (req, res) => {
-    res.setHeader(
-        'Cache-Control',
-        'public, max-age=86400'
-    );
+            console.error(
+                '[iCHEF FAVICON] Image introuvable :',
+                ICHEF_GLOBAL_FAVICON_FILE,
+                error?.message || error
+            );
 
-    return res.redirect(
-        302,
-        ICHEF_GLOBAL_FAVICON
+            if (!res.headersSent) {
+                return res
+                    .status(error?.statusCode || 404)
+                    .end();
+            }
+        }
     );
-});
+}
+
+// Le navigateur demande automatiquement /favicon.ico
+// lorsqu'aucun <link rel="icon"> n'est défini dans une page.
+app.get('/favicon.ico', ichefSendGlobalFavicon);
+
+// Alias explicite utilisé par les pages iCHEF si nécessaire.
+app.get('/favicon.png', ichefSendGlobalFavicon);
 
 // Une seule déclaration des fichiers statiques.
 app.use(express.static(__dirname, { // 👈 OUVERTURE CORRECTE ICI
