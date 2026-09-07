@@ -2,8 +2,11 @@
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, proxy-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>iCHEF OS — Connexion Partenaire V3</title>
+    <title>iCHEF OS — Connexion Partenaire V4</title>
     
     <!-- 🛡️ BOUCLIER CSP STRICT : Interdit l'exécution de scripts pirates externes -->
     <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://tableau-system.onrender.com; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://upload.wikimedia.org https://via.placeholder.com;">
@@ -235,6 +238,17 @@
     </div>
     
     <footer class="footer">
+        <div style="margin-top:18px;text-align:center;font-family:'Inter',sans-serif;">
+            <span id="ichef-login-build"
+                  style="display:inline-flex;align-items:center;gap:7px;padding:6px 10px;border-radius:999px;border:1px solid rgba(212,175,55,.28);color:#d4af37;font-size:.68rem;font-weight:900;letter-spacing:.8px;">
+                LOGIN V4
+                <span id="ichef-server-health"
+                      style="color:#999;font-weight:700;letter-spacing:0;">
+                    · serveur…
+                </span>
+            </span>
+        </div>
+
         <div class="container" style="margin-top: 20px; text-align: center;">
           <a href="https://os.ichef.ch/politique-de-confidentialite.html" style="color: #666; text-decoration: none; font-size: 0.75rem; font-family: 'Inter', sans-serif;">© 2026 iCHEF OS - Sécurité & Confidentialité</a>
         </div>
@@ -245,10 +259,49 @@
 // 🚨 1. SERVICE WORKER & PWA
 // ==========================================
 if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/service-worker.js')
-        .then(reg => console.log('✅ Service Worker actif'))
-        .catch(err => alert('❌ Erreur critique : Le fichier service-worker.js est introuvable à la racine de votre site.'));
+    window.addEventListener('load', async () => {
+        try {
+            const reg = await navigator.serviceWorker.register(
+                '/service-worker.js?v=19',
+                {
+                    scope: '/',
+                    updateViaCache: 'none'
+                }
+            );
+
+            await reg.update();
+
+            if ('caches' in window) {
+                const keys = await caches.keys();
+
+                await Promise.all(
+                    keys
+                        .filter(name =>
+                            (
+                                name.startsWith('ichef-cache-') ||
+                                name.startsWith('ichef-dynamic-')
+                            ) &&
+                            !name.endsWith('v19')
+                        )
+                        .map(name => caches.delete(name))
+                );
+            }
+
+            navigator.serviceWorker.addEventListener(
+                'controllerchange',
+                () => {
+                    const key = 'ichef_sw_v19_reloaded';
+
+                    if (sessionStorage.getItem(key) !== '1') {
+                        sessionStorage.setItem(key, '1');
+                        window.location.reload();
+                    }
+                }
+            );
+
+        } catch (error) {
+            console.warn('[iCHEF Service Worker]', error);
+        }
     });
 }
 
@@ -310,6 +363,45 @@ window.onload = function() {
 
 const SERVER_URL = "https://tableau-system.onrender.com";
 let failedAttempts = 0;
+
+
+async function updateIchefServerHealth() {
+    const status = document.getElementById('ichef-server-health');
+    if (!status) return;
+
+    try {
+        const response = await fetch(
+            `${SERVER_URL}/healthz?_t=${Date.now()}`,
+            {
+                cache: 'no-store',
+                credentials: 'include'
+            }
+        );
+
+        if (!response.ok) {
+            status.textContent = `· serveur HTTP ${response.status}`;
+            status.style.color = '#fbbf24';
+            return;
+        }
+
+        const data = await response.json().catch(() => ({}));
+        const mongoOK = Number(data.mongoReadyState) === 1;
+
+        status.textContent = mongoOK
+            ? '· SERVEUR OK'
+            : '· BASE INDISPONIBLE';
+
+        status.style.color = mongoOK
+            ? '#4ade80'
+            : '#fbbf24';
+
+    } catch (_) {
+        status.textContent = '· SERVEUR HORS LIGNE';
+        status.style.color = '#ff7676';
+    }
+}
+
+window.addEventListener('load', updateIchefServerHealth);
 
 // ==========================================
 // 🔄 3. NAVIGATION ET FONCTIONS MÉTIER
