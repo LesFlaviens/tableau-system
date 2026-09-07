@@ -6,7 +6,7 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>iCHEF OS — Connexion Partenaire V6</title>
+    <title>iCHEF OS — Connexion Partenaire V7</title>
     
     <!-- 🛡️ BOUCLIER CSP STRICT : Interdit l'exécution de scripts pirates externes -->
     <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://tableau-system.onrender.com; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://upload.wikimedia.org https://via.placeholder.com;">
@@ -151,7 +151,7 @@
             <button class="btn-demo" onclick="switchScreen('demo')">✨ Créer une démo privée</button>
         </div>
 
-        <button id="pwa-install-btn" onclick="ouvrirGuideInstallation()" style="background: #111; color: #aaa; border: 1px solid #333; box-shadow: none; margin-top: 15px; padding: 12px; font-size: 0.85rem;">
+        <button id="pwa-install-btn" style="display:none" onclick="ouvrirGuideInstallation()" style="background: #111; color: #aaa; border: 1px solid #333; box-shadow: none; margin-top: 15px; padding: 12px; font-size: 0.85rem;">
             📲 Installer l'App iCHEF OS
         </button>
 
@@ -241,7 +241,7 @@
         <div style="margin-top:18px;text-align:center;font-family:'Inter',sans-serif;">
             <span id="ichef-login-build"
                   style="display:inline-flex;align-items:center;gap:7px;padding:6px 10px;border-radius:999px;border:1px solid rgba(212,175,55,.28);color:#d4af37;font-size:.68rem;font-weight:900;letter-spacing:.8px;">
-                LOGIN V6
+                LOGIN V7
                 <span id="ichef-server-health"
                       style="color:#999;font-weight:700;letter-spacing:0;">
                     · serveur…
@@ -258,87 +258,113 @@
 // ==========================================
 // 🚨 1. SERVICE WORKER & PWA
 // ==========================================
-if ('serviceWorker' in navigator) {
-    window.addEventListener('load', async () => {
-        try {
-            const registrations =
-                await navigator.serviceWorker.getRegistrations();
+// ==========================================================
+// 🔥 LOGIN V7 — AUCUN SERVICE WORKER PENDANT LA CONNEXION
+// ==========================================================
+async function purgeIchefLoginServiceWorkers() {
+    if (!('serviceWorker' in navigator)) {
+        return false;
+    }
 
-            // Retire les anciennes registrations iCHEF qui ne pointent pas sur V21.
-            for (const oldReg of registrations) {
-                const scriptURL =
-                    oldReg.active?.scriptURL ||
-                    oldReg.waiting?.scriptURL ||
-                    oldReg.installing?.scriptURL ||
-                    '';
+    const hadController =
+        Boolean(
+            navigator.serviceWorker.controller
+        );
 
-                if (
-                    scriptURL &&
-                    !scriptURL.includes('service-worker.js?v=21')
-                ) {
-                    await oldReg.unregister();
-                }
-            }
+    try {
+        const registrations =
+            await navigator.serviceWorker
+                .getRegistrations();
 
-            const reg =
-                await navigator.serviceWorker.register(
-                    '/service-worker.js?v=21',
-                    {
-                        scope: '/',
-                        updateViaCache: 'none'
-                    }
-                );
+        await Promise.all(
+            registrations.map(reg =>
+                reg.unregister()
+            )
+        );
+    } catch (error) {
+        console.warn(
+            '[iCHEF LOGIN V7] Unregister SW',
+            error
+        );
+    }
 
-            await reg.update();
+    try {
+        if ('caches' in window) {
+            const keys =
+                await caches.keys();
 
-            if ('caches' in window) {
-                const keys =
-                    await caches.keys();
-
-                await Promise.all(
-                    keys
-                        .filter(name =>
-                            name.startsWith('ichef-cache-') ||
-                            name.startsWith('ichef-dynamic-')
-                        )
-                        .map(name =>
-                            caches.delete(name)
-                        )
-                );
-            }
-
-            navigator.serviceWorker.addEventListener(
-                'controllerchange',
-                () => {
-                    const key =
-                        'ichef_sw_v21_reloaded';
-
-                    if (
-                        sessionStorage.getItem(key) !== '1'
-                    ) {
-                        sessionStorage.setItem(
-                            key,
-                            '1'
-                        );
-
-                        window.location.replace(
-                            window.location.pathname +
-                            window.location.search +
-                            (window.location.search ? '&' : '?') +
-                            '_sw=21'
-                        );
-                    }
-                }
-            );
-
-        } catch (error) {
-            console.warn(
-                '[iCHEF Service Worker V21]',
-                error
+            await Promise.all(
+                keys
+                    .filter(name =>
+                        name.startsWith('ichef-')
+                    )
+                    .map(name =>
+                        caches.delete(name)
+                    )
             );
         }
-    });
+    } catch (error) {
+        console.warn(
+            '[iCHEF LOGIN V7] Nettoyage cache',
+            error
+        );
+    }
+
+    // Si cette page était encore contrôlée par un ancien SW,
+    // un seul rechargement immédiat est nécessaire.
+    // Il se produit AVANT toute saisie utilisateur.
+    if (
+        hadController &&
+        sessionStorage.getItem(
+            'ichef_login_v7_sw_purged'
+        ) !== '1'
+    ) {
+        sessionStorage.setItem(
+            'ichef_login_v7_sw_purged',
+            '1'
+        );
+
+        const url =
+            new URL(
+                window.location.href
+            );
+
+        url.searchParams.set(
+            '_loginbuild',
+            '7'
+        );
+
+        window.location.replace(
+            url.toString()
+        );
+
+        return true;
+    }
+
+    return false;
 }
+
+window.addEventListener(
+    'load',
+    async () => {
+        const reloading =
+            await purgeIchefLoginServiceWorkers();
+
+        if (reloading) {
+            return;
+        }
+
+        const badge =
+            document.getElementById(
+                'ichef-login-build'
+            );
+
+        if (badge) {
+            badge.title =
+                'Connexion directe sans Service Worker';
+        }
+    }
+);
 
 let deferredPrompt;
 window.addEventListener('beforeinstallprompt', (e) => {
@@ -662,7 +688,13 @@ async function ichefEnsureBackendReady() {
     };
 }
 
+let ichefLoginInProgress = false;
+
 async function login() {
+    if (ichefLoginInProgress) {
+        return;
+    }
+
     const tenantInput =
         document.getElementById('tenantID');
 
@@ -711,6 +743,7 @@ async function login() {
     btn.innerText =
         'Vérification serveur…';
     btn.disabled = true;
+    ichefLoginInProgress = true;
 
     try {
         const backend =
@@ -723,6 +756,7 @@ async function login() {
             btn.innerText =
                 'Se Connecter';
             btn.disabled = false;
+            ichefLoginInProgress = false;
             return;
         }
 
@@ -834,6 +868,7 @@ async function login() {
 
         failedAttempts += 1;
         pinInput.value = '';
+        ichefLoginInProgress = false;
 
         const serverMessage =
             String(
@@ -911,6 +946,7 @@ async function login() {
         btn.innerText =
             'Se Connecter';
         btn.disabled = false;
+        ichefLoginInProgress = false;
     }
 }
 
