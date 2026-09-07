@@ -1,6 +1,6 @@
 /**
  * ==============================================================
- * 🧠 iCHEF EMPIRE OS — CORE SERVER V56.3 · GLOBAL FAVICON DIRECT (2026.09.07)
+ * 🧠 iCHEF EMPIRE OS — CORE SERVER V56.4 · ESPACE CLIENT DOCUMENTS (2026.09.07)
  * ==============================================================
  * Contrat central stable pour multi-établissements :
  * Réservations · Plan/PAD/Téléphone · Cuisine/Bar/Pâtisserie · Anti-Rush
@@ -907,7 +907,10 @@ const ICHEF_TENANT_MUTATION_PATHS = new Set([
     '/api/rh/timesheet/status', '/api/anti-rush/update', '/api/fiscal/cash-in',
     '/api/save-transaction', '/api/fiscal/correction', '/api/orders/close-paid',
     '/api/admin-action',
-    '/api/client-portal/reservations/create'
+    '/api/client-portal/reservations/create',
+    '/api/client-space/admin/upload',
+    '/api/client-space/admin/delete-document',
+    '/api/client-space/admin/message'
 ]);
 const ichefTenantMutationQueues = new Map();
 function ichefRequestTenantID(req) {
@@ -17796,6 +17799,233 @@ app.get('/api/fiscal/control', async (req, res) => {
 });
 
 
+
+
+// ============================================================================
+// 📁 iCHEF — ESPACE CLIENT CENTRALISÉ
+// Tour de Contrôle -> contrat / factures / message -> administration.html
+// Documents PDF stockés dans MongoDB GridFS, isolés par tenantID.
+// ============================================================================
+const ichefClientMessageSchema = new mongoose.Schema({
+    tenantID: { type: String, required: true, unique: true, index: true },
+    text: { type: String, default: '' },
+    active: { type: Boolean, default: false },
+    priority: { type: String, enum: ['INFO','IMPORTANT','URGENT'], default: 'INFO' },
+    updatedAt: { type: Date, default: Date.now }
+}, { minimize: false });
+const IchefClientMessage = mongoose.models.IchefClientMessage || mongoose.model('IchefClientMessage', ichefClientMessageSchema);
+
+function ichefClientDocsBucket() {
+    if (!mongoose.connection?.db) throw new Error('MongoDB non disponible.');
+    return new mongoose.mongo.GridFSBucket(mongoose.connection.db, { bucketName: 'ichefClientDocs' });
+}
+function ichefClientDocId(value) {
+    const raw = String(value || '').trim();
+    return mongoose.Types.ObjectId.isValid(raw) ? new mongoose.Types.ObjectId(raw) : null;
+}
+function ichefClientFilePublicMeta(file, signed = false) {
+    const md = file?.metadata || {};
+    const tenantID = cleanString(md.tenantID || '');
+    const id = String(file?._id || '');
+    let openPath = '';
+    if (signed && tenantID && id) {
+        const token = ichefSignSession({ scope: 'CLIENT_DOC', tenantID, documentId: id }, 2 * 60 * 60);
+        openPath = `/api/client-space/file/${encodeURIComponent(id)}?token=${encodeURIComponent(token)}`;
+    }
+    return {
+        id,
+        tenantID,
+        kind: String(md.kind || 'DOCUMENT').toUpperCase(),
+        title: String(md.title || file?.filename || 'Document'),
+        version: String(md.version || ''),
+        period: String(md.period || ''),
+        status: String(md.status || ''),
+        filename: String(file?.filename || ''),
+        mimeType: String(md.mimeType || file?.contentType || 'application/pdf'),
+        uploadedAt: file?.uploadDate || md.uploadedAt || null,
+        source: 'ICHEF',
+        openPath
+    };
+}
+async function ichefClientListManualDocs(tenantID, signed = false) {
+    const safeID = cleanString(tenantID);
+    if (!safeID) return [];
+    const bucket = ichefClientDocsBucket();
+    const files = await bucket.find({ 'metadata.tenantID': safeID }).sort({ uploadDate: -1 }).toArray();
+    return files.map(file => ichefClientFilePublicMeta(file, signed));
+}
+async function ichefStripePaidInvoicesForTenant(tenant) {
+    if (!stripe || !tenant?.config?.stripeCustomerId) return [];
+    try {
+        const result = await stripe.invoices.list({ customer: tenant.config.stripeCustomerId, status: 'paid', limit: 24 });
+        return (result?.data || []).map(inv => ({
+            id: String(inv.id || ''),
+            kind: 'INVOICE',
+            title: `Facture ${inv.number || inv.id || ''}`.trim(),
+            number: String(inv.number || ''),
+            period: '',
+            status: 'PAID',
+            date: inv.status_transitions?.paid_at ? new Date(inv.status_transitions.paid_at * 1000).toISOString() : (inv.created ? new Date(inv.created * 1000).toISOString() : null),
+            source: 'STRIPE',
+            openUrl: String(inv.invoice_pdf || inv.hosted_invoice_url || '')
+        })).filter(inv => inv.openUrl);
+    } catch (error) {
+        console.warn('[iCHEF CLIENT SPACE] Stripe invoices indisponibles :', error?.message || error);
+        return [];
+    }
+}
+function ichefClientMasterAuthorized(req, res) {
+    if (String(req.body?.masterKey || '') !== ADMIN_PASS) {
+        res.status(401).json({ success: false, error: 'Accès SuperAdmin refusé.' });
+        return false;
+    }
+    return true;
+}
+function ichefClientValidateReason(value) {
+    return String(value || '').trim().length >= 8;
+}
+
+app.post('/api/client-space/admin/get', async (req, res) => {
+    if (!ichefClientMasterAuthorized(req, res)) return;
+    try {
+        const tenantID = cleanString(req.body?.tenantID || '');
+        if (!tenantID) return res.status(400).json({ success: false, error: 'tenantID manquant.' });
+        const tenant = await Tenant.findOne({ tenantID }).lean();
+        if (!tenant) return res.status(404).json({ success: false, error: 'Établissement introuvable.' });
+        const documents = await ichefClientListManualDocs(tenantID, false);
+        const message = await IchefClientMessage.findOne({ tenantID }).lean();
+        return res.json({ success: true, tenantID, documents, message: message || { text: '', active: false } });
+    } catch (error) {
+        console.error('[iCHEF CLIENT SPACE] admin get:', error);
+        return res.status(500).json({ success: false, error: error?.message || 'Dossier client indisponible.' });
+    }
+});
+
+app.post('/api/client-space/admin/upload', async (req, res) => {
+    if (!ichefClientMasterAuthorized(req, res)) return;
+    try {
+        const tenantID = cleanString(req.body?.tenantID || '');
+        const kind = String(req.body?.kind || '').trim().toUpperCase();
+        const filename = String(req.body?.filename || 'document.pdf').replace(/[^a-zA-Z0-9._ -]/g, '_').slice(0, 180);
+        const mimeType = String(req.body?.mimeType || 'application/pdf').toLowerCase();
+        const base64 = String(req.body?.base64 || '').replace(/^data:application\/pdf;base64,/i, '').trim();
+        if (!tenantID || !['CONTRACT','INVOICE'].includes(kind)) return res.status(400).json({ success: false, error: 'Document invalide.' });
+        if (!ichefClientValidateReason(req.body?.reason)) return res.status(400).json({ success: false, error: 'Motif obligatoire (8 caractères minimum).' });
+        if (!(mimeType === 'application/pdf' || /\.pdf$/i.test(filename))) return res.status(400).json({ success: false, error: 'Seuls les PDF sont acceptés.' });
+        const tenant = await Tenant.findOne({ tenantID }).lean();
+        if (!tenant) return res.status(404).json({ success: false, error: 'Établissement introuvable.' });
+        let buffer;
+        try { buffer = Buffer.from(base64, 'base64'); } catch (_) { buffer = null; }
+        if (!buffer || !buffer.length || buffer.slice(0, 4).toString('ascii') !== '%PDF') return res.status(400).json({ success: false, error: 'PDF illisible ou vide.' });
+        if (buffer.length > 12 * 1024 * 1024) return res.status(413).json({ success: false, error: 'PDF trop volumineux (12 Mo maximum).' });
+        const bucket = ichefClientDocsBucket();
+        const upload = bucket.openUploadStream(filename, {
+            contentType: 'application/pdf',
+            metadata: {
+                tenantID,
+                kind,
+                title: String(req.body?.title || (kind === 'CONTRACT' ? 'Contrat iCHEF OS' : 'Facture payée')).trim().slice(0, 160),
+                version: String(req.body?.version || '').trim().slice(0, 40),
+                period: String(req.body?.period || '').trim().slice(0, 100),
+                status: String(req.body?.status || (kind === 'INVOICE' ? 'PAID' : 'CURRENT')).trim().toUpperCase().slice(0, 30),
+                mimeType: 'application/pdf',
+                uploadedAt: new Date(),
+                reason: String(req.body?.reason || '').trim().slice(0, 500)
+            }
+        });
+        await new Promise((resolve, reject) => { upload.on('finish', resolve); upload.on('error', reject); upload.end(buffer); });
+        io.to(tenantID).emit('client-space-updated', { tenantID, type: kind, timestamp: new Date().toISOString() });
+        return res.json({ success: true, documentId: String(upload.id) });
+    } catch (error) {
+        console.error('[iCHEF CLIENT SPACE] upload:', error);
+        return res.status(500).json({ success: false, error: error?.message || 'Enregistrement du PDF impossible.' });
+    }
+});
+
+app.post('/api/client-space/admin/delete-document', async (req, res) => {
+    if (!ichefClientMasterAuthorized(req, res)) return;
+    try {
+        const tenantID = cleanString(req.body?.tenantID || '');
+        const objectId = ichefClientDocId(req.body?.documentId);
+        if (!tenantID || !objectId) return res.status(400).json({ success: false, error: 'Document invalide.' });
+        if (!ichefClientValidateReason(req.body?.reason)) return res.status(400).json({ success: false, error: 'Motif obligatoire (8 caractères minimum).' });
+        const bucket = ichefClientDocsBucket();
+        const files = await bucket.find({ _id: objectId, 'metadata.tenantID': tenantID }).limit(1).toArray();
+        if (!files.length) return res.status(404).json({ success: false, error: 'Document introuvable.' });
+        await bucket.delete(objectId);
+        io.to(tenantID).emit('client-space-updated', { tenantID, type: 'DELETE_DOCUMENT', timestamp: new Date().toISOString() });
+        return res.json({ success: true });
+    } catch (error) {
+        return res.status(500).json({ success: false, error: error?.message || 'Suppression impossible.' });
+    }
+});
+
+app.post('/api/client-space/admin/message', async (req, res) => {
+    if (!ichefClientMasterAuthorized(req, res)) return;
+    try {
+        const tenantID = cleanString(req.body?.tenantID || '');
+        const text = String(req.body?.text || '').trim().slice(0, 2000);
+        const active = req.body?.active === true;
+        if (!tenantID) return res.status(400).json({ success: false, error: 'tenantID manquant.' });
+        if (active && !text) return res.status(400).json({ success: false, error: 'Le message actif ne peut pas être vide.' });
+        const tenant = await Tenant.findOne({ tenantID }).lean();
+        if (!tenant) return res.status(404).json({ success: false, error: 'Établissement introuvable.' });
+        const message = await IchefClientMessage.findOneAndUpdate(
+            { tenantID },
+            { $set: { text, active, priority: String(req.body?.priority || 'INFO').toUpperCase(), updatedAt: new Date() } },
+            { upsert: true, new: true, setDefaultsOnInsert: true }
+        ).lean();
+        io.to(tenantID).emit('client-space-updated', { tenantID, type: 'MESSAGE', timestamp: new Date().toISOString() });
+        return res.json({ success: true, message });
+    } catch (error) {
+        return res.status(500).json({ success: false, error: error?.message || 'Message non enregistré.' });
+    }
+});
+
+app.post('/api/client-space', async (req, res) => {
+    try {
+        const tenantID = cleanString(req.body?.tenantID || req.headers['x-ichef-tenant'] || '');
+        const pin = String(req.body?.pin || req.headers['x-ichef-pin'] || '').trim();
+        const auth = await ichefAuthorizePin(tenantID, pin, { managerOnly: true });
+        if (!auth.ok) return res.status(auth.status || 403).json({ success: false, error: auth.error || 'Accès refusé.' });
+        const manual = await ichefClientListManualDocs(tenantID, true);
+        const contracts = manual.filter(d => d.kind === 'CONTRACT').sort((a,b) => new Date(b.uploadedAt || 0) - new Date(a.uploadedAt || 0));
+        const manualInvoices = manual.filter(d => d.kind === 'INVOICE').map(d => ({ ...d, status: 'PAID' }));
+        const stripeInvoices = await ichefStripePaidInvoicesForTenant(auth.tenant);
+        const invoices = [...manualInvoices, ...stripeInvoices].sort((a,b) => new Date(b.date || b.uploadedAt || 0) - new Date(a.date || a.uploadedAt || 0));
+        const msg = await IchefClientMessage.findOne({ tenantID, active: true }).lean();
+        res.set('Cache-Control', 'no-store, max-age=0');
+        return res.json({ success: true, tenantID, contracts, invoices, message: msg ? { text: msg.text, active: true, priority: msg.priority, updatedAt: msg.updatedAt } : null });
+    } catch (error) {
+        console.error('[iCHEF CLIENT SPACE] client get:', error);
+        return res.status(500).json({ success: false, error: error?.message || 'Espace client indisponible.' });
+    }
+});
+
+app.get('/api/client-space/file/:id', async (req, res) => {
+    try {
+        const objectId = ichefClientDocId(req.params.id);
+        const token = String(req.query?.token || '').trim();
+        if (!objectId || !token) return res.status(400).send('Lien invalide.');
+        const claims = ichefVerifySignedSession(token, { scope: 'CLIENT_DOC' });
+        if (!claims || String(claims.documentId || '') !== String(objectId)) return res.status(403).send('Lien expiré ou non autorisé.');
+        const tenantID = cleanString(claims.tenantID || '');
+        const bucket = ichefClientDocsBucket();
+        const files = await bucket.find({ _id: objectId, 'metadata.tenantID': tenantID }).limit(1).toArray();
+        if (!files.length) return res.status(404).send('Document introuvable.');
+        const file = files[0];
+        const safeFilename = String(file.filename || 'document.pdf').replace(/["\r\n]/g, '_');
+        res.set('Cache-Control', 'private, no-store, max-age=0');
+        res.set('Content-Type', 'application/pdf');
+        res.set('Content-Disposition', `inline; filename="${safeFilename}"`);
+        bucket.openDownloadStream(objectId).on('error', () => { if (!res.headersSent) res.status(404).end(); else res.end(); }).pipe(res);
+    } catch (error) {
+        console.error('[iCHEF CLIENT SPACE] file:', error);
+        if (!res.headersSent) return res.status(500).send('Document indisponible.');
+        res.end();
+    }
+});
+
 // ==========================================================
 // 🧯 DERNIER FILET EXPRESS — UNE ERREUR HTTP NE DOIT PAS TUER NODE
 // ==========================================================
@@ -17915,6 +18145,7 @@ server.listen(
         console.log('✅ Paiements PAD / Caisse synchronisés.');
         console.log('✅ Socket temps réel PAD / Caisse / Cuisine activé.');
         console.log('✅ Roadmap CORE MongoDB / API / Socket.IO activé.');
+        console.log('✅ Espace client centralisé : contrats / factures / messages activé.');
         console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
         console.log('==========================================');
     }
