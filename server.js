@@ -789,7 +789,7 @@ app.use((req, res, next) => {
 // IMPORTANT : ce fichier PNG doit être présent dans le même dossier
 // public/racine que server.js et les fichiers HTML.
 const ICHEF_GLOBAL_FAVICON_FILENAME =
-    'Gemini_Generated_Image_q748ueq748ueq748-Photoroom (1) (1) (1).png';
+    'Gemini_Generated_Image_q748ueq748ueq748-Photoroom(1)(1)(1).png';
 
 const ICHEF_GLOBAL_FAVICON_FILE =
     path.join(
