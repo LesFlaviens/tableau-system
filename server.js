@@ -13108,28 +13108,41 @@ function ichefStripeConnectionPriceId(currency, quantity) {
     };
 }
 
+// ==========================================================
+// 💳 MATRICE DES PRIX STRIPE CONNECT (SaaS)
+// ==========================================================
 function ichefStripeConnectionLineItems(currency, quantity) {
-    const qty = Math.min(50, Math.max(1, parseInt(quantity, 10) || 1));
-    const configured = ichefStripeConnectionPriceId(currency, qty);
+    const qty = Math.max(1, parseInt(quantity, 10) || 1);
+    const curr = String(currency || 'EUR').toUpperCase();
 
-    if (qty <= 5) {
-        if (!configured || !configured.startsWith('price_')) {
-            throw new Error(`Tarif Stripe +${qty} ${String(currency || '').toUpperCase()} non configuré.`);
+    // 🎯 MATRICE DES PRIX : Remplace les "price_..." par tes vrais ID Stripe
+    const STRIPE_PRICES = {
+        EUR: {
+            1: "price_1xxxxxxxxx_EUR_9",   // ID Stripe pour +1 connexion (9€)
+            2: "price_1xxxxxxxxx_EUR_15",  // ID Stripe pour +2 connexions (15€)
+            3: "price_1xxxxxxxxx_EUR_22",  // ID Stripe pour +3 connexions (22€)
+            4: "price_1xxxxxxxxx_EUR_29",  // ID Stripe pour +4 connexions (29€)
+            5: "price_1xxxxxxxxx_EUR_35"   // ID Stripe pour +5 connexions (35€)
+        },
+        CHF: {
+            1: "price_1xxxxxxxxx_CHF_9",   // ID Stripe pour +1 connexion (9 CHF)
+            2: "price_1xxxxxxxxx_CHF_15",  // ID Stripe pour +2 connexions (15 CHF)
+            3: "price_1xxxxxxxxx_CHF_22",  // ID Stripe pour +3 connexions (22 CHF)
+            4: "price_1xxxxxxxxx_CHF_29",  // ID Stripe pour +4 connexions (29 CHF)
+            5: "price_1xxxxxxxxx_CHF_35"   // ID Stripe pour +5 connexions (35 CHF)
         }
-        return [{ price: configured, quantity: 1 }];
+    };
+
+    const priceId = STRIPE_PRICES[curr]?.[qty];
+
+    if (!priceId || priceId.startsWith("price_1xxxxxxxxx")) {
+        throw new Error(`Tarif Stripe +${qty} ${curr} non configuré.`);
     }
 
-    if (!configured.base || !configured.base.startsWith('price_')) {
-        throw new Error(`Tarif Stripe +5 ${String(currency || '').toUpperCase()} non configuré.`);
-    }
-    if (!configured.extra || !configured.extra.startsWith('price_')) {
-        throw new Error(`Tarif Stripe connexion supplémentaire ${String(currency || '').toUpperCase()} non configuré.`);
-    }
-
-    return [
-        { price: configured.base, quantity: 1 },
-        { price: configured.extra, quantity: qty - 5 }
-    ];
+    return [{
+        price: priceId,
+        quantity: 1 // On facture 1 seul "Pack de connexions"
+    }];
 }
 
 async function ichefStripeEnsureCustomer(tenant) {
@@ -13176,9 +13189,11 @@ app.post(
 
             const quantity = Math.min(50, Math.max(1, parseInt(req.body?.quantity, 10) || 1));
             const currency = String(req.body?.currency || '').toUpperCase() === 'CHF' ? 'CHF' : 'EUR';
+            
             const lineItems = ichefStripeConnectionLineItems(currency, quantity);
             const customerId = await ichefStripeEnsureCustomer(auth.tenant);
 
+            const ICHEF_STRIPE_FRONTEND_URL = process.env.FRONTEND_URL || 'https://os.ichef.ch';
             const returnBase = `${ICHEF_STRIPE_FRONTEND_URL}/administration.html?tenantID=${encodeURIComponent(tenantID)}`;
 
             const session = await stripe.checkout.sessions.create({
