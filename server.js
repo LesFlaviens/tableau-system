@@ -17816,7 +17816,7 @@ const ichefClientMessageSchema = new mongoose.Schema({
 const IchefClientMessage = mongoose.models.IchefClientMessage || mongoose.model('IchefClientMessage', ichefClientMessageSchema);
 
 function ichefClientDocsBucket() {
-    if (!mongoose.connection?.db) throw new Error('MongoDB non disponible.');
+    if (mongoose.connection.readyState !== 1 || !mongoose.connection?.db) throw new Error('MongoDB non disponible ou pas encore connecté.');
     return new mongoose.mongo.GridFSBucket(mongoose.connection.db, { bucketName: 'ichefClientDocs' });
 }
 function ichefClientDocId(value) {
@@ -17884,6 +17884,24 @@ function ichefClientMasterAuthorized(req, res) {
 function ichefClientValidateReason(value) {
     return String(value || '').trim().length >= 8;
 }
+
+app.post('/api/client-space/admin/health', async (req, res) => {
+    if (!ichefClientMasterAuthorized(req, res)) return;
+    try {
+        const tenantID = cleanString(req.body?.tenantID || '');
+        if (!tenantID) return res.status(400).json({ success:false, error:'tenantID manquant.' });
+        const tenant = await Tenant.findOne({ tenantID }, { tenantID:1 }).lean();
+        if (!tenant) return res.status(404).json({ success:false, error:'Établissement introuvable.' });
+        const mongoReady = mongoose.connection.readyState === 1 && !!mongoose.connection?.db;
+        if (!mongoReady) return res.status(503).json({ success:false, error:'MongoDB n’est pas prêt.' });
+        const bucket = ichefClientDocsBucket();
+        await bucket.find({ 'metadata.tenantID': tenantID }).limit(1).toArray();
+        return res.json({ success:true, tenantID, mongoReady:true, bucket:'GridFS ichefClientDocs', maxPdfMB:12 });
+    } catch (error) {
+        console.error('[iCHEF CLIENT SPACE] health:', error);
+        return res.status(500).json({ success:false, error:error?.message || 'Stockage documents indisponible.' });
+    }
+});
 
 app.post('/api/client-space/admin/get', async (req, res) => {
     if (!ichefClientMasterAuthorized(req, res)) return;
