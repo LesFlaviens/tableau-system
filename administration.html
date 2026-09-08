@@ -25,33 +25,209 @@
             ? "http://localhost:10000" : "https://tableau-system.onrender.com";
         
         
-// ==========================================================
-// 💳 STRIPE iCHEF — DÉMO + CONNEXIONS RÉELLES
-// ==========================================================
+/confirmStripeAction: async function() {
 
-// 🔹 MODE DÉMO / TEST
-window.ICHEF_DEMO_STRIPE_PAYMENT_LINK =
-    "https://buy.stripe.com/test_8x29AVekh8tPb3Zgrz1kA06";
+    const pending = this.pendingStripeAction;
 
-// 🔹 CLIENTS RÉELS
-window.ICHEF_STRIPE_CONNECTION_LINKS = {
-
-    CHF: {
-        1: "LIEN_STRIPE_9_CHF",
-        2: "LIEN_STRIPE_15_CHF",
-        3: "LIEN_STRIPE_22_CHF",
-        4: "LIEN_STRIPE_29_CHF",
-        5: "LIEN_STRIPE_35_CHF"
-    },
-
-    EUR: {
-        1: "LIEN_STRIPE_9_EUR",
-        2: "LIEN_STRIPE_15_EUR",
-        3: "LIEN_STRIPE_22_EUR",
-        4: "LIEN_STRIPE_29_EUR",
-        5: "LIEN_STRIPE_35_EUR"
+    if (!pending) {
+        return this.closeStripeConfirm();
     }
-};
+
+    const go =
+        document.getElementById('stripe-confirm-go');
+
+    const status =
+        document.getElementById('stripe-confirm-status');
+
+    if (go) {
+        go.disabled = true;
+        go.textContent = 'Préparation…';
+    }
+
+    try {
+
+        // ======================================================
+        // 💳 AJOUT DE CONNEXIONS
+        // ======================================================
+
+        if (pending.type === 'screens') {
+
+            const quantity = Math.max(
+                1,
+                parseInt(pending.quantity || 1, 10) || 1
+            );
+
+            // ----------------------------------------------
+            // 🧪 DÉMO / TESTENFC
+            // ----------------------------------------------
+
+            if (this.isStripeTestMode) {
+
+                if (status) {
+                    status.textContent =
+                        'Ouverture de Stripe TEST… Aucun débit réel.';
+                    status.classList.remove('bad');
+                }
+
+                this.openStripeSafely(
+                    window.ICHEF_DEMO_STRIPE_PAYMENT_LINK
+                );
+
+                setTimeout(
+                    () => this.closeStripeConfirm(),
+                    450
+                );
+
+                return;
+            }
+
+            // ----------------------------------------------
+            // 6 CONNEXIONS OU PLUS
+            // → SERVICE COMMERCIAL
+            // ----------------------------------------------
+
+            if (quantity >= 6) {
+
+                if (status) {
+                    status.textContent =
+                        'Pour 6 connexions ou plus, notre service commercial vous accompagne.';
+                    status.classList.remove('bad');
+                }
+
+                this.openCommercialFromStripeConfirm();
+
+                return;
+            }
+
+            // ----------------------------------------------
+            // 🌍 CLIENT RÉEL
+            // ----------------------------------------------
+
+            const pricing =
+                this.getConnectionPricing(quantity);
+
+            const currency =
+                pricing.region === 'CH'
+                    ? 'CHF'
+                    : 'EUR';
+
+            const stripeLink =
+                window.ICHEF_STRIPE_CONNECTION_LINKS?.[currency]?.[quantity];
+
+            if (
+                !stripeLink ||
+                !/^https:\/\/buy\.stripe\.com\//i.test(stripeLink)
+            ) {
+                throw new Error(
+                    `Le lien Stripe +${quantity} ${currency} n’est pas encore configuré.`
+                );
+            }
+
+            if (status) {
+                status.textContent =
+                    `Ouverture de Stripe · +${quantity} connexion${quantity > 1 ? 's' : ''} · ${pricing.amount} ${currency}/mois`;
+                status.classList.remove('bad');
+            }
+
+            this.openStripeSafely(stripeLink);
+
+            setTimeout(
+                () => this.closeStripeConfirm(),
+                450
+            );
+
+            return;
+        }
+
+
+        // ======================================================
+        // 💳 GESTION ABONNEMENT
+        // ======================================================
+
+        if (pending.type === 'billing') {
+
+            if (this.isStripeTestMode) {
+
+                const contact =
+                    this.refreshIchefContactRouting();
+
+                if (status) {
+                    status.textContent =
+                        `Mode test : contactez le service commercial iCHEF au ${contact.display}.`;
+                }
+
+                if (go) {
+                    go.disabled = false;
+                    go.textContent =
+                        '📞 Service commercial';
+                }
+
+                return;
+            }
+
+            const res = await fetch(
+                `${this.SERVER_URL}/api/stripe/create-customer-portal-session`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        tenantID: this.tenantID,
+                        pin: this.masterPin
+                    })
+                }
+            );
+
+            const raw = await res.text();
+
+            let data = {};
+
+            try {
+                data = raw ? JSON.parse(raw) : {};
+            } catch (_) {
+                throw new Error(
+                    `Réponse serveur invalide (${res.status}).`
+                );
+            }
+
+            if (!res.ok || !data.url) {
+                throw new Error(
+                    data.error ||
+                    'Impossible d’ouvrir le portail Stripe.'
+                );
+            }
+
+            this.openStripeSafely(data.url);
+
+            setTimeout(
+                () => this.closeStripeConfirm(),
+                450
+            );
+
+            return;
+        }
+
+        throw new Error(
+            'Action Stripe inconnue.'
+        );
+
+    } catch (error) {
+
+        if (status) {
+            status.textContent =
+                error?.message ||
+                'Impossible d’ouvrir Stripe.';
+            status.classList.add('bad');
+        }
+
+        if (go) {
+            go.disabled = false;
+            go.textContent =
+                'Réessayer avec Stripe →';
+        }
+    }
+},
         // ==========================================================
         // 📦 OFFRE COMMERCIALE iCHEF — 18 MODULES OFFICIELS
         // ==========================================================
