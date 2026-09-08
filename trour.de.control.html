@@ -98,6 +98,7 @@ h1{margin:0;color:var(--gold);font-size:1.35rem}.grow{flex:1}.search{min-width:2
   </section>
 </div>
 <div id="clientModalStatus" class="client-status"></div>
+<div class="actions" style="margin-top:8px"><button class="btn" id="testClientStorage" type="button">Tester stockage documents</button></div>
 </div></div>
 
 
@@ -117,7 +118,22 @@ function touch(){lastActivity=Date.now()}
 ['click','keydown','pointerdown','touchstart'].forEach(e=>addEventListener(e,touch,{passive:true}));
 function lock(){masterKey='';tenants=[];$('rows').innerHTML='<tr><td colspan="8" style="text-align:center;color:#7c8798;padding:40px">Session verrouillée.</td></tr>';$('masterKey').value='';$('lock').style.display='flex'}
 setInterval(()=>{if(!masterKey)return;const r=Math.max(0,SESSION_TIMEOUT-(Date.now()-lastActivity));$('timerText').textContent=`• verrouillage ${Math.floor(r/60000)}:${String(Math.floor((r%60000)/1000)).padStart(2,'0')}`;if(r<=0)lock()},1000);
-async function api(path,body){if(!masterKey)throw new Error('Session verrouillée.');const res=await fetch(SERVER_URL+path,{method:'POST',headers:{'Content-Type':'application/json','X-iCHEF-Master-Device':deviceId()},cache:'no-store',body:JSON.stringify({...body,masterKey})});let data={};try{data=await res.json()}catch{}if(!res.ok||data.success===false)throw new Error(data.error||`HTTP ${res.status}`);return data}
+async function api(path,body,timeoutMs=90000){
+ if(!masterKey)throw new Error('Session verrouillée.');
+ const controller=new AbortController();
+ const timer=setTimeout(()=>controller.abort(),timeoutMs);
+ try{
+  const res=await fetch(SERVER_URL+path,{method:'POST',headers:{'Content-Type':'application/json','X-iCHEF-Master-Device':deviceId()},cache:'no-store',signal:controller.signal,body:JSON.stringify({...body,masterKey})});
+  const raw=await res.text();
+  let data={};
+  try{data=raw?JSON.parse(raw):{}}catch{data={success:res.ok,error:raw?raw.slice(0,500):''}}
+  if(!res.ok||data.success===false)throw new Error(data.error||`HTTP ${res.status}`);
+  return data;
+ }catch(error){
+  if(error?.name==='AbortError')throw new Error('Délai dépassé : le serveur n’a pas répondu à temps.');
+  throw error;
+ }finally{clearTimeout(timer)}
+}
 async function login(){const key=$('masterKey').value.trim();if(!key)return;$('loginError').textContent='Vérification…';masterKey=key;try{const data=await api('/api/get-all-tenants-admin',{});tenants=Array.isArray(data.tenants)?data.tenants:[];render();$('lock').style.display='none';$('masterKey').value='';$('loginError').textContent='';$('deviceText').textContent='• '+deviceId().slice(0,8);touch()}catch(e){masterKey='';$('loginError').textContent=e.message||'Accès refusé.'}}
 async function load(){if(busy||!masterKey)return;busy=true;try{const data=await api('/api/get-all-tenants-admin',{});tenants=Array.isArray(data.tenants)?data.tenants:[];render()}catch(e){alert(e.message);if(/refus|401|accès/i.test(e.message))lock()}finally{busy=false}}
 function addonLabel(id){return MODULES.find(m=>m[0]===id)?.[1]||id}
@@ -142,9 +158,58 @@ function clientDate(v){if(!v)return '';const d=new Date(v);return Number.isNaN(d
 function renderClientDocuments(data){currentClientData=data||{};const docs=Array.isArray(data?.documents)?data.documents:[];const message=data?.message||null;$('clientMessageText').value=message?.text||'';$('clientMessageActive').checked=message?.active===true;const list=$('clientDocumentsList');if(!docs.length){list.innerHTML='<div class="doc-empty">Aucun document publié pour ce client.</div>';return}list.innerHTML=docs.map(d=>`<div class="doc-row"><div><strong><span class="doc-kind">${esc(d.kind==='CONTRACT'?'CONTRAT':'FACTURE')}</span>${esc(d.title||d.filename||'Document')}</strong><small>${esc((d.version?'Version '+d.version+' · ':'')+(d.period?d.period+' · ':'')+clientDate(d.uploadedAt))}</small></div><div class="actions"><button class="btn bad" onclick="window.deleteClientDocument('${esc(d.id)}')">Retirer</button></div></div>`).join('')}
 async function reloadClientDossier(){if(!currentClientTenant)return;clientSetStatus('Chargement…');try{const data=await api('/api/client-space/admin/get',{tenantID:currentClientTenant});renderClientDocuments(data);clientSetStatus('Dossier synchronisé.','ok')}catch(e){clientSetStatus(e.message||'Erreur de chargement.','bad')}}
 window.openClientDossier=async id=>{currentClientTenant=id;$('clientModalTitle').textContent=`📁 Dossier client — ${id}`;$('clientModalSub').textContent='Les éléments publiés ici sont visibles uniquement par cet établissement dans administration.html.';$('clientModal').classList.add('open');await reloadClientDossier()};
-async function uploadClientPdf(kind){if(!currentClientTenant)return;const isContract=kind==='CONTRACT';const file=$(isContract?'clientContractFile':'clientInvoiceFile').files?.[0];if(!file)return alert('Choisissez un fichier PDF.');if(!(file.type==='application/pdf'||/\.pdf$/i.test(file.name)))return alert('Le fichier doit être un PDF.');if(file.size>12*1024*1024)return alert('PDF trop volumineux : maximum 12 Mo.');const why=reason(`${isContract?'Publier le contrat':'Ajouter une facture payée'} — ${currentClientTenant}`);if(!why)return;clientSetStatus('Envoi du PDF au serveur…');try{const base64=await clientFileToBase64(file);await api('/api/client-space/admin/upload',{tenantID:currentClientTenant,kind,title:$(isContract?'clientContractTitle':'clientInvoiceTitle').value.trim()||(isContract?'Contrat iCHEF OS':'Facture payée'),version:isContract?$('clientContractVersion').value.trim():'',period:isContract?'':$('clientInvoicePeriod').value.trim(),status:isContract?'CURRENT':'PAID',filename:file.name,mimeType:'application/pdf',base64,reason:why});$(isContract?'clientContractFile':'clientInvoiceFile').value='';await reloadClientDossier();clientSetStatus(isContract?'Contrat publié avec succès.':'Facture publiée avec succès.','ok')}catch(e){clientSetStatus(e.message||'Envoi impossible.','bad')}}
+async function uploadClientPdf(kind){
+ if(!currentClientTenant)return;
+ const isContract=kind==='CONTRACT';
+ const input=$(isContract?'clientContractFile':'clientInvoiceFile');
+ const button=$(isContract?'uploadClientContract':'uploadClientInvoice');
+ const file=input.files?.[0];
+ if(!file)return alert('Choisissez un fichier PDF.');
+ if(!(file.type==='application/pdf'||/\.pdf$/i.test(file.name)))return alert('Le fichier doit être un PDF.');
+ if(file.size>12*1024*1024)return alert('PDF trop volumineux : maximum 12 Mo.');
+ const oldText=button.textContent;
+ button.disabled=true;
+ try{
+  clientSetStatus(`Lecture de ${file.name}…`);
+  const base64=await clientFileToBase64(file);
+  if(!base64||base64.length<20)throw new Error('Le PDF n’a pas pu être lu.');
+  clientSetStatus(`Envoi de ${file.name} au serveur iCHEF…`);
+  button.textContent='ENVOI EN COURS…';
+  const why=`${isContract?'Publication contrat':'Ajout facture payée'} via Tour de Contrôle — ${currentClientTenant}`;
+  await api('/api/client-space/admin/upload',{
+   tenantID:currentClientTenant,
+   kind,
+   title:$(isContract?'clientContractTitle':'clientInvoiceTitle').value.trim()||(isContract?'Contrat iCHEF OS':'Facture payée'),
+   version:isContract?$('clientContractVersion').value.trim():'',
+   period:isContract?'':$('clientInvoicePeriod').value.trim(),
+   status:isContract?'CURRENT':'PAID',
+   filename:file.name,
+   mimeType:'application/pdf',
+   base64,
+   reason:why
+  },120000);
+  input.value='';
+  clientSetStatus('PDF enregistré. Vérification du dossier…');
+  await reloadClientDossier();
+  clientSetStatus(isContract?'✓ Contrat publié avec succès.':'✓ Facture publiée avec succès.','ok');
+ }catch(e){
+  console.error('[iCHEF dossier client upload]',e);
+  clientSetStatus(`Échec de l’envoi : ${e.message||'Erreur inconnue.'}`,'bad');
+ }finally{
+  button.disabled=false;
+  button.textContent=oldText;
+ }
+}
 window.deleteClientDocument=async id=>{if(!currentClientTenant||!id)return;const why=reason(`Retirer le document du dossier client — ${currentClientTenant}`);if(!why)return;try{await api('/api/client-space/admin/delete-document',{tenantID:currentClientTenant,documentId:id,reason:why});await reloadClientDossier()}catch(e){alert(e.message)}};
 $('uploadClientContract').onclick=()=>uploadClientPdf('CONTRACT');$('uploadClientInvoice').onclick=()=>uploadClientPdf('INVOICE');$('saveClientMessage').onclick=async()=>{if(!currentClientTenant)return;const text=$('clientMessageText').value.trim();const active=$('clientMessageActive').checked;if(active&&!text)return alert('Écrivez le message avant de l’afficher.');try{await api('/api/client-space/admin/message',{tenantID:currentClientTenant,text,active});clientSetStatus('Message client enregistré.','ok');await reloadClientDossier()}catch(e){clientSetStatus(e.message||'Message non enregistré.','bad')}};
+$('testClientStorage').onclick=async()=>{
+ if(!currentClientTenant)return;
+ clientSetStatus('Test du stockage documents…');
+ try{
+  const data=await api('/api/client-space/admin/health',{tenantID:currentClientTenant},30000);
+  clientSetStatus(`✓ Stockage prêt · MongoDB ${data.mongoReady?'OK':'NON'} · ${data.bucket||'GridFS'}`,'ok');
+ }catch(e){clientSetStatus(`Stockage indisponible : ${e.message}`,'bad')}
+};
 function closeClientModal(){ $('clientModal').classList.remove('open');currentClientTenant=null;currentClientData=null;clientSetStatus('') }
 $('closeClientModal').onclick=closeClientModal;$('clientModal').addEventListener('click',e=>{if(e.target===$('clientModal'))closeClientModal()});
 
