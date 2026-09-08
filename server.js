@@ -17843,6 +17843,9 @@ function ichefClientFilePublicMeta(file, signed = false) {
         filename: String(file?.filename || ''),
         mimeType: String(md.mimeType || file?.contentType || 'application/pdf'),
         uploadedAt: file?.uploadDate || md.uploadedAt || null,
+        sizeBytes: Number(file?.length || md.sizeBytes || 0),
+        sha256: String(md.sha256 || ''),
+        storage: 'MONGODB_GRIDFS',
         source: 'ICHEF',
         openPath
     };
@@ -17875,8 +17878,14 @@ async function ichefStripePaidInvoicesForTenant(tenant) {
     }
 }
 function ichefClientMasterAuthorized(req, res) {
-    if (String(req.body?.masterKey || '') !== ADMIN_PASS) {
-        res.status(401).json({ success: false, error: 'Accès SuperAdmin refusé.' });
+    // Le dossier client utilise exactement la même clé que la Tour de Contrôle.
+    // La Tour officielle s'authentifie avec MASTER_KEY, pas avec ADMIN_PASS.
+    if (!process.env.MASTER_KEY) {
+        res.status(503).json({ success: false, error: 'MASTER_KEY non configurée sur le serveur.' });
+        return false;
+    }
+    if (!ichefMasterKeyIsValid(req.body?.masterKey)) {
+        res.status(401).json({ success: false, error: 'Accès SuperAdmin refusé : MASTER_KEY invalide.' });
         return false;
     }
     return true;
@@ -17937,6 +17946,8 @@ app.post('/api/client-space/admin/upload', async (req, res) => {
         if (!buffer || !buffer.length || buffer.slice(0, 4).toString('ascii') !== '%PDF') return res.status(400).json({ success: false, error: 'PDF illisible ou vide.' });
         if (buffer.length > 12 * 1024 * 1024) return res.status(413).json({ success: false, error: 'PDF trop volumineux (12 Mo maximum).' });
         const bucket = ichefClientDocsBucket();
+        const uploadedAt = new Date();
+        const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
         const upload = bucket.openUploadStream(filename, {
             contentType: 'application/pdf',
             metadata: {
@@ -17947,13 +17958,36 @@ app.post('/api/client-space/admin/upload', async (req, res) => {
                 period: String(req.body?.period || '').trim().slice(0, 100),
                 status: String(req.body?.status || (kind === 'INVOICE' ? 'PAID' : 'CURRENT')).trim().toUpperCase().slice(0, 30),
                 mimeType: 'application/pdf',
-                uploadedAt: new Date(),
+                uploadedAt,
+                sizeBytes: buffer.length,
+                sha256,
                 reason: String(req.body?.reason || '').trim().slice(0, 500)
             }
         });
         await new Promise((resolve, reject) => { upload.on('finish', resolve); upload.on('error', reject); upload.end(buffer); });
-        io.to(tenantID).emit('client-space-updated', { tenantID, type: kind, timestamp: new Date().toISOString() });
-        return res.json({ success: true, documentId: String(upload.id) });
+
+        // Vérification immédiate : on relit le document depuis GridFS avant de confirmer l'envoi.
+        const stored = await bucket.find({ _id: upload.id, 'metadata.tenantID': tenantID }).limit(1).toArray();
+        if (!stored.length) {
+            throw new Error('Le serveur a reçu le PDF mais la vérification GridFS a échoué.');
+        }
+
+        const proof = {
+            proofId: `DOC_${String(upload.id)}`,
+            documentId: String(upload.id),
+            tenantID,
+            kind,
+            filename,
+            sizeBytes: buffer.length,
+            sha256,
+            uploadedAt: uploadedAt.toISOString(),
+            storage: 'MONGODB_GRIDFS',
+            stored: true,
+            visibleInAdministration: true
+        };
+
+        io.to(tenantID).emit('client-space-updated', { tenantID, type: kind, timestamp: uploadedAt.toISOString(), proofId: proof.proofId });
+        return res.json({ success: true, documentId: String(upload.id), proof });
     } catch (error) {
         console.error('[iCHEF CLIENT SPACE] upload:', error);
         return res.status(500).json({ success: false, error: error?.message || 'Enregistrement du PDF impossible.' });
