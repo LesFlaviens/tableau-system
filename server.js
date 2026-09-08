@@ -13090,7 +13090,9 @@ app.post('/api/fiscal-file/full', async (req, res) => {
 // ==========================================================
 
 const ICHEF_STRIPE_FRONTEND_URL = String(
-    process.env.ICHEF_FRONTEND_URL || 'https://os.ichef.ch'
+    process.env.ICHEF_FRONTEND_URL ||
+    process.env.FRONTEND_URL ||
+    'https://os.ichef.ch'
 ).replace(/\/$/, '');
 
 function ichefStripeConnectionPriceId(currency, quantity) {
@@ -13111,25 +13113,27 @@ function ichefStripeConnectionPriceId(currency, quantity) {
 // ==========================================================
 // 💳 MATRICE DES PRIX STRIPE CONNECT (SaaS)
 // ==========================================================
+// ICHEF_STRIPE_FRONTEND_URL est déjà défini ci-dessus.
+
 function ichefStripeConnectionLineItems(currency, quantity) {
     const qty = Math.max(1, parseInt(quantity, 10) || 1);
     const curr = String(currency || 'EUR').toUpperCase();
 
-    // 🎯 MATRICE DES PRIX : Remplace les "price_..." par tes vrais ID Stripe
+    // 🎯 MATRICE DES PRIX : Ton véritable ID Stripe intégré
     const STRIPE_PRICES = {
         EUR: {
-            1: "price_1xxxxxxxxx_EUR_9",   // ID Stripe pour +1 connexion (9€)
-            2: "price_1xxxxxxxxx_EUR_15",  // ID Stripe pour +2 connexions (15€)
-            3: "price_1xxxxxxxxx_EUR_22",  // ID Stripe pour +3 connexions (22€)
-            4: "price_1xxxxxxxxx_EUR_29",  // ID Stripe pour +4 connexions (29€)
-            5: "price_1xxxxxxxxx_EUR_35"   // ID Stripe pour +5 connexions (35€)
+            1: "price_1TN8NPQ9Dw3nOFa4jBaO1Gib",   // Ton produit à 9€
+            2: "",  
+            3: "",  
+            4: "",  
+            5: ""   
         },
         CHF: {
-            1: "price_1xxxxxxxxx_CHF_9",   // ID Stripe pour +1 connexion (9 CHF)
-            2: "price_1xxxxxxxxx_CHF_15",  // ID Stripe pour +2 connexions (15 CHF)
-            3: "price_1xxxxxxxxx_CHF_22",  // ID Stripe pour +3 connexions (22 CHF)
-            4: "price_1xxxxxxxxx_CHF_29",  // ID Stripe pour +4 connexions (29 CHF)
-            5: "price_1xxxxxxxxx_CHF_35"   // ID Stripe pour +5 connexions (35 CHF)
+            1: "",   
+            2: "",  
+            3: "",  
+            4: "",  
+            5: ""   
         }
     };
 
@@ -13193,7 +13197,6 @@ app.post(
             const lineItems = ichefStripeConnectionLineItems(currency, quantity);
             const customerId = await ichefStripeEnsureCustomer(auth.tenant);
 
-            const ICHEF_STRIPE_FRONTEND_URL = process.env.FRONTEND_URL || 'https://os.ichef.ch';
             const returnBase = `${ICHEF_STRIPE_FRONTEND_URL}/administration.html?tenantID=${encodeURIComponent(tenantID)}`;
 
             const session = await stripe.checkout.sessions.create({
@@ -13283,7 +13286,6 @@ app.post(
         }
     }
 );
-
 // =============================================================
 // QR FISCAL iCHEF — DOSSIER COMPLET DE TABLE
 // COLLER CE BLOC JUSTE AVANT : // 🤖 MOTEURS IA (GEMINI)
