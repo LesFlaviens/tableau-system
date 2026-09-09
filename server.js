@@ -1,6 +1,6 @@
 /**
  * ==============================================================
- * 🧠 iCHEF EMPIRE OS — CORE SERVER V56.4 · ESPACE CLIENT DOCUMENTS (2026.09.07)
+ * 🧠 iCHEF EMPIRE OS — CORE SERVER V56.5 · ESPACE CLIENT DOCUMENTS (2026.09.07)
  * ==============================================================
  * Contrat central stable pour multi-établissements :
  * Réservations · Plan/PAD/Téléphone · Cuisine/Bar/Pâtisserie · Anti-Rush
@@ -3178,14 +3178,18 @@ function ichefStripeSubscriptionIdFromInvoice(invoice) {
 
 async function ichefEnsureStripeScreenBaseline(tenant) {
     if (!tenant) return 5;
-    const planLimit = Math.max(1, Number(getPlanScreenLimit(tenant.plan) || 5));
+
+    // IMPORTANT : la limite de base du contrat peut être personnalisée par la Tour de Contrôle.
+    // Ne jamais la remonter automatiquement au plafond théorique du forfait (ex. 50 pour EMPIRE),
+    // sinon un contrat manuel à 3 écrans deviendrait 50 avant d'ajouter Stripe.
     const stored = Number(tenant.stripeConnectionBaseScreens);
-    if (Number.isFinite(stored) && stored >= planLimit) return stored;
+    if (Number.isFinite(stored) && stored >= 1) return Math.round(stored);
 
     const current = Number(tenant.maxScreens);
+    const planFallback = Math.max(1, Number(getPlanScreenLimit(tenant.plan) || 5));
     const baseline = Number.isFinite(current) && current > 0
-        ? Math.max(planLimit, current)
-        : planLimit;
+        ? Math.round(current)
+        : planFallback;
 
     tenant.stripeConnectionBaseScreens = baseline;
     await tenant.save();
@@ -8370,7 +8374,12 @@ app.post('/api/admin-action', async (req, res) => {
         const safeID = cleanString(tenantID);
 
         if (action === 'set_screens' && manualScreens) {
-            await Tenant.findOneAndUpdate({ tenantID: safeID }, { maxScreens: parseInt(manualScreens) });
+            const baseScreens = Math.max(1, Math.min(100, parseInt(manualScreens, 10) || 1));
+            await Tenant.findOneAndUpdate(
+                { tenantID: safeID },
+                { $set: { maxScreens: baseScreens, stripeConnectionBaseScreens: baseScreens } }
+            );
+            await ichefRecomputeStripeScreenLimit(safeID, 'tour-set-base-screens');
         }
         else if (action === 'set_max_staff' && manualMaxStaff) {
             await Tenant.findOneAndUpdate({ tenantID: safeID }, { maxStaff: parseInt(manualMaxStaff) });
@@ -8540,13 +8549,23 @@ app.post('/api/admin-action', async (req, res) => {
             else if (['BUSINESS', 'RENTABILITE', 'ECO', 'PACK_A'].includes(upperPlan)) { limit = 5; staffLimit = 999; } 
             else if (['BRIGADE', 'EMPIRE', 'BRIGADES', 'PREMIUM'].includes(upperPlan)) { limit = 50; staffLimit = 999; } 
             
-            await Tenant.findOneAndUpdate({ tenantID: safeID }, { plan: upperPlan, maxScreens: limit, maxStaff: staffLimit }, { new: true });
+            await Tenant.findOneAndUpdate(
+                { tenantID: safeID },
+                { $set: { plan: upperPlan, maxScreens: limit, stripeConnectionBaseScreens: limit, maxStaff: staffLimit } },
+                { new: true }
+            );
+            await ichefRecomputeStripeScreenLimit(safeID, 'tour-set-plan');
         }
         else if (action === 'set_max_screens') {
             if (!maxScreens || isNaN(maxScreens) || maxScreens < 1) {
                 return res.status(400).json({ success: false, error: "Nombre invalide." });
             }
-            await Tenant.findOneAndUpdate({ tenantID: safeID }, { maxScreens: parseInt(maxScreens) });
+            const baseScreens = Math.max(1, Math.min(100, parseInt(maxScreens, 10) || 1));
+            await Tenant.findOneAndUpdate(
+                { tenantID: safeID },
+                { $set: { maxScreens: baseScreens, stripeConnectionBaseScreens: baseScreens } }
+            );
+            await ichefRecomputeStripeScreenLimit(safeID, 'tour-set-max-screens');
         }
         else if (action === 'reset_devices') {
             await Tenant.findOneAndUpdate(
@@ -10494,7 +10513,7 @@ async function creerNouveauClient({ nomRestaurant, emailContact, phoneContact, p
     const hasManualScreens = maxScreens !== null && maxScreens !== undefined && String(maxScreens).trim() !== '' && Number.isFinite(Number(maxScreens));
     const screenLimit = hasManualScreens ? Math.max(1, Math.min(100, Math.round(Number(maxScreens)))) : fallbackScreens;
     const staffLimit = Math.max(1, Math.min(5000, Math.round(Number(maxStaff) || 999)));
-    const tenant = await Tenant.create({ tenantID, clientName: restaurant, email, phone, status:'ACTIF', plan, specialite:String(specialite || 'cuisine').trim().slice(0,80), pin, maxScreens:screenLimit, maxStaff:staffLimit, registeredDevices:[] });
+    const tenant = await Tenant.create({ tenantID, clientName: restaurant, email, phone, status:'ACTIF', plan, specialite:String(specialite || 'cuisine').trim().slice(0,80), pin, maxScreens:screenLimit, stripeConnectionBaseScreens:screenLimit, maxStaff:staffLimit, registeredDevices:[] });
     await AppState.findOneAndUpdate({ tenantID }, { $setOnInsert: { tenantID, activeOrders: { SETTINGS_MASTER:{data:{name:restaurant}}, RESERVATIONS_MASTER:{data:[]} } } }, { upsert:true, new:true, setDefaultsOnInsert:true });
     console.log(`✅ Nouveau client iCHEF créé : ${restaurant} (${tenantID})`);
     return { tenant, credentials:{ name:restaurant, tenantID, pin, plan, loginUrl:`https://os.ichef.ch/?tenantID=${encodeURIComponent(tenantID)}`, administrationUrl:`https://os.ichef.ch/administration.html?tenantID=${encodeURIComponent(tenantID)}` } };
@@ -13650,8 +13669,234 @@ app.post('/api/stripe/reconcile-screen-upgrade', async (req, res) => {
 });
 
 // ==========================================================
+// 🛠️ RÉPARATION / DÉFINITION DE LA BASE ÉCRANS DU CONTRAT
+// Manager uniquement. Les connexions Stripe actives sont ensuite rajoutées automatiquement.
+// Exemple : baseScreens=3 + licence Stripe +1 => maxScreens=4.
+// ==========================================================
+app.post('/api/stripe/set-screen-base', async (req, res) => {
+    try {
+        const tenantID = cleanString(req.body?.tenantID || req.headers['x-ichef-tenant'] || '');
+        const pin = String(req.body?.pin || req.headers['x-ichef-pin'] || '').trim();
+        const baseScreens = Math.max(1, Math.min(100, parseInt(req.body?.baseScreens, 10) || 0));
+
+        if (!baseScreens) {
+            return res.status(400).json({ success: false, error: 'Nombre de connexions de base invalide.' });
+        }
+
+        const auth = await ichefAuthorizePin(tenantID, pin, { managerOnly: true });
+        if (!auth.ok) {
+            return res.status(auth.status || 403).json({ success: false, error: auth.error || 'Accès refusé.' });
+        }
+
+        const tenant = await Tenant.findOne({ tenantID });
+        if (!tenant) return res.status(404).json({ success: false, error: 'Restaurant introuvable.' });
+
+        tenant.stripeConnectionBaseScreens = baseScreens;
+        tenant.maxScreens = baseScreens;
+        await tenant.save();
+
+        const current = await ichefRecomputeStripeScreenLimit(tenantID, 'manual-base-repair');
+        return res.json({
+            success: true,
+            baseScreens: current?.baseline ?? baseScreens,
+            stripeExtraScreens: current?.stripeExtraScreens ?? 0,
+            maxScreens: current?.maxScreens ?? baseScreens,
+            repairVersion: '2026-09-09-SCREEN-BASE-V2'
+        });
+    } catch (error) {
+        console.error('[iCHEF STRIPE] Réparation base écrans:', error);
+        return res.status(500).json({ success: false, error: error?.message || 'Réparation impossible.' });
+    }
+});
+
+// ==========================================================
 // 💳 PORTAIL CLIENT STRIPE
 // ==========================================================
+
+// ==========================================================
+// 🩺 DIAGNOSTIC STRIPE — CONNEXIONS SUPPLÉMENTAIRES
+// N'expose aucune clé secrète. Permet de voir exactement où bloque l'activation.
+// ==========================================================
+app.post('/api/stripe/screen-upgrade-diagnostic', async (req, res) => {
+    try {
+        const tenantID = cleanString(req.body?.tenantID || req.headers['x-ichef-tenant'] || '');
+        const pin = String(req.body?.pin || req.headers['x-ichef-pin'] || '').trim();
+        const quantity = Math.min(50, Math.max(1, parseInt(req.body?.quantity, 10) || 1));
+
+        const auth = await ichefAuthorizePin(tenantID, pin, { managerOnly: true });
+        if (!auth.ok) {
+            return res.status(auth.status || 403).json({
+                success: false,
+                error: auth.error || 'Accès refusé.'
+            });
+        }
+
+        const tenant = await Tenant.findOne({ tenantID });
+        if (!tenant) {
+            return res.status(404).json({ success: false, error: 'Restaurant introuvable.' });
+        }
+
+        const expectedReference = ichefBuildStripeScreenReference(tenantID, quantity);
+        const baseline = await ichefEnsureStripeScreenBaseline(tenant);
+        const licenses = await StripeScreenLicense.find({ tenantID }).sort({ updatedAt: -1 }).lean();
+        const activeLicenses = licenses.filter(x => x.active === true && x.paid === true);
+        const stripeExtraScreens = activeLicenses.reduce(
+            (sum, item) => sum + Math.min(50, Math.max(0, Number(item.extraScreens) || 0)),
+            0
+        );
+
+        const result = {
+            success: true,
+            diagnosticVersion: '2026-09-09-STRIPE-DIAG-V1',
+            tenantID,
+            quantity,
+            expectedReference,
+            stripe: {
+                configured: Boolean(stripe),
+                keyMode: stripeKey.startsWith('sk_test_') ? 'TEST' : (stripeKey.startsWith('sk_live_') ? 'LIVE' : (stripeKey ? 'UNKNOWN' : 'NONE')),
+                webhookConfigured: Boolean(process.env.STRIPE_WEBHOOK_SECRET),
+                apiReachable: false,
+                error: ''
+            },
+            paymentLink: {
+                expectedUrl: ICHEF_STRIPE_DIRECT_CONNECTION_LINKS?.EUR?.[1] || '',
+                foundInStripe: false,
+                id: '',
+                active: null
+            },
+            checkout: {
+                exactReferenceFound: false,
+                paymentLinkSessionFound: false,
+                sessionId: '',
+                clientReferenceId: '',
+                paymentStatus: '',
+                status: '',
+                mode: '',
+                hasSubscription: false,
+                customerAttached: false,
+                createdAt: ''
+            },
+            license: {
+                baseScreens: baseline,
+                stripeExtraScreens,
+                maxScreens: Number(tenant.maxScreens || baseline),
+                activeStripeLicenses: activeLicenses.length,
+                totalStripeLicenseRecords: licenses.length
+            },
+            recommendation: ''
+        };
+
+        if (!stripe) {
+            result.recommendation = 'STRIPE_SECRET_KEY absente ou invalide sur le serveur.';
+            return res.json(result);
+        }
+
+        try {
+            // Appel API léger : confirme que la clé Stripe utilisée par Render répond réellement.
+            await stripe.balance.retrieve();
+            result.stripe.apiReachable = true;
+        } catch (error) {
+            result.stripe.error = error?.message || 'API Stripe inaccessible.';
+            result.recommendation = 'La clé Stripe du serveur ne peut pas interroger Stripe.';
+            return res.json(result);
+        }
+
+        let paymentLink = null;
+        try {
+            const targetUrl = String(result.paymentLink.expectedUrl || '').split('?')[0];
+            const links = await stripe.paymentLinks.list({ limit: 100 });
+            paymentLink = (links?.data || []).find(link =>
+                String(link?.url || '').split('?')[0] === targetUrl
+            ) || null;
+
+            if (paymentLink) {
+                result.paymentLink.foundInStripe = true;
+                result.paymentLink.id = String(paymentLink.id || '');
+                result.paymentLink.active = paymentLink.active !== false;
+            }
+        } catch (error) {
+            result.paymentLink.lookupError = error?.message || 'Impossible de lister les Payment Links.';
+        }
+
+        // 1) Recherche la plus sûre : référence exacte du restaurant.
+        let selectedSession = null;
+        try {
+            const createdGte = Math.floor(Date.now() / 1000) - (30 * 24 * 60 * 60);
+            const sessions = await stripe.checkout.sessions.list({
+                limit: 100,
+                status: 'complete',
+                created: { gte: createdGte }
+            });
+
+            selectedSession = (sessions?.data || []).find(session =>
+                String(session?.client_reference_id || '') === expectedReference &&
+                ['paid', 'no_payment_required'].includes(String(session?.payment_status || '').toLowerCase())
+            ) || null;
+
+            if (selectedSession) result.checkout.exactReferenceFound = true;
+        } catch (error) {
+            result.checkout.referenceLookupError = error?.message || 'Recherche Checkout impossible.';
+        }
+
+        // 2) Diagnostic du Payment Link A07 même si la référence client a été perdue.
+        if (!selectedSession && paymentLink?.id) {
+            try {
+                const byLink = await stripe.checkout.sessions.list({
+                    payment_link: paymentLink.id,
+                    status: 'complete',
+                    limit: 20
+                });
+                const paidByLink = (byLink?.data || []).filter(session =>
+                    ['paid', 'no_payment_required'].includes(String(session?.payment_status || '').toLowerCase())
+                );
+                if (paidByLink.length) {
+                    result.checkout.paymentLinkSessionFound = true;
+                    // Pour le diagnostic seulement : on montre la plus récente.
+                    // On ne l'active PAS automatiquement sans référence tenant sûre.
+                    selectedSession = paidByLink[0];
+                }
+            } catch (error) {
+                result.checkout.paymentLinkLookupError = error?.message || 'Recherche du Payment Link impossible.';
+            }
+        }
+
+        if (selectedSession) {
+            result.checkout.sessionId = String(selectedSession.id || '');
+            result.checkout.clientReferenceId = String(selectedSession.client_reference_id || '');
+            result.checkout.paymentStatus = String(selectedSession.payment_status || '');
+            result.checkout.status = String(selectedSession.status || '');
+            result.checkout.mode = String(selectedSession.mode || '');
+            result.checkout.hasSubscription = Boolean(selectedSession.subscription);
+            result.checkout.customerAttached = Boolean(selectedSession.customer);
+            result.checkout.createdAt = selectedSession.created
+                ? new Date(Number(selectedSession.created) * 1000).toISOString()
+                : '';
+        }
+
+        if (result.checkout.exactReferenceFound) {
+            result.recommendation = activeLicenses.length
+                ? 'Paiement A07 retrouvé et licence Stripe déjà enregistrée.'
+                : 'Paiement A07 retrouvé avec la bonne référence. Utilisez « Vérifier & activer » pour créer la licence.';
+        } else if (result.checkout.paymentLinkSessionFound) {
+            result.recommendation = result.checkout.clientReferenceId
+                ? `Paiement A07 trouvé, mais référence différente: ${result.checkout.clientReferenceId}`
+                : 'Paiement A07 trouvé mais client_reference_id absent. Stripe a le paiement, iCHEF ne peut pas savoir de façon sûre quel restaurant activer.';
+        } else if (!result.paymentLink.foundInStripe) {
+            result.recommendation = 'Le serveur Stripe actuel ne trouve pas le Payment Link A07. Vérifiez que STRIPE_SECRET_KEY appartient au même compte Stripe et au même mode TEST.';
+        } else {
+            result.recommendation = 'Aucun Checkout payé récent trouvé sur A07 pour ce restaurant.';
+        }
+
+        return res.json(result);
+    } catch (error) {
+        console.error('[iCHEF STRIPE DIAG]', error);
+        return res.status(500).json({
+            success: false,
+            error: error?.message || 'Diagnostic Stripe impossible.'
+        });
+    }
+});
+
 app.post(
     '/api/stripe/create-customer-portal-session',
     async (req, res) => {
@@ -18434,23 +18679,76 @@ async function ichefClientListManualDocs(tenantID, signed = false) {
 async function ichefStripePaidInvoicesForTenant(tenant) {
     if (!stripe || !tenant?.config?.stripeCustomerId) return [];
     try {
-        const result = await stripe.invoices.list({ customer: tenant.config.stripeCustomerId, status: 'paid', limit: 24 });
-        return (result?.data || []).map(inv => ({
-            id: String(inv.id || ''),
-            kind: 'INVOICE',
-            title: `Facture ${inv.number || inv.id || ''}`.trim(),
-            number: String(inv.number || ''),
-            period: '',
-            status: 'PAID',
-            date: inv.status_transitions?.paid_at ? new Date(inv.status_transitions.paid_at * 1000).toISOString() : (inv.created ? new Date(inv.created * 1000).toISOString() : null),
-            source: 'STRIPE',
-            openUrl: String(inv.invoice_pdf || inv.hosted_invoice_url || '')
-        })).filter(inv => inv.openUrl);
+        const tenantID = cleanString(tenant.tenantID || '');
+        const licenses = tenantID
+            ? await StripeScreenLicense.find({ tenantID }).lean()
+            : [];
+        const licenseBySubscription = new Map(
+            licenses
+                .filter(l => l?.subscriptionId)
+                .map(l => [String(l.subscriptionId), l])
+        );
+
+        const result = await stripe.invoices.list({ customer: tenant.config.stripeCustomerId, status: 'paid', limit: 48 });
+        return (result?.data || []).map(inv => {
+            const subscriptionId = ichefStripeSubscriptionIdFromInvoice(inv);
+            const screenLicense = subscriptionId ? licenseBySubscription.get(String(subscriptionId)) : null;
+            return {
+                id: String(inv.id || ''),
+                kind: 'INVOICE',
+                title: screenLicense
+                    ? `Facture connexions ${inv.number || inv.id || ''}`.trim()
+                    : `Facture ${inv.number || inv.id || ''}`.trim(),
+                number: String(inv.number || ''),
+                period: '',
+                status: 'PAID',
+                date: inv.status_transitions?.paid_at ? new Date(inv.status_transitions.paid_at * 1000).toISOString() : (inv.created ? new Date(inv.created * 1000).toISOString() : null),
+                source: 'STRIPE',
+                category: screenLicense ? 'SCREEN_CONNECTION' : 'GENERAL',
+                subscriptionId,
+                extraScreens: screenLicense ? Math.max(1, Number(screenLicense.extraScreens || 1)) : 0,
+                licenseActive: screenLicense ? Boolean(screenLicense.active && screenLicense.paid) : null,
+                licenseStatus: screenLicense ? String(screenLicense.status || '') : '',
+                amountPaid: Number(inv.amount_paid || 0) / 100,
+                currency: String(inv.currency || screenLicense?.currency || 'EUR').toUpperCase(),
+                openUrl: String(inv.invoice_pdf || inv.hosted_invoice_url || '')
+            };
+        }).filter(inv => inv.openUrl);
     } catch (error) {
         console.warn('[iCHEF CLIENT SPACE] Stripe invoices indisponibles :', error?.message || error);
         return [];
     }
 }
+
+async function ichefScreenLicenseSummaryForTenant(tenant) {
+    const tenantID = cleanString(tenant?.tenantID || '');
+    if (!tenantID) return { baseScreens: 0, activeExtraScreens: 0, totalScreens: Number(tenant?.maxScreens || 0), activeLicenses: 0 };
+    try {
+        const licenses = await StripeScreenLicense.find({ tenantID }).lean();
+        const active = licenses.filter(l => l?.active === true && l?.paid === true);
+        const activeExtraScreens = active.reduce((sum, l) => sum + Math.max(1, Number(l.extraScreens || 1)), 0);
+        const storedBase = Number(tenant?.stripeConnectionBaseScreens);
+        const totalScreens = Math.max(1, Number(tenant?.maxScreens || 1));
+        const baseScreens = Number.isFinite(storedBase) && storedBase >= 1
+            ? Math.round(storedBase)
+            : Math.max(1, totalScreens - activeExtraScreens);
+        return {
+            baseScreens,
+            activeExtraScreens,
+            totalScreens,
+            activeLicenses: active.length
+        };
+    } catch (error) {
+        return {
+            baseScreens: Math.max(1, Number(tenant?.stripeConnectionBaseScreens || tenant?.maxScreens || 1)),
+            activeExtraScreens: 0,
+            totalScreens: Math.max(1, Number(tenant?.maxScreens || 1)),
+            activeLicenses: 0,
+            degraded: true
+        };
+    }
+}
+
 function ichefClientMasterAuthorized(req, res) {
     // Le dossier client utilise exactement la même clé que la Tour de Contrôle.
     // La Tour officielle s'authentifie avec MASTER_KEY, pas avec ADMIN_PASS.
@@ -18619,9 +18917,10 @@ app.post('/api/client-space', async (req, res) => {
         const manualInvoices = manual.filter(d => d.kind === 'INVOICE').map(d => ({ ...d, status: 'PAID' }));
         const stripeInvoices = await ichefStripePaidInvoicesForTenant(auth.tenant);
         const invoices = [...manualInvoices, ...stripeInvoices].sort((a,b) => new Date(b.date || b.uploadedAt || 0) - new Date(a.date || a.uploadedAt || 0));
+        const screenLicenseSummary = await ichefScreenLicenseSummaryForTenant(auth.tenant);
         const msg = await IchefClientMessage.findOne({ tenantID, active: true }).lean();
         res.set('Cache-Control', 'no-store, max-age=0');
-        return res.json({ success: true, tenantID, contracts, invoices, message: msg ? { text: msg.text, active: true, priority: msg.priority, updatedAt: msg.updatedAt } : null });
+        return res.json({ success: true, tenantID, contracts, invoices, screenLicenseSummary, message: msg ? { text: msg.text, active: true, priority: msg.priority, updatedAt: msg.updatedAt } : null });
     } catch (error) {
         console.error('[iCHEF CLIENT SPACE] client get:', error);
         return res.status(500).json({ success: false, error: error?.message || 'Espace client indisponible.' });
