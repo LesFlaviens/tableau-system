@@ -18368,3 +18368,7 @@ server.listen(
         console.log('==========================================');
     }
 );
+
+server.listen(PORT, () => {
+    console.log(`✅ iCHEF OS Server running on port ${PORT}`);
+});
