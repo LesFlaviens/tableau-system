@@ -18334,7 +18334,6 @@ process.on('uncaughtException', error => {
 // 🚀 DÉMARRAGE OFFICIEL DU SERVEUR iCHEF
 // IMPORTANT : CE BLOC DOIT ÊTRE LE DERNIER DU server.js
 // ==========================================================
-
 server.on('error', error => {
     console.error(
         '❌ Erreur serveur HTTP :',
@@ -18366,7 +18365,4 @@ server.listen(
         console.log('==========================================');
     }
 );
-
-server.listen(PORT, () => {
-    console.log(`✅ iCHEF OS Server running on port ${PORT}`);
-});
+```[cite: 5]
