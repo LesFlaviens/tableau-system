@@ -3121,8 +3121,220 @@ app.get('/api/payments/stripe/status', async (req, res) => {
 });
 
 // ==========================================
-// WEBHOOK STRIPE : SÉCURITÉ ANTI-IMPAYÉS & UPSELL 
+// WEBHOOK STRIPE : SÉCURITÉ ANTI-IMPAYÉS & UPSELL
+// Connexions supplémentaires : actives uniquement si Stripe confirme le paiement.
 // ==========================================
+
+const stripeScreenLicenseSchema = new mongoose.Schema({
+    tenantID: { type: String, required: true, index: true },
+    subscriptionId: { type: String, required: true, unique: true, index: true },
+    checkoutSessionId: { type: String, default: '', index: true },
+    customerId: { type: String, default: '', index: true },
+    extraScreens: { type: Number, default: 1, min: 1, max: 50 },
+    currency: { type: String, default: 'EUR' },
+    status: { type: String, default: 'pending' },
+    paid: { type: Boolean, default: false },
+    active: { type: Boolean, default: false, index: true },
+    latestInvoiceId: { type: String, default: '' },
+    currentPeriodEnd: { type: Date, default: null },
+    createdAt: { type: Date, default: Date.now },
+    updatedAt: { type: Date, default: Date.now }
+}, { collection: 'stripe_screen_licenses' });
+
+stripeScreenLicenseSchema.index({ tenantID: 1, active: 1 });
+
+const StripeScreenLicense =
+    mongoose.models.StripeScreenLicense ||
+    mongoose.model('StripeScreenLicense', stripeScreenLicenseSchema);
+
+function ichefBuildStripeScreenReference(tenantID, quantity = 1) {
+    const safeTenant = String(tenantID || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]/g, '-');
+    const qty = Math.min(50, Math.max(1, parseInt(quantity, 10) || 1));
+    return `ichef-screen-${qty}-${safeTenant}`.slice(0, 200);
+}
+
+function ichefParseStripeScreenReference(value) {
+    const ref = String(value || '').trim().toLowerCase();
+    const match = /^ichef-screen-(\d{1,2})-([a-z0-9_-]{1,80})$/.exec(ref);
+    if (!match) return null;
+    const extraScreens = Math.min(50, Math.max(1, parseInt(match[1], 10) || 1));
+    const tenantID = cleanString(match[2]);
+    return tenantID ? { tenantID, extraScreens } : null;
+}
+
+function ichefStripeSubscriptionIdFromInvoice(invoice) {
+    const direct = invoice?.subscription;
+    if (typeof direct === 'string' && direct) return direct;
+    if (direct && typeof direct === 'object' && direct.id) return String(direct.id);
+
+    const parentSub = invoice?.parent?.subscription_details?.subscription;
+    if (typeof parentSub === 'string' && parentSub) return parentSub;
+    if (parentSub && typeof parentSub === 'object' && parentSub.id) return String(parentSub.id);
+    return '';
+}
+
+async function ichefEnsureStripeScreenBaseline(tenant) {
+    if (!tenant) return 5;
+    const planLimit = Math.max(1, Number(getPlanScreenLimit(tenant.plan) || 5));
+    const stored = Number(tenant.stripeConnectionBaseScreens);
+    if (Number.isFinite(stored) && stored >= planLimit) return stored;
+
+    const current = Number(tenant.maxScreens);
+    const baseline = Number.isFinite(current) && current > 0
+        ? Math.max(planLimit, current)
+        : planLimit;
+
+    tenant.stripeConnectionBaseScreens = baseline;
+    await tenant.save();
+    return baseline;
+}
+
+async function ichefRecomputeStripeScreenLimit(tenantID, reason = 'stripe-sync') {
+    const safeID = cleanString(tenantID);
+    if (!safeID) return null;
+
+    const tenant = await Tenant.findOne({ tenantID: safeID });
+    if (!tenant) return null;
+
+    const baseline = await ichefEnsureStripeScreenBaseline(tenant);
+    const licenses = await StripeScreenLicense.find({
+        tenantID: safeID,
+        active: true,
+        paid: true
+    }).lean();
+
+    const stripeExtraScreens = licenses.reduce(
+        (sum, item) => sum + Math.min(50, Math.max(0, Number(item.extraScreens) || 0)),
+        0
+    );
+
+    const effectiveLimit = Math.min(100, Math.max(1, baseline + stripeExtraScreens));
+    tenant.maxScreens = effectiveLimit;
+
+    // Si des connexions viennent d'être retirées, seules les premières licences appareil
+    // jusqu'à la nouvelle limite restent enregistrées. Les autres devront se reconnecter
+    // et seront refusées tant qu'une licence Stripe n'est pas active.
+    if (Array.isArray(tenant.registeredDevices) && tenant.registeredDevices.length > effectiveLimit) {
+        tenant.registeredDevices = tenant.registeredDevices.slice(0, effectiveLimit);
+    }
+
+    await tenant.save();
+
+    io.to(safeID).emit('license-updated', {
+        tenantID: safeID,
+        maxScreens: effectiveLimit,
+        baseScreens: baseline,
+        stripeExtraScreens,
+        source: 'STRIPE',
+        reason,
+        timestamp: new Date().toISOString()
+    });
+
+    console.log(
+        `[iCHEF STRIPE] Licence écrans ${safeID}: base=${baseline}, Stripe=+${stripeExtraScreens}, total=${effectiveLimit} (${reason}).`
+    );
+
+    return { tenantID: safeID, baseline, stripeExtraScreens, maxScreens: effectiveLimit };
+}
+
+async function ichefHandleStripeScreenCheckout(session, { forcePaid = null } = {}) {
+    const metadata = session?.metadata || {};
+    const metadataUpgrade = String(metadata.type || '').toUpperCase() === 'UPGRADE_SCREENS';
+    const referenceUpgrade = ichefParseStripeScreenReference(session?.client_reference_id);
+
+    if (!metadataUpgrade && !referenceUpgrade) return false;
+
+    const tenantID = metadataUpgrade
+        ? cleanString(metadata.tenantID)
+        : cleanString(referenceUpgrade?.tenantID);
+
+    const extraScreens = metadataUpgrade
+        ? Math.min(50, Math.max(1, parseInt(metadata.extraScreens, 10) || 1))
+        : Math.min(50, Math.max(1, parseInt(referenceUpgrade?.extraScreens, 10) || 1));
+
+    const checkoutSessionId = String(session?.id || '').trim();
+    const subscriptionId = String(
+        (typeof session?.subscription === 'string' && session.subscription) ||
+        session?.subscription?.id ||
+        (checkoutSessionId ? `checkout:${checkoutSessionId}` : '')
+    ).trim();
+
+    if (!tenantID || !subscriptionId) {
+        throw new Error('Référence Stripe connexion incomplète.');
+    }
+
+    const tenant = await Tenant.findOne({ tenantID });
+    if (!tenant) {
+        throw new Error(`Restaurant introuvable pour la licence Stripe: ${tenantID}`);
+    }
+
+    await ichefEnsureStripeScreenBaseline(tenant);
+
+    const paymentStatus = String(session?.payment_status || '').toLowerCase();
+    const paid = forcePaid === null
+        ? ['paid', 'no_payment_required'].includes(paymentStatus)
+        : Boolean(forcePaid);
+
+    const customerId = String(
+        (typeof session?.customer === 'string' && session.customer) ||
+        session?.customer?.id ||
+        ''
+    ).trim();
+
+    const currency = String(session?.currency || metadata.currency || 'EUR').toUpperCase();
+
+    await StripeScreenLicense.findOneAndUpdate(
+        { subscriptionId },
+        {
+            $set: {
+                tenantID,
+                checkoutSessionId,
+                customerId,
+                extraScreens,
+                currency,
+                status: paid ? 'paid' : (paymentStatus || 'pending'),
+                paid,
+                active: paid,
+                updatedAt: new Date()
+            },
+            $setOnInsert: { createdAt: new Date() }
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    const tenantUpdate = {
+        $addToSet: { stripeProcessedCheckoutSessions: checkoutSessionId }
+    };
+    if (customerId) tenantUpdate.$set = { 'config.stripeCustomerId': customerId };
+    await Tenant.updateOne({ tenantID }, tenantUpdate);
+
+    await ichefRecomputeStripeScreenLimit(
+        tenantID,
+        paid ? `checkout-paid:${checkoutSessionId}` : `checkout-not-paid:${checkoutSessionId}`
+    );
+
+    console.log(
+        `[iCHEF STRIPE] Checkout connexion ${checkoutSessionId}: ${tenantID} +${extraScreens}, paid=${paid}.`
+    );
+    return true;
+}
+
+async function ichefSetStripeScreenSubscriptionState(subscriptionId, patch = {}, reason = 'subscription-update') {
+    const subId = String(subscriptionId || '').trim();
+    if (!subId) return false;
+
+    const existing = await StripeScreenLicense.findOne({ subscriptionId: subId });
+    if (!existing) return false;
+
+    Object.assign(existing, patch, { updatedAt: new Date() });
+    await existing.save();
+    await ichefRecomputeStripeScreenLimit(existing.tenantID, reason);
+    return true;
+}
+
 app.post('/webhook', async (req, res) => {
     if (!stripe || !process.env.STRIPE_WEBHOOK_SECRET) {
         return res.status(503).json({
@@ -3142,130 +3354,191 @@ app.post('/webhook', async (req, res) => {
     } catch (err) {
         return res.status(400).send(`Webhook Error: ${err.message}`);
     }
-    
-    if (event.type === 'checkout.session.completed') {
-        const session = event.data.object;
 
-        // 👈 NOUVEAU BLOC : Encaissement d'une commande client au restaurant
-        if (session.metadata && session.metadata.type === 'ORDER_PAYMENT') {
-            const reqId = String(session.metadata.paymentRequestId || '');
-            const safeID = cleanString(session.metadata.tenantID);
+    try {
+        // Checkout terminé : paiement immédiat ou création d'abonnement.
+        if (
+            event.type === 'checkout.session.completed' ||
+            event.type === 'checkout.session.async_payment_succeeded' ||
+            event.type === 'checkout.session.async_payment_failed'
+        ) {
+            const session = event.data.object;
+            const asyncSucceeded = event.type === 'checkout.session.async_payment_succeeded';
+            const asyncFailed = event.type === 'checkout.session.async_payment_failed';
 
-            activeStripePayments.set(reqId, 'PAID');
+            // Encaissement d'une commande client au restaurant.
+            if (session.metadata && session.metadata.type === 'ORDER_PAYMENT') {
+                if (!asyncFailed) {
+                    const reqId = String(session.metadata.paymentRequestId || '');
+                    const safeID = cleanString(session.metadata.tenantID);
 
-            if (reqId && safeID) {
-                await PaymentRequest.findOneAndUpdate(
-                    {
-                        tenantID: safeID,
-                        paymentRequestId: reqId
-                    },
-                    {
-                        $set: {
-                            paymentId: reqId,
-                            status: 'PAID',
-                            provider: 'STRIPE',
-                            providerTransactionId: String(session.payment_intent || session.id || ''),
-                            authorizedAt: new Date(),
-                            paidAt: new Date(),
-                            stripeSessionId: String(session.id || ''),
-                            updatedAt: new Date()
-                        },
-                        $setOnInsert: {
-                            tableId: String(session.metadata.tableId || ''),
-                            amount: Number(session.amount_total || 0) / 100,
-                            currency: String(session.currency || 'CHF').toUpperCase(),
-                            createdAt: new Date()
+                    activeStripePayments.set(reqId, 'PAID');
+
+                    if (reqId && safeID) {
+                        await PaymentRequest.findOneAndUpdate(
+                            { tenantID: safeID, paymentRequestId: reqId },
+                            {
+                                $set: {
+                                    paymentId: reqId,
+                                    status: 'PAID',
+                                    provider: 'STRIPE',
+                                    providerTransactionId: String(session.payment_intent || session.id || ''),
+                                    authorizedAt: new Date(),
+                                    paidAt: new Date(),
+                                    stripeSessionId: String(session.id || ''),
+                                    updatedAt: new Date()
+                                },
+                                $setOnInsert: {
+                                    tableId: String(session.metadata.tableId || ''),
+                                    amount: Number(session.amount_total || 0) / 100,
+                                    currency: String(session.currency || 'CHF').toUpperCase(),
+                                    createdAt: new Date()
+                                }
+                            },
+                            { upsert: true, new: true }
+                        );
+                    }
+                    console.log(`✅ Paiement Stripe Connect validé pour la commande : ${reqId}`);
+                }
+                return res.json({ received: true });
+            }
+
+            // Connexions supplémentaires iCHEF.
+            const handledScreenUpgrade = await ichefHandleStripeScreenCheckout(
+                session,
+                { forcePaid: asyncSucceeded ? true : (asyncFailed ? false : null) }
+            );
+
+            if (!handledScreenUpgrade && event.type === 'checkout.session.completed') {
+                // Achat d'un forfait iCHEF historique (hors achat de connexions).
+                try {
+                    const rawTenantID = session.client_reference_id || 'client_attente_' + Date.now();
+                    const safeID = cleanString(rawTenantID);
+                    let planAchete = 'BUSINESS';
+                    let limitScreens = 5;
+                    let limitStaff = 999;
+
+                    if (session.metadata && session.metadata.plan) {
+                        planAchete = session.metadata.plan.toUpperCase();
+                        if (['CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR', 'CHEF', 'PATISSIER', 'BAR'].includes(planAchete)) {
+                            limitScreens = 1; limitStaff = 1;
+                        } else if (['BUSINESS', 'RENTABILITE', 'ECO', 'PACK_A'].includes(planAchete)) {
+                            limitScreens = 5; limitStaff = 999;
+                        } else if (['EMPIRE', 'BRIGADE', 'BRIGADES', 'PREMIUM'].includes(planAchete)) {
+                            limitScreens = 50; limitStaff = 999;
                         }
-                    },
-                    {
-                        upsert: true,
-                        new: true
+                    } else {
+                        if (session.amount_total === 1900) { planAchete = 'CHEF_CUISINE'; limitScreens = 1; limitStaff = 1; }
+                        else if (session.amount_total === 4500 || session.amount_total === 4900) { planAchete = 'PACK_A'; limitScreens = 5; limitStaff = 999; }
+                        else if (session.amount_total >= 9900) { planAchete = 'EMPIRE'; limitScreens = 50; limitStaff = 999; }
                     }
-                );
-            }
 
-            console.log(`✅ Paiement Stripe Connect validé pour la commande : ${reqId}`);
-            return res.json({ received: true });
+                    await Tenant.updateOne(
+                        { tenantID: safeID },
+                        {
+                            $set: { status: 'ACTIF', config: { stripeCustomerId: session.customer } },
+                            $unset: { demoExpiration: '' },
+                            $setOnInsert: {
+                                plan: planAchete,
+                                maxScreens: limitScreens,
+                                maxStaff: limitStaff,
+                                pin: Math.floor(1000 + Math.random() * 9000).toString()
+                            }
+                        },
+                        { upsert: true }
+                    );
+                } catch (e) {
+                    console.error('[iCHEF STRIPE] Activation forfait historique:', e?.message || e);
+                }
+            }
         }
 
-        // Bloc existant pour tes abonnements iCHEF
-        if (session.metadata && session.metadata.type === 'UPGRADE_SCREENS') {
-            const safeID = cleanString(session.metadata.tenantID);
-            try {
-                const extraScreens = Math.min(50, Math.max(1, parseInt(session.metadata.extraScreens, 10) || 1));
-                const stripeSessionId = String(session.id || '').trim();
-
-                if (!safeID || !stripeSessionId) {
-                    throw new Error('Métadonnées upgrade Stripe incomplètes.');
-                }
-
-                const update = {
-                    $inc: { maxScreens: extraScreens },
-                    $addToSet: { stripeProcessedCheckoutSessions: stripeSessionId }
-                };
-                if (session.customer) {
-                    update.$set = { 'config.stripeCustomerId': String(session.customer) };
-                }
-
-                const applied = await Tenant.updateOne(
+        // Paiement mensuel confirmé : réactive/maintient les connexions achetées.
+        if (event.type === 'invoice.paid') {
+            const invoice = event.data.object;
+            const subscriptionId = ichefStripeSubscriptionIdFromInvoice(invoice);
+            if (subscriptionId) {
+                await ichefSetStripeScreenSubscriptionState(
+                    subscriptionId,
                     {
-                        tenantID: safeID,
-                        stripeProcessedCheckoutSessions: { $ne: stripeSessionId }
+                        paid: true,
+                        active: true,
+                        status: 'paid',
+                        latestInvoiceId: String(invoice?.id || '')
                     },
-                    update
+                    `invoice-paid:${invoice?.id || subscriptionId}`
                 );
-
-                if (Number(applied.modifiedCount || 0) > 0) {
-                    console.log(`[iCHEF STRIPE] +${extraScreens} connexion(s) appliquée(s) à ${safeID}.`);
-                    io.to(safeID).emit('license-updated', {
-                        tenantID: safeID,
-                        extraScreens,
-                        source: 'STRIPE',
-                        stripeSessionId,
-                        timestamp: new Date().toISOString()
-                    });
-                } else {
-                    console.log(`[iCHEF STRIPE] Session ${stripeSessionId} déjà traitée pour ${safeID}.`);
-                }
-            } catch(e) {
-                console.error('[iCHEF STRIPE] Application upgrade connexions :', e?.message || e);
             }
-        } else {
-            try {
-                const rawTenantID = session.client_reference_id || "client_attente_" + Date.now();
-                const safeID = cleanString(rawTenantID);
-                let planAchete = "BUSINESS";
-                let limitScreens = 5; let limitStaff = 999;
-
-                if (session.metadata && session.metadata.plan) {
-                    planAchete = session.metadata.plan.toUpperCase();
-                    if (['CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR', 'CHEF', 'PATISSIER', 'BAR'].includes(planAchete)) {
-                        limitScreens = 1; limitStaff = 1;
-                    } else if (['BUSINESS', 'RENTABILITE', 'ECO', 'PACK_A'].includes(planAchete)) {
-                        limitScreens = 5; limitStaff = 999;
-                    } else if (['EMPIRE', 'BRIGADE', 'BRIGADES', 'PREMIUM'].includes(planAchete)) {
-                        limitScreens = 50; limitStaff = 999;
-                    }
-                } else {
-                    if (session.amount_total === 1900) { planAchete = "CHEF_CUISINE"; limitScreens = 1; limitStaff = 1; } 
-                    else if (session.amount_total === 4500 || session.amount_total === 4900) { planAchete = "PACK_A"; limitScreens = 5; limitStaff = 999; } 
-                    else if (session.amount_total >= 9900) { planAchete = "EMPIRE"; limitScreens = 50; limitStaff = 999; }
-                }
-
-                // 🔓 Un achat officiel supprime toute expiration de démo
-                await Tenant.updateOne(
-                    { tenantID: safeID },
-                    { 
-                        $set: { status: 'ACTIF', config: { stripeCustomerId: session.customer } },
-                        $unset: { demoExpiration: "" },
-                        $setOnInsert: { plan: planAchete, maxScreens: limitScreens, maxStaff: limitStaff, pin: Math.floor(1000 + Math.random() * 9000).toString() }
-                    },
-                    { upsert: true }
-                );
-            } catch(e) {}
         }
+
+        // Impayé : retrait immédiat des connexions supplémentaires liées à cet abonnement.
+        if (event.type === 'invoice.payment_failed') {
+            const invoice = event.data.object;
+            const subscriptionId = ichefStripeSubscriptionIdFromInvoice(invoice);
+            if (subscriptionId) {
+                await ichefSetStripeScreenSubscriptionState(
+                    subscriptionId,
+                    {
+                        paid: false,
+                        active: false,
+                        status: 'payment_failed',
+                        latestInvoiceId: String(invoice?.id || '')
+                    },
+                    `invoice-payment-failed:${invoice?.id || subscriptionId}`
+                );
+            }
+        }
+
+        // Mise à jour abonnement : on retire l'accès pour les statuts réellement non actifs.
+        if (event.type === 'customer.subscription.updated') {
+            const subscription = event.data.object;
+            const status = String(subscription?.status || '').toLowerCase();
+            const revoke = ['unpaid', 'canceled', 'incomplete_expired', 'paused'].includes(status);
+
+            const periodEnd = Number(subscription?.current_period_end || 0);
+            const patch = {
+                status: status || 'updated',
+                currentPeriodEnd: periodEnd > 0 ? new Date(periodEnd * 1000) : null
+            };
+
+            // Ne réactive jamais uniquement parce que Stripe dit "active" :
+            // la réactivation se fait sur invoice.paid, donc après paiement confirmé.
+            if (revoke) {
+                patch.paid = false;
+                patch.active = false;
+            }
+
+            await ichefSetStripeScreenSubscriptionState(
+                String(subscription?.id || ''),
+                patch,
+                `subscription-updated:${status || 'unknown'}`
+            );
+        }
+
+        // Abonnement terminé/annulé : connexions supplémentaires désactivées.
+        if (event.type === 'customer.subscription.deleted') {
+            const subscription = event.data.object;
+            await ichefSetStripeScreenSubscriptionState(
+                String(subscription?.id || ''),
+                {
+                    paid: false,
+                    active: false,
+                    status: 'canceled',
+                    currentPeriodEnd: null
+                },
+                'subscription-deleted'
+            );
+        }
+
+        return res.json({ received: true });
+    } catch (error) {
+        console.error('[iCHEF STRIPE] Webhook licence connexions:', error);
+        // Stripe réessaiera le webhook si le serveur renvoie une erreur 5xx.
+        return res.status(500).json({
+            received: false,
+            error: 'Erreur de synchronisation licence Stripe.'
+        });
     }
-    res.json({received: true});
 });
 
 const mongoURI =
@@ -3585,6 +3858,13 @@ siret: { type: String, default: 'NON RENSEIGNÉ' },
     maxScreens: {
         type: Number,
         default: 5
+    },
+
+    // Limite de base avant les connexions supplémentaires Stripe.
+    // Elle permet de retirer proprement les connexions achetées si l'abonnement n'est plus payé.
+    stripeConnectionBaseScreens: {
+        type: Number,
+        default: null
     },
 
     maxStaff: {
@@ -13198,14 +13478,18 @@ app.post(
             // une session Checkout à partir d'un ancien Price ID.
             const directLink = ICHEF_STRIPE_DIRECT_CONNECTION_LINKS?.[currency]?.[quantity];
             if (directLink) {
-                console.info(`[iCHEF STRIPE] Payment Link direct ${currency} +${quantity} -> A07`);
+                const clientReferenceId = ichefBuildStripeScreenReference(tenantID, quantity);
+                const separator = directLink.includes('?') ? '&' : '?';
+                const trackedLink = `${directLink}${separator}client_reference_id=${encodeURIComponent(clientReferenceId)}`;
+                console.info(`[iCHEF STRIPE] Payment Link direct ${currency} +${quantity} -> A07 · ${clientReferenceId}`);
                 return res.json({
                     success: true,
-                    url: directLink,
+                    url: trackedLink,
                     direct: true,
                     quantity,
                     currency,
-                    stripeFix: '2026-09-09-A07-LOCK'
+                    clientReferenceId,
+                    stripeFix: '2026-09-09-A07-LICENSE-SYNC'
                 });
             }
 
@@ -13225,7 +13509,7 @@ app.post(
                 mode: 'subscription',
                 customer: customerId,
                 line_items: lineItems,
-                client_reference_id: tenantID,
+                client_reference_id: ichefBuildStripeScreenReference(tenantID, quantity),
                 success_url: `${returnBase}&stripe=success&connections=${quantity}#billing`,
                 cancel_url: `${returnBase}&stripe=cancelled#billing`,
                 allow_promotion_codes: false,
