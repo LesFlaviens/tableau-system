@@ -2049,7 +2049,8 @@ body>nav{display:none!important}
                 }
                 return true;
             },
-confirmStripeAction: async function() {
+
+            confirmStripeAction: async function() {
                 const pending = this.pendingStripeAction;
                 if (!pending) return this.closeStripeConfirm();
 
@@ -2059,7 +2060,16 @@ confirmStripeAction: async function() {
                 if (status) { status.textContent = 'Création de la session sécurisée…'; status.classList.remove('bad'); }
 
                 try {
-                    // Déclaration unique des variables
+                    if (this.isDemoMode) {
+                        if (status) {
+                            status.textContent = 'Stripe Test s’ouvre dans un nouvel onglet. Aucun débit réel ne sera effectué.';
+                            status.classList.remove('bad');
+                        }
+                        this.openStripeSafely(window.ICHEF_DEMO_STRIPE_PAYMENT_LINK);
+                        setTimeout(() => this.closeStripeConfirm(), 450);
+                        return;
+                    }
+
                     let endpoint = '';
                     let body = { tenantID: this.tenantID, pin: this.masterPin };
 
@@ -2068,14 +2078,13 @@ confirmStripeAction: async function() {
                         body.quantity = Math.max(1, parseInt(pending.quantity || 1, 10) || 1);
                         const pricing = this.getConnectionPricing(body.quantity);
                         body.currency = pricing.region === 'CH' ? 'CHF' : 'EUR';
-                        body.displayAmount = pricing.amount; // affichage uniquement
+                        body.displayAmount = pricing.amount; // affichage uniquement : le serveur/Stripe doit rester source de vérité
                     } else if (pending.type === 'billing') {
                         endpoint = '/api/stripe/create-customer-portal-session';
                     } else {
                         throw new Error('Action Stripe inconnue.');
                     }
 
-                    // Appel à ton serveur Render
                     const res = await fetch(`${this.SERVER_URL}${endpoint}`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -2092,8 +2101,6 @@ confirmStripeAction: async function() {
                     }
 
                     if (status) status.textContent = 'Stripe s’ouvre dans un nouvel onglet. iCHEF reste ouvert ici.';
-                    
-                    // Redirection vers la vraie session dynamique Stripe
                     this.openStripeSafely(data.url);
                     setTimeout(() => this.closeStripeConfirm(), 450);
 
@@ -2105,3 +2112,530 @@ confirmStripeAction: async function() {
                     if (go) { go.disabled = false; go.textContent = 'Réessayer avec Stripe →'; }
                 }
             },
+
+            openAddonModal: function(id, title) {
+                this.currentSelectedAddon = id;
+                document.getElementById('addon-title').innerText = title;
+                document.getElementById('addon-modal').classList.add('active');
+            },
+
+            processAddonPurchase: async function() {
+                if(!this.currentSelectedAddon) return;
+                
+                let moduleName = document.getElementById('addon-title').innerText;
+                let message = `Bonjour, je souhaite ajouter le module "${moduleName}" à mon abonnement ICHEF OS pour mon restaurant : ${this.tenantID.toUpperCase()}.`;
+                
+                const contact = this.refreshIchefContactRouting();
+                const urlWhatsApp = `https://wa.me/${contact.whatsapp}?text=${encodeURIComponent(message)}`;
+                
+                window.open(urlWhatsApp, '_blank');
+                document.getElementById('addon-modal').classList.remove('active');
+            },
+
+            loadStaffList: async function() {
+                const listDiv = document.getElementById('dashboard-staff-list');
+                try {
+                    const r = await fetch(`${this.SERVER_URL}/get-current-state?tenantID=${this.tenantID}&_t=${Date.now()}`);
+                    if(r.ok) {
+                        const state = await r.json();
+                        const staffData = (state.activeOrders && state.activeOrders['STAFF_ACCESS']) ? state.activeOrders['STAFF_ACCESS'].data : [];
+                        const staffCount = Array.isArray(staffData) ? staffData.length : 0;
+                        const dashStaff = document.getElementById('dashboard-staff-count');
+                        const staffCardCount = document.getElementById('staff-card-count');
+                        const staffProgress = document.getElementById('dashboard-staff-progress');
+                        if (dashStaff) dashStaff.textContent = staffCount;
+                        if (staffCardCount) staffCardCount.textContent = staffCount;
+                        if (staffProgress) staffProgress.style.width = `${Math.min(100, staffCount * 10)}%`;
+                        
+                        if(staffData.length === 0) {
+                            listDiv.innerHTML = `<div style="color:var(--text-muted); font-size: 0.9rem; background: rgba(255,255,255,0.03); padding: 15px; border-radius: 8px; border: 1px dashed var(--border-strong); text-align: center;">Aucun collaborateur enregistré.</div>`;
+                        } else {
+                            listDiv.innerHTML = staffData.map(s => {
+                                let badgeColor = s.active ? 'var(--text-main)' : 'var(--text-muted)';
+                                let badgeText = s.active ? 'ACTIF' : 'SUSPENDU';
+                                let roleBadge = s.dept === 'admin' ? '<span style="color:var(--gold); font-size:0.75rem; border: 1px solid var(--gold); padding: 2px 6px; border-radius: 4px; margin-left:10px;">MANAGER</span>' : '';
+                                
+                                return `
+                                <div style="display:flex; justify-content:space-between; align-items:center; background:var(--bg); border:1px solid var(--border-strong); padding: 12px 15px; border-radius: 8px;">
+                                    <span style="font-weight:600; color:var(--text-main); font-size: 0.95rem;">${s.name} ${roleBadge}</span>
+                                    <span style="color:${badgeColor}; font-size:0.7rem; font-weight:600; letter-spacing:1px; border: 1px solid ${badgeColor}; padding: 3px 8px; border-radius: 4px;">${badgeText}</span>
+                                </div>
+                                `;
+                            }).join('');
+                        }
+                    } else {
+                        listDiv.innerHTML = `<span style="color:var(--text-muted);">Erreur de lecture de l'équipe.</span>`;
+                    }
+                } catch(e) {
+                    listDiv.innerHTML = `<span style="color:var(--text-muted);">Mode hors ligne - Équipe indisponible.</span>`;
+                }
+            },
+
+            loadScreenStats: async function() {
+                try {
+                    const res = await fetch(`${this.SERVER_URL}/api/check-license?tenantID=${this.tenantID}`);
+                    const data = await res.json();
+                    
+                    const countRes = await fetch(`${this.SERVER_URL}/api/dashboard-info?tenantID=${this.tenantID}`);
+                    const countData = await countRes.json();
+                    
+                    if (data.success && countData.success) {
+                        const activeDevices = countData.activeDevices || 0;
+                        const limit = countData.maxScreens || 5;
+                        
+                        const color = activeDevices >= limit ? 'var(--danger)' : 'var(--text-main)';
+                        document.getElementById('device-count').innerHTML = `Écrans utilisés : <b style="color:${color}; font-size:1.1rem;">${activeDevices} / ${limit}</b>`;
+                        const dashScreens = document.getElementById('dashboard-screens-count');
+                        const screenProgress = document.getElementById('dashboard-screens-progress');
+                        const screenDots = document.getElementById('screen-dots');
+                        if (dashScreens) dashScreens.textContent = `${activeDevices} / ${limit}`;
+                        if (screenProgress) screenProgress.style.width = `${limit ? Math.min(100, Math.round(activeDevices / limit * 100)) : 0}%`;
+                        if (screenDots) screenDots.innerHTML = Array.from({length: Math.min(limit, 12)}, (_,i) => `<span class="screen-dot ${i < activeDevices ? 'on' : ''}"></span>`).join('');
+                    }
+                } catch(e) {
+                    document.getElementById('device-count').innerText = "Écrans Actifs : Inconnu";
+                }
+            },
+
+            resetEcrans: async function() {
+                if(this.isDemoMode) return alert("🔒 Mode Démo : La réinitialisation des écrans est désactivée pour éviter de perturber les autres utilisateurs en test.");
+
+                if(!confirm("ATTENTION : Cela va déconnecter TOUS les écrans actuels de votre restaurant. Êtes-vous sûr de vouloir forcer la libération des connexions ?")) return;
+                
+                try {
+                    const res = await fetch(`${this.SERVER_URL}/api/admin-reset-devices`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ tenantID: this.tenantID, adminPin: this.masterPin })
+                    });
+                    const data = await res.json();
+                    if(data.success) {
+                        alert("Toutes les connexions ont été libérées. Vos écrans peuvent se reconnecter.");
+                        this.loadScreenStats();
+                    } else {
+                        alert("Erreur : Action non autorisée ou code PIN invalide.");
+                    }
+                } catch(e) {
+                    alert("Erreur réseau. Vérifiez votre connexion.");
+                }
+            },
+
+            buyScreens: async function(qty) {
+                const quantity = Math.min(50, Math.max(1, parseInt(qty || 1, 10) || 1));
+                // Même fenêtre de contrôle en DÉMO et en production : aucune fausse manipulation.
+                // En démo, la confirmation n'effectue aucun paiement réel.
+                this.openStripeConfirm('screens', { quantity });
+            },
+
+            chargerCoordonnees: async function() {
+                try {
+                    const res = await fetch(`${this.SERVER_URL}/api/get-contact?tenantID=${this.tenantID}`);
+                    const data = await res.json();
+                    if (data.success && data.contact) {
+                        if(data.contact.email) document.getElementById('user-email').value = data.contact.email;
+                        if(data.contact.phone) {
+                            document.getElementById('user-phone').value = data.contact.phone;
+                            const callbackPhone = document.getElementById('sos-callback-phone');
+                            if (callbackPhone && !callbackPhone.value) callbackPhone.value = data.contact.phone;
+                        }
+                        this.refreshIchefContactRouting();
+                    }
+                } catch(e) {
+                    console.warn("API Contacts non configurée ou injoignable.");
+                }
+            },
+
+            sauvegarderCoordonnees: async function() {
+                if(this.isDemoMode) return alert("🔒 Mode Démo : L'enregistrement des coordonnées est désactivé.");
+
+                const email = document.getElementById('user-email').value.trim();
+                const phone = document.getElementById('user-phone').value.trim();
+                
+                if(!email && !phone) return alert("Veuillez remplir au moins un champ.");
+                
+                try {
+                    const res = await fetch(`${this.SERVER_URL}/api/update-contact`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ tenantID: this.tenantID, masterPin: this.masterPin, email: email, phone: phone })
+                    });
+                    const data = await res.json();
+                    if(data.success) alert("Informations enregistrées avec succès.");
+                    else alert("Erreur lors de l'enregistrement. Vérifiez votre connexion.");
+                } catch(e) {
+                    alert("Erreur réseau lors de la sauvegarde.");
+                }
+            },
+
+            modifierPinMaster: async function() {
+                if(this.isDemoMode) return alert("🔒 Mode Démo : La modification du code PIN Administrateur est désactivée.");
+
+                const newPin = prompt("Entrez votre NOUVEAU code PIN (entre 4 et 9 chiffres) :");
+                if(!newPin) return;
+                
+                if(!/^\d{4,9}$/.test(newPin)) {
+                    return alert("Invalide. Le code doit contenir entre 4 et 9 chiffres.");
+                }
+
+                if(newPin === "0000" || newPin === "1234") {
+                    return alert("Code trop simple. Veuillez choisir un code plus sécurisé.");
+                }
+
+                const confirmPin = prompt("Confirmez votre nouveau code PIN :");
+                if(newPin !== confirmPin) {
+                    return alert("Les codes ne correspondent pas. Annulé.");
+                }
+
+                try {
+                    const res = await fetch(`${this.SERVER_URL}/api/update-master-pin`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ tenantID: this.tenantID, oldPin: this.masterPin, newPin: newPin })
+                    });
+                    
+                    const data = await res.json();
+                    if (data.success) {
+                        localStorage.setItem('ichef_master_pin', newPin);
+                        this.masterPin = newPin;
+                        alert("✅ Code PIN synchronisé et mis à jour avec succès. Attention : Toutes les sessions actives ont été déconnectées par sécurité.");
+                        this.loadScreenStats();
+                    } else {
+                        alert("Erreur : " + (data.error || "Mise à jour refusée par le serveur."));
+                    }
+                } catch(e) {
+                    alert("📡 Erreur réseau : Le serveur met trop de temps à répondre. Attendez 1 minute et réessayez.");
+                }
+            },
+
+            resolveClientDocumentUrl: function(value) {
+                const raw = String(value || '').trim();
+                if (!raw) return '';
+                if (/^https?:\/\//i.test(raw)) return raw;
+                return `${this.SERVER_URL}${raw.startsWith('/') ? '' : '/'}${raw}`;
+            },
+
+            formatClientDate: function(value) {
+                if (!value) return '';
+                const d = new Date(value);
+                return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleDateString('fr-FR');
+            },
+
+            escapeHtml: function(value) {
+                return String(value ?? '')
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#039;');
+            },
+
+            renderClientQr: function() {
+                const box = document.getElementById('client-contract-qr');
+                const label = document.getElementById('client-contract-qr-link');
+                if (!box) return;
+                const url = `${window.ICHEF_FRONTEND_URL}/administration.html?tenantID=${encodeURIComponent(this.tenantID)}#client-documents`;
+                if (label) label.textContent = url;
+                box.innerHTML = '';
+                if (typeof window.QRCode === 'function') {
+                    try {
+                        new window.QRCode(box, { text: url, width: 190, height: 190, correctLevel: window.QRCode.CorrectLevel ? window.QRCode.CorrectLevel.M : undefined });
+                        return;
+                    } catch (e) { console.warn('QR contrat :', e); }
+                }
+                box.innerHTML = '<div style="color:#334155;text-align:center;font-size:.75rem;line-height:1.4;">QR indisponible<br><small>Utilisez le lien ci-dessous.</small></div>';
+            },
+
+            renderClientSpace: function(data) {
+                this.clientSpace = data || {};
+                const contracts = Array.isArray(data?.contracts) ? data.contracts : [];
+                const invoices = Array.isArray(data?.invoices) ? data.invoices : [];
+                const message = data?.message && data.message.active !== false ? data.message : null;
+                const current = contracts[0] || null;
+                this.currentContractUrl = current ? this.resolveClientDocumentUrl(current.openUrl || current.openPath) : null;
+
+                const preview = document.getElementById('client-contract-preview');
+                const title = document.getElementById('client-contract-title');
+                const meta = document.getElementById('client-contract-meta');
+                const openBtn = document.getElementById('client-contract-open');
+                const badge = document.getElementById('client-contract-badge');
+                const history = document.getElementById('client-contract-history');
+                const headerDate = document.getElementById('contract-header-date');
+                const dashSub = document.getElementById('dashboard-contract-subtitle');
+                const dashProgress = document.getElementById('dashboard-contract-progress');
+
+                if (current) {
+                    const safeUrl = this.escapeHtml(this.currentContractUrl);
+                    if (preview) preview.innerHTML = `<iframe title="Aperçu du contrat iCHEF" src="${safeUrl}#toolbar=0&navpanes=0"></iframe>`;
+                    if (title) title.textContent = current.title || current.filename || 'Contrat iCHEF OS';
+                    if (meta) meta.textContent = `${current.version ? 'Version ' + current.version + ' · ' : ''}${this.formatClientDate(current.uploadedAt || current.date) || 'Disponible'}`;
+                    if (openBtn) openBtn.disabled = false;
+                    if (badge) badge.style.display = 'inline-flex';
+                    if (headerDate) headerDate.textContent = `Contrat publié : ${this.formatClientDate(current.uploadedAt || current.date) || 'disponible'}`;
+                    if (dashSub) dashSub.textContent = 'À jour';
+                    if (dashProgress) dashProgress.style.width = '100%';
+                } else {
+                    if (preview) preview.innerHTML = '<div class="client-empty">Aucun contrat n’a encore été publié pour cet établissement.</div>';
+                    if (title) title.textContent = 'Aucun contrat disponible';
+                    if (meta) meta.textContent = 'Votre contrat apparaîtra ici dès sa publication par iCHEF.';
+                    if (openBtn) openBtn.disabled = true;
+                    if (badge) badge.style.display = 'none';
+                    if (headerDate) headerDate.textContent = 'Contrat non publié';
+                    if (dashSub) dashSub.textContent = 'Non publié';
+                    if (dashProgress) dashProgress.style.width = '0%';
+                }
+
+                if (history) {
+                    const older = contracts.slice(1);
+                    history.innerHTML = older.length
+                        ? `<div class="client-history-title">Historique des contrats</div>` + older.map(doc => {
+                            const url = this.resolveClientDocumentUrl(doc.openUrl || doc.openPath);
+                            return `<div class="client-history-row"><div><strong>${this.escapeHtml(doc.title || doc.filename || 'Ancien contrat')}</strong><small>${this.escapeHtml((doc.version ? 'Version ' + doc.version + ' · ' : '') + (this.formatClientDate(doc.uploadedAt || doc.date) || ''))}</small></div><button type="button" onclick="window.logicielManager.openClientDocument('${this.escapeHtml(url)}')">Ouvrir</button></div>`;
+                        }).join('')
+                        : '';
+                }
+
+                const invoiceList = document.getElementById('client-invoices-list');
+                const invoiceCount = document.getElementById('client-invoice-count');
+                if (invoiceCount) invoiceCount.textContent = `${invoices.length} facture${invoices.length > 1 ? 's' : ''}`;
+                if (invoiceList) {
+                    invoiceList.innerHTML = invoices.length ? invoices.map(inv => {
+                        const url = this.resolveClientDocumentUrl(inv.openUrl || inv.openPath);
+                        const date = this.formatClientDate(inv.date || inv.uploadedAt);
+                        const period = inv.period ? ` · ${inv.period}` : '';
+                        const source = inv.source ? `<span class="client-invoice-source">${this.escapeHtml(inv.source)}</span>` : '';
+                        return `<div class="client-invoice-row"><div><strong>${this.escapeHtml(inv.title || inv.number || inv.filename || 'Facture')}<span class="invoice-state">Payée</span>${source}</strong><small>${this.escapeHtml(date + period)}</small></div><button type="button" ${url ? '' : 'disabled'} onclick="window.logicielManager.openClientDocument('${this.escapeHtml(url)}')">PDF</button></div>`;
+                    }).join('') : '<div class="client-empty">Aucune facture payée disponible pour le moment.</div>';
+                }
+
+                const msgCard = document.getElementById('client-message-card');
+                const msgText = document.getElementById('client-message-text');
+                const msgDate = document.getElementById('client-message-date');
+                if (msgCard) {
+                    if (message && String(message.text || '').trim()) {
+                        msgCard.hidden = false;
+                        if (msgText) msgText.textContent = message.text;
+                        if (msgDate) msgDate.textContent = message.updatedAt ? `Mis à jour le ${this.formatClientDate(message.updatedAt)}` : '';
+                    } else {
+                        msgCard.hidden = true;
+                        if (msgText) msgText.textContent = '';
+                        if (msgDate) msgDate.textContent = '';
+                    }
+                }
+                this.renderClientQr();
+            },
+
+            loadClientSpace: async function() {
+                const preview = document.getElementById('client-contract-preview');
+                const invoiceList = document.getElementById('client-invoices-list');
+                try {
+                    const res = await fetch(`${this.SERVER_URL}/api/client-space`, {
+                        method: 'POST',
+                        credentials: 'include',
+                        cache: 'no-store',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ tenantID: this.tenantID, pin: this.masterPin })
+                    });
+                    let data = {};
+                    try { data = await res.json(); } catch (_) {}
+                    if (!res.ok || data.success !== true) throw new Error(data.error || 'Espace documents indisponible.');
+                    this.renderClientSpace(data);
+                } catch (error) {
+                    console.warn('Espace client :', error);
+                    if (preview) preview.innerHTML = `<div class="client-empty">Impossible de charger votre espace documents.<br><small>${this.escapeHtml(error.message || '')}</small></div>`;
+                    if (invoiceList) invoiceList.innerHTML = '<div class="client-empty">Factures indisponibles pour le moment.</div>';
+                    const dashSub = document.getElementById('dashboard-contract-subtitle');
+                    if (dashSub) dashSub.textContent = 'Indisponible';
+                    this.renderClientQr();
+                }
+            },
+
+            openClientDocument: function(url) {
+                const target = this.resolveClientDocumentUrl(url);
+                if (!target) return alert('Document indisponible.');
+                window.open(target, '_blank', 'noopener,noreferrer');
+            },
+
+            openCurrentContract: function() {
+                if (!this.currentContractUrl) return alert('Aucun contrat disponible.');
+                this.openClientDocument(this.currentContractUrl);
+            },
+
+            revokeContractUrls: function() {},
+
+            openBillingPortal: async function() {
+                if(this.isDemoMode) {
+                    const contact = this.refreshIchefContactRouting();
+                    if (confirm(`Mode démonstration : aucun paiement réel n’est effectué.\n\nContacter iCHEF au ${contact.display} (${contact.label}) ?`)) {
+                        this.callICHEF('billing');
+                    }
+                    return;
+                }
+
+                // Confirmation iCHEF avant de créer la session Stripe.
+                this.openStripeConfirm('billing');
+            },
+
+            requestCallback: async function() {
+                if (this.isDemoMode) {
+                    return alert("🔒 Mode Démo : la demande de rappel est désactivée.");
+                }
+
+                const callbackInput = document.getElementById('sos-callback-phone');
+                const contactInput = document.getElementById('user-phone');
+                const phone = String(
+                    (callbackInput && callbackInput.value) ||
+                    (contactInput && contactInput.value) ||
+                    ""
+                ).trim();
+
+                const digits = phone.replace(/\D/g, "");
+                if (!phone || digits.length < 8 || digits.length > 15) {
+                    if (callbackInput) callbackInput.focus();
+                    return alert("Veuillez saisir un numéro de téléphone valide pour être rappelé.");
+                }
+
+                const btn = document.getElementById('sos-btn-callback');
+                const oldLabel = btn ? btn.textContent : "";
+                if (btn) {
+                    btn.disabled = true;
+                    btn.textContent = "Envoi…";
+                    btn.style.opacity = "0.65";
+                }
+
+                try {
+                    const res = await fetch(`${this.SERVER_URL}/api/twilio/call-me`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            phone: phone,
+                            tenantID: this.tenantID || "",
+                            source: "administration.html"
+                        })
+                    });
+
+                    let data = {};
+                    try { data = await res.json(); } catch (_) {}
+
+                    if (!res.ok || data.success !== true) {
+                        throw new Error(data.error || "La demande n'a pas pu être envoyée.");
+                    }
+
+                    document.getElementById('sos-modal').style.display = 'none';
+                    alert(data.message || "Votre demande a bien été envoyée. Nous vous rappellerons rapidement.");
+                } catch (error) {
+                    console.error("Erreur demande de rappel :", error);
+                    alert("Impossible d'envoyer la demande de rappel pour le moment. Vous pouvez utiliser le bouton Appeler ou Email.");
+                } finally {
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.textContent = oldLabel || "📲 Être rappelé";
+                        btn.style.opacity = "";
+                    }
+                }
+            },
+
+            sendSOS: function(methode) {
+                const sosType = document.getElementById('sos-type').value;
+                const sosMessage = document.getElementById('sos-message').value.trim();
+                
+                let texteAlerte = `🚨 SOS iCHEF OS 🚨\n\n🏢 Restaurant : ${this.tenantID ? this.tenantID.toUpperCase() : "Inconnu"}\n⚠️ Type : ${sosType}`;
+                if (sosMessage) {
+                    texteAlerte += `\n📝 Détails : ${sosMessage}`;
+                }
+                
+                if (methode === 'whatsapp') {
+                    const contact = this.refreshIchefContactRouting();
+                    const urlWhatsApp = `https://wa.me/${contact.whatsapp}?text=${encodeURIComponent(texteAlerte)}`;
+                    window.open(urlWhatsApp, '_blank', 'noopener,noreferrer');
+                } 
+                else if (methode === 'email') {
+                    const emailSupport = "icheflavien@ichef.ch";
+                    const urlEmail = `mailto:${emailSupport}?subject=${encodeURIComponent("🚨 SOS iCHEF OS - " + sosType)}&body=${encodeURIComponent(texteAlerte)}`;
+                    window.location.href = urlEmail;
+                }
+                
+                document.getElementById('sos-modal').style.display = 'none';
+                document.getElementById('sos-message').value = "";
+            },
+
+            logout: function() {
+                if(confirm("Confirmer la déconnexion ? Cela libérera cet écran du système iCHEF.")) {
+                    localStorage.removeItem('ichef_tenant_id');
+                    localStorage.removeItem('ichef_master_pin');
+                    localStorage.removeItem('pin');
+                    sessionStorage.removeItem('ichef_login_context');
+                    sessionStorage.removeItem('ichef_csrf_token');
+                    window.location.replace(`${window.ICHEF_FRONTEND_URL}/connexionpartenaire.html`);
+                }
+            }
+        };
+
+        window.addEventListener('beforeunload', () => {
+            if (window.logicielManager && typeof window.logicielManager.revokeContractUrls === 'function') {
+                window.logicielManager.revokeContractUrls();
+            }
+        });
+
+        // ====== SCRIPT PILOTE TÉLÉCHARGEMENT APP (PWA) ======
+        let defferredPrompt;
+
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            defferredPrompt = e;
+            document.getElementById('pwa-instructions').innerText = "Cliquez ci-dessous pour lancer le téléchargement de l'application iCHEF OS directement sur votre terminal :";
+            document.getElementById('ios-guide').style.display = 'none';
+        });
+
+        function ouvrirGuideInstallation() {
+            const modal = document.getElementById('pwa-modal');
+            modal.style.display = 'flex';
+            
+            if (defferredPrompt) {
+                modal.style.display = 'none';
+                defferredPrompt.prompt();
+                defferredPrompt.userChoice.then((choiceResult) => {
+                    if (choiceResult.outcome === 'accepted') {
+                        console.log('iCHEF App Installée par le client.');
+                    }
+                    defferredPrompt = null;
+                });
+            }
+        }
+
+        // Afficher ou cacher le bouton selon si l'app est déjà installée
+        window.addEventListener('load', () => {
+            if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone) {
+                document.getElementById('pwa-install-btn').style.display = 'none';
+            } else {
+                document.getElementById('pwa-install-btn').style.display = 'block';
+            }
+            window.logicielManager.init();
+        });
+    </script>
+<script id="ichef-premium-nav-behavior">
+(function(){
+  const links=[...document.querySelectorAll('.sidebar-link[href^="#"]')].filter(a=>a.getAttribute('href').length>1);
+  links.forEach(a=>a.addEventListener('click',()=>{links.forEach(x=>x.classList.remove('active'));a.classList.add('active');}));
+})();
+
+
+        // Fermeture sécurisée de la confirmation Stripe (clic fond + touche Échap).
+        (function(){
+            const modal = document.getElementById('stripe-confirm-modal');
+            if (modal) {
+                modal.addEventListener('click', (event) => {
+                    if (event.target === modal && window.logicielManager) {
+                        window.logicielManager.closeStripeConfirm();
+                    }
+                });
+            }
+            document.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape' && modal?.classList.contains('active') && window.logicielManager) {
+                    window.logicielManager.closeStripeConfirm();
+                }
+            });
+        })();
+</script>
+
+</body>
+</html>
