@@ -17,7 +17,7 @@
     
 <script>
         "use strict";
-        window.__ICHEF_STRIPE_FIX_VERSION = "2026-09-09-A07-LOCK";
+        window.__ICHEF_STRIPE_FIX_VERSION = "2026-09-09-A07-ACTIVATION-RECONCILE";
         console.info("[iCHEF] Stripe fix chargé:", window.__ICHEF_STRIPE_FIX_VERSION);
         // Déclaration globale du cerveau
         window.tenantID = new URLSearchParams(window.location.search).get('tenantID') || localStorage.getItem('ichef_tenant_id');
@@ -1632,6 +1632,7 @@ body>nav{display:none!important}
                 this.loadConnectedApps();
                 this.loadScreenStats();
                 this.loadClientSpace();
+                setTimeout(() => this.reconcilePendingStripeScreenPurchase({ silent: false }), 900);
             },
 
             loadConnectedApps: async function() {
@@ -2050,6 +2051,65 @@ body>nav{display:none!important}
                 return true;
             },
 
+            rememberPendingStripeScreenPurchase: function({ quantity, currency, clientReferenceId }) {
+                try {
+                    localStorage.setItem('ichef_pending_stripe_screen_purchase', JSON.stringify({
+                        tenantID: String(this.tenantID || '').toLowerCase(),
+                        quantity: Math.max(1, parseInt(quantity || 1, 10) || 1),
+                        currency: String(currency || 'EUR').toUpperCase(),
+                        clientReferenceId: String(clientReferenceId || ''),
+                        startedAt: Date.now()
+                    }));
+                } catch (_) {}
+            },
+
+            reconcilePendingStripeScreenPurchase: async function({ silent = false } = {}) {
+                let pending = null;
+                try {
+                    pending = JSON.parse(localStorage.getItem('ichef_pending_stripe_screen_purchase') || 'null');
+                } catch (_) {
+                    pending = null;
+                }
+                if (!pending || !pending.tenantID) return false;
+                if (String(pending.tenantID).toLowerCase() !== String(this.tenantID || '').toLowerCase()) return false;
+
+                // Ne garde pas indéfiniment une tentative abandonnée.
+                if (Date.now() - Number(pending.startedAt || 0) > 24 * 60 * 60 * 1000) {
+                    localStorage.removeItem('ichef_pending_stripe_screen_purchase');
+                    return false;
+                }
+
+                try {
+                    const res = await fetch(`${this.SERVER_URL}/api/stripe/reconcile-screen-upgrade`, {
+                        method: 'POST',
+                        cache: 'no-store',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            tenantID: this.tenantID,
+                            pin: this.masterPin,
+                            quantity: Math.max(1, parseInt(pending.quantity || 1, 10) || 1)
+                        })
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok || !data.success) return false;
+
+                    if (data.active && data.paid) {
+                        localStorage.removeItem('ichef_pending_stripe_screen_purchase');
+                        await this.loadScreenStats();
+                        await this.loadConnectedApps();
+                        if (!silent) {
+                            alert(`✅ Paiement Stripe confirmé. Connexion activée. Votre licence autorise maintenant ${data.maxScreens} écran${Number(data.maxScreens) > 1 ? 's' : ''}.`);
+                        }
+                        return true;
+                    }
+
+                    return false;
+                } catch (e) {
+                    console.warn('[iCHEF STRIPE] Vérification du paiement impossible pour le moment.', e);
+                    return false;
+                }
+            },
+
             confirmStripeAction: async function() {
                 const pending = this.pendingStripeAction;
                 if (!pending) return this.closeStripeConfirm();
@@ -2093,6 +2153,7 @@ body>nav{display:none!important}
                             const separator = forcedLink.includes('?') ? '&' : '?';
                             const trackedLink = `${forcedLink}${separator}client_reference_id=${encodeURIComponent(clientReferenceId)}`;
                             if (status) status.textContent = 'Ouverture du lien Stripe iCHEF validé…';
+                            this.rememberPendingStripeScreenPurchase({ quantity: body.quantity, currency: body.currency, clientReferenceId });
                             this.openStripeSafely(trackedLink);
                             setTimeout(() => this.closeStripeConfirm(), 450);
                             return;
@@ -2108,6 +2169,7 @@ body>nav{display:none!important}
                             const separator = directLink.includes('?') ? '&' : '?';
                             const trackedLink = `${directLink}${separator}client_reference_id=${encodeURIComponent(clientReferenceId)}`;
                             if (status) status.textContent = 'Stripe s’ouvre dans un nouvel onglet. iCHEF reste ouvert ici.';
+                            this.rememberPendingStripeScreenPurchase({ quantity: body.quantity, currency: body.currency, clientReferenceId });
                             this.openStripeSafely(trackedLink);
                             setTimeout(() => this.closeStripeConfirm(), 450);
                             return;
@@ -2647,6 +2709,19 @@ body>nav{display:none!important}
                 document.getElementById('pwa-install-btn').style.display = 'block';
             }
             window.logicielManager.init();
+        });
+
+        // Au retour de Stripe (onglet/fenêtre), iCHEF vérifie directement chez Stripe
+        // que le paiement est réellement confirmé avant d'activer la connexion.
+        window.addEventListener('focus', () => {
+            if (window.logicielManager?.tenantID) {
+                setTimeout(() => window.logicielManager.reconcilePendingStripeScreenPurchase({ silent: false }), 500);
+            }
+        });
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible' && window.logicielManager?.tenantID) {
+                setTimeout(() => window.logicielManager.reconcilePendingStripeScreenPurchase({ silent: false }), 500);
+            }
         });
     </script>
 <script id="ichef-premium-nav-behavior">
