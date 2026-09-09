@@ -17,7 +17,7 @@
     
 <script>
         "use strict";
-        window.__ICHEF_STRIPE_FIX_VERSION = "2026-09-09-A07-ACTIVATION-RECONCILE";
+        window.__ICHEF_STRIPE_FIX_VERSION = "2026-09-09-STRIPE-DIAG-V1";
         console.info("[iCHEF] Stripe fix chargé:", window.__ICHEF_STRIPE_FIX_VERSION);
         // Déclaration globale du cerveau
         window.tenantID = new URLSearchParams(window.location.search).get('tenantID') || localStorage.getItem('ichef_tenant_id');
@@ -1341,6 +1341,17 @@ body>nav{display:none!important}
                     <button class="btn-outline" onclick="window.logicielManager.buyScreens('6')">6+</button>
                 </div>
                 <div id="connections-help" style="font-size:.68rem;color:var(--text-muted);line-height:1.4;margin-top:9px;"></div>
+                <div id="stripe-diagnostic-panel" style="margin-top:12px;padding:12px;border:1px solid rgba(56,189,248,.28);border-radius:11px;background:rgba(56,189,248,.045);font-size:.72rem;line-height:1.5;">
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;">
+                        <strong style="color:#7dd3fc;letter-spacing:.8px;">🩺 DIAGNOSTIC STRIPE</strong>
+                        <span id="stripe-diag-version" style="color:var(--text-muted);font-size:.62rem;">DIAG V1</span>
+                    </div>
+                    <div id="stripe-diag-content" style="color:var(--text-muted);">Diagnostic en attente…</div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:10px;">
+                        <button type="button" class="btn-outline" style="min-height:42px;padding:8px;font-size:.67rem;" onclick="window.logicielManager.runStripeDiagnostic({silent:false})">Vérifier Stripe</button>
+                        <button type="button" class="btn-outline" style="min-height:42px;padding:8px;font-size:.67rem;border-color:rgba(16,185,129,.5);" onclick="window.logicielManager.verifyAndActivateStripeConnection()">Vérifier & activer +1</button>
+                    </div>
+                </div>
                 <button class="btn-return" style="width:100%;margin-top:10px;border-color:var(--danger)!important;color:var(--danger);" onclick="window.logicielManager.resetEcrans()">Libérer les connexions</button>
             </div>
             <div class="card" id="security-section">
@@ -1633,6 +1644,7 @@ body>nav{display:none!important}
                 this.loadScreenStats();
                 this.loadClientSpace();
                 setTimeout(() => this.reconcilePendingStripeScreenPurchase({ silent: false }), 900);
+                setTimeout(() => this.runStripeDiagnostic({ silent: true }), 1700);
             },
 
             loadConnectedApps: async function() {
@@ -2106,6 +2118,90 @@ body>nav{display:none!important}
                     return false;
                 } catch (e) {
                     console.warn('[iCHEF STRIPE] Vérification du paiement impossible pour le moment.', e);
+                    return false;
+                }
+            },
+
+            stripeDiagLine: function(label, value, state = 'neutral') {
+                const colors = {
+                    ok: '#4ade80', bad: '#f87171', warn: '#fbbf24', neutral: '#cbd5e1'
+                };
+                const color = colors[state] || colors.neutral;
+                return `<div style="display:flex;justify-content:space-between;gap:12px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.045);"><span style="color:#8295aa;">${label}</span><strong style="color:${color};text-align:right;overflow-wrap:anywhere;">${value}</strong></div>`;
+            },
+
+            runStripeDiagnostic: async function({ silent = false } = {}) {
+                const box = document.getElementById('stripe-diag-content');
+                if (box) box.innerHTML = '<span style="color:#7dd3fc;">Vérification Stripe en cours…</span>';
+                try {
+                    const res = await fetch(`${this.SERVER_URL}/api/stripe/screen-upgrade-diagnostic`, {
+                        method: 'POST',
+                        cache: 'no-store',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ tenantID: this.tenantID, pin: this.masterPin, quantity: 1 })
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok || !data.success) throw new Error(data.error || `Diagnostic indisponible (${res.status}).`);
+
+                    const s = data.stripe || {};
+                    const p = data.paymentLink || {};
+                    const c = data.checkout || {};
+                    const l = data.license || {};
+                    const refState = c.exactReferenceFound ? 'ok' : (c.paymentLinkSessionFound ? 'warn' : 'bad');
+                    const payState = ['paid','no_payment_required'].includes(String(c.paymentStatus || '').toLowerCase()) ? 'ok' : (c.sessionId ? 'warn' : 'bad');
+                    const licenseState = Number(l.stripeExtraScreens || 0) >= 1 ? 'ok' : 'warn';
+
+                    if (box) box.innerHTML = [
+                        this.stripeDiagLine('API Stripe', s.apiReachable ? `CONNECTÉE · ${s.keyMode || '—'}` : `NON CONNECTÉE · ${s.keyMode || '—'}`, s.apiReachable ? 'ok' : 'bad'),
+                        this.stripeDiagLine('Webhook', s.webhookConfigured ? 'CONFIGURÉ' : 'NON CONFIGURÉ', s.webhookConfigured ? 'ok' : 'warn'),
+                        this.stripeDiagLine('Payment Link A07', p.foundInStripe ? 'TROUVÉ' : 'INTROUVABLE', p.foundInStripe ? 'ok' : 'bad'),
+                        this.stripeDiagLine('Référence attendue', data.expectedReference || '—', 'neutral'),
+                        this.stripeDiagLine('Référence dans Stripe', c.clientReferenceId || 'ABSENTE', refState),
+                        this.stripeDiagLine('Paiement', c.paymentStatus ? c.paymentStatus.toUpperCase() : 'NON TROUVÉ', payState),
+                        this.stripeDiagLine('Abonnement Stripe', c.hasSubscription ? 'OUI' : 'NON / INCONNU', c.hasSubscription ? 'ok' : 'warn'),
+                        this.stripeDiagLine('Connexion iCHEF Stripe', `+${Number(l.stripeExtraScreens || 0)}`, licenseState),
+                        this.stripeDiagLine('Licence totale', `${Number(l.maxScreens || 0)} écran${Number(l.maxScreens || 0) > 1 ? 's' : ''}`, Number(l.maxScreens || 0) > 0 ? 'ok' : 'warn'),
+                        `<div style="margin-top:9px;padding:8px 9px;border-radius:8px;background:rgba(255,255,255,.035);color:#dbe7f3;"><strong>Conclusion :</strong> ${data.recommendation || '—'}</div>`
+                    ].join('');
+
+                    if (!silent && c.exactReferenceFound && Number(l.stripeExtraScreens || 0) < 1) {
+                        alert('Stripe voit bien le paiement A07 pour ce restaurant, mais la licence +1 n’est pas encore enregistrée. Clique sur « Vérifier & activer +1 ».');
+                    }
+                    return data;
+                } catch (error) {
+                    if (box) box.innerHTML = `<span style="color:#f87171;">❌ ${error?.message || 'Diagnostic Stripe impossible.'}</span>`;
+                    if (!silent) alert(error?.message || 'Diagnostic Stripe impossible.');
+                    return null;
+                }
+            },
+
+            verifyAndActivateStripeConnection: async function() {
+                const box = document.getElementById('stripe-diag-content');
+                if (box) box.innerHTML = '<span style="color:#7dd3fc;">Recherche du paiement A07 et activation sécurisée…</span>';
+                try {
+                    const res = await fetch(`${this.SERVER_URL}/api/stripe/reconcile-screen-upgrade`, {
+                        method: 'POST',
+                        cache: 'no-store',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ tenantID: this.tenantID, pin: this.masterPin, quantity: 1 })
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok || !data.success) throw new Error(data.error || 'Vérification impossible.');
+
+                    await this.loadScreenStats();
+                    await this.runStripeDiagnostic({ silent: true });
+
+                    if (data.active && data.paid) {
+                        localStorage.removeItem('ichef_pending_stripe_screen_purchase');
+                        alert(`✅ Paiement Stripe confirmé. +1 connexion activée. Licence : ${data.maxScreens} écrans.`);
+                        return true;
+                    }
+
+                    alert('Le paiement A07 n’est pas encore rattaché à ce restaurant. Le diagnostic affiche maintenant la raison exacte.');
+                    return false;
+                } catch (error) {
+                    if (box) box.innerHTML = `<span style="color:#f87171;">❌ ${error?.message || 'Activation impossible.'}</span>`;
+                    alert(error?.message || 'Activation impossible.');
                     return false;
                 }
             },
