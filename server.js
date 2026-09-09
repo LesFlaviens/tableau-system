@@ -15502,15 +15502,18 @@ app.get(
 const ICHEF_SESSION_SECRET =
     String(
         process.env.ICHEF_SESSION_SECRET ||
+        process.env.MASTER_KEY ||
         process.env.ADMIN_PASS ||
         ''
     ).trim() ||
     crypto.randomBytes(32).toString('hex');
 
-if (!process.env.ICHEF_SESSION_SECRET && !process.env.ADMIN_PASS) {
+if (!process.env.ICHEF_SESSION_SECRET && !process.env.MASTER_KEY && !process.env.ADMIN_PASS) {
     console.warn(
-        '⚠️ ICHEF_SESSION_SECRET manquant : sessions signées temporaires jusqu’au prochain redémarrage.'
+        '⚠️ ICHEF_SESSION_SECRET / MASTER_KEY manquants : sessions signées temporaires jusqu’au prochain redémarrage.'
     );
+} else if (!process.env.ICHEF_SESSION_SECRET && process.env.MASTER_KEY) {
+    console.log('✅ Sessions iCHEF signées avec une clé persistante dérivée de MASTER_KEY.');
 }
 
 function ichefBase64UrlJson(value) {
@@ -18934,6 +18937,7 @@ app.post('/api/client-space', async (req, res) => {
 });
 
 // PDF Stripe : proxy sécurisé iCHEF pour permettre l’aperçu inline dans Administration.
+// V5 : signature persistante entre redémarrages Render (ICHEF_SESSION_SECRET > MASTER_KEY > ADMIN_PASS).
 app.get('/api/client-space/stripe-invoice/:invoiceId/pdf', async (req, res) => {
     try {
         if (!stripe) return res.status(503).send('Stripe indisponible.');
