@@ -1351,6 +1351,13 @@ body>nav{display:none!important}
                         <button type="button" class="btn-outline" style="min-height:42px;padding:8px;font-size:.67rem;" onclick="window.logicielManager.runStripeDiagnostic({silent:false})">Vérifier Stripe</button>
                         <button type="button" class="btn-outline" style="min-height:42px;padding:8px;font-size:.67rem;border-color:rgba(16,185,129,.5);" onclick="window.logicielManager.verifyAndActivateStripeConnection()">Vérifier & activer +1</button>
                     </div>
+                    <div style="margin-top:9px;padding-top:9px;border-top:1px solid rgba(255,255,255,.08);">
+                        <div style="color:#94a3b8;margin-bottom:6px;">Connexions incluses au contrat (hors Stripe)</div>
+                        <div style="display:grid;grid-template-columns:90px 1fr;gap:7px;">
+                            <input id="stripe-base-screens-input" type="number" min="1" max="100" value="3" class="input-field" style="min-height:42px;padding:8px;font-size:.8rem;">
+                            <button type="button" class="btn-outline" style="min-height:42px;padding:8px;font-size:.67rem;border-color:rgba(251,191,36,.5);" onclick="window.logicielManager.setStripeScreenBase()">Corriger la base</button>
+                        </div>
+                    </div>
                 </div>
                 <button class="btn-return" style="width:100%;margin-top:10px;border-color:var(--danger)!important;color:var(--danger);" onclick="window.logicielManager.resetEcrans()">Libérer les connexions</button>
             </div>
@@ -2070,6 +2077,7 @@ body>nav{display:none!important}
                         quantity: Math.max(1, parseInt(quantity || 1, 10) || 1),
                         currency: String(currency || 'EUR').toUpperCase(),
                         clientReferenceId: String(clientReferenceId || ''),
+                        baseScreensBeforePurchase: Number(this.currentMaxScreens || 0) || null,
                         startedAt: Date.now()
                     }));
                 } catch (_) {}
@@ -2141,7 +2149,10 @@ body>nav{display:none!important}
                         body: JSON.stringify({ tenantID: this.tenantID, pin: this.masterPin, quantity: 1 })
                     });
                     const data = await res.json().catch(() => ({}));
-                    if (!res.ok || !data.success) throw new Error(data.error || `Diagnostic indisponible (${res.status}).`);
+                    if (!res.ok || !data.success) {
+                        if (res.status === 404) throw new Error('Serveur iCHEF ancien : la route Diagnostic n’est pas encore déployée sur Render.');
+                        throw new Error(data.error || `Diagnostic indisponible (${res.status}).`);
+                    }
 
                     const s = data.stripe || {};
                     const p = data.paymentLink || {};
@@ -2159,10 +2170,14 @@ body>nav{display:none!important}
                         this.stripeDiagLine('Référence dans Stripe', c.clientReferenceId || 'ABSENTE', refState),
                         this.stripeDiagLine('Paiement', c.paymentStatus ? c.paymentStatus.toUpperCase() : 'NON TROUVÉ', payState),
                         this.stripeDiagLine('Abonnement Stripe', c.hasSubscription ? 'OUI' : 'NON / INCONNU', c.hasSubscription ? 'ok' : 'warn'),
+                        this.stripeDiagLine('Base contrat', `${Number(l.baseScreens || 0)} écran${Number(l.baseScreens || 0) > 1 ? 's' : ''}`, Number(l.baseScreens || 0) > 0 ? 'ok' : 'warn'),
                         this.stripeDiagLine('Connexion iCHEF Stripe', `+${Number(l.stripeExtraScreens || 0)}`, licenseState),
                         this.stripeDiagLine('Licence totale', `${Number(l.maxScreens || 0)} écran${Number(l.maxScreens || 0) > 1 ? 's' : ''}`, Number(l.maxScreens || 0) > 0 ? 'ok' : 'warn'),
                         `<div style="margin-top:9px;padding:8px 9px;border-radius:8px;background:rgba(255,255,255,.035);color:#dbe7f3;"><strong>Conclusion :</strong> ${data.recommendation || '—'}</div>`
                     ].join('');
+
+                    const baseInput = document.getElementById('stripe-base-screens-input');
+                    if (baseInput && Number(l.baseScreens || 0) > 0) baseInput.value = String(Number(l.baseScreens));
 
                     if (!silent && c.exactReferenceFound && Number(l.stripeExtraScreens || 0) < 1) {
                         alert('Stripe voit bien le paiement A07 pour ce restaurant, mais la licence +1 n’est pas encore enregistrée. Clique sur « Vérifier & activer +1 ».');
@@ -2202,6 +2217,35 @@ body>nav{display:none!important}
                 } catch (error) {
                     if (box) box.innerHTML = `<span style="color:#f87171;">❌ ${error?.message || 'Activation impossible.'}</span>`;
                     alert(error?.message || 'Activation impossible.');
+                    return false;
+                }
+            },
+
+            setStripeScreenBase: async function() {
+                const input = document.getElementById('stripe-base-screens-input');
+                const baseScreens = Math.max(1, Math.min(100, parseInt(input?.value || 0, 10) || 0));
+                if (!baseScreens) return alert('Indique le nombre de connexions incluses au contrat.');
+                if (!confirm(`Confirmer une base de ${baseScreens} connexion${baseScreens > 1 ? 's' : ''} hors Stripe ? Les connexions Stripe payées resteront ajoutées automatiquement.`)) return false;
+
+                try {
+                    const res = await fetch(`${this.SERVER_URL}/api/stripe/set-screen-base`, {
+                        method: 'POST',
+                        cache: 'no-store',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ tenantID: this.tenantID, pin: this.masterPin, baseScreens })
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok || !data.success) {
+                        if (res.status === 404) throw new Error('Le serveur V2 n’est pas encore déployé sur Render.');
+                        throw new Error(data.error || 'Impossible de corriger la base.');
+                    }
+
+                    await this.loadScreenStats();
+                    await this.runStripeDiagnostic({ silent: true });
+                    alert(`✅ Base corrigée : ${data.baseScreens} + ${data.stripeExtraScreens} Stripe = ${data.maxScreens} connexions autorisées.`);
+                    return true;
+                } catch (error) {
+                    alert(error?.message || 'Impossible de corriger la base des connexions.');
                     return false;
                 }
             },
@@ -2377,6 +2421,7 @@ body>nav{display:none!important}
                     if (data.success && countData.success) {
                         const activeDevices = countData.activeDevices || 0;
                         const limit = countData.maxScreens || 5;
+                        this.currentMaxScreens = Number(limit) || 5;
                         
                         const color = activeDevices >= limit ? 'var(--danger)' : 'var(--text-main)';
                         document.getElementById('device-count').innerHTML = `Écrans utilisés : <b style="color:${color}; font-size:1.1rem;">${activeDevices} / ${limit}</b>`;
