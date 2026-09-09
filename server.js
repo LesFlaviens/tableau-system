@@ -18,6 +18,7 @@ const nodemailer = require('nodemailer');
 
 // 🔥 WEBSOCKETS POUR LE TEMPS RÉEL 🔥
 const http = require('http');
+const https = require('https');
 const { Server } = require('socket.io');
 
 const app = express();
@@ -18997,7 +18998,60 @@ app.post('/api/client-space', async (req, res) => {
 });
 
 // PDF Stripe : proxy sécurisé iCHEF pour permettre l’aperçu inline dans Administration.
-// V6 : signature PDF dédiée stable (ICHEF_PDF_SECRET > ICHEF_SESSION_SECRET > MASTER_KEY > STRIPE_SECRET_KEY).
+// V7 : téléchargement via HTTPS natif Node (pas de dépendance à fetch sur Render).
+function ichefDownloadHttpsBuffer(url, redirectsLeft = 5) {
+    return new Promise((resolve, reject) => {
+        let parsed;
+        try { parsed = new URL(String(url || '')); }
+        catch (_) { return reject(new Error('URL PDF Stripe invalide.')); }
+        if (parsed.protocol !== 'https:') return reject(new Error('URL PDF Stripe non HTTPS.'));
+
+        const request = https.get(parsed, {
+            headers: {
+                'Accept': 'application/pdf,application/octet-stream;q=0.9,*/*;q=0.8',
+                'User-Agent': 'iCHEF-OS/Stripe-PDF-Proxy-V7'
+            },
+            timeout: 20000
+        }, (upstream) => {
+            const status = Number(upstream.statusCode || 0);
+            const location = upstream.headers.location;
+            if (status >= 300 && status < 400 && location) {
+                upstream.resume();
+                if (redirectsLeft <= 0) return reject(new Error('Trop de redirections Stripe PDF.'));
+                const nextUrl = new URL(location, parsed).toString();
+                return resolve(ichefDownloadHttpsBuffer(nextUrl, redirectsLeft - 1));
+            }
+            if (status < 200 || status >= 300) {
+                upstream.resume();
+                return reject(new Error(`Stripe PDF HTTP ${status || 'inconnu'}.`));
+            }
+
+            const chunks = [];
+            let total = 0;
+            const maxBytes = 20 * 1024 * 1024;
+            upstream.on('data', (chunk) => {
+                total += chunk.length;
+                if (total > maxBytes) {
+                    upstream.destroy(new Error('PDF Stripe trop volumineux.'));
+                    return;
+                }
+                chunks.push(chunk);
+            });
+            upstream.on('end', () => {
+                const buffer = Buffer.concat(chunks);
+                if (!buffer.length) return reject(new Error('PDF Stripe vide.'));
+                resolve({
+                    buffer,
+                    contentType: String(upstream.headers['content-type'] || 'application/pdf')
+                });
+            });
+            upstream.on('error', reject);
+        });
+        request.on('timeout', () => request.destroy(new Error('Timeout Stripe PDF.')));
+        request.on('error', reject);
+    });
+}
+
 app.get('/api/client-space/stripe-invoice/:invoiceId/pdf', async (req, res) => {
     try {
         if (!stripe) return res.status(503).send('Stripe indisponible.');
@@ -19030,27 +19084,25 @@ app.get('/api/client-space/stripe-invoice/:invoiceId/pdf', async (req, res) => {
         const pdfUrl = String(invoice.invoice_pdf || '').trim();
         if (!pdfUrl) return res.status(404).send('PDF Stripe indisponible.');
 
-        const pdfResponse = await fetch(pdfUrl, {
-            method: 'GET',
-            redirect: 'follow',
-            headers: { 'Accept': 'application/pdf' }
-        });
-        if (!pdfResponse.ok) {
-            console.warn('[iCHEF STRIPE PDF] téléchargement impossible:', invoiceId, pdfResponse.status);
-            return res.status(502).send('PDF Stripe temporairement indisponible.');
+        let downloaded;
+        try {
+            downloaded = await ichefDownloadHttpsBuffer(pdfUrl);
+        } catch (downloadError) {
+            console.warn('[iCHEF STRIPE PDF V7] téléchargement impossible:', invoiceId, downloadError?.message || downloadError);
+            return res.status(502).send(`PDF Stripe temporairement indisponible (${downloadError?.message || 'erreur réseau'}).`);
         }
 
-        const pdfBuffer = Buffer.from(await pdfResponse.arrayBuffer());
+        const pdfBuffer = downloaded.buffer;
         const safeNumber = String(invoice.number || invoice.id || 'stripe').replace(/[^a-zA-Z0-9._-]/g, '_');
         res.set('Cache-Control', 'private, no-store, max-age=0');
         res.set('Content-Type', 'application/pdf');
-        res.set('X-iCHEF-PDF-Proxy', 'V6');
+        res.set('X-iCHEF-PDF-Proxy', 'V7');
         res.set('Content-Security-Policy', "frame-ancestors https://os.ichef.ch https://ichef.ch https://www.ichef.ch");
         res.set('Content-Disposition', `inline; filename="Facture-${safeNumber}.pdf"`);
         res.set('X-Content-Type-Options', 'nosniff');
         return res.status(200).send(pdfBuffer);
     } catch (error) {
-        console.error('[iCHEF STRIPE PDF] proxy:', error?.message || error);
+        console.error('[iCHEF STRIPE PDF V7] proxy:', error?.message || error);
         if (!res.headersSent) return res.status(500).send('Facture Stripe indisponible.');
         res.end();
     }
