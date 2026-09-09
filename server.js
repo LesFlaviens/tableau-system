@@ -13547,6 +13547,108 @@ app.post(
     }
 );
 
+
+// ==========================================================
+// 🔄 RAPPROCHEMENT STRIPE IMMÉDIAT — PAYMENT LINK A07
+// Sécurité de secours si le webhook Stripe n'a pas encore été livré/configuré.
+// Le serveur vérifie lui-même chez Stripe qu'une Checkout Session réellement payée
+// existe pour le tenantID avant d'activer la connexion supplémentaire.
+// ==========================================================
+async function ichefFindPaidScreenCheckoutSession(tenantID, quantity = 1) {
+    if (!stripe) throw new Error('Stripe API non configurée sur le serveur iCHEF.');
+
+    const safeID = cleanString(tenantID);
+    const qty = Math.min(50, Math.max(1, parseInt(quantity, 10) || 1));
+    const expectedReference = ichefBuildStripeScreenReference(safeID, qty);
+    const createdGte = Math.floor(Date.now() / 1000) - (7 * 24 * 60 * 60);
+
+    // Les sessions sont retournées de la plus récente à la plus ancienne.
+    // 100 suffit largement pour le rapprochement immédiat d'un achat récent.
+    const sessions = await stripe.checkout.sessions.list({
+        limit: 100,
+        status: 'complete',
+        created: { gte: createdGte }
+    });
+
+    for (const session of (sessions?.data || [])) {
+        if (String(session?.client_reference_id || '') !== expectedReference) continue;
+        const paymentStatus = String(session?.payment_status || '').toLowerCase();
+        if (!['paid', 'no_payment_required'].includes(paymentStatus)) continue;
+        return session;
+    }
+
+    return null;
+}
+
+app.post('/api/stripe/reconcile-screen-upgrade', async (req, res) => {
+    try {
+        const tenantID = cleanString(req.body?.tenantID || req.headers['x-ichef-tenant'] || '');
+        const pin = String(req.body?.pin || req.headers['x-ichef-pin'] || '').trim();
+        const quantity = Math.min(50, Math.max(1, parseInt(req.body?.quantity, 10) || 1));
+
+        const auth = await ichefAuthorizePin(tenantID, pin, { managerOnly: true });
+        if (!auth.ok) {
+            return res.status(auth.status || 403).json({
+                success: false,
+                active: false,
+                error: auth.error || 'Accès refusé.'
+            });
+        }
+
+        if (!stripe) {
+            return res.status(503).json({
+                success: false,
+                active: false,
+                error: 'Stripe API non configurée sur le serveur iCHEF.'
+            });
+        }
+
+        const expectedReference = ichefBuildStripeScreenReference(tenantID, quantity);
+        const session = await ichefFindPaidScreenCheckoutSession(tenantID, quantity);
+
+        if (!session) {
+            const current = await ichefRecomputeStripeScreenLimit(tenantID, 'reconcile-no-paid-checkout');
+            return res.json({
+                success: true,
+                active: false,
+                paid: false,
+                clientReferenceId: expectedReference,
+                maxScreens: current?.maxScreens || Number(auth.tenant?.maxScreens || getPlanScreenLimit(auth.tenant?.plan) || 5),
+                message: 'Aucun paiement Stripe confirmé trouvé pour cet achat.'
+            });
+        }
+
+        await ichefHandleStripeScreenCheckout(session, { forcePaid: true });
+        const current = await ichefRecomputeStripeScreenLimit(
+            tenantID,
+            `manual-reconcile-paid:${session.id}`
+        );
+
+        return res.json({
+            success: true,
+            active: true,
+            paid: true,
+            sessionId: String(session.id || ''),
+            subscriptionId: typeof session.subscription === 'string'
+                ? session.subscription
+                : String(session.subscription?.id || ''),
+            paymentStatus: String(session.payment_status || ''),
+            mode: String(session.mode || ''),
+            quantity,
+            maxScreens: current?.maxScreens || Number(auth.tenant?.maxScreens || 5),
+            clientReferenceId: expectedReference,
+            stripeFix: '2026-09-09-A07-ACTIVATION-RECONCILE'
+        });
+    } catch (error) {
+        console.error('[iCHEF STRIPE] Rapprochement achat connexion:', error);
+        return res.status(500).json({
+            success: false,
+            active: false,
+            error: error?.message || 'Impossible de vérifier le paiement Stripe.'
+        });
+    }
+});
+
 // ==========================================================
 // 💳 PORTAIL CLIENT STRIPE
 // ==========================================================
