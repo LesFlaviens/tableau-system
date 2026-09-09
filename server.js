@@ -18676,7 +18676,7 @@ async function ichefClientListManualDocs(tenantID, signed = false) {
     const files = await bucket.find({ 'metadata.tenantID': safeID }).sort({ uploadDate: -1 }).toArray();
     return files.map(file => ichefClientFilePublicMeta(file, signed));
 }
-async function ichefStripePaidInvoicesForTenant(tenant) {
+async function ichefStripePaidInvoicesForTenant(tenant, signed = false) {
     if (!stripe || !tenant?.config?.stripeCustomerId) return [];
     try {
         const tenantID = cleanString(tenant.tenantID || '');
@@ -18711,7 +18711,13 @@ async function ichefStripePaidInvoicesForTenant(tenant) {
                 licenseStatus: screenLicense ? String(screenLicense.status || '') : '',
                 amountPaid: Number(inv.amount_paid || 0) / 100,
                 currency: String(inv.currency || screenLicense?.currency || 'EUR').toUpperCase(),
-                openUrl: String(inv.invoice_pdf || inv.hosted_invoice_url || '')
+                // Les PDF Stripe ne sont pas toujours intégrables directement dans un iframe.
+                // En lecture client, on passe donc par un proxy iCHEF signé qui les sert en inline.
+                openUrl: signed && tenantID && inv.id
+                    ? `/api/client-space/stripe-invoice/${encodeURIComponent(String(inv.id))}/pdf?token=${encodeURIComponent(ichefSignSession({ scope: 'STRIPE_INVOICE_PDF', tenantID, invoiceId: String(inv.id) }, 2 * 60 * 60))}`
+                    : String(inv.invoice_pdf || inv.hosted_invoice_url || ''),
+                stripePdfUrl: String(inv.invoice_pdf || ''),
+                stripeHostedUrl: String(inv.hosted_invoice_url || '')
             };
         }).filter(inv => inv.openUrl);
     } catch (error) {
@@ -18915,7 +18921,7 @@ app.post('/api/client-space', async (req, res) => {
         const manual = await ichefClientListManualDocs(tenantID, true);
         const contracts = manual.filter(d => d.kind === 'CONTRACT').sort((a,b) => new Date(b.uploadedAt || 0) - new Date(a.uploadedAt || 0));
         const manualInvoices = manual.filter(d => d.kind === 'INVOICE').map(d => ({ ...d, status: 'PAID' }));
-        const stripeInvoices = await ichefStripePaidInvoicesForTenant(auth.tenant);
+        const stripeInvoices = await ichefStripePaidInvoicesForTenant(auth.tenant, true);
         const invoices = [...manualInvoices, ...stripeInvoices].sort((a,b) => new Date(b.date || b.uploadedAt || 0) - new Date(a.date || a.uploadedAt || 0));
         const screenLicenseSummary = await ichefScreenLicenseSummaryForTenant(auth.tenant);
         const msg = await IchefClientMessage.findOne({ tenantID, active: true }).lean();
@@ -18924,6 +18930,63 @@ app.post('/api/client-space', async (req, res) => {
     } catch (error) {
         console.error('[iCHEF CLIENT SPACE] client get:', error);
         return res.status(500).json({ success: false, error: error?.message || 'Espace client indisponible.' });
+    }
+});
+
+// PDF Stripe : proxy sécurisé iCHEF pour permettre l’aperçu inline dans Administration.
+app.get('/api/client-space/stripe-invoice/:invoiceId/pdf', async (req, res) => {
+    try {
+        if (!stripe) return res.status(503).send('Stripe indisponible.');
+        const invoiceId = cleanString(req.params?.invoiceId || '');
+        const token = String(req.query?.token || '').trim();
+        if (!invoiceId || !token) return res.status(400).send('Lien invalide.');
+
+        const claims = ichefVerifySignedSession(token, { scope: 'STRIPE_INVOICE_PDF' });
+        if (!claims || String(claims.invoiceId || '') !== invoiceId) {
+            return res.status(403).send('Lien expiré ou non autorisé.');
+        }
+
+        const tenantID = cleanString(claims.tenantID || '');
+        const tenant = await Tenant.findOne({ tenantID }).lean();
+        if (!tenant) return res.status(404).send('Établissement introuvable.');
+        const expectedCustomerId = String(tenant?.config?.stripeCustomerId || '').trim();
+        if (!expectedCustomerId) return res.status(404).send('Compte Stripe non associé.');
+
+        const invoice = await stripe.invoices.retrieve(invoiceId);
+        const invoiceCustomerId = typeof invoice?.customer === 'string'
+            ? invoice.customer
+            : String(invoice?.customer?.id || '');
+        if (!invoice || invoiceCustomerId !== expectedCustomerId) {
+            return res.status(403).send('Facture non autorisée.');
+        }
+        if (String(invoice.status || '').toLowerCase() !== 'paid') {
+            return res.status(403).send('Facture non payée.');
+        }
+
+        const pdfUrl = String(invoice.invoice_pdf || '').trim();
+        if (!pdfUrl) return res.status(404).send('PDF Stripe indisponible.');
+
+        const pdfResponse = await fetch(pdfUrl, {
+            method: 'GET',
+            redirect: 'follow',
+            headers: { 'Accept': 'application/pdf' }
+        });
+        if (!pdfResponse.ok) {
+            console.warn('[iCHEF STRIPE PDF] téléchargement impossible:', invoiceId, pdfResponse.status);
+            return res.status(502).send('PDF Stripe temporairement indisponible.');
+        }
+
+        const pdfBuffer = Buffer.from(await pdfResponse.arrayBuffer());
+        const safeNumber = String(invoice.number || invoice.id || 'stripe').replace(/[^a-zA-Z0-9._-]/g, '_');
+        res.set('Cache-Control', 'private, no-store, max-age=0');
+        res.set('Content-Type', 'application/pdf');
+        res.set('Content-Disposition', `inline; filename="Facture-${safeNumber}.pdf"`);
+        res.set('X-Content-Type-Options', 'nosniff');
+        return res.status(200).send(pdfBuffer);
+    } catch (error) {
+        console.error('[iCHEF STRIPE PDF] proxy:', error?.message || error);
+        if (!res.headersSent) return res.status(500).send('Facture Stripe indisponible.');
+        res.end();
     }
 });
 
