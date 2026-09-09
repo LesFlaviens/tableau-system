@@ -13113,6 +13113,8 @@ function ichefStripeConnectionPriceId(currency, quantity) {
 // ==========================================================
 // 💳 MATRICE DES PRIX STRIPE CONNECT (SaaS)
 // ==========================================================
+// ICHEF_STRIPE_FRONTEND_URL est déjà défini ci-dessus.
+
 function ichefStripeConnectionLineItems(currency, quantity) {
     const qty = Math.max(1, parseInt(quantity, 10) || 1);
     const curr = String(currency || 'EUR').toUpperCase();
@@ -13168,17 +13170,17 @@ async function ichefStripeEnsureCustomer(tenant) {
     return customer.id;
 }
 
+const ICHEF_STRIPE_DIRECT_CONNECTION_LINKS = Object.freeze({
+    EUR: Object.freeze({
+        1: 'https://buy.stripe.com/test_dRmfZj4JHdO91tp1wF1kA07'
+    }),
+    CHF: Object.freeze({})
+});
+
 app.post(
     '/api/stripe/create-screen-upgrade-session',
     async (req, res) => {
         try {
-            if (!stripe) {
-                return res.status(503).json({
-                    success: false,
-                    error: 'Stripe n’est pas configuré sur le serveur iCHEF.'
-                });
-            }
-
             const tenantID = cleanString(req.body?.tenantID || req.headers['x-ichef-tenant'] || '');
             const pin = String(req.body?.pin || req.headers['x-ichef-pin'] || '').trim();
             const auth = await ichefAuthorizePin(tenantID, pin, { managerOnly: true });
@@ -13191,6 +13193,28 @@ app.post(
 
             const quantity = Math.min(50, Math.max(1, parseInt(req.body?.quantity, 10) || 1));
             const currency = String(req.body?.currency || '').toUpperCase() === 'CHF' ? 'CHF' : 'EUR';
+
+            // VERROU SERVEUR A07 : pour +1 connexion EUR, ne jamais recréer
+            // une session Checkout à partir d'un ancien Price ID.
+            const directLink = ICHEF_STRIPE_DIRECT_CONNECTION_LINKS?.[currency]?.[quantity];
+            if (directLink) {
+                console.info(`[iCHEF STRIPE] Payment Link direct ${currency} +${quantity} -> A07`);
+                return res.json({
+                    success: true,
+                    url: directLink,
+                    direct: true,
+                    quantity,
+                    currency,
+                    stripeFix: '2026-09-09-A07-LOCK'
+                });
+            }
+
+            if (!stripe) {
+                return res.status(503).json({
+                    success: false,
+                    error: 'Stripe n’est pas configuré sur le serveur iCHEF.'
+                });
+            }
             
             const lineItems = ichefStripeConnectionLineItems(currency, quantity);
             const customerId = await ichefStripeEnsureCustomer(auth.tenant);
@@ -18334,6 +18358,7 @@ process.on('uncaughtException', error => {
 // 🚀 DÉMARRAGE OFFICIEL DU SERVEUR iCHEF
 // IMPORTANT : CE BLOC DOIT ÊTRE LE DERNIER DU server.js
 // ==========================================================
+
 server.on('error', error => {
     console.error(
         '❌ Erreur serveur HTTP :',
