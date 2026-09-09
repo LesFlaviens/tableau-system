@@ -8287,6 +8287,41 @@ app.get('/api/module-access/check', async (req, res) => {
     }
 });
 
+// ==========================================================
+// 🛡️ TOUR DE CONTRÔLE V2 — JOURNAL SUPERADMIN
+// Aucun PIN / secret n'est enregistré dans ce journal.
+// ==========================================================
+const ichefMasterAuditSchema = new mongoose.Schema({
+    tenantID: { type: String, default: '', index: true },
+    at: { type: Date, default: Date.now, index: true },
+    action: { type: String, required: true, index: true },
+    reason: { type: String, default: '' },
+    deviceId: { type: String, default: '' },
+    result: { type: String, default: 'OK' },
+    details: { type: Object, default: {} }
+}, { minimize: false });
+const IchefMasterAudit = mongoose.models.IchefMasterAudit || mongoose.model('IchefMasterAudit', ichefMasterAuditSchema);
+
+async function ichefWriteMasterAudit({ tenantID='', action='', reason='', deviceId='', result='OK', details={} } = {}) {
+    try {
+        const safeDetails = { ...(details || {}) };
+        // Défense en profondeur : ne jamais journaliser de secrets.
+        for (const key of ['pin','manualPin','password','masterKey','token','secret']) {
+            if (Object.prototype.hasOwnProperty.call(safeDetails, key)) delete safeDetails[key];
+        }
+        await IchefMasterAudit.create({
+            tenantID: cleanString(tenantID || ''),
+            action: String(action || 'UNKNOWN').trim().slice(0,100),
+            reason: String(reason || '').trim().slice(0,500),
+            deviceId: String(deviceId || '').trim().slice(0,120),
+            result: String(result || 'OK').trim().slice(0,40),
+            details: safeDetails
+        });
+    } catch (error) {
+        console.warn('[iCHEF MASTER AUDIT]', error?.message || error);
+    }
+}
+
 // ==========================================
 // MASTER CONTROL API (EMPIRE SUPER ADMIN)
 // ==========================================
@@ -8331,7 +8366,11 @@ app.post('/api/get-all-tenants-admin', async (req, res) => {
                 defaultTerminalId: '',
                 terminals: []
             },
-            status: t.status
+            status: t.status,
+            demoExpiration: t.demoExpiration || null,
+            isDemo: Boolean(t.demoExpiration),
+            demoExpired: Boolean(t.demoExpiration && new Date(t.demoExpiration).getTime() < Date.now()),
+            stripeCustomerId: String(t?.config?.stripeCustomerId || '')
         }));
         res.json({ success: true, tenants: formattedTenants });
     } catch(err) { res.status(500).json({ success: false }); }
@@ -8370,7 +8409,8 @@ app.post('/api/admin-action', async (req, res) => {
             email,
             phone,
             specialite,
-            confirmDelete
+            confirmDelete,
+            reason
         } = req.body;
         const safeID = cleanString(tenantID);
 
@@ -8672,8 +8712,225 @@ app.post('/api/admin-action', async (req, res) => {
             // Les journaux fiscaux / audits scellés restent conservés.
         }
         
+        await ichefWriteMasterAudit({
+            tenantID: safeID,
+            action: `ADMIN_${String(action || 'UNKNOWN').toUpperCase()}`,
+            reason,
+            deviceId: req.headers['x-ichef-master-device'],
+            details: {
+                newPlan: newPlan || undefined,
+                maxScreens: maxScreens || manualScreens || undefined,
+                maxStaff: manualMaxStaff || undefined,
+                clientName: clientName || undefined,
+                email: email || undefined,
+                phone: phone || undefined,
+                specialite: specialite || undefined
+            }
+        });
         res.json({ success: true });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+// ==========================================================
+// 🏰 TOUR DE CONTRÔLE V2 — DÉMOS / FACTURES / AUDIT
+// ==========================================================
+app.post('/api/master/demo/create', async (req, res) => {
+    try {
+        if (!process.env.MASTER_KEY) return res.status(503).json({ success:false, error:'MASTER_KEY non configurée.' });
+        if (!ichefMasterKeyIsValid(req.body?.masterKey)) return res.status(401).json({ success:false, error:'Accès refusé.' });
+
+        const days = Math.max(1, Math.min(365, parseInt(req.body?.durationDays, 10) || 15));
+        const result = await creerNouveauClient({
+            nomRestaurant: req.body?.restaurant,
+            emailContact: req.body?.email,
+            phoneContact: req.body?.phone,
+            planChoisi: req.body?.plan || 'BUSINESS',
+            specialite: req.body?.specialite || 'cuisine',
+            requestedTenantID: req.body?.requestedTenantID || '',
+            maxScreens: req.body?.maxScreens,
+            maxStaff: req.body?.maxStaff || 999
+        });
+        const expiresAt = new Date(Date.now() + days * 86400000);
+        await Tenant.findOneAndUpdate(
+            { tenantID: result.tenant.tenantID },
+            { $set: { status:'ACTIF', demoExpiration: expiresAt } }
+        );
+        await ichefWriteMasterAudit({
+            tenantID: result.tenant.tenantID,
+            action: 'DEMO_CREATE',
+            reason: String(req.body?.reason || 'Création depuis Tour de Contrôle V2'),
+            deviceId: req.headers['x-ichef-master-device'],
+            details: { durationDays: days, expiresAt, plan: result.tenant.plan, maxScreens: result.tenant.maxScreens }
+        });
+        return res.status(201).json({
+            success:true,
+            demo: { ...result.credentials, demoExpiration: expiresAt, durationDays: days }
+        });
+    } catch (error) {
+        console.error('[iCHEF DEMO CREATE]', error?.message || error);
+        if (error?.code === 11000) return res.status(409).json({ success:false, error:'Cet identifiant est déjà utilisé.' });
+        return res.status(400).json({ success:false, error:error?.message || 'Création démo impossible.' });
+    }
+});
+
+app.post('/api/master/demo/action', async (req, res) => {
+    try {
+        if (!process.env.MASTER_KEY) return res.status(503).json({ success:false, error:'MASTER_KEY non configurée.' });
+        if (!ichefMasterKeyIsValid(req.body?.masterKey)) return res.status(401).json({ success:false, error:'Accès refusé.' });
+        const tenantID = cleanString(req.body?.tenantID || '');
+        const action = String(req.body?.action || '').trim().toLowerCase();
+        const tenant = await Tenant.findOne({ tenantID });
+        if (!tenant) return res.status(404).json({ success:false, error:'Restaurant introuvable.' });
+
+        if (action === 'extend') {
+            const days = Math.max(1, Math.min(365, parseInt(req.body?.days, 10) || 7));
+            const base = tenant.demoExpiration && new Date(tenant.demoExpiration).getTime() > Date.now()
+                ? new Date(tenant.demoExpiration).getTime()
+                : Date.now();
+            tenant.demoExpiration = new Date(base + days * 86400000);
+            tenant.status = 'ACTIF';
+            await tenant.save();
+            await ichefWriteMasterAudit({ tenantID, action:'DEMO_EXTEND', reason:req.body?.reason, deviceId:req.headers['x-ichef-master-device'], details:{ days, demoExpiration:tenant.demoExpiration } });
+            return res.json({ success:true, demoExpiration:tenant.demoExpiration });
+        }
+        if (action === 'convert') {
+            tenant.demoExpiration = undefined;
+            tenant.status = 'ACTIF';
+            await tenant.save();
+            await Tenant.updateOne({ tenantID }, { $unset:{ demoExpiration:'' } });
+            await ichefWriteMasterAudit({ tenantID, action:'DEMO_CONVERT_TO_CLIENT', reason:req.body?.reason, deviceId:req.headers['x-ichef-master-device'] });
+            return res.json({ success:true, converted:true });
+        }
+        return res.status(400).json({ success:false, error:'Action démo inconnue.' });
+    } catch (error) {
+        console.error('[iCHEF DEMO ACTION]', error?.message || error);
+        return res.status(500).json({ success:false, error:error?.message || 'Action démo impossible.' });
+    }
+});
+
+app.post('/api/master/invoices/all', async (req, res) => {
+    try {
+        if (!process.env.MASTER_KEY) return res.status(503).json({ success:false, error:'MASTER_KEY non configurée.' });
+        if (!ichefMasterKeyIsValid(req.body?.masterKey)) return res.status(401).json({ success:false, error:'Accès refusé.' });
+
+        const tenants = await Tenant.find({}, { tenantID:1, clientName:1, email:1, config:1 }).lean();
+        const tenantByCustomer = new Map();
+        const tenantById = new Map();
+        for (const t of tenants) {
+            tenantById.set(String(t.tenantID), t);
+            const cid = String(t?.config?.stripeCustomerId || '').trim();
+            if (cid) tenantByCustomer.set(cid, t);
+        }
+
+        const invoices = [];
+        let stripeCount = 0;
+        if (stripe) {
+            const licenses = await StripeScreenLicense.find({}).lean();
+            const licenseBySubscription = new Map(
+                licenses.filter(l => l?.subscriptionId).map(l => [String(l.subscriptionId), l])
+            );
+            let startingAfter = null;
+            for (let page = 0; page < 10; page += 1) {
+                const params = { limit: 100 };
+                if (startingAfter) params.starting_after = startingAfter;
+                const result = await stripe.invoices.list(params);
+                const data = Array.isArray(result?.data) ? result.data : [];
+                for (const inv of data) {
+                    const customerId = typeof inv?.customer === 'string' ? inv.customer : String(inv?.customer?.id || '');
+                    const tenant = tenantByCustomer.get(customerId);
+                    if (!tenant) continue;
+                    const subscriptionId = ichefStripeSubscriptionIdFromInvoice(inv);
+                    const screenLicense = subscriptionId ? licenseBySubscription.get(String(subscriptionId)) : null;
+                    const status = String(inv.status || '').toUpperCase();
+                    invoices.push({
+                        id: String(inv.id || ''),
+                        source: 'STRIPE',
+                        tenantID: String(tenant.tenantID || ''),
+                        clientName: String(tenant.clientName || tenant.tenantID || ''),
+                        email: String(tenant.email || ''),
+                        number: String(inv.number || ''),
+                        date: inv.status_transitions?.paid_at ? new Date(inv.status_transitions.paid_at * 1000).toISOString() : (inv.created ? new Date(inv.created * 1000).toISOString() : null),
+                        amount: Number(inv.amount_paid ?? inv.amount_due ?? 0) / 100,
+                        currency: String(inv.currency || 'EUR').toUpperCase(),
+                        status,
+                        paid: status === 'PAID',
+                        category: screenLicense ? 'SCREEN_CONNECTION' : 'GENERAL',
+                        extraScreens: screenLicense ? Math.max(1, Number(screenLicense.extraScreens || 1)) : 0,
+                        subscriptionId: subscriptionId || '',
+                        pdfUrl: String(inv.invoice_pdf || inv.hosted_invoice_url || ''),
+                        hostedUrl: String(inv.hosted_invoice_url || '')
+                    });
+                    stripeCount += 1;
+                }
+                if (!result?.has_more || !data.length) break;
+                startingAfter = String(data[data.length - 1].id || '');
+                if (!startingAfter) break;
+            }
+        }
+
+        // Factures PDF ajoutées manuellement depuis la Tour de Contrôle.
+        let manualCount = 0;
+        try {
+            const bucket = ichefClientDocsBucket();
+            const files = await bucket.find({ 'metadata.kind':'INVOICE' }).sort({ uploadDate:-1 }).limit(1000).toArray();
+            for (const file of files) {
+                const meta = ichefClientFilePublicMeta(file, true);
+                const tenant = tenantById.get(String(meta.tenantID || ''));
+                if (!tenant) continue;
+                invoices.push({
+                    id: String(meta.id || ''),
+                    source: 'ICHEF',
+                    tenantID: String(meta.tenantID || ''),
+                    clientName: String(tenant.clientName || tenant.tenantID || ''),
+                    email: String(tenant.email || ''),
+                    number: String(meta.title || meta.filename || ''),
+                    date: meta.uploadedAt || null,
+                    amount: null,
+                    currency: '',
+                    status: String(meta.status || 'PAID').toUpperCase(),
+                    paid: true,
+                    category: 'MANUAL',
+                    extraScreens: 0,
+                    subscriptionId: '',
+                    pdfUrl: meta.openPath || '',
+                    openPath: meta.openPath || ''
+                });
+                manualCount += 1;
+            }
+        } catch (manualError) {
+            console.warn('[iCHEF MASTER INVOICES] factures manuelles:', manualError?.message || manualError);
+        }
+
+        invoices.sort((a,b) => new Date(b.date || 0) - new Date(a.date || 0));
+        const paid = invoices.filter(i => i.paid);
+        const paidTotalByCurrency = {};
+        for (const inv of paid) {
+            if (typeof inv.amount !== 'number' || !inv.currency) continue;
+            paidTotalByCurrency[inv.currency] = Number((paidTotalByCurrency[inv.currency] || 0) + inv.amount);
+        }
+        return res.json({
+            success:true,
+            stripeConfigured:Boolean(stripe),
+            invoices,
+            summary:{ total:invoices.length, stripe:stripeCount, manual:manualCount, paid:paid.length, paidTotalByCurrency }
+        });
+    } catch (error) {
+        console.error('[iCHEF MASTER INVOICES]', error?.message || error);
+        return res.status(500).json({ success:false, error:error?.message || 'Factures indisponibles.' });
+    }
+});
+
+app.post('/api/master/audit/list', async (req, res) => {
+    try {
+        if (!process.env.MASTER_KEY) return res.status(503).json({ success:false, error:'MASTER_KEY non configurée.' });
+        if (!ichefMasterKeyIsValid(req.body?.masterKey)) return res.status(401).json({ success:false, error:'Accès refusé.' });
+        const limit = Math.max(20, Math.min(500, parseInt(req.body?.limit,10) || 250));
+        const query = req.body?.tenantID ? { tenantID:cleanString(req.body.tenantID) } : {};
+        const items = await IchefMasterAudit.find(query).sort({ at:-1 }).limit(limit).lean();
+        return res.json({ success:true, items:items.map(x => ({ id:String(x._id), tenantID:x.tenantID, at:x.at, action:x.action, reason:x.reason, deviceId:x.deviceId, result:x.result, details:x.details || {} })) });
+    } catch (error) {
+        return res.status(500).json({ success:false, error:error?.message || 'Journal indisponible.' });
+    }
 });
 
 // ==========================================
