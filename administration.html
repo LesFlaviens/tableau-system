@@ -29,6 +29,9 @@
         // 💳 LIENS STRIPE TEST — CONNEXIONS iCHEF
         // ==========================================================
 
+        // Lien Stripe officiel iCHEF pour +1 connexion EUR (TEST)
+        window.ICHEF_DEMO_STRIPE_PAYMENT_LINK = "https://buy.stripe.com/test_dRmfZj4JHdO91tp1wF1kA07";
+
         window.ICHEF_STRIPE_CONNECTION_LINKS = {
             CHF: {
                 1: "COLLE_ICI_LE_LIEN_STRIPE_9_CHF",
@@ -1428,12 +1431,8 @@ body>nav{display:none!important}
         <div class="stripe-demo-badge">✓ STRIPE MODE TEST</div>
     </div>
     <div class="stripe-buy-wrap">
-        <stripe-buy-button
-          id="ichef-stripe-buy-button-demo"
-          buy-button-id="buy_btn_1UDNiNQ9Dw3nOFa4HLvCrv56"
-          publishable-key="pk_test_51TN80JQ9Dw3nOFa4hqTSWbnGRhWF75RnOrmMNapqcGRtRx67uqsj8VbJqPOKh2qTaf2TFrMsO4he0aNal0ebqY3v00VN1nlQdO">
-        </stripe-buy-button>
-        <a href="https://buy.stripe.com/test_8x29AVekh8tPb3Zgrz1kA06" target="_blank" rel="noopener noreferrer" style="display:block;margin-top:12px;text-align:center;color:#60a5fa;font-weight:800;text-decoration:none;">Ouvrir le Payment Link Stripe Test ↗</a>
+        <!-- Lien Stripe officiel unique : évite qu'un ancien buy-button Stripe ouvre une mauvaise page -->
+        <a href="https://buy.stripe.com/test_dRmfZj4JHdO91tp1wF1kA07" target="_blank" rel="noopener noreferrer" style="display:block;margin-top:12px;text-align:center;color:#60a5fa;font-weight:800;text-decoration:none;">Ouvrir le Payment Link Stripe Test ↗</a>
     </div>
     <button type="button" class="stripe-embedded-back" onclick="window.logicielManager.hideEmbeddedStripeStep()">← Revenir à mon choix</button>
 </div>
@@ -2074,11 +2073,25 @@ body>nav{display:none!important}
                     let body = { tenantID: this.tenantID, pin: this.masterPin };
 
                     if (pending.type === 'screens') {
-                        endpoint = '/api/stripe/create-screen-upgrade-session';
                         body.quantity = Math.max(1, parseInt(pending.quantity || 1, 10) || 1);
                         const pricing = this.getConnectionPricing(body.quantity);
                         body.currency = pricing.region === 'CH' ? 'CHF' : 'EUR';
-                        body.displayAmount = pricing.amount; // affichage uniquement : le serveur/Stripe doit rester source de vérité
+                        body.displayAmount = pricing.amount;
+
+                        // PRIORITÉ AU PAYMENT LINK CONFIGURÉ DANS ADMINISTRATION.
+                        // Pour +1 connexion EUR, ceci force le bon lien A07 et empêche
+                        // une ancienne URL Stripe renvoyée par le serveur de prendre la main.
+                        const directLink = window.ICHEF_STRIPE_CONNECTION_LINKS?.[body.currency]?.[body.quantity];
+                        if (directLink && /^https:\/\/buy\.stripe\.com\//i.test(directLink)) {
+                            if (status) status.textContent = 'Stripe s’ouvre dans un nouvel onglet. iCHEF reste ouvert ici.';
+                            this.openStripeSafely(directLink);
+                            setTimeout(() => this.closeStripeConfirm(), 450);
+                            return;
+                        }
+
+                        // Repli serveur uniquement si aucun Payment Link direct n'est configuré
+                        // (ex. quantités 2 à 5 ou CHF tant que leurs liens ne sont pas renseignés).
+                        endpoint = '/api/stripe/create-screen-upgrade-session';
                     } else if (pending.type === 'billing') {
                         endpoint = '/api/stripe/create-customer-portal-session';
                     } else {
