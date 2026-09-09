@@ -18679,6 +18679,66 @@ async function ichefClientListManualDocs(tenantID, signed = false) {
     const files = await bucket.find({ 'metadata.tenantID': safeID }).sort({ uploadDate: -1 }).toArray();
     return files.map(file => ichefClientFilePublicMeta(file, signed));
 }
+
+// ============================================================================
+// 🔐 V6 — LIENS PDF STRIPE STABLES
+// La signature PDF utilise une clé persistante. STRIPE_SECRET_KEY est le dernier
+// filet de sécurité : si Stripe fonctionne, la signature reste stable entre
+// les redémarrages / instances Render.
+// ============================================================================
+const ICHEF_STRIPE_PDF_SECRET = crypto
+    .createHash('sha256')
+    .update(String(
+        process.env.ICHEF_PDF_SECRET ||
+        process.env.ICHEF_SESSION_SECRET ||
+        process.env.MASTER_KEY ||
+        stripeKey ||
+        ''
+    ))
+    .digest();
+
+function ichefSignStripeInvoicePdfToken({ tenantID, invoiceId }, ttlSeconds = 24 * 60 * 60) {
+    const now = Math.floor(Date.now() / 1000);
+    const claims = {
+        scope: 'STRIPE_INVOICE_PDF_V6',
+        tenantID: cleanString(tenantID || ''),
+        invoiceId: cleanString(invoiceId || ''),
+        iat: now,
+        exp: now + Math.max(300, Number(ttlSeconds || 0))
+    };
+    const body = Buffer.from(JSON.stringify(claims)).toString('base64url');
+    const signature = crypto
+        .createHmac('sha256', ICHEF_STRIPE_PDF_SECRET)
+        .update(body)
+        .digest('base64url');
+    return `p6.${body}.${signature}`;
+}
+
+function ichefVerifyStripeInvoicePdfToken(token, invoiceId) {
+    try {
+        const parts = String(token || '').split('.');
+        if (parts.length !== 3 || parts[0] !== 'p6') return null;
+        const body = parts[1];
+        const signature = parts[2];
+        const expected = crypto
+            .createHmac('sha256', ICHEF_STRIPE_PDF_SECRET)
+            .update(body)
+            .digest('base64url');
+        const a = Buffer.from(signature);
+        const b = Buffer.from(expected);
+        if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+        const claims = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+        const now = Math.floor(Date.now() / 1000);
+        if (claims.scope !== 'STRIPE_INVOICE_PDF_V6') return null;
+        if (!claims.exp || Number(claims.exp) < now) return null;
+        if (cleanString(claims.invoiceId || '') !== cleanString(invoiceId || '')) return null;
+        if (!cleanString(claims.tenantID || '')) return null;
+        return claims;
+    } catch (_) {
+        return null;
+    }
+}
+
 async function ichefStripePaidInvoicesForTenant(tenant, signed = false) {
     if (!stripe || !tenant?.config?.stripeCustomerId) return [];
     try {
@@ -18717,7 +18777,7 @@ async function ichefStripePaidInvoicesForTenant(tenant, signed = false) {
                 // Les PDF Stripe ne sont pas toujours intégrables directement dans un iframe.
                 // En lecture client, on passe donc par un proxy iCHEF signé qui les sert en inline.
                 openUrl: signed && tenantID && inv.id
-                    ? `/api/client-space/stripe-invoice/${encodeURIComponent(String(inv.id))}/pdf?token=${encodeURIComponent(ichefSignSession({ scope: 'STRIPE_INVOICE_PDF', tenantID, invoiceId: String(inv.id) }, 2 * 60 * 60))}`
+                    ? `/api/client-space/stripe-invoice/${encodeURIComponent(String(inv.id))}/pdf?token=${encodeURIComponent(ichefSignStripeInvoicePdfToken({ tenantID, invoiceId: String(inv.id) }))}`
                     : String(inv.invoice_pdf || inv.hosted_invoice_url || ''),
                 stripePdfUrl: String(inv.invoice_pdf || ''),
                 stripeHostedUrl: String(inv.hosted_invoice_url || '')
@@ -18937,7 +18997,7 @@ app.post('/api/client-space', async (req, res) => {
 });
 
 // PDF Stripe : proxy sécurisé iCHEF pour permettre l’aperçu inline dans Administration.
-// V5 : signature persistante entre redémarrages Render (ICHEF_SESSION_SECRET > MASTER_KEY > ADMIN_PASS).
+// V6 : signature PDF dédiée stable (ICHEF_PDF_SECRET > ICHEF_SESSION_SECRET > MASTER_KEY > STRIPE_SECRET_KEY).
 app.get('/api/client-space/stripe-invoice/:invoiceId/pdf', async (req, res) => {
     try {
         if (!stripe) return res.status(503).send('Stripe indisponible.');
@@ -18945,7 +19005,7 @@ app.get('/api/client-space/stripe-invoice/:invoiceId/pdf', async (req, res) => {
         const token = String(req.query?.token || '').trim();
         if (!invoiceId || !token) return res.status(400).send('Lien invalide.');
 
-        const claims = ichefVerifySignedSession(token, { scope: 'STRIPE_INVOICE_PDF' });
+        const claims = ichefVerifyStripeInvoicePdfToken(token, invoiceId);
         if (!claims || String(claims.invoiceId || '') !== invoiceId) {
             return res.status(403).send('Lien expiré ou non autorisé.');
         }
@@ -18984,6 +19044,8 @@ app.get('/api/client-space/stripe-invoice/:invoiceId/pdf', async (req, res) => {
         const safeNumber = String(invoice.number || invoice.id || 'stripe').replace(/[^a-zA-Z0-9._-]/g, '_');
         res.set('Cache-Control', 'private, no-store, max-age=0');
         res.set('Content-Type', 'application/pdf');
+        res.set('X-iCHEF-PDF-Proxy', 'V6');
+        res.set('Content-Security-Policy', "frame-ancestors https://os.ichef.ch https://ichef.ch https://www.ichef.ch");
         res.set('Content-Disposition', `inline; filename="Facture-${safeNumber}.pdf"`);
         res.set('X-Content-Type-Options', 'nosniff');
         return res.status(200).send(pdfBuffer);
