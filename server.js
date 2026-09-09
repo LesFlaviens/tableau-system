@@ -13113,8 +13113,6 @@ function ichefStripeConnectionPriceId(currency, quantity) {
 // ==========================================================
 // 💳 MATRICE DES PRIX STRIPE CONNECT (SaaS)
 // ==========================================================
-const ICHEF_STRIPE_FRONTEND_URL = process.env.FRONTEND_URL || 'https://os.ichef.ch';
-
 function ichefStripeConnectionLineItems(currency, quantity) {
     const qty = Math.max(1, parseInt(quantity, 10) || 1);
     const curr = String(currency || 'EUR').toUpperCase();
