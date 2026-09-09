@@ -19052,8 +19052,8 @@ function ichefDownloadHttpsBuffer(url, redirectsLeft = 5) {
     });
 }
 
-// ==========================================================
-// 📄 iCHEF — APERÇU FACTURE STRIPE PDF V8
+/// ==========================================================
+// 📄 iCHEF — APERÇU FACTURE STRIPE PDF V8 (CORRIGÉ)
 // Bloc autonome : aucun helper externe nécessaire
 // ==========================================================
 app.get('/api/client-space/stripe-invoice/:invoiceId/pdf', async (req, res) => {
@@ -19074,10 +19074,7 @@ app.get('/api/client-space/stripe-invoice/:invoiceId/pdf', async (req, res) => {
         // ----------------------------------------------------------
         const claims = ichefVerifyStripeInvoicePdfToken(token, invoiceId);
 
-        if (
-            !claims ||
-            String(claims.invoiceId || '') !== String(invoiceId)
-        ) {
+        if (!claims || String(claims.invoiceId || '') !== String(invoiceId)) {
             return res.status(403).send('Lien expiré ou non autorisé.');
         }
 
@@ -19096,61 +19093,53 @@ app.get('/api/client-space/stripe-invoice/:invoiceId/pdf', async (req, res) => {
             return res.status(404).send('Établissement introuvable.');
         }
 
-        const expectedCustomerId =
-            String(tenant?.config?.stripeCustomerId || '').trim();
-
-        if (!expectedCustomerId) {
-            return res.status(404).send('Compte Stripe non associé.');
-        }
+        const expectedCustomerId = String(tenant?.config?.stripeCustomerId || '').trim();
 
         // ----------------------------------------------------------
-        // 3. Récupération sécurisée de la facture chez Stripe
+        // 3. Récupération sécurisée et intelligente chez Stripe
         // ----------------------------------------------------------
-        let invoice;
+        let pdfUrl = '';
+        let safeNumber = invoiceId;
 
         try {
-            invoice = await stripe.invoices.retrieve(invoiceId);
-        } catch (stripeError) {
-            console.error(
-                '[iCHEF STRIPE PDF V8] invoice retrieve:',
-                stripeError?.message || stripeError
-            );
-
-            return res.status(404).send('Facture Stripe introuvable.');
-        }
-
-        if (!invoice) {
-            return res.status(404).send('Facture Stripe introuvable.');
-        }
-
-        const invoiceCustomerId =
-            typeof invoice.customer === 'string'
-                ? invoice.customer
-                : String(invoice?.customer?.id || '');
-
-        if (invoiceCustomerId !== expectedCustomerId) {
-            console.warn(
-                '[iCHEF STRIPE PDF V8] customer mismatch',
-                {
-                    tenantID,
-                    invoiceId,
-                    expectedCustomerId,
-                    invoiceCustomerId
+            // Cas A : C'est une vraie facture Stripe (ID commence par "in_")
+            if (invoiceId.startsWith('in_')) {
+                const invoice = await stripe.invoices.retrieve(invoiceId);
+                
+                if (expectedCustomerId && invoice.customer !== expectedCustomerId && invoice.customer?.id !== expectedCustomerId) {
+                    return res.status(403).send('Facture non autorisée.');
                 }
-            );
-
-            return res.status(403).send('Facture non autorisée.');
-        }
-
-        if (String(invoice.status || '').toLowerCase() !== 'paid') {
-            return res.status(403).send('Facture non payée.');
+                if (String(invoice.status || '').toLowerCase() !== 'paid') {
+                    return res.status(403).send('Facture non payée.');
+                }
+                
+                pdfUrl = String(invoice.invoice_pdf || '').trim();
+                safeNumber = String(invoice.number || invoice.id || 'stripe').replace(/[^a-zA-Z0-9._-]/g, '_');
+            } 
+            // Cas B : C'est une session de paiement (Payment Link, ID commence par "cs_")
+            else if (invoiceId.startsWith('cs_')) {
+                const session = await stripe.checkout.sessions.retrieve(invoiceId);
+                
+                if (!session.invoice) {
+                    return res.status(404).send('Ce paiement ne comporte pas de facture PDF (reçu simple).');
+                }
+                
+                const invoice = await stripe.invoices.retrieve(session.invoice);
+                pdfUrl = String(invoice.invoice_pdf || '').trim();
+                safeNumber = String(invoice.number || invoice.id || 'stripe').replace(/[^a-zA-Z0-9._-]/g, '_');
+            } 
+            // Cas C : Format inconnu (Ex: V8FBISLS-0220)
+            else {
+                return res.status(404).send('Format de référence Stripe invalide.');
+            }
+        } catch (stripeError) {
+            console.error('[iCHEF STRIPE PDF V8] API Stripe Error:', stripeError?.message || stripeError);
+            return res.status(404).send('Document Stripe introuvable.');
         }
 
         // ----------------------------------------------------------
         // 4. URL PDF officielle Stripe
         // ----------------------------------------------------------
-        const pdfUrl = String(invoice.invoice_pdf || '').trim();
-
         if (!pdfUrl) {
             return res.status(404).send('PDF Stripe indisponible.');
         }
@@ -19161,139 +19150,69 @@ app.get('/api/client-space/stripe-invoice/:invoiceId/pdf', async (req, res) => {
         const downloadPdf = (url, redirectsLeft = 5) => {
             return new Promise((resolve, reject) => {
                 const https = require('https');
-
                 let parsed;
 
                 try {
                     parsed = new URL(String(url || ''));
                 } catch (_) {
-                    return reject(
-                        new Error('URL PDF Stripe invalide')
-                    );
+                    return reject(new Error('URL PDF Stripe invalide'));
                 }
 
                 if (parsed.protocol !== 'https:') {
-                    return reject(
-                        new Error('URL PDF Stripe non HTTPS')
-                    );
+                    return reject(new Error('URL PDF Stripe non HTTPS'));
                 }
 
                 const request = https.get(
                     parsed,
                     {
                         headers: {
-                            'Accept':
-                                'application/pdf,application/octet-stream;q=0.9,*/*;q=0.8',
-                            'User-Agent':
-                                'Mozilla/5.0 iCHEF-OS Stripe-PDF-Proxy-V8'
+                            'Accept': 'application/pdf,application/octet-stream;q=0.9,*/*;q=0.8',
+                            'User-Agent': 'Mozilla/5.0 iCHEF-OS Stripe-PDF-Proxy-V8'
                         },
                         timeout: 20000
                     },
                     response => {
-                        const status = Number(
-                            response.statusCode || 0
-                        );
+                        const status = Number(response.statusCode || 0);
 
                         // Stripe peut rediriger son PDF
-                        if (
-                            [301, 302, 303, 307, 308].includes(status)
-                        ) {
-                            const location =
-                                response.headers.location;
-
+                        if ([301, 302, 303, 307, 308].includes(status)) {
+                            const location = response.headers.location;
                             response.resume();
 
-                            if (
-                                !location ||
-                                redirectsLeft <= 0
-                            ) {
-                                return reject(
-                                    new Error(
-                                        'Redirection Stripe invalide'
-                                    )
-                                );
+                            if (!location || redirectsLeft <= 0) {
+                                return reject(new Error('Redirection Stripe invalide ou boucle infinie'));
                             }
 
-                            const nextUrl = new URL(
-                                location,
-                                parsed
-                            ).toString();
-
-                            return resolve(
-                                downloadPdf(
-                                    nextUrl,
-                                    redirectsLeft - 1
-                                )
-                            );
+                            const nextUrl = new URL(location, parsed).toString();
+                            return resolve(downloadPdf(nextUrl, redirectsLeft - 1));
                         }
 
                         if (status < 200 || status >= 300) {
                             response.resume();
-
-                            return reject(
-                                new Error(
-                                    `Stripe PDF HTTP ${status}`
-                                )
-                            );
+                            return reject(new Error(`Stripe PDF HTTP ${status}`));
                         }
 
                         const chunks = [];
                         let totalBytes = 0;
-
-                        // Protection : max 20 Mo
-                        const MAX_PDF_SIZE =
-                            20 * 1024 * 1024;
+                        const MAX_PDF_SIZE = 20 * 1024 * 1024; // 20 Mo max
 
                         response.on('data', chunk => {
                             totalBytes += chunk.length;
-
-                            if (
-                                totalBytes >
-                                MAX_PDF_SIZE
-                            ) {
-                                request.destroy(
-                                    new Error(
-                                        'PDF Stripe trop volumineux'
-                                    )
-                                );
-                                return;
+                            if (totalBytes > MAX_PDF_SIZE) {
+                                request.destroy(new Error('PDF Stripe trop volumineux'));
+                            } else {
+                                chunks.push(chunk);
                             }
-
-                            chunks.push(chunk);
                         });
 
                         response.on('end', () => {
-                            const buffer =
-                                Buffer.concat(chunks);
+                            const buffer = Buffer.concat(chunks);
+                            if (!buffer.length) return reject(new Error('PDF Stripe vide'));
 
-                            if (!buffer.length) {
-                                return reject(
-                                    new Error(
-                                        'PDF Stripe vide'
-                                    )
-                                );
+                            // Vérifie la signature du fichier (Magic Bytes)
+                            if (buffer.subarray(0, 5).toString('ascii') !== '%PDF-') {
+                                return reject(new Error('Stripe n’a pas retourné un fichier PDF valide'));
                             }
-
-                            // Vérifie qu'on reçoit réellement un PDF
-                            const signature = buffer
-                                .subarray(0, 5)
-                                .toString('ascii');
-
-                            if (signature !== '%PDF-') {
-                                console.warn(
-                                    '[iCHEF STRIPE PDF V8] contenu inattendu:',
-                                    response.headers[
-                                        'content-type'
-                                    ]
-                                );
-
-                                return reject(
-                                    new Error(
-                                        'Stripe n’a pas retourné un PDF'
-                                    )
-                                );
-                            }
-
                             resolve(buffer);
                         });
 
@@ -19302,11 +19221,7 @@ app.get('/api/client-space/stripe-invoice/:invoiceId/pdf', async (req, res) => {
                 );
 
                 request.on('timeout', () => {
-                    request.destroy(
-                        new Error(
-                            'Timeout téléchargement Stripe'
-                        )
-                    );
+                    request.destroy(new Error('Timeout téléchargement Stripe'));
                 });
 
                 request.on('error', reject);
@@ -19314,84 +19229,40 @@ app.get('/api/client-space/stripe-invoice/:invoiceId/pdf', async (req, res) => {
         };
 
         // ----------------------------------------------------------
-        // 6. Téléchargement du PDF
+        // 6. Exécution du téléchargement
         // ----------------------------------------------------------
         let pdfBuffer;
-
         try {
             pdfBuffer = await downloadPdf(pdfUrl);
         } catch (downloadError) {
-            console.error(
-                '[iCHEF STRIPE PDF V8] download:',
-                downloadError?.message || downloadError
-            );
-
-            return res
-                .status(502)
-                .send(
-                    `PDF Stripe temporairement indisponible : ${
-                        downloadError?.message ||
-                        'erreur inconnue'
-                    }`
-                );
+            console.error('[iCHEF STRIPE PDF V8] download:', downloadError?.message || downloadError);
+            return res.status(502).send(`PDF Stripe temporairement indisponible : ${downloadError?.message || 'erreur inconnue'}`);
         }
 
         // ----------------------------------------------------------
         // 7. Affichage INLINE dans Administration
         // ----------------------------------------------------------
-        const safeNumber = String(
-            invoice.number ||
-            invoice.id ||
-            'stripe'
-        ).replace(/[^a-zA-Z0-9._-]/g, '_');
-
-        // Important si Helmet ajoute X-Frame-Options
         res.removeHeader('X-Frame-Options');
 
         res.set({
-            'Cache-Control':
-                'private, no-store, max-age=0',
-            'Content-Type':
-                'application/pdf',
-            'Content-Disposition':
-                `inline; filename="Facture-${safeNumber}.pdf"`,
-            'Content-Security-Policy':
-                "frame-ancestors 'self' https://os.ichef.ch https://ichef.ch https://www.ichef.ch",
-            'Cross-Origin-Resource-Policy':
-                'cross-origin',
-            'X-Content-Type-Options':
-                'nosniff',
-            'X-iCHEF-PDF-Proxy':
-                'V8',
-            'Content-Length':
-                String(pdfBuffer.length)
+            'Cache-Control': 'private, no-store, max-age=0',
+            'Content-Type': 'application/pdf',
+            'Content-Disposition': `inline; filename="Facture-${safeNumber}.pdf"`,
+            'Content-Security-Policy': "frame-ancestors 'self' https://os.ichef.ch https://ichef.ch https://www.ichef.ch",
+            'Cross-Origin-Resource-Policy': 'cross-origin',
+            'X-Content-Type-Options': 'nosniff',
+            'X-iCHEF-PDF-Proxy': 'V8',
+            'Content-Length': String(pdfBuffer.length)
         });
 
-        console.log(
-            `[iCHEF STRIPE PDF V8] ✅ ${tenantID} · ${invoice.number || invoiceId}`
-        );
-
+        console.log(`[iCHEF STRIPE PDF V8] ✅ ${tenantID} · ${safeNumber}`);
         return res.status(200).end(pdfBuffer);
 
     } catch (error) {
-        console.error(
-            '[iCHEF STRIPE PDF V8] ERREUR:',
-            error?.stack ||
-            error?.message ||
-            error
-        );
-
+        console.error('[iCHEF STRIPE PDF V8] ERREUR:', error?.stack || error?.message || error);
         if (!res.headersSent) {
-            return res
-                .status(500)
-                .send(
-                    `Facture Stripe indisponible : ${
-                        error?.message ||
-                        'erreur serveur'
-                    }`
-                );
+            return res.status(500).send(`Facture Stripe indisponible : ${error?.message || 'erreur serveur'}`);
         }
-
         return res.end();
     }
 });
@@ -19474,37 +19345,18 @@ async function ichefGracefulShutdown(signal, exitCode = 0) {
     try {
         await mongoose.connection.close(false);
     } catch (error) {
-        console.error(
-            'Erreur fermeture MongoDB :',
-            error?.message || error
-        );
+        console.error('Erreur fermeture MongoDB :', error?.message || error);
     }
 
     clearTimeout(forceTimer);
     process.exit(exitCode);
 }
 
-process.on('SIGTERM', () => {
-    ichefGracefulShutdown('SIGTERM', 0);
-});
-
-process.on('SIGINT', () => {
-    ichefGracefulShutdown('SIGINT', 0);
-});
-
-process.on('unhandledRejection', reason => {
-    console.error(
-        '❌ Promise rejetée non gérée :',
-        reason
-    );
-});
-
+process.on('SIGTERM', () => { ichefGracefulShutdown('SIGTERM', 0); });
+process.on('SIGINT', () => { ichefGracefulShutdown('SIGINT', 0); });
+process.on('unhandledRejection', reason => { console.error('❌ Promise rejetée non gérée :', reason); });
 process.on('uncaughtException', error => {
-    console.error(
-        '❌ Exception Node non interceptée :',
-        error
-    );
-
+    console.error('❌ Exception Node non interceptée :', error);
     ichefGracefulShutdown('uncaughtException', 1);
 });
 
@@ -19514,33 +19366,27 @@ process.on('uncaughtException', error => {
 // ==========================================================
 
 server.on('error', error => {
-    console.error(
-        '❌ Erreur serveur HTTP :',
-        error
-    );
+    console.error('❌ Erreur serveur HTTP :', error);
 });
 
-server.listen(
-    PORT,
-    () => {
-        console.log('');
-        console.log('==========================================');
-        console.log('✅ iCHEF EMPIRE OS — SERVEUR EN LIGNE');
-        console.log('==========================================');
-        console.log(`✅ Port serveur : ${PORT}`);
-        console.log('✅ Socket.IO activé.');
-        console.log('✅ MongoDB / AppState activé.');
-        console.log(`✅ Mongo pool cible : ${ICHEF_MONGO_MIN_POOL}-${ICHEF_MONGO_MAX_POOL}.`);
-        console.log('✅ Moteur fiscal MongoDB activé.');
-        console.log('✅ FINANCIAL_HISTORY activé.');
-        console.log('✅ FiscalRecord permanent activé.');
-        console.log('✅ Fichier Fiscal Complet activé.');
-        console.log('✅ Audit cryptographique SHA-256 activé.');
-        console.log('✅ Paiements PAD / Caisse synchronisés.');
-        console.log('✅ Socket temps réel PAD / Caisse / Cuisine activé.');
-        console.log('✅ Roadmap CORE MongoDB / API / Socket.IO activé.');
-        console.log('✅ Espace client centralisé : contrats / factures / messages activé.');
-        console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
-        console.log('==========================================');
-    }
-);
+server.listen(PORT, () => {
+    console.log('');
+    console.log('==========================================');
+    console.log('✅ iCHEF EMPIRE OS — SERVEUR EN LIGNE');
+    console.log('==========================================');
+    console.log(`✅ Port serveur : ${PORT}`);
+    console.log('✅ Socket.IO activé.');
+    console.log('✅ MongoDB / AppState activé.');
+    console.log(`✅ Mongo pool cible : ${ICHEF_MONGO_MIN_POOL}-${ICHEF_MONGO_MAX_POOL}.`);
+    console.log('✅ Moteur fiscal MongoDB activé.');
+    console.log('✅ FINANCIAL_HISTORY activé.');
+    console.log('✅ FiscalRecord permanent activé.');
+    console.log('✅ Fichier Fiscal Complet activé.');
+    console.log('✅ Audit cryptographique SHA-256 activé.');
+    console.log('✅ Paiements PAD / Caisse synchronisés.');
+    console.log('✅ Socket temps réel PAD / Caisse / Cuisine activé.');
+    console.log('✅ Roadmap CORE MongoDB / API / Socket.IO activé.');
+    console.log('✅ Espace client centralisé : contrats / factures / messages activé.');
+    console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
+    console.log('==========================================');
+});
