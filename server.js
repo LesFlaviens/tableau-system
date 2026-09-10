@@ -1749,21 +1749,56 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
 
         console.log(`✅ Nouvelle candidature enregistrée en base : ${restaurant} (${safeID})`);
 
-        // 📧 ENVOI DE L'EMAIL SÉCURISÉ (Isolé pour éviter l'erreur 500)
+        // 📧 ENVOI DE L'EMAIL SÉCURISÉ — candidature partenaire uniquement
+        // IMPORTANT : ce bloc reste isolé afin qu'une panne email ne bloque jamais
+        // l'enregistrement de la candidature dans MongoDB.
         try {
-            const gmailUser = String(process.env.GMAIL_USER || '').trim();
-            const gmailPassword = String(process.env.GMAIL_APP_PASSWORD || '').trim();
-            const alertRecipient = String(process.env.ICHEF_ALERT_EMAIL || 'iche.flavien@ichef.ch').trim();
+            const gmailUser = String(
+                process.env.GMAIL_USER ||
+                process.env.EMAIL_USER ||
+                process.env.SMTP_USER ||
+                ''
+            ).trim();
 
-            if (gmailUser && gmailPassword) {
-                const transporter = nodemailer.createTransport({ 
-                    service: 'gmail', 
-                    auth: { user: gmailUser, pass: gmailPassword } 
+            const gmailPassword = String(
+                process.env.GMAIL_APP_PASSWORD ||
+                process.env.EMAIL_APP_PASSWORD ||
+                process.env.SMTP_PASS ||
+                ''
+            ).trim();
+
+            const alertRecipient = String(
+                process.env.ICHEF_ALERT_EMAIL ||
+                process.env.EMAIL_TO ||
+                'iche.flavien@ichef.ch'
+            ).trim();
+
+            if (!gmailUser || !gmailPassword) {
+                const missing = [];
+                if (!gmailUser) missing.push('GMAIL_USER');
+                if (!gmailPassword) missing.push('GMAIL_APP_PASSWORD');
+
+                console.error(
+                    `❌ [iCHEF EMAIL] Notification non envoyée : variable(s) manquante(s) ${missing.join(', ')}.`
+                );
+            } else {
+                const transporter = nodemailer.createTransport({
+                    host: 'smtp.gmail.com',
+                    port: 465,
+                    secure: true,
+                    auth: {
+                        user: gmailUser,
+                        pass: gmailPassword
+                    },
+                    connectionTimeout: 15000,
+                    greetingTimeout: 15000,
+                    socketTimeout: 20000
                 });
-                
-                await transporter.sendMail({
-                    from: gmailUser,
+
+                const info = await transporter.sendMail({
+                    from: `iCHEF OS <${gmailUser}>`,
                     to: alertRecipient,
+                    replyTo: String(email).trim(),
                     subject: `🚨 iCHEF OS - Nouvelle Candidature : ${restaurant}`,
                     html: `
                         <div style="font-family: Arial, sans-serif; color: #111;">
@@ -1778,10 +1813,18 @@ app.post('/api/nouvelle-demande-demo', async (req, res) => {
                         </div>
                     `
                 });
-                console.log('📧 Email de notification envoyé avec succès.');
+
+                console.log(
+                    `📧 [iCHEF EMAIL] Nouvelle candidature envoyée à ${alertRecipient}` +
+                    (info?.messageId ? ` — messageId=${info.messageId}` : '')
+                );
             }
         } catch (emailErr) {
-            console.error('⚠️ Avertissement : Échec de l\'envoi de l\'e-mail (le client est quand même enregistré) :', emailErr.message);
+            console.error(
+                '⚠️ [iCHEF EMAIL] Échec de la notification candidature (candidature enregistrée) :',
+                emailErr?.code || '',
+                emailErr?.response || emailErr?.message || emailErr
+            );
         }
 
         return res.status(200).json({ 
