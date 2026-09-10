@@ -672,6 +672,95 @@ function ichefModuleIsEnabled(tenant, moduleID) {
 
 
 // ==========================================================
+// 👑 V14 — ACCÈS SUPERADMIN AUX 18 MODULES
+// Le client conserve ses propres droits moduleAccess.
+// La Tour peut ouvrir n'importe quel module avec un jeton signé,
+// limité au tenant + module et expirant rapidement.
+// ==========================================================
+function ichefSuperAdminModuleSecret() {
+    const raw = String(
+        process.env.ICHEF_SUPERADMIN_MODULE_SECRET ||
+        process.env.MASTER_KEY ||
+        ''
+    );
+    if (!raw) return null;
+    return crypto.createHash('sha256').update(`ICHEF_SUPERADMIN_MODULE_V1|${raw}`).digest();
+}
+
+function ichefSignSuperAdminModuleToken({ tenantID, moduleID }, ttlSeconds = 15 * 60) {
+    const secret = ichefSuperAdminModuleSecret();
+    if (!secret) throw new Error('MASTER_KEY / ICHEF_SUPERADMIN_MODULE_SECRET non configurée.');
+    const now = Math.floor(Date.now() / 1000);
+    const claims = {
+        scope: 'ICHEF_SUPERADMIN_MODULE_V1',
+        tenantID: cleanString(tenantID || ''),
+        moduleID: String(moduleID || '').trim().toLowerCase(),
+        iat: now,
+        exp: now + Math.max(60, Math.min(3600, Number(ttlSeconds) || 900))
+    };
+    const body = Buffer.from(JSON.stringify(claims)).toString('base64url');
+    const sig = crypto.createHmac('sha256', secret).update(body).digest('base64url');
+    return `sa1.${body}.${sig}`;
+}
+
+function ichefVerifySuperAdminModuleToken(token, { tenantID = '', moduleID = '' } = {}) {
+    try {
+        const secret = ichefSuperAdminModuleSecret();
+        if (!secret) return null;
+        const parts = String(token || '').trim().split('.');
+        if (parts.length !== 3 || parts[0] !== 'sa1') return null;
+        const body = parts[1];
+        const sig = parts[2];
+        const expected = crypto.createHmac('sha256', secret).update(body).digest('base64url');
+        const a = Buffer.from(sig, 'utf8');
+        const b = Buffer.from(expected, 'utf8');
+        if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+        const claims = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+        const now = Math.floor(Date.now() / 1000);
+        if (claims.scope !== 'ICHEF_SUPERADMIN_MODULE_V1') return null;
+        if (!claims.exp || Number(claims.exp) < now) return null;
+        if (cleanString(claims.tenantID || '') !== cleanString(tenantID || '')) return null;
+        if (String(claims.moduleID || '').toLowerCase() !== String(moduleID || '').toLowerCase()) return null;
+        return claims;
+    } catch (_) {
+        return null;
+    }
+}
+
+function ichefSuperAdminModuleCookieName(tenantID, moduleID) {
+    return 'ichef_sa_' + crypto
+        .createHash('sha256')
+        .update(`${cleanString(tenantID || '')}|${String(moduleID || '').toLowerCase()}`)
+        .digest('hex')
+        .slice(0, 16);
+}
+
+function ichefReadCookie(req, name) {
+    const raw = String(req?.headers?.cookie || '');
+    if (!raw || !name) return '';
+    for (const part of raw.split(';')) {
+        const idx = part.indexOf('=');
+        if (idx < 0) continue;
+        const key = part.slice(0, idx).trim();
+        if (key !== name) continue;
+        try { return decodeURIComponent(part.slice(idx + 1).trim()); }
+        catch (_) { return part.slice(idx + 1).trim(); }
+    }
+    return '';
+}
+
+function ichefGetSuperAdminModuleToken(req, tenantID, moduleID) {
+    const direct = String(
+        req?.query?.ichefSuperAdminToken ||
+        req?.headers?.['x-ichef-superadmin-token'] ||
+        ''
+    ).trim();
+    if (direct) return direct;
+    const cookieName = ichefSuperAdminModuleCookieName(tenantID, moduleID);
+    return ichefReadCookie(req, cookieName);
+}
+
+// ==========================================================
 // 🔒 CONTRÔLE DES 18 MODULES AVANT express.static
 // ==========================================================
 app.use(async (req, res, next) => {
@@ -693,6 +782,11 @@ app.use(async (req, res, next) => {
                 req.headers['x-ichef-tenant'] ||
                 ''
             );
+
+        const superAdminToken = ichefGetSuperAdminModuleToken(req, tenantID, requestModule);
+        const superAdminClaims = tenantID
+            ? ichefVerifySuperAdminModuleToken(superAdminToken, { tenantID, moduleID: requestModule })
+            : null;
 
         // Compatibilité avec les vieux écrans qui choisissent le tenant
         // après chargement. Ils peuvent ensuite appeler /api/module-access/check.
@@ -717,6 +811,23 @@ app.use(async (req, res, next) => {
                 '<body style="background:#080a0b;color:#fff;font-family:Arial;padding:40px">' +
                 '<h2>Établissement inconnu</h2></body>'
             );
+        }
+
+        // 👑 SuperAdmin : accès technique temporaire au module, sans modifier
+        // moduleAccess, le forfait ou le statut du client.
+        if (superAdminClaims) {
+            const cookieName = ichefSuperAdminModuleCookieName(tenantID, requestModule);
+            res.cookie(cookieName, superAdminToken, {
+                httpOnly: true,
+                secure: process.env.NODE_ENV === 'production',
+                sameSite: 'lax',
+                maxAge: Math.max(60000, (Number(superAdminClaims.exp) * 1000) - Date.now()),
+                path: '/'
+            });
+            res.setHeader('Cache-Control', 'no-store');
+            res.setHeader('Referrer-Policy', 'no-referrer');
+            res.setHeader('X-iCHEF-SuperAdmin-Access', 'V14');
+            return next();
         }
 
         if (
@@ -3973,6 +4084,46 @@ config: {
 
     demoExpiration: {
         type: Date
+    },
+
+    // V20 — connexions temporaires pour les profils DÉMO
+    demoBaseScreens: {
+        type: Number,
+        default: null
+    },
+    demoTemporaryExtraScreens: {
+        type: Number,
+        default: 0
+    },
+    demoTemporaryScreensUntil: {
+        type: Date,
+        default: null
+    },
+
+    // V20 — provenance et cycle de vie du modèle DÉMO MAÎTRE
+    isDemoMaster: {
+        type: Boolean,
+        default: false
+    },
+    demoTemplateSource: {
+        type: String,
+        default: null
+    },
+    demoTemplateVersion: {
+        type: Number,
+        default: null
+    },
+    demoResetAt: {
+        type: Date,
+        default: null
+    },
+    demoResetCount: {
+        type: Number,
+        default: 0
+    },
+    demoLastResetReason: {
+        type: String,
+        default: null
     }
 });
 
@@ -4045,6 +4196,61 @@ async function syncTenantScreenLimit(tenant) {
     const basePlanLimit =
         getPlanScreenLimit(tenant.plan);
 
+    // V18 — une démo garde sa limite de base choisie lors de sa création.
+    // Les connexions temporaires sont ajoutées sans modifier le contrat.
+    if (tenant.demoExpiration) {
+        const storedBase = Number(
+            tenant.demoBaseScreens ??
+            tenant.stripeConnectionBaseScreens ??
+            tenant.maxScreens
+        );
+
+        const demoBase =
+            Number.isFinite(storedBase) && storedBase > 0
+                ? Math.max(1, Math.round(storedBase))
+                : Math.max(1, Number(basePlanLimit) || 5);
+
+        const until = tenant.demoTemporaryScreensUntil
+            ? new Date(tenant.demoTemporaryScreensUntil)
+            : null;
+
+        const tempStillActive =
+            until &&
+            Number.isFinite(until.getTime()) &&
+            until.getTime() > Date.now();
+
+        const tempExtra =
+            tempStillActive
+                ? Math.max(0, Math.min(50, Number(tenant.demoTemporaryExtraScreens) || 0))
+                : 0;
+
+        const effectiveLimit = demoBase + tempExtra;
+
+        let changed = false;
+
+        if (Number(tenant.demoBaseScreens) !== demoBase) {
+            tenant.demoBaseScreens = demoBase;
+            changed = true;
+        }
+
+        if (Number(tenant.maxScreens) !== effectiveLimit) {
+            tenant.maxScreens = effectiveLimit;
+            changed = true;
+        }
+
+        if (!tempStillActive && (Number(tenant.demoTemporaryExtraScreens) > 0 || tenant.demoTemporaryScreensUntil)) {
+            tenant.demoTemporaryExtraScreens = 0;
+            tenant.demoTemporaryScreensUntil = null;
+            changed = true;
+        }
+
+        if (changed) {
+            await tenant.save();
+        }
+
+        return effectiveLimit;
+    }
+
     const currentLimit =
         Number(tenant.maxScreens);
 
@@ -4068,7 +4274,6 @@ async function syncTenantScreenLimit(tenant) {
 
     return effectiveLimit;
 }
-
 
 // ==========================================================
 // 📦 ÉTAT DU RESTAURANT
@@ -8292,6 +8497,25 @@ app.get('/api/module-access/check', async (req, res) => {
             });
         }
 
+        const superAdminToken = ichefGetSuperAdminModuleToken(req, tenantID, moduleID);
+        const superAdminClaims = ichefVerifySuperAdminModuleToken(
+            superAdminToken,
+            { tenantID, moduleID }
+        );
+
+        if (superAdminClaims) {
+            return res.json({
+                success:true,
+                tenantID,
+                module:moduleID,
+                allowed:true,
+                accessMode:'SUPERADMIN',
+                clientModuleEnabled:ichefModuleIsEnabled(tenant, moduleID),
+                accountStatus:tenant.archivedAt ? 'ARCHIVE' : String(tenant.status || 'INCONNU'),
+                moduleAccess:ichefNormalizeModuleAccess(tenant.moduleAccess || {})
+            });
+        }
+
         const active =
             !tenant.archivedAt &&
             String(tenant.status || '').toUpperCase() === 'ACTIF';
@@ -8386,7 +8610,20 @@ app.post('/api/get-all-tenants-admin', async (req, res) => {
     }
 
     try {
+        // V20 — si une démo a expiré, elle est d'abord restaurée depuis
+        // le snapshot DÉMO MAÎTRE puis suspendue.
+        await ichefResetExpiredDemos();
+
         const tenantsData = await Tenant.find({});
+
+        // V18 — remet automatiquement une démo à sa limite de base
+        // lorsque ses connexions temporaires sont arrivées à expiration.
+        for (const tenant of tenantsData) {
+            if (tenant?.demoExpiration) {
+                await syncTenantScreenLimit(tenant);
+            }
+        }
+
         const formattedTenants = tenantsData.map(t => ({
             id: t.tenantID, 
             name: t.clientName || "Sans Nom", 
@@ -8411,12 +8648,84 @@ app.post('/api/get-all-tenants-admin', async (req, res) => {
             },
             status: t.status,
             demoExpiration: t.demoExpiration || null,
-            isDemo: Boolean(t.demoExpiration),
-            demoExpired: Boolean(t.demoExpiration && new Date(t.demoExpiration).getTime() < Date.now()),
+            isDemoMaster: Boolean(t.isDemoMaster),
+            isDemo: Boolean(t.demoExpiration) && !Boolean(t.isDemoMaster),
+            demoExpired: Boolean(!t.isDemoMaster && t.demoExpiration && new Date(t.demoExpiration).getTime() < Date.now()),
+            demoTemplateSource: t.demoTemplateSource || null,
+            demoTemplateVersion: Number(t.demoTemplateVersion || 0) || null,
+            demoResetAt: t.demoResetAt || null,
+            demoResetCount: Math.max(0, Number(t.demoResetCount) || 0),
+            demoLastResetReason: t.demoLastResetReason || null,
+            demoBaseScreens: Number(t.demoBaseScreens || t.stripeConnectionBaseScreens || t.maxScreens || 0),
+            demoTemporaryExtraScreens: (
+                t.demoTemporaryScreensUntil &&
+                new Date(t.demoTemporaryScreensUntil).getTime() > Date.now()
+            ) ? Math.max(0, Number(t.demoTemporaryExtraScreens) || 0) : 0,
+            demoTemporaryScreensUntil: (
+                t.demoTemporaryScreensUntil &&
+                new Date(t.demoTemporaryScreensUntil).getTime() > Date.now()
+            ) ? t.demoTemporaryScreensUntil : null,
             stripeCustomerId: String(t?.config?.stripeCustomerId || '')
         }));
         res.json({ success: true, tenants: formattedTenants });
     } catch(err) { res.status(500).json({ success: false }); }
+});
+
+
+// ==========================================================
+// 👑 V14 — OUVERTURE SÉCURISÉE D'UN MODULE PAR LA TOUR
+// ==========================================================
+app.post('/api/master/module-access-url', async (req, res) => {
+    try {
+        if (!process.env.MASTER_KEY) {
+            return res.status(503).json({ success:false, error:'MASTER_KEY non configurée.' });
+        }
+        if (!ichefMasterKeyIsValid(req.body?.masterKey)) {
+            return res.status(401).json({ success:false, error:'Accès SuperAdmin refusé.' });
+        }
+
+        const tenantID = cleanString(req.body?.tenantID || '');
+        const moduleID = String(req.body?.moduleID || '').trim().toLowerCase();
+        const deviceId = String(req.headers['x-ichef-master-device'] || '').trim().slice(0,120);
+
+        if (!tenantID || !ICHEF_OFFICIAL_MODULE_SET.has(moduleID)) {
+            return res.status(400).json({ success:false, error:'Tenant ou module invalide.' });
+        }
+
+        const tenant = await Tenant.findOne(
+            { tenantID },
+            { tenantID:1, clientName:1, status:1, archivedAt:1, moduleAccess:1 }
+        ).lean();
+        if (!tenant) {
+            return res.status(404).json({ success:false, error:'Établissement introuvable.' });
+        }
+
+        const token = ichefSignSuperAdminModuleToken({ tenantID, moduleID }, 15 * 60);
+        const osBase = String(process.env.ICHEF_PUBLIC_OS_URL || 'https://os.ichef.ch').replace(/\/+$/, '');
+        const url = `${osBase}/${moduleID}?tenantID=${encodeURIComponent(tenantID)}&ichefSuperAdminToken=${encodeURIComponent(token)}`;
+        const clientEnabled = ichefModuleIsEnabled(tenant, moduleID);
+
+        await ichefWriteMasterAudit({
+            tenantID,
+            action:'SUPERADMIN_OPEN_MODULE',
+            reason:`Accès SuperAdmin au module ${moduleID}`,
+            deviceId,
+            details:{ moduleID, clientEnabled, accountStatus:String(tenant.status || '') }
+        });
+
+        return res.json({
+            success:true,
+            tenantID,
+            moduleID,
+            clientEnabled,
+            superAdminAllowed:true,
+            expiresInSeconds:15 * 60,
+            url
+        });
+    } catch (error) {
+        console.error('[iCHEF V14 SuperAdmin module]', error?.message || error);
+        return res.status(500).json({ success:false, error:error?.message || 'Ouverture du module impossible.' });
+    }
 });
 
 app.post('/api/admin-action', async (req, res) => {
@@ -8777,40 +9086,469 @@ app.post('/api/admin-action', async (req, res) => {
 // ==========================================================
 // 🏰 TOUR DE CONTRÔLE V2 — DÉMOS / FACTURES / AUDIT
 // ==========================================================
+// ==========================================================
+// 🧪 iCHEF V20 — DÉMO MAÎTRE / SNAPSHOTS VERSIONNÉS
+// testenfc est le modèle par défaut, configurable par variable d'environnement.
+// Les prospects ne travaillent JAMAIS directement dans le modèle :
+// chaque démo reçoit sa propre copie indépendante d'AppState.
+// ==========================================================
+const ICHEF_DEMO_MASTER_TENANT_ID = cleanString(
+    process.env.ICHEF_DEMO_MASTER_TENANT_ID || 'testenfc'
+);
+
+const ichefDemoTemplateSchema = new mongoose.Schema({
+    templateKey: { type: String, required: true, default: 'MASTER', index: true },
+    version: { type: Number, required: true },
+    sourceTenantID: { type: String, required: true, index: true },
+    sourceClientName: { type: String, default: '' },
+    publishedAt: { type: Date, default: Date.now, index: true },
+    publishedByDevice: { type: String, default: '' },
+    reason: { type: String, default: '' },
+    snapshot: {
+        tenant: { type: mongoose.Schema.Types.Mixed, default: {} },
+        activeOrders: { type: mongoose.Schema.Types.Mixed, default: {} }
+    }
+}, { minimize: false });
+ichefDemoTemplateSchema.index({ templateKey: 1, version: 1 }, { unique: true });
+
+const IchefDemoTemplate =
+    mongoose.models.IchefDemoTemplate ||
+    mongoose.model('IchefDemoTemplate', ichefDemoTemplateSchema);
+
+function ichefCloneDemoValue(value) {
+    if (value === undefined) return undefined;
+    if (typeof structuredClone === 'function') {
+        try { return structuredClone(value); } catch (_) {}
+    }
+    return JSON.parse(JSON.stringify(value));
+}
+
+async function ichefLatestDemoTemplate() {
+    return IchefDemoTemplate.findOne({ templateKey: 'MASTER' })
+        .sort({ version: -1 })
+        .lean();
+}
+
+async function ichefPublishDemoTemplate({
+    sourceTenantID = ICHEF_DEMO_MASTER_TENANT_ID,
+    reason = 'Publication du modèle DÉMO MAÎTRE',
+    deviceId = ''
+} = {}) {
+    const safeSource = cleanString(sourceTenantID || ICHEF_DEMO_MASTER_TENANT_ID);
+    if (!safeSource) throw new Error('Tenant du modèle démo invalide.');
+
+    const [tenant, state, latest] = await Promise.all([
+        Tenant.findOne({ tenantID: safeSource }),
+        AppState.findOne({ tenantID: safeSource }).lean(),
+        ichefLatestDemoTemplate()
+    ]);
+
+    if (!tenant) throw new Error(`Le modèle ${safeSource} est introuvable.`);
+    if (!state) throw new Error(`Aucun AppState n'existe pour ${safeSource}.`);
+
+    const moduleAccess = ichefNormalizeModuleAccess(
+        tenant.moduleAccess instanceof Map
+            ? Object.fromEntries(tenant.moduleAccess)
+            : (tenant.moduleAccess || {})
+    );
+
+    const version = Math.max(0, Number(latest?.version) || 0) + 1;
+    const baseScreens = Math.max(
+        1,
+        Number(
+            tenant.demoBaseScreens ??
+            tenant.stripeConnectionBaseScreens ??
+            tenant.maxScreens ??
+            1
+        ) || 1
+    );
+
+    const record = await IchefDemoTemplate.create({
+        templateKey: 'MASTER',
+        version,
+        sourceTenantID: safeSource,
+        sourceClientName: String(tenant.clientName || safeSource),
+        publishedAt: new Date(),
+        publishedByDevice: String(deviceId || '').slice(0, 120),
+        reason: String(reason || '').slice(0, 500),
+        snapshot: {
+            tenant: {
+                plan: tenant.plan,
+                specialite: tenant.specialite,
+                maxScreens: baseScreens,
+                maxStaff: Math.max(1, Number(tenant.maxStaff) || 999),
+                moduleAccess: ichefCloneDemoValue(moduleAccess)
+            },
+            activeOrders: ichefCloneDemoValue(state.activeOrders || {})
+        }
+    });
+
+    // Un seul restaurant est signalé comme source DÉMO MAÎTRE.
+    await Tenant.updateMany(
+        { isDemoMaster: true, tenantID: { $ne: safeSource } },
+        { $set: { isDemoMaster: false } }
+    );
+
+    tenant.isDemoMaster = true;
+    tenant.status = 'ACTIF';
+    tenant.demoExpiration = undefined;
+    tenant.demoBaseScreens = undefined;
+    tenant.demoTemporaryExtraScreens = 0;
+    tenant.demoTemporaryScreensUntil = null;
+    tenant.demoTemplateSource = safeSource;
+    tenant.demoTemplateVersion = version;
+    await tenant.save();
+
+    // Conserve les 5 dernières versions seulement.
+    const oldVersions = await IchefDemoTemplate.find(
+        { templateKey: 'MASTER' },
+        { _id: 1 }
+    ).sort({ version: -1 }).skip(5).lean();
+    if (oldVersions.length) {
+        await IchefDemoTemplate.deleteMany({
+            _id: { $in: oldVersions.map(x => x._id) }
+        });
+    }
+
+    await ichefWriteMasterAudit({
+        tenantID: safeSource,
+        action: 'DEMO_MASTER_PUBLISH',
+        reason,
+        deviceId,
+        details: {
+            version,
+            sourceTenantID: safeSource,
+            baseScreens,
+            modules: Object.values(moduleAccess).filter(Boolean).length
+        }
+    });
+
+    return record.toObject();
+}
+
+async function ichefApplyDemoTemplateToTenant(
+    tenantID,
+    {
+        template = null,
+        suspend = false,
+        preserveExpiration = true,
+        resetReason = 'MANUAL_RESET'
+    } = {}
+) {
+    const safeID = cleanString(tenantID || '');
+    if (!safeID) throw new Error('Tenant démo invalide.');
+
+    const latest = template || await ichefLatestDemoTemplate();
+    if (!latest) {
+        throw new Error(
+            `Aucun modèle DÉMO MAÎTRE n'est publié. Publiez d'abord ${ICHEF_DEMO_MASTER_TENANT_ID}.`
+        );
+    }
+
+    const tenant = await Tenant.findOne({ tenantID: safeID });
+    if (!tenant) throw new Error('Profil DÉMO introuvable.');
+    if (tenant.isDemoMaster) throw new Error('Le DÉMO MAÎTRE ne peut pas être réinitialisé comme un prospect.');
+
+    const snapshot = ichefCloneDemoValue(latest.snapshot || {});
+    const tenantSnapshot = snapshot.tenant || {};
+    const activeOrders = snapshot.activeOrders || {};
+
+    // Le contenu vient du modèle, mais l'identité du prospect reste la sienne.
+    if (!activeOrders.SETTINGS_MASTER || typeof activeOrders.SETTINGS_MASTER !== 'object') {
+        activeOrders.SETTINGS_MASTER = { data: {} };
+    }
+    if (!activeOrders.SETTINGS_MASTER.data || typeof activeOrders.SETTINGS_MASTER.data !== 'object') {
+        activeOrders.SETTINGS_MASTER.data = {};
+    }
+    activeOrders.SETTINGS_MASTER.data.name = String(tenant.clientName || safeID);
+
+    await AppState.findOneAndUpdate(
+        { tenantID: safeID },
+        { $set: { tenantID: safeID, activeOrders } },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    // Données de travail temporaires séparées d'AppState.
+    // Les journaux fiscaux / audits scellés ne sont volontairement pas effacés.
+    await Promise.allSettled([
+        PaymentRequest.deleteMany({ tenantID: safeID }),
+        RhPunchRecord.deleteMany({ tenantID: safeID })
+    ]);
+
+    const baseScreens = Math.max(1, Number(tenantSnapshot.maxScreens) || 1);
+    tenant.plan = tenantSnapshot.plan || tenant.plan;
+    tenant.specialite = tenantSnapshot.specialite || tenant.specialite;
+    tenant.maxScreens = baseScreens;
+    tenant.stripeConnectionBaseScreens = baseScreens;
+    tenant.maxStaff = Math.max(1, Number(tenantSnapshot.maxStaff) || Number(tenant.maxStaff) || 999);
+    tenant.moduleAccess = ichefCloneDemoValue(tenantSnapshot.moduleAccess || {});
+    tenant.registeredDevices = [];
+    tenant.demoBaseScreens = baseScreens;
+    tenant.demoTemporaryExtraScreens = 0;
+    tenant.demoTemporaryScreensUntil = null;
+    tenant.demoTemplateSource = latest.sourceTenantID;
+    tenant.demoTemplateVersion = Number(latest.version) || 1;
+    tenant.demoResetAt = new Date();
+    tenant.demoResetCount = Math.max(0, Number(tenant.demoResetCount) || 0) + 1;
+    tenant.demoLastResetReason = String(resetReason || 'RESET').slice(0, 80);
+    tenant.status = suspend ? 'SUSPENDU' : 'ACTIF';
+    if (!preserveExpiration) tenant.demoExpiration = undefined;
+    await tenant.save();
+
+    return {
+        tenantID: safeID,
+        templateVersion: tenant.demoTemplateVersion,
+        sourceTenantID: tenant.demoTemplateSource,
+        resetAt: tenant.demoResetAt,
+        resetCount: tenant.demoResetCount,
+        maxScreens: tenant.maxScreens,
+        status: tenant.status,
+        demoExpiration: tenant.demoExpiration || null
+    };
+}
+
+let ichefDemoResetJobRunning = false;
+async function ichefResetExpiredDemos() {
+    if (ichefDemoResetJobRunning) return { skipped: true };
+    ichefDemoResetJobRunning = true;
+    try {
+        const latest = await ichefLatestDemoTemplate();
+        if (!latest) return { reset: 0, noTemplate: true };
+
+        const now = new Date();
+        const expired = await Tenant.find({
+            isDemoMaster: { $ne: true },
+            demoExpiration: { $lte: now }
+        });
+
+        let reset = 0;
+        for (const tenant of expired) {
+            const expirationMs = tenant.demoExpiration
+                ? new Date(tenant.demoExpiration).getTime()
+                : 0;
+            const resetMs = tenant.demoResetAt
+                ? new Date(tenant.demoResetAt).getTime()
+                : 0;
+
+            // Déjà restaurée pour cette échéance.
+            if (resetMs >= expirationMs && tenant.status === 'SUSPENDU') continue;
+
+            try {
+                const result = await ichefApplyDemoTemplateToTenant(
+                    tenant.tenantID,
+                    {
+                        template: latest,
+                        suspend: true,
+                        preserveExpiration: true,
+                        resetReason: 'EXPIRATION_AUTO_7J'
+                    }
+                );
+                reset += 1;
+                await ichefWriteMasterAudit({
+                    tenantID: tenant.tenantID,
+                    action: 'DEMO_AUTO_RESET_MASTER',
+                    reason: 'Fin de la période de démonstration : restauration automatique du modèle maître.',
+                    deviceId: 'SERVER_AUTO',
+                    details: {
+                        templateVersion: result.templateVersion,
+                        sourceTenantID: result.sourceTenantID,
+                        expiredAt: tenant.demoExpiration,
+                        resetAt: result.resetAt
+                    }
+                });
+            } catch (error) {
+                console.error('[iCHEF DEMO AUTO RESET]', tenant.tenantID, error?.message || error);
+            }
+        }
+        return { reset };
+    } finally {
+        ichefDemoResetJobRunning = false;
+    }
+}
+
+// Vérification au démarrage puis toutes les 5 minutes.
+setTimeout(() => {
+    ichefResetExpiredDemos().catch(error =>
+        console.error('[iCHEF DEMO RESET STARTUP]', error?.message || error)
+    );
+}, 12000);
+const ichefDemoResetTimer = setInterval(() => {
+    ichefResetExpiredDemos().catch(error =>
+        console.error('[iCHEF DEMO RESET TIMER]', error?.message || error)
+    );
+}, 5 * 60 * 1000);
+if (typeof ichefDemoResetTimer.unref === 'function') ichefDemoResetTimer.unref();
+
+app.post('/api/master/demo-template/status', async (req, res) => {
+    try {
+        if (!process.env.MASTER_KEY) return res.status(503).json({ success:false, error:'MASTER_KEY non configurée.' });
+        if (!ichefMasterKeyIsValid(req.body?.masterKey)) return res.status(401).json({ success:false, error:'Accès refusé.' });
+
+        const latest = await ichefLatestDemoTemplate();
+        const sourceID = latest?.sourceTenantID || ICHEF_DEMO_MASTER_TENANT_ID;
+        const source = await Tenant.findOne({ tenantID: sourceID }, { tenantID:1, clientName:1, isDemoMaster:1 }).lean();
+        const demoCount = await Tenant.countDocuments({ isDemoMaster:{ $ne:true }, demoExpiration:{ $exists:true, $ne:null } });
+
+        return res.json({
+            success: true,
+            configuredSourceTenantID: ICHEF_DEMO_MASTER_TENANT_ID,
+            published: Boolean(latest),
+            lockedSnapshot: Boolean(latest),
+            sourceTenantID: sourceID,
+            sourceName: source?.clientName || sourceID,
+            sourceExists: Boolean(source),
+            version: latest ? Number(latest.version) : null,
+            publishedAt: latest?.publishedAt || null,
+            demoCount,
+            defaultDurationDays: 7
+        });
+    } catch (error) {
+        return res.status(500).json({ success:false, error:error?.message || 'Statut DÉMO MAÎTRE indisponible.' });
+    }
+});
+
+app.post('/api/master/demo-template/publish', async (req, res) => {
+    try {
+        if (!process.env.MASTER_KEY) return res.status(503).json({ success:false, error:'MASTER_KEY non configurée.' });
+        if (!ichefMasterKeyIsValid(req.body?.masterKey)) return res.status(401).json({ success:false, error:'Accès refusé.' });
+
+        const sourceTenantID = cleanString(req.body?.sourceTenantID || ICHEF_DEMO_MASTER_TENANT_ID);
+        const reason = String(req.body?.reason || 'Publication du DÉMO MAÎTRE').trim().slice(0, 500);
+        const record = await ichefPublishDemoTemplate({
+            sourceTenantID,
+            reason,
+            deviceId: req.headers['x-ichef-master-device']
+        });
+
+        return res.json({
+            success: true,
+            published: true,
+            sourceTenantID: record.sourceTenantID,
+            version: record.version,
+            publishedAt: record.publishedAt
+        });
+    } catch (error) {
+        console.error('[iCHEF DEMO MASTER PUBLISH]', error?.message || error);
+        return res.status(400).json({ success:false, error:error?.message || 'Publication impossible.' });
+    }
+});
+
+app.post('/api/master/demo-template/reset', async (req, res) => {
+    try {
+        if (!process.env.MASTER_KEY) return res.status(503).json({ success:false, error:'MASTER_KEY non configurée.' });
+        if (!ichefMasterKeyIsValid(req.body?.masterKey)) return res.status(401).json({ success:false, error:'Accès refusé.' });
+
+        const tenantID = cleanString(req.body?.tenantID || '');
+        const tenant = await Tenant.findOne({ tenantID });
+        if (!tenant) return res.status(404).json({ success:false, error:'Démo introuvable.' });
+        if (!tenant.demoExpiration) return res.status(409).json({ success:false, error:'Ce compte n’est pas une démo active.' });
+
+        const result = await ichefApplyDemoTemplateToTenant(tenantID, {
+            suspend: false,
+            preserveExpiration: true,
+            resetReason: 'RESET_MANUEL_MASTER'
+        });
+
+        await ichefWriteMasterAudit({
+            tenantID,
+            action: 'DEMO_RESET_MASTER_MANUAL',
+            reason: String(req.body?.reason || 'Restauration manuelle du DÉMO MAÎTRE'),
+            deviceId: req.headers['x-ichef-master-device'],
+            details: {
+                templateVersion: result.templateVersion,
+                sourceTenantID: result.sourceTenantID,
+                demoExpiration: result.demoExpiration
+            }
+        });
+
+        return res.json({ success:true, ...result });
+    } catch (error) {
+        console.error('[iCHEF DEMO RESET MANUAL]', error?.message || error);
+        return res.status(500).json({ success:false, error:error?.message || 'Réinitialisation impossible.' });
+    }
+});
+
 app.post('/api/master/demo/create', async (req, res) => {
     try {
         if (!process.env.MASTER_KEY) return res.status(503).json({ success:false, error:'MASTER_KEY non configurée.' });
         if (!ichefMasterKeyIsValid(req.body?.masterKey)) return res.status(401).json({ success:false, error:'Accès refusé.' });
 
-        const days = Math.max(1, Math.min(365, parseInt(req.body?.durationDays, 10) || 15));
+        const template = await ichefLatestDemoTemplate();
+        if (!template) {
+            return res.status(409).json({
+                success:false,
+                error:`Aucun DÉMO MAÎTRE publié. Publiez d'abord ${ICHEF_DEMO_MASTER_TENANT_ID} depuis la Tour de Contrôle.`
+            });
+        }
+
+        const days = Math.max(1, Math.min(365, parseInt(req.body?.durationDays, 10) || 7));
+        const tcfg = template?.snapshot?.tenant || {};
+
         const result = await creerNouveauClient({
             nomRestaurant: req.body?.restaurant,
             emailContact: req.body?.email,
             phoneContact: req.body?.phone,
-            planChoisi: req.body?.plan || 'BUSINESS',
-            specialite: req.body?.specialite || 'cuisine',
+            planChoisi: tcfg.plan || 'BUSINESS',
+            specialite: tcfg.specialite || 'cuisine',
             requestedTenantID: req.body?.requestedTenantID || '',
-            maxScreens: req.body?.maxScreens,
-            maxStaff: req.body?.maxStaff || 999
+            maxScreens: Math.max(1, Number(tcfg.maxScreens) || 1),
+            maxStaff: Math.max(1, Number(tcfg.maxStaff) || 999)
         });
+
+        const tenantID = result.tenant.tenantID;
+        await ichefApplyDemoTemplateToTenant(tenantID, {
+            template,
+            suspend: false,
+            preserveExpiration: true,
+            resetReason: 'CREATION_DEPUIS_MASTER'
+        });
+
         const expiresAt = new Date(Date.now() + days * 86400000);
-        await Tenant.findOneAndUpdate(
-            { tenantID: result.tenant.tenantID },
-            { $set: { status:'ACTIF', demoExpiration: expiresAt } }
+        const updated = await Tenant.findOneAndUpdate(
+            { tenantID },
+            { $set: {
+                status: 'ACTIF',
+                demoExpiration: expiresAt,
+                demoBaseScreens: Math.max(1, Number(tcfg.maxScreens) || 1),
+                demoTemporaryExtraScreens: 0,
+                demoTemporaryScreensUntil: null,
+                demoTemplateSource: template.sourceTenantID,
+                demoTemplateVersion: Number(template.version) || 1,
+                demoResetAt: null,
+                demoResetCount: 0,
+                demoLastResetReason: null
+            } },
+            { new: true }
         );
+
         await ichefWriteMasterAudit({
-            tenantID: result.tenant.tenantID,
-            action: 'DEMO_CREATE',
-            reason: String(req.body?.reason || 'Création depuis Tour de Contrôle V2'),
+            tenantID,
+            action: 'DEMO_CREATE_FROM_MASTER',
+            reason: String(req.body?.reason || 'Création démo depuis DÉMO MAÎTRE'),
             deviceId: req.headers['x-ichef-master-device'],
-            details: { durationDays: days, expiresAt, plan: result.tenant.plan, maxScreens: result.tenant.maxScreens }
+            details: {
+                durationDays: days,
+                expiresAt,
+                templateVersion: Number(template.version) || 1,
+                sourceTenantID: template.sourceTenantID,
+                plan: updated?.plan,
+                maxScreens: updated?.maxScreens
+            }
         });
+
         return res.status(201).json({
             success:true,
-            demo: { ...result.credentials, demoExpiration: expiresAt, durationDays: days }
+            demo: {
+                ...result.credentials,
+                plan: updated?.plan || result.credentials.plan,
+                demoExpiration: expiresAt,
+                durationDays: days,
+                templateVersion: Number(template.version) || 1,
+                templateSource: template.sourceTenantID
+            }
         });
     } catch (error) {
-        console.error('[iCHEF DEMO CREATE]', error?.message || error);
+        console.error('[iCHEF DEMO CREATE V20]', error?.message || error);
         if (error?.code === 11000) return res.status(409).json({ success:false, error:'Cet identifiant est déjà utilisé.' });
         return res.status(400).json({ success:false, error:error?.message || 'Création démo impossible.' });
     }
@@ -8824,6 +9562,18 @@ app.post('/api/master/demo/action', async (req, res) => {
         const action = String(req.body?.action || '').trim().toLowerCase();
         const tenant = await Tenant.findOne({ tenantID });
         if (!tenant) return res.status(404).json({ success:false, error:'Restaurant introuvable.' });
+        if (tenant.isDemoMaster) return res.status(409).json({ success:false, error:'Le DÉMO MAÎTRE est protégé. Publiez une nouvelle version au lieu de le traiter comme une démo prospect.' });
+
+        if (action === 'reset_master') {
+            if (!tenant.demoExpiration) return res.status(409).json({ success:false, error:'Ce compte n’est pas une démo.' });
+            const result = await ichefApplyDemoTemplateToTenant(tenantID, {
+                suspend:false,
+                preserveExpiration:true,
+                resetReason:'RESET_MANUEL_MASTER'
+            });
+            await ichefWriteMasterAudit({ tenantID, action:'DEMO_RESET_MASTER_MANUAL', reason:req.body?.reason, deviceId:req.headers['x-ichef-master-device'], details:{ templateVersion:result.templateVersion, sourceTenantID:result.sourceTenantID } });
+            return res.json({ success:true, ...result });
+        }
 
         if (action === 'extend') {
             const days = Math.max(1, Math.min(365, parseInt(req.body?.days, 10) || 7));
@@ -8836,13 +9586,119 @@ app.post('/api/master/demo/action', async (req, res) => {
             await ichefWriteMasterAudit({ tenantID, action:'DEMO_EXTEND', reason:req.body?.reason, deviceId:req.headers['x-ichef-master-device'], details:{ days, demoExpiration:tenant.demoExpiration } });
             return res.json({ success:true, demoExpiration:tenant.demoExpiration });
         }
-        if (action === 'convert') {
-            tenant.demoExpiration = undefined;
+        if (action === 'add_screens') {
+            if (!tenant.demoExpiration) {
+                return res.status(409).json({ success:false, error:'Ce compte n’est pas un profil DÉMO.' });
+            }
+
+            const extraScreens = Math.max(1, Math.min(20, parseInt(req.body?.extraScreens, 10) || 1));
+            const days = Math.max(1, Math.min(90, parseInt(req.body?.days, 10) || 3));
+
+            const now = Date.now();
+            const currentUntil = tenant.demoTemporaryScreensUntil
+                ? new Date(tenant.demoTemporaryScreensUntil).getTime()
+                : 0;
+            const currentExtra = currentUntil > now
+                ? Math.max(0, Number(tenant.demoTemporaryExtraScreens) || 0)
+                : 0;
+
+            const baseScreens = Math.max(
+                1,
+                Number(
+                    tenant.demoBaseScreens ??
+                    tenant.stripeConnectionBaseScreens ??
+                    tenant.maxScreens ??
+                    1
+                ) || 1
+            );
+
+            const nextExtra = Math.min(50, currentExtra + extraScreens);
+            const until = new Date(now + days * 86400000);
+
+            tenant.demoBaseScreens = baseScreens;
+            tenant.demoTemporaryExtraScreens = nextExtra;
+            tenant.demoTemporaryScreensUntil = until;
+            tenant.maxScreens = baseScreens + nextExtra;
             tenant.status = 'ACTIF';
             await tenant.save();
-            await Tenant.updateOne({ tenantID }, { $unset:{ demoExpiration:'' } });
+
+            await ichefWriteMasterAudit({
+                tenantID,
+                action:'DEMO_TEMP_SCREENS_ADD',
+                reason:req.body?.reason,
+                deviceId:req.headers['x-ichef-master-device'],
+                details:{
+                    addedScreens:extraScreens,
+                    temporaryExtraScreens:nextExtra,
+                    baseScreens,
+                    totalScreens:tenant.maxScreens,
+                    days,
+                    until
+                }
+            });
+
+            return res.json({
+                success:true,
+                baseScreens,
+                temporaryExtraScreens:nextExtra,
+                totalScreens:tenant.maxScreens,
+                until
+            });
+        }
+
+        if (action === 'remove_temp_screens') {
+            const baseScreens = Math.max(
+                1,
+                Number(
+                    tenant.demoBaseScreens ??
+                    tenant.stripeConnectionBaseScreens ??
+                    tenant.maxScreens ??
+                    1
+                ) || 1
+            );
+
+            tenant.demoBaseScreens = baseScreens;
+            tenant.demoTemporaryExtraScreens = 0;
+            tenant.demoTemporaryScreensUntil = null;
+            tenant.maxScreens = baseScreens;
+            await tenant.save();
+
+            await ichefWriteMasterAudit({
+                tenantID,
+                action:'DEMO_TEMP_SCREENS_REMOVE',
+                reason:req.body?.reason,
+                deviceId:req.headers['x-ichef-master-device'],
+                details:{ baseScreens }
+            });
+
+            return res.json({ success:true, baseScreens, totalScreens:baseScreens });
+        }
+
+        if (action === 'convert') {
+            const baseScreens = Math.max(
+                1,
+                Number(
+                    tenant.demoBaseScreens ??
+                    tenant.stripeConnectionBaseScreens ??
+                    tenant.maxScreens ??
+                    1
+                ) || 1
+            );
+            tenant.demoExpiration = undefined;
+            tenant.demoBaseScreens = undefined;
+            tenant.demoTemporaryExtraScreens = 0;
+            tenant.demoTemporaryScreensUntil = null;
+            tenant.maxScreens = baseScreens;
+            tenant.stripeConnectionBaseScreens = baseScreens;
+            tenant.demoLastResetReason = 'CONVERTI_CLIENT';
+            tenant.status = 'ACTIF';
+            await tenant.save();
+            await Tenant.updateOne(
+                { tenantID },
+                { $unset:{ demoExpiration:'', demoBaseScreens:'', demoTemporaryScreensUntil:'' } }
+            );
             await ichefWriteMasterAudit({ tenantID, action:'DEMO_CONVERT_TO_CLIENT', reason:req.body?.reason, deviceId:req.headers['x-ichef-master-device'] });
-            return res.json({ success:true, converted:true });
+            return res.json({ success:true, converted:true, maxScreens:baseScreens });
         }
         return res.status(400).json({ success:false, error:'Action démo inconnue.' });
     } catch (error) {
@@ -8960,6 +9816,128 @@ app.post('/api/master/invoices/all', async (req, res) => {
     } catch (error) {
         console.error('[iCHEF MASTER INVOICES]', error?.message || error);
         return res.status(500).json({ success:false, error:error?.message || 'Factures indisponibles.' });
+    }
+});
+
+// ==========================================================
+// 💳 TOUR DE CONTRÔLE V2.1 — DOSSIER STRIPE PAR CLIENT
+// Lecture SuperAdmin uniquement : client Stripe, licences écrans et factures PDF.
+// Aucun secret Stripe n'est renvoyé au navigateur.
+// ==========================================================
+app.post('/api/master/client/stripe', async (req, res) => {
+    try {
+        if (!process.env.MASTER_KEY) {
+            return res.status(503).json({ success:false, error:'MASTER_KEY non configurée.' });
+        }
+        if (!ichefMasterKeyIsValid(req.body?.masterKey)) {
+            return res.status(401).json({ success:false, error:'Accès refusé.' });
+        }
+
+        const tenantID = cleanString(req.body?.tenantID || '');
+        if (!tenantID) {
+            return res.status(400).json({ success:false, error:'tenantID manquant.' });
+        }
+
+        const tenant = await Tenant.findOne({ tenantID }).lean();
+        if (!tenant) {
+            return res.status(404).json({ success:false, error:'Établissement introuvable.' });
+        }
+
+        const customerId = String(tenant?.config?.stripeCustomerId || '').trim();
+        const screenLicenseSummary = await ichefScreenLicenseSummaryForTenant(tenant);
+        const licenses = await StripeScreenLicense.find({ tenantID }).sort({ updatedAt:-1 }).lean();
+
+        const publicLicenses = licenses.map(item => ({
+            subscriptionId: String(item?.subscriptionId || ''),
+            extraScreens: Math.max(1, Number(item?.extraScreens || 1)),
+            currency: String(item?.currency || 'EUR').toUpperCase(),
+            status: String(item?.status || '').toUpperCase(),
+            paid: item?.paid === true,
+            active: item?.active === true,
+            latestInvoiceId: String(item?.latestInvoiceId || ''),
+            currentPeriodEnd: item?.currentPeriodEnd || null,
+            createdAt: item?.createdAt || null,
+            updatedAt: item?.updatedAt || null
+        }));
+
+        if (!stripe) {
+            return res.json({
+                success:true,
+                tenantID,
+                stripeConfigured:false,
+                connected:Boolean(customerId),
+                customerId,
+                screenLicenseSummary,
+                licenses:publicLicenses,
+                invoices:[]
+            });
+        }
+
+        if (!customerId) {
+            return res.json({
+                success:true,
+                tenantID,
+                stripeConfigured:true,
+                connected:false,
+                customerId:'',
+                screenLicenseSummary,
+                licenses:publicLicenses,
+                invoices:[]
+            });
+        }
+
+        const licenseBySubscription = new Map(
+            licenses
+                .filter(item => item?.subscriptionId)
+                .map(item => [String(item.subscriptionId), item])
+        );
+
+        const result = await stripe.invoices.list({ customer:customerId, limit:100 });
+        const invoices = (Array.isArray(result?.data) ? result.data : []).map(inv => {
+            const subscriptionId = ichefStripeSubscriptionIdFromInvoice(inv);
+            const screenLicense = subscriptionId
+                ? licenseBySubscription.get(String(subscriptionId))
+                : null;
+            const status = String(inv?.status || '').toUpperCase();
+            const amountCents = status === 'PAID'
+                ? Number(inv?.amount_paid ?? 0)
+                : Number(inv?.amount_due ?? inv?.total ?? 0);
+
+            return {
+                id: String(inv?.id || ''),
+                number: String(inv?.number || inv?.id || ''),
+                date: inv?.status_transitions?.paid_at
+                    ? new Date(inv.status_transitions.paid_at * 1000).toISOString()
+                    : (inv?.created ? new Date(inv.created * 1000).toISOString() : null),
+                amount: amountCents / 100,
+                currency: String(inv?.currency || 'EUR').toUpperCase(),
+                status,
+                paid: status === 'PAID',
+                category: screenLicense ? 'SCREEN_CONNECTION' : 'GENERAL',
+                extraScreens: screenLicense ? Math.max(1, Number(screenLicense.extraScreens || 1)) : 0,
+                subscriptionId: subscriptionId || '',
+                licenseActive: screenLicense ? Boolean(screenLicense.active && screenLicense.paid) : null,
+                pdfUrl: String(inv?.invoice_pdf || inv?.hosted_invoice_url || ''),
+                hostedUrl: String(inv?.hosted_invoice_url || '')
+            };
+        }).sort((a,b) => new Date(b.date || 0) - new Date(a.date || 0));
+
+        return res.json({
+            success:true,
+            tenantID,
+            stripeConfigured:true,
+            connected:true,
+            customerId,
+            screenLicenseSummary,
+            licenses:publicLicenses,
+            invoices
+        });
+    } catch (error) {
+        console.error('[iCHEF MASTER CLIENT STRIPE]', error?.message || error);
+        return res.status(500).json({
+            success:false,
+            error:error?.message || 'Dossier Stripe indisponible.'
+        });
     }
 });
 
@@ -19552,6 +20530,7 @@ server.listen(
         console.log('✅ Socket temps réel PAD / Caisse / Cuisine activé.');
         console.log('✅ Roadmap CORE MongoDB / API / Socket.IO activé.');
         console.log('✅ Espace client centralisé : contrats / factures / messages activé.');
+        console.log('✅ V20 DÉMO MAÎTRE : snapshots + reset 7 jours activés.');
         console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
         console.log('==========================================');
     }
