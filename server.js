@@ -1721,7 +1721,7 @@ const activeStripePayments = new Map();
 // =========================================================================
 // 🚀 GESTION DES CANDIDATURES PARTENAIRES (DEMANDE DE DÉMO)
 // =========================================================================
-app.post('/api/nouvelle-demande-demo', async (req, res) => {
+app.post(['/api/nouvelle-demande-demo', '/request-demo'], async (req, res) => {
     try {
         const { restaurant, phone, email, details } = req.body;
 
