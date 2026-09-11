@@ -1554,6 +1554,10 @@ body>nav{display:none!important}
                     ✉ Envoyer à iCHEF
                 </button>
 
+                <button class="btn-return" onclick="window.logicielManager.sendSOS('email')" style="flex: 1; min-width: 120px; background: #1d4ed8; border: none; color: white;">
+                    📧 Email
+                </button>
+
                 <button id="sos-btn-callback" class="btn-return" onclick="window.logicielManager.requestCallback()" style="flex: 1; min-width: 140px; background: #d4af37; border: none; color: #050505;">
                     📲 Être rappelé
                 </button>
@@ -3056,6 +3060,17 @@ body>nav{display:none!important}
                         throw new Error(data.error || "La demande n'a pas pu être envoyée.");
                     }
 
+                    try {
+                        const details = String(document.getElementById('sos-message')?.value || '').trim();
+                        await this.sendSupportToTour({
+                            category: 'DEMANDE RAPPEL',
+                            text: details || `Demande de rappel au ${phone}`,
+                            callbackPhone: phone,
+                            sourceAction: 'CALLBACK'
+                        });
+                    } catch (supportError) {
+                        console.warn('Rappel envoyé, mais journal Support non confirmé :', supportError);
+                    }
                     document.getElementById('sos-modal').style.display = 'none';
                     alert(data.message || "Votre demande a bien été envoyée. Nous vous rappellerons rapidement.");
                 } catch (error) {
@@ -3070,58 +3085,93 @@ body>nav{display:none!important}
                 }
             },
 
+            sendSupportToTour: async function({ category = 'SUPPORT', text = '', callbackPhone = '', sourceAction = 'ADMINISTRATION' } = {}) {
+                const safeText = String(text || '').trim();
+                if (!safeText) throw new Error('Décrivez le problème avant de l’envoyer.');
+                const res = await fetch(`${this.SERVER_URL}/api/support/client/send`, {
+                    method: 'POST',
+                    credentials: 'include',
+                    cache: 'no-store',
+                    headers: { 'Content-Type':'application/json' },
+                    body: JSON.stringify({
+                        tenantID: this.tenantID,
+                        pin: this.masterPin,
+                        category: String(category || 'SUPPORT'),
+                        text: safeText,
+                        callbackPhone: String(callbackPhone || ''),
+                        sourceAction: String(sourceAction || 'ADMINISTRATION')
+                    })
+                });
+                let data = {};
+                try { data = await res.json(); } catch (_) {}
+                if (!res.ok || data.success !== true) {
+                    throw new Error(data.error || `Envoi support impossible (HTTP ${res.status}).`);
+                }
+                if (!data.message?.messageId) {
+                    throw new Error('Le serveur n’a pas confirmé l’enregistrement du message.');
+                }
+                return data;
+            },
+
             sendSOS: async function(methode) {
                 const sosType = document.getElementById('sos-type').value;
                 const sosMessage = document.getElementById('sos-message').value.trim();
                 const callbackPhone = String(document.getElementById('sos-callback-phone')?.value || '').trim();
+                const status = document.getElementById('sos-support-status');
+                const btn = document.getElementById('sos-btn-send');
+                const old = btn ? btn.textContent : '';
 
-                if (methode === 'ichef') {
-                    if (!sosMessage) {
-                        document.getElementById('sos-message').focus();
-                        return alert('Décrivez le problème avant de l’envoyer.');
-                    }
-                    const btn = document.getElementById('sos-btn-send');
-                    const status = document.getElementById('sos-support-status');
-                    const old = btn ? btn.textContent : '';
-                    if (btn) { btn.disabled = true; btn.textContent = 'Envoi…'; }
-                    if (status) { status.className = 'sos-support-status'; status.textContent = 'Envoi à la Tour de Contrôle…'; }
-                    try {
-                        const res = await fetch(`${this.SERVER_URL}/api/support/client/send`, {
-                            method: 'POST',
-                            credentials: 'include',
-                            cache: 'no-store',
-                            headers: { 'Content-Type':'application/json' },
-                            body: JSON.stringify({
-                                tenantID:this.tenantID,
-                                pin:this.masterPin,
-                                category:sosType,
-                                text:sosMessage,
-                                callbackPhone
-                            })
-                        });
-                        let data = {};
-                        try { data = await res.json(); } catch (_) {}
-                        if (!res.ok || data.success !== true) throw new Error(data.error || 'Envoi impossible.');
-                        document.getElementById('sos-message').value = '';
-                        if (status) { status.className = 'sos-support-status ok'; status.textContent = '✓ Message envoyé à la Tour de Contrôle.'; }
-                        await this.loadSupportConversation({ silent:true });
-                    } catch (error) {
-                        console.error('Erreur support iCHEF :', error);
-                        if (status) { status.className = 'sos-support-status bad'; status.textContent = error.message || 'Message non envoyé.'; }
-                    } finally {
-                        if (btn) { btn.disabled = false; btn.textContent = old || '✉ Envoyer à iCHEF'; }
-                    }
-                    return;
+                if (!sosMessage) {
+                    document.getElementById('sos-message').focus();
+                    return alert('Décrivez le problème avant de l’envoyer.');
                 }
 
-                let texteAlerte = `🚨 SOS iCHEF OS 🚨\n\n🏢 Restaurant : ${this.tenantID ? this.tenantID.toUpperCase() : "Inconnu"}\n⚠️ Type : ${sosType}`;
-                if (sosMessage) texteAlerte += `\n📝 Détails : ${sosMessage}`;
-                if (methode === 'whatsapp') {
-                    const contact = this.refreshIchefContactRouting();
-                    window.open(`https://wa.me/${contact.whatsapp}?text=${encodeURIComponent(texteAlerte)}`, '_blank', 'noopener,noreferrer');
-                } else if (methode === 'email') {
-                    const emailSupport = 'icheflavien@ichef.ch';
-                    window.location.href = `mailto:${emailSupport}?subject=${encodeURIComponent('🚨 SOS iCHEF OS - ' + sosType)}&body=${encodeURIComponent(texteAlerte)}`;
+                if (btn) { btn.disabled = true; btn.textContent = 'Envoi…'; }
+                if (status) {
+                    status.className = 'sos-support-status';
+                    status.textContent = 'Enregistrement du message dans iCHEF…';
+                }
+
+                try {
+                    // Toujours enregistrer d'abord dans iCHEF : c'est la source de vérité.
+                    const data = await this.sendSupportToTour({
+                        category: sosType,
+                        text: sosMessage,
+                        callbackPhone,
+                        sourceAction: methode || 'ichef'
+                    });
+                    const messageId = String(data.message?.messageId || '');
+                    if (status) {
+                        status.className = 'sos-support-status ok';
+                        status.textContent = `✓ Reçu par iCHEF · ${messageId}`;
+                    }
+                    await this.loadSupportConversation({ silent:true });
+
+                    // Email/WhatsApp restent des canaux complémentaires, mais seulement
+                    // APRÈS la sauvegarde dans la Tour de Contrôle.
+                    let texteAlerte = `🚨 SOS iCHEF OS 🚨
+
+🏢 Restaurant : ${this.tenantID ? this.tenantID.toUpperCase() : "Inconnu"}
+⚠️ Type : ${sosType}
+📝 Détails : ${sosMessage}
+🔖 Référence : ${messageId}`;
+                    if (methode === 'email') {
+                        const emailSupport = 'icheflavien@ichef.ch';
+                        window.location.href = `mailto:${emailSupport}?subject=${encodeURIComponent('🚨 SOS iCHEF OS - ' + sosType)}&body=${encodeURIComponent(texteAlerte)}`;
+                    } else if (methode === 'whatsapp') {
+                        const contact = this.refreshIchefContactRouting();
+                        window.open(`https://wa.me/${contact.whatsapp}?text=${encodeURIComponent(texteAlerte)}`, '_blank', 'noopener,noreferrer');
+                    }
+
+                    document.getElementById('sos-message').value = '';
+                } catch (error) {
+                    console.error('Erreur support iCHEF :', error);
+                    if (status) {
+                        status.className = 'sos-support-status bad';
+                        status.textContent = error.message || 'Message non envoyé.';
+                    }
+                } finally {
+                    if (btn) { btn.disabled = false; btn.textContent = old || '✉ Envoyer à iCHEF'; }
                 }
             },
 
