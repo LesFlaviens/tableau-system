@@ -3954,6 +3954,7 @@ body.order-open .order-sync-state.bad{background:#fff2f4 !important;}
 .archpad-zoom-controls{display:inline-flex;align-items:center;gap:4px;flex:0 0 auto}
 .archpad-zoom-controls button{min-width:34px;height:34px;padding:0 8px;border:1px solid #3b464a;border-radius:7px;background:#13191b;color:#fff;font-size:14px;font-weight:1000;cursor:pointer}
 .archpad-zoom-controls button:active{transform:scale(.96)}
+.archpad-zoom-controls [data-plan-fit]{min-width:82px;padding:0 10px;color:#e8c45e;border-color:#8a7131}
 .archpad-sync-badge{display:inline-flex;align-items:center;justify-content:center;min-width:76px;height:34px;padding:0 9px;border:1px solid #3b464a;border-radius:7px;background:#13191b;color:#73dfa2;font-size:9px;font-weight:950;white-space:nowrap}
 .archpad-sync-badge.syncing{color:#e8c45e}.archpad-sync-badge.offline{color:#ff6b6b}
 </style>
@@ -4014,8 +4015,9 @@ body.order-open .order-sync-state.bad{background:#fff2f4 !important;}
     if(!bar.querySelector('.archpad-zoom-controls')){
       const group=document.createElement('span');
       group.className='archpad-zoom-controls';
-      group.innerHTML='<button type="button" data-plan-zoom-out title="Zoom -">−</button><button type="button" data-plan-zoom-100 title="Revenir à 100%">100%</button><button type="button" data-plan-zoom-in title="Zoom +">+</button>';
+      group.innerHTML='<button type="button" data-plan-fit title="Afficher tout le plan">⛶ Tout voir</button><button type="button" data-plan-zoom-out title="Zoom -">−</button><button type="button" data-plan-zoom-100 title="Revenir à 100%">100%</button><button type="button" data-plan-zoom-in title="Zoom +">+</button>';
       bar.insertBefore(group,sel);
+      group.querySelector('[data-plan-fit]').onclick=()=>window.ichefFitArchitecturePlan?.();
       group.querySelector('[data-plan-zoom-out]').onclick=()=>setZoom(currentZoom()-STEP);
       group.querySelector('[data-plan-zoom-100]').onclick=()=>setZoom(100);
       group.querySelector('[data-plan-zoom-in]').onclick=()=>setZoom(currentZoom()+STEP);
@@ -13511,6 +13513,9 @@ try{ if(typeof scheduleRender==="function") scheduleRender(); }catch(_ ){}
    ========================================================= */
 (()=>{
 const ARCH_W=5000,ARCH_H=5000;
+// V22 — tactile Architecture : sensibilité réduite de 35 % (65 % du déplacement du doigt).
+// La souris reste à 100 % pour conserver la précision sur ordinateur.
+const ARCH_TOUCH_SENSITIVITY=0.65;
 const A={root:null,room:"",mode:"architect",tool:"select",selected:null,dirty:false,grid:true,snap:true,zoom:100,history:[],future:[],drag:null,tables:[],zones:[],elements:[],rooms:[],archUnlocked:false,archRole:"",archPin:"",pinOpen:false,pinValue:"",pinMsg:""};
 const canEdit=()=>!!(STATE.demo||expressRoleLevel()>=2||A.archUnlocked);
 const aText=v=>String(v??"").trim();
@@ -13645,10 +13650,10 @@ function deleteSelected(){const hit=current();if(!hit?.obj||A.mode!=='architect'
 function addRoom(){if(!canEdit())return aToast('Droit manager requis',true);const name=aText(prompt('Nom du nouvel espace / salle :','Nouvel espace'));if(!name)return;if(A.rooms.some(r=>aText(r).toUpperCase()===name.toUpperCase()))return aToast('Cet espace existe déjà',true);pushHistory();A.rooms.push(name);A.room=name;A.selected=null;markDirty();renderAll()}
 function renameRoom(){if(!canEdit())return aToast('Droit manager requis',true);const old=A.room,name=aText(prompt('Nouveau nom de cet espace :',old));if(!name||name===old)return;if(A.rooms.some(r=>r!==old&&aText(r).toUpperCase()===name.toUpperCase()))return aToast('Cet espace existe déjà',true);pushHistory();A.rooms=A.rooms.map(r=>r===old?name:r);A.tables.forEach(t=>{if(aText(t.room||A.rooms[0])===old)t.room=name});A.zones.forEach(z=>{if(aText(z.room||A.rooms[0])===old)z.room=name});A.elements.forEach(e=>{if(aText(e.room||A.rooms[0])===old)e.room=name});A.room=name;STATE.room=name;markDirty();renderAll()}
 function deleteRoom(){if(!canEdit())return aToast('Droit manager requis',true);if(A.rooms.length<=1)return aToast('Impossible de supprimer le dernier espace',true);if(roomTables().some(t=>activeOrder(t.label)))return aToast('Espace protégé : commande active',true);if(!confirm(`Supprimer l’espace ${A.room} et ses éléments ?`))return;pushHistory();const old=A.room;A.tables=A.tables.filter(t=>aText(t.room||A.rooms[0])!==old);A.zones=A.zones.filter(z=>aText(z.room||A.rooms[0])!==old);A.elements=A.elements.filter(e=>aText(e.room||A.rooms[0])!==old);A.rooms=A.rooms.filter(r=>r!==old);A.room=A.rooms[0];STATE.room=A.room;A.selected=null;markDirty();renderAll()}
-function switchRoom(r){A.room=r;STATE.room=r;A.selected=null;renderAll()}
+function switchRoom(r){A.room=r;STATE.room=r;A.selected=null;renderAll();scheduleArchitectureFit()}
 function pointInStage(cx,cy){const st=A.root.querySelector('[data-stage]'),r=st.getBoundingClientRect();return {x:aClamp((cx-r.left)/r.width*ARCH_W,0,ARCH_W),y:aClamp((cy-r.top)/r.height*ARCH_H,0,ARCH_H)}}
-function pointerDown(e){const rot=e.target.closest('[data-rotate]'),handle=e.target.closest('[data-resize]'),node=e.target.closest('[data-arch-key]');if(rot){if(A.mode!=='architect'||!canEdit())return;e.preventDefault();const key=rot.closest('[data-arch-key]')?.dataset.archKey;if(key)A.selected=key;const h=current();if(h?.obj){if(h.obj.locked)return aToast('Élément verrouillé');pushHistory();h.obj.rotation=((Number(h.obj.rotation)||0)+15)%360;markDirty();renderCanvas()}return}if(handle){if(A.mode!=='architect'||!canEdit())return;const key=handle.closest('[data-arch-key]')?.dataset.archKey;if(key)A.selected=key;const h=current();if(!h?.obj)return;if(h.obj.locked)return aToast('Déverrouille cet élément dans Propriétés');pushHistory();A.drag={kind:'resize',dir:handle.dataset.resize,key:A.selected,start:pointInStage(e.clientX,e.clientY),orig:clone(defaults(h.obj,h.type))};e.preventDefault();return}if(node){const key=node.dataset.archKey;if(A.mode==='service')return;if(A.selected!==key){A.selected=key;renderCanvas()}if(!canEdit())return;const h=byKey(key);if(!h?.obj)return;if(h.obj.locked)return aToast('Élément verrouillé · sélectionné sans déplacement');pushHistory();A.drag={kind:'move',key,start:pointInStage(e.clientX,e.clientY),orig:clone(defaults(h.obj,h.type))};e.preventDefault();return}if(e.target.closest('[data-stage]')){A.selected=null;renderCanvas()}}
-function pointerMove(e){if(!A.drag)return;const h=byKey(A.drag.key);if(!h?.obj)return;const p=pointInStage(e.clientX,e.clientY),dx=p.x-A.drag.start.x,dy=p.y-A.drag.start.y,o=A.drag.orig,min=16;if(A.drag.kind==='move'){h.obj.l=snap(aClamp(o.l+dx,0,ARCH_W-o.w));h.obj.t=snap(aClamp(o.t+dy,0,ARCH_H-o.h))}else{const dir=A.drag.dir;let l=o.l,t=o.t,w=o.w,hh=o.h;if(dir.includes('e'))w=o.w+dx;if(dir.includes('s'))hh=o.h+dy;if(dir.includes('w')){l=o.l+dx;w=o.w-dx}if(dir.includes('n')){t=o.t+dy;hh=o.h-dy}if(w<min){if(dir.includes('w'))l=o.l+o.w-min;w=min}if(hh<min){if(dir.includes('n'))t=o.t+o.h-min;hh=min}l=aClamp(snap(l),0,ARCH_W-min);t=aClamp(snap(t),0,ARCH_H-min);w=Math.min(ARCH_W-l,Math.max(min,snap(w)));hh=Math.min(ARCH_H-t,Math.max(min,snap(hh)));h.obj.l=l;h.obj.t=t;h.obj.w=w;h.obj.h=hh}markDirty();const n=A.root.querySelector(`[data-arch-key="${CSS.escape(A.drag.key)}"]`);if(n)n.setAttribute('style',nodeStyle(h.obj)+(h.type==='zone'?`;--zone-color:${colorForZone(h.obj)};--zone-fill:${aClamp(h.obj.fillOpacity||15,3,55)}%;--zone-border:${aText(h.obj.borderStyle||'dashed')}`:h.type==='element'?cashCustomStyle(h.obj):''));e.preventDefault()}
+function pointerDown(e){const rot=e.target.closest('[data-rotate]'),handle=e.target.closest('[data-resize]'),node=e.target.closest('[data-arch-key]');if(rot){if(A.mode!=='architect'||!canEdit())return;e.preventDefault();const key=rot.closest('[data-arch-key]')?.dataset.archKey;if(key)A.selected=key;const h=current();if(h?.obj){if(h.obj.locked)return aToast('Élément verrouillé');pushHistory();h.obj.rotation=((Number(h.obj.rotation)||0)+15)%360;markDirty();renderCanvas()}return}if(handle){if(A.mode!=='architect'||!canEdit())return;const key=handle.closest('[data-arch-key]')?.dataset.archKey;if(key)A.selected=key;const h=current();if(!h?.obj)return;if(h.obj.locked)return aToast('Déverrouille cet élément dans Propriétés');pushHistory();A.drag={kind:'resize',dir:handle.dataset.resize,key:A.selected,start:pointInStage(e.clientX,e.clientY),orig:clone(defaults(h.obj,h.type)),pointerType:String(e.pointerType||'mouse')};e.preventDefault();return}if(node){const key=node.dataset.archKey;if(A.mode==='service')return;if(A.selected!==key){A.selected=key;renderCanvas()}if(!canEdit())return;const h=byKey(key);if(!h?.obj)return;if(h.obj.locked)return aToast('Élément verrouillé · sélectionné sans déplacement');pushHistory();A.drag={kind:'move',key,start:pointInStage(e.clientX,e.clientY),orig:clone(defaults(h.obj,h.type)),pointerType:String(e.pointerType||'mouse')};e.preventDefault();return}if(e.target.closest('[data-stage]')){A.selected=null;renderCanvas()}}
+function pointerMove(e){if(!A.drag)return;const h=byKey(A.drag.key);if(!h?.obj)return;const p=pointInStage(e.clientX,e.clientY),touchLike=A.drag.pointerType==='touch'||A.drag.pointerType==='pen',sensitivity=touchLike?ARCH_TOUCH_SENSITIVITY:1,dx=(p.x-A.drag.start.x)*sensitivity,dy=(p.y-A.drag.start.y)*sensitivity,o=A.drag.orig,min=16;if(A.drag.kind==='move'){h.obj.l=snap(aClamp(o.l+dx,0,ARCH_W-o.w));h.obj.t=snap(aClamp(o.t+dy,0,ARCH_H-o.h))}else{const dir=A.drag.dir;let l=o.l,t=o.t,w=o.w,hh=o.h;if(dir.includes('e'))w=o.w+dx;if(dir.includes('s'))hh=o.h+dy;if(dir.includes('w')){l=o.l+dx;w=o.w-dx}if(dir.includes('n')){t=o.t+dy;hh=o.h-dy}if(w<min){if(dir.includes('w'))l=o.l+o.w-min;w=min}if(hh<min){if(dir.includes('n'))t=o.t+o.h-min;hh=min}l=aClamp(snap(l),0,ARCH_W-min);t=aClamp(snap(t),0,ARCH_H-min);w=Math.min(ARCH_W-l,Math.max(min,snap(w)));hh=Math.min(ARCH_H-t,Math.max(min,snap(hh)));h.obj.l=l;h.obj.t=t;h.obj.w=w;h.obj.h=hh}markDirty();const n=A.root.querySelector(`[data-arch-key="${CSS.escape(A.drag.key)}"]`);if(n)n.setAttribute('style',nodeStyle(h.obj)+(h.type==='zone'?`;--zone-color:${colorForZone(h.obj)};--zone-fill:${aClamp(h.obj.fillOpacity||15,3,55)}%;--zone-border:${aText(h.obj.borderStyle||'dashed')}`:h.type==='element'?cashCustomStyle(h.obj):''));e.preventDefault()}
 function pointerUp(){if(A.drag){A.drag=null;renderCanvas()}}
 function applyZoom(){
   const sh=A.root?.querySelector('[data-stage-shell]');
@@ -13683,6 +13688,75 @@ function applyZoom(){
   }
   try{localStorage.setItem('ichef_plan_zoom_pct_v28',String(A.zoom))}catch(_){}
 }
+
+
+/* =========================================================
+   V23 — CADRAGE AUTOMATIQUE DU PLAN COMPLET
+   À l'ouverture, iCHEF calcule la zone réellement utilisée par
+   les tables / zones / équipements de la salle et affiche tout.
+   ========================================================= */
+function architectureObjectBounds(obj,type){
+  const d=defaults(obj,type);
+  const rad=(Number(d.rotation)||0)*Math.PI/180;
+  const c=Math.abs(Math.cos(rad)),s=Math.abs(Math.sin(rad));
+  const bw=Math.max(1,d.w*c+d.h*s),bh=Math.max(1,d.w*s+d.h*c);
+  const cx=d.l+d.w/2,cy=d.t+d.h/2;
+  return {l:cx-bw/2,t:cy-bh/2,r:cx+bw/2,b:cy+bh/2};
+}
+function architectureRoomBounds(){
+  const items=[];
+  roomTables().forEach(o=>items.push({obj:o,type:'table'}));
+  roomZones().forEach(o=>items.push({obj:o,type:'zone'}));
+  roomElements().forEach(o=>items.push({obj:o,type:'element'}));
+  if(!items.length){
+    return {l:0,t:0,r:Math.min(1400,ARCH_W),b:Math.min(820,ARCH_H),empty:true};
+  }
+  let l=ARCH_W,t=ARCH_H,r=0,b=0;
+  for(const item of items){
+    const q=architectureObjectBounds(item.obj,item.type);
+    l=Math.min(l,q.l);t=Math.min(t,q.t);r=Math.max(r,q.r);b=Math.max(b,q.b);
+  }
+  const margin=120;
+  return {
+    l:aClamp(l-margin,0,ARCH_W),
+    t:aClamp(t-margin,0,ARCH_H),
+    r:aClamp(r+margin,0,ARCH_W),
+    b:aClamp(b+margin,0,ARCH_H),
+    empty:false
+  };
+}
+function fitArchitecturePlanToViewport(){
+  const wrap=A.root?.querySelector('.archpad-stagewrap');
+  if(!wrap||!A.root?.classList.contains('open'))return false;
+  const bounds=architectureRoomBounds();
+  const width=Math.max(240,bounds.r-bounds.l);
+  const height=Math.max(180,bounds.b-bounds.t);
+  const availableW=Math.max(220,wrap.clientWidth-28);
+  const availableH=Math.max(180,wrap.clientHeight-28);
+  let factor=Math.min(availableW/width,availableH/height,1);
+  if(!Number.isFinite(factor)||factor<=0)factor=.1;
+  /* Pas de zoom microscopique : 5 % minimum, 100 % maximum au cadrage auto. */
+  A.zoom=aClamp(Math.floor(factor*100),5,100);
+  applyZoom();
+  requestAnimationFrame(()=>{
+    const f=A.zoom/100;
+    const centerX=((bounds.l+bounds.r)/2)*f;
+    const centerY=((bounds.t+bounds.b)/2)*f;
+    const maxLeft=Math.max(0,wrap.scrollWidth-wrap.clientWidth);
+    const maxTop=Math.max(0,wrap.scrollHeight-wrap.clientHeight);
+    wrap.scrollLeft=aClamp(centerX-wrap.clientWidth/2,0,maxLeft);
+    wrap.scrollTop=aClamp(centerY-wrap.clientHeight/2,0,maxTop);
+  });
+  return true;
+}
+let architectureFitTimer=0;
+function scheduleArchitectureFit(){
+  clearTimeout(architectureFitTimer);
+  /* Le petit délai laisse le temps au DOM, aux panneaux latéraux et au
+     restaurateur de zoom V28 de finir leur mise en page. */
+  architectureFitTimer=setTimeout(()=>fitArchitecturePlanToViewport(),90);
+}
+window.ichefFitArchitecturePlan=fitArchitecturePlanToViewport;
 
 async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_ULTRA_3_CASH_CUSTOM'},updatedFrom:'PAD_ARCHITECT_ULTRA_CASH_CUSTOM',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD ultra modulable');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
 function openExpress(){if(closePadArchitect()!==false)openExpressTableCreate()}
@@ -13795,7 +13869,7 @@ function installPermanentPlanTouchRouter(){
 }
 
 function ensureRoot(){let r=document.getElementById('ichefArchPad');if(!r){r=document.createElement('div');r.id='ichefArchPad';r.tabIndex=-1;document.body.appendChild(r)}A.root=r;installPermanentPlanTouchRouter();return r}
-function openPadArchitectEditor(){closeSheet?.();loadData();normaliseAll();A.archUnlocked=false;A.archRole='';A.archPin='';A.pinOpen=false;A.mode=expressRoleLevel()>=2||STATE.demo?'architect':'service';ensureRoot().classList.add('open');document.body.style.overflow='hidden';renderAll();A.root.focus();if(A.mode==='service')aToast('Mode SERVICE · architecture protégée par PIN')}
+function openPadArchitectEditor(){closeSheet?.();loadData();normaliseAll();A.archUnlocked=false;A.archRole='';A.archPin='';A.pinOpen=false;A.mode=expressRoleLevel()>=2||STATE.demo?'architect':'service';ensureRoot().classList.add('open');document.body.style.overflow='hidden';renderAll();scheduleArchitectureFit();A.root.focus();if(A.mode==='service')aToast('Mode SERVICE · architecture protégée par PIN')}
 async function openPadServiceHome(){
   closeSheet?.();
   /* Toujours repartir de la source officielle serveur avant d'afficher le plan. */
@@ -13809,6 +13883,7 @@ async function openPadServiceHome(){
   ensureRoot().classList.add('open');
   document.body.style.overflow='hidden';
   renderAll();
+  scheduleArchitectureFit();
   A.root.focus();
   aToast(STATE.connected?'PLAN LIVE · TEMPS RÉEL':'PLAN LIVE · SYNCHRO HTTP');
 }
@@ -16808,7 +16883,7 @@ html body.order-open .ticket-row{min-height:106px !important}
   window.__ICHEF_SERVICE_MENU_V29_API__=api;
   window.__ICHEF_SERVICE_MENU_V27_API__=api; /* alias compatibilité */
 
-  console.info("[iCHEF]",VERSION,"actif — rythme libre des plats seuls — architecture inchangée");
+  console.info("[iCHEF]",VERSION,"actif — Architecture tactile -35% + cadrage plan complet par défaut");
 })();
 </script>
 
