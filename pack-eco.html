@@ -9550,7 +9550,10 @@ function systemPrintHTML(lines,title="iCHEF",paperWidth=80){
   }).join("");
 
   /* Ticket d'impression isolé : aucun script applicatif/architecture ne doit être injecté ici. */
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>@page{size:${width}mm auto;margin:3mm}html,body{margin:0;padding:0;background:#fff;color:#000;font-family:Arial,sans-serif}.ticket{width:${width-6}mm;margin:0 auto}</style></head><body><div class="ticket">${body}</div></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>@page{size:${width}mm auto;margin:3mm}html,body{margin:0;padding:0;background:#fff;color:#000;font-family:Arial,sans-serif}.ticket{width:${width-6}mm;margin:0 auto}</style></head><body><div class="ticket">${body}</div>
+<!-- iCHEF V27 — FIX TRANSFORMATIONS ARCHITECTURE
+     Auto-fit suspendu pendant déplacement/resize + pointer capture robuste. -->
+</body></html>`;
 }
 
 async function printViaSystem(printer,lines,meta={}){
@@ -13652,9 +13655,96 @@ function renameRoom(){if(!canEdit())return aToast('Droit manager requis',true);c
 function deleteRoom(){if(!canEdit())return aToast('Droit manager requis',true);if(A.rooms.length<=1)return aToast('Impossible de supprimer le dernier espace',true);if(roomTables().some(t=>activeOrder(t.label)))return aToast('Espace protégé : commande active',true);if(!confirm(`Supprimer l’espace ${A.room} et ses éléments ?`))return;pushHistory();const old=A.room;A.tables=A.tables.filter(t=>aText(t.room||A.rooms[0])!==old);A.zones=A.zones.filter(z=>aText(z.room||A.rooms[0])!==old);A.elements=A.elements.filter(e=>aText(e.room||A.rooms[0])!==old);A.rooms=A.rooms.filter(r=>r!==old);A.room=A.rooms[0];STATE.room=A.room;A.selected=null;markDirty();renderAll()}
 function switchRoom(r){A.room=r;STATE.room=r;A.selected=null;renderAll();scheduleArchitectureFit()}
 function pointInStage(cx,cy){const st=A.root.querySelector('[data-stage]'),r=st.getBoundingClientRect();return {x:aClamp((cx-r.left)/r.width*ARCH_W,0,ARCH_W),y:aClamp((cy-r.top)/r.height*ARCH_H,0,ARCH_H)}}
-function pointerDown(e){const rot=e.target.closest('[data-rotate]'),handle=e.target.closest('[data-resize]'),node=e.target.closest('[data-arch-key]');if(rot){if(A.mode!=='architect'||!canEdit())return;e.preventDefault();const key=rot.closest('[data-arch-key]')?.dataset.archKey;if(key)A.selected=key;const h=current();if(h?.obj){if(h.obj.locked)return aToast('Élément verrouillé');pushHistory();h.obj.rotation=((Number(h.obj.rotation)||0)+15)%360;markDirty();renderCanvas()}return}if(handle){if(A.mode!=='architect'||!canEdit())return;const key=handle.closest('[data-arch-key]')?.dataset.archKey;if(key)A.selected=key;const h=current();if(!h?.obj)return;if(h.obj.locked)return aToast('Déverrouille cet élément dans Propriétés');pushHistory();A.drag={kind:'resize',dir:handle.dataset.resize,key:A.selected,start:pointInStage(e.clientX,e.clientY),orig:clone(defaults(h.obj,h.type)),pointerType:String(e.pointerType||'mouse')};e.preventDefault();return}if(node){const key=node.dataset.archKey;if(A.mode==='service')return;if(A.selected!==key){A.selected=key;renderCanvas()}if(!canEdit())return;const h=byKey(key);if(!h?.obj)return;if(h.obj.locked)return aToast('Élément verrouillé · sélectionné sans déplacement');pushHistory();A.drag={kind:'move',key,start:pointInStage(e.clientX,e.clientY),orig:clone(defaults(h.obj,h.type)),pointerType:String(e.pointerType||'mouse')};e.preventDefault();return}if(e.target.closest('[data-stage]')){A.selected=null;renderCanvas()}}
-function pointerMove(e){if(!A.drag)return;const h=byKey(A.drag.key);if(!h?.obj)return;const p=pointInStage(e.clientX,e.clientY),touchLike=A.drag.pointerType==='touch'||A.drag.pointerType==='pen',sensitivity=touchLike?ARCH_TOUCH_SENSITIVITY:1,dx=(p.x-A.drag.start.x)*sensitivity,dy=(p.y-A.drag.start.y)*sensitivity,o=A.drag.orig,min=16;if(A.drag.kind==='move'){h.obj.l=snap(aClamp(o.l+dx,0,ARCH_W-o.w));h.obj.t=snap(aClamp(o.t+dy,0,ARCH_H-o.h))}else{const dir=A.drag.dir;let l=o.l,t=o.t,w=o.w,hh=o.h;if(dir.includes('e'))w=o.w+dx;if(dir.includes('s'))hh=o.h+dy;if(dir.includes('w')){l=o.l+dx;w=o.w-dx}if(dir.includes('n')){t=o.t+dy;hh=o.h-dy}if(w<min){if(dir.includes('w'))l=o.l+o.w-min;w=min}if(hh<min){if(dir.includes('n'))t=o.t+o.h-min;hh=min}l=aClamp(snap(l),0,ARCH_W-min);t=aClamp(snap(t),0,ARCH_H-min);w=Math.min(ARCH_W-l,Math.max(min,snap(w)));hh=Math.min(ARCH_H-t,Math.max(min,snap(hh)));h.obj.l=l;h.obj.t=t;h.obj.w=w;h.obj.h=hh}markDirty();const n=A.root.querySelector(`[data-arch-key="${CSS.escape(A.drag.key)}"]`);if(n)n.setAttribute('style',nodeStyle(h.obj)+(h.type==='zone'?`;--zone-color:${colorForZone(h.obj)};--zone-fill:${aClamp(h.obj.fillOpacity||15,3,55)}%;--zone-border:${aText(h.obj.borderStyle||'dashed')}`:h.type==='element'?cashCustomStyle(h.obj):''));e.preventDefault()}
-function pointerUp(){if(A.drag){A.drag=null;renderCanvas()}}
+function archCapturePointer(e){
+  try{
+    const st=A.root?.querySelector('[data-stage]');
+    if(st&&Number.isFinite(Number(e?.pointerId))&&st.setPointerCapture)st.setPointerCapture(e.pointerId);
+  }catch(_){ }
+}
+function archReleasePointer(e){
+  try{
+    const st=A.root?.querySelector('[data-stage]');
+    if(st&&Number.isFinite(Number(e?.pointerId))&&st.hasPointerCapture?.(e.pointerId))st.releasePointerCapture(e.pointerId);
+  }catch(_){ }
+}
+function pointerDown(e){
+  const rot=e.target.closest('[data-rotate]'),handle=e.target.closest('[data-resize]'),node=e.target.closest('[data-arch-key]');
+  if(rot){
+    if(A.mode!=='architect'||!canEdit())return;
+    e.preventDefault();
+    const key=rot.closest('[data-arch-key]')?.dataset.archKey;
+    if(key)A.selected=key;
+    const h=current();
+    if(h?.obj){
+      if(h.obj.locked)return aToast('Élément verrouillé');
+      pushHistory();
+      h.obj.rotation=((Number(h.obj.rotation)||0)+15)%360;
+      markDirty();
+      renderCanvas();
+    }
+    return;
+  }
+  if(handle){
+    if(A.mode!=='architect'||!canEdit())return;
+    const key=handle.closest('[data-arch-key]')?.dataset.archKey;
+    if(key)A.selected=key;
+    const h=current();
+    if(!h?.obj)return;
+    if(h.obj.locked)return aToast('Déverrouille cet élément dans Propriétés');
+    pushHistory();
+    A.drag={kind:'resize',dir:handle.dataset.resize,key:A.selected,start:pointInStage(e.clientX,e.clientY),orig:clone(defaults(h.obj,h.type)),pointerType:String(e.pointerType||'mouse'),pointerId:e.pointerId};
+    archCapturePointer(e);
+    e.preventDefault();
+    return;
+  }
+  if(node){
+    const key=node.dataset.archKey;
+    if(A.mode==='service')return;
+    if(A.selected!==key){A.selected=key;renderCanvas()}
+    if(!canEdit())return;
+    const h=byKey(key);
+    if(!h?.obj)return;
+    if(h.obj.locked)return aToast('Élément verrouillé · sélectionné sans déplacement');
+    pushHistory();
+    A.drag={kind:'move',key,start:pointInStage(e.clientX,e.clientY),orig:clone(defaults(h.obj,h.type)),pointerType:String(e.pointerType||'mouse'),pointerId:e.pointerId};
+    archCapturePointer(e);
+    e.preventDefault();
+    return;
+  }
+  if(e.target.closest('[data-stage]')){A.selected=null;renderCanvas()}
+}
+function pointerMove(e){
+  if(!A.drag)return;
+  if(A.drag.pointerId!=null&&e.pointerId!=null&&A.drag.pointerId!==e.pointerId)return;
+  const h=byKey(A.drag.key);
+  if(!h?.obj)return;
+  const p=pointInStage(e.clientX,e.clientY),touchLike=A.drag.pointerType==='touch'||A.drag.pointerType==='pen',sensitivity=touchLike?ARCH_TOUCH_SENSITIVITY:1,dx=(p.x-A.drag.start.x)*sensitivity,dy=(p.y-A.drag.start.y)*sensitivity,o=A.drag.orig,min=16;
+  if(A.drag.kind==='move'){
+    h.obj.l=snap(aClamp(o.l+dx,0,ARCH_W-o.w));
+    h.obj.t=snap(aClamp(o.t+dy,0,ARCH_H-o.h));
+  }else{
+    const dir=A.drag.dir;let l=o.l,t=o.t,w=o.w,hh=o.h;
+    if(dir.includes('e'))w=o.w+dx;
+    if(dir.includes('s'))hh=o.h+dy;
+    if(dir.includes('w')){l=o.l+dx;w=o.w-dx}
+    if(dir.includes('n')){t=o.t+dy;hh=o.h-dy}
+    if(w<min){if(dir.includes('w'))l=o.l+o.w-min;w=min}
+    if(hh<min){if(dir.includes('n'))t=o.t+o.h-min;hh=min}
+    l=aClamp(snap(l),0,ARCH_W-min);t=aClamp(snap(t),0,ARCH_H-min);
+    w=Math.min(ARCH_W-l,Math.max(min,snap(w)));hh=Math.min(ARCH_H-t,Math.max(min,snap(hh)));
+    h.obj.l=l;h.obj.t=t;h.obj.w=w;h.obj.h=hh;
+  }
+  markDirty();
+  const n=A.root.querySelector(`[data-arch-key="${CSS.escape(A.drag.key)}"]`);
+  if(n)n.setAttribute('style',nodeStyle(h.obj)+(h.type==='zone'?`;--zone-color:${colorForZone(h.obj)};--zone-fill:${aClamp(h.obj.fillOpacity||15,3,55)}%;--zone-border:${aText(h.obj.borderStyle||'dashed')}`:h.type==='element'?cashCustomStyle(h.obj):''));
+  e.preventDefault();
+}
+function pointerUp(e){
+  if(!A.drag)return;
+  archReleasePointer(e);
+  A.drag=null;
+  renderCanvas();
+}
 function applyZoom(){
   const sh=A.root?.querySelector('[data-stage-shell]');
   const st=A.root?.querySelector('[data-stage]');
@@ -13754,6 +13844,8 @@ function fitArchitecturePlanToViewport(){
   const wrap=A.root?.querySelector('.archpad-stagewrap');
   const sh=A.root?.querySelector('[data-stage-shell]');
   if(!wrap||!sh||!A.root?.classList.contains('open'))return false;
+  /* V27 : ne jamais recadrer pendant un déplacement/redimensionnement. */
+  if(A.drag)return false;
 
   const bounds=architectureRoomBounds();
   const width=Math.max(220,bounds.r-bounds.l);
@@ -16992,15 +17084,15 @@ html body.order-open .ticket-row{min-height:106px !important}
     },delay);
   }
 
-  /* Chaque ouverture/reconstruction de la section Architecture repart en plein écran. */
-  const observer=new MutationObserver((mutations)=>{
+  /* V27 : recadrage seulement à l'ouverture, jamais sur les mutations internes
+     (sélection, déplacement, resize, changement de classe d'une table, etc.). */
+  let v25WasOpen=false;
+  setInterval(()=>{
     const root=document.getElementById('ichefArchPad');
-    if(!root?.classList.contains('open')) return;
-    for(const m of mutations){
-      if(m.type==='attributes' || m.addedNodes?.length){ fitSoon(150); break; }
-    }
-  });
-  observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:['class']});
+    const open=!!root?.classList.contains('open');
+    if(open&&!v25WasOpen)fitSoon(180);
+    v25WasOpen=open;
+  },350);
 
   /* Rotation tablette, changement de fenêtre, clavier flottant, etc. */
   window.addEventListener('resize',()=>fitSoon(180),{passive:true});
@@ -17060,8 +17152,15 @@ html body.order-open .ticket-row{min-height:106px !important}
       setTimeout(enforce,40);
     },delay);
   }
-  const mo=new MutationObserver(()=>adapt(80));
-  mo.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:['class']});
+  /* V27 : ne pas observer toutes les classes du DOM. Cela relançait le fit
+     pendant la transformation d'une zone/table et annulait le geste. */
+  let v26WasOpen=false;
+  setInterval(()=>{
+    const root=document.getElementById('ichefArchPad');
+    const open=!!root?.classList.contains('open');
+    if(open&&!v26WasOpen)adapt(120);
+    v26WasOpen=open;
+  },350);
   window.addEventListener('resize',()=>adapt(140),{passive:true});
   window.addEventListener('orientationchange',()=>adapt(240),{passive:true});
   if(window.visualViewport)window.visualViewport.addEventListener('resize',()=>adapt(140),{passive:true});
