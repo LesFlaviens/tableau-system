@@ -1023,7 +1023,9 @@ const ICHEF_TENANT_MUTATION_PATHS = new Set([
     '/api/client-space/admin/upload',
     '/api/client-space/admin/delete-document',
     '/api/client-space/admin/message',
-    '/api/client-space/message/read'
+    '/api/client-space/message/read',
+    '/api/support/client/send',
+    '/api/support/admin/send'
 ]);
 const ichefTenantMutationQueues = new Map();
 function ichefRequestTenantID(req) {
@@ -19922,6 +19924,58 @@ const ichefClientMessageSchema = new mongoose.Schema({
 }, { minimize: false });
 const IchefClientMessage = mongoose.models.IchefClientMessage || mongoose.model('IchefClientMessage', ichefClientMessageSchema);
 
+
+// ============================================================================
+// 🛟 iCHEF — MESSAGERIE SUPPORT BIDIRECTIONNELLE
+// Administration restaurant <-> Tour de Contrôle, isolée par tenantID.
+// ============================================================================
+const ichefSupportMessageSchema = new mongoose.Schema({
+    tenantID: { type: String, required: true, index: true },
+    messageId: { type: String, required: true, unique: true, index: true },
+    direction: {
+        type: String,
+        enum: ['CLIENT_TO_ICHEF', 'ICHEF_TO_CLIENT'],
+        required: true,
+        index: true
+    },
+    category: { type: String, default: 'SUPPORT' },
+    text: { type: String, default: '' },
+    callbackPhone: { type: String, default: '' },
+    channel: { type: String, default: 'ICHEF_SUPPORT' },
+    status: {
+        type: String,
+        enum: ['SENT', 'DELIVERED', 'READ'],
+        default: 'SENT',
+        index: true
+    },
+    createdAt: { type: Date, default: Date.now, index: true },
+    deliveredAt: { type: Date, default: null },
+    readAt: { type: Date, default: null }
+}, { minimize: false });
+ichefSupportMessageSchema.index({ tenantID: 1, createdAt: 1 });
+const IchefSupportMessage = mongoose.models.IchefSupportMessage || mongoose.model('IchefSupportMessage', ichefSupportMessageSchema);
+
+function ichefSupportMessagePublic(msg) {
+    if (!msg) return null;
+    return {
+        messageId: String(msg.messageId || ''),
+        tenantID: cleanString(msg.tenantID || ''),
+        direction: String(msg.direction || ''),
+        category: String(msg.category || 'SUPPORT'),
+        text: String(msg.text || ''),
+        callbackPhone: String(msg.callbackPhone || ''),
+        channel: String(msg.channel || 'ICHEF_SUPPORT'),
+        status: String(msg.status || 'SENT'),
+        createdAt: msg.createdAt || null,
+        deliveredAt: msg.deliveredAt || null,
+        readAt: msg.readAt || null
+    };
+}
+
+function ichefSupportMessageId() {
+    return `SUP_${Date.now()}_${crypto.randomBytes(5).toString('hex')}`;
+}
+
 // Message client : format public stable pour Administration / Tour de Contrôle.
 function ichefClientMessagePublic(msg) {
     if (!msg) return null;
@@ -20397,6 +20451,192 @@ app.post('/api/client-space/message/read', async (req, res) => {
         });
     } catch (error) {
         return res.status(500).json({ success: false, error: error?.message || 'Accusé de lecture impossible.' });
+    }
+});
+
+
+// ============================================================================
+// 🛟 SUPPORT BIDIRECTIONNEL — CLIENT <-> TOUR DE CONTRÔLE
+// ============================================================================
+app.post('/api/support/client/send', async (req, res) => {
+    try {
+        const tenantID = cleanString(req.body?.tenantID || req.headers['x-ichef-tenant'] || '');
+        const pin = String(req.body?.pin || req.headers['x-ichef-pin'] || '').trim();
+        const auth = await ichefAuthorizePin(tenantID, pin, { managerOnly: true });
+        if (!auth.ok) return res.status(auth.status || 403).json({ success:false, error:auth.error || 'Accès refusé.' });
+
+        const text = String(req.body?.text || '').trim().slice(0, 4000);
+        const category = String(req.body?.category || 'SUPPORT').trim().toUpperCase().slice(0, 80);
+        const callbackPhone = String(req.body?.callbackPhone || '').trim().slice(0, 40);
+        if (!text) return res.status(400).json({ success:false, error:'Décrivez le problème avant l’envoi.' });
+
+        const now = new Date();
+        const message = await IchefSupportMessage.create({
+            tenantID,
+            messageId: ichefSupportMessageId(),
+            direction: 'CLIENT_TO_ICHEF',
+            category,
+            text,
+            callbackPhone,
+            channel: 'ADMINISTRATION',
+            status: 'SENT',
+            createdAt: now
+        });
+
+        io.to(tenantID).emit('support-message-updated', {
+            tenantID,
+            direction: 'CLIENT_TO_ICHEF',
+            messageId: message.messageId,
+            timestamp: now.toISOString()
+        });
+
+        return res.json({ success:true, message:ichefSupportMessagePublic(message.toObject()) });
+    } catch (error) {
+        console.error('[iCHEF SUPPORT] client send:', error?.message || error);
+        return res.status(500).json({ success:false, error:error?.message || 'Message support non envoyé.' });
+    }
+});
+
+app.post('/api/support/client/list', async (req, res) => {
+    try {
+        const tenantID = cleanString(req.body?.tenantID || req.headers['x-ichef-tenant'] || '');
+        const pin = String(req.body?.pin || req.headers['x-ichef-pin'] || '').trim();
+        const auth = await ichefAuthorizePin(tenantID, pin, { managerOnly: true });
+        if (!auth.ok) return res.status(auth.status || 403).json({ success:false, error:auth.error || 'Accès refusé.' });
+
+        const now = new Date();
+        await IchefSupportMessage.updateMany(
+            { tenantID, direction:'ICHEF_TO_CLIENT', readAt:null },
+            { $set:{ deliveredAt:now, readAt:now, status:'READ' } }
+        );
+
+        const messages = await IchefSupportMessage.find({ tenantID })
+            .sort({ createdAt: 1 })
+            .limit(200)
+            .lean();
+
+        res.set('Cache-Control', 'no-store, max-age=0');
+        return res.json({ success:true, tenantID, messages:messages.map(ichefSupportMessagePublic) });
+    } catch (error) {
+        console.error('[iCHEF SUPPORT] client list:', error?.message || error);
+        return res.status(500).json({ success:false, error:error?.message || 'Conversation support indisponible.' });
+    }
+});
+
+app.post('/api/support/admin/inbox', async (req, res) => {
+    if (!ichefClientMasterAuthorized(req, res)) return;
+    try {
+        const messages = await IchefSupportMessage.find({})
+            .sort({ createdAt: -1 })
+            .limit(1000)
+            .lean();
+
+        const grouped = new Map();
+        for (const msg of messages) {
+            const tenantID = cleanString(msg.tenantID || '');
+            if (!tenantID) continue;
+            if (!grouped.has(tenantID)) {
+                grouped.set(tenantID, {
+                    tenantID,
+                    lastMessage: ichefSupportMessagePublic(msg),
+                    unread: 0,
+                    total: 0
+                });
+            }
+            const row = grouped.get(tenantID);
+            row.total += 1;
+            if (msg.direction === 'CLIENT_TO_ICHEF' && !msg.readAt) row.unread += 1;
+        }
+
+        const tenantIDs = [...grouped.keys()];
+        const tenantRows = tenantIDs.length
+            ? await Tenant.find({ tenantID:{ $in:tenantIDs } }, { tenantID:1, clientName:1, email:1, phone:1 }).lean()
+            : [];
+        const tenantMap = new Map(tenantRows.map(t => [String(t.tenantID), t]));
+
+        const items = [...grouped.values()].map(row => {
+            const tenant = tenantMap.get(row.tenantID) || {};
+            return {
+                ...row,
+                clientName: String(tenant.clientName || row.tenantID),
+                email: String(tenant.email || ''),
+                phone: String(tenant.phone || '')
+            };
+        }).sort((a,b) => new Date(b.lastMessage?.createdAt || 0) - new Date(a.lastMessage?.createdAt || 0));
+
+        return res.json({
+            success:true,
+            items,
+            unreadTotal:items.reduce((sum, row) => sum + Number(row.unread || 0), 0)
+        });
+    } catch (error) {
+        console.error('[iCHEF SUPPORT] admin inbox:', error?.message || error);
+        return res.status(500).json({ success:false, error:error?.message || 'Boîte support indisponible.' });
+    }
+});
+
+app.post('/api/support/admin/list', async (req, res) => {
+    if (!ichefClientMasterAuthorized(req, res)) return;
+    try {
+        const tenantID = cleanString(req.body?.tenantID || '');
+        if (!tenantID) return res.status(400).json({ success:false, error:'tenantID manquant.' });
+
+        const tenant = await Tenant.findOne({ tenantID }, { tenantID:1, clientName:1 }).lean();
+        if (!tenant) return res.status(404).json({ success:false, error:'Établissement introuvable.' });
+
+        const now = new Date();
+        await IchefSupportMessage.updateMany(
+            { tenantID, direction:'CLIENT_TO_ICHEF', readAt:null },
+            { $set:{ deliveredAt:now, readAt:now, status:'READ' } }
+        );
+
+        const messages = await IchefSupportMessage.find({ tenantID })
+            .sort({ createdAt:1 })
+            .limit(200)
+            .lean();
+
+        return res.json({ success:true, tenantID, messages:messages.map(ichefSupportMessagePublic) });
+    } catch (error) {
+        console.error('[iCHEF SUPPORT] admin list:', error?.message || error);
+        return res.status(500).json({ success:false, error:error?.message || 'Conversation support indisponible.' });
+    }
+});
+
+app.post('/api/support/admin/send', async (req, res) => {
+    if (!ichefClientMasterAuthorized(req, res)) return;
+    try {
+        const tenantID = cleanString(req.body?.tenantID || '');
+        const text = String(req.body?.text || '').trim().slice(0, 4000);
+        if (!tenantID) return res.status(400).json({ success:false, error:'tenantID manquant.' });
+        if (!text) return res.status(400).json({ success:false, error:'Écrivez une réponse avant l’envoi.' });
+
+        const tenant = await Tenant.findOne({ tenantID }, { tenantID:1 }).lean();
+        if (!tenant) return res.status(404).json({ success:false, error:'Établissement introuvable.' });
+
+        const now = new Date();
+        const message = await IchefSupportMessage.create({
+            tenantID,
+            messageId: ichefSupportMessageId(),
+            direction:'ICHEF_TO_CLIENT',
+            category:String(req.body?.category || 'RÉPONSE ICHEF').trim().toUpperCase().slice(0,80),
+            text,
+            callbackPhone:'',
+            channel:'TOUR_DE_CONTROLE',
+            status:'SENT',
+            createdAt:now
+        });
+
+        io.to(tenantID).emit('support-message-updated', {
+            tenantID,
+            direction:'ICHEF_TO_CLIENT',
+            messageId:message.messageId,
+            timestamp:now.toISOString()
+        });
+
+        return res.json({ success:true, message:ichefSupportMessagePublic(message.toObject()) });
+    } catch (error) {
+        console.error('[iCHEF SUPPORT] admin send:', error?.message || error);
+        return res.status(500).json({ success:false, error:error?.message || 'Réponse support non envoyée.' });
     }
 });
 
