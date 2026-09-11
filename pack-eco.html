@@ -5953,17 +5953,17 @@ body.order-open #btnHeadWho .head-sub-v20{
 #ichefArchPad .arch-chair-layer{position:absolute;inset:0;overflow:visible;pointer-events:none;z-index:1}
 #ichefArchPad .arch-chair{
   position:absolute;left:var(--chair-x);top:var(--chair-y);
-  width:22px;height:13px;transform:translate(-50%,-50%) rotate(var(--chair-r));
-  border:2px solid #5d4029;border-radius:7px 7px 4px 4px;
+  width:44px;height:26px;transform:translate(-50%,-50%) rotate(var(--chair-r));
+  border:3px solid #5d4029;border-radius:12px 12px 7px 7px;
   background:linear-gradient(180deg,#c99a68,#8d6038);
   box-shadow:0 2px 4px rgba(0,0,0,.34),inset 0 1px 0 rgba(255,255,255,.28);
   display:flex;align-items:center;justify-content:center;
-  color:#fff;font-size:7px;font-weight:1000;line-height:1;text-shadow:0 1px 1px #000;
+  color:#fff;font-size:11px;font-weight:1000;line-height:1;text-shadow:0 1px 1px #000;
   pointer-events:none;box-sizing:border-box
 }
 #ichefArchPad .arch-chair::after{
-  content:"";position:absolute;left:3px;right:3px;bottom:-4px;height:4px;
-  border:1px solid #5d4029;border-top:0;border-radius:0 0 4px 4px;background:#744b2d
+  content:"";position:absolute;left:6px;right:6px;bottom:-8px;height:8px;
+  border:2px solid #5d4029;border-top:0;border-radius:0 0 7px 7px;background:#744b2d
 }
 #ichefArchPad .arch-chair.occupied{
   background:var(--chair-color,#55d987);border-color:color-mix(in srgb,var(--chair-color,#55d987) 55%,#111);
@@ -5981,7 +5981,15 @@ body.order-open #btnHeadWho .head-sub-v20{
 #ichefArchPad .arch-table .arch-seat-strip,
 #ichefArchPad .arch-table .arch-client-count{position:relative;z-index:3}
 #ichefArchPad .arch-table .arch-handle,#ichefArchPad .arch-table .arch-rotate{z-index:80!important}
-@media(max-width:700px){#ichefArchPad .arch-chair{width:18px;height:11px;font-size:6px}}
+#ichefArchPad .archpad-main:not(.service-layout) .arch-chair.free-layout{
+  pointer-events:auto!important;cursor:grab!important;touch-action:none!important;z-index:65!important;
+}
+#ichefArchPad .archpad-main:not(.service-layout) .arch-chair.free-layout:active{cursor:grabbing!important}
+#ichefArchPad .archpad-main:not(.service-layout) .arch-chair.free-layout::before{
+  content:"";position:absolute;inset:-7px;border:1px dashed rgba(85,217,135,.0);border-radius:14px;pointer-events:none
+}
+#ichefArchPad .archpad-main:not(.service-layout) .arch-chair.free-layout:hover::before{border-color:rgba(85,217,135,.75)}
+@media(max-width:700px){#ichefArchPad .arch-chair{width:36px;height:22px;font-size:9px}}
 </style>
 </head>
 
@@ -13934,6 +13942,62 @@ function cityRotateSelected(){const h=current();if(!h?.obj||h.obj.locked)return;
 function cityFloatAction(action){if(action==='move')return aToast('Appui 0,3 s sur l’objet puis déplacez-le');if(action==='rotate')return cityRotateSelected();if(action==='duplicate')return duplicateSelected();if(action==='delete')return deleteSelected()}
 function cityRefreshAssistLive(){const n=A.root?.querySelector(`[data-arch-key="${CSS.escape(A.selected||'')}" ]`);if(n)n.classList.toggle('city-collision',cityHasCollision(A.selected));const b=A.root?.querySelector('[data-city-position]');if(b){const bad=cityHasCollision(A.selected);b.classList.toggle('bad',bad);b.classList.toggle('good',!bad);b.textContent=bad?'⚠ Collision':'✓ Position correcte'}}
 
+function archChairAutoPose(index,count){
+  const angle=-90+((360/Math.max(1,count))*(index-1));
+  const rad=angle*Math.PI/180;
+  return {x:50+Math.cos(rad)*63,y:50+Math.sin(rad)*63,r:angle+90};
+}
+function archChairLayoutEntry(t,index,count){
+  const auto=archChairAutoPose(index,count);
+  if(!t?.chairsFree)return auto;
+  const arr=Array.isArray(t.chairLayout)?t.chairLayout:[];
+  const p=arr[index-1];
+  if(!p||!Number.isFinite(Number(p.x))||!Number.isFinite(Number(p.y)))return auto;
+  return {x:Number(p.x),y:Number(p.y),r:Number.isFinite(Number(p.r))?Number(p.r):auto.r};
+}
+function archEnsureChairLayout(t,count){
+  if(!Array.isArray(t.chairLayout))t.chairLayout=[];
+  for(let i=1;i<=count;i++){
+    const p=t.chairLayout[i-1];
+    if(!p||!Number.isFinite(Number(p.x))||!Number.isFinite(Number(p.y)))t.chairLayout[i-1]=archChairAutoPose(i,count);
+  }
+  if(t.chairLayout.length>count)t.chairLayout=t.chairLayout.slice(0,count);
+  return t.chairLayout;
+}
+function archResetChairLayout(){
+  const hit=current();if(!hit?.obj||hit.type!=='table')return;
+  pushHistory();hit.obj.chairLayout=[];hit.obj.chairsFree=true;markDirty();renderCanvas();aToast('Chaises remises autour de la table · disposition libre active');
+}
+function clearChairPress(){if(A.chairPress?.timer)clearTimeout(A.chairPress.timer);A.chairPress=null}
+function scheduleChairPick(e,key,seat){
+  clearChairPress();archCapture(e);
+  const p={key,seat:Number(seat)||1,pointerId:e.pointerId,x:e.clientX,y:e.clientY,fired:false,timer:null};
+  p.timer=setTimeout(()=>{
+    if(A.chairPress!==p)return;
+    const h=byKey(key);if(!h?.obj||h.type!=='table'||!h.obj.chairsFree){clearChairPress();return}
+    const t=h.obj,count=Math.max(1,Math.min(16,Number(t.pax)||2));
+    archEnsureChairLayout(t,count);A.selected=key;p.fired=true;
+    A.chairDrag={key,seat:p.seat,pointerId:p.pointerId,moved:false,historyPushed:false};
+    aToast(`Chaise C${p.seat} prise · placez-la où vous voulez`);
+  },ARCH_PICK_MS);
+  A.chairPress=p;e.preventDefault();e.stopPropagation();
+}
+function moveFreeChair(e){
+  const d=A.chairDrag;if(!d||d.pointerId!==e.pointerId)return false;
+  const h=byKey(d.key);if(!h?.obj||h.type!=='table')return false;
+  const t=h.obj,td=defaults(t,'table'),count=Math.max(1,Math.min(16,Number(t.pax)||2));
+  const p=pointInStage(e.clientX,e.clientY);
+  let x=(p.x-td.l)/Math.max(1,td.w)*100,y=(p.y-td.t)/Math.max(1,td.h)*100;
+  // Liberté réelle sur le plan, tout en évitant des coordonnées infinies accidentelles.
+  x=aClamp(x,-2500,2600);y=aClamp(y,-2500,2600);
+  const angle=Math.atan2(y-50,x-50)*180/Math.PI;
+  const layout=archEnsureChairLayout(t,count);
+  if(!d.moved){d.moved=true;if(!d.historyPushed){pushHistory();d.historyPushed=true}}
+  layout[d.seat-1]={x,y,r:angle+90};t.chairsFree=true;markDirty();
+  const n=A.root.querySelector(`[data-chair-table="${CSS.escape(d.key)}"][data-chair-seat="${d.seat}"]`);
+  if(n){n.style.setProperty('--chair-x',x.toFixed(2)+'%');n.style.setProperty('--chair-y',y.toFixed(2)+'%');n.style.setProperty('--chair-r',(angle+90).toFixed(1)+'deg')}
+  e.preventDefault();return true;
+}
 function archTableChairsHTML(t,live,service){
   const capacity=Math.max(1,Math.min(16,Number(t?.pax)||2));
   const livePax=Math.max(0,Math.min(16,Number(live?.pax)||0));
@@ -13941,21 +14005,17 @@ function archTableChairsHTML(t,live,service){
   const seatMap=new Map((live?.seats||[]).map(s=>[Number(s.seat),s]));
   const chairs=[];
   for(let i=1;i<=count;i++){
-    const angle=-90+((360/count)*(i-1));
-    const rad=angle*Math.PI/180;
-    /* Les chaises sont juste hors du bord de la table, quelle que soit sa forme. */
-    const x=50+Math.cos(rad)*63;
-    const y=50+Math.sin(rad)*63;
+    const pose=archChairLayoutEntry(t,i,count);
     const seat=seatMap.get(i);
     const occupied=service && i<=Math.min(livePax,9);
     const state=seat?.code||'occupied';
     const allergy=!!seat?.allergy;
     const color=occupied?`var(--c${Math.min(i,9)},#55d987)`:'#ad7b49';
-    const label=occupied?`C${i}`:'';
-    const title=occupied?`Client C${i}${seat?.label?' · '+seat.label:''}`:`Place ${i} / ${capacity}`;
-    chairs.push(`<span class="arch-chair ${occupied?'occupied':'free'} ${occupied?'chair-'+esc(state):''} ${allergy?'chair-allergy':''}" style="--chair-x:${x.toFixed(2)}%;--chair-y:${y.toFixed(2)}%;--chair-r:${(angle+90).toFixed(1)}deg;--chair-color:${color}" title="${esc(title)}"><span>${label}</span></span>`);
+    const label=occupied?`C${i}`:(t?.chairsFree?String(i):'');
+    const title=occupied?`Client C${i}${seat?.label?' · '+seat.label:''}`:`Chaise ${i} / ${capacity}${t?.chairsFree?' · appui 0,3 s pour déplacer':''}`;
+    chairs.push(`<span class="arch-chair ${occupied?'occupied':'free'} ${occupied?'chair-'+esc(state):''} ${allergy?'chair-allergy':''} ${!service&&t?.chairsFree?'free-layout':''}" data-chair-seat="${i}" data-chair-table="${esc(getTableKey(t))}" style="--chair-x:${pose.x.toFixed(2)}%;--chair-y:${pose.y.toFixed(2)}%;--chair-r:${pose.r.toFixed(1)}deg;--chair-color:${color}" title="${esc(title)}"><span>${label}</span></span>`);
   }
-  return `<span class="arch-chair-layer" aria-hidden="true">${chairs.join('')}</span>`;
+  return `<span class="arch-chair-layer">${chairs.join('')}</span>`;
 }
 function canvasHTML(){
  const collision=cityHasCollision(A.selected);
@@ -13970,7 +14030,7 @@ function propHTML(){
  const hit=byKey(A.selected);if(!hit?.obj)return '<div class="prop-empty">Sélectionne une table, une zone, un mur ou un équipement.<br><br>En MODE ARCHITECTE : déplacement libre, 8 poignées de redimensionnement, rotation et verrouillage.</div>';
  const {type,obj:o}=hit,d=defaults(o,type);const zoneOpts=roomZones().map(z=>`<option value="${esc(z.label)}" ${aText(o.zone)===aText(z.label)?'selected':''}>${esc(z.label)}</option>`).join('');
  let extra='';
- if(type==='table')extra=`<div class="arch-prop-row"><label>Forme</label><select data-prop="shape"><option value="square" ${aText(o.shape)!=='round'?'selected':''}>Carrée</option><option value="round" ${aText(o.shape)==='round'?'selected':''}>Ronde</option></select></div><div class="arch-prop-row"><label>Couverts</label><input data-prop="pax" type="number" min="1" max="99" value="${Number(o.pax)||2}"></div><div class="arch-prop-row"><label>Zone</label><select data-prop="zone"><option value="">— aucune —</option>${zoneOpts}</select></div>`;
+ if(type==='table')extra=`<div class="arch-prop-row"><label>Forme</label><select data-prop="shape"><option value="square" ${aText(o.shape)!=='round'?'selected':''}>Carrée</option><option value="round" ${aText(o.shape)==='round'?'selected':''}>Ronde</option></select></div><div class="arch-prop-row"><label>Couverts</label><input data-prop="pax" type="number" min="1" max="99" value="${Number(o.pax)||2}"></div><div class="arch-prop-row"><label>Disposition chaises</label><select data-prop="chairsFree"><option value="false" ${!o.chairsFree?'selected':''}>Automatique</option><option value="true" ${o.chairsFree?'selected':''}>Libre</option></select></div>${o.chairsFree?`<div class="arch-help" style="margin:-2px 0 8px">Appui 0,3 s sur une chaise puis déplace-la où tu veux. La chaise reste associée à cette table.</div><button type="button" class="city-chair-reset" data-chair-reset style="width:100%;min-height:38px;border:1px solid #46545a;border-radius:9px;background:#12191c;color:#d8e0e2;font-weight:900">↻ Réinitialiser les positions</button>`:''}<div class="arch-prop-row"><label>Zone</label><select data-prop="zone"><option value="">— aucune —</option>${zoneOpts}</select></div>`;
  if(type==='zone')extra=`<div class="arch-prop-row"><label>Type zone</label><select data-prop="zoneKind">${[['service','Service'],['bathroom','Salle de bain'],['bedroom','Chambre'],['office','Bureau'],['terrace','Terrasse'],['kitchen','Cuisine'],['spa','Spa'],['technical','Technique']].map(([v,l])=>`<option value="${v}" ${aText(o.zoneKind||'service')===v?'selected':''}>${l}</option>`).join('')}</select></div><div class="arch-prop-row"><label>Forme</label><select data-prop="zoneShape"><option value="rect" ${aText(o.zoneShape||'rect')==='rect'?'selected':''}>Rectangle</option><option value="rounded" ${aText(o.zoneShape)==='rounded'?'selected':''}>Arrondie</option><option value="oval" ${aText(o.zoneShape)==='oval'?'selected':''}>Ovale</option></select></div><div class="arch-prop-row"><label>Couleur</label><input data-prop="color" type="color" value="${esc(colorForZone(o))}"></div><div class="arch-prop-row"><label>Transparence</label><input data-prop="fillOpacity" type="number" min="3" max="55" value="${aClamp(o.fillOpacity||15,3,55)}"></div><div class="arch-prop-row"><label>Bordure</label><select data-prop="borderStyle"><option value="dashed" ${aText(o.borderStyle||'dashed')==='dashed'?'selected':''}>Pointillés</option><option value="solid" ${aText(o.borderStyle)==='solid'?'selected':''}>Continue</option><option value="dotted" ${aText(o.borderStyle)==='dotted'?'selected':''}>Points</option></select></div><div class="arch-prop-row"><label>Responsable</label><input data-prop="responsible" value="${esc(o.responsible||o.responsable||'')}"></div><div class="arch-prop-row"><label>Service</label><select data-prop="serviceType">${['Dîner','Déjeuner','Petit-déjeuner','Bar','Room Service','Événement','Hébergement'].map(v=>`<option ${aText(o.serviceType)===v?'selected':''}>${v}</option>`).join('')}</select></div><div class="arch-prop-row"><label>Capacité</label><input data-prop="capacity" type="number" min="0" value="${Number(o.capacity)||0}"></div><div class="arch-prop-row"><label>Horaires</label><input data-prop="hours" value="${esc(o.hours||'')}"></div>`;
  if(type==='element'){
   extra=`<div class="arch-prop-row"><label>Type</label><input value="${esc(o.type||'équipement')}" disabled></div>`;
@@ -14034,8 +14094,8 @@ function renderCanvas(){normaliseAll();const stage=A.root?.querySelector('[data-
 function renderAll(){if(!A.root)return;A.root.innerHTML=fullHTML();bindAll();updateSaveState();applyZoom();updateCityBuilderUI()}
 function select(key){A.selected=key;renderCanvas()}
 function current(){return byKey(A.selected)}
-function setObjProp(o,k,v){if(['l','t','w','h','rotation','pax','capacity','fillOpacity','zIndex','cashBorderWidth','cashFontSize','cashRadius'].includes(k))v=Number(v)||0;if(k==='w'||k==='h')v=Math.max(16,v);if(k==='fillOpacity')v=aClamp(v,3,55);if(k==='cashBorderWidth')v=aClamp(v,1,12);if(k==='cashFontSize')v=aClamp(v,8,72);if(k==='cashRadius')v=aClamp(v,0,60);if(k==='locked')v=String(v)==='true';o[k]=v}
-function propChange(e){const k=e.target.dataset.prop;if(!k)return;const hit=current();if(!hit?.obj)return;pushHistory();let v=e.target.value;if(k==='label'&&hit.type==='table'){const nv=aText(v),oldLabel=aText(hit.obj.label);if(!nv)return;if(activeOrder(oldLabel)){aToast('Renommer interdit : commande active',true);renderCanvas();return}if(A.tables.some(t=>t!==hit.obj&&aText(t.label).toUpperCase()===nv.toUpperCase())){aToast('Numéro de table déjà utilisé',true);renderCanvas();return}hit.obj.label=nv;if(!hit.obj.id||aText(hit.obj.id)===oldLabel)hit.obj.id=nv}else setObjProp(hit.obj,k,v);markDirty();renderCanvas()}
+function setObjProp(o,k,v){if(['l','t','w','h','rotation','pax','capacity','fillOpacity','zIndex','cashBorderWidth','cashFontSize','cashRadius'].includes(k))v=Number(v)||0;if(k==='w'||k==='h')v=Math.max(16,v);if(k==='fillOpacity')v=aClamp(v,3,55);if(k==='cashBorderWidth')v=aClamp(v,1,12);if(k==='cashFontSize')v=aClamp(v,8,72);if(k==='cashRadius')v=aClamp(v,0,60);if(k==='locked'||k==='chairsFree')v=String(v)==='true';o[k]=v}
+function propChange(e){const k=e.target.dataset.prop;if(!k)return;const hit=current();if(!hit?.obj)return;pushHistory();let v=e.target.value;if(k==='chairsFree'&&hit.type==='table'){hit.obj.chairsFree=String(v)==='true';if(!hit.obj.chairsFree)hit.obj.chairLayout=[];markDirty();renderCanvas();return}if(k==='label'&&hit.type==='table'){const nv=aText(v),oldLabel=aText(hit.obj.label);if(!nv)return;if(activeOrder(oldLabel)){aToast('Renommer interdit : commande active',true);renderCanvas();return}if(A.tables.some(t=>t!==hit.obj&&aText(t.label).toUpperCase()===nv.toUpperCase())){aToast('Numéro de table déjà utilisé',true);renderCanvas();return}hit.obj.label=nv;if(!hit.obj.id||aText(hit.obj.id)===oldLabel)hit.obj.id=nv}else setObjProp(hit.obj,k,v);markDirty();renderCanvas()}
 function addObject(type,clientPoint=null){if(A.mode!=='architect'||!canEdit()){aToast('Mode Architecte réservé Gérant / Directeur',true);return}pushHistory();const isZonePreset=['zone','bathroom_zone','bedroom_zone','office_zone'].includes(type),count=type==='table'?roomTables().length:isZonePreset?roomZones().length:roomElements().length;let x=220+(count%5)*105,y=150+Math.floor(count/5)*85;if(clientPoint){const p=pointInStage(clientPoint.x,clientPoint.y);x=p.x;y=p.y}if(type==='table'){const label=nextArchitectTableLabel();const t={id:label,label,room:A.room,pax:2,l:snap(x-50),t:snap(y-40),w:100,h:82,shape:'square',rotation:0,createdByRole:expressRoleLabel(),architectCreated:true};A.tables.push(t);A.selected=getTableKey(t)}else if(isZonePreset){const idx=roomZones().length+1,preset=type==='bathroom_zone'?{kind:'bathroom',label:'SALLE DE BAIN',color:'#55c7d9',w:300,h:240,serviceType:'Hébergement'}:type==='bedroom_zone'?{kind:'bedroom',label:'CHAMBRE',color:'#a785ff',w:500,h:360,serviceType:'Hébergement'}:type==='office_zone'?{kind:'office',label:'BUREAU',color:'#d59b54',w:360,h:260,serviceType:'Hébergement'}:{kind:'service',label:'ZONE '+idx,color:['#4cda8a','#58a9ff','#a785ff','#ffb13b'][idx%4],w:420,h:260,serviceType:'Dîner'};const z={id:aId('zone'),label:preset.label,room:A.room,l:snap(x-preset.w/2),t:snap(y-preset.h/2),w:preset.w,h:preset.h,rotation:0,color:preset.color,zoneKind:preset.kind,zoneShape:'rect',fillOpacity:preset.kind==='bathroom'?20:15,borderStyle:'dashed',responsible:'',serviceType:preset.serviceType,active:true,locked:false};A.zones.push(z);A.selected=getZoneKey(z)}else{const dims={wall:[300,18],door:[90,22],window:[120,18],bar:[220,100],kitchen:[260,150],cash:[120,80],buffet:[170,70],text:[240,45],plant:[65,65],pool:[320,180],roomservice:[180,80],bed_single:[115,210],bed_double:[195,210],desk:[170,75],sofa:[190,85],wardrobe:[150,65],sink:[85,65],toilet:[70,95],shower:[110,110]}[type]||[150,70];const e={id:aId(type),type,label:iconFor(type),room:A.room,l:snap(x-dims[0]/2),t:snap(y-dims[1]/2),w:dims[0],h:dims[1],rotation:0,locked:false};if(type==='cash')Object.assign(e,{label:'CAISSE',cashBg:'#d7b04a',cashText:'#17130a',cashPattern:'none',cashPatternColor:'#f7e4a3',cashBorder:'#816417',cashBorderStyle:'solid',cashBorderWidth:3,cashFontSize:18,cashRadius:8});A.elements.push(e);A.selected=getElemKey(e)}markDirty();renderCanvas()}
 function duplicateSelected(){const hit=current();if(!hit?.obj||A.mode!=='architect'||!canEdit())return;pushHistory();const c=clone(hit.obj);c.l=Number(c.l||0)+30;c.t=Number(c.t||0)+30;if(hit.type==='table'){c.id=nextArchitectTableLabel();c.label=c.id;c.express=false;c.temporary=false;A.tables.push(c);A.selected=getTableKey(c)}else if(hit.type==='zone'){c.id=aId('zone');c.label=(c.label||'ZONE')+' COPIE';A.zones.push(c);A.selected=getZoneKey(c)}else{c.id=aId(c.type||'e');A.elements.push(c);A.selected=getElemKey(c)}markDirty();renderCanvas()}
 function zoneHasActive(z){return roomTables().some(t=>aText(t.zone)===aText(z.label)&&activeOrder(t.label))}
@@ -14087,6 +14147,12 @@ function pointerDown(e){
     e.preventDefault();
     return;
   }
+  const chair=e.target.closest('.arch-chair[data-chair-seat]');
+  if(chair&&A.mode==='architect'&&canEdit()){
+    const key=chair.dataset.chairTable||chair.closest('[data-arch-key]')?.dataset.archKey;
+    const hit=byKey(key);
+    if(hit?.type==='table'&&hit.obj?.chairsFree){A.selected=key;scheduleChairPick(e,key,chair.dataset.chairSeat);return}
+  }
   const rot=e.target.closest('[data-rotate]'),handle=e.target.closest('[data-resize]'),node=e.target.closest('[data-arch-key]');
   if(rot){
     if(A.mode!=='architect'||!canEdit())return;clearArchPress();e.preventDefault();
@@ -14116,6 +14182,8 @@ function pointerDown(e){
   }
 }
 function pointerMove(e){
+  if(A.chairPress&&!A.chairPress.fired&&A.chairPress.pointerId===e.pointerId){if(Math.hypot(e.clientX-A.chairPress.x,e.clientY-A.chairPress.y)>ARCH_PICK_CANCEL_PX){clearChairPress();archRelease(e)}}
+  if(A.chairDrag&&A.chairDrag.pointerId===e.pointerId){moveFreeChair(e);return}
   if(A.press&&!A.press.fired&&A.press.pointerId===e.pointerId){
     if(Math.hypot(e.clientX-A.press.x,e.clientY-A.press.y)>ARCH_PICK_CANCEL_PX){clearArchPress();archRelease(e)}
   }
@@ -14141,6 +14209,8 @@ function pointerMove(e){
   e.preventDefault();
 }
 function pointerUp(e){
+  if(A.chairPress&&A.chairPress.pointerId===e.pointerId){const fired=!!A.chairPress.fired;if(A.chairPress.timer)clearTimeout(A.chairPress.timer);A.chairPress=null;if(!fired){archRelease(e);return}}
+  if(A.chairDrag&&A.chairDrag.pointerId===e.pointerId){const d=A.chairDrag;A.chairDrag=null;archRelease(e);renderCanvas();aToast(d.moved?'Chaise posée · position enregistrable':'Chaise sélectionnée');return}
   if(A.press&&A.press.pointerId===e.pointerId){
     const fired=!!A.press.fired;if(A.press.timer)clearTimeout(A.press.timer);A.press=null;
     if(!fired){archRelease(e);return}
@@ -14160,6 +14230,7 @@ function pointerUp(e){
   archRelease(e);
 }
 function pointerCancel(e){
+  clearChairPress();if(A.chairDrag&&A.chairDrag.pointerId===e.pointerId)A.chairDrag=null;
   clearArchPress();A.releaseCandidate=null;
   if(A.drag&&A.drag.pointerId===e.pointerId){A.drag=null;renderCanvas()}
   archRelease(e);
@@ -14198,7 +14269,7 @@ function applyZoom(){
   try{localStorage.setItem('ichef_plan_zoom_pct_v28',String(A.zoom))}catch(_){}
 }
 
-async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_ULTRA_3_CASH_CUSTOM'},updatedFrom:'PAD_ARCHITECT_ULTRA_CASH_CUSTOM',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD ultra modulable');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
+async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_V40_CHAIRS_FREE'},updatedFrom:'PAD_ARCHITECT_V40_CHAIRS_FREE',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD ultra modulable');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
 function openExpress(){if(closePadArchitect()!==false)openExpressTableCreate()}
 function architectAccessKey(value){
   return aText(value).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[\s-]+/g,'_');
@@ -14276,7 +14347,7 @@ function adjacentRoom(step){const rooms=(A.rooms||[]).filter(Boolean);if(!rooms.
 function previousRoom(){adjacentRoom(-1)}
 function nextRoom(){adjacentRoom(1)}
 function toggleMode(){if(A.mode==='architect'){A.mode='service';if(expressRoleLevel()<2){A.archUnlocked=false;A.archRole='';A.archPin=''}renderAll()}else{if(canEdit()){A.mode='architect';renderAll()}else openArchitectPin()}}
-function bindDynamic(){A.root.querySelectorAll('[data-room]').forEach(b=>b.addEventListener('click',()=>switchRoom(b.dataset.room)));A.root.querySelectorAll('[data-prop]').forEach(el=>el.addEventListener('change',propChange));A.root.querySelector('[data-duplicate]')?.addEventListener('click',duplicateSelected);A.root.querySelector('[data-delete]')?.addEventListener('click',deleteSelected);A.root.querySelectorAll('[data-city-float]').forEach(b=>b.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();cityFloatAction(b.dataset.cityFloat)}))}
+function bindDynamic(){A.root.querySelectorAll('[data-room]').forEach(b=>b.addEventListener('click',()=>switchRoom(b.dataset.room)));A.root.querySelectorAll('[data-prop]').forEach(el=>el.addEventListener('change',propChange));A.root.querySelector('[data-chair-reset]')?.addEventListener('click',archResetChairLayout);A.root.querySelector('[data-duplicate]')?.addEventListener('click',duplicateSelected);A.root.querySelector('[data-delete]')?.addEventListener('click',deleteSelected);A.root.querySelectorAll('[data-city-float]').forEach(b=>b.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();cityFloatAction(b.dataset.cityFloat)}))}
 function bindAll(){
  bindDynamic();
  A.root.querySelector('[data-close]')?.addEventListener('click',closePadArchitect);
