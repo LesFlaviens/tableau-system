@@ -5991,7 +5991,7 @@ body.order-open #btnHeadWho .head-sub-v20{
 #ichefArchPad .archpad-main:not(.service-layout) .arch-chair.free-layout:hover::before{border-color:rgba(85,217,135,.75)}
 @media(max-width:700px){#ichefArchPad .arch-chair{width:36px;height:22px;font-size:9px}}
 
-/* iCHEF V41 — ANTI-CHOC TABLES */
+/* iCHEF V42 — ANTI-COLLISION TABLE + CHAISES */
 #ichefArchPad .arch-node.arch-table.city-antishock-blocked{
   box-shadow:0 0 0 5px rgba(255,83,104,.24),0 0 22px rgba(255,83,104,.28)!important;
   outline-color:#ff5368!important;
@@ -13899,39 +13899,82 @@ function cityRoomBounds(pad=50){
 }
 function cityRect(hit){if(!hit?.obj)return null;const d=defaults(hit.obj,hit.type);return {l:d.l,t:d.t,r:d.l+d.w,b:d.t+d.h,w:d.w,h:d.h}}
 function cityOverlaps(a,b,margin=4){return a.l+margin<b.r&&a.r-margin>b.l&&a.t+margin<b.b&&a.b-margin>b.t}
-const CITY_TABLE_ANTISHOCK=20; // 20 cm de tampon invisible entre deux tables
+const CITY_TABLE_ANTISHOCK=20; // 20 cm de tampon de sécurité
+const CITY_CHAIR_PHYS_W=56;     // encombrement physique approx. d'une chaise en cm
+const CITY_CHAIR_PHYS_H=44;
+const CITY_CHAIR_GAP=10;        // petit tampon autour des chaises
 function cityTableRectAt(obj,l,t,w=null,h=null){
   const d=defaults(obj,'table');
   const ww=w==null?d.w:w,hh=h==null?d.h:h;
-  return {l,t,r:l+ww,b:t+hh,w:ww,h:hh};
+  return {l,t,r:l+ww,b:t+hh,w:ww,h:hh,kind:'body'};
 }
-function cityTableTooCloseRect(rect,key,gap=CITY_TABLE_ANTISHOCK){
-  return roomTables().some(o=>{
-    const k=getTableKey(o);if(k===key)return false;
-    const d=defaults(o,'table');
-    return rect.l < d.l+d.w+gap && rect.r > d.l-gap && rect.t < d.t+d.h+gap && rect.b > d.t-gap;
+function cityRectOverlapPenalty(a,b,gap=0){
+  const ax1=a.l-gap,ay1=a.t-gap,ax2=a.r+gap,ay2=a.b+gap;
+  const bx1=b.l-gap,by1=b.t-gap,bx2=b.r+gap,by2=b.b+gap;
+  const ow=Math.min(ax2,bx2)-Math.max(ax1,bx1),oh=Math.min(ay2,by2)-Math.max(ay1,by1);
+  return (ow>0&&oh>0)?ow*oh:0;
+}
+function cityTableCollisionShapesAt(obj,l,t,w=null,h=null){
+  const d=defaults(obj,'table'),ww=w==null?d.w:w,hh=h==null?d.h:h;
+  const shapes=[cityTableRectAt(obj,l,t,ww,hh)];
+  const count=Math.max(1,Math.min(16,Number(obj?.pax)||2));
+  for(let i=1;i<=count;i++){
+    const pose=archChairLayoutEntry(obj,i,count);
+    const cx=l+ww*(Number(pose.x)||50)/100;
+    const cy=t+hh*(Number(pose.y)||50)/100;
+    const rw=CITY_CHAIR_PHYS_W/2,rh=CITY_CHAIR_PHYS_H/2;
+    shapes.push({l:cx-rw,t:cy-rh,r:cx+rw,b:cy+rh,w:CITY_CHAIR_PHYS_W,h:CITY_CHAIR_PHYS_H,kind:'chair',seat:i});
+  }
+  return shapes;
+}
+function cityTableCollisionPenaltyAt(obj,key,l,t,w=null,h=null){
+  const mine=cityTableCollisionShapesAt(obj,l,t,w,h);
+  let penalty=0;
+  roomTables().forEach(other=>{
+    const k=getTableKey(other);if(k===key)return;
+    const od=defaults(other,'table'),theirs=cityTableCollisionShapesAt(other,od.l,od.t,od.w,od.h);
+    mine.forEach(a=>theirs.forEach(b=>{
+      // Corps contre corps = 20 cm ; dès qu'une chaise participe, tampon plus léger.
+      const gap=(a.kind==='body'&&b.kind==='body')?CITY_TABLE_ANTISHOCK:CITY_CHAIR_GAP;
+      penalty+=cityRectOverlapPenalty(a,b,gap);
+    }));
   });
+  return penalty;
+}
+function cityTableTooCloseAt(obj,key,l,t,w=null,h=null){
+  return cityTableCollisionPenaltyAt(obj,key,l,t,w,h)>0;
 }
 function cityResolveTableMove(hit,key,targetL,targetT){
   const d=defaults(hit.obj,'table');
   const curL=Number(hit.obj.l)||0,curT=Number(hit.obj.t)||0;
-  const full=cityTableRectAt(hit.obj,targetL,targetT,d.w,d.h);
-  if(!cityTableTooCloseRect(full,key))return {l:targetL,t:targetT,blocked:false};
-  // Effet "jeu de construction" : on essaie de glisser sur X puis sur Y.
-  const xOnly=cityTableRectAt(hit.obj,targetL,curT,d.w,d.h);
-  if(!cityTableTooCloseRect(xOnly,key))return {l:targetL,t:curT,blocked:true};
-  const yOnly=cityTableRectAt(hit.obj,curL,targetT,d.w,d.h);
-  if(!cityTableTooCloseRect(yOnly,key))return {l:curL,t:targetT,blocked:true};
+  const currentPenalty=cityTableCollisionPenaltyAt(hit.obj,key,curL,curT,d.w,d.h);
+  const targetPenalty=cityTableCollisionPenaltyAt(hit.obj,key,targetL,targetT,d.w,d.h);
+  if(targetPenalty===0)return {l:targetL,t:targetT,blocked:false};
+  // Si la table est déjà en collision, toujours autoriser une trajectoire qui la libère progressivement.
+  if(currentPenalty>0&&targetPenalty<currentPenalty)return {l:targetL,t:targetT,blocked:true};
+  // Effet jeu de construction : glisser le long de l'obstacle sur l'axe encore libre.
+  const xPenalty=cityTableCollisionPenaltyAt(hit.obj,key,targetL,curT,d.w,d.h);
+  const yPenalty=cityTableCollisionPenaltyAt(hit.obj,key,curL,targetT,d.w,d.h);
+  const candidates=[];
+  if(xPenalty===0||(currentPenalty>0&&xPenalty<currentPenalty))candidates.push({l:targetL,t:curT,p:xPenalty});
+  if(yPenalty===0||(currentPenalty>0&&yPenalty<currentPenalty))candidates.push({l:curL,t:targetT,p:yPenalty});
+  if(candidates.length){candidates.sort((a,b)=>a.p-b.p);return {l:candidates[0].l,t:candidates[0].t,blocked:true}}
   return {l:curL,t:curT,blocked:true};
 }
 function cityTableResizeAllowed(hit,key,l,t,w,h){
-  return !cityTableTooCloseRect(cityTableRectAt(hit.obj,l,t,w,h),key);
+  const current=defaults(hit.obj,'table');
+  const before=cityTableCollisionPenaltyAt(hit.obj,key,current.l,current.t,current.w,current.h);
+  const after=cityTableCollisionPenaltyAt(hit.obj,key,l,t,w,h);
+  return after===0||(before>0&&after<before);
 }
 function cityHasCollision(key=A.selected){
   const hit=byKey(key);if(!hit?.obj||hit.type==='zone')return false;
+  if(hit.type==='table'){
+    const d=defaults(hit.obj,'table');
+    return cityTableCollisionPenaltyAt(hit.obj,key,d.l,d.t,d.w,d.h)>0;
+  }
   if(hit.type==='element'&&['wall','door','window','text'].includes(aText(hit.obj.type)))return false;
   const r=cityRect(hit);if(!r)return false;
-  if(hit.type==='table'&&cityTableTooCloseRect(r,key,CITY_TABLE_ANTISHOCK))return true;
   const candidates=[];
   roomElements().forEach(o=>{const k=getElemKey(o),t=aText(o.type);if(k!==key&&!['wall','door','window','text'].includes(t))candidates.push({type:'element',obj:o,key:k})});
   return candidates.some(h=>cityOverlaps(r,cityRect(h),5));
@@ -14314,7 +14357,7 @@ function applyZoom(){
   try{localStorage.setItem('ichef_plan_zoom_pct_v28',String(A.zoom))}catch(_){}
 }
 
-async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_V41_ANTI_CHOC'},updatedFrom:'PAD_ARCHITECT_V41_ANTI_CHOC',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD ultra modulable');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
+async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_V42_ANTI_COLLISION_TABLE_CHAISES'},updatedFrom:'PAD_ARCHITECT_V42_ANTI_COLLISION_TABLE_CHAISES',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD ultra modulable');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
 function openExpress(){if(closePadArchitect()!==false)openExpressTableCreate()}
 function architectAccessKey(value){
   return aText(value).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[\s-]+/g,'_');
