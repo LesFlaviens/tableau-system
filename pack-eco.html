@@ -9551,6 +9551,21 @@ function systemPrintHTML(lines,title="iCHEF",paperWidth=80){
 
   /* Ticket d'impression isolé : aucun script applicatif/architecture ne doit être injecté ici. */
   return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>@page{size:${width}mm auto;margin:3mm}html,body{margin:0;padding:0;background:#fff;color:#000;font-family:Arial,sans-serif}.ticket{width:${width-6}mm;margin:0 auto}</style></head><body><div class="ticket">${body}</div>
+
+
+<!-- iCHEF V30 — SALLE AUTO + MARGE SÉCURITÉ 0,5 M -->
+<style id="ichef-architecture-v30-room-size">
+#ichefArchPad .archpad-stage-shell{
+  outline:2px solid rgba(72,78,80,.42) !important;
+  outline-offset:-2px !important;
+  background:#f8f6f0 !important;
+}
+#ichefArchPad .archpad-stage{
+  background-color:#f8f6f0 !important;
+}
+#ichefArchPad .archpad-statusbar [data-room-size]{color:#e2b84e !important;}
+</style>
+
 </body></html>`;
 }
 
@@ -13514,6 +13529,10 @@ try{ if(typeof scheduleRender==="function") scheduleRender(); }catch(_ ){}
    ========================================================= */
 (()=>{
 const ARCH_W=5000,ARCH_H=5000;
+// V30 — dimensions du plan en centimètres : 100 unités = 1 mètre.
+// La salle visible suit le contenu réel avec 0,5 m de sécurité sur chaque côté.
+const ARCH_UNITS_PER_METER=100;
+const ARCH_ROOM_SAFETY_MARGIN=0.5*ARCH_UNITS_PER_METER; // 50 cm
 // V22 — tactile Architecture : sensibilité réduite de 35 % (65 % du déplacement du doigt).
 // La souris reste à 100 % pour conserver la précision sur ordinateur.
 const ARCH_TOUCH_SENSITIVITY=0.65;
@@ -13603,7 +13622,16 @@ function zoneKindLabel(k){return ({service:'SERVICE',bathroom:'SALLE DE BAIN',be
 function zoneClass(z){const k=aText(z.zoneKind||'service'),shape=aText(z.zoneShape||'rect');return `zone-${k} ${shape==='rounded'?'zone-rounded':shape==='oval'?'zone-oval':''}`}
 function iconFor(type){return ({wall:'🧱',door:'🚪',window:'🪟',bar:'🍸 BAR',kitchen:'👨‍🍳 CUISINE',cash:'💳 CAISSE',buffet:'🍽️ BUFFET',text:'✏️ TEXTE',plant:'🪴',pool:'🏊 PISCINE',roomservice:'🛎️ ROOM SERVICE',bed_single:'🛏️ LIT SIMPLE',bed_double:'🛏️ LIT DOUBLE',desk:'🖥️ BUREAU',sofa:'🛋️ CANAPÉ',wardrobe:'🚪 ARMOIRE',sink:'🚰 LAVABO',toilet:'🚽 WC',shower:'🚿 DOUCHE'})[type]||type.toUpperCase()}
 function classFor(type){return ({wall:'arch-wall',door:'arch-door',window:'arch-window',bar:'arch-bar',kitchen:'arch-kitchen',cash:'arch-cash',buffet:'arch-buffet',text:'arch-text',plant:'arch-plant',pool:'arch-pool',roomservice:'arch-roomservice',bed_single:'arch-bed-single',bed_double:'arch-bed-double',desk:'arch-desk',sofa:'arch-sofa',wardrobe:'arch-wardrobe',sink:'arch-bathfixture',toilet:'arch-bathfixture',shower:'arch-shower'})[type]||''}
-function nodeStyle(o){const d=defaults(o,o.__kind||'element'),z=Number(o.zIndex)||0;return `left:${d.l/ARCH_W*100}%;top:${d.t/ARCH_H*100}%;width:${d.w/ARCH_W*100}%;height:${d.h/ARCH_H*100}%;transform:rotate(${d.rotation||0}deg);${z?`z-index:${z};`:''}`}
+function architectureStageBounds(){
+  if(A.drag?.stageBounds)return A.drag.stageBounds;
+  if(typeof architectureRoomBounds==='function')return architectureRoomBounds();
+  return {l:0,t:0,r:ARCH_W,b:ARCH_H,empty:true};
+}
+function nodeStyle(o){
+  const d=defaults(o,o.__kind||'element'),z=Number(o.zIndex)||0,b=architectureStageBounds();
+  const bw=Math.max(1,b.r-b.l),bh=Math.max(1,b.b-b.t);
+  return `left:${(d.l-b.l)/bw*100}%;top:${(d.t-b.t)/bh*100}%;width:${d.w/bw*100}%;height:${d.h/bh*100}%;transform:rotate(${d.rotation||0}deg);${z?`z-index:${z};`:''}`
+}
 function handles(){if(A.mode!=='architect'||!canEdit())return '';return '<span class="arch-handle nw" data-resize="nw"></span><span class="arch-handle n" data-resize="n"></span><span class="arch-handle ne" data-resize="ne"></span><span class="arch-handle e" data-resize="e"></span><span class="arch-handle se" data-resize="se"></span><span class="arch-handle s" data-resize="s"></span><span class="arch-handle sw" data-resize="sw"></span><span class="arch-handle w" data-resize="w"></span><button type="button" class="arch-rotate" data-rotate title="Rotation +15°">↻</button>'}
 function elementInner(e){const label=esc(e.label||iconFor(e.type));if(e.type==='wall')return '';if(e.type==='cash')return `<span class="arch-cash-label">${label}</span>`;if(['bed_single','bed_double','desk','sofa','wardrobe','sink','toilet','shower'].includes(e.type))return `<span class="arch-object-label">${label}</span>`;return label}
 function canvasHTML(){
@@ -13637,22 +13665,28 @@ function zoomOptionsHTML(){
   const z=aClamp(Number(A.zoom)||0,0,200);
   return Array.from({length:21},(_,i)=>i*10).map(v=>`<option value="${v}" ${v===z?'selected':''}>${v}%</option>`).join('');
 }
-function fullHTML(){const st=statsHTML(),architect=A.mode==='architect'&&canEdit();const toolbar=architect?`<div class="archpad-toolbar"><button class="archpad-tool active" type="button" data-tool="select">✋ Déplacer</button><button class="archpad-tool" type="button" data-add="zone">🟩 Zone</button><button class="archpad-tool" type="button" data-add="wall">🧱 Mur</button><button class="archpad-tool" type="button" data-add="door">🚪 Porte</button><button class="archpad-tool" type="button" data-add="table">🍽️ Table</button><button class="archpad-tool" type="button" data-add="text">✏️ Texte</button><button class="archpad-tool" type="button" data-undo>↶</button><button class="archpad-tool" type="button" data-redo>↷</button><button class="archpad-tool save" type="button" data-save>💾 Enregistrer</button></div>`:`<div class="archpad-service-note"><b>🟢 MODE SERVICE</b><span>Plan opérationnel · édition masquée</span></div>`;const sideLeft=architect?architectPaletteHTML():'';const sideRight=architect?`<aside class="archpad-right"><div class="archpad-section"><h3>⚙️ Propriétés</h3></div><div data-props>${propHTML()}</div></aside>`:'';return `<div class="archpad-top"><div class="archpad-brand"><strong>🗺️ iCHEF · ARCHITECTURE</strong><small>🍽️ Plan ultra modulable · Restaurant + Hôtel 🏨</small></div><div class="archpad-breadcrumb">Architecture › <b data-crumb>${esc(A.room)}</b></div>${toolbar}<button type="button" class="archpad-close" data-close>×</button></div><div class="archpad-main ${architect?'':'service-layout'}">${sideLeft}<section class="archpad-center" style="background:#f4f1e8!important;"><div class="archpad-canvasbar"><button type="button" class="archpad-room-nav" data-room-prev title="Salle précédente" aria-label="Salle précédente">⬅️</button><div class="archpad-room-name"><small>🗺️ PLAN DE SALLE</small><b>${esc(A.room)}</b></div><button type="button" class="archpad-room-nav" data-room-next title="Salle suivante" aria-label="Salle suivante">➡️</button><span class="archpad-mode ${architect?'architect':''}" data-mode-label>${architect?'🛠️ MODE ARCHITECTE':'🟢 MODE SERVICE'}</span><button type="button" data-toggle-mode>${architect?'▶️ Passer en SERVICE':'🔐 CODE ARCHITECTE'}</button><button type="button" data-express>➕ 🍽️ TABLE EXPRESS</button><span class="grow"></span>${architect?`<button type="button" data-grid>▦ Grille ${A.grid?'ON':'OFF'}</button><button type="button" data-snap>🧲 Aimant ${A.snap?'ON':'OFF'}</button>`:''}<select data-zoom aria-label="Zoom du plan">${zoomOptionsHTML()}</select></div>${architect?'':`<div class="archpad-livebar" data-livebar>${planRushHTML()}</div>`}<div class="archpad-stagewrap" style="background-color:#f4f1e8!important;background-image:linear-gradient(rgba(50,55,57,.055) 1px,transparent 1px),linear-gradient(90deg,rgba(50,55,57,.055) 1px,transparent 1px);background-size:20px 20px;"><div class="archpad-stage-shell" data-stage-shell style="background:#f4f1e8!important;border:0!important;border-radius:0!important;box-shadow:none!important;"><div class="archpad-stage ${A.grid?'':'no-grid'}" data-stage>${canvasHTML()}</div></div></div><div class="archpad-statusbar"><span><b>${roomTables().length}</b> tables</span><span><b>${roomZones().length}</b> zones/pièces</span><span><b>${roomElements().length}</b> éléments</span><span>Zoom <b data-zoom-label>${A.zoom}%</b></span><span class="save-state" data-arch-save-state></span></div></section>${sideRight}</div>${architect?architectBottomHTML(st):''}<div class="archpad-toast" aria-live="polite"></div>${pinOverlayHTML()}`}
+function fullHTML(){const st=statsHTML(),architect=A.mode==='architect'&&canEdit();const toolbar=architect?`<div class="archpad-toolbar"><button class="archpad-tool active" type="button" data-tool="select">✋ Déplacer</button><button class="archpad-tool" type="button" data-add="zone">🟩 Zone</button><button class="archpad-tool" type="button" data-add="wall">🧱 Mur</button><button class="archpad-tool" type="button" data-add="door">🚪 Porte</button><button class="archpad-tool" type="button" data-add="table">🍽️ Table</button><button class="archpad-tool" type="button" data-add="text">✏️ Texte</button><button class="archpad-tool" type="button" data-undo>↶</button><button class="archpad-tool" type="button" data-redo>↷</button><button class="archpad-tool save" type="button" data-save>💾 Enregistrer</button></div>`:`<div class="archpad-service-note"><b>🟢 MODE SERVICE</b><span>Plan opérationnel · édition masquée</span></div>`;const sideLeft=architect?architectPaletteHTML():'';const sideRight=architect?`<aside class="archpad-right"><div class="archpad-section"><h3>⚙️ Propriétés</h3></div><div data-props>${propHTML()}</div></aside>`:'';return `<div class="archpad-top"><div class="archpad-brand"><strong>🗺️ iCHEF · ARCHITECTURE</strong><small>🍽️ Plan ultra modulable · Restaurant + Hôtel 🏨</small></div><div class="archpad-breadcrumb">Architecture › <b data-crumb>${esc(A.room)}</b></div>${toolbar}<button type="button" class="archpad-close" data-close>×</button></div><div class="archpad-main ${architect?'':'service-layout'}">${sideLeft}<section class="archpad-center" style="background:#f4f1e8!important;"><div class="archpad-canvasbar"><button type="button" class="archpad-room-nav" data-room-prev title="Salle précédente" aria-label="Salle précédente">⬅️</button><div class="archpad-room-name"><small>🗺️ PLAN DE SALLE</small><b>${esc(A.room)}</b></div><button type="button" class="archpad-room-nav" data-room-next title="Salle suivante" aria-label="Salle suivante">➡️</button><span class="archpad-mode ${architect?'architect':''}" data-mode-label>${architect?'🛠️ MODE ARCHITECTE':'🟢 MODE SERVICE'}</span><button type="button" data-toggle-mode>${architect?'▶️ Passer en SERVICE':'🔐 CODE ARCHITECTE'}</button><button type="button" data-express>➕ 🍽️ TABLE EXPRESS</button><span class="grow"></span>${architect?`<button type="button" data-grid>▦ Grille ${A.grid?'ON':'OFF'}</button><button type="button" data-snap>🧲 Aimant ${A.snap?'ON':'OFF'}</button>`:''}<select data-zoom aria-label="Zoom du plan">${zoomOptionsHTML()}</select></div>${architect?'':`<div class="archpad-livebar" data-livebar>${planRushHTML()}</div>`}<div class="archpad-stagewrap" style="background-color:#f4f1e8!important;background-image:linear-gradient(rgba(50,55,57,.055) 1px,transparent 1px),linear-gradient(90deg,rgba(50,55,57,.055) 1px,transparent 1px);background-size:20px 20px;"><div class="archpad-stage-shell" data-stage-shell style="background:#f4f1e8!important;border:0!important;border-radius:0!important;box-shadow:none!important;"><div class="archpad-stage ${A.grid?'':'no-grid'}" data-stage>${canvasHTML()}</div></div></div><div class="archpad-statusbar"><span><b>${roomTables().length}</b> tables</span><span><b>${roomZones().length}</b> zones/pièces</span><span><b>${roomElements().length}</b> éléments</span><span>Salle <b data-room-size>—</b> · marge <b>0,5 m</b></span><span>Zoom <b data-zoom-label>${A.zoom}%</b></span><span class="save-state" data-arch-save-state></span></div></section>${sideRight}</div>${architect?architectBottomHTML(st):''}<div class="archpad-toast" aria-live="polite"></div>${pinOverlayHTML()}`}
 function renderCanvas(){normaliseAll();const stage=A.root?.querySelector('[data-stage]');if(stage){stage.innerHTML=canvasHTML();stage.classList.toggle('no-grid',!A.grid)}const props=A.root?.querySelector('[data-props]');if(props)props.innerHTML=propHTML();const crumb=A.root?.querySelector('[data-crumb]');if(crumb)crumb.textContent=A.room;const list=A.root?.querySelector('[data-room-list]');if(list)list.innerHTML=roomListHTML();bindDynamic();updateSaveState()}
 function renderAll(){if(!A.root)return;A.root.innerHTML=fullHTML();bindAll();updateSaveState();applyZoom()}
 function select(key){A.selected=key;renderCanvas()}
 function current(){return byKey(A.selected)}
 function setObjProp(o,k,v){if(['l','t','w','h','rotation','pax','capacity','fillOpacity','zIndex','cashBorderWidth','cashFontSize','cashRadius'].includes(k))v=Number(v)||0;if(k==='w'||k==='h')v=Math.max(16,v);if(k==='fillOpacity')v=aClamp(v,3,55);if(k==='cashBorderWidth')v=aClamp(v,1,12);if(k==='cashFontSize')v=aClamp(v,8,72);if(k==='cashRadius')v=aClamp(v,0,60);if(k==='locked')v=String(v)==='true';o[k]=v}
-function propChange(e){const k=e.target.dataset.prop;if(!k)return;const hit=current();if(!hit?.obj)return;pushHistory();let v=e.target.value;if(k==='label'&&hit.type==='table'){const nv=aText(v),oldLabel=aText(hit.obj.label);if(!nv)return;if(activeOrder(oldLabel)){aToast('Renommer interdit : commande active',true);renderCanvas();return}if(A.tables.some(t=>t!==hit.obj&&aText(t.label).toUpperCase()===nv.toUpperCase())){aToast('Numéro de table déjà utilisé',true);renderCanvas();return}hit.obj.label=nv;if(!hit.obj.id||aText(hit.obj.id)===oldLabel)hit.obj.id=nv}else setObjProp(hit.obj,k,v);markDirty();renderCanvas()}
-function addObject(type,clientPoint=null){if(A.mode!=='architect'||!canEdit()){aToast('Mode Architecte réservé Gérant / Directeur',true);return}pushHistory();const isZonePreset=['zone','bathroom_zone','bedroom_zone','office_zone'].includes(type),count=type==='table'?roomTables().length:isZonePreset?roomZones().length:roomElements().length;let x=220+(count%5)*105,y=150+Math.floor(count/5)*85;if(clientPoint){const p=pointInStage(clientPoint.x,clientPoint.y);x=p.x;y=p.y}if(type==='table'){const label=nextArchitectTableLabel();const t={id:label,label,room:A.room,pax:2,l:snap(x-50),t:snap(y-40),w:100,h:82,shape:'square',rotation:0,createdByRole:expressRoleLabel(),architectCreated:true};A.tables.push(t);A.selected=getTableKey(t)}else if(isZonePreset){const idx=roomZones().length+1,preset=type==='bathroom_zone'?{kind:'bathroom',label:'SALLE DE BAIN',color:'#55c7d9',w:300,h:240,serviceType:'Hébergement'}:type==='bedroom_zone'?{kind:'bedroom',label:'CHAMBRE',color:'#a785ff',w:500,h:360,serviceType:'Hébergement'}:type==='office_zone'?{kind:'office',label:'BUREAU',color:'#d59b54',w:360,h:260,serviceType:'Hébergement'}:{kind:'service',label:'ZONE '+idx,color:['#4cda8a','#58a9ff','#a785ff','#ffb13b'][idx%4],w:420,h:260,serviceType:'Dîner'};const z={id:aId('zone'),label:preset.label,room:A.room,l:snap(x-preset.w/2),t:snap(y-preset.h/2),w:preset.w,h:preset.h,rotation:0,color:preset.color,zoneKind:preset.kind,zoneShape:'rect',fillOpacity:preset.kind==='bathroom'?20:15,borderStyle:'dashed',responsible:'',serviceType:preset.serviceType,active:true,locked:false};A.zones.push(z);A.selected=getZoneKey(z)}else{const dims={wall:[300,18],door:[90,22],window:[120,18],bar:[220,100],kitchen:[260,150],cash:[120,80],buffet:[170,70],text:[240,45],plant:[65,65],pool:[320,180],roomservice:[180,80],bed_single:[115,210],bed_double:[195,210],desk:[170,75],sofa:[190,85],wardrobe:[150,65],sink:[85,65],toilet:[70,95],shower:[110,110]}[type]||[150,70];const e={id:aId(type),type,label:iconFor(type),room:A.room,l:snap(x-dims[0]/2),t:snap(y-dims[1]/2),w:dims[0],h:dims[1],rotation:0,locked:false};if(type==='cash')Object.assign(e,{label:'CAISSE',cashBg:'#d7b04a',cashText:'#17130a',cashPattern:'none',cashPatternColor:'#f7e4a3',cashBorder:'#816417',cashBorderStyle:'solid',cashBorderWidth:3,cashFontSize:18,cashRadius:8});A.elements.push(e);A.selected=getElemKey(e)}markDirty();renderCanvas()}
-function duplicateSelected(){const hit=current();if(!hit?.obj||A.mode!=='architect'||!canEdit())return;pushHistory();const c=clone(hit.obj);c.l=Number(c.l||0)+30;c.t=Number(c.t||0)+30;if(hit.type==='table'){c.id=nextArchitectTableLabel();c.label=c.id;c.express=false;c.temporary=false;A.tables.push(c);A.selected=getTableKey(c)}else if(hit.type==='zone'){c.id=aId('zone');c.label=(c.label||'ZONE')+' COPIE';A.zones.push(c);A.selected=getZoneKey(c)}else{c.id=aId(c.type||'e');A.elements.push(c);A.selected=getElemKey(c)}markDirty();renderCanvas()}
+function propChange(e){const k=e.target.dataset.prop;if(!k)return;const hit=current();if(!hit?.obj)return;pushHistory();let v=e.target.value;if(k==='label'&&hit.type==='table'){const nv=aText(v),oldLabel=aText(hit.obj.label);if(!nv)return;if(activeOrder(oldLabel)){aToast('Renommer interdit : commande active',true);renderCanvas();return}if(A.tables.some(t=>t!==hit.obj&&aText(t.label).toUpperCase()===nv.toUpperCase())){aToast('Numéro de table déjà utilisé',true);renderCanvas();return}hit.obj.label=nv;if(!hit.obj.id||aText(hit.obj.id)===oldLabel)hit.obj.id=nv}else setObjProp(hit.obj,k,v);markDirty();renderCanvas();scheduleArchitectureFit()}
+function addObject(type,clientPoint=null){if(A.mode!=='architect'||!canEdit()){aToast('Mode Architecte réservé Gérant / Directeur',true);return}pushHistory();const isZonePreset=['zone','bathroom_zone','bedroom_zone','office_zone'].includes(type),count=type==='table'?roomTables().length:isZonePreset?roomZones().length:roomElements().length;let x=220+(count%5)*105,y=150+Math.floor(count/5)*85;if(clientPoint){const p=pointInStage(clientPoint.x,clientPoint.y);x=p.x;y=p.y}if(type==='table'){const label=nextArchitectTableLabel();const t={id:label,label,room:A.room,pax:2,l:snap(x-50),t:snap(y-40),w:100,h:82,shape:'square',rotation:0,createdByRole:expressRoleLabel(),architectCreated:true};A.tables.push(t);A.selected=getTableKey(t)}else if(isZonePreset){const idx=roomZones().length+1,preset=type==='bathroom_zone'?{kind:'bathroom',label:'SALLE DE BAIN',color:'#55c7d9',w:300,h:240,serviceType:'Hébergement'}:type==='bedroom_zone'?{kind:'bedroom',label:'CHAMBRE',color:'#a785ff',w:500,h:360,serviceType:'Hébergement'}:type==='office_zone'?{kind:'office',label:'BUREAU',color:'#d59b54',w:360,h:260,serviceType:'Hébergement'}:{kind:'service',label:'ZONE '+idx,color:['#4cda8a','#58a9ff','#a785ff','#ffb13b'][idx%4],w:420,h:260,serviceType:'Dîner'};const z={id:aId('zone'),label:preset.label,room:A.room,l:snap(x-preset.w/2),t:snap(y-preset.h/2),w:preset.w,h:preset.h,rotation:0,color:preset.color,zoneKind:preset.kind,zoneShape:'rect',fillOpacity:preset.kind==='bathroom'?20:15,borderStyle:'dashed',responsible:'',serviceType:preset.serviceType,active:true,locked:false};A.zones.push(z);A.selected=getZoneKey(z)}else{const dims={wall:[300,18],door:[90,22],window:[120,18],bar:[220,100],kitchen:[260,150],cash:[120,80],buffet:[170,70],text:[240,45],plant:[65,65],pool:[320,180],roomservice:[180,80],bed_single:[115,210],bed_double:[195,210],desk:[170,75],sofa:[190,85],wardrobe:[150,65],sink:[85,65],toilet:[70,95],shower:[110,110]}[type]||[150,70];const e={id:aId(type),type,label:iconFor(type),room:A.room,l:snap(x-dims[0]/2),t:snap(y-dims[1]/2),w:dims[0],h:dims[1],rotation:0,locked:false};if(type==='cash')Object.assign(e,{label:'CAISSE',cashBg:'#d7b04a',cashText:'#17130a',cashPattern:'none',cashPatternColor:'#f7e4a3',cashBorder:'#816417',cashBorderStyle:'solid',cashBorderWidth:3,cashFontSize:18,cashRadius:8});A.elements.push(e);A.selected=getElemKey(e)}markDirty();renderCanvas();scheduleArchitectureFit()}
+function duplicateSelected(){const hit=current();if(!hit?.obj||A.mode!=='architect'||!canEdit())return;pushHistory();const c=clone(hit.obj);c.l=Number(c.l||0)+30;c.t=Number(c.t||0)+30;if(hit.type==='table'){c.id=nextArchitectTableLabel();c.label=c.id;c.express=false;c.temporary=false;A.tables.push(c);A.selected=getTableKey(c)}else if(hit.type==='zone'){c.id=aId('zone');c.label=(c.label||'ZONE')+' COPIE';A.zones.push(c);A.selected=getZoneKey(c)}else{c.id=aId(c.type||'e');A.elements.push(c);A.selected=getElemKey(c)}markDirty();renderCanvas();scheduleArchitectureFit()}
 function zoneHasActive(z){return roomTables().some(t=>aText(t.zone)===aText(z.label)&&activeOrder(t.label))}
-function deleteSelected(){const hit=current();if(!hit?.obj||A.mode!=='architect'||!canEdit())return;if(hit.type==='table'&&activeOrder(hit.obj.label)){aToast('Suppression interdite : commande active',true);return}if(hit.type==='zone'&&zoneHasActive(hit.obj)){aToast('Zone protégée : table active',true);return}if(!confirm('Supprimer cet élément du plan ?'))return;pushHistory();if(hit.type==='table')A.tables=A.tables.filter(x=>x!==hit.obj);else if(hit.type==='zone'){A.tables.forEach(t=>{if(aText(t.zone)===aText(hit.obj.label))t.zone=''});A.zones=A.zones.filter(x=>x!==hit.obj)}else A.elements=A.elements.filter(x=>x!==hit.obj);A.selected=null;markDirty();renderCanvas()}
+function deleteSelected(){const hit=current();if(!hit?.obj||A.mode!=='architect'||!canEdit())return;if(hit.type==='table'&&activeOrder(hit.obj.label)){aToast('Suppression interdite : commande active',true);return}if(hit.type==='zone'&&zoneHasActive(hit.obj)){aToast('Zone protégée : table active',true);return}if(!confirm('Supprimer cet élément du plan ?'))return;pushHistory();if(hit.type==='table')A.tables=A.tables.filter(x=>x!==hit.obj);else if(hit.type==='zone'){A.tables.forEach(t=>{if(aText(t.zone)===aText(hit.obj.label))t.zone=''});A.zones=A.zones.filter(x=>x!==hit.obj)}else A.elements=A.elements.filter(x=>x!==hit.obj);A.selected=null;markDirty();renderCanvas();scheduleArchitectureFit()}
 function addRoom(){if(!canEdit())return aToast('Droit manager requis',true);const name=aText(prompt('Nom du nouvel espace / salle :','Nouvel espace'));if(!name)return;if(A.rooms.some(r=>aText(r).toUpperCase()===name.toUpperCase()))return aToast('Cet espace existe déjà',true);pushHistory();A.rooms.push(name);A.room=name;A.selected=null;markDirty();renderAll()}
 function renameRoom(){if(!canEdit())return aToast('Droit manager requis',true);const old=A.room,name=aText(prompt('Nouveau nom de cet espace :',old));if(!name||name===old)return;if(A.rooms.some(r=>r!==old&&aText(r).toUpperCase()===name.toUpperCase()))return aToast('Cet espace existe déjà',true);pushHistory();A.rooms=A.rooms.map(r=>r===old?name:r);A.tables.forEach(t=>{if(aText(t.room||A.rooms[0])===old)t.room=name});A.zones.forEach(z=>{if(aText(z.room||A.rooms[0])===old)z.room=name});A.elements.forEach(e=>{if(aText(e.room||A.rooms[0])===old)e.room=name});A.room=name;STATE.room=name;markDirty();renderAll()}
 function deleteRoom(){if(!canEdit())return aToast('Droit manager requis',true);if(A.rooms.length<=1)return aToast('Impossible de supprimer le dernier espace',true);if(roomTables().some(t=>activeOrder(t.label)))return aToast('Espace protégé : commande active',true);if(!confirm(`Supprimer l’espace ${A.room} et ses éléments ?`))return;pushHistory();const old=A.room;A.tables=A.tables.filter(t=>aText(t.room||A.rooms[0])!==old);A.zones=A.zones.filter(z=>aText(z.room||A.rooms[0])!==old);A.elements=A.elements.filter(e=>aText(e.room||A.rooms[0])!==old);A.rooms=A.rooms.filter(r=>r!==old);A.room=A.rooms[0];STATE.room=A.room;A.selected=null;markDirty();renderAll()}
 function switchRoom(r){A.room=r;STATE.room=r;A.selected=null;renderAll();scheduleArchitectureFit()}
-function pointInStage(cx,cy){const st=A.root.querySelector('[data-stage]'),r=st.getBoundingClientRect();return {x:aClamp((cx-r.left)/r.width*ARCH_W,0,ARCH_W),y:aClamp((cy-r.top)/r.height*ARCH_H,0,ARCH_H)}}
+function pointInStage(cx,cy){
+  const st=A.root.querySelector('[data-stage]'),r=st.getBoundingClientRect(),b=architectureStageBounds();
+  const bw=Math.max(1,b.r-b.l),bh=Math.max(1,b.b-b.t);
+  const x=b.l+((cx-r.left)/Math.max(1,r.width))*bw;
+  const y=b.t+((cy-r.top)/Math.max(1,r.height))*bh;
+  return {x:aClamp(x,0,ARCH_W),y:aClamp(y,0,ARCH_H)};
+}
 function archCapturePointer(e){
   try{
     const st=A.root?.querySelector('[data-stage]');
@@ -13690,7 +13724,7 @@ function pointerDown(e){
     if(!h?.obj)return;
     if(h.obj.locked)return aToast('Déverrouille cet élément dans Propriétés');
     pushHistory();
-    A.drag={kind:'resize',dir:handle.dataset.resize,key:A.selected,start:pointInStage(e.clientX,e.clientY),orig:clone(defaults(h.obj,h.type)),pointerType:String(e.pointerType||'mouse'),pointerId:e.pointerId};
+    A.drag={kind:'resize',dir:handle.dataset.resize,key:A.selected,start:pointInStage(e.clientX,e.clientY),orig:clone(defaults(h.obj,h.type)),pointerType:String(e.pointerType||'mouse'),pointerId:e.pointerId,stageBounds:architectureRoomBounds()};
     archCapturePointer(e);
     e.preventDefault();
     return;
@@ -13704,7 +13738,7 @@ function pointerDown(e){
     if(!h?.obj)return;
     if(h.obj.locked)return aToast('Élément verrouillé · sélectionné sans déplacement');
     pushHistory();
-    A.drag={kind:'move',key,start:pointInStage(e.clientX,e.clientY),orig:clone(defaults(h.obj,h.type)),pointerType:String(e.pointerType||'mouse'),pointerId:e.pointerId};
+    A.drag={kind:'move',key,start:pointInStage(e.clientX,e.clientY),orig:clone(defaults(h.obj,h.type)),pointerType:String(e.pointerType||'mouse'),pointerId:e.pointerId,stageBounds:architectureRoomBounds()};
     archCapturePointer(e);
     e.preventDefault();
     return;
@@ -13742,6 +13776,7 @@ function pointerUp(e){
   archReleasePointer(e);
   A.drag=null;
   renderCanvas();
+  scheduleArchitectureFit();
 }
 function applyZoom(){
   const sh=A.root?.querySelector('[data-stage-shell]');
@@ -13749,24 +13784,28 @@ function applyZoom(){
   if(!sh||!st)return;
   A.zoom=aClamp(Number(A.zoom)||0,0,200);
   const factor=A.zoom/100;
+  const b=architectureStageBounds();
+  const roomW=Math.max(100,b.r-b.l),roomH=Math.max(100,b.b-b.t);
 
-  /* Le shell représente la taille VISUELLE réellement occupée après zoom.
-     Le stage garde toujours les coordonnées architecte 5000 x 5000 et est
-     réellement agrandi/réduit : le pourcentage et le plan restent synchronisés. */
-  sh.style.setProperty('width',(ARCH_W*factor)+'px','important');
-  sh.style.setProperty('height',(ARCH_H*factor)+'px','important');
+  /* V30 : le shell n'est plus le canevas technique 50 x 50 m.
+     Il représente uniquement la salle réelle + 0,5 m de marge de sécurité. */
+  sh.style.setProperty('width',(roomW*factor)+'px','important');
+  sh.style.setProperty('height',(roomH*factor)+'px','important');
   sh.style.setProperty('min-width','0px','important');
   sh.style.setProperty('min-height','0px','important');
   sh.style.setProperty('max-width','none','important');
   sh.style.setProperty('overflow','visible','important');
 
-  st.style.setProperty('width',ARCH_W+'px','important');
-  st.style.setProperty('height',ARCH_H+'px','important');
+  st.style.setProperty('width',roomW+'px','important');
+  st.style.setProperty('height',roomH+'px','important');
+  st.style.setProperty('aspect-ratio','auto','important');
   st.style.setProperty('transform-origin','0 0','important');
   st.style.setProperty('transform','scale('+factor+')','important');
 
   const z=A.root.querySelector('[data-zoom-label]');
   if(z)z.textContent=A.zoom+'%';
+  const size=A.root.querySelector('[data-room-size]');
+  if(size)size.textContent=(roomW/ARCH_UNITS_PER_METER).toFixed(1)+' × '+(roomH/ARCH_UNITS_PER_METER).toFixed(1)+' m';
   const sel=A.root.querySelector('[data-zoom]');
   if(sel){
     if(!Array.from(sel.options).some(o=>Number(String(o.value||o.textContent).replace('%',''))===A.zoom)){
@@ -13791,92 +13830,68 @@ function architectureObjectBounds(obj,type){
   const cx=d.l+d.w/2,cy=d.t+d.h/2;
   return {l:cx-bw/2,t:cy-bh/2,r:cx+bw/2,b:cy+bh/2};
 }
-function architectureBoundsFromItems(items,margin=100){
+function architectureBoundsFromItems(items,margin=ARCH_ROOM_SAFETY_MARGIN){
   if(!items.length)return null;
-  let l=ARCH_W,t=ARCH_H,r=0,b=0;
+  let l=Infinity,t=Infinity,r=-Infinity,b=-Infinity;
   for(const item of items){
     const q=architectureObjectBounds(item.obj,item.type);
     l=Math.min(l,q.l);t=Math.min(t,q.t);r=Math.max(r,q.r);b=Math.max(b,q.b);
   }
-  return {
-    l:aClamp(l-margin,0,ARCH_W),
-    t:aClamp(t-margin,0,ARCH_H),
-    r:aClamp(r+margin,0,ARCH_W),
-    b:aClamp(b+margin,0,ARCH_H)
-  };
+  /* Ne pas brider à 0/5000 : la marge de 0,5 m doit exister même quand
+     une table se trouve exactement au bord du repère technique. */
+  return {l:l-margin,t:t-margin,r:r+margin,b:b+margin};
 }
 function architectureBoundsIntersect(a,b,pad=0){
   return !(a.r+pad<b.l||a.l-pad>b.r||a.b+pad<b.t||a.t-pad>b.b);
 }
 function architectureRoomBounds(){
-  /* Le cadrage par défaut est piloté par les TABLES : un texte décoratif,
-     une plante ou un élément perdu à 3 000 px ne doit plus réduire tout le plan. */
-  const tableItems=roomTables().map(obj=>({obj,type:'table'}));
-  if(tableItems.length){
-    const core=architectureBoundsFromItems(tableItems,70);
-    const useful=[...tableItems];
-
-    /* On conserve les zones et équipements réellement proches des tables,
-       afin que la salle reste compréhensible sans englober le canevas vide. */
-    for(const obj of roomZones()){
-      const q=architectureObjectBounds(obj,'zone');
-      if(architectureBoundsIntersect(core,q,120))useful.push({obj,type:'zone'});
-    }
-    const structuralTypes=new Set(['wall','door','window','bar','kitchen','cash','buffet','pool']);
-    for(const obj of roomElements()){
-      if(!structuralTypes.has(String(obj?.type||'').toLowerCase()))continue;
-      const q=architectureObjectBounds(obj,'element');
-      if(architectureBoundsIntersect(core,q,160))useful.push({obj,type:'element'});
-    }
-    return {...architectureBoundsFromItems(useful,110),empty:false,tableDriven:true};
-  }
-
-  /* Sans table, on retombe sur les éléments réellement présents. */
+  /* V30 — TAILLE DE SALLE = contenu physique du plan + 0,5 m tout autour.
+     Les zones/pièces ont priorité car elles décrivent les limites physiques.
+     Tables et équipements complètent la salle. Les textes libres sont exclus
+     pour qu'une étiquette oubliée loin du plan ne crée pas une salle géante. */
   const items=[];
   roomZones().forEach(obj=>items.push({obj,type:'zone'}));
-  roomElements().forEach(obj=>items.push({obj,type:'element'}));
-  if(!items.length)return {l:0,t:0,r:Math.min(1400,ARCH_W),b:Math.min(820,ARCH_H),empty:true};
-  return {...architectureBoundsFromItems(items,110),empty:false,tableDriven:false};
+  roomTables().forEach(obj=>items.push({obj,type:'table'}));
+  roomElements().forEach(obj=>{
+    if(String(obj?.type||'').toLowerCase()==='text')return;
+    items.push({obj,type:'element'});
+  });
+  if(!items.length){
+    /* Salle vide par défaut : 14 x 8,2 m + marge déjà incluse visuellement. */
+    return {l:-ARCH_ROOM_SAFETY_MARGIN,t:-ARCH_ROOM_SAFETY_MARGIN,r:1400+ARCH_ROOM_SAFETY_MARGIN,b:820+ARCH_ROOM_SAFETY_MARGIN,empty:true,safetyMargin:ARCH_ROOM_SAFETY_MARGIN};
+  }
+  return {...architectureBoundsFromItems(items,ARCH_ROOM_SAFETY_MARGIN),empty:false,safetyMargin:ARCH_ROOM_SAFETY_MARGIN};
 }
 function fitArchitecturePlanToViewport(){
   const wrap=A.root?.querySelector('.archpad-stagewrap');
   const sh=A.root?.querySelector('[data-stage-shell]');
   if(!wrap||!sh||!A.root?.classList.contains('open'))return false;
-  /* V27 : ne jamais recadrer pendant un déplacement/redimensionnement. */
   if(A.drag)return false;
 
   const bounds=architectureRoomBounds();
-  const width=Math.max(220,bounds.r-bounds.l);
-  const height=Math.max(160,bounds.b-bounds.t);
-  const availableW=Math.max(260,wrap.clientWidth-20);
-  const availableH=Math.max(220,wrap.clientHeight-20);
+  const width=Math.max(100,bounds.r-bounds.l);
+  const height=Math.max(100,bounds.b-bounds.t);
+  const availableW=Math.max(260,wrap.clientWidth-24);
+  const availableH=Math.max(220,wrap.clientHeight-24);
 
-  /* On remplit réellement l'écran avec le plan utile. Jusqu'à 140 % si
-     nécessaire : le but est la lisibilité, pas d'afficher le canevas 5000². */
-  let factor=Math.min(availableW/width,availableH/height,1.40);
+  /* La salle réelle remplit au mieux l'écran, tout en conservant la marge 0,5 m. */
+  let factor=Math.min(availableW/width,availableH/height,1.60);
   if(!Number.isFinite(factor)||factor<=0)factor=.1;
-  A.zoom=aClamp(Math.floor(factor*100),5,140);
+  A.zoom=aClamp(Math.floor(factor*100),5,160);
   applyZoom();
 
   requestAnimationFrame(()=>{
     const f=A.zoom/100;
-    const visualW=width*f;
-    const visualH=height*f;
-
-    /* Si le plan utile commence près du bord gauche/haut, le scroll ne peut
-       pas devenir négatif. Ces marges permettent donc un VRAI centrage. */
-    const marginLeft=Math.max(0,(wrap.clientWidth-visualW)/2-bounds.l*f);
-    const marginTop=Math.max(0,(wrap.clientHeight-visualH)/2-bounds.t*f);
+    const visualW=width*f,visualH=height*f;
+    const marginLeft=Math.max(0,(wrap.clientWidth-visualW)/2);
+    const marginTop=Math.max(0,(wrap.clientHeight-visualH)/2);
     sh.style.setProperty('margin-left',marginLeft+'px','important');
     sh.style.setProperty('margin-top',marginTop+'px','important');
-
     requestAnimationFrame(()=>{
-      const centerX=((bounds.l+bounds.r)/2)*f+marginLeft;
-      const centerY=((bounds.t+bounds.b)/2)*f+marginTop;
       const maxLeft=Math.max(0,wrap.scrollWidth-wrap.clientWidth);
       const maxTop=Math.max(0,wrap.scrollHeight-wrap.clientHeight);
-      wrap.scrollLeft=aClamp(centerX-wrap.clientWidth/2,0,maxLeft);
-      wrap.scrollTop=aClamp(centerY-wrap.clientHeight/2,0,maxTop);
+      wrap.scrollLeft=aClamp(marginLeft+visualW/2-wrap.clientWidth/2,0,maxLeft);
+      wrap.scrollTop=aClamp(marginTop+visualH/2-wrap.clientHeight/2,0,maxTop);
     });
   });
   return true;
