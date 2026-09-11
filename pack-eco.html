@@ -13691,9 +13691,9 @@ function applyZoom(){
 
 
 /* =========================================================
-   V23 — CADRAGE AUTOMATIQUE DU PLAN COMPLET
+   V24 — PLAN TABLES ADAPTÉ À L’ÉCRAN
    À l'ouverture, iCHEF calcule la zone réellement utilisée par
-   les tables / zones / équipements de la salle et affiche tout.
+   les tables en priorité et agrandit la salle au maximum sans canevas vide.
    ========================================================= */
 function architectureObjectBounds(obj,type){
   const d=defaults(obj,type);
@@ -13703,49 +13703,91 @@ function architectureObjectBounds(obj,type){
   const cx=d.l+d.w/2,cy=d.t+d.h/2;
   return {l:cx-bw/2,t:cy-bh/2,r:cx+bw/2,b:cy+bh/2};
 }
-function architectureRoomBounds(){
-  const items=[];
-  roomTables().forEach(o=>items.push({obj:o,type:'table'}));
-  roomZones().forEach(o=>items.push({obj:o,type:'zone'}));
-  roomElements().forEach(o=>items.push({obj:o,type:'element'}));
-  if(!items.length){
-    return {l:0,t:0,r:Math.min(1400,ARCH_W),b:Math.min(820,ARCH_H),empty:true};
-  }
+function architectureBoundsFromItems(items,margin=100){
+  if(!items.length)return null;
   let l=ARCH_W,t=ARCH_H,r=0,b=0;
   for(const item of items){
     const q=architectureObjectBounds(item.obj,item.type);
     l=Math.min(l,q.l);t=Math.min(t,q.t);r=Math.max(r,q.r);b=Math.max(b,q.b);
   }
-  const margin=120;
   return {
     l:aClamp(l-margin,0,ARCH_W),
     t:aClamp(t-margin,0,ARCH_H),
     r:aClamp(r+margin,0,ARCH_W),
-    b:aClamp(b+margin,0,ARCH_H),
-    empty:false
+    b:aClamp(b+margin,0,ARCH_H)
   };
+}
+function architectureBoundsIntersect(a,b,pad=0){
+  return !(a.r+pad<b.l||a.l-pad>b.r||a.b+pad<b.t||a.t-pad>b.b);
+}
+function architectureRoomBounds(){
+  /* Le cadrage par défaut est piloté par les TABLES : un texte décoratif,
+     une plante ou un élément perdu à 3 000 px ne doit plus réduire tout le plan. */
+  const tableItems=roomTables().map(obj=>({obj,type:'table'}));
+  if(tableItems.length){
+    const core=architectureBoundsFromItems(tableItems,70);
+    const useful=[...tableItems];
+
+    /* On conserve les zones et équipements réellement proches des tables,
+       afin que la salle reste compréhensible sans englober le canevas vide. */
+    for(const obj of roomZones()){
+      const q=architectureObjectBounds(obj,'zone');
+      if(architectureBoundsIntersect(core,q,120))useful.push({obj,type:'zone'});
+    }
+    const structuralTypes=new Set(['wall','door','window','bar','kitchen','cash','buffet','pool']);
+    for(const obj of roomElements()){
+      if(!structuralTypes.has(String(obj?.type||'').toLowerCase()))continue;
+      const q=architectureObjectBounds(obj,'element');
+      if(architectureBoundsIntersect(core,q,160))useful.push({obj,type:'element'});
+    }
+    return {...architectureBoundsFromItems(useful,110),empty:false,tableDriven:true};
+  }
+
+  /* Sans table, on retombe sur les éléments réellement présents. */
+  const items=[];
+  roomZones().forEach(obj=>items.push({obj,type:'zone'}));
+  roomElements().forEach(obj=>items.push({obj,type:'element'}));
+  if(!items.length)return {l:0,t:0,r:Math.min(1400,ARCH_W),b:Math.min(820,ARCH_H),empty:true};
+  return {...architectureBoundsFromItems(items,110),empty:false,tableDriven:false};
 }
 function fitArchitecturePlanToViewport(){
   const wrap=A.root?.querySelector('.archpad-stagewrap');
-  if(!wrap||!A.root?.classList.contains('open'))return false;
+  const sh=A.root?.querySelector('[data-stage-shell]');
+  if(!wrap||!sh||!A.root?.classList.contains('open'))return false;
+
   const bounds=architectureRoomBounds();
-  const width=Math.max(240,bounds.r-bounds.l);
-  const height=Math.max(180,bounds.b-bounds.t);
-  const availableW=Math.max(220,wrap.clientWidth-28);
-  const availableH=Math.max(180,wrap.clientHeight-28);
-  let factor=Math.min(availableW/width,availableH/height,1);
+  const width=Math.max(220,bounds.r-bounds.l);
+  const height=Math.max(160,bounds.b-bounds.t);
+  const availableW=Math.max(260,wrap.clientWidth-36);
+  const availableH=Math.max(220,wrap.clientHeight-36);
+
+  /* On remplit réellement l'écran avec le plan utile. Jusqu'à 140 % si
+     nécessaire : le but est la lisibilité, pas d'afficher le canevas 5000². */
+  let factor=Math.min(availableW/width,availableH/height,1.40);
   if(!Number.isFinite(factor)||factor<=0)factor=.1;
-  /* Pas de zoom microscopique : 5 % minimum, 100 % maximum au cadrage auto. */
-  A.zoom=aClamp(Math.floor(factor*100),5,100);
+  A.zoom=aClamp(Math.floor(factor*100),5,140);
   applyZoom();
+
   requestAnimationFrame(()=>{
     const f=A.zoom/100;
-    const centerX=((bounds.l+bounds.r)/2)*f;
-    const centerY=((bounds.t+bounds.b)/2)*f;
-    const maxLeft=Math.max(0,wrap.scrollWidth-wrap.clientWidth);
-    const maxTop=Math.max(0,wrap.scrollHeight-wrap.clientHeight);
-    wrap.scrollLeft=aClamp(centerX-wrap.clientWidth/2,0,maxLeft);
-    wrap.scrollTop=aClamp(centerY-wrap.clientHeight/2,0,maxTop);
+    const visualW=width*f;
+    const visualH=height*f;
+
+    /* Si le plan utile commence près du bord gauche/haut, le scroll ne peut
+       pas devenir négatif. Ces marges permettent donc un VRAI centrage. */
+    const marginLeft=Math.max(0,(wrap.clientWidth-visualW)/2-bounds.l*f);
+    const marginTop=Math.max(0,(wrap.clientHeight-visualH)/2-bounds.t*f);
+    sh.style.setProperty('margin-left',marginLeft+'px','important');
+    sh.style.setProperty('margin-top',marginTop+'px','important');
+
+    requestAnimationFrame(()=>{
+      const centerX=((bounds.l+bounds.r)/2)*f+marginLeft;
+      const centerY=((bounds.t+bounds.b)/2)*f+marginTop;
+      const maxLeft=Math.max(0,wrap.scrollWidth-wrap.clientWidth);
+      const maxTop=Math.max(0,wrap.scrollHeight-wrap.clientHeight);
+      wrap.scrollLeft=aClamp(centerX-wrap.clientWidth/2,0,maxLeft);
+      wrap.scrollTop=aClamp(centerY-wrap.clientHeight/2,0,maxTop);
+    });
   });
   return true;
 }
@@ -16883,7 +16925,7 @@ html body.order-open .ticket-row{min-height:106px !important}
   window.__ICHEF_SERVICE_MENU_V29_API__=api;
   window.__ICHEF_SERVICE_MENU_V27_API__=api; /* alias compatibilité */
 
-  console.info("[iCHEF]",VERSION,"actif — Architecture tactile -35% + cadrage plan complet par défaut");
+  console.info("[iCHEF]",VERSION,"actif — Architecture tactile -35% + plan tables adapté écran");
 })();
 </script>
 
