@@ -1022,7 +1022,8 @@ const ICHEF_TENANT_MUTATION_PATHS = new Set([
     '/api/client-portal/reservations/create',
     '/api/client-space/admin/upload',
     '/api/client-space/admin/delete-document',
-    '/api/client-space/admin/message'
+    '/api/client-space/admin/message',
+    '/api/client-space/message/read'
 ]);
 const ichefTenantMutationQueues = new Map();
 function ichefRequestTenantID(req) {
@@ -19909,12 +19910,68 @@ app.get('/api/fiscal/control', async (req, res) => {
 // ============================================================================
 const ichefClientMessageSchema = new mongoose.Schema({
     tenantID: { type: String, required: true, unique: true, index: true },
+    messageId: { type: String, default: '' },
     text: { type: String, default: '' },
     active: { type: Boolean, default: false },
     priority: { type: String, enum: ['INFO','IMPORTANT','URGENT'], default: 'INFO' },
+    sentAt: { type: Date, default: null },
+    deliveredAt: { type: Date, default: null },
+    readAt: { type: Date, default: null },
+    unread: { type: Boolean, default: false },
     updatedAt: { type: Date, default: Date.now }
 }, { minimize: false });
 const IchefClientMessage = mongoose.models.IchefClientMessage || mongoose.model('IchefClientMessage', ichefClientMessageSchema);
+
+// Message client : format public stable pour Administration / Tour de Contrôle.
+function ichefClientMessagePublic(msg) {
+    if (!msg) return null;
+    return {
+        messageId: String(msg.messageId || ''),
+        text: String(msg.text || ''),
+        active: msg.active !== false,
+        priority: String(msg.priority || 'INFO').toUpperCase(),
+        sentAt: msg.sentAt || msg.updatedAt || null,
+        deliveredAt: msg.deliveredAt || null,
+        readAt: msg.readAt || null,
+        unread: msg.unread !== false,
+        updatedAt: msg.updatedAt || null
+    };
+}
+
+// Marque un message comme réellement arrivé sur le compte client.
+// Les anciens messages sans messageId sont migrés au premier affichage.
+async function ichefClientMessageDeliver(tenantID) {
+    const safeID = cleanString(tenantID || '');
+    if (!safeID) return null;
+
+    let msg = await IchefClientMessage.findOne({ tenantID: safeID, active: true }).lean();
+    if (!msg) return null;
+
+    const needsId = !String(msg.messageId || '').trim();
+    const needsDelivery = !msg.deliveredAt;
+
+    if (needsId || needsDelivery) {
+        const deliveredAt = msg.deliveredAt || new Date();
+        const messageId = needsId
+            ? `MSG_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`
+            : String(msg.messageId);
+
+        msg = await IchefClientMessage.findOneAndUpdate(
+            { tenantID: safeID, active: true },
+            {
+                $set: {
+                    messageId,
+                    deliveredAt,
+                    sentAt: msg.sentAt || msg.updatedAt || deliveredAt,
+                    unread: msg.readAt ? false : msg.unread !== false
+                }
+            },
+            { new: true }
+        ).lean() || { ...msg, messageId, deliveredAt };
+    }
+
+    return msg;
+}
 
 function ichefClientDocsBucket() {
     if (mongoose.connection.readyState !== 1 || !mongoose.connection?.db) throw new Error('MongoDB non disponible ou pas encore connecté.');
@@ -20240,17 +20297,106 @@ app.post('/api/client-space/admin/message', async (req, res) => {
         const active = req.body?.active === true;
         if (!tenantID) return res.status(400).json({ success: false, error: 'tenantID manquant.' });
         if (active && !text) return res.status(400).json({ success: false, error: 'Le message actif ne peut pas être vide.' });
+
         const tenant = await Tenant.findOne({ tenantID }).lean();
         if (!tenant) return res.status(404).json({ success: false, error: 'Établissement introuvable.' });
+
+        const now = new Date();
+        const messageId = active ? `MSG_${Date.now()}_${crypto.randomBytes(4).toString('hex')}` : '';
+
         const message = await IchefClientMessage.findOneAndUpdate(
             { tenantID },
-            { $set: { text, active, priority: String(req.body?.priority || 'INFO').toUpperCase(), updatedAt: new Date() } },
+            {
+                $set: {
+                    messageId,
+                    text,
+                    active,
+                    priority: String(req.body?.priority || 'INFO').toUpperCase(),
+                    sentAt: active ? now : null,
+                    deliveredAt: null,
+                    readAt: null,
+                    unread: active,
+                    updatedAt: now
+                }
+            },
             { upsert: true, new: true, setDefaultsOnInsert: true }
         ).lean();
-        io.to(tenantID).emit('client-space-updated', { tenantID, type: 'MESSAGE', timestamp: new Date().toISOString() });
-        return res.json({ success: true, message });
+
+        io.to(tenantID).emit('client-space-updated', {
+            tenantID,
+            type: 'MESSAGE',
+            messageId,
+            unread: active,
+            timestamp: now.toISOString()
+        });
+
+        return res.json({
+            success: true,
+            message: ichefClientMessagePublic(message),
+            delivery: active ? 'SENT' : 'HIDDEN'
+        });
     } catch (error) {
         return res.status(500).json({ success: false, error: error?.message || 'Message non enregistré.' });
+    }
+});
+
+// Lecture légère du message : Administration peut recevoir un nouveau message
+// sans recharger contrats et factures à chaque vérification.
+app.post('/api/client-space/message', async (req, res) => {
+    try {
+        const tenantID = cleanString(req.body?.tenantID || req.headers['x-ichef-tenant'] || '');
+        const pin = String(req.body?.pin || req.headers['x-ichef-pin'] || '').trim();
+        const auth = await ichefAuthorizePin(tenantID, pin, { managerOnly: true });
+        if (!auth.ok) return res.status(auth.status || 403).json({ success: false, error: auth.error || 'Accès refusé.' });
+
+        const msg = await ichefClientMessageDeliver(tenantID);
+        res.set('Cache-Control', 'no-store, max-age=0');
+
+        return res.json({
+            success: true,
+            tenantID,
+            message: ichefClientMessagePublic(msg)
+        });
+    } catch (error) {
+        return res.status(500).json({ success: false, error: error?.message || 'Message client indisponible.' });
+    }
+});
+
+// Accusé de lecture : le compte client confirme qu'un message a été affiché.
+app.post('/api/client-space/message/read', async (req, res) => {
+    try {
+        const tenantID = cleanString(req.body?.tenantID || req.headers['x-ichef-tenant'] || '');
+        const pin = String(req.body?.pin || req.headers['x-ichef-pin'] || '').trim();
+        const auth = await ichefAuthorizePin(tenantID, pin, { managerOnly: true });
+        if (!auth.ok) return res.status(auth.status || 403).json({ success: false, error: auth.error || 'Accès refusé.' });
+
+        const messageId = String(req.body?.messageId || '').trim();
+        if (!messageId) return res.status(400).json({ success: false, error: 'messageId manquant.' });
+
+        const now = new Date();
+        const message = await IchefClientMessage.findOneAndUpdate(
+            { tenantID, active: true, messageId },
+            { $set: { readAt: now, deliveredAt: now, unread: false } },
+            { new: true }
+        ).lean();
+
+        if (!message) {
+            return res.status(404).json({ success: false, error: 'Message introuvable ou remplacé.' });
+        }
+
+        io.to(tenantID).emit('client-message-read', {
+            tenantID,
+            messageId,
+            readAt: now.toISOString()
+        });
+
+        return res.json({
+            success: true,
+            messageId,
+            readAt: now.toISOString()
+        });
+    } catch (error) {
+        return res.status(500).json({ success: false, error: error?.message || 'Accusé de lecture impossible.' });
     }
 });
 
@@ -20260,15 +20406,24 @@ app.post('/api/client-space', async (req, res) => {
         const pin = String(req.body?.pin || req.headers['x-ichef-pin'] || '').trim();
         const auth = await ichefAuthorizePin(tenantID, pin, { managerOnly: true });
         if (!auth.ok) return res.status(auth.status || 403).json({ success: false, error: auth.error || 'Accès refusé.' });
+
         const manual = await ichefClientListManualDocs(tenantID, true);
         const contracts = manual.filter(d => d.kind === 'CONTRACT').sort((a,b) => new Date(b.uploadedAt || 0) - new Date(a.uploadedAt || 0));
         const manualInvoices = manual.filter(d => d.kind === 'INVOICE').map(d => ({ ...d, status: 'PAID' }));
         const stripeInvoices = await ichefStripePaidInvoicesForTenant(auth.tenant, true);
         const invoices = [...manualInvoices, ...stripeInvoices].sort((a,b) => new Date(b.date || b.uploadedAt || 0) - new Date(a.date || a.uploadedAt || 0));
         const screenLicenseSummary = await ichefScreenLicenseSummaryForTenant(auth.tenant);
-        const msg = await IchefClientMessage.findOne({ tenantID, active: true }).lean();
+        const msg = await ichefClientMessageDeliver(tenantID);
+
         res.set('Cache-Control', 'no-store, max-age=0');
-        return res.json({ success: true, tenantID, contracts, invoices, screenLicenseSummary, message: msg ? { text: msg.text, active: true, priority: msg.priority, updatedAt: msg.updatedAt } : null });
+        return res.json({
+            success: true,
+            tenantID,
+            contracts,
+            invoices,
+            screenLicenseSummary,
+            message: ichefClientMessagePublic(msg)
+        });
     } catch (error) {
         console.error('[iCHEF CLIENT SPACE] client get:', error);
         return res.status(500).json({ success: false, error: error?.message || 'Espace client indisponible.' });
