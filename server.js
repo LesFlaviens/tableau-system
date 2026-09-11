@@ -19942,6 +19942,7 @@ const ichefSupportMessageSchema = new mongoose.Schema({
     text: { type: String, default: '' },
     callbackPhone: { type: String, default: '' },
     channel: { type: String, default: 'ICHEF_SUPPORT' },
+    sourceAction: { type: String, default: '' },
     status: {
         type: String,
         enum: ['SENT', 'DELIVERED', 'READ'],
@@ -19965,6 +19966,7 @@ function ichefSupportMessagePublic(msg) {
         text: String(msg.text || ''),
         callbackPhone: String(msg.callbackPhone || ''),
         channel: String(msg.channel || 'ICHEF_SUPPORT'),
+        sourceAction: String(msg.sourceAction || ''),
         status: String(msg.status || 'SENT'),
         createdAt: msg.createdAt || null,
         deliveredAt: msg.deliveredAt || null,
@@ -20468,6 +20470,7 @@ app.post('/api/support/client/send', async (req, res) => {
         const text = String(req.body?.text || '').trim().slice(0, 4000);
         const category = String(req.body?.category || 'SUPPORT').trim().toUpperCase().slice(0, 80);
         const callbackPhone = String(req.body?.callbackPhone || '').trim().slice(0, 40);
+        const sourceAction = String(req.body?.sourceAction || 'ADMINISTRATION').trim().toUpperCase().slice(0, 40);
         if (!text) return res.status(400).json({ success:false, error:'Décrivez le problème avant l’envoi.' });
 
         const now = new Date();
@@ -20479,6 +20482,7 @@ app.post('/api/support/client/send', async (req, res) => {
             text,
             callbackPhone,
             channel: 'ADMINISTRATION',
+            sourceAction,
             status: 'SENT',
             createdAt: now
         });
@@ -20490,7 +20494,7 @@ app.post('/api/support/client/send', async (req, res) => {
             timestamp: now.toISOString()
         });
 
-        return res.json({ success:true, message:ichefSupportMessagePublic(message.toObject()) });
+        return res.json({ success:true, stored:true, tourVisible:true, receiptId:message.messageId, message:ichefSupportMessagePublic(message.toObject()) });
     } catch (error) {
         console.error('[iCHEF SUPPORT] client send:', error?.message || error);
         return res.status(500).json({ success:false, error:error?.message || 'Message support non envoyé.' });
@@ -20526,6 +20530,11 @@ app.post('/api/support/client/list', async (req, res) => {
 app.post('/api/support/admin/inbox', async (req, res) => {
     if (!ichefClientMasterAuthorized(req, res)) return;
     try {
+        const deliveredAt = new Date();
+        await IchefSupportMessage.updateMany(
+            { direction:'CLIENT_TO_ICHEF', deliveredAt:null },
+            { $set:{ deliveredAt, status:'DELIVERED' } }
+        );
         const messages = await IchefSupportMessage.find({})
             .sort({ createdAt: -1 })
             .limit(1000)
