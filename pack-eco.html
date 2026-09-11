@@ -13504,21 +13504,12 @@ try{ if(typeof scheduleRender==="function") scheduleRender(); }catch(_ ){}
 @media(max-width:900px){.archpad-livebar{gap:6px}.arch-live-rush{min-width:210px}.arch-live-status-key{display:none}}
 </style>
 
-<style id="ichef-architect-pick-300ms-css">
-/* iCHEF ARCHITECTURE — prise simple : appui 0,3 s, clic pour lâcher */
-#ichefArchPad .archpad-main:not(.service-layout) [data-arch-key],
-#ichefArchPad .archpad-main:not(.service-layout) .arch-handle,
-#ichefArchPad .archpad-main:not(.service-layout) .arch-rotate{
-  touch-action:none!important;
-  -webkit-tap-highlight-color:transparent;
-}
-#ichefArchPad .archpad-main:not(.service-layout) [data-arch-key]{cursor:grab}
-#ichefArchPad .archpad-main:not(.service-layout) [data-arch-key].selected{
-  cursor:move;
-  outline:4px solid #55d987!important;
-  outline-offset:3px!important;
-  box-shadow:0 0 0 5px rgba(85,217,135,.18),0 7px 18px rgba(0,0,0,.22)!important;
-}
+<style id="ichef-architect-v33-pick-css">
+/* V33 — tactile Architecture : les objets gardent la main sur le geste */
+#ichefArchPad .archpad-main:not(.service-layout) [data-stage] [data-arch-key],
+#ichefArchPad .archpad-main:not(.service-layout) [data-stage] .arch-handle,
+#ichefArchPad .archpad-main:not(.service-layout) [data-stage] .arch-rotate{touch-action:none!important;-webkit-tap-highlight-color:transparent}
+#ichefArchPad .archpad-main:not(.service-layout) [data-stage] [data-arch-key].selected{outline-color:#55d987!important;box-shadow:0 0 0 4px rgba(85,217,135,.18)!important}
 </style>
 
 <script id="ichef-pad-architect-js">
@@ -13665,73 +13656,74 @@ function deleteRoom(){if(!canEdit())return aToast('Droit manager requis',true);i
 function switchRoom(r){A.room=r;STATE.room=r;A.selected=null;renderAll()}
 function pointInStage(cx,cy){const st=A.root.querySelector('[data-stage]'),r=st.getBoundingClientRect();return {x:aClamp((cx-r.left)/r.width*ARCH_W,0,ARCH_W),y:aClamp((cy-r.top)/r.height*ARCH_H,0,ARCH_H)}}
 
-/* =========================================================
-   SÉLECTION ARCHITECTURE SIMPLIFIÉE
-   - Appui 0,3 s sur un objet = PRENDRE / SÉLECTIONNER
-   - Une fois pris : déplacement immédiat + poignées de taille
-   - Un simple clic sans mouvement = LÂCHER / DÉSÉLECTIONNER
-   ========================================================= */
-const ARCH_PICK_HOLD_MS=300;
-const ARCH_PICK_CANCEL_PX=10;
-function clearPickPress(){if(A.press?.timer)clearTimeout(A.press.timer);A.press=null}
-function stageCapture(e){const st=A.root?.querySelector('[data-stage]');try{if(st&&e?.pointerId!=null&&!st.hasPointerCapture(e.pointerId))st.setPointerCapture(e.pointerId)}catch(_){}}
-function stageRelease(e){const st=A.root?.querySelector('[data-stage]');try{if(st&&e?.pointerId!=null&&st.hasPointerCapture(e.pointerId))st.releasePointerCapture(e.pointerId)}catch(_){}}
-function startArchitectDrag(key,e,kind='move',dir='',fromHold=false){
+/* ===== V33 · SÉLECTION ARCHITECTURE SIMPLE =====
+   0,3 s = prendre/sélectionner
+   objet déjà pris + glisser = déplacer
+   clic simple objet pris ou fond = lâcher
+   propriétés / modifier / supprimer restent actifs tant que l'objet est pris
+*/
+const ARCH_PICK_MS=300;
+const ARCH_PICK_CANCEL_PX=12;
+function archStage(){return A.root?.querySelector('[data-stage]')||null}
+function archCapture(e){const st=archStage();try{if(st&&e?.pointerId!=null&&!st.hasPointerCapture(e.pointerId))st.setPointerCapture(e.pointerId)}catch(_){}}
+function archRelease(e){const st=archStage();try{if(st&&e?.pointerId!=null&&st.hasPointerCapture(e.pointerId))st.releasePointerCapture(e.pointerId)}catch(_){}}
+function clearArchPress(){if(A.press?.timer)clearTimeout(A.press.timer);A.press=null}
+function beginArchDrag(key,e,kind='move',dir='',fromHold=false){
   const h=byKey(key);if(!h?.obj)return false;
-  if(h.obj.locked){aToast(kind==='resize'?'Déverrouille cet élément dans Propriétés':'Élément verrouillé');return false}
+  if(h.obj.locked){aToast('Élément verrouillé · sélectionné');return false}
   A.drag={kind,dir,key,start:pointInStage(e.clientX,e.clientY),startClientX:e.clientX,startClientY:e.clientY,orig:clone(defaults(h.obj,h.type)),moved:false,historyPushed:false,fromHold:!!fromHold,pointerId:e.pointerId};
-  stageCapture(e);return true;
+  archCapture(e);return true;
 }
-function scheduleArchitectPick(e,key){
-  clearPickPress();stageCapture(e);
-  const press={key,pointerId:e.pointerId,startClientX:e.clientX,startClientY:e.clientY,fired:false,timer:null};
-  press.timer=setTimeout(()=>{
-    if(A.press!==press)return;
-    const h=byKey(key);if(!h?.obj)return clearPickPress();
-    A.selected=key;press.fired=true;renderCanvas();
-    if(h.obj.locked){aToast('Élément verrouillé · sélectionné');return}
-    startArchitectDrag(key,{clientX:press.startClientX,clientY:press.startClientY,pointerId:press.pointerId},'move','',true);
-    aToast('Objet pris · déplacez / modifiez · 1 clic pour lâcher');
-  },ARCH_PICK_HOLD_MS);
-  A.press=press;e.preventDefault();
+function scheduleArchPick(e,key){
+  clearArchPress();archCapture(e);
+  const p={key,pointerId:e.pointerId,x:e.clientX,y:e.clientY,fired:false,timer:null};
+  p.timer=setTimeout(()=>{
+    if(A.press!==p)return;
+    const h=byKey(key);if(!h?.obj){clearArchPress();return}
+    p.fired=true;A.selected=key;
+    if(!h.obj.locked)beginArchDrag(key,{clientX:p.x,clientY:p.y,pointerId:p.pointerId},'move','',true);
+    renderCanvas();
+    aToast(h.obj.locked?'Objet sélectionné · déverrouillez-le pour le déplacer':'Objet pris · modifiez-le · clic pour lâcher');
+  },ARCH_PICK_MS);
+  A.press=p;e.preventDefault();
 }
 function pointerDown(e){
   const rot=e.target.closest('[data-rotate]'),handle=e.target.closest('[data-resize]'),node=e.target.closest('[data-arch-key]');
   if(rot){
-    if(A.mode!=='architect'||!canEdit())return;clearPickPress();e.preventDefault();
+    if(A.mode!=='architect'||!canEdit())return;clearArchPress();e.preventDefault();
     const key=rot.closest('[data-arch-key]')?.dataset.archKey;if(key)A.selected=key;
-    const h=current();if(h?.obj){if(h.obj.locked)return aToast('Élément verrouillé');pushHistory();h.obj.rotation=((Number(h.obj.rotation)||0)+15)%360;markDirty();renderCanvas();aToast('Rotation modifiée · clic pour lâcher')}
+    const h=current();if(h?.obj){if(h.obj.locked)return aToast('Élément verrouillé');pushHistory();h.obj.rotation=((Number(h.obj.rotation)||0)+15)%360;markDirty();renderCanvas()}
     return;
   }
   if(handle){
-    if(A.mode!=='architect'||!canEdit())return;clearPickPress();
+    if(A.mode!=='architect'||!canEdit())return;clearArchPress();
     const key=handle.closest('[data-arch-key]')?.dataset.archKey;if(key)A.selected=key;
-    if(startArchitectDrag(A.selected,e,'resize',handle.dataset.resize,false)){e.preventDefault()}
+    if(beginArchDrag(A.selected,e,'resize',handle.dataset.resize,false))e.preventDefault();
     return;
   }
   if(node){
-    const key=node.dataset.archKey;if(A.mode==='service'||!canEdit())return;
+    if(A.mode==='service'||!canEdit())return;
+    const key=node.dataset.archKey;
     if(A.selected===key){
-      clearPickPress();
-      if(startArchitectDrag(key,e,'move','',false))e.preventDefault();
+      clearArchPress();
+      if(beginArchDrag(key,e,'move','',false))e.preventDefault();
+      else {A.releaseCandidate={pointerId:e.pointerId,x:e.clientX,y:e.clientY};archCapture(e);e.preventDefault()}
       return;
     }
-    scheduleArchitectPick(e,key);return;
+    scheduleArchPick(e,key);return;
   }
-  if(e.target.closest('[data-stage]')){
-    clearPickPress();
-    if(A.selected){A.releaseCandidate={pointerId:e.pointerId,startClientX:e.clientX,startClientY:e.clientY};stageCapture(e);e.preventDefault()}
+  if(e.target.closest('[data-stage]')&&A.selected){
+    clearArchPress();A.releaseCandidate={pointerId:e.pointerId,x:e.clientX,y:e.clientY};archCapture(e);e.preventDefault();
   }
 }
 function pointerMove(e){
   if(A.press&&!A.press.fired&&A.press.pointerId===e.pointerId){
-    const dist=Math.hypot(e.clientX-A.press.startClientX,e.clientY-A.press.startClientY);
-    if(dist>ARCH_PICK_CANCEL_PX){clearPickPress();stageRelease(e)}
+    if(Math.hypot(e.clientX-A.press.x,e.clientY-A.press.y)>ARCH_PICK_CANCEL_PX){clearArchPress();archRelease(e)}
   }
   if(!A.drag||A.drag.pointerId!==e.pointerId)return;
   const h=byKey(A.drag.key);if(!h?.obj)return;
   const pxDist=Math.hypot(e.clientX-A.drag.startClientX,e.clientY-A.drag.startClientY);
-  if(!A.drag.moved&&pxDist<2)return;
+  if(!A.drag.moved&&pxDist<3)return;
   if(!A.drag.moved){A.drag.moved=true;if(!A.drag.historyPushed){pushHistory();A.drag.historyPushed=true}}
   const p=pointInStage(e.clientX,e.clientY),dx=p.x-A.drag.start.x,dy=p.y-A.drag.start.y,o=A.drag.orig,min=16;
   if(A.drag.kind==='move'){
@@ -13749,28 +13741,28 @@ function pointerMove(e){
   e.preventDefault();
 }
 function pointerUp(e){
-  const press=A.press;
-  if(press&&press.pointerId===e.pointerId){if(press.timer)clearTimeout(press.timer);A.press=null}
+  if(A.press&&A.press.pointerId===e.pointerId){
+    const fired=!!A.press.fired;if(A.press.timer)clearTimeout(A.press.timer);A.press=null;
+    if(!fired){archRelease(e);return}
+  }
   if(A.drag&&A.drag.pointerId===e.pointerId){
-    const d=A.drag;A.drag=null;stageRelease(e);
-    if(d.kind==='move'&&!d.moved&&!d.fromHold){
-      A.selected=null;renderCanvas();aToast('Objet lâché');return;
-    }
+    const d=A.drag;A.drag=null;archRelease(e);
+    if(d.kind==='move'&&!d.moved&&!d.fromHold){A.selected=null;renderCanvas();aToast('Objet lâché');return}
     renderCanvas();
-    if(d.moved)aToast('Objet modifié · 1 clic pour lâcher');
+    if(d.moved)aToast('Objet modifié · clic pour lâcher');
     return;
   }
   if(A.releaseCandidate&&A.releaseCandidate.pointerId===e.pointerId){
-    const r=A.releaseCandidate;A.releaseCandidate=null;stageRelease(e);
-    if(Math.hypot(e.clientX-r.startClientX,e.clientY-r.startClientY)<8){A.selected=null;renderCanvas();aToast('Objet lâché')}
+    const r=A.releaseCandidate;A.releaseCandidate=null;archRelease(e);
+    if(Math.hypot(e.clientX-r.x,e.clientY-r.y)<8){A.selected=null;renderCanvas();aToast('Objet lâché')}
     return;
   }
-  stageRelease(e);
+  archRelease(e);
 }
 function pointerCancel(e){
-  clearPickPress();A.releaseCandidate=null;
+  clearArchPress();A.releaseCandidate=null;
   if(A.drag&&A.drag.pointerId===e.pointerId){A.drag=null;renderCanvas()}
-  stageRelease(e);
+  archRelease(e);
 }
 function applyZoom(){
   const sh=A.root?.querySelector('[data-stage-shell]');
@@ -13902,7 +13894,7 @@ function installPermanentPlanTouchRouter(){
         e.preventDefault();e.stopImmediatePropagation();
         const label=hit.obj.label;
         root.classList.remove('open');document.body.style.overflow='';
-        clearPickPress();A.drag=null;A.releaseCandidate=null;A.selected=null;A.archUnlocked=false;A.archRole='';A.archPin='';A.pinOpen=false;A.pinValue='';A.mode='service';
+        A.drag=null;A.selected=null;A.archUnlocked=false;A.archRole='';A.archPin='';A.pinOpen=false;A.pinValue='';A.mode='service';
         setTimeout(()=>openOrder(label),0);
       }
       return;
@@ -13934,7 +13926,7 @@ async function openPadServiceHome(){
   A.root.focus();
   aToast(STATE.connected?'PLAN LIVE · TEMPS RÉEL':'PLAN LIVE · SYNCHRO HTTP');
 }
-function closePadArchitect(){if(A.dirty&&canEdit()&&!confirm('Quitter sans enregistrer les modifications du plan ?'))return false;A.root?.classList.remove('open');document.body.style.overflow='';clearPickPress();A.drag=null;A.releaseCandidate=null;A.selected=null;A.archUnlocked=false;A.archRole='';A.archPin='';A.pinOpen=false;A.pinValue='';A.mode='service';scheduleRender?.();return true}
+function closePadArchitect(){if(A.dirty&&canEdit()&&!confirm('Quitter sans enregistrer les modifications du plan ?'))return false;A.root?.classList.remove('open');document.body.style.overflow='';A.drag=null;A.selected=null;A.archUnlocked=false;A.archRole='';A.archPin='';A.pinOpen=false;A.pinValue='';A.mode='service';scheduleRender?.();return true}
 function refreshPadServiceLive(){
   if(!A.root?.classList.contains('open')||A.mode!=='service')return;
   /* Recharge aussi l'architecture reçue du serveur, pas seulement les états des commandes. */
