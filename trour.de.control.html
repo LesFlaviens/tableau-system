@@ -298,6 +298,7 @@ body.client-drawer-open #view-clients .client-table{min-width:820px}
 
 /* Message intégré sans prendre toute la hauteur */
 #clientModal #clientMessageText{min-height:74px!important}
+.message-receipt{margin-top:9px;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:#0b0e11;color:var(--muted);font-size:12px;font-weight:800}.message-receipt.sent{border-color:#d6aa35;color:#f1c85b}.message-receipt.delivered{border-color:#4c9be8;color:#77baff}.message-receipt.read{border-color:#42b86b;color:#66dc8a}
 
 /* Le mode dossier n'écrase plus la liste derrière : le client occupe 100% */
 body.client-drawer-open #view-clients{padding-right:0!important}
@@ -726,7 +727,13 @@ body{font-size:1rem!important;overflow-x:hidden!important}
         </div>
         <div class="actions" style="margin-top:10px"><button class="btn outline-gold" id="openSuperModulesFromDossier" type="button">👑 Ouvrir modules SuperAdmin 18/18</button></div>
       </div>
-      <section class="client-section" style="margin-top:12px"><h3>💬 Message iCHEF au client</h3><textarea id="clientMessageText" class="input" style="min-height:100px" maxlength="2000"></textarea><label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input id="clientMessageActive" type="checkbox"> Afficher ce message dans administration.html</label><button class="btn outline-gold" id="saveClientMessage" style="margin-top:9px">Enregistrer le message</button></section>
+      <section class="client-section" style="margin-top:12px">
+        <h3>💬 Message iCHEF au client</h3>
+        <textarea id="clientMessageText" class="input" style="min-height:100px" maxlength="2000" placeholder="Écrivez le message qui doit apparaître sur le compte du client…"></textarea>
+        <label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input id="clientMessageActive" type="checkbox" checked> Visible sur le compte client dans administration.html</label>
+        <div id="clientMessageReceipt" class="message-receipt">Aucun message envoyé.</div>
+        <button class="btn outline-gold" id="saveClientMessage" style="margin-top:9px">✉ Envoyer au compte client</button>
+      </section>
     </div>
 
     <div class="client-tab-pane" data-client-pane="stripe">
@@ -1085,7 +1092,20 @@ $('submitCreate').onclick=async()=>{
 };
 function clientSetStatus(text,kind=''){$('clientModalStatus').textContent=text||'';$('clientModalStatus').className='statusline'+(kind?' '+kind:'')}
 function fileToBase64(file){return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>{const raw=String(r.result||'');resolve(raw.includes(',')?raw.split(',').pop():raw)};r.onerror=()=>reject(r.error);r.readAsDataURL(file)})}
-function renderClientDocs(data){const docs=Array.isArray(data?.documents)?data.documents:[],msg=data?.message||{};$('clientMessageText').value=msg.text||'';$('clientMessageActive').checked=msg.active===true;$('clientDocumentsList').innerHTML=docs.map(d=>`<div class="doc-row"><div><strong>${esc(d.kind==='CONTRACT'?'CONTRAT':'FACTURE')} · ${esc(d.title||d.filename)}</strong><small>${esc((d.version?'Version '+d.version+' · ':'')+(d.period?d.period+' · ':'')+fmtDate(d.uploadedAt))}</small></div><button class="btn bad" onclick="window.deleteClientDocument('${esc(d.id)}')">Retirer</button></div>`).join('')||'<div class="empty">Aucun document publié.</div>'}
+function renderClientDocs(data){
+ const docs=Array.isArray(data?.documents)?data.documents:[],msg=data?.message||{};
+ $('clientMessageText').value=msg.text||'';
+ $('clientMessageActive').checked=msg.active===true;
+ const receipt=$('clientMessageReceipt');
+ if(receipt){
+   receipt.className='message-receipt';
+   if(msg?.readAt){receipt.classList.add('read');receipt.textContent=`✓ Lu par le client le ${fmtDate(msg.readAt)}`}
+   else if(msg?.deliveredAt){receipt.classList.add('delivered');receipt.textContent=`✓ Reçu sur le compte client le ${fmtDate(msg.deliveredAt)} · non lu`}
+   else if(msg?.active&&msg?.text){receipt.classList.add('sent');receipt.textContent=`✓ Envoyé au compte client${msg.sentAt||msg.updatedAt?' · '+fmtDate(msg.sentAt||msg.updatedAt):''} · en attente de réception`}
+   else{receipt.textContent='Aucun message actuellement visible sur le compte client.'}
+ }
+ $('clientDocumentsList').innerHTML=docs.map(d=>`<div class="doc-row"><div><strong>${esc(d.kind==='CONTRACT'?'CONTRAT':'FACTURE')} · ${esc(d.title||d.filename)}</strong><small>${esc((d.version?'Version '+d.version+' · ':'')+(d.period?d.period+' · ':'')+fmtDate(d.uploadedAt))}</small></div><button class="btn bad" onclick="window.deleteClientDocument('${esc(d.id)}')">Retirer</button></div>`).join('')||'<div class="empty">Aucun document publié.</div>'
+}
 function resetClientStripe(){
  const badge=$('clientStripeBadge');badge.className='badge warn';badge.textContent='CHARGEMENT';
  $('clientStripeCustomer').textContent='Compte Stripe : chargement…';
@@ -1165,7 +1185,16 @@ $('nextClientBtn').onclick=()=>navigateVisibleClient(1);
 
 async function uploadClientPdf(kind){if(!currentClientTenant)return;const contract=kind==='CONTRACT',input=$(contract?'clientContractFile':'clientInvoiceFile'),file=input.files?.[0];if(!file)return alert('Choisissez un PDF.');if(!(file.type==='application/pdf'||/\.pdf$/i.test(file.name)))return alert('PDF requis.');if(file.size>12*1024*1024)return alert('Maximum 12 Mo.');try{clientSetStatus('Envoi en cours…');const base64=await fileToBase64(file);const data=await api('/api/client-space/admin/upload',{tenantID:currentClientTenant,kind,title:$(contract?'clientContractTitle':'clientInvoiceTitle').value.trim()||(contract?'Contrat iCHEF OS':'Facture payée'),version:contract?$('clientContractVersion').value.trim():'',period:contract?'':$('clientInvoicePeriod').value.trim(),status:contract?'CURRENT':'PAID',filename:file.name,mimeType:'application/pdf',base64,reason:`${contract?'Publication contrat':'Ajout facture'} — ${currentClientTenant}`},120000);input.value='';$('clientUploadProof').textContent=`✅ PDF enregistré · ${data?.proof?.filename||file.name}`;$('clientUploadProof').classList.add('show');await reloadClientDossier();if(!contract&&currentView==='invoices')await loadInvoices()}catch(e){clientSetStatus(e.message,'bad')}}
 window.deleteClientDocument=async id=>{const why=reason(`Retirer ce document de ${currentClientTenant}`);if(!why)return;try{await api('/api/client-space/admin/delete-document',{tenantID:currentClientTenant,documentId:id,reason:why});await reloadClientDossier()}catch(e){alert(e.message)}};
-$('uploadClientContract').onclick=()=>uploadClientPdf('CONTRACT');$('uploadClientInvoice').onclick=()=>uploadClientPdf('INVOICE');$('saveClientMessage').onclick=async()=>{const text=$('clientMessageText').value.trim(),active=$('clientMessageActive').checked;if(active&&!text)return alert('Message vide.');try{await api('/api/client-space/admin/message',{tenantID:currentClientTenant,text,active});clientSetStatus('Message enregistré.','ok')}catch(e){clientSetStatus(e.message,'bad')}};
+$('uploadClientContract').onclick=()=>uploadClientPdf('CONTRACT');$('uploadClientInvoice').onclick=()=>uploadClientPdf('INVOICE');$('saveClientMessage').onclick=async()=>{
+ const text=$('clientMessageText').value.trim(),active=$('clientMessageActive').checked;
+ if(active&&!text)return alert('Écrivez le message à envoyer au client.');
+ try{
+   clientSetStatus(active?'Envoi du message au compte client…':'Retrait du message du compte client…');
+   await api('/api/client-space/admin/message',{tenantID:currentClientTenant,text,active});
+   await reloadClientDossier();
+   clientSetStatus(active?'✓ Message envoyé au compte client.':'✓ Message retiré du compte client.','ok');
+ }catch(e){clientSetStatus(e.message,'bad')}
+};
 $('refreshClientStripe').onclick=()=>loadClientStripe().catch(e=>clientSetStatus(e.message,'bad'));
 $('showClientStripeInvoices').onclick=async()=>{if(!currentClientTenant)return;$('invoiceSearch').value=currentClientTenant;closeModal('clientModal');showView('invoices');if(!invoices.length)await loadInvoices();else renderInvoices()};
 
