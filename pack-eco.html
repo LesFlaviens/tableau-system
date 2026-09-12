@@ -5992,8 +5992,8 @@ body.order-open #btnHeadWho .head-sub-v20{
 #ichefArchPad .archpad-main:not(.service-layout) .arch-chair.free-layout:hover::before{border-color:rgba(85,217,135,.75)}
 @media(max-width:700px){#ichefArchPad .arch-chair{width:36px;height:22px;font-size:9px}}
 
-/* iCHEF V42 — ANTI-COLLISION TABLE + CHAISES */
-#ichefArchPad .arch-node.arch-table.city-antishock-blocked{
+/* iCHEF V50 — ANTI-CHOC GLOBAL : tables, chaises, zones et tous les objets */
+#ichefArchPad .arch-node.city-antishock-blocked{
   box-shadow:0 0 0 5px rgba(255,83,104,.24),0 0 22px rgba(255,83,104,.28)!important;
   outline-color:#ff5368!important;
 }
@@ -14297,17 +14297,95 @@ function cityTableResizeAllowed(hit,key,l,t,w,h){
   const after=cityTableCollisionPenaltyAt(hit.obj,key,l,t,w,h);
   return after===0||(before>0&&after<before);
 }
-function cityHasCollision(key=A.selected){
-  const hit=byKey(key);if(!hit?.obj||hit.type==='zone')return false;
-  if(hit.type==='table'){
-    const d=defaults(hit.obj,'table');
-    return cityTableCollisionPenaltyAt(hit.obj,key,d.l,d.t,d.w,d.h)>0;
+/* ================================================================
+   iCHEF V50 — ANTI-CHOC GLOBAL TOUS OBJETS
+   - Tables + chaises contre tous les objets physiques
+   - Eléments contre tables/chaises et autres éléments
+   - Zones contre zones (une zone reste un conteneur : tables/objets peuvent être dedans)
+   - Porte/fenêtre peuvent rester posées sur un mur, comportement architectural normal
+   ================================================================ */
+const CITY_OBJECT_ANTISHOCK=10; // 10 cm autour des objets génériques
+function cityCollisionItems(){
+  const out=[];
+  roomTables().forEach(o=>out.push({type:'table',obj:o,key:getTableKey(o)}));
+  roomZones().forEach(o=>out.push({type:'zone',obj:o,key:getZoneKey(o)}));
+  roomElements().forEach(o=>out.push({type:'element',obj:o,key:getElemKey(o)}));
+  return out;
+}
+function cityElementKind(hit){
+  if(!hit)return '';
+  if(hit.type==='table'||hit.type==='zone')return hit.type;
+  return aText(hit.obj?.type||'element').toLowerCase();
+}
+function cityObjectsShouldCollide(a,b){
+  if(!a||!b)return false;
+  const ak=cityElementKind(a),bk=cityElementKind(b);
+  // Les zones sont des conteneurs : elles se repoussent entre elles, mais peuvent contenir tables et mobilier.
+  if(ak==='zone'||bk==='zone')return ak==='zone'&&bk==='zone';
+  // Une porte ou une fenêtre doit pouvoir être intégrée à un mur.
+  const wallEmbed=(ak==='wall'&&(bk==='door'||bk==='window'))||(bk==='wall'&&(ak==='door'||ak==='window'));
+  if(wallEmbed)return false;
+  return true;
+}
+function cityCollisionShapesForHitAt(hit,l,t,w=null,h=null){
+  if(!hit?.obj)return [];
+  if(hit.type==='table')return cityTableCollisionShapesAt(hit.obj,l,t,w,h);
+  const d=defaults(hit.obj,hit.type),ww=w==null?d.w:w,hh=h==null?d.h:h;
+  const rot=Number(hit.obj?.rotation)||0,cx=l+ww/2,cy=t+hh/2;
+  return [cityRotatedRectAABB(cx,cy,ww,hh,rot,cityElementKind(hit)||'object')];
+}
+function cityCollisionGapForShapes(hitA,shapeA,hitB,shapeB){
+  if(hitA?.type==='table'&&hitB?.type==='table'&&shapeA?.kind==='body'&&shapeB?.kind==='body')return CITY_TABLE_ANTISHOCK;
+  if(shapeA?.kind==='chair'||shapeB?.kind==='chair')return CITY_CHAIR_GAP;
+  return CITY_OBJECT_ANTISHOCK;
+}
+function cityObjectCollisionPenaltyAt(hit,key,l,t,w=null,h=null){
+  if(!hit?.obj)return 0;
+  const mine=cityCollisionShapesForHitAt(hit,l,t,w,h);
+  let penalty=0;
+  for(const other of cityCollisionItems()){
+    if(other.key===key||!cityObjectsShouldCollide(hit,other))continue;
+    const od=defaults(other.obj,other.type),theirs=cityCollisionShapesForHitAt(other,od.l,od.t,od.w,od.h);
+    for(const a of mine)for(const b of theirs){
+      const gap=cityCollisionGapForShapes(hit,a,other,b);
+      penalty+=cityRectOverlapPenalty(a,b,gap);
+    }
   }
-  if(hit.type==='element'&&['wall','door','window','text'].includes(aText(hit.obj.type)))return false;
-  const r=cityRect(hit);if(!r)return false;
-  const candidates=[];
-  roomElements().forEach(o=>{const k=getElemKey(o),t=aText(o.type);if(k!==key&&!['wall','door','window','text'].includes(t))candidates.push({type:'element',obj:o,key:k})});
-  return candidates.some(h=>cityOverlaps(r,cityRect(h),5));
+  return penalty;
+}
+function cityTraceObjectMove(hit,key,fromL,fromT,toL,toT,w,h){
+  const dx=toL-fromL,dy=toT-fromT,dist=Math.hypot(dx,dy);
+  const steps=Math.max(1,Math.min(220,Math.ceil(dist/7)));
+  let l=fromL,t=fromT,lastPenalty=cityObjectCollisionPenaltyAt(hit,key,fromL,fromT,w,h),blocked=false;
+  for(let i=1;i<=steps;i++){
+    const f=i/steps,cl=fromL+dx*f,ct=fromT+dy*f,p=cityObjectCollisionPenaltyAt(hit,key,cl,ct,w,h);
+    // Si un ancien plan contient déjà un chevauchement, on autorise uniquement les mouvements qui améliorent la situation.
+    const allowed=p===0||(lastPenalty>0&&p<=lastPenalty);
+    if(!allowed){blocked=true;break}
+    l=cl;t=ct;lastPenalty=p;
+  }
+  return {l,t,blocked,penalty:lastPenalty,travel:Math.hypot(l-fromL,t-fromT)};
+}
+function cityResolveObjectMove(hit,key,targetL,targetT){
+  const d=defaults(hit.obj,hit.type),curL=Number(hit.obj.l)||0,curT=Number(hit.obj.t)||0;
+  const direct=cityTraceObjectMove(hit,key,curL,curT,targetL,targetT,d.w,d.h);
+  if(!direct.blocked)return {l:targetL,t:targetT,blocked:false};
+  // Glissement naturel contre l'obstacle : teste l'axe horizontal puis vertical.
+  const sx=cityTraceObjectMove(hit,key,direct.l,direct.t,targetL,direct.t,d.w,d.h);
+  const sy=cityTraceObjectMove(hit,key,direct.l,direct.t,direct.l,targetT,d.w,d.h);
+  const best=sx.travel>=sy.travel?sx:sy;
+  return {l:best.l,t:best.t,blocked:true};
+}
+function cityObjectResizeAllowed(hit,key,l,t,w,h){
+  const cur=defaults(hit.obj,hit.type);
+  const before=cityObjectCollisionPenaltyAt(hit,key,cur.l,cur.t,cur.w,cur.h);
+  const after=cityObjectCollisionPenaltyAt(hit,key,l,t,w,h);
+  return after===0||(before>0&&after<before);
+}
+function cityHasCollision(key=A.selected){
+  const hit=byKey(key);if(!hit?.obj)return false;
+  const d=defaults(hit.obj,hit.type);
+  return cityObjectCollisionPenaltyAt(hit,key,d.l,d.t,d.w,d.h)>0;
 }
 function cityRoomBoundaryHTML(){const b=cityRoomBounds(CITY_ROOM_MARGIN_CM);return `<div class="city-room-boundary" style="left:${b.minX/ARCH_W*100}%;top:${b.minY/ARCH_H*100}%;width:${b.w/ARCH_W*100}%;height:${b.h/ARCH_H*100}%"></div>`}
 function citySelectionOverlayHTML(){
@@ -14406,7 +14484,7 @@ function cityAutoOrganize(){
 }
 function cityToggleMeasures(){A.showMeasures=!A.showMeasures;renderCanvas();aToast(A.showMeasures?'Mesures activées':'Mesures masquées')}
 function cityUpdateBottom(){const m=A.root?.querySelector('[data-city-room-metrics]');if(m)m.innerHTML=cityRoomMetricsHTML()+' &nbsp;•&nbsp; Marge de sécurité 0,5 m';const mm=A.root?.querySelector('[data-city-minimap]');if(mm)mm.innerHTML=cityMiniMapHTML();const mb=A.root?.querySelector('[data-city-measures]');if(mb)mb.classList.toggle('active',!!A.showMeasures)}
-function cityRotateSelected(){const h=current();if(!h?.obj||h.obj.locked)return;pushHistory();h.obj.rotation=((Number(h.obj.rotation)||0)+15)%360;markDirty();renderCanvas()}
+function cityRotateSelected(){const h=current();if(!h?.obj||h.obj.locked)return;const oldRot=Number(h.obj.rotation)||0;pushHistory();h.obj.rotation=(oldRot+15)%360;if(cityHasCollision(A.selected)){h.obj.rotation=oldRot;A.antiShockBlocked=true;renderCanvas();aToast('🛡 Rotation bloquée par anti-choc');return}A.antiShockBlocked=false;markDirty();renderCanvas()}
 function cityFloatAction(action){if(action==='move')return aToast('Appui 0,3 s sur l’objet puis déplacez-le');if(action==='rotate')return cityRotateSelected();if(action==='duplicate')return duplicateSelected();if(action==='delete')return deleteSelected()}
 function cityRefreshAssistLive(){const n=A.root?.querySelector(`[data-arch-key="${CSS.escape(A.selected||'')}" ]`);const bad=cityHasCollision(A.selected);if(n){n.classList.toggle('city-collision',bad);n.classList.toggle('city-antishock-blocked',!!A.antiShockBlocked)}const b=A.root?.querySelector('[data-city-position]');if(b){b.classList.toggle('antishock',!!A.antiShockBlocked);b.classList.toggle('bad',bad&&!A.antiShockBlocked);b.classList.toggle('good',!bad&&!A.antiShockBlocked);b.textContent=A.antiShockBlocked?'🛡 Anti-choc':bad?'⚠ Trop proche':'✓ Position correcte'};cityRefreshMeasuresLive()}
 
@@ -14587,6 +14665,17 @@ function cityFindFreeDuplicateTablePose(c){
   }
   return {l:snap(aClamp(baseL+30,CITY_STAGE_EDGE_CM,ARCH_W-CITY_STAGE_EDGE_CM-d.w)),t:snap(aClamp(baseT+30,CITY_STAGE_EDGE_CM,ARCH_H-CITY_STAGE_EDGE_CM-d.h))};
 }
+function cityFindFreeObjectPose(hit){
+  if(!hit?.obj)return null;
+  const d=defaults(hit.obj,hit.type),baseL=Number(hit.obj.l)||0,baseT=Number(hit.obj.t)||0;
+  const offsets=[[45,0],[-45,0],[0,45],[0,-45],[55,55],[-55,55],[55,-55],[-55,-55]];
+  for(let radius=1;radius<=12;radius++)for(const [ox,oy] of offsets){
+    const l=snap(aClamp(baseL+ox*radius,CITY_STAGE_EDGE_CM,ARCH_W-CITY_STAGE_EDGE_CM-d.w));
+    const t=snap(aClamp(baseT+oy*radius,CITY_STAGE_EDGE_CM,ARCH_H-CITY_STAGE_EDGE_CM-d.h));
+    if(cityObjectCollisionPenaltyAt(hit,hit.key,l,t,d.w,d.h)===0)return {l,t};
+  }
+  return {l:baseL,t:baseT};
+}
 function duplicateSelected(){
   const hit=current();if(!hit?.obj||A.mode!=='architect'||!canEdit())return;
   pushHistory();const c=clone(hit.obj);
@@ -14595,9 +14684,9 @@ function duplicateSelected(){
     const free=cityFindFreeDuplicateTablePose(c);c.l=free.l;c.t=free.t;
     A.tables.push(c);A.selected=getTableKey(c)
   }else if(hit.type==='zone'){
-    c.l=Number(c.l||0)+30;c.t=Number(c.t||0)+30;c.id=aId('zone');c.label=(c.label||'ZONE')+' COPIE';A.zones.push(c);A.selected=getZoneKey(c)
+    c.id=aId('zone');c.label=(c.label||'ZONE')+' COPIE';A.zones.push(c);A.selected=getZoneKey(c);{const h=byKey(A.selected),p=cityFindFreeObjectPose(h);if(p){c.l=p.l;c.t=p.t}}
   }else{
-    c.l=Number(c.l||0)+30;c.t=Number(c.t||0)+30;c.id=aId(c.type||'e');A.elements.push(c);A.selected=getElemKey(c)
+    c.id=aId(c.type||'e');A.elements.push(c);A.selected=getElemKey(c);{const h=byKey(A.selected),p=cityFindFreeObjectPose(h);if(p){c.l=p.l;c.t=p.t}}
   }
   A.drag=null;A.releaseCandidate=null;A.antiShockBlocked=false;
   markDirty();renderCanvas();aToast(hit.type==='table'?'Table dupliquée · position libre':'Objet dupliqué')
@@ -14667,7 +14756,7 @@ function pointerDown(e){
   if(rot){
     if(A.mode!=='architect'||!canEdit())return;clearArchPress();e.preventDefault();
     const key=rot.closest('[data-arch-key]')?.dataset.archKey;if(key)A.selected=key;
-    const h=current();if(h?.obj){if(h.obj.locked)return aToast('Élément verrouillé');pushHistory();h.obj.rotation=((Number(h.obj.rotation)||0)+15)%360;markDirty();renderCanvas()}
+    const h=current();if(h?.obj){if(h.obj.locked)return aToast('Élément verrouillé');const oldRot=Number(h.obj.rotation)||0;pushHistory();h.obj.rotation=(oldRot+15)%360;if(cityHasCollision(A.selected)){h.obj.rotation=oldRot;A.antiShockBlocked=true;renderCanvas();aToast('🛡 Rotation bloquée par anti-choc');return}A.antiShockBlocked=false;markDirty();renderCanvas()}
     return;
   }
   if(handle){
@@ -14707,16 +14796,14 @@ function pointerMove(e){
   A.antiShockBlocked=false;
   if(A.drag.kind==='move'){
     const targetL=snap(aClamp(o.l+dx,CITY_STAGE_EDGE_CM,ARCH_W-CITY_STAGE_EDGE_CM-o.w)),targetT=snap(aClamp(o.t+dy,CITY_STAGE_EDGE_CM,ARCH_H-CITY_STAGE_EDGE_CM-o.h));
-    if(h.type==='table'){
-      const safe=cityResolveTableMove(h,A.drag.key,targetL,targetT);
-      h.obj.l=safe.l;h.obj.t=safe.t;A.antiShockBlocked=safe.blocked;
-    }else{h.obj.l=targetL;h.obj.t=targetT}
+    const safe=cityResolveObjectMove(h,A.drag.key,targetL,targetT);
+    h.obj.l=safe.l;h.obj.t=safe.t;A.antiShockBlocked=safe.blocked;
   }else{
     const dir=A.drag.dir;let l=o.l,t=o.t,w=o.w,hh=o.h;
     if(dir.includes('e'))w=o.w+dx;if(dir.includes('s'))hh=o.h+dy;if(dir.includes('w')){l=o.l+dx;w=o.w-dx}if(dir.includes('n')){t=o.t+dy;hh=o.h-dy}
     if(w<min){if(dir.includes('w'))l=o.l+o.w-min;w=min}if(hh<min){if(dir.includes('n'))t=o.t+o.h-min;hh=min}
     l=aClamp(snap(l),CITY_STAGE_EDGE_CM,ARCH_W-CITY_STAGE_EDGE_CM-min);t=aClamp(snap(t),CITY_STAGE_EDGE_CM,ARCH_H-CITY_STAGE_EDGE_CM-min);w=Math.min(ARCH_W-CITY_STAGE_EDGE_CM-l,Math.max(min,snap(w)));hh=Math.min(ARCH_H-CITY_STAGE_EDGE_CM-t,Math.max(min,snap(hh)));
-    if(h.type==='table'&&!cityTableResizeAllowed(h,A.drag.key,l,t,w,hh)){A.antiShockBlocked=true}
+    if(!cityObjectResizeAllowed(h,A.drag.key,l,t,w,hh)){A.antiShockBlocked=true}
     else{h.obj.l=l;h.obj.t=t;h.obj.w=w;h.obj.h=hh}
   }
   markDirty();
