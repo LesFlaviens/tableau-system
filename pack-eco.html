@@ -13961,8 +13961,8 @@ try{ if(typeof scheduleRender==="function") scheduleRender(); }catch(_ ){}
 #ichefArchPad .archpad-main:not(.service-layout) [data-stage] [data-arch-key].selected{outline-color:#55d987!important;box-shadow:0 0 0 4px rgba(85,217,135,.18)!important}
 </style>
 
-<style id="ichef-architect-v47-group-css">
-/* V47 — TOUT SÉLECTIONNER / DÉPLACER / SUPPRIMER */
+<style id="ichef-architect-v48-group-css">
+/* V48 — TOUT SÉLECTIONNER + MARGE DE SÉCURITÉ ÉCRAN */
 #ichefArchPad .arch-node.city-group-selected{
   outline:3px solid #55d987!important;
   outline-offset:2px!important;
@@ -13986,16 +13986,39 @@ try{ if(typeof scheduleRender==="function") scheduleRender(); }catch(_ ){}
 #ichefArchPad .arch-group-actions{display:grid;grid-template-columns:1fr;gap:8px;margin-top:14px}
 #ichefArchPad .arch-group-actions button{min-height:46px;border-radius:10px;border:1px solid #34464d;background:#11191d;color:#edf4f6;font-weight:950}
 #ichefArchPad .arch-group-actions button.red{border-color:#a73c45;color:#ff7b84;background:#251215}
+
+
+<style id="ichef-architect-v48-safe-margin-css">
+/* V48 — le contour de la salle garde une respiration visuelle par rapport à l'UI noire. */
+#ichefArchPad .city-room-boundary{
+  box-shadow:0 0 0 10px rgba(255,255,255,.10),0 0 0 12px rgba(112,119,27,.12)!important;
+}
+#ichefArchPad .city-room-boundary::after{
+  content:"MARGE 0,5 m";
+  position:absolute;right:10px;bottom:8px;
+  padding:3px 7px;border-radius:999px;
+  background:rgba(255,255,255,.88);color:#697016;
+  border:1px solid rgba(112,119,27,.34);
+  font-size:8px;font-weight:1000;letter-spacing:.5px;
+  pointer-events:none;white-space:nowrap;
+}
+</style>
 </style>
 
 <script id="ichef-pad-architect-js">
 /* =========================================================
-   V47 — Tout sélectionner / déplacer tout / supprimer tout
+   V48 — Tout sélectionner + marge de sécurité écran
    iCHEF PAD — ÉDITEUR ARCHITECTURAL PERSONNALISABLE
    Même ARCHITECTURE serveur que téléphone / caisse / KDS.
    ========================================================= */
 (()=>{
 const ARCH_W=5000,ARCH_H=5000;
+/* V48 — marge de sécurité du plan
+   0,5 m = 50 unités architecte. Le contour de salle garde aussi un recul
+   visuel par rapport aux panneaux noirs de l'interface. */
+const CITY_ROOM_MARGIN_CM=50;
+const CITY_STAGE_EDGE_CM=100;      // objets >= 1 m du bord brut => contour +0,5 m reste à 0,5 m du bord
+const CITY_VIEW_SAFE_GUTTER_PX=58; // marge écran minimale après « Ajuster à l'écran »
 const A={root:null,room:"",mode:"architect",tool:"select",selected:null,groupAll:false,groupDrag:null,dirty:false,grid:true,snap:true,zoom:100,showMeasures:true,history:[],future:[],drag:null,tables:[],zones:[],elements:[],rooms:[],archUnlocked:false,archRole:"",archPin:"",pinOpen:false,pinValue:"",pinMsg:""};
 const canEdit=()=>!!(STATE.demo||expressRoleLevel()>=2||A.archUnlocked);
 const aText=v=>String(v??"").trim();
@@ -14140,7 +14163,7 @@ function moveGroupDrag(e){
   const p=pointInStage(e.clientX,e.clientY);
   let dx=p.x-g.start.x,dy=p.y-g.start.y;
   dx=A.snap?Math.round(dx/10)*10:Math.round(dx);dy=A.snap?Math.round(dy/10)*10:Math.round(dy);
-  dx=aClamp(dx,-g.bounds.minX,ARCH_W-g.bounds.maxX);dy=aClamp(dy,-g.bounds.minY,ARCH_H-g.bounds.maxY);
+  dx=aClamp(dx,CITY_STAGE_EDGE_CM-g.bounds.minX,(ARCH_W-CITY_STAGE_EDGE_CM)-g.bounds.maxX);dy=aClamp(dy,CITY_STAGE_EDGE_CM-g.bounds.minY,(ARCH_H-CITY_STAGE_EDGE_CM)-g.bounds.maxY);
   g.items.forEach(it=>{it.obj.l=it.l+dx;it.obj.t=it.t+dy;const n=A.root.querySelector(`[data-arch-key="${CSS.escape(it.key)}"]`);if(n)n.setAttribute('style',nodeStyle(it.obj)+(it.type==='zone'?`;--zone-color:${colorForZone(it.obj)};--zone-fill:${aClamp(it.obj.fillOpacity||15,3,55)}%;--zone-border:${aText(it.obj.borderStyle||'dashed')}`:it.type==='element'?cashCustomStyle(it.obj):''))});
   markDirty();e.preventDefault();return true;
 }
@@ -14285,7 +14308,7 @@ function cityHasCollision(key=A.selected){
   roomElements().forEach(o=>{const k=getElemKey(o),t=aText(o.type);if(k!==key&&!['wall','door','window','text'].includes(t))candidates.push({type:'element',obj:o,key:k})});
   return candidates.some(h=>cityOverlaps(r,cityRect(h),5));
 }
-function cityRoomBoundaryHTML(){const b=cityRoomBounds(50);return `<div class="city-room-boundary" style="left:${b.minX/ARCH_W*100}%;top:${b.minY/ARCH_H*100}%;width:${b.w/ARCH_W*100}%;height:${b.h/ARCH_H*100}%"></div>`}
+function cityRoomBoundaryHTML(){const b=cityRoomBounds(CITY_ROOM_MARGIN_CM);return `<div class="city-room-boundary" style="left:${b.minX/ARCH_W*100}%;top:${b.minY/ARCH_H*100}%;width:${b.w/ARCH_W*100}%;height:${b.h/ARCH_H*100}%"></div>`}
 function citySelectionOverlayHTML(){
   if(A.mode!=='architect'||!canEdit())return '';
   if(A.groupAll){
@@ -14301,32 +14324,47 @@ function citySelectionOverlayHTML(){
 function cityMeasureOverlayHTML(){
   if(A.groupAll||!A.showMeasures||!A.selected)return '';
   const hit=byKey(A.selected);if(!hit?.obj)return '';
-  const d=defaults(hit.obj,hit.type),b=cityRoomBounds(50);
+  const d=defaults(hit.obj,hit.type),b=cityRoomBounds(CITY_ROOM_MARGIN_CM);
   const right=Math.max(0,b.maxX-(d.l+d.w)),top=Math.max(0,d.t-b.minY);
   const hx=d.l+d.w,hy=d.t+d.h/2,vx=d.l+d.w/2,vy=b.minY;
   return `${right>12?`<div class="city-measure-line h" style="left:${hx/ARCH_W*100}%;top:${hy/ARCH_H*100}%;width:${right/ARCH_W*100}%"><span>${(right/100).toFixed(2).replace('.',',')} m</span></div>`:''}${top>12?`<div class="city-measure-line v" style="left:${vx/ARCH_W*100}%;top:${vy/ARCH_H*100}%;height:${top/ARCH_H*100}%"><span>${(top/100).toFixed(2).replace('.',',')} m</span></div>`:''}`;
 }
 function cityMiniMapHTML(){
-  const b=cityRoomBounds(50),toX=x=>(x-b.minX)/b.w*100,toY=y=>(y-b.minY)/b.h*100;
+  const b=cityRoomBounds(CITY_ROOM_MARGIN_CM),toX=x=>(x-b.minX)/b.w*100,toY=y=>(y-b.minY)/b.h*100;
   return cityPhysicalItems().map(h=>{const d=defaults(h.obj,h.type);return `<span class="mm ${h.type} ${(A.groupAll||A.selected===h.key)?'selected':''}" style="left:${aClamp(toX(d.l),0,100)}%;top:${aClamp(toY(d.t),0,100)}%;width:${aClamp(d.w/b.w*100,.8,100)}%;height:${aClamp(d.h/b.h*100,.8,100)}%"></span>`}).join('');
 }
-function cityRoomMetricsHTML(){const b=cityRoomBounds(50);return `${(b.w/100).toFixed(1).replace('.',',')} × ${(b.h/100).toFixed(1).replace('.',',')} m`}
+function cityRoomMetricsHTML(){const b=cityRoomBounds(CITY_ROOM_MARGIN_CM);return `${(b.w/100).toFixed(1).replace('.',',')} × ${(b.h/100).toFixed(1).replace('.',',')} m`}
 function cityFitRoom(show=true){
   const wrap=A.root?.querySelector('.archpad-stagewrap');if(!wrap)return;
-  const b=cityRoomBounds(50),aw=Math.max(200,wrap.clientWidth-36),ah=Math.max(180,wrap.clientHeight-36);
-  const scale=Math.max(.1,Math.min(1.8,aw/b.w,ah/b.h));A.zoom=Math.round(scale*100);applyZoom();
-  requestAnimationFrame(()=>{wrap.scrollLeft=Math.max(0,b.minX*scale-(aw-b.w*scale)/2-18);wrap.scrollTop=Math.max(0,b.minY*scale-(ah-b.h*scale)/2-18)});
-  if(show)aToast('Plan ajusté à l’écran');
+  const room=cityRoomBounds(CITY_ROOM_MARGIN_CM);
+  /* On réserve une marge supplémentaire à l'écran : même à faible zoom,
+     le contour de salle ne vient jamais se coller aux panneaux noirs. */
+  const b={
+    minX:aClamp(room.minX-CITY_ROOM_MARGIN_CM,0,ARCH_W),
+    minY:aClamp(room.minY-CITY_ROOM_MARGIN_CM,0,ARCH_H),
+    maxX:aClamp(room.maxX+CITY_ROOM_MARGIN_CM,0,ARCH_W),
+    maxY:aClamp(room.maxY+CITY_ROOM_MARGIN_CM,0,ARCH_H)
+  };
+  b.w=Math.max(100,b.maxX-b.minX);b.h=Math.max(100,b.maxY-b.minY);
+  const vw=Math.max(240,wrap.clientWidth),vh=Math.max(200,wrap.clientHeight);
+  const fitW=Math.max(180,vw-CITY_VIEW_SAFE_GUTTER_PX*2),fitH=Math.max(160,vh-CITY_VIEW_SAFE_GUTTER_PX*2);
+  const scale=Math.max(.1,Math.min(1.8,fitW/b.w,fitH/b.h));A.zoom=Math.round(scale*100);applyZoom();
+  requestAnimationFrame(()=>{
+    const cx=(b.minX+b.maxX)/2,cy=(b.minY+b.maxY)/2;
+    wrap.scrollLeft=Math.max(0,cx*scale-vw/2);
+    wrap.scrollTop=Math.max(0,cy*scale-vh/2);
+  });
+  if(show)aToast('Plan ajusté · marge de sécurité conservée');
 }
 function cityAutoOrganize(){
   if(!canEdit()||!roomTables().length)return;
   if(!confirm('Auto-organiser les tables de cette salle ?'))return;
   pushHistory();
   const zh=current();let area=(zh?.type==='zone')?defaults(zh.obj,'zone'):null;
-  if(!area){const zones=roomZones().slice().sort((a,b)=>(Number(b.w)||0)*(Number(b.h)||0)-(Number(a.w)||0)*(Number(a.h)||0));if(zones.length)area=defaults(zones[0],'zone');else{const b=cityRoomBounds(50);area={l:b.minX,t:b.minY,w:b.w,h:b.h}}}
+  if(!area){const zones=roomZones().slice().sort((a,b)=>(Number(b.w)||0)*(Number(b.h)||0)-(Number(a.w)||0)*(Number(a.h)||0));if(zones.length)area=defaults(zones[0],'zone');else{const b=cityRoomBounds(CITY_ROOM_MARGIN_CM);area={l:b.minX,t:b.minY,w:b.w,h:b.h}}}
   const tables=roomTables(),n=tables.length,ratio=Math.max(.7,area.w/Math.max(1,area.h)),cols=Math.max(1,Math.ceil(Math.sqrt(n*ratio))),rows=Math.ceil(n/cols),pad=55;
   const innerW=Math.max(160,area.w-pad*2),innerH=Math.max(120,area.h-pad*2),cellW=innerW/cols,cellH=innerH/rows;
-  tables.forEach((t,i)=>{const d=defaults(t,'table'),c=i%cols,r=Math.floor(i/cols);t.l=snap(aClamp(area.l+pad+c*cellW+(cellW-d.w)/2,0,ARCH_W-d.w));t.t=snap(aClamp(area.t+pad+r*cellH+(cellH-d.h)/2,0,ARCH_H-d.h))});
+  tables.forEach((t,i)=>{const d=defaults(t,'table'),c=i%cols,r=Math.floor(i/cols);t.l=snap(aClamp(area.l+pad+c*cellW+(cellW-d.w)/2,CITY_STAGE_EDGE_CM,ARCH_W-CITY_STAGE_EDGE_CM-d.w));t.t=snap(aClamp(area.t+pad+r*cellH+(cellH-d.h)/2,CITY_STAGE_EDGE_CM,ARCH_H-CITY_STAGE_EDGE_CM-d.h))});
   markDirty();renderCanvas();setTimeout(()=>cityFitRoom(false),0);aToast('Tables auto-organisées');
 }
 function cityToggleMeasures(){A.showMeasures=!A.showMeasures;renderCanvas();aToast(A.showMeasures?'Mesures activées':'Mesures masquées')}
@@ -14505,12 +14543,12 @@ function cityFindFreeDuplicateTablePose(c){
   const offsets=[[60,0],[-60,0],[0,60],[0,-60],[90,90],[-90,90],[90,-90],[-90,-90]];
   for(let radius=1;radius<=8;radius++){
     for(const [ox,oy] of offsets){
-      const l=snap(aClamp(baseL+ox*radius,0,ARCH_W-d.w));
-      const t=snap(aClamp(baseT+oy*radius,0,ARCH_H-d.h));
+      const l=snap(aClamp(baseL+ox*radius,CITY_STAGE_EDGE_CM,ARCH_W-CITY_STAGE_EDGE_CM-d.w));
+      const t=snap(aClamp(baseT+oy*radius,CITY_STAGE_EDGE_CM,ARCH_H-CITY_STAGE_EDGE_CM-d.h));
       if(cityTableCollisionPenaltyAt(c,'__ICHEF_DUPLICATE__',l,t,d.w,d.h)===0)return {l,t};
     }
   }
-  return {l:snap(aClamp(baseL+30,0,ARCH_W-d.w)),t:snap(aClamp(baseT+30,0,ARCH_H-d.h))};
+  return {l:snap(aClamp(baseL+30,CITY_STAGE_EDGE_CM,ARCH_W-CITY_STAGE_EDGE_CM-d.w)),t:snap(aClamp(baseT+30,CITY_STAGE_EDGE_CM,ARCH_H-CITY_STAGE_EDGE_CM-d.h))};
 }
 function duplicateSelected(){
   const hit=current();if(!hit?.obj||A.mode!=='architect'||!canEdit())return;
@@ -14631,7 +14669,7 @@ function pointerMove(e){
   const p=pointInStage(e.clientX,e.clientY),dx=p.x-A.drag.start.x,dy=p.y-A.drag.start.y,o=A.drag.orig,min=16;
   A.antiShockBlocked=false;
   if(A.drag.kind==='move'){
-    const targetL=snap(aClamp(o.l+dx,0,ARCH_W-o.w)),targetT=snap(aClamp(o.t+dy,0,ARCH_H-o.h));
+    const targetL=snap(aClamp(o.l+dx,CITY_STAGE_EDGE_CM,ARCH_W-CITY_STAGE_EDGE_CM-o.w)),targetT=snap(aClamp(o.t+dy,CITY_STAGE_EDGE_CM,ARCH_H-CITY_STAGE_EDGE_CM-o.h));
     if(h.type==='table'){
       const safe=cityResolveTableMove(h,A.drag.key,targetL,targetT);
       h.obj.l=safe.l;h.obj.t=safe.t;A.antiShockBlocked=safe.blocked;
@@ -14640,7 +14678,7 @@ function pointerMove(e){
     const dir=A.drag.dir;let l=o.l,t=o.t,w=o.w,hh=o.h;
     if(dir.includes('e'))w=o.w+dx;if(dir.includes('s'))hh=o.h+dy;if(dir.includes('w')){l=o.l+dx;w=o.w-dx}if(dir.includes('n')){t=o.t+dy;hh=o.h-dy}
     if(w<min){if(dir.includes('w'))l=o.l+o.w-min;w=min}if(hh<min){if(dir.includes('n'))t=o.t+o.h-min;hh=min}
-    l=aClamp(snap(l),0,ARCH_W-min);t=aClamp(snap(t),0,ARCH_H-min);w=Math.min(ARCH_W-l,Math.max(min,snap(w)));hh=Math.min(ARCH_H-t,Math.max(min,snap(hh)));
+    l=aClamp(snap(l),CITY_STAGE_EDGE_CM,ARCH_W-CITY_STAGE_EDGE_CM-min);t=aClamp(snap(t),CITY_STAGE_EDGE_CM,ARCH_H-CITY_STAGE_EDGE_CM-min);w=Math.min(ARCH_W-CITY_STAGE_EDGE_CM-l,Math.max(min,snap(w)));hh=Math.min(ARCH_H-CITY_STAGE_EDGE_CM-t,Math.max(min,snap(hh)));
     if(h.type==='table'&&!cityTableResizeAllowed(h,A.drag.key,l,t,w,hh)){A.antiShockBlocked=true}
     else{h.obj.l=l;h.obj.t=t;h.obj.w=w;h.obj.h=hh}
   }
@@ -14713,7 +14751,7 @@ function applyZoom(){
   try{localStorage.setItem('ichef_plan_zoom_pct_v28',String(A.zoom))}catch(_){}
 }
 
-async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_V47_GROUP_SELECT'},updatedFrom:'PAD_ARCHITECT_V47_GROUP_SELECT',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD ultra modulable');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
+async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_V48_SAFE_MARGIN'},updatedFrom:'PAD_ARCHITECT_V48_SAFE_MARGIN',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD ultra modulable');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
 function openExpress(){if(closePadArchitect()!==false)openExpressTableCreate()}
 function architectAccessKey(value){
   return aText(value).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[\s-]+/g,'_');
