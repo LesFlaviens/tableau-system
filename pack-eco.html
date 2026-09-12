@@ -4146,7 +4146,7 @@ body.order-open .order-sync-state.bad{background:#fff2f4 !important;}
 </style>
 <style id="transition-login-douce-v2">
 /* =========================================================
-   TRANSITION EXTRA FLUIDE (GPU) : ÉCRAN PIN -> PLAN
+   V71 · TRANSITION RAPIDE (GPU) : ÉCRAN PIN -> PLAN
    ========================================================= */
 
 /* On prépare l'écran de login pour l'accélération matérielle */
@@ -4161,7 +4161,7 @@ body.order-open .order-sync-state.bad{background:#fff2f4 !important;}
     display: flex !important; /* Annule la disparition brutale */
     pointer-events: none !important; /* Bloque les clics */
     /* Animation de 0.8s avec un effet très doux */
-    animation: loginSmoothFade 0.8s cubic-bezier(0.25, 1, 0.5, 1) forwards !important;
+    animation: loginSmoothFade 0.18s ease-out forwards !important;
 }
 
 /* Définition de l'animation : fondu transparent + très léger zoom avant immersif */
@@ -4180,12 +4180,11 @@ body.order-open .order-sync-state.bad{background:#fff2f4 !important;}
 
 /* BONUS : On fait apparaître le plan de salle doucement en arrière-plan */
 .plan-visible-wrap {
-    animation: planSmoothFadeIn 0.8s ease-out forwards !important;
+    animation: planSmoothFadeIn 0.22s ease-out forwards !important;
 }
 
 @keyframes planSmoothFadeIn {
     0% { opacity: 0; }
-    50% { opacity: 0; } /* Attend un peu que le login commence à disparaître */
     100% { opacity: 1; }
 }
 </style>
@@ -5908,7 +5907,7 @@ body.order-open #btnHeadWho .head-sub-v20{
 #ichefArchPad .arch-help{background:#0e1a21!important;color:#73868f!important}
 
 #ichefArchPad .archpad-bottom{height:78px!important;flex:0 0 78px!important;display:grid!important;grid-template-columns:260px 1fr 190px!important;gap:12px!important;padding:9px 14px!important;border-top:1px solid #22323b!important;background:linear-gradient(180deg,#09141b,#071016)!important;color:#e9eff2!important}
-#ichefArchPad .city-bottom-room{display:flex;align-items:center;gap:12px;min-width:0}.city-bottom-icon{width:42px;height:42px;border:1px solid #344751;border-radius:11px;display:flex;align-items:center;justify-content:center;font-size:20px}.city-bottom-room b{display:block;font-size:12px}.city-bottom-room small{display:block;color:#9eb0b9;font-size:9px;margin-top:3px;white-space:nowrap}
+#ichefArchPad .city-bottom-room{display:flex;align-items:center;gap:12px;min-width:0}.city-bottom-icon{width:42px;height:42px;border:1px solid #344751;border-radius:11px;display:flex;align-items:center;justify-content:center;font-size:20px;padding:0;background:#0d171c;color:#eef4f6;cursor:pointer;appearance:none;-webkit-appearance:none}.city-bottom-icon:hover{border-color:#5d7783;background:#13232a}.city-bottom-icon:active{transform:scale(.96)}.city-bottom-room b{display:block;font-size:12px}.city-bottom-room small{display:block;color:#9eb0b9;font-size:9px;margin-top:3px;white-space:nowrap}
 #ichefArchPad .city-bottom-actions{display:flex;align-items:center;justify-content:center;gap:9px}.city-bottom-actions button{height:46px;padding:0 18px;border:1px solid #31444e;border-radius:12px;background:#0d1920;color:#e5edf0;font-size:10px;font-weight:900}.city-bottom-actions button.active{border-color:#37b47a;color:#65d49a;background:rgba(38,174,106,.09)}
 #ichefArchPad .city-minimap-wrap{display:flex;align-items:center;justify-content:flex-end;gap:8px}.city-minimap{position:relative;width:118px;height:56px;border:1px solid #344751;border-radius:9px;background:#152129;overflow:hidden}.city-minimap .mm{position:absolute;border-radius:1px}.city-minimap .mm.table{background:#e7c27a}.city-minimap .mm.zone{border:1px solid #5dc68e;background:rgba(93,198,142,.12)}.city-minimap .mm.element{background:#92a2aa}.city-minimap .mm.selected{box-shadow:0 0 0 2px #ffb94a}.city-minimap-expand{width:42px;height:42px;border:1px solid #344751;border-radius:10px;background:#0d1920;color:#fff;font-size:19px}
 
@@ -7193,7 +7192,9 @@ async function verifyPin(){
       if(typeof window.openPadServiceHome!=="function"){
         throw new Error("Plan interactif indisponible");
       }
-      await window.openPadServiceHome();
+      /* V71 : bootApp() vient déjà de synchroniser le serveur.
+         Ne pas refaire une deuxième lecture HTTP avant d'afficher l'accueil. */
+      await window.openPadServiceHome({skipSync:true});
 
       /* Le plan est maintenant réellement affiché. L'app reste disponible
          dessous pour les commandes, sans jamais apparaître au démarrage. */
@@ -13255,13 +13256,16 @@ async function bootApp(){
   autoDisplay();
   setConnection(navigator.onLine?"CONNEXION SERVEUR":"HORS LIGNE",navigator.onLine?"warn":"bad");
 
-  /* Lecture HTTP d'abord : server.js reste la source de vérité, même sans Socket.IO. */
+  /* V71 — démarrage rapide : une seule lecture HTTP bloquante suffit pour
+     afficher l'accueil avec des données fiables. Les contrôles secondaires
+     continuent juste après, sans retenir l'utilisateur sur l'écran PIN. */
   await syncFull("initial");
-  await fiscalMaintenance().catch(err=>{
+
+  Promise.resolve().then(()=>fiscalMaintenance()).catch(err=>{
     console.warn("[iCHEF FISCAL] contrôle initial",err);
     STATE.fiscalChainState="A_VERIFIER";
   });
-  connectSocket();
+  try{connectSocket()}catch(err){console.warn("[iCHEF SOCKET] démarrage",err)}
 
   setInterval(()=>{
     renderStatus();
@@ -14786,8 +14790,15 @@ function cityResolveResizeLive(drag,hit,target){
    - retour automatique à l'état normal dès que la collision disparaît
    - seule la limite pointillée de sécurité reste bloquante
    ================================================================ */
+/* V72 — ALERTE ROUGE UNIQUEMENT POUR TABLES ET ZONES
+   Les objets d'aménagement (comptoir/caisse, bar, cuisine, sanitaires,
+   hôtellerie, porte, fenêtre, mobilier, plante, etc.) peuvent se toucher ou
+   se superposer sans passer en rouge. La collision visuelle reste utile pour
+   les tables et les zones. */
 function cityHasCollision(key=A.selected){
-  const hit=byKey(key);if(!hit?.obj||hit.type==='room')return false;
+  const hit=byKey(key);
+  if(!hit?.obj||hit.type==='room')return false;
+  if(hit.type!=='table'&&hit.type!=='zone')return false;
   const d=defaults(hit.obj,hit.type);
   return cityObjectOverlapPenaltyAt(hit,key,d.l,d.t,d.w,d.h)>0;
 }
@@ -14885,6 +14896,22 @@ function cityFitRoom(show=true){
     wrap.scrollTop=Math.max(0,cy*scale-vh/2);
   });
   if(show)aToast('Plan ajusté · constructions intérieures et extérieures visibles');
+}
+function cityResetView(){
+  const wrap=A.root?.querySelector('.archpad-stagewrap');
+  if(!wrap)return;
+  A.zoom=100;
+  applyZoom();
+  requestAnimationFrame(()=>{
+    const room=citySafetyBounds();
+    const scale=1;
+    const vw=Math.max(240,wrap.clientWidth),vh=Math.max(200,wrap.clientHeight);
+    const cx=(room.minX+room.maxX)/2,cy=(room.minY+room.maxY)/2;
+    wrap.scrollLeft=Math.max(0,cx*scale-vw/2);
+    wrap.scrollTop=Math.max(0,cy*scale-vh/2);
+    const z=A.root?.querySelector('[data-zoom]');if(z)z.value='100';
+  });
+  aToast('↻ Vue réinitialisée · zoom 100 %');
 }
 function cityApplyPlanScreenMode(){
   if(!A.root)return;
@@ -15063,7 +15090,7 @@ function architectBottomHTML(st){
   const boundary=!!A.selected&&!!A.antiShockBlocked;
   const statusText=A.groupAll?`☑ ${cityGroupHits().length} objets sélectionnés`:boundary?'⛔ Bord du terrain':bad?'⚠ Collision':'✓ Position correcte';
   const statusClass=A.groupAll?'good':boundary?'antishock':bad?'bad':'good';
-  return `<div class="archpad-bottom"><div class="city-bottom-room"><div class="city-bottom-icon">↻</div><div><b>${esc(A.room)}</b><small data-city-room-metrics>${cityRoomMetricsHTML()} &nbsp;•&nbsp; Terrain 50 × 50 m constructible</small><small class="city-touch-help">🤏 2 doigts = zoom tactile</small></div></div><div class="city-bottom-center"><div class="archpad-city-hint" data-city-hint></div>${hasSelection?`<div class="city-position-badge ${statusClass}" data-city-position style="position:static;transform:none;display:inline-flex;align-items:center;justify-content:center;min-height:25px;padding:5px 12px;margin:0 auto 1px;white-space:nowrap;">${statusText}</div>`:''}<div class="city-bottom-actions"><button type="button" data-city-fit>⌗ &nbsp; Ajuster à l’écran</button><button type="button" data-city-auto>✣ &nbsp; Auto-organiser</button><button type="button" class="${A.showMeasures?'active':''}" data-city-measures>⌁ &nbsp; Mesures</button></div></div><div class="city-minimap-wrap"><div class="city-minimap" data-city-minimap>${cityMiniMapHTML()}</div><button type="button" class="city-minimap-expand" data-city-fit title="Ajuster à l’écran">⛶</button></div></div>`}
+  return `<div class="archpad-bottom"><div class="city-bottom-room"><button type="button" class="city-bottom-icon" data-city-reset-view title="Réinitialiser la vue" aria-label="Réinitialiser la vue">↻</button><div><b>${esc(A.room)}</b><small data-city-room-metrics>${cityRoomMetricsHTML()} &nbsp;•&nbsp; Terrain 50 × 50 m constructible</small><small class="city-touch-help">🤏 2 doigts = zoom tactile</small></div></div><div class="city-bottom-center"><div class="archpad-city-hint" data-city-hint></div>${hasSelection?`<div class="city-position-badge ${statusClass}" data-city-position style="position:static;transform:none;display:inline-flex;align-items:center;justify-content:center;min-height:25px;padding:5px 12px;margin:0 auto 1px;white-space:nowrap;">${statusText}</div>`:''}<div class="city-bottom-actions"><button type="button" data-city-fit>⌗ &nbsp; Ajuster à l’écran</button><button type="button" data-city-auto>✣ &nbsp; Auto-organiser</button><button type="button" class="${A.showMeasures?'active':''}" data-city-measures>⌁ &nbsp; Mesures</button></div></div><div class="city-minimap-wrap"><div class="city-minimap" data-city-minimap>${cityMiniMapHTML()}</div><button type="button" class="city-minimap-expand" data-city-fit title="Ajuster à l’écran">⛶</button></div></div>`}
 function cityTableMemoHTML(){
  return `<div class="city-table-memo-overlay" data-table-memo-overlay aria-hidden="true"><div class="city-table-memo-card" role="dialog" aria-modal="true" aria-label="Mémo tailles de tables"><div class="city-table-memo-head"><div><h3>📏 MÉMO TAILLES — RESTAURANT GASTRONOMIQUE</h3><p>Repères conseillés pour construire le plan. Les valeurs restent modifiables librement dans iCHEF.</p></div><button type="button" class="city-table-memo-close" data-table-memo-close aria-label="Fermer">×</button></div><table class="city-table-memo-table"><thead><tr><th>Couverts</th><th>Carrée</th><th>Rectangulaire</th><th>Ronde</th></tr></thead><tbody><tr><td>2 personnes</td><td><strong>0,80 × 0,80 m</strong></td><td>0,90 × 0,70 m</td><td>Ø 0,80–0,90 m</td></tr><tr><td>4 personnes</td><td><strong>1,00 × 1,00 m</strong></td><td>1,20 × 0,80 m</td><td>Ø 1,00–1,10 m</td></tr><tr><td>6 personnes</td><td>1,20 × 1,20 m</td><td><strong>1,60 × 0,90 m</strong></td><td>Ø 1,30–1,40 m</td></tr><tr><td>8 personnes</td><td>1,40 × 1,40 m</td><td><strong>2,00 × 1,00 m</strong></td><td>Ø 1,50–1,60 m</td></tr></tbody></table><div class="city-table-memo-note"><b>Repères de confort :</b> garde un passage généreux entre les tables pour le service. Les dimensions ci-dessus sont des repères ergonomiques pour une présentation gastronomique, pas des dimensions réglementaires obligatoires. La ligne pointillée représente la salle active ; le terrain complet reste constructible.</div></div></div>`;
 }
@@ -15627,6 +15654,7 @@ function bindAll(){
  A.root.querySelector('[data-zoom-minus]')?.addEventListener('click',()=>{A.zoom=aClamp((Number(A.zoom)||100)-10,10,200);applyZoom()});
  A.root.querySelector('[data-zoom-plus]')?.addEventListener('click',()=>{A.zoom=aClamp((Number(A.zoom)||100)+10,10,200);applyZoom()});
  A.root.querySelector('[data-view-mode]')?.addEventListener('change',e=>{if(e.target.value==='service')toggleMode()});
+ A.root.querySelector('[data-city-reset-view]')?.addEventListener('click',cityResetView);
  A.root.querySelectorAll('[data-city-fit]').forEach(b=>b.addEventListener('click',()=>cityFitRoom(true)));
  A.root.querySelector('[data-city-auto]')?.addEventListener('click',cityAutoOrganize);
  A.root.querySelector('[data-city-measures]')?.addEventListener('click',cityToggleMeasures);
@@ -15667,10 +15695,12 @@ function installPermanentPlanTouchRouter(){
 
 function ensureRoot(){let r=document.getElementById('ichefArchPad');if(!r){r=document.createElement('div');r.id='ichefArchPad';r.tabIndex=-1;document.body.appendChild(r)}A.root=r;installPermanentPlanTouchRouter();return r}
 function openPadArchitectEditor(){closeSheet?.();loadData();normaliseAll();A.archUnlocked=false;A.archRole='';A.archPin='';A.pinOpen=false;A.mode=expressRoleLevel()>=2||STATE.demo?'architect':'service';ensureRoot().classList.add('open');document.body.style.overflow='hidden';renderAll();A.root.focus();if(A.mode==='architect')setTimeout(()=>cityFitRoom(false),80);if(A.mode==='service')aToast('Mode SERVICE · architecture protégée par PIN')}
-async function openPadServiceHome(){
+async function openPadServiceHome(options={}){
   closeSheet?.();
-  /* Toujours repartir de la source officielle serveur avant d'afficher le plan. */
-  if(STATE.authenticated && !STATE.demo && navigator.onLine && typeof syncFull==='function'){
+  const skipSync=options?.skipSync===true;
+  /* V71 : au login, bootApp() vient déjà de synchroniser les données.
+     Pour les ouvertures suivantes depuis l'application, on garde la lecture live. */
+  if(!skipSync && STATE.authenticated && !STATE.demo && navigator.onLine && typeof syncFull==='function'){
     try{await syncFull('plan-open-live')}catch(err){console.warn('[iCHEF PLAN] synchro ouverture',err)}
   }
   try{if(typeof connectSocket==='function')connectSocket()}catch(_){}
