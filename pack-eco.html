@@ -5877,7 +5877,8 @@ body.order-open #btnHeadWho .head-sub-v20{
 #ichefArchPad .arch-kitchen{background:linear-gradient(135deg,#d4d8da,#9da6aa)!important;border-color:#647176!important}
 #ichefArchPad .arch-sofa{background:linear-gradient(180deg,#7b8588,#535f63)!important;border-color:#3e494d!important;box-shadow:inset 0 -14px 0 rgba(0,0,0,.12)!important}
 #ichefArchPad .arch-node.selected{outline:3px solid #24c778!important;outline-offset:3px!important;box-shadow:0 0 0 5px rgba(36,199,120,.15),0 8px 18px rgba(0,0,0,.16)!important}
-#ichefArchPad .arch-node.selected.city-collision{outline-color:var(--city-red)!important;box-shadow:0 0 0 5px rgba(239,75,75,.17),0 8px 18px rgba(0,0,0,.18)!important}
+#ichefArchPad .arch-node.city-collision{border-color:var(--city-red)!important;outline:3px solid var(--city-red)!important;outline-offset:3px!important;box-shadow:0 0 0 5px rgba(239,75,75,.18),0 8px 18px rgba(0,0,0,.18)!important}
+#ichefArchPad .arch-node.selected.city-collision{outline-color:var(--city-red)!important;box-shadow:0 0 0 6px rgba(239,75,75,.22),0 8px 18px rgba(0,0,0,.20)!important}
 #ichefArchPad .arch-handle{width:18px!important;height:18px!important;background:#fff!important;border:2px solid #0e3425!important;box-shadow:0 2px 5px rgba(0,0,0,.24)}
 #ichefArchPad .arch-rotate{width:28px!important;height:28px!important;top:-38px!important;background:#fff!important;border:2px solid #18382b!important;box-shadow:0 2px 6px rgba(0,0,0,.22)}
 
@@ -14334,8 +14335,8 @@ function cityCollisionItems(){
   const out=[];
   roomTables().forEach(o=>out.push({type:'table',obj:o,key:getTableKey(o)}));
   roomZones().forEach(o=>out.push({type:'zone',obj:o,key:getZoneKey(o)}));
-  /* V51 : le texte est un repère visuel, pas un obstacle physique. */
-  roomElements().forEach(o=>{if(aText(o.type)!=='text')out.push({type:'element',obj:o,key:getElemKey(o)})});
+  /* V54 : tous les objets peuvent signaler une superposition. Les zones restent des conteneurs. */
+  roomElements().forEach(o=>out.push({type:'element',obj:o,key:getElemKey(o)}));
   return out;
 }
 function cityElementKind(hit){
@@ -14346,8 +14347,6 @@ function cityElementKind(hit){
 function cityObjectsShouldCollide(a,b){
   if(!a||!b)return false;
   const ak=cityElementKind(a),bk=cityElementKind(b);
-  // Le texte n'est pas un obstacle physique, mais reste contraint par la limite pointillée.
-  if(ak==='text'||bk==='text')return false;
   // Les zones sont des conteneurs : elles se repoussent entre elles, mais peuvent contenir tables et mobilier.
   if(ak==='zone'||bk==='zone')return ak==='zone'&&bk==='zone';
   // Une porte ou une fenêtre doit pouvoir être intégrée à un mur.
@@ -14367,10 +14366,10 @@ function cityCollisionGapForShapes(hitA,shapeA,hitB,shapeB){
   if(shapeA?.kind==='chair'||shapeB?.kind==='chair')return CITY_CHAIR_GAP;
   return CITY_OBJECT_ANTISHOCK;
 }
-function cityObjectCollisionPenaltyAt(hit,key,l,t,w=null,h=null){
+function cityObjectOverlapPenaltyAt(hit,key,l,t,w=null,h=null){
   if(!hit?.obj)return 0;
   const mine=cityCollisionShapesForHitAt(hit,l,t,w,h);
-  let penalty=citySafetyOverflowForShapes(mine);
+  let penalty=0;
   for(const other of cityCollisionItems()){
     if(other.key===key||!cityObjectsShouldCollide(hit,other))continue;
     const od=defaults(other.obj,other.type),theirs=cityCollisionShapesForHitAt(other,od.l,od.t,od.w,od.h);
@@ -14380,6 +14379,52 @@ function cityObjectCollisionPenaltyAt(hit,key,l,t,w=null,h=null){
     }
   }
   return penalty;
+}
+function citySafetyPenaltyAt(hit,l,t,w=null,h=null){
+  if(!hit?.obj)return 0;
+  return citySafetyOverflowForShapes(cityCollisionShapesForHitAt(hit,l,t,w,h));
+}
+function cityObjectCollisionPenaltyAt(hit,key,l,t,w=null,h=null){
+  /* Compatibilité des anciennes fonctions : sécurité + superposition. */
+  return citySafetyPenaltyAt(hit,l,t,w,h)+cityObjectOverlapPenaltyAt(hit,key,l,t,w,h);
+}
+function cityTraceSafetyMove(hit,fromL,fromT,toL,toT,w,h){
+  const dx=toL-fromL,dy=toT-fromT,dist=Math.hypot(dx,dy);
+  const steps=Math.max(1,Math.min(240,Math.ceil(dist/6)));
+  let l=fromL,t=fromT,lastPenalty=citySafetyPenaltyAt(hit,fromL,fromT,w,h),blocked=false;
+  for(let i=1;i<=steps;i++){
+    const f=i/steps,cl=fromL+dx*f,ct=fromT+dy*f,p=citySafetyPenaltyAt(hit,cl,ct,w,h);
+    const allowed=p===0||(lastPenalty>0&&p<=lastPenalty);
+    if(!allowed){blocked=true;break}
+    l=cl;t=ct;lastPenalty=p;
+  }
+  return {l,t,blocked,penalty:lastPenalty,travel:Math.hypot(l-fromL,t-fromT)};
+}
+function cityResolveSafetyMove(hit,targetL,targetT){
+  const d=defaults(hit.obj,hit.type),curL=Number(hit.obj.l)||0,curT=Number(hit.obj.t)||0;
+  const direct=cityTraceSafetyMove(hit,curL,curT,targetL,targetT,d.w,d.h);
+  if(!direct.blocked)return {l:targetL,t:targetT,blocked:false};
+  /* La ligne pointillée reste la seule barrière : glissement le long du bord. */
+  const sx=cityTraceSafetyMove(hit,direct.l,direct.t,targetL,direct.t,d.w,d.h);
+  const sy=cityTraceSafetyMove(hit,direct.l,direct.t,direct.l,targetT,d.w,d.h);
+  const best=sx.travel>=sy.travel?sx:sy;
+  return {l:best.l,t:best.t,blocked:true};
+}
+function cityResolveResizeSafetyLive(drag,hit,target){
+  if(!drag||!hit?.obj||!target)return {geom:target,blocked:false};
+  const current=cityDragGeom(hit),targetPenalty=citySafetyPenaltyAt(hit,target.l,target.t,target.w,target.h);
+  if(targetPenalty===0)return {geom:target,blocked:false};
+  let best={...current},bestPenalty=citySafetyPenaltyAt(hit,current.l,current.t,current.w,current.h);
+  const steps=48;
+  for(let i=1;i<=steps;i++){
+    const f=i/steps;
+    const g={l:current.l+(target.l-current.l)*f,t:current.t+(target.t-current.t)*f,w:current.w+(target.w-current.w)*f,h:current.h+(target.h-current.h)*f};
+    const p=citySafetyPenaltyAt(hit,g.l,g.t,g.w,g.h);
+    const allowed=p===0||(bestPenalty>0&&p<=bestPenalty);
+    if(!allowed)break;
+    best=g;bestPenalty=p;
+  }
+  return {geom:best,blocked:true};
 }
 function cityTraceObjectMove(hit,key,fromL,fromT,toL,toT,w,h){
   const dx=toL-fromL,dy=toT-fromT,dist=Math.hypot(dx,dy);
@@ -14483,10 +14528,17 @@ function cityResolveResizeLive(drag,hit,target){
   return {geom:best,blocked:true};
 }
 
+/* ================================================================
+   iCHEF V54 — COLLISION = ALERTE, PAS BLOCAGE
+   - déplacement / redimensionnement libres entre objets
+   - superposition autorisée mais affichée en rouge
+   - retour automatique à l'état normal dès que la collision disparaît
+   - seule la limite pointillée de sécurité reste bloquante
+   ================================================================ */
 function cityHasCollision(key=A.selected){
   const hit=byKey(key);if(!hit?.obj)return false;
   const d=defaults(hit.obj,hit.type);
-  return cityObjectCollisionPenaltyAt(hit,key,d.l,d.t,d.w,d.h)>0;
+  return cityObjectOverlapPenaltyAt(hit,key,d.l,d.t,d.w,d.h)>0;
 }
 function cityRoomBoundaryHTML(){const b=citySafetyBounds();return `<div class="city-room-boundary" style="left:${b.minX/ARCH_W*100}%;top:${b.minY/ARCH_H*100}%;width:${b.w/ARCH_W*100}%;height:${b.h/ARCH_H*100}%"></div>`}
 function citySelectionOverlayHTML(){
@@ -14585,9 +14637,9 @@ function cityAutoOrganize(){
 }
 function cityToggleMeasures(){A.showMeasures=!A.showMeasures;renderCanvas();aToast(A.showMeasures?'Mesures activées':'Mesures masquées')}
 function cityUpdateBottom(){const m=A.root?.querySelector('[data-city-room-metrics]');if(m)m.innerHTML=cityRoomMetricsHTML()+' &nbsp;•&nbsp; Limite pointillée = bord de sécurité 0,5 m';const mm=A.root?.querySelector('[data-city-minimap]');if(mm)mm.innerHTML=cityMiniMapHTML();const mb=A.root?.querySelector('[data-city-measures]');if(mb)mb.classList.toggle('active',!!A.showMeasures)}
-function cityRotateSelected(){const h=current();if(!h?.obj||h.obj.locked)return;const oldRot=Number(h.obj.rotation)||0;pushHistory();h.obj.rotation=(oldRot+15)%360;if(cityHasCollision(A.selected)){h.obj.rotation=oldRot;A.antiShockBlocked=true;renderCanvas();aToast('🛡 Rotation bloquée par anti-choc');return}A.antiShockBlocked=false;markDirty();renderCanvas()}
+function cityRotateSelected(){const h=current();if(!h?.obj||h.obj.locked)return;const oldRot=Number(h.obj.rotation)||0;pushHistory();h.obj.rotation=(oldRot+15)%360;if(cityOutsideSafetyBoundary(h)){h.obj.rotation=oldRot;A.antiShockBlocked=true;renderCanvas();aToast('⛔ Rotation bloquée par la limite de sécurité');return}A.antiShockBlocked=false;markDirty();renderCanvas();if(cityHasCollision(A.selected))aToast('⚠ Collision : repositionnez l’objet');}
 function cityFloatAction(action){if(action==='move')return aToast('Appui 0,3 s sur l’objet puis déplacez-le');if(action==='rotate')return cityRotateSelected();if(action==='duplicate')return duplicateSelected();if(action==='delete')return deleteSelected()}
-function cityRefreshAssistLive(){const n=A.root?.querySelector(`[data-arch-key="${CSS.escape(A.selected||'')}" ]`);const hit=byKey(A.selected),outside=hit?.obj?cityOutsideSafetyBoundary(hit):false,bad=cityHasCollision(A.selected);if(n){n.classList.toggle('city-collision',bad);n.classList.toggle('city-antishock-blocked',!!A.antiShockBlocked)}const b=A.root?.querySelector('[data-city-position]');if(b){b.classList.toggle('antishock',!!A.antiShockBlocked);b.classList.toggle('bad',bad&&!A.antiShockBlocked);b.classList.toggle('good',!bad&&!A.antiShockBlocked);b.textContent=A.antiShockBlocked?(outside?'⛔ Limite sécurité':'🛡 Anti-choc'):bad?(outside?'⛔ Limite sécurité':'⚠ Trop proche'):'✓ Position correcte'};cityRefreshMeasuresLive()}
+function cityRefreshAssistLive(){const n=A.root?.querySelector(`[data-arch-key="${CSS.escape(A.selected||'')}" ]`);const hit=byKey(A.selected),outside=hit?.obj?cityOutsideSafetyBoundary(hit):false,bad=cityHasCollision(A.selected);if(n){n.classList.toggle('city-collision',bad);n.classList.toggle('city-antishock-blocked',!!A.antiShockBlocked)}const b=A.root?.querySelector('[data-city-position]');if(b){b.classList.toggle('antishock',!!A.antiShockBlocked);b.classList.toggle('bad',bad||outside);b.classList.toggle('good',!bad&&!outside&&!A.antiShockBlocked);b.textContent=(outside||A.antiShockBlocked)?'⛔ Limite sécurité':bad?'⚠ Collision · déplacez vers une zone libre':'✓ Position correcte'};cityRefreshMeasuresLive()}
 
 function archChairAutoPose(index,count){
   const angle=-90+((360/Math.max(1,count))*(index-1));
@@ -14666,9 +14718,9 @@ function archTableChairsHTML(t,live,service){
 }
 function canvasHTML(){
  const collision=cityHasCollision(A.selected);
- const zones=roomZones().map(z=>{z.__kind='zone';const key=getZoneKey(z),locked=!!z.locked,fill=aClamp(z.fillOpacity||15,3,55),border=['solid','dashed','dotted'].includes(aText(z.borderStyle))?aText(z.borderStyle):'dashed';return `<div class="arch-node arch-zone ${zoneClass(z)} ${locked?'locked':''} ${A.selected===key?'selected':''} ${A.groupAll?'city-group-selected':''} ${A.selected===key&&collision?'city-collision':''}" data-arch-key="${esc(key)}" style="${nodeStyle(z)};--zone-color:${esc(colorForZone(z))};--zone-fill:${fill}%;--zone-border:${border}"><span class="zone-label">${esc(z.label||'ZONE')}</span><span class="zone-kind">${esc(zoneKindLabel(z.zoneKind))}</span><span class="zone-meta">${esc(z.responsible||z.responsable||'')} ${z.capacity?'· '+esc(z.capacity)+' places':''}</span>${locked?'<span class="arch-lock-badge"></span>':''}${handles()}</div>`}).join('');
- const els=roomElements().map(e=>{e.__kind='element';const key=getElemKey(e),locked=!!e.locked;return `<div class="arch-node arch-generic ${classFor(e.type)} ${cashPatternClass(e)} ${locked?'locked':''} ${A.selected===key?'selected':''} ${A.groupAll?'city-group-selected':''} ${A.selected===key&&collision?'city-collision':''}" data-arch-key="${esc(key)}" style="${nodeStyle(e)}${cashCustomStyle(e)}">${elementInner(e)}${locked?'<span class="arch-lock-badge"></span>':''}${handles()}</div>`}).join('');
- const tables=roomTables().map(t=>{t.__kind='table';const key=getTableKey(t),act=activeOrder(t.label),ex=isExpressTable(t),shape=aText(t.shape||'square'),locked=!!t.locked,service=A.mode==='service',live=planTableLive(t);const liveClass=service?`service-live live-${live.code}`:'';const serviceInner=service?`<span class="tlabel">${esc(t.label)}</span><span class="arch-table-live-head"><span class="state ${esc(live.code)}">${esc(live.label)}</span>${live.time?`<span class="clock">${esc(live.time)}</span>`:''}<span class="pax">${Math.max(1,Number(t.pax)||2)}</span></span>${live.seats?.length?`<span class="arch-seat-strip">${planSeatStripHTML(live)}</span>`:''}`:`<span class="tlabel">${esc(t.label)}</span><span class="tpax">CAP. ${Number(t.pax)||2}${t.zone?' · '+esc(t.zone):''}</span>`;const clientCount=`<span class="arch-client-count ${live.pax>0?'':'zero'}" title="${live.pax} client${live.pax===1?'':'s'}">${live.pax}</span>`;const chairs=archTableChairsHTML(t,live,service);return `<button type="button" class="arch-node arch-table ${shape==='round'?'round':''} ${act?'active-order':''} ${liveClass} ${ex?'express':''} ${locked?'locked':''} ${A.selected===key?'selected':''} ${A.groupAll?'city-group-selected':''} ${A.selected===key&&collision?'city-collision':''}" data-arch-key="${esc(key)}" style="${nodeStyle(t)}">${chairs}${serviceInner}${clientCount}${locked?'<span class="arch-lock-badge"></span>':''}${handles()}</button>`}).join('');
+ const zones=roomZones().map(z=>{z.__kind='zone';const key=getZoneKey(z),locked=!!z.locked,fill=aClamp(z.fillOpacity||15,3,55),border=['solid','dashed','dotted'].includes(aText(z.borderStyle))?aText(z.borderStyle):'dashed',coll=cityHasCollision(key);return `<div class="arch-node arch-zone ${zoneClass(z)} ${locked?'locked':''} ${A.selected===key?'selected':''} ${A.groupAll?'city-group-selected':''} ${coll?'city-collision':''}" data-arch-key="${esc(key)}" style="${nodeStyle(z)};--zone-color:${esc(colorForZone(z))};--zone-fill:${fill}%;--zone-border:${border}"><span class="zone-label">${esc(z.label||'ZONE')}</span><span class="zone-kind">${esc(zoneKindLabel(z.zoneKind))}</span><span class="zone-meta">${esc(z.responsible||z.responsable||'')} ${z.capacity?'· '+esc(z.capacity)+' places':''}</span>${locked?'<span class="arch-lock-badge"></span>':''}${handles()}</div>`}).join('');
+ const els=roomElements().map(e=>{e.__kind='element';const key=getElemKey(e),locked=!!e.locked,coll=cityHasCollision(key);return `<div class="arch-node arch-generic ${classFor(e.type)} ${cashPatternClass(e)} ${locked?'locked':''} ${A.selected===key?'selected':''} ${A.groupAll?'city-group-selected':''} ${coll?'city-collision':''}" data-arch-key="${esc(key)}" style="${nodeStyle(e)}${cashCustomStyle(e)}">${elementInner(e)}${locked?'<span class="arch-lock-badge"></span>':''}${handles()}</div>`}).join('');
+ const tables=roomTables().map(t=>{t.__kind='table';const key=getTableKey(t),act=activeOrder(t.label),ex=isExpressTable(t),shape=aText(t.shape||'square'),locked=!!t.locked,service=A.mode==='service',live=planTableLive(t),coll=cityHasCollision(key);const liveClass=service?`service-live live-${live.code}`:'';const serviceInner=service?`<span class="tlabel">${esc(t.label)}</span><span class="arch-table-live-head"><span class="state ${esc(live.code)}">${esc(live.label)}</span>${live.time?`<span class="clock">${esc(live.time)}</span>`:''}<span class="pax">${Math.max(1,Number(t.pax)||2)}</span></span>${live.seats?.length?`<span class="arch-seat-strip">${planSeatStripHTML(live)}</span>`:''}`:`<span class="tlabel">${esc(t.label)}</span><span class="tpax">CAP. ${Number(t.pax)||2}${t.zone?' · '+esc(t.zone):''}</span>`;const clientCount=`<span class="arch-client-count ${live.pax>0?'':'zero'}" title="${live.pax} client${live.pax===1?'':'s'}">${live.pax}</span>`;const chairs=archTableChairsHTML(t,live,service);return `<button type="button" class="arch-node arch-table ${shape==='round'?'round':''} ${act?'active-order':''} ${liveClass} ${ex?'express':''} ${locked?'locked':''} ${A.selected===key?'selected':''} ${A.groupAll?'city-group-selected':''} ${coll?'city-collision':''}" data-arch-key="${esc(key)}" style="${nodeStyle(t)}">${chairs}${serviceInner}${clientCount}${locked?'<span class="arch-lock-badge"></span>':''}${handles()}</button>`}).join('');
  return `${cityRoomBoundaryHTML()}${zones}${els}${tables}${cityMeasureOverlayHTML()}${citySelectionOverlayHTML()}`;
 }
 function roomEmoji(name){const n=aText(name).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();if(/HOTEL|CHAMBRE|ROOM/.test(n))return '🏨';if(/TERRASSE|PLAGE/.test(n))return '☀️';if(/BAR/.test(n))return '🍸';if(/PISCINE|POOL/.test(n))return '🏊';if(/CUISINE/.test(n))return '👨‍🍳';if(/BUREAU|REUNION/.test(n))return '🖥️';if(/KIOSQUE/.test(n))return '🏪';if(/YACHT/.test(n))return '🛥️';if(/MONTAGNE|CHALET/.test(n))return '🏔️';if(/LAC/.test(n))return '🏞️';return '🍽️'}
@@ -14698,9 +14750,9 @@ function architectPaletteHTML(){
 function architectBottomHTML(st){
   const hasSelection=!!A.selected||!!A.groupAll;
   const bad=A.selected?cityHasCollision(A.selected):false;
-  const anti=!!A.selected&&!!A.antiShockBlocked;
-  const statusText=A.groupAll?`☑ ${cityGroupHits().length} objets sélectionnés`:anti?'🛡 Anti-choc':bad?'⚠ Trop proche':'✓ Position correcte';
-  const statusClass=A.groupAll?'good':anti?'antishock':bad?'bad':'good';
+  const boundary=!!A.selected&&!!A.antiShockBlocked;
+  const statusText=A.groupAll?`☑ ${cityGroupHits().length} objets sélectionnés`:boundary?'⛔ Limite sécurité':bad?'⚠ Collision':'✓ Position correcte';
+  const statusClass=A.groupAll?'good':boundary?'antishock':bad?'bad':'good';
   return `<div class="archpad-bottom"><div class="city-bottom-room"><div class="city-bottom-icon">↻</div><div><b>${esc(A.room)}</b><small data-city-room-metrics>${cityRoomMetricsHTML()} &nbsp;•&nbsp; Marge de sécurité 0,5 m</small><small class="city-touch-help">🤏 2 doigts = zoom tactile</small></div></div><div class="city-bottom-center"><div class="archpad-city-hint" data-city-hint></div>${hasSelection?`<div class="city-position-badge ${statusClass}" data-city-position style="position:static;transform:none;display:inline-flex;align-items:center;justify-content:center;min-height:25px;padding:5px 12px;margin:0 auto 1px;white-space:nowrap;">${statusText}</div>`:''}<div class="city-bottom-actions"><button type="button" data-city-fit>⌗ &nbsp; Ajuster à l’écran</button><button type="button" data-city-auto>✣ &nbsp; Auto-organiser</button><button type="button" class="${A.showMeasures?'active':''}" data-city-measures>⌁ &nbsp; Mesures</button></div></div><div class="city-minimap-wrap"><div class="city-minimap" data-city-minimap>${cityMiniMapHTML()}</div><button type="button" class="city-minimap-expand" data-city-fit title="Ajuster à l’écran">⛶</button></div></div>`}
 function zoomOptionsHTML(){
   const z=aClamp(Number(A.zoom)||0,0,200);
@@ -14859,7 +14911,7 @@ function pointerDown(e){
   if(rot){
     if(A.mode!=='architect'||!canEdit())return;clearArchPress();e.preventDefault();
     const key=rot.closest('[data-arch-key]')?.dataset.archKey;if(key)A.selected=key;
-    const h=current();if(h?.obj){if(h.obj.locked)return aToast('Élément verrouillé');const oldRot=Number(h.obj.rotation)||0;pushHistory();h.obj.rotation=(oldRot+15)%360;if(cityHasCollision(A.selected)){h.obj.rotation=oldRot;A.antiShockBlocked=true;renderCanvas();aToast('🛡 Rotation bloquée par anti-choc');return}A.antiShockBlocked=false;markDirty();renderCanvas()}
+    const h=current();if(h?.obj){if(h.obj.locked)return aToast('Élément verrouillé');cityRotateSelected()}
     return;
   }
   if(handle){
@@ -14901,10 +14953,10 @@ function pointerMove(e){
   if(A.drag.kind==='move'){
     const targetL=snap(aClamp(o.l+dx,CITY_STAGE_EDGE_CM,ARCH_W-CITY_STAGE_EDGE_CM-o.w));
     const targetT=snap(aClamp(o.t+dy,CITY_STAGE_EDGE_CM,ARCH_H-CITY_STAGE_EDGE_CM-o.h));
-    /* V52 : collision continue. L'objet va au plus loin possible et glisse
-       le long de l'obstacle au lieu de le traverser puis revenir en arrière. */
+    /* V54 : les autres objets ne bloquent plus le geste. Seule la ligne
+       pointillée de sécurité reste une barrière physique. */
     {
-      const resolved=cityResolveObjectMove(h,A.drag.key,targetL,targetT);
+      const resolved=cityResolveSafetyMove(h,targetL,targetT);
       h.obj.l=snap(resolved.l);h.obj.t=snap(resolved.t);
       liveGeom={l:h.obj.l,t:h.obj.t,w:o.w,h:o.h};
       blocked=!!resolved.blocked;
@@ -14916,17 +14968,14 @@ function pointerMove(e){
     l=aClamp(snap(l),CITY_STAGE_EDGE_CM,ARCH_W-CITY_STAGE_EDGE_CM-min);t=aClamp(snap(t),CITY_STAGE_EDGE_CM,ARCH_H-CITY_STAGE_EDGE_CM-min);w=Math.min(ARCH_W-CITY_STAGE_EDGE_CM-l,Math.max(min,snap(w)));hh=Math.min(ARCH_H-CITY_STAGE_EDGE_CM-t,Math.max(min,snap(hh)));
     const target={l,t,w,h:hh};
     {
-      const resolved=cityResolveResizeLive(A.drag,h,target);
+      const resolved=cityResolveResizeSafetyLive(A.drag,h,target);
       liveGeom=resolved.geom;blocked=!!resolved.blocked;
     }
     cityApplyDragGeom(h,liveGeom);
   }
 
-  const livePenalty=cityDragPenalty(h,A.drag.key,liveGeom);
-  if(livePenalty<=0||(Number(A.drag.startPenalty||0)>0&&livePenalty<Number(A.drag.startPenalty||0))){
-    A.drag.lastSafeGeom={...liveGeom};
-  }
-  cityRememberDragBest(A.drag,h,liveGeom,livePenalty);
+  /* La collision avec un autre objet est maintenant une ALERTE VISUELLE,
+     jamais un blocage. Le blocage ne représente que la limite pointillée. */
   A.drag.blockedByAntiShock=blocked;
   A.antiShockBlocked=blocked;
   markDirty();
@@ -14949,7 +14998,7 @@ function pointerUp(e){
     A.drag=null;A.antiShockBlocked=false;archRelease(e);
     if(d.kind==='move'&&!d.moved&&!d.fromHold){A.selected=null;renderCanvas();aToast('Objet lâché');return}
     renderCanvas();
-    if(d.moved)aToast(blocked?'🛡 Limite anti-choc atteinte · objet posé ici':'Objet modifié · clic pour lâcher');
+    if(d.moved){const collision=cityHasCollision(d.key);aToast(collision?'⚠ Collision : objet superposé · déplacez-le vers une zone libre':blocked?'⛔ Limite de sécurité atteinte':'✓ Objet posé · position correcte',collision)}
     return;
   }
   if(A.releaseCandidate&&A.releaseCandidate.pointerId===e.pointerId){
@@ -15000,7 +15049,7 @@ function applyZoom(){
   try{localStorage.setItem('ichef_plan_zoom_pct_v28',String(A.zoom))}catch(_){}
 }
 
-async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_V53_SAFETY_BOUNDARY'},updatedFrom:'PAD_ARCHITECT_V53_SAFETY_BOUNDARY',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD ultra modulable');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
+async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_V54_COLLISION_ALERT'},updatedFrom:'PAD_ARCHITECT_V54_COLLISION_ALERT',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD ultra modulable');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
 function openExpress(){if(closePadArchitect()!==false)openExpressTableCreate()}
 function architectAccessKey(value){
   return aText(value).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[\s-]+/g,'_');
