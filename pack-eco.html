@@ -6029,33 +6029,52 @@ body.order-open #btnHeadWho .head-sub-v20{
 }
 </style>
 
-<style id="ichef-v67-plan-plein-ecran-standard">
+<style id="ichef-v68-plan-plein-ecran-reel-standard">
 /* =========================================================
-   iCHEF Architecture V67 — PLAN PLEIN ÉCRAN / TAILLE STANDARD
-   Le mode plein écran agrandit uniquement la zone de travail :
-   les palettes gauche/droite et la barre basse sont masquées.
-   La barre supérieure reste visible pour Enregistrer / Standard.
+   iCHEF Architecture V68 — PLEIN ÉCRAN RÉEL + STANDARD
+   - Le plan occupe réellement toute la surface sous la barre haute.
+   - Les palettes / propriétés / barre basse sont masquées.
+   - La barre haute reste visible pour Enregistrer / Standard.
+   - Compatible avec le Fullscreen API quand le navigateur l'autorise.
    ========================================================= */
 #ichefArchPad .city-plan-screen-btn.active{
   color:#071016!important;background:var(--city-gold,#f2bd46)!important;
   border-color:#f8d77f!important;box-shadow:0 0 0 2px rgba(242,189,70,.12) inset;
 }
+#ichefArchPad.city-plan-fullscreen{
+  width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;
+}
 #ichefArchPad.city-plan-fullscreen .archpad-main{
-  grid-template-columns:minmax(0,1fr)!important;
-  width:100%!important;min-width:0!important;
+  position:relative!important;display:block!important;flex:1 1 auto!important;
+  width:100%!important;min-width:0!important;min-height:0!important;overflow:hidden!important;
+  grid-template-columns:none!important;
 }
 #ichefArchPad.city-plan-fullscreen .archpad-left,
 #ichefArchPad.city-plan-fullscreen .archpad-right,
 #ichefArchPad.city-plan-fullscreen .archpad-bottom{display:none!important}
 #ichefArchPad.city-plan-fullscreen .archpad-center{
-  grid-column:1!important;width:100%!important;min-width:0!important;
+  position:absolute!important;inset:0!important;z-index:30!important;
+  display:flex!important;flex-direction:column!important;
+  width:auto!important;height:auto!important;min-width:0!important;min-height:0!important;
+  grid-column:auto!important;background:#0b0f10!important;
 }
 #ichefArchPad.city-plan-fullscreen .archpad-stagewrap{
-  width:100%!important;height:100%!important;max-width:none!important;
+  flex:1 1 auto!important;width:100%!important;height:100%!important;
+  min-width:0!important;min-height:0!important;max-width:none!important;max-height:none!important;
+  padding:8px!important;box-sizing:border-box!important;overflow:auto!important;
 }
 #ichefArchPad.city-plan-fullscreen .archpad-stage-shell{max-width:none!important}
+#ichefArchPad.city-plan-fullscreen .archpad-top{
+  position:relative!important;z-index:1000!important;flex:0 0 76px!important;
+}
+#ichefArchPad.city-plan-fullscreen .city-plan-standard-btn{
+  border-color:#f8d77f!important;color:#ffe08a!important;
+}
 @media(max-width:1180px){
   #ichefArchPad .city-plan-screen-btn,#ichefArchPad .city-plan-standard-btn{padding:0 11px!important}
+}
+@media(max-width:900px){
+  #ichefArchPad.city-plan-fullscreen .archpad-top{flex-basis:64px!important;height:64px!important}
 }
 </style>
 </head>
@@ -14844,25 +14863,45 @@ function cityApplyPlanScreenMode(){
   if(full){
     full.classList.toggle('active',!!A.planFullscreen);
     full.setAttribute('aria-pressed',A.planFullscreen?'true':'false');
+    full.title=A.planFullscreen?'Plan déjà en plein écran':'Agrandir le plan sur tout l’écran';
   }
 }
 function cityRefitAfterLayout(message){
+  /* Deux frames + petit délai : le navigateur doit avoir terminé le recalcul
+     de la grille / plein écran avant de mesurer archpad-stagewrap. */
   requestAnimationFrame(()=>requestAnimationFrame(()=>{
     cityFitRoom(false);
+    setTimeout(()=>cityFitRoom(false),80);
     if(message)aToast(message);
   }));
 }
-function cityPlanFullscreen(){
-  if(A.mode!=='architect'||!canEdit())return aToast('Mode Architecte requis',true);
+async function cityPlanFullscreen(){
+  if(A.mode!=='architect')return aToast('Mode Architecte requis',true);
   A.planFullscreen=true;
   cityApplyPlanScreenMode();
-  cityRefitAfterLayout('⛶ Plan agrandi sur tout l’écran');
+
+  /* Le root iCHEF est déjà fixed/inset:0. Le Fullscreen API complète ce mode
+     sur tablette / navigateur en masquant aussi le chrome quand c'est permis.
+     En cas de refus, le fallback CSS reste pleinement fonctionnel. */
+  try{
+    if(!document.fullscreenElement && A.root?.requestFullscreen){
+      const p=A.root.requestFullscreen({navigationUI:'hide'});
+      if(p&&typeof p.then==='function')await p.catch(()=>{});
+    }
+  }catch(_){}
+  cityRefitAfterLayout('⛶ Plan en plein écran');
 }
-function cityPlanStandard(){
-  if(A.mode!=='architect'||!canEdit())return aToast('Mode Architecte requis',true);
+async function cityPlanStandard(){
+  if(A.mode!=='architect')return aToast('Mode Architecte requis',true);
   A.planFullscreen=false;
   cityApplyPlanScreenMode();
-  cityRefitAfterLayout('↙ Taille standard restaurée');
+  try{
+    if(document.fullscreenElement===A.root && document.exitFullscreen){
+      const p=document.exitFullscreen();
+      if(p&&typeof p.then==='function')await p.catch(()=>{});
+    }
+  }catch(_){}
+  cityRefitAfterLayout('↙ Vue standard restaurée');
 }
 function cityAutoOrganize(){
   if(!canEdit()||!roomTables().length)return;
@@ -15416,7 +15455,7 @@ function applyZoom(){
   try{localStorage.setItem('ichef_plan_zoom_pct_v28',String(A.zoom))}catch(_){}
 }
 
-async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),roomLayouts:clone(A.roomLayouts),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_V64_DELETE_ALLOWED'},updatedFrom:'PAD_ARCHITECT_V64_DELETE_ALLOWED',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD V64 · suppression Architecture autorisée');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
+async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),roomLayouts:clone(A.roomLayouts),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_V68_FULLSCREEN_STANDARD'},updatedFrom:'PAD_ARCHITECT_V68_FULLSCREEN_STANDARD',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD V68 · plein écran réel + vue standard');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
 function openExpress(){if(closePadArchitect()!==false)openExpressTableCreate()}
 function architectAccessKey(value){
   return aText(value).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[\s-]+/g,'_');
@@ -15540,6 +15579,7 @@ function bindAll(){
  A.root.querySelector('[data-save]')?.addEventListener('click',saveAll);
  A.root.querySelector('[data-plan-fullscreen]')?.addEventListener('click',cityPlanFullscreen);
  A.root.querySelector('[data-plan-standard]')?.addEventListener('click',cityPlanStandard);
+ if(!A.fullscreenSyncBound){A.fullscreenSyncBound=true;document.addEventListener('fullscreenchange',()=>{if(!document.fullscreenElement&&A.planFullscreen){A.planFullscreen=false;cityApplyPlanScreenMode();cityRefitAfterLayout('↙ Vue standard restaurée')}})}
  A.root.querySelector('[data-undo]')?.addEventListener('click',undo);A.root.querySelector('[data-redo]')?.addEventListener('click',redo);
  A.root.querySelector('[data-add-room]')?.addEventListener('click',addRoom);A.root.querySelector('[data-rename-room]')?.addEventListener('click',renameRoom);A.root.querySelector('[data-edit-room]')?.addEventListener('click',()=>{A.groupAll=false;A.selected=getRoomKey();renderCanvas();aToast('Salle sélectionnée · nom, taille et position modifiables')});A.root.querySelector('[data-delete-room]')?.addEventListener('click',deleteRoom);
  A.root.querySelectorAll('[data-add]').forEach(b=>b.addEventListener('click',()=>setCityBuildTool(b.dataset.add)));
