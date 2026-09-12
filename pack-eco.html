@@ -3958,167 +3958,121 @@ body.order-open .order-sync-state.bad{background:#fff2f4 !important;}
 .archpad-sync-badge.syncing{color:#e8c45e}.archpad-sync-badge.offline{color:#ff6b6b}
 </style>
 <script id="zoom-tactile-script">
-/* iCHEF Architecture V69 — zoom tactile doux + pont direct vers moteur Architecture */
+/* iCHEF Architecture V77 — tactile fiable : Pointer Events uniquement.
+   2 doigts = zoom doux. Compatible écrans tactiles Windows / tablettes.
+   Aucun mélange TouchEvent + PointerEvent afin d'éviter le conflit avec le déplacement. */
 (function(){
-  if(window.__ICHEF_PLAN_ZOOM_V28__)return;
-  window.__ICHEF_PLAN_ZOOM_V28__=true;
+  if(window.__ICHEF_PLAN_POINTER_PINCH_V77__)return;
+  window.__ICHEF_PLAN_POINTER_PINCH_V77__=true;
 
-  const KEY='ichef_plan_zoom_pct_v28';
   const MIN=10,MAX=200,STEP=10;
-  /* V61 — Pinch tactile doux : zoom précis à deux doigts, sans emballement. */
-  const PINCH_START_THRESHOLD=6;    // petite zone morte : évite le zoom involontaire
-  const PINCH_SENSITIVITY=0.38;     // V61 : 38 % du geste réel = zoom beaucoup plus doux
-  const PINCH_MAX_STEP=3;           // maximum 3 % par mise à jour = mouvement progressif
+  const SENSITIVITY=0.34;      // zoom volontairement doux
+  const START_THRESHOLD=5;    // évite les micro-mouvements involontaires
+  const MAX_STEP=2.5;         // variation max par frame
+  const active=new Map();
   let pinch=null;
-  let pinchRaf=0;
+  let suppressIds=new Set();
+  let raf=0;
 
-  const clamp=v=>{const n=Number(v);return Math.max(MIN,Math.min(MAX,Math.round(Number.isFinite(n)?n:100)))};
+  const clamp=v=>Math.max(MIN,Math.min(MAX,Number(v)||100));
   const root=()=>document.getElementById('ichefArchPad');
-  const select=()=>root()?.querySelector('[data-zoom]')||null;
-
-  function ensureOption(sel,pct){
-    if(!sel)return;
-    const value=String(pct);
-    if(!Array.from(sel.options).some(o=>String(o.value||o.textContent).replace(/%/g,'').trim()===value)){
-      const opt=document.createElement('option');
-      opt.value=value;opt.textContent=value+'%';
-      sel.appendChild(opt);
-    }
-  }
-
   function currentZoom(){
-    const sel=select();
-    const raw=sel?.value||root()?.querySelector('[data-zoom-label]')?.textContent||'100';
-    const parsed=parseInt(String(raw).replace(/[^0-9]/g,''),10);
-    return clamp(Number.isFinite(parsed)?parsed:100);
-  }
-
-  function setZoom(value,persist=true){
     const r=root();
-    if(!r)return false;
-    const pct=clamp(value);
-    const sel=select();
-    if(sel){
-      ensureOption(sel,pct);
-      sel.value=String(pct);
-    }
-    const label=r.querySelector('[data-zoom-label]');
-    if(label)label.textContent=pct+'%';
-    /* V69 : l'interface actuelle n'a plus de select[data-zoom].
-       On parle directement au moteur Architecture via un événement dédié. */
+    const raw=r?.querySelector('[data-zoom-label]')?.textContent || localStorage.getItem('ichef_plan_zoom_pct_v28') || '100';
+    const n=parseFloat(String(raw).replace(',','.').replace(/[^0-9.]/g,''));
+    return clamp(Number.isFinite(n)?n:100);
+  }
+  function setZoom(value,persist=false){
+    const pct=Math.round(clamp(value)*10)/10;
     document.dispatchEvent(new CustomEvent('ichef-plan-zoom',{detail:{value:pct}}));
-    if(persist){try{localStorage.setItem(KEY,String(pct))}catch(_){}}
-    return true;
+    if(persist){try{localStorage.setItem('ichef_plan_zoom_pct_v28',String(pct))}catch(_){}}
+  }
+  function distance(a,b){return Math.hypot(a.x-b.x,a.y-b.y)}
+  function pointsForPinch(){
+    if(!pinch)return null;
+    const a=active.get(pinch.ids[0]),b=active.get(pinch.ids[1]);
+    return a&&b?[a,b]:null;
+  }
+  function finishIfNeeded(){
+    if(pinch && !pointsForPinch()){
+      pinch=null;
+      document.dispatchEvent(new CustomEvent('ichef-plan-pinch-end'));
+      try{localStorage.setItem('ichef_plan_zoom_pct_v28',String(currentZoom()))}catch(_){}
+    }
+    if(!active.size)suppressIds.clear();
   }
 
-  function installControls(){
-    const r=root();
-    const sel=select();
-    const bar=r?.querySelector('.archpad-canvasbar');
-    if(!r||!sel||!bar)return;
+  document.addEventListener('pointerdown',e=>{
+    if(e.pointerType!=='touch')return;
+    const wrap=e.target.closest?.('#ichefArchPad .archpad-stagewrap');
+    if(!wrap)return;
+    active.set(e.pointerId,{x:e.clientX,y:e.clientY});
 
-    if(!bar.querySelector('.archpad-zoom-controls')){
-      const group=document.createElement('span');
-      group.className='archpad-zoom-controls';
-      group.innerHTML='<button type="button" data-plan-zoom-out title="Zoom -">−</button><button type="button" data-plan-zoom-100 title="Revenir à 100%">100%</button><button type="button" data-plan-zoom-in title="Zoom +">+</button>';
-      bar.insertBefore(group,sel);
-      group.querySelector('[data-plan-zoom-out]').onclick=()=>setZoom(currentZoom()-STEP);
-      group.querySelector('[data-plan-zoom-100]').onclick=()=>setZoom(100);
-      group.querySelector('[data-plan-zoom-in]').onclick=()=>setZoom(currentZoom()+STEP);
+    if(!pinch && active.size>=2){
+      const ids=Array.from(active.keys()).slice(-2);
+      const p1=active.get(ids[0]),p2=active.get(ids[1]);
+      const d=distance(p1,p2);
+      pinch={ids,startDistance:d,lastDistance:d,startZoom:currentZoom(),appliedZoom:currentZoom(),active:false};
+      suppressIds=new Set(ids);
+      document.dispatchEvent(new CustomEvent('ichef-plan-pinch-start',{detail:{pointerIds:ids}}));
+      e.preventDefault();
+      e.stopImmediatePropagation();
     }
+  },true);
 
-    if(!bar.querySelector('.archpad-sync-badge')){
-      const badge=document.createElement('span');
-      badge.className='archpad-sync-badge';
-      badge.dataset.planSyncBadge='1';
-      badge.textContent='↻ SYNC';
-      badge.title='Synchronisation du plan avec server.js';
-      bar.insertBefore(badge,bar.querySelector('.grow')?.nextSibling||sel);
-    }
+  document.addEventListener('pointermove',e=>{
+    if(e.pointerType!=='touch'||!active.has(e.pointerId))return;
+    active.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    if(!pinch||!suppressIds.has(e.pointerId))return;
+    const pts=pointsForPinch();
+    if(!pts)return;
 
-    if(!sel.dataset.zoomRestoredV28){
-      sel.dataset.zoomRestoredV28='1';
-      let saved=100;
-      try{saved=clamp(localStorage.getItem(KEY)||100)}catch(_){}
-      setTimeout(()=>setZoom(saved,false),0);
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    const d=distance(pts[0],pts[1]);
+    const travelled=Math.abs(d-pinch.startDistance);
+    if(!pinch.active&&travelled<START_THRESHOLD)return;
+    pinch.active=true;
+
+    const ratio=pinch.startDistance>0?d/pinch.startDistance:1;
+    const damped=1+((ratio-1)*SENSITIVITY);
+    const target=clamp(pinch.startZoom*damped);
+    pinch.lastDistance=d;
+
+    if(!raf){
+      raf=requestAnimationFrame(()=>{
+        raf=0;
+        if(!pinch)return;
+        const delta=Math.max(-MAX_STEP,Math.min(MAX_STEP,target-pinch.appliedZoom));
+        if(Math.abs(delta)<0.05)return;
+        pinch.appliedZoom=clamp(pinch.appliedZoom+delta);
+        setZoom(pinch.appliedZoom,false);
+      });
     }
+  },true);
+
+  function endPointer(e){
+    if(e.pointerType!=='touch')return;
+    const wasActive=active.has(e.pointerId);
+    const suppress=suppressIds.has(e.pointerId);
+    if(wasActive)active.delete(e.pointerId);
+    if(suppress){
+      if(e.cancelable)e.preventDefault();
+      e.stopImmediatePropagation();
+      suppressIds.delete(e.pointerId);
+    }
+    finishIfNeeded();
   }
+  document.addEventListener('pointerup',endPointer,true);
+  document.addEventListener('pointercancel',endPointer,true);
 
-  const observer=new MutationObserver(installControls);
-  observer.observe(document.documentElement,{childList:true,subtree:true});
-  document.addEventListener('DOMContentLoaded',installControls,{once:true});
-  setInterval(installControls,1200);
-
-  /* Ctrl/Cmd + molette = zoom. La molette normale garde le défilement du plan. */
+  /* Ctrl/Cmd + molette reste disponible sur PC. */
   document.addEventListener('wheel',e=>{
     if(!(e.ctrlKey||e.metaKey))return;
     if(!e.target.closest?.('#ichefArchPad .archpad-stagewrap'))return;
     e.preventDefault();
-    setZoom(currentZoom()+(e.deltaY>0?-STEP:STEP));
+    setZoom(currentZoom()+(e.deltaY>0?-STEP:STEP),true);
   },{passive:false,capture:true});
-
-  /* Pinch tactile à deux doigts — V61 sensibilité douce. */
-  document.addEventListener('touchstart',e=>{
-    if(e.touches.length!==2)return;
-    const wrap=e.target.closest?.('#ichefArchPad .archpad-stagewrap');
-    if(!wrap)return;
-    e.preventDefault();
-    const d=Math.hypot(
-      e.touches[0].clientX-e.touches[1].clientX,
-      e.touches[0].clientY-e.touches[1].clientY
-    );
-    pinch={
-      distance:d,
-      lastDistance:d,
-      zoom:currentZoom(),
-      appliedZoom:currentZoom(),
-      active:false,
-      pendingZoom:null,
-      wrap
-    };
-  },{passive:false,capture:true});
-
-  document.addEventListener('touchmove',e=>{
-    if(!pinch||e.touches.length!==2)return;
-    const d=Math.hypot(
-      e.touches[0].clientX-e.touches[1].clientX,
-      e.touches[0].clientY-e.touches[1].clientY
-    );
-    const travelled=Math.abs(d-pinch.distance);
-    if(!pinch.active && travelled<PINCH_START_THRESHOLD)return;
-
-    pinch.active=true;
-    e.preventDefault();
-
-    /* Le rapport est volontairement amorti pour un zoom précis et doux. */
-    const rawRatio=pinch.distance>0?(d/pinch.distance):1;
-    const dampedRatio=1+((rawRatio-1)*PINCH_SENSITIVITY);
-    pinch.pendingZoom=clamp(pinch.zoom*dampedRatio);
-    pinch.lastDistance=d;
-
-    if(!pinchRaf){
-      pinchRaf=requestAnimationFrame(()=>{
-        pinchRaf=0;
-        if(!pinch||pinch.pendingZoom==null)return;
-        const current=Number(pinch.appliedZoom)||currentZoom();
-        const target=Number(pinch.pendingZoom)||current;
-        const delta=Math.max(-PINCH_MAX_STEP,Math.min(PINCH_MAX_STEP,target-current));
-        const next=clamp(current+delta);
-        pinch.appliedZoom=next;
-        setZoom(next,false);
-      });
-    }
-  },{passive:false,capture:true});
-
-  const finishPinch=e=>{
-    if(!pinch)return;
-    if(e.touches && e.touches.length>=2)return;
-    if(pinchRaf){cancelAnimationFrame(pinchRaf);pinchRaf=0}
-    pinch=null;
-    try{localStorage.setItem(KEY,String(currentZoom()))}catch(_){}
-  };
-  document.addEventListener('touchend',finishPinch,{passive:true,capture:true});
-  document.addEventListener('touchcancel',finishPinch,{passive:true,capture:true});
 })();
 </script>
 <style id="taille-zones-x3">
@@ -5936,47 +5890,6 @@ body.order-open #btnHeadWho .head-sub-v20{
 @media(max-width:720px){#ichefArchPad .city-table-memo-card{padding:16px}#ichefArchPad .city-table-memo-table{font-size:10px}#ichefArchPad .city-table-memo-table td{padding:9px 7px}}
 
 @media(max-width:900px){#ichefArchPad .archpad-top{height:64px!important;flex-basis:64px!important;padding:0 8px!important}.archpad-brand{display:none!important}.archpad-breadcrumb{font-size:11px!important}.city-history{display:none!important}.city-top-actions{gap:4px!important}.city-save{padding:0 12px!important}.archpad-main{grid-template-columns:120px minmax(0,1fr)!important}.archpad-right{position:absolute!important;right:0;top:64px;bottom:78px;width:250px;z-index:300;box-shadow:-8px 0 24px rgba(0,0,0,.3)}.city-tool-list button{grid-template-columns:30px 1fr!important;padding:0 5px!important;font-size:10px!important}.city-tool-list button .ico{font-size:17px!important}.archpad-bottom{grid-template-columns:1fr!important}.city-bottom-room,.city-minimap-wrap{display:none!important}.city-bottom-actions{justify-content:space-around!important}.city-bottom-actions button{padding:0 9px!important;font-size:9px!important}}
-</style>
-
-<style id="ichef-piscine-exterieur-v77">
-/* =========================================================
-   iCHEF V77 — PISCINE & EXTÉRIEUR COMPLET
-   - mobilier extérieur dédié
-   - points de service piscine reliés à C1-C9 / Qui mange quoi
-   - purement architecture : aucun nouveau format serveur nécessaire
-   ========================================================= */
-#ichefArchPad .city-pool-title{margin-top:13px!important;color:#72d8ff!important}
-#ichefArchPad .city-pool-tools button{border-color:#284956!important;background:linear-gradient(180deg,#10252d,#0d1b21)!important}
-#ichefArchPad .city-pool-tools button:hover{border-color:#4d91a8!important}
-#ichefArchPad .city-pool-tools button .ico{color:#8de4ff!important}
-
-#ichefArchPad .arch-pool-parasol{border:3px solid #a97428;border-radius:50%;color:#3e2b12;background:conic-gradient(#ffe39a 0 12.5%,#fff7dc 12.5% 25%,#ffd56b 25% 37.5%,#fff7dc 37.5% 50%,#ffe39a 50% 62.5%,#fff7dc 62.5% 75%,#ffd56b 75% 87.5%,#fff7dc 87.5% 100%)}
-#ichefArchPad .arch-palm{border:3px solid #47743d;border-radius:50%;color:#173616;background:radial-gradient(circle at 50% 55%,#8a5a2d 0 10%,transparent 11%),conic-gradient(from 10deg,#3b8d4b,#75b85e,#2f7440,#7fc769,#3c8647,#75b85e,#3b8d4b)}
-#ichefArchPad .arch-tree{border:3px solid #3a6b38;border-radius:50%;color:#143416;background:radial-gradient(circle at 36% 34%,#7dbe68 0 20%,transparent 21%),radial-gradient(circle at 68% 36%,#5ea64f 0 25%,transparent 26%),radial-gradient(circle at 50% 67%,#448d43 0 34%,#2d6331 35% 100%)}
-#ichefArchPad .arch-cabana{border:4px solid #916c42;border-radius:12px;color:#4b3420;background:repeating-linear-gradient(90deg,#f1dfb9 0 24px,#dfc797 24px 48px)}
-#ichefArchPad .arch-outdoor-sofa{border:4px solid #71828c;border-radius:18px;color:#20313a;background:linear-gradient(180deg,#dbe6e9 0 42%,#aebfc5 43% 100%)}
-#ichefArchPad .arch-pool-shower{border:3px solid #4a7888;border-radius:12px;color:#173d49;background:linear-gradient(135deg,#dff8ff,#90d5e9)}
-#ichefArchPad .arch-towel-station{border:3px solid #9c7a51;border-radius:10px;color:#4a3420;background:repeating-linear-gradient(0deg,#fff 0 13px,#e6f1f4 13px 26px)}
-#ichefArchPad .arch-pool-bar{border:4px solid #426d79;border-radius:16px;color:#fff;background:linear-gradient(145deg,#277f95,#155266)}
-#ichefArchPad .arch-hammock{border:3px dashed #8f714d;border-radius:45% 45% 25% 25%;color:#4a3520;background:repeating-linear-gradient(45deg,#f8e0ab 0 10px,#eecf91 10px 20px)}
-
-/* Points de service piscine : ce sont de vraies tables iCHEF en interne,
-   donc commandes + C1-C9 + Qui mange quoi continuent à fonctionner. */
-#ichefArchPad .arch-table.pool-service{border-color:#44798a!important;color:#102c35!important;text-shadow:none!important;box-shadow:0 4px 11px rgba(0,0,0,.20)!important}
-#ichefArchPad .arch-table.pool-service::after{display:none!important}
-#ichefArchPad .arch-table.pool-service.pool-lounger{border-radius:18px!important;background:linear-gradient(90deg,#eff5f2 0 26%,#77c8d7 27% 32%,#e7eee8 33% 100%)!important}
-#ichefArchPad .arch-table.pool-service.pool-lounger::before{content:""!important;display:block!important;position:absolute!important;left:8%!important;right:8%!important;top:8%!important;height:27%!important;border-radius:12px!important;background:#fff!important;border:1px solid rgba(48,88,99,.22)!important;inset:auto!important}
-#ichefArchPad .arch-table.pool-service.pool-daybed{border-radius:22px!important;background:linear-gradient(180deg,#fbfbf4 0 24%,#cce7e6 25% 100%)!important}
-#ichefArchPad .arch-table.pool-service.pool-lowtable{border-radius:50%!important;background:radial-gradient(circle,#f3e5c6 0 56%,#9e7547 58% 100%)!important;border-color:#7b5a35!important}
-#ichefArchPad .arch-table.pool-service .tlabel{color:#123743!important;text-shadow:none!important;font-size:15px!important}
-#ichefArchPad .arch-table.pool-service .tpax{color:#315d67!important;text-shadow:none!important}
-#ichefArchPad .arch-table.pool-service.service-live .arch-table-live-head{color:#173e48!important;text-shadow:none!important}
-#ichefArchPad .pool-client-layer{position:absolute;inset:0;overflow:visible;pointer-events:none;z-index:12}
-#ichefArchPad .pool-client-seat{position:absolute;left:var(--pool-seat-x);top:var(--pool-seat-y);transform:translate(-50%,-50%);min-width:28px;height:28px;padding:0 5px;border-radius:999px;border:3px solid var(--pool-seat-color,#71909b);background:#fff;display:flex;align-items:center;justify-content:center;color:var(--pool-seat-color,#4b6872);font-size:10px;font-weight:1000;box-shadow:0 2px 5px rgba(0,0,0,.22);box-sizing:border-box}
-#ichefArchPad .pool-client-seat.occupied{background:var(--pool-seat-color,#55d987);color:#07120d;border-color:#fff;box-shadow:0 0 0 2px var(--pool-seat-color,#55d987),0 2px 5px rgba(0,0,0,.25)}
-#ichefArchPad .pool-client-seat.pool-seat-allergy{animation:archChairAlert 1s infinite}
-#ichefArchPad .pool-service-kind{position:relative;z-index:4;font-size:8px;font-weight:1000;letter-spacing:.7px;color:#2d6675!important;text-shadow:none!important;margin-bottom:1px}
-#ichefArchPad .pool-service-note{margin:8px 0;padding:9px 10px;border:1px solid #2c5967;border-radius:9px;background:#0e2027;color:#9edff1;font-size:9px;line-height:1.45}
 </style>
 
 <style id="ichef-city-builder-v36-normalize">
@@ -14194,6 +14107,23 @@ document.addEventListener('ichef-plan-zoom',e=>{
   A.zoom=aClamp(n,10,200);
   if(A.root)applyZoom();
 });
+/* V77 — quand le deuxième doigt arrive, le pinch devient prioritaire sur
+   sélection / déplacement / redimensionnement. Cela évite qu'un objet soit
+   capturé par le premier doigt avant le zoom. */
+document.addEventListener('ichef-plan-pinch-start',e=>{
+  A.pinchZooming=true;
+  clearArchPress();
+  try{clearChairPress()}catch(_){}
+  A.releaseCandidate=null;
+  A.groupDrag=null;
+  A.chairDrag=null;
+  A.drag=null;
+  A.antiShockBlocked=false;
+  const st=A.root?.querySelector('[data-stage]');
+  const ids=Array.isArray(e?.detail?.pointerIds)?e.detail.pointerIds:[];
+  ids.forEach(id=>{try{if(st?.hasPointerCapture?.(id))st.releasePointerCapture(id)}catch(_){}});
+});
+document.addEventListener('ichef-plan-pinch-end',()=>{A.pinchZooming=false});
 const aId=(p="e")=>p+"_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,7);
 const snap=v=>A.snap?Math.round(v/10)*10:Math.round(v);
 function aToast(msg,bad=false){const el=A.root?.querySelector('.archpad-toast');if(!el)return;el.textContent=msg;el.style.borderColor=bad?'#ff6575':'#55d987';el.classList.add('show');clearTimeout(aToast.t);aToast.t=setTimeout(()=>el.classList.remove('show'),1600)}
@@ -14251,7 +14181,6 @@ function roomTables(){return A.tables.filter(t=>aText(t.room||A.rooms[0])===A.ro
 function roomZones(){return A.zones.filter(z=>aText(z.room||A.rooms[0])===A.room)}
 function roomElements(){return A.elements.filter(e=>aText(e.room||A.rooms[0])===A.room)}
 function nextArchitectTableLabel(){const used=new Set(A.tables.map(t=>aText(t.label).toUpperCase()));let prefix='T';const candidates=A.tables.map(t=>aText(t.label).match(/^([^0-9]*)(\d+)$/)).filter(Boolean);if(candidates.length){const count={};candidates.forEach(m=>count[m[1]]=(count[m[1]]||0)+1);prefix=Object.entries(count).sort((a,b)=>b[1]-a[1])[0][0]||'T'}for(let n=1;n<10000;n++){const v=prefix+n;if(!used.has(v.toUpperCase()))return v}return 'T'+Date.now().toString().slice(-4)}
-function nextPoolServiceLabel(){const used=new Set(A.tables.map(t=>aText(t.label).toUpperCase()));for(let n=1;n<10000;n++){const v='P'+n;if(!used.has(v))return v}return 'P'+Date.now().toString().slice(-4)}
 function activeOrder(label){const o=getOrder(label);return !!((o?.items||[]).some(i=>i&&!i.cancelled&&itemQty(i)>0))}
 function planStateToken(v){return aText(v).normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[\s-]+/g,'_').toUpperCase()}
 function planItemTaken(i){const st=planStateToken(i?.status),seq=planStateToken(i?.sequenceStatus);return !!(i&&(i.pickedByServer===true||i.takenByWaiter===true||i.runnerTaken===true||["PRIS_PAR_SERVEUR","TAKEN_BY_WAITER","RUNNER_TAKEN"].includes(st)||["PRIS_PAR_SERVEUR","TAKEN_BY_WAITER","RUNNER_TAKEN"].includes(seq)))}
@@ -14294,8 +14223,8 @@ function planRushHTML(){const r=rushSnapshot(),color=r.level<=1?'#55d987':r.leve
 function colorForZone(z){return aText(z.color||z.colour||'#58a9ff')||'#58a9ff'}
 function zoneKindLabel(k){return ({service:'SERVICE',bathroom:'SALLE DE BAIN',bedroom:'CHAMBRE',office:'BUREAU',terrace:'TERRASSE',kitchen:'CUISINE',spa:'SPA',technical:'TECHNIQUE'})[aText(k)||'service']||aText(k).toUpperCase()}
 function zoneClass(z){const k=aText(z.zoneKind||'service'),shape=aText(z.zoneShape||'rect');return `zone-${k} ${shape==='rounded'?'zone-rounded':shape==='oval'?'zone-oval':''}`}
-function iconFor(type){return ({wall:'🧱',door:'🚪',window:'🪟',bar:'🍸 BAR',kitchen:'👨‍🍳 CUISINE',cash:'💳 CAISSE',buffet:'🍽️ BUFFET',text:'✏️ TEXTE',plant:'🪴',pool:'🏊 PISCINE',roomservice:'🛎️ ROOM SERVICE',bed_single:'🛏️ LIT SIMPLE',bed_double:'🛏️ LIT DOUBLE',desk:'🖥️ BUREAU',sofa:'🛋️ CANAPÉ',wardrobe:'🚪 ARMOIRE',sink:'🚰 LAVABO',toilet:'🚽 WC',shower:'🚿 DOUCHE',pool_parasol:'☂ PARASOL',palm:'🌴 PALMIER',tree:'🌳 ARBRE',cabana:'⛱ CABANA',outdoor_sofa:'🛋 SALON EXT.',pool_shower:'🚿 DOUCHE PISCINE',towel_station:'🧺 SERVIETTES',pool_bar:'🍹 BAR PISCINE',hammock:'🪢 HAMAC'})[type]||type.toUpperCase()}
-function classFor(type){return ({wall:'arch-wall',door:'arch-door',window:'arch-window',bar:'arch-bar',kitchen:'arch-kitchen',cash:'arch-cash',buffet:'arch-buffet',text:'arch-text',plant:'arch-plant',pool:'arch-pool',roomservice:'arch-roomservice',bed_single:'arch-bed-single',bed_double:'arch-bed-double',desk:'arch-desk',sofa:'arch-sofa',wardrobe:'arch-wardrobe',sink:'arch-bathfixture',toilet:'arch-bathfixture',shower:'arch-shower',pool_parasol:'arch-pool-parasol',palm:'arch-palm',tree:'arch-tree',cabana:'arch-cabana',outdoor_sofa:'arch-outdoor-sofa',pool_shower:'arch-pool-shower',towel_station:'arch-towel-station',pool_bar:'arch-pool-bar',hammock:'arch-hammock'})[type]||''}
+function iconFor(type){return ({wall:'🧱',door:'🚪',window:'🪟',bar:'🍸 BAR',kitchen:'👨‍🍳 CUISINE',cash:'💳 CAISSE',buffet:'🍽️ BUFFET',text:'✏️ TEXTE',plant:'🪴',pool:'🏊 PISCINE',roomservice:'🛎️ ROOM SERVICE',bed_single:'🛏️ LIT SIMPLE',bed_double:'🛏️ LIT DOUBLE',desk:'🖥️ BUREAU',sofa:'🛋️ CANAPÉ',wardrobe:'🚪 ARMOIRE',sink:'🚰 LAVABO',toilet:'🚽 WC',shower:'🚿 DOUCHE'})[type]||type.toUpperCase()}
+function classFor(type){return ({wall:'arch-wall',door:'arch-door',window:'arch-window',bar:'arch-bar',kitchen:'arch-kitchen',cash:'arch-cash',buffet:'arch-buffet',text:'arch-text',plant:'arch-plant',pool:'arch-pool',roomservice:'arch-roomservice',bed_single:'arch-bed-single',bed_double:'arch-bed-double',desk:'arch-desk',sofa:'arch-sofa',wardrobe:'arch-wardrobe',sink:'arch-bathfixture',toilet:'arch-bathfixture',shower:'arch-shower'})[type]||''}
 function nodeStyle(o){const d=defaults(o,o.__kind||'element'),z=Number(o.zIndex)||0;return `left:${d.l/ARCH_W*100}%;top:${d.t/ARCH_H*100}%;width:${d.w/ARCH_W*100}%;height:${d.h/ARCH_H*100}%;transform:rotate(${d.rotation||0}deg);${z?`z-index:${z};`:''}`}
 function handles(){if(A.mode!=='architect'||!canEdit())return '';return '<span class="arch-handle nw" data-resize="nw"></span><span class="arch-handle n" data-resize="n"></span><span class="arch-handle ne" data-resize="ne"></span><span class="arch-handle e" data-resize="e"></span><span class="arch-handle se" data-resize="se"></span><span class="arch-handle s" data-resize="s"></span><span class="arch-handle sw" data-resize="sw"></span><span class="arch-handle w" data-resize="w"></span><button type="button" class="arch-rotate" data-rotate title="Rotation +15°">↻</button>'}
 function elementInner(e){const label=esc(e.label||iconFor(e.type));if(e.type==='wall')return '';if(e.type==='cash')return `<span class="arch-cash-label">${label}</span>`;if(['bed_single','bed_double','desk','sofa','wardrobe','sink','toilet','shower'].includes(e.type))return `<span class="arch-object-label">${label}</span>`;return label}
@@ -14542,9 +14471,6 @@ function cityTableCollisionShapesAt(obj,l,t,w=null,h=null){
   const tcx=l+ww/2,tcy=t+hh/2;
   /* V46 : la boîte anti-collision suit réellement la rotation CSS de la table. */
   const shapes=[cityRotatedRectAABB(tcx,tcy,ww,hh,rot,'body')];
-  /* V77 : les marqueurs C1-C9 des points piscine sont des repères de service,
-     pas des chaises physiques. Ils ne créent donc aucune marge invisible. */
-  if(obj?.poolServiceKind)return shapes;
   const count=Math.max(1,Math.min(16,Number(obj?.pax)||2));
   for(let i=1;i<=count;i++){
     const pose=archChairLayoutEntry(obj,i,count);
@@ -14846,7 +14772,6 @@ function cityHasCollision(key=A.selected){
   const hit=byKey(key);
   if(!hit?.obj||hit.type==='room')return false;
   if(hit.type!=='table'&&hit.type!=='zone')return false;
-  if(hit.type==='table'&&hit.obj?.poolServiceKind)return false;
   const d=defaults(hit.obj,hit.type);
   return cityObjectOverlapPenaltyAt(hit,key,d.l,d.t,d.w,d.h)>0;
 }
@@ -15017,7 +14942,7 @@ async function cityPlanStandard(){
 let CITY_AUTO_PLANS=[];
 let CITY_AUTO_SELECTED=0;
 function cityAutoPlannerHTML(){
-  return `<div class="city-auto-overlay" data-city-auto-overlay aria-hidden="true"><div class="city-auto-card" role="dialog" aria-modal="true" aria-label="Assistant Auto-organiser"><div class="city-auto-head"><div><h3>✣ AUTO-ORGANISER — ASSISTANT DE PLAN</h3><p>Indique les besoins du restaurant. iCHEF prépare 3 propositions avant toute modification du plan.</p></div><button type="button" class="city-auto-close" data-city-auto-close aria-label="Fermer">×</button></div><div class="city-auto-body"><div class="city-auto-grid"><div class="city-auto-panel"><h4>1 · TABLES</h4><div class="city-auto-table-grid">${[2,3,4,5,6,8].map(p=>`<div class="city-auto-field"><label>${p} pers.</label><input type="number" min="0" max="99" step="1" value="${roomTables().filter(t=>!t.poolServiceKind&&(Number(t.pax)||2)===p).length}" data-auto-table="${p}"></div>`).join('')}</div><div class="city-auto-row" style="margin-top:12px"><div class="city-auto-field"><label>Forme</label><select data-auto-shape><option value="mixed">Carrées + rondes</option><option value="square">Carrées</option><option value="round">Rondes</option></select></div><div class="city-auto-field"><label>Style</label><select data-auto-style><option value="gastro">Gastronomique</option><option value="brasserie">Brasserie</option><option value="bar">Bar / lounge</option><option value="hotel">Hôtel</option><option value="terrace">Terrasse</option></select></div></div><div class="city-auto-field"><label>Priorité</label><select data-auto-priority><option value="balanced">Équilibre espace / capacité</option><option value="comfort">Confort & circulation</option><option value="capacity">Maximum de places</option></select></div><div class="city-auto-mini">Les dimensions de tables utilisent les repères du mémo gastronomique, puis l’espacement s’adapte au style choisi.</div></div><div class="city-auto-panel"><h4>2 · ZONES EN M²</h4>${[['Salle principale',80,true],['Terrasse',30,false],['VIP',20,false],['Salon privé',15,false]].map((z,i)=>`<div class="city-auto-zone-row"><input type="checkbox" data-auto-zone-on="${i}" ${z[2]?'checked':''}><input type="text" value="${z[0]}" data-auto-zone-name="${i}"><input type="number" min="1" max="2000" step="1" value="${z[1]}" data-auto-zone-m2="${i}" title="m²"></div>`).join('')}<div class="city-auto-mini">Coche uniquement les zones à créer. Les surfaces sont des objectifs d’aménagement ; si elles dépassent l’espace disponible, l’assistant les ajuste et le signale.</div></div><div class="city-auto-panel"><h4>3 · ÉQUIPEMENTS</h4>${[['bar','Bar',8],['kitchen','Cuisine',18],['toilet','Sanitaires',8],['cash','Comptoir / caisse',4],['pool','Piscine',25]].map((e,i)=>`<div class="city-auto-equip-row"><input type="checkbox" data-auto-equip-on="${e[0]}"><span>${e[1]}</span><input type="number" min="1" max="500" step="1" value="${e[2]}" data-auto-equip-m2="${e[0]}" title="m²"></div>`).join('')}<div class="city-auto-mini">Les équipements sont placés en périphérie afin de conserver les circulations et l’espace de service.</div></div><div class="city-auto-panel"><h4>4 · PROPOSITION</h4><div class="city-auto-summary" data-auto-summary>Renseigne les quantités puis clique sur <b>Générer 3 propositions</b>. Rien n’est modifié avant <b>Appliquer</b>.</div><div class="city-auto-mini"><b>A</b> = équilibrée · <b>B</b> = allée centrale · <b>C</b> = circulation périphérique.</div></div></div><div class="city-auto-preview" data-auto-preview><div class="city-auto-proposals" data-auto-proposals></div></div><div class="city-auto-actions"><button type="button" data-city-auto-close>Annuler</button><button type="button" class="primary" data-auto-generate>✨ Générer 3 propositions</button><button type="button" class="apply" data-auto-apply disabled>✓ Appliquer la proposition</button></div></div></div></div>`;
+  return `<div class="city-auto-overlay" data-city-auto-overlay aria-hidden="true"><div class="city-auto-card" role="dialog" aria-modal="true" aria-label="Assistant Auto-organiser"><div class="city-auto-head"><div><h3>✣ AUTO-ORGANISER — ASSISTANT DE PLAN</h3><p>Indique les besoins du restaurant. iCHEF prépare 3 propositions avant toute modification du plan.</p></div><button type="button" class="city-auto-close" data-city-auto-close aria-label="Fermer">×</button></div><div class="city-auto-body"><div class="city-auto-grid"><div class="city-auto-panel"><h4>1 · TABLES</h4><div class="city-auto-table-grid">${[2,3,4,5,6,8].map(p=>`<div class="city-auto-field"><label>${p} pers.</label><input type="number" min="0" max="99" step="1" value="${roomTables().filter(t=>(Number(t.pax)||2)===p).length}" data-auto-table="${p}"></div>`).join('')}</div><div class="city-auto-row" style="margin-top:12px"><div class="city-auto-field"><label>Forme</label><select data-auto-shape><option value="mixed">Carrées + rondes</option><option value="square">Carrées</option><option value="round">Rondes</option></select></div><div class="city-auto-field"><label>Style</label><select data-auto-style><option value="gastro">Gastronomique</option><option value="brasserie">Brasserie</option><option value="bar">Bar / lounge</option><option value="hotel">Hôtel</option><option value="terrace">Terrasse</option></select></div></div><div class="city-auto-field"><label>Priorité</label><select data-auto-priority><option value="balanced">Équilibre espace / capacité</option><option value="comfort">Confort & circulation</option><option value="capacity">Maximum de places</option></select></div><div class="city-auto-mini">Les dimensions de tables utilisent les repères du mémo gastronomique, puis l’espacement s’adapte au style choisi.</div></div><div class="city-auto-panel"><h4>2 · ZONES EN M²</h4>${[['Salle principale',80,true],['Terrasse',30,false],['VIP',20,false],['Salon privé',15,false]].map((z,i)=>`<div class="city-auto-zone-row"><input type="checkbox" data-auto-zone-on="${i}" ${z[2]?'checked':''}><input type="text" value="${z[0]}" data-auto-zone-name="${i}"><input type="number" min="1" max="2000" step="1" value="${z[1]}" data-auto-zone-m2="${i}" title="m²"></div>`).join('')}<div class="city-auto-mini">Coche uniquement les zones à créer. Les surfaces sont des objectifs d’aménagement ; si elles dépassent l’espace disponible, l’assistant les ajuste et le signale.</div></div><div class="city-auto-panel"><h4>3 · ÉQUIPEMENTS</h4>${[['bar','Bar',8],['kitchen','Cuisine',18],['toilet','Sanitaires',8],['cash','Comptoir / caisse',4],['pool','Piscine',25]].map((e,i)=>`<div class="city-auto-equip-row"><input type="checkbox" data-auto-equip-on="${e[0]}"><span>${e[1]}</span><input type="number" min="1" max="500" step="1" value="${e[2]}" data-auto-equip-m2="${e[0]}" title="m²"></div>`).join('')}<div class="city-auto-mini">Les équipements sont placés en périphérie afin de conserver les circulations et l’espace de service.</div></div><div class="city-auto-panel"><h4>4 · PROPOSITION</h4><div class="city-auto-summary" data-auto-summary>Renseigne les quantités puis clique sur <b>Générer 3 propositions</b>. Rien n’est modifié avant <b>Appliquer</b>.</div><div class="city-auto-mini"><b>A</b> = équilibrée · <b>B</b> = allée centrale · <b>C</b> = circulation périphérique.</div></div></div><div class="city-auto-preview" data-auto-preview><div class="city-auto-proposals" data-auto-proposals></div></div><div class="city-auto-actions"><button type="button" data-city-auto-close>Annuler</button><button type="button" class="primary" data-auto-generate>✨ Générer 3 propositions</button><button type="button" class="apply" data-auto-apply disabled>✓ Appliquer la proposition</button></div></div></div></div>`;
 }
 function cityAutoOpen(){
   if(!canEdit())return aToast('Mode Architecte requis',true);
@@ -15186,25 +15111,6 @@ function archTableChairsHTML(t,live,service){
   const livePax=Math.max(0,Math.min(16,Number(live?.pax)||0));
   const count=Math.max(capacity,livePax);
   const seatMap=new Map((live?.seats||[]).map(s=>[Number(s.seat),s]));
-  /* V77 — mobilier piscine avec service : C1-C9 reste relié au moteur
-     Qui mange quoi, mais sans dessiner de chaises de restaurant. */
-  if(t?.poolServiceKind){
-    const marks=[];
-    const kind=aText(t.poolServiceKind);
-    for(let i=1;i<=count;i++){
-      const seat=seatMap.get(i),occupied=service&&i<=Math.min(livePax,9),allergy=!!seat?.allergy;
-      let x=50,y=50;
-      if(kind==='lounger'){x=84;y=18}
-      else if(kind==='daybed'){x=count<=1?50:(i===1?24:76);y=18}
-      else{
-        const poses=[[50,-10],[110,50],[50,110],[-10,50],[15,10],[85,10],[85,90],[15,90],[50,50]];
-        const p=poses[(i-1)%poses.length];x=p[0];y=p[1];
-      }
-      const color=occupied?`var(--c${Math.min(i,9)},#55d987)`:'#71909b';
-      marks.push(`<span class="pool-client-seat ${occupied?'occupied':''} ${allergy?'pool-seat-allergy':''}" style="--pool-seat-x:${x}%;--pool-seat-y:${y}%;--pool-seat-color:${color}" title="${occupied?`Client C${i}${seat?.label?' · '+esc(seat.label):''}`:`Place service C${i}`} ">C${i}</span>`);
-    }
-    return `<span class="pool-client-layer">${marks.join('')}</span>`;
-  }
   const chairs=[];
   for(let i=1;i<=count;i++){
     const pose=archChairLayoutEntry(t,i,count);
@@ -15223,19 +15129,7 @@ function canvasHTML(){
  const collision=cityHasCollision(A.selected);
  const zones=roomZones().map(z=>{z.__kind='zone';const key=getZoneKey(z),locked=!!z.locked,fill=aClamp(z.fillOpacity||15,3,55),border=['solid','dashed','dotted'].includes(aText(z.borderStyle))?aText(z.borderStyle):'dashed',coll=cityHasCollision(key);return `<div class="arch-node arch-zone ${zoneClass(z)} ${locked?'locked':''} ${A.selected===key?'selected':''} ${A.groupAll?'city-group-selected':''} ${coll?'city-collision':''}" data-arch-key="${esc(key)}" style="${nodeStyle(z)};--zone-color:${esc(colorForZone(z))};--zone-fill:${fill}%;--zone-border:${border}"><span class="zone-label" data-zone-drag title="Maintenir et glisser pour déplacer la zone">${esc(z.label||'ZONE')}</span><span class="zone-kind" data-zone-drag title="Maintenir et glisser pour déplacer la zone">${esc(zoneKindLabel(z.zoneKind))}</span><span class="zone-meta">${esc(z.responsible||z.responsable||'')} ${z.capacity?'· '+esc(z.capacity)+' places':''}</span>${locked?'<span class="arch-lock-badge"></span>':''}${handles()}</div>`}).join('');
  const els=roomElements().map(e=>{e.__kind='element';const key=getElemKey(e),locked=!!e.locked,coll=cityHasCollision(key);return `<div class="arch-node arch-generic ${classFor(e.type)} ${cashPatternClass(e)} ${locked?'locked':''} ${A.selected===key?'selected':''} ${A.groupAll?'city-group-selected':''} ${coll?'city-collision':''}" data-arch-key="${esc(key)}" style="${nodeStyle(e)}${cashCustomStyle(e)}">${elementInner(e)}${locked?'<span class="arch-lock-badge"></span>':''}${handles()}</div>`}).join('');
- const tables=roomTables().map(t=>{
-   t.__kind='table';
-   const key=getTableKey(t),act=activeOrder(t.label),ex=isExpressTable(t),shape=aText(t.shape||'square'),locked=!!t.locked,service=A.mode==='service',live=planTableLive(t),coll=cityHasCollision(key);
-   const poolKind=aText(t.poolServiceKind),poolClass=poolKind?`pool-service pool-${poolKind}`:'';
-   const liveClass=service?`service-live live-${live.code}`:'';
-   const poolTitle=poolKind==='lounger'?'TRANSAT':poolKind==='daybed'?'DAYBED':poolKind==='lowtable'?'TABLE BASSE':'';
-   const serviceInner=service
-     ?`${poolTitle?`<span class="pool-service-kind">${poolTitle}</span>`:''}<span class="tlabel">${esc(t.label)}</span><span class="arch-table-live-head"><span class="state ${esc(live.code)}">${esc(live.label)}</span>${live.time?`<span class="clock">${esc(live.time)}</span>`:''}<span class="pax">${Math.max(1,Number(t.pax)||2)}</span></span>${live.seats?.length?`<span class="arch-seat-strip">${planSeatStripHTML(live)}</span>`:''}`
-     :`${poolTitle?`<span class="pool-service-kind">${poolTitle}</span>`:''}<span class="tlabel">${esc(t.label)}</span><span class="tpax">${poolKind?'SERVICE C1–C'+Math.max(1,Number(t.pax)||2):'CAP. '+(Number(t.pax)||2)+(t.zone?' · '+esc(t.zone):'')}</span>`;
-   const clientCount=`<span class="arch-client-count ${live.pax>0?'':'zero'}" title="${live.pax} client${live.pax===1?'':'s'}">${live.pax}</span>`;
-   const chairs=archTableChairsHTML(t,live,service);
-   return `<button type="button" class="arch-node arch-table ${shape==='round'?'round':''} ${poolClass} ${act?'active-order':''} ${liveClass} ${ex?'express':''} ${locked?'locked':''} ${A.selected===key?'selected':''} ${A.groupAll?'city-group-selected':''} ${coll?'city-collision':''}" data-arch-key="${esc(key)}" style="${nodeStyle(t)}">${chairs}${serviceInner}${clientCount}${locked?'<span class="arch-lock-badge"></span>':''}${handles()}</button>`
- }).join('');
+ const tables=roomTables().map(t=>{t.__kind='table';const key=getTableKey(t),act=activeOrder(t.label),ex=isExpressTable(t),shape=aText(t.shape||'square'),locked=!!t.locked,service=A.mode==='service',live=planTableLive(t),coll=cityHasCollision(key);const liveClass=service?`service-live live-${live.code}`:'';const serviceInner=service?`<span class="tlabel">${esc(t.label)}</span><span class="arch-table-live-head"><span class="state ${esc(live.code)}">${esc(live.label)}</span>${live.time?`<span class="clock">${esc(live.time)}</span>`:''}<span class="pax">${Math.max(1,Number(t.pax)||2)}</span></span>${live.seats?.length?`<span class="arch-seat-strip">${planSeatStripHTML(live)}</span>`:''}`:`<span class="tlabel">${esc(t.label)}</span><span class="tpax">CAP. ${Number(t.pax)||2}${t.zone?' · '+esc(t.zone):''}</span>`;const clientCount=`<span class="arch-client-count ${live.pax>0?'':'zero'}" title="${live.pax} client${live.pax===1?'':'s'}">${live.pax}</span>`;const chairs=archTableChairsHTML(t,live,service);return `<button type="button" class="arch-node arch-table ${shape==='round'?'round':''} ${act?'active-order':''} ${liveClass} ${ex?'express':''} ${locked?'locked':''} ${A.selected===key?'selected':''} ${A.groupAll?'city-group-selected':''} ${coll?'city-collision':''}" data-arch-key="${esc(key)}" style="${nodeStyle(t)}">${chairs}${serviceInner}${clientCount}${locked?'<span class="arch-lock-badge"></span>':''}${handles()}</button>`}).join('');
  return `${cityRoomBoundaryHTML()}${zones}${els}${tables}${cityMeasureOverlayHTML()}${citySelectionOverlayHTML()}${cityRoomEditOverlayHTML()}`;
 }
 function roomEmoji(name){const n=aText(name).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();if(/HOTEL|CHAMBRE|ROOM/.test(n))return '🏨';if(/TERRASSE|PLAGE/.test(n))return '☀️';if(/BAR/.test(n))return '🍸';if(/PISCINE|POOL/.test(n))return '🏊';if(/CUISINE/.test(n))return '👨‍🍳';if(/BUREAU|REUNION/.test(n))return '🖥️';if(/KIOSQUE/.test(n))return '🏪';if(/YACHT/.test(n))return '🛥️';if(/MONTAGNE|CHALET/.test(n))return '🏔️';if(/LAC/.test(n))return '🏞️';return '🍽️'}
@@ -15246,7 +15140,7 @@ function propHTML(){
  const {type,obj:o}=hit,d=defaults(o,type);
  if(type==='room')return `<div class="arch-prop-group"><h4>SALLE SÉLECTIONNÉE</h4><div class="arch-prop-row"><label>Nom</label><input data-prop="label" value="${esc(A.room)}"></div><div class="arch-help">La salle est entièrement modifiable. Déplace-la avec le bouton sur le contour ou change directement ses valeurs.</div></div><div class="arch-prop-group"><h4>POSITION / DIMENSIONS</h4><div class="arch-prop-row"><label>X / Y (m)</label><div style="display:grid;grid-template-columns:1fr 1fr;gap:5px"><input data-prop="l" data-unit="m" type="text" inputmode="decimal" value="${cityMetersInput(d.l)}"><input data-prop="t" data-unit="m" type="text" inputmode="decimal" value="${cityMetersInput(d.t)}"></div></div><div class="arch-prop-row"><label>Largeur / Haut. (m)</label><div style="display:grid;grid-template-columns:1fr 1fr;gap:5px"><input data-prop="w" data-unit="m" type="text" inputmode="decimal" value="${cityMetersInput(d.w)}"><input data-prop="h" data-unit="m" type="text" inputmode="decimal" value="${cityMetersInput(d.h)}"></div></div><div class="arch-help" style="margin-top:8px">Mesures en mètres. Ex. : 8,50 = 8 m 50 cm.</div></div><div class="arch-prop-group"><div class="arch-help">Les objets restent contenus dans la ligne pointillée. En déplaçant la salle, tout son contenu se déplace avec elle.</div></div>`;const zoneOpts=roomZones().map(z=>`<option value="${esc(z.label)}" ${aText(o.zone)===aText(z.label)?'selected':''}>${esc(z.label)}</option>`).join('');
  let extra='';
- if(type==='table')extra=`${o.poolServiceKind?'<div class="pool-service-note">🏊 Point de service piscine relié à <b>C1-C9 / Qui mange quoi</b>. Les commandes restent associées à '+esc(o.label)+'.</div>':''}<div class="arch-prop-row"><label>Forme</label><select data-prop="shape"><option value="square" ${aText(o.shape)!=='round'?'selected':''}>Carrée</option><option value="round" ${aText(o.shape)==='round'?'selected':''}>Ronde</option></select></div><div class="arch-prop-row"><label>Couverts</label><input data-prop="pax" type="number" min="1" max="99" value="${Number(o.pax)||2}"></div><div class="arch-prop-row"><label>Disposition chaises</label><select data-prop="chairsFree"><option value="false" ${!o.chairsFree?'selected':''}>Automatique</option><option value="true" ${o.chairsFree?'selected':''}>Libre</option></select></div>${o.chairsFree?`<div class="arch-help" style="margin:-2px 0 8px">Appui 0,3 s sur une chaise puis déplace-la où tu veux. La chaise reste associée à cette table.</div><button type="button" class="city-chair-reset" data-chair-reset style="width:100%;min-height:38px;border:1px solid #46545a;border-radius:9px;background:#12191c;color:#d8e0e2;font-weight:900">↻ Réinitialiser les positions</button>`:''}<div class="arch-prop-row"><label>Zone</label><select data-prop="zone"><option value="">— aucune —</option>${zoneOpts}</select></div>`;
+ if(type==='table')extra=`<div class="arch-prop-row"><label>Forme</label><select data-prop="shape"><option value="square" ${aText(o.shape)!=='round'?'selected':''}>Carrée</option><option value="round" ${aText(o.shape)==='round'?'selected':''}>Ronde</option></select></div><div class="arch-prop-row"><label>Couverts</label><input data-prop="pax" type="number" min="1" max="99" value="${Number(o.pax)||2}"></div><div class="arch-prop-row"><label>Disposition chaises</label><select data-prop="chairsFree"><option value="false" ${!o.chairsFree?'selected':''}>Automatique</option><option value="true" ${o.chairsFree?'selected':''}>Libre</option></select></div>${o.chairsFree?`<div class="arch-help" style="margin:-2px 0 8px">Appui 0,3 s sur une chaise puis déplace-la où tu veux. La chaise reste associée à cette table.</div><button type="button" class="city-chair-reset" data-chair-reset style="width:100%;min-height:38px;border:1px solid #46545a;border-radius:9px;background:#12191c;color:#d8e0e2;font-weight:900">↻ Réinitialiser les positions</button>`:''}<div class="arch-prop-row"><label>Zone</label><select data-prop="zone"><option value="">— aucune —</option>${zoneOpts}</select></div>`;
  if(type==='zone')extra=`<div class="arch-prop-row"><label>Type zone</label><select data-prop="zoneKind">${[['service','Service'],['bathroom','Salle de bain'],['bedroom','Chambre'],['office','Bureau'],['terrace','Terrasse'],['kitchen','Cuisine'],['spa','Spa'],['technical','Technique']].map(([v,l])=>`<option value="${v}" ${aText(o.zoneKind||'service')===v?'selected':''}>${l}</option>`).join('')}</select></div><div class="arch-prop-row"><label>Forme</label><select data-prop="zoneShape"><option value="rect" ${aText(o.zoneShape||'rect')==='rect'?'selected':''}>Rectangle</option><option value="rounded" ${aText(o.zoneShape)==='rounded'?'selected':''}>Arrondie</option><option value="oval" ${aText(o.zoneShape)==='oval'?'selected':''}>Ovale</option></select></div><div class="arch-prop-row"><label>Couleur</label><input data-prop="color" type="color" value="${esc(colorForZone(o))}"></div><div class="arch-prop-row"><label>Transparence</label><input data-prop="fillOpacity" type="number" min="3" max="55" value="${aClamp(o.fillOpacity||15,3,55)}"></div><div class="arch-prop-row"><label>Bordure</label><select data-prop="borderStyle"><option value="dashed" ${aText(o.borderStyle||'dashed')==='dashed'?'selected':''}>Pointillés</option><option value="solid" ${aText(o.borderStyle)==='solid'?'selected':''}>Continue</option><option value="dotted" ${aText(o.borderStyle)==='dotted'?'selected':''}>Points</option></select></div><div class="arch-prop-row"><label>Responsable</label><input data-prop="responsible" value="${esc(o.responsible||o.responsable||'')}"></div><div class="arch-prop-row"><label>Service</label><select data-prop="serviceType">${['Dîner','Déjeuner','Petit-déjeuner','Bar','Room Service','Événement','Hébergement'].map(v=>`<option ${aText(o.serviceType)===v?'selected':''}>${v}</option>`).join('')}</select></div><div class="arch-prop-row"><label>Capacité</label><input data-prop="capacity" type="number" min="0" value="${Number(o.capacity)||0}"></div><div class="arch-prop-row"><label>Horaires</label><input data-prop="hours" value="${esc(o.hours||'')}"></div>`;
  if(type==='element'){
   extra=`<div class="arch-prop-row"><label>Type</label><input value="${esc(o.type||'équipement')}" disabled></div>`;
@@ -15255,13 +15149,13 @@ function propHTML(){
  }
  const locked=!!o.locked;
  const nameLabel=type==='element'&&o.type==='cash'?'Texte affiché':'Nom';
- return `<div class="arch-prop-group"><h4>${type==='table'?(o.poolServiceKind?'SERVICE PISCINE':'TABLE'):type==='zone'?'ZONE / PIÈCE':'ÉLÉMENT'} SÉLECTIONNÉ</h4><div class="arch-prop-row"><label>${nameLabel}</label><input data-prop="label" value="${esc(o.label||'')}"></div><div class="arch-prop-row"><label>Verrouillé</label><select data-prop="locked"><option value="false" ${!locked?'selected':''}>Non</option><option value="true" ${locked?'selected':''}>Oui</option></select></div>${extra}</div><div class="arch-prop-group"><h4>POSITION / DIMENSIONS</h4><div class="arch-prop-row"><label>X / Y (m)</label><div style="display:grid;grid-template-columns:1fr 1fr;gap:5px"><input data-prop="l" data-unit="m" type="text" inputmode="decimal" value="${cityMetersInput(d.l)}"><input data-prop="t" data-unit="m" type="text" inputmode="decimal" value="${cityMetersInput(d.t)}"></div></div><div class="arch-prop-row"><label>Largeur / Haut. (m)</label><div style="display:grid;grid-template-columns:1fr 1fr;gap:5px"><input data-prop="w" data-unit="m" type="text" inputmode="decimal" value="${cityMetersInput(d.w)}"><input data-prop="h" data-unit="m" type="text" inputmode="decimal" value="${cityMetersInput(d.h)}"></div></div><div class="arch-help" style="margin-top:8px">Mesures en mètres. Ex. : 1,20 = 1 m 20 cm.</div><div class="arch-prop-row"><label>Rotation</label><input data-prop="rotation" type="number" min="-360" max="360" value="${Math.round(d.rotation||0)}"></div></div><div class="arch-prop-group"><div class="arch-prop-actions"><button type="button" data-duplicate>Dupliquer</button><button type="button" class="red" data-delete>Supprimer</button></div><div class="arch-help" style="margin-top:8px">Suppression Architecture autorisée. Une commande active reste conservée dans la caisse. Tu peux verrouiller murs, zones et mobilier une fois leur position validée.</div></div>`;
+ return `<div class="arch-prop-group"><h4>${type==='table'?'TABLE':type==='zone'?'ZONE / PIÈCE':'ÉLÉMENT'} SÉLECTIONNÉ</h4><div class="arch-prop-row"><label>${nameLabel}</label><input data-prop="label" value="${esc(o.label||'')}"></div><div class="arch-prop-row"><label>Verrouillé</label><select data-prop="locked"><option value="false" ${!locked?'selected':''}>Non</option><option value="true" ${locked?'selected':''}>Oui</option></select></div>${extra}</div><div class="arch-prop-group"><h4>POSITION / DIMENSIONS</h4><div class="arch-prop-row"><label>X / Y (m)</label><div style="display:grid;grid-template-columns:1fr 1fr;gap:5px"><input data-prop="l" data-unit="m" type="text" inputmode="decimal" value="${cityMetersInput(d.l)}"><input data-prop="t" data-unit="m" type="text" inputmode="decimal" value="${cityMetersInput(d.t)}"></div></div><div class="arch-prop-row"><label>Largeur / Haut. (m)</label><div style="display:grid;grid-template-columns:1fr 1fr;gap:5px"><input data-prop="w" data-unit="m" type="text" inputmode="decimal" value="${cityMetersInput(d.w)}"><input data-prop="h" data-unit="m" type="text" inputmode="decimal" value="${cityMetersInput(d.h)}"></div></div><div class="arch-help" style="margin-top:8px">Mesures en mètres. Ex. : 1,20 = 1 m 20 cm.</div><div class="arch-prop-row"><label>Rotation</label><input data-prop="rotation" type="number" min="-360" max="360" value="${Math.round(d.rotation||0)}"></div></div><div class="arch-prop-group"><div class="arch-prop-actions"><button type="button" data-duplicate>Dupliquer</button><button type="button" class="red" data-delete>Supprimer</button></div><div class="arch-help" style="margin-top:8px">Suppression Architecture autorisée. Une commande active reste conservée dans la caisse. Tu peux verrouiller murs, zones et mobilier une fois leur position validée.</div></div>`;
 }
 function statsHTML(){const orders=roomTables().filter(t=>activeOrder(t.label)).length,express=roomTables().filter(isExpressTable).length,pax=roomTables().reduce((s,t)=>s+(activeOrder(t.label)?Number(getOrder(t.label)?.pax||t.pax||0):0),0);return {orders,express,pax}}
 function pinOverlayHTML(){if(!A.pinOpen)return '';const dots=Array.from({length:6},(_,i)=>`<i class="${i<A.pinValue.length?'on':''}"></i>`).join('');return `<div class="archpad-pin-overlay"><div class="archpad-pin-card"><h3>🛠️ MODE ARCHITECTE</h3><p>PIN iCHEF Cloud partagé avec Admin / RH. Autorisé : PIN principal, Gérant, Directeur, Admin / Manager actif.</p><div class="archpad-pin-dots">${dots}</div><div class="archpad-pin-grid">${[1,2,3,4,5,6,7,8,9].map(n=>`<button type="button" data-arch-pin="${n}">${n}</button>`).join('')}<button type="button" class="small" data-arch-pin-clear>EFFACER</button><button type="button" data-arch-pin="0">0</button><button type="button" class="small" data-arch-pin-back>←</button></div><div class="archpad-pin-msg">${esc(A.pinMsg||'')}</div><div class="archpad-pin-actions"><button type="button" data-arch-pin-cancel>Annuler</button><button type="button" class="ok" data-arch-pin-ok>VALIDER</button></div></div></div>`}
 function architectPaletteHTML(){
- const roomOpts=A.rooms.map(r=>`<option value="${esc(r)}" ${r===A.room?'selected':''}>${esc(r)}</option>`).join('');
- return `<aside class="archpad-left"><div class="city-room-box"><label>Salle active</label><select data-room-select>${roomOpts}</select><div class="city-room-actions"><button type="button" data-add-room>+ Salle</button><button type="button" data-rename-room>Renommer</button><button type="button" class="wide" data-edit-room>▣ Modifier la salle</button><button type="button" class="wide" data-toggle-mode>▶ Passer en service</button></div></div><div class="city-panel-title">CONSTRUIRE</div><div class="city-tool-list"><button type="button" data-tool="select"><span class="ico">✋</span><span>Déplacer</span></button><button type="button" data-select-all><span class="ico">☑</span><span>Tout sélectionner</span></button><button type="button" data-add="table"><span class="ico">◯</span><span>Table</span></button><button type="button" data-add="zone"><span class="ico">▰</span><span>Zone service</span></button><button type="button" data-add="wall"><span class="ico">▦</span><span>Mur</span></button><button type="button" data-add="door"><span class="ico">▯</span><span>Porte</span></button><button type="button" data-add="window"><span class="ico">▣</span><span>Fenêtre</span></button><button type="button" data-add="sofa"><span class="ico">▱</span><span>Mobilier</span></button><button type="button" data-add="plant"><span class="ico">♣</span><span>Plante</span></button><button type="button" data-add="text"><span class="ico">T</span><span>Texte</span></button></div><div class="city-more-title">PLUS D’OBJETS</div><div class="city-tool-list"><button type="button" data-add="cash"><span class="ico">▤</span><span>Comptoir / caisse</span></button><button type="button" data-add="bar"><span class="ico">▰</span><span>Bar</span></button><button type="button" data-add="kitchen"><span class="ico">⌂</span><span>Cuisine</span></button><button type="button" data-add="toilet"><span class="ico">♟</span><span>Sanitaires</span></button><button type="button" data-add="bed_double"><span class="ico">▱</span><span>Hôtellerie</span></button><button type="button" data-express><span class="ico">＋</span><span>Table express</span></button><button type="button" class="city-table-memo-btn" data-table-memo-open><span class="ico">📏</span><span>Mémo tailles</span></button></div><div class="city-more-title city-pool-title">🏊 PISCINE & EXTÉRIEUR</div><div class="city-tool-list city-pool-tools"><button type="button" data-add="pool"><span class="ico">≈</span><span>Piscine</span></button><button type="button" data-add="terrace_zone"><span class="ico">▰</span><span>Terrasse</span></button><button type="button" data-add="pool_lounger_service"><span class="ico">▱</span><span>Transat · C1</span></button><button type="button" data-add="pool_daybed_service"><span class="ico">▰</span><span>Daybed · C1-C2</span></button><button type="button" data-add="pool_low_table_service"><span class="ico">◉</span><span>Table basse · C1-C4</span></button><button type="button" data-add="pool_parasol"><span class="ico">☂</span><span>Parasol</span></button><button type="button" data-add="palm"><span class="ico">🌴</span><span>Palmier</span></button><button type="button" data-add="tree"><span class="ico">🌳</span><span>Arbre</span></button><button type="button" data-add="cabana"><span class="ico">⌂</span><span>Cabana</span></button><button type="button" data-add="outdoor_sofa"><span class="ico">▱</span><span>Salon extérieur</span></button><button type="button" data-add="pool_bar"><span class="ico">🍹</span><span>Bar piscine</span></button><button type="button" data-add="pool_shower"><span class="ico">🚿</span><span>Douche piscine</span></button><button type="button" data-add="towel_station"><span class="ico">▤</span><span>Serviettes</span></button><button type="button" data-add="hammock"><span class="ico">⌣</span><span>Hamac</span></button></div></aside>`;
+ const roomOpts=(A.rooms||[]).map(r=>`<option value="${esc(r)}" ${r===A.room?'selected':''}>${esc(r)}</option>`).join('');
+ return `<aside class="archpad-left"><div class="city-room-box"><label>Salle active</label><select data-room-select>${roomOpts}</select><div class="city-room-actions"><button type="button" data-add-room>+ Salle</button><button type="button" data-rename-room>Renommer</button><button type="button" class="wide" data-edit-room>▣ Modifier la salle</button><button type="button" class="wide" data-toggle-mode>▶ Passer en service</button></div></div><div class="city-panel-title">CONSTRUIRE</div><div class="city-tool-list"><button type="button" data-tool="select"><span class="ico">✋</span><span>Déplacer</span></button><button type="button" data-select-all><span class="ico">☑</span><span>Tout sélectionner</span></button><button type="button" data-add="table"><span class="ico">◯</span><span>Table</span></button><button type="button" data-add="zone"><span class="ico">▰</span><span>Zone service</span></button><button type="button" data-add="wall"><span class="ico">▦</span><span>Mur</span></button><button type="button" data-add="door"><span class="ico">▯</span><span>Porte</span></button><button type="button" data-add="window"><span class="ico">▣</span><span>Fenêtre</span></button><button type="button" data-add="sofa"><span class="ico">▱</span><span>Mobilier</span></button><button type="button" data-add="plant"><span class="ico">♣</span><span>Plante</span></button><button type="button" data-add="text"><span class="ico">T</span><span>Texte</span></button></div><div class="city-more-title">PLUS D’OBJETS</div><div class="city-tool-list"><button type="button" data-add="cash"><span class="ico">▤</span><span>Comptoir / caisse</span></button><button type="button" data-add="bar"><span class="ico">▰</span><span>Bar</span></button><button type="button" data-add="kitchen"><span class="ico">⌂</span><span>Cuisine</span></button><button type="button" data-add="toilet"><span class="ico">♟</span><span>Sanitaires</span></button><button type="button" data-add="bed_double"><span class="ico">▱</span><span>Hôtellerie</span></button><button type="button" data-add="pool"><span class="ico">≈</span><span>Extérieur</span></button><button type="button" data-express><span class="ico">＋</span><span>Table express</span></button><button type="button" class="city-table-memo-btn" data-table-memo-open><span class="ico">📏</span><span>Mémo tailles</span></button></div></aside>`;
 }
 function architectBottomHTML(st){
   const hasSelection=!!A.selected||!!A.groupAll;
@@ -15286,7 +15180,7 @@ function fullHTML(){
 }
 
 function cityToolName(type){
-  return ({table:'Table',zone:'Zone',wall:'Mur',door:'Porte',window:'Fenêtre',text:'Texte',bathroom_zone:'Salle de bain',bedroom_zone:'Zone chambre',office_zone:'Bureau',terrace_zone:'Terrasse',bed_single:'Lit simple',bed_double:'Lit double',desk:'Bureau',wardrobe:'Armoire',sofa:'Canapé',sink:'Lavabo',toilet:'Toilettes',shower:'Douche',bar:'Bar',kitchen:'Cuisine',cash:'Caisse',buffet:'Buffet',plant:'Plante',pool:'Piscine',roomservice:'Room Service',pool_lounger_service:'Transat service',pool_daybed_service:'Daybed service',pool_low_table_service:'Table basse service',pool_parasol:'Parasol',palm:'Palmier',tree:'Arbre',cabana:'Cabana',outdoor_sofa:'Salon extérieur',pool_shower:'Douche piscine',towel_station:'Serviettes',pool_bar:'Bar piscine',hammock:'Hamac'})[type]||'Objet';
+  return ({table:'Table',zone:'Zone',wall:'Mur',door:'Porte',window:'Fenêtre',text:'Texte',bathroom_zone:'Salle de bain',bedroom_zone:'Zone chambre',office_zone:'Bureau',bed_single:'Lit simple',bed_double:'Lit double',desk:'Bureau',wardrobe:'Armoire',sofa:'Canapé',sink:'Lavabo',toilet:'Toilettes',shower:'Douche',bar:'Bar',kitchen:'Cuisine',cash:'Caisse',buffet:'Buffet',plant:'Plante',pool:'Piscine',roomservice:'Room Service'})[type]||'Objet';
 }
 function cityHintText(){
   if(A.mode!=='architect'||!canEdit())return '';
@@ -15361,45 +15255,18 @@ function propChange(e){const k=e.target.dataset.prop;if(!k)return;const hit=curr
     }
   }
   markDirty();renderCanvas()}
-function addObject(type,clientPoint=null){
-  A.groupAll=false;A.groupDrag=null;
-  if(A.mode!=='architect'||!canEdit()){aToast('Mode Architecte réservé Gérant / Directeur',true);return}
-  pushHistory();
-  const isPoolService=['pool_lounger_service','pool_daybed_service','pool_low_table_service'].includes(type);
-  const isZonePreset=['zone','bathroom_zone','bedroom_zone','office_zone','terrace_zone'].includes(type);
-  const count=(type==='table'||isPoolService)?roomTables().length:isZonePreset?roomZones().length:roomElements().length;
-  let x=220+(count%5)*105,y=150+Math.floor(count/5)*85;
-  if(clientPoint){const p=pointInStage(clientPoint.x,clientPoint.y);x=p.x;y=p.y}
-  if(type==='table'){
-    const label=nextArchitectTableLabel();
-    const t={id:label,label,room:A.room,pax:2,l:snap(x-50),t:snap(y-40),w:100,h:82,shape:'square',rotation:0,createdByRole:expressRoleLabel(),architectCreated:true};
-    A.tables.push(t);A.selected=getTableKey(t)
-  }else if(isPoolService){
-    const label=nextPoolServiceLabel();
-    const preset=type==='pool_lounger_service'
-      ?{kind:'lounger',name:'TRANSAT',pax:1,w:75,h:190,shape:'square'}
-      :type==='pool_daybed_service'
-        ?{kind:'daybed',name:'DAYBED',pax:2,w:180,h:190,shape:'square'}
-        :{kind:'lowtable',name:'TABLE BASSE',pax:4,w:90,h:90,shape:'round'};
-    const t={id:label,label,room:A.room,pax:preset.pax,l:snap(x-preset.w/2),t:snap(y-preset.h/2),w:preset.w,h:preset.h,shape:preset.shape,rotation:0,poolServiceKind:preset.kind,poolServiceName:preset.name,createdByRole:expressRoleLabel(),architectCreated:true};
-    A.tables.push(t);A.selected=getTableKey(t);
-    aToast(`${preset.name} ${label} · service C1-C${preset.pax} activé`)
-  }else if(isZonePreset){
-    const idx=roomZones().length+1;
-    const preset=type==='bathroom_zone'?{kind:'bathroom',label:'SALLE DE BAIN',color:'#55c7d9',w:300,h:240,serviceType:'Hébergement'}
-      :type==='bedroom_zone'?{kind:'bedroom',label:'CHAMBRE',color:'#a785ff',w:500,h:360,serviceType:'Hébergement'}
-      :type==='office_zone'?{kind:'office',label:'BUREAU',color:'#d59b54',w:360,h:260,serviceType:'Hébergement'}
-      :type==='terrace_zone'?{kind:'terrace',label:'TERRASSE',color:'#d5b55f',w:600,h:400,serviceType:'Bar'}
-      :{kind:'service',label:'ZONE '+idx,color:['#4cda8a','#58a9ff','#a785ff','#ffb13b'][idx%4],w:420,h:260,serviceType:'Dîner'};
-    const z={id:aId('zone'),label:preset.label,room:A.room,l:snap(x-preset.w/2),t:snap(y-preset.h/2),w:preset.w,h:preset.h,rotation:0,color:preset.color,zoneKind:preset.kind,zoneShape:'rect',fillOpacity:preset.kind==='bathroom'?20:15,borderStyle:'dashed',responsible:'',serviceType:preset.serviceType,active:true,locked:false};
-    A.zones.push(z);A.selected=getZoneKey(z)
-  }else{
-    const dims={wall:[300,18],door:[90,22],window:[120,18],bar:[220,100],kitchen:[260,150],cash:[120,80],buffet:[170,70],text:[240,45],plant:[65,65],pool:[320,180],roomservice:[180,80],bed_single:[115,210],bed_double:[195,210],desk:[170,75],sofa:[190,85],wardrobe:[150,65],sink:[85,65],toilet:[70,95],shower:[110,110],pool_parasol:[230,230],palm:[110,110],tree:[150,150],cabana:[300,240],outdoor_sofa:[220,95],pool_shower:[75,75],towel_station:[110,65],pool_bar:[260,110],hammock:[220,95]}[type]||[150,70];
-    const e={id:aId(type),type,label:iconFor(type),room:A.room,l:snap(x-dims[0]/2),t:snap(y-dims[1]/2),w:dims[0],h:dims[1],rotation:0,locked:false};
-    if(type==='cash')Object.assign(e,{label:'CAISSE',cashBg:'#d7b04a',cashText:'#17130a',cashPattern:'none',cashPatternColor:'#f7e4a3',cashBorder:'#816417',cashBorderStyle:'solid',cashBorderWidth:3,cashFontSize:18,cashRadius:8});
-    A.elements.push(e);A.selected=getElemKey(e)
+function addObject(type,clientPoint=null){A.groupAll=false;A.groupDrag=null;if(A.mode!=='architect'||!canEdit()){aToast('Mode Architecte réservé Gérant / Directeur',true);return}pushHistory();const isZonePreset=['zone','bathroom_zone','bedroom_zone','office_zone'].includes(type),count=type==='table'?roomTables().length:isZonePreset?roomZones().length:roomElements().length;let x=220+(count%5)*105,y=150+Math.floor(count/5)*85;if(clientPoint){const p=pointInStage(clientPoint.x,clientPoint.y);x=p.x;y=p.y}if(type==='table'){const label=nextArchitectTableLabel();const t={id:label,label,room:A.room,pax:2,l:snap(x-50),t:snap(y-40),w:100,h:82,shape:'square',rotation:0,createdByRole:expressRoleLabel(),architectCreated:true};A.tables.push(t);A.selected=getTableKey(t)}else if(isZonePreset){const idx=roomZones().length+1,preset=type==='bathroom_zone'?{kind:'bathroom',label:'SALLE DE BAIN',color:'#55c7d9',w:300,h:240,serviceType:'Hébergement'}:type==='bedroom_zone'?{kind:'bedroom',label:'CHAMBRE',color:'#a785ff',w:500,h:360,serviceType:'Hébergement'}:type==='office_zone'?{kind:'office',label:'BUREAU',color:'#d59b54',w:360,h:260,serviceType:'Hébergement'}:{kind:'service',label:'ZONE '+idx,color:['#4cda8a','#58a9ff','#a785ff','#ffb13b'][idx%4],w:420,h:260,serviceType:'Dîner'};const z={id:aId('zone'),label:preset.label,room:A.room,l:snap(x-preset.w/2),t:snap(y-preset.h/2),w:preset.w,h:preset.h,rotation:0,color:preset.color,zoneKind:preset.kind,zoneShape:'rect',fillOpacity:preset.kind==='bathroom'?20:15,borderStyle:'dashed',responsible:'',serviceType:preset.serviceType,active:true,locked:false};A.zones.push(z);A.selected=getZoneKey(z)}else{const dims={wall:[300,18],door:[90,22],window:[120,18],bar:[220,100],kitchen:[260,150],cash:[120,80],buffet:[170,70],text:[240,45],plant:[65,65],pool:[320,180],roomservice:[180,80],bed_single:[115,210],bed_double:[195,210],desk:[170,75],sofa:[190,85],wardrobe:[150,65],sink:[85,65],toilet:[70,95],shower:[110,110]}[type]||[150,70];const e={id:aId(type),type,label:iconFor(type),room:A.room,l:snap(x-dims[0]/2),t:snap(y-dims[1]/2),w:dims[0],h:dims[1],rotation:0,locked:false};if(type==='cash')Object.assign(e,{label:'CAISSE',cashBg:'#d7b04a',cashText:'#17130a',cashPattern:'none',cashPatternColor:'#f7e4a3',cashBorder:'#816417',cashBorderStyle:'solid',cashBorderWidth:3,cashFontSize:18,cashRadius:8});A.elements.push(e);A.selected=getElemKey(e)}markDirty();renderCanvas()}
+function cityFindFreeDuplicateTablePose(c){
+  const d=defaults(c,'table'),baseL=Number(c.l)||0,baseT=Number(c.t)||0;
+  const offsets=[[60,0],[-60,0],[0,60],[0,-60],[90,90],[-90,90],[90,-90],[-90,-90]];
+  for(let radius=1;radius<=8;radius++){
+    for(const [ox,oy] of offsets){
+      const l=snap(aClamp(baseL+ox*radius,CITY_STAGE_EDGE_CM,ARCH_W-CITY_STAGE_EDGE_CM-d.w));
+      const t=snap(aClamp(baseT+oy*radius,CITY_STAGE_EDGE_CM,ARCH_H-CITY_STAGE_EDGE_CM-d.h));
+      if(cityTableCollisionPenaltyAt(c,'__ICHEF_DUPLICATE__',l,t,d.w,d.h)===0)return {l,t};
+    }
   }
-  markDirty();renderCanvas()
+  return {l:snap(aClamp(baseL+30,CITY_STAGE_EDGE_CM,ARCH_W-CITY_STAGE_EDGE_CM-d.w)),t:snap(aClamp(baseT+30,CITY_STAGE_EDGE_CM,ARCH_H-CITY_STAGE_EDGE_CM-d.h))};
 }
 function cityFindFreeObjectPose(hit){
   if(!hit?.obj)return null;
@@ -15416,7 +15283,7 @@ function duplicateSelected(){
   const hit=current();if(!hit?.obj||A.mode!=='architect'||!canEdit())return;
   pushHistory();const c=clone(hit.obj);
   if(hit.type==='table'){
-    c.id=c.poolServiceKind?nextPoolServiceLabel():nextArchitectTableLabel();c.label=c.id;c.express=false;c.temporary=false;
+    c.id=nextArchitectTableLabel();c.label=c.id;c.express=false;c.temporary=false;
     const free=cityFindFreeDuplicateTablePose(c);c.l=free.l;c.t=free.t;
     A.tables.push(c);A.selected=getTableKey(c)
   }else if(hit.type==='zone'){
@@ -15504,6 +15371,7 @@ function scheduleArchPick(e,key){
   A.press=p;e.preventDefault();
 }
 function pointerDown(e){
+  if(A.pinchZooming&&e.pointerType==='touch'){e.preventDefault();return}
   /* V60 : l'étiquette d'une zone est une vraie poignée de déplacement.
      Elle fonctionne même si des tables / objets occupent la zone. */
   const zoneGrip=e.target.closest('[data-zone-drag]');
@@ -15569,6 +15437,7 @@ function pointerDown(e){
   }
 }
 function pointerMove(e){
+  if(A.pinchZooming&&e.pointerType==='touch'){e.preventDefault();return}
   if(A.groupDrag&&A.groupDrag.pointerId===e.pointerId){moveGroupDrag(e);return}
   if(A.chairPress&&!A.chairPress.fired&&A.chairPress.pointerId===e.pointerId){if(Math.hypot(e.clientX-A.chairPress.x,e.clientY-A.chairPress.y)>ARCH_PICK_CANCEL_PX){clearChairPress();archRelease(e)}}
   if(A.chairDrag&&A.chairDrag.pointerId===e.pointerId){moveFreeChair(e);return}
@@ -15654,6 +15523,7 @@ function pointerMove(e){
   e.preventDefault();
 }
 function pointerUp(e){
+  if(A.pinchZooming&&e.pointerType==='touch'){e.preventDefault();return}
   if(A.groupDrag&&A.groupDrag.pointerId===e.pointerId){const g=A.groupDrag;A.groupDrag=null;archRelease(e);renderCanvas();if(g.moved)aToast('Tout le plan déplacé');return}
   if(A.chairPress&&A.chairPress.pointerId===e.pointerId){const fired=!!A.chairPress.fired;if(A.chairPress.timer)clearTimeout(A.chairPress.timer);A.chairPress=null;if(!fired){archRelease(e);return}}
   if(A.chairDrag&&A.chairDrag.pointerId===e.pointerId){const d=A.chairDrag;A.chairDrag=null;archRelease(e);renderCanvas();aToast(d.moved?'Chaise posée · position enregistrable':'Chaise sélectionnée');return}
@@ -15678,6 +15548,7 @@ function pointerUp(e){
   archRelease(e);
 }
 function pointerCancel(e){
+  if(A.pinchZooming&&e.pointerType==='touch')return;
   if(A.groupDrag&&A.groupDrag.pointerId===e.pointerId)A.groupDrag=null;
   clearChairPress();if(A.chairDrag&&A.chairDrag.pointerId===e.pointerId)A.chairDrag=null;
   clearArchPress();A.releaseCandidate=null;
@@ -15718,7 +15589,7 @@ function applyZoom(){
   try{localStorage.setItem('ichef_plan_zoom_pct_v28',String(A.zoom))}catch(_){}
 }
 
-async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),roomLayouts:clone(A.roomLayouts),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_V77_PISCINE_EXTERIEUR_COMPLET'},updatedFrom:'PAD_ARCHITECT_V77_PISCINE_EXTERIEUR_COMPLET',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD V77 · piscine & extérieur complet');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
+async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),roomLayouts:clone(A.roomLayouts),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_V77_TACTILE_POINTER_FIX'},updatedFrom:'PAD_ARCHITECT_V77_TACTILE_POINTER_FIX',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD V77 · tactile Pointer Events');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
 function openExpress(){if(closePadArchitect()!==false)openExpressTableCreate()}
 function architectAccessKey(value){
   return aText(value).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[\s-]+/g,'_');
