@@ -6005,6 +6005,8 @@ body.order-open #btnHeadWho .head-sub-v20{
 </head>
 
 <body>
+<!-- iCHEF V44 — STATUT POSITION DÉPLACÉ EN BARRE BASSE -->
+
 
 <div id="padNetworkOverlay" aria-modal="true" role="dialog">
   <div class="pad-network-card">
@@ -10423,8 +10425,9 @@ function editNote(){if(!STATE.currentTable)return;const o=ensureOrder(STATE.curr
    - Espèces / carte TPE / TWINT / autre : ticket fiscal créé côté serveur
    - Aucun ticket fiscal n'est créé uniquement dans le navigateur
    ========================================================= */
-const ICHEF_PAYMENT_SERVER_VERSION="FRCH-MULTI-TPE-V54-2026.09.06";
+const ICHEF_PAYMENT_SERVER_VERSION="FRCH-MULTI-TPE-V55-TPE-LIVE-2026.09.11";
 let ICHEF_STRIPE_WATCH=null;
+let ICHEF_TPE_WATCH=null;
 
 function paymentServerHeaders(idempotencyKey=""){
   const h={
@@ -10610,30 +10613,209 @@ function terminalButtonHTML(t){
     </button>`;
 }
 
+function clearTpeWatch(){
+  if(ICHEF_TPE_WATCH){
+    clearInterval(ICHEF_TPE_WATCH);
+    ICHEF_TPE_WATCH=null;
+  }
+}
+
+function tpeTerminalIsAutomatic(terminal){
+  const mode=text(terminal?.integrationMode||"EXTERNAL_MANUAL").toUpperCase();
+  return mode==="API_CLOUD" || mode==="SMARTPOS_APP";
+}
+
+async function tpeProbeTerminal(terminal){
+  if(!terminal?.terminalId)throw new Error("Terminal introuvable");
+
+  if(!tpeTerminalIsAutomatic(terminal)){
+    return {
+      success:true,
+      connected:true,
+      manual:true,
+      status:"CONFIGURED",
+      terminalId:terminal.terminalId
+    };
+  }
+
+  return paymentServerRequest("/api/payments/tpe/test",{
+    method:"POST",
+    body:{terminalId:terminal.terminalId}
+  });
+}
+
+async function refreshTpeLiveStatuses(){
+  const terminals=availablePaymentTerminals();
+  if(!terminals.length)return [];
+
+  const results=await Promise.all(terminals.map(async terminal=>{
+    try{
+      const r=await tpeProbeTerminal(terminal);
+      if(tpeTerminalIsAutomatic(terminal)){
+        terminal.status=r.connected===true?"CONNECTED":"DISCONNECTED";
+      }
+      return {terminalId:terminal.terminalId,ok:true,result:r};
+    }catch(err){
+      if(tpeTerminalIsAutomatic(terminal))terminal.status="DISCONNECTED";
+      return {terminalId:terminal.terminalId,ok:false,error:err?.message||"TPE indisponible"};
+    }
+  }));
+
+  return results;
+}
+
+async function tpePaymentStatus(paymentRequestId){
+  return paymentServerRequest("/api/payments/tpe/status",{
+    method:"POST",
+    body:{paymentRequestId}
+  });
+}
+
+async function waitForTpePayment(order,terminal,startResult){
+  const total=orderTotal(order);
+  const paymentRequestId=text(startResult?.paymentRequestId);
+  if(!paymentRequestId)throw new Error("Référence paiement TPE absente");
+
+  openSheet(`TPE · ${esc(terminal.terminalId)}`,`
+    <div class="big-state">
+      <div class="big gold">${money(total)}</div>
+      <div class="small">${esc(terminal.provider||"TPE")} · ${esc(terminal.terminalModel||terminal.terminalId)} · ${esc(terminal.zone||"SALLE")}</div>
+    </div>
+    <div class="list-row" id="tpeLiveState">
+      <div class="grow">
+        <div class="title">PAIEMENT EN COURS</div>
+        <div class="sub">Présentez la carte sur le terminal…</div>
+      </div>
+      <strong class="gold">EN ATTENTE</strong>
+    </div>
+    <div style="margin-top:10px;color:#98a1a4;font-size:9px;line-height:1.4;text-align:center">
+      iCHEF attend la confirmation du TPE. Aucun ticket fiscal ne sera créé avant validation bancaire.
+    </div>
+    <button class="action-btn" style="width:100%;margin-top:10px" data-tpe-check>VÉRIFIER MAINTENANT</button>
+  `);
+
+  let finished=false;
+  let busy=false;
+
+  const finish=async(statusResult)=>{
+    if(finished)return true;
+    const status=text(statusResult?.status).toUpperCase();
+    const state=$("tpeLiveState");
+    const sub=state?.querySelector(".sub");
+    const strong=state?.querySelector("strong");
+
+    if(sub)sub.textContent=statusResult?.message||status;
+    if(strong)strong.textContent=status||"EN ATTENTE";
+
+    if(["PAID","APPROVED","SUCCESS"].includes(status)){
+      finished=true;
+      clearTpeWatch();
+
+      const fiscalResult=await fiscalizeWithServer(
+        order,
+        "CARTE",
+        [{
+          method:"CARTE",
+          provider:text(statusResult?.provider||terminal.provider||"TPE"),
+          terminalId:text(statusResult?.terminalId||terminal.terminalId),
+          providerTransactionId:text(statusResult?.providerTransactionId||""),
+          paymentRequestId,
+          integrationMode:text(terminal.integrationMode||"")
+        }],
+        serverPaymentId("FISCAL_TPE")
+      );
+
+      applyServerFiscalResult(order,fiscalResult,"CARTE");
+      closeSheet();
+      await syncFull("tpe-paid").catch(()=>{});
+      toast(` TPE confirmé · ticket ${fiscalResult.ticketNumber}`);
+
+      const pcfg=loadPrinterConfig();
+      if(pcfg.enabled&&pcfg.printers?.caisse?.enabled&&pcfg.receipt?.autoAfterPayment!==false){
+        try{await printCashReceipt(STATE.currentOrder,{auto:true})}catch(_){}
+      }
+      return true;
+    }
+
+    if(["DECLINED","REJECTED","FAILED","CANCELED","CANCELLED","ERROR","EXPIRED"].includes(status)){
+      finished=true;
+      clearTpeWatch();
+      if(state)state.classList.add("bad");
+      toast(statusResult?.message||`Paiement TPE ${status.toLowerCase()}`,true);
+      return true;
+    }
+
+    return false;
+  };
+
+  const check=async()=>{
+    if(busy||finished)return finished;
+    busy=true;
+    try{
+      const st=await tpePaymentStatus(paymentRequestId);
+      return await finish(st);
+    }catch(err){
+      console.warn("[iCHEF TPE] statut",err);
+      const sub=$("tpeLiveState")?.querySelector(".sub");
+      if(sub)sub.textContent=err?.message||"Connexion TPE momentanément indisponible";
+      return false;
+    }finally{
+      busy=false;
+    }
+  };
+
+  $("sheetBody")?.querySelector("[data-tpe-check]")?.addEventListener("click",check);
+
+  clearTpeWatch();
+  ICHEF_TPE_WATCH=setInterval(check,1500);
+  setTimeout(()=>{
+    if(!finished){
+      clearTpeWatch();
+      const sub=$("tpeLiveState")?.querySelector(".sub");
+      if(sub)sub.textContent="Toujours en attente · utilisez Vérifier maintenant ou contrôlez le TPE.";
+    }
+  },3*60*1000);
+
+  if(startResult?.status){
+    await finish(startResult);
+  }
+
+  return true;
+}
+
 async function configuredTerminalPayment(order,terminal){
   if(!terminal)throw new Error("Terminal introuvable");
 
   const mode=text(terminal.integrationMode||"EXTERNAL_MANUAL").toUpperCase();
-  const provider=text(terminal.provider||"OTHER").toUpperCase();
 
   if(mode==="EXTERNAL_MANUAL"){
     return recordPayment("CARTE",terminal);
   }
 
-  /*
-    V54 sait sélectionner le bon terminal par tenant/zone.
-    Le pilotage automatique d'un TPE physique exige ensuite l'adaptateur
-    officiel du prestataire dans server.js. On ne simule jamais un débit.
-  */
-  const fallback=confirm(
-    `${terminal.terminalId} · ${provider}\n\n`+
-    `Ce terminal est configuré en ${paymentTerminalModeLabel(mode)}.\n`+
-    `Le connecteur bancaire ${provider} n'est pas encore activé dans ce Pack-Eco.\n\n`+
-    `Voulez-vous utiliser ce TPE en mode externe manuel pour ce paiement ?`
-  );
+  // Paiement TPE connecté : le serveur pilote le connecteur bancaire/SmartPOS.
+  const total=orderTotal(order);
+  if(!(total>0))throw new Error("Montant invalide");
 
-  if(!fallback)return false;
-  return recordPayment("CARTE",{...terminal,integrationMode:"EXTERNAL_MANUAL",fallbackFrom:mode});
+  const paymentRequestId=serverPaymentId("TPE");
+  const result=await paymentServerRequest("/api/payments/tpe/start",{
+    method:"POST",
+    idempotencyKey:paymentRequestId,
+    body:{
+      paymentRequestId,
+      tableId:STATE.currentTable,
+      amount:total,
+      currency:paymentCurrency(),
+      terminalId:terminal.terminalId,
+      orderSnapshot:fiscalServerSnapshot(order)
+    }
+  });
+
+  if(result?.manual===true){
+    throw new Error("Ce TPE est configuré en mode manuel.");
+  }
+
+  await waitForTpePayment(order,terminal,result);
+  return false; // la fermeture/fiscalisation est gérée après confirmation TPE.
 }
 
 function serverPaymentId(prefix="PAY"){
@@ -10866,8 +11048,9 @@ async function openPayment(){
 
     <div style="margin-top:9px;color:#98a1a4;font-size:9px;line-height:1.4;text-align:center">
       iCHEF charge les TPE du restaurant depuis <strong>server.js</strong>.
-      Un TPE en mode externe est confirmé manuellement.
-      Un TPE API/SmartPOS n'est jamais considéré payé sans confirmation du connecteur bancaire.
+      <strong>Actualiser les TPE</strong> teste maintenant la connexion réelle des terminaux API/SmartPOS.
+      Un TPE en mode externe reste confirmé manuellement.
+      Un TPE connecté n'est jamais considéré payé sans confirmation bancaire <strong>PAID / APPROVED</strong>.
     </div>`);
 
   const body=$("sheetBody");
@@ -10934,7 +11117,10 @@ async function openPayment(){
     b.textContent="ACTUALISATION…";
     try{
       await loadPaymentConfig(true);
-      toast(`${availablePaymentTerminals().length} TPE disponible(s)`);
+      const live=await refreshTpeLiveStatuses();
+      const connected=availablePaymentTerminals().filter(t=>text(t.status).toUpperCase()==="CONNECTED").length;
+      const automatic=availablePaymentTerminals().filter(tpeTerminalIsAutomatic).length;
+      toast(automatic?`${connected}/${automatic} TPE connecté(s)`:`${availablePaymentTerminals().length} TPE configuré(s)`);
       await openPayment();
     }catch(err){
       toast(err?.message||"Configuration TPE indisponible",true);
@@ -13984,8 +14170,7 @@ function citySelectionOverlayHTML(){
   if(A.mode!=='architect'||!canEdit()||!A.selected)return '';
   const hit=byKey(A.selected);if(!hit?.obj)return '';
   const d=defaults(hit.obj,hit.type),cx=d.l+d.w/2,nearTop=d.t<190,menuY=nearTop?d.t+d.h+18:d.t-12;
-  const bad=cityHasCollision(A.selected),badgeX=d.l+d.w+35,badgeY=d.t+Math.min(36,d.h/2);
-  return `<div class="city-float-menu ${nearTop?'below':''}" style="left:${cx/ARCH_W*100}%;top:${menuY/ARCH_H*100}%"><button type="button" data-city-float="move"><span>✥</span>Déplacer</button><button type="button" data-city-float="rotate"><span>↻</span>Tourner</button><button type="button" data-city-float="duplicate"><span>⧉</span>Dupliquer</button><button type="button" class="danger" data-city-float="delete"><span>▣</span>Supprimer</button></div><div class="city-position-badge ${bad?'bad':'good'}" data-city-position style="left:${badgeX/ARCH_W*100}%;top:${badgeY/ARCH_H*100}%">${bad?'⚠ Collision':'✓ Position correcte'}</div>`;
+  return `<div class="city-float-menu ${nearTop?'below':''}" style="left:${cx/ARCH_W*100}%;top:${menuY/ARCH_H*100}%"><button type="button" data-city-float="move"><span>✥</span>Déplacer</button><button type="button" data-city-float="rotate"><span>↻</span>Tourner</button><button type="button" data-city-float="duplicate"><span>⧉</span>Dupliquer</button><button type="button" class="danger" data-city-float="delete"><span>▣</span>Supprimer</button></div>`;
 }
 function cityMeasureOverlayHTML(){
   if(!A.showMeasures||!A.selected)return '';
@@ -14129,7 +14314,13 @@ function architectPaletteHTML(){
  const roomOpts=(A.rooms||[]).map(r=>`<option value="${esc(r)}" ${r===A.room?'selected':''}>${esc(r)}</option>`).join('');
  return `<aside class="archpad-left"><div class="city-panel-title">CONSTRUIRE</div><div class="city-tool-list"><button type="button" data-tool="select"><span class="ico">✋</span><span>Déplacer</span></button><button type="button" data-add="table"><span class="ico">◯</span><span>Table</span></button><button type="button" data-add="zone"><span class="ico">▰</span><span>Zone service</span></button><button type="button" data-add="wall"><span class="ico">▦</span><span>Mur</span></button><button type="button" data-add="door"><span class="ico">▯</span><span>Porte</span></button><button type="button" data-add="window"><span class="ico">▣</span><span>Fenêtre</span></button><button type="button" data-add="sofa"><span class="ico">▱</span><span>Mobilier</span></button><button type="button" data-add="plant"><span class="ico">♣</span><span>Plante</span></button><button type="button" data-add="text"><span class="ico">T</span><span>Texte</span></button></div><div class="city-more-title">PLUS D’OBJETS</div><div class="city-tool-list"><button type="button" data-add="cash"><span class="ico">▤</span><span>Comptoir / caisse</span></button><button type="button" data-add="bar"><span class="ico">▰</span><span>Bar</span></button><button type="button" data-add="kitchen"><span class="ico">⌂</span><span>Cuisine</span></button><button type="button" data-add="toilet"><span class="ico">♟</span><span>Sanitaires</span></button><button type="button" data-add="bed_double"><span class="ico">▱</span><span>Hôtellerie</span></button><button type="button" data-add="pool"><span class="ico">≈</span><span>Extérieur</span></button><button type="button" data-express><span class="ico">＋</span><span>Table express</span></button></div><div class="city-room-box"><label>Salle active</label><select data-room-select>${roomOpts}</select><div class="city-room-actions"><button type="button" data-add-room>+ Salle</button><button type="button" data-rename-room>Renommer</button><button type="button" class="wide" data-toggle-mode>▶ Passer en service</button></div></div></aside>`;
 }
-function architectBottomHTML(st){return `<div class="archpad-bottom"><div class="city-bottom-room"><div class="city-bottom-icon">↻</div><div><b>${esc(A.room)}</b><small data-city-room-metrics>${cityRoomMetricsHTML()} &nbsp;•&nbsp; Marge de sécurité 0,5 m</small><small class="city-touch-help">🤏 2 doigts = zoom tactile</small></div></div><div class="city-bottom-center"><div class="archpad-city-hint" data-city-hint></div><div class="city-bottom-actions"><button type="button" data-city-fit>⌗ &nbsp; Ajuster à l’écran</button><button type="button" data-city-auto>✣ &nbsp; Auto-organiser</button><button type="button" class="${A.showMeasures?'active':''}" data-city-measures>⌁ &nbsp; Mesures</button></div></div><div class="city-minimap-wrap"><div class="city-minimap" data-city-minimap>${cityMiniMapHTML()}</div><button type="button" class="city-minimap-expand" data-city-fit title="Ajuster à l’écran">⛶</button></div></div>`}
+function architectBottomHTML(st){
+  const hasSelection=!!A.selected;
+  const bad=hasSelection?cityHasCollision(A.selected):false;
+  const anti=hasSelection&&!!A.antiShockBlocked;
+  const statusText=anti?'🛡 Anti-choc':bad?'⚠ Trop proche':'✓ Position correcte';
+  const statusClass=anti?'antishock':bad?'bad':'good';
+  return `<div class="archpad-bottom"><div class="city-bottom-room"><div class="city-bottom-icon">↻</div><div><b>${esc(A.room)}</b><small data-city-room-metrics>${cityRoomMetricsHTML()} &nbsp;•&nbsp; Marge de sécurité 0,5 m</small><small class="city-touch-help">🤏 2 doigts = zoom tactile</small></div></div><div class="city-bottom-center"><div class="archpad-city-hint" data-city-hint></div>${hasSelection?`<div class="city-position-badge ${statusClass}" data-city-position style="position:static;transform:none;display:inline-flex;align-items:center;justify-content:center;min-height:25px;padding:5px 12px;margin:0 auto 1px;white-space:nowrap;">${statusText}</div>`:''}<div class="city-bottom-actions"><button type="button" data-city-fit>⌗ &nbsp; Ajuster à l’écran</button><button type="button" data-city-auto>✣ &nbsp; Auto-organiser</button><button type="button" class="${A.showMeasures?'active':''}" data-city-measures>⌁ &nbsp; Mesures</button></div></div><div class="city-minimap-wrap"><div class="city-minimap" data-city-minimap>${cityMiniMapHTML()}</div><button type="button" class="city-minimap-expand" data-city-fit title="Ajuster à l’écran">⛶</button></div></div>`}
 function zoomOptionsHTML(){
   const z=aClamp(Number(A.zoom)||0,0,200);
   return Array.from({length:21},(_,i)=>i*10).map(v=>`<option value="${v}" ${v===z?'selected':''}>${v}%</option>`).join('');
