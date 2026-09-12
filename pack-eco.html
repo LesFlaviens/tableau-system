@@ -14298,7 +14298,7 @@ function cityTableResizeAllowed(hit,key,l,t,w,h){
   return after===0||(before>0&&after<before);
 }
 /* ================================================================
-   iCHEF V50 — ANTI-CHOC GLOBAL TOUS OBJETS
+   iCHEF V51 — ANTI-CHOC SOUPLE + MANIPULATION LIBRE
    - Tables + chaises contre tous les objets physiques
    - Eléments contre tables/chaises et autres éléments
    - Zones contre zones (une zone reste un conteneur : tables/objets peuvent être dedans)
@@ -14309,7 +14309,8 @@ function cityCollisionItems(){
   const out=[];
   roomTables().forEach(o=>out.push({type:'table',obj:o,key:getTableKey(o)}));
   roomZones().forEach(o=>out.push({type:'zone',obj:o,key:getZoneKey(o)}));
-  roomElements().forEach(o=>out.push({type:'element',obj:o,key:getElemKey(o)}));
+  /* V51 : le texte est un repère visuel, pas un obstacle physique. */
+  roomElements().forEach(o=>{if(aText(o.type)!=='text')out.push({type:'element',obj:o,key:getElemKey(o)})});
   return out;
 }
 function cityElementKind(hit){
@@ -14382,6 +14383,49 @@ function cityObjectResizeAllowed(hit,key,l,t,w,h){
   const after=cityObjectCollisionPenaltyAt(hit,key,l,t,w,h);
   return after===0||(before>0&&after<before);
 }
+/* ================================================================
+   iCHEF V51 — MANIPULATION LIBRE + ANTI-CHOC AU LÂCHER
+   Le V50 bloquait trop tôt le geste. En V51 l'objet suit toujours le doigt
+   pour déplacement / agrandissement / réduction. L'anti-choc surveille en
+   direct puis ramène au meilleur emplacement sûr au relâchement.
+   ================================================================ */
+function cityDragGeom(hit){
+  const d=defaults(hit.obj,hit.type);
+  return {l:Number(d.l)||0,t:Number(d.t)||0,w:Math.max(16,Number(d.w)||16),h:Math.max(16,Number(d.h)||16)};
+}
+function cityApplyDragGeom(hit,g){
+  if(!hit?.obj||!g)return;
+  hit.obj.l=g.l;hit.obj.t=g.t;hit.obj.w=g.w;hit.obj.h=g.h;
+}
+function cityDragPenalty(hit,key,g){
+  if(!hit?.obj||!g)return 0;
+  if(cityElementKind(hit)==='text')return 0;
+  return cityObjectCollisionPenaltyAt(hit,key,g.l,g.t,g.w,g.h);
+}
+function cityRememberDragBest(drag,hit,g,penalty){
+  if(!drag||!hit||!g)return;
+  const eps=0.5;
+  if(!drag.bestGeom||penalty+eps<Number(drag.bestPenalty??Infinity)||penalty===0){
+    drag.bestGeom={...g};drag.bestPenalty=penalty;
+  }
+}
+function cityFinalizeSoftAntiShock(drag,hit){
+  if(!drag||!hit?.obj)return {adjusted:false,penalty:0};
+  const current=cityDragGeom(hit),penalty=cityDragPenalty(hit,drag.key,current);
+  if(penalty<=0)return {adjusted:false,penalty:0};
+  /* Si l'objet était déjà en collision avant le geste, conserver le meilleur
+     progrès obtenu permet de le sortir progressivement d'un ancien plan. */
+  const startPenalty=Number(drag.startPenalty||0);
+  const best=drag.bestGeom||drag.orig;
+  const bestPenalty=Number(drag.bestPenalty??startPenalty);
+  if(best&&(bestPenalty===0||bestPenalty<penalty||bestPenalty<startPenalty)){
+    cityApplyDragGeom(hit,best);
+    return {adjusted:true,penalty:bestPenalty};
+  }
+  cityApplyDragGeom(hit,drag.orig);
+  return {adjusted:true,penalty:startPenalty};
+}
+
 function cityHasCollision(key=A.selected){
   const hit=byKey(key);if(!hit?.obj)return false;
   const d=defaults(hit.obj,hit.type);
@@ -14714,7 +14758,9 @@ function clearArchPress(){if(A.press?.timer)clearTimeout(A.press.timer);A.press=
 function beginArchDrag(key,e,kind='move',dir='',fromHold=false){
   const h=byKey(key);if(!h?.obj)return false;
   if(h.obj.locked){aToast('Élément verrouillé · sélectionné');return false}
-  A.drag={kind,dir,key,start:pointInStage(e.clientX,e.clientY),startClientX:e.clientX,startClientY:e.clientY,orig:clone(defaults(h.obj,h.type)),moved:false,historyPushed:false,fromHold:!!fromHold,pointerId:e.pointerId};
+  const orig=clone(defaults(h.obj,h.type));
+  const startPenalty=cityDragPenalty(h,key,{l:orig.l,t:orig.t,w:orig.w,h:orig.h});
+  A.drag={kind,dir,key,start:pointInStage(e.clientX,e.clientY),startClientX:e.clientX,startClientY:e.clientY,orig,moved:false,historyPushed:false,fromHold:!!fromHold,pointerId:e.pointerId,startPenalty,bestPenalty:startPenalty,bestGeom:{l:orig.l,t:orig.t,w:orig.w,h:orig.h}};
   archCapture(e);return true;
 }
 function scheduleArchPick(e,key){
@@ -14794,18 +14840,25 @@ function pointerMove(e){
   if(!A.drag.moved){A.drag.moved=true;if(!A.drag.historyPushed){pushHistory();A.drag.historyPushed=true}}
   const p=pointInStage(e.clientX,e.clientY),dx=p.x-A.drag.start.x,dy=p.y-A.drag.start.y,o=A.drag.orig,min=16;
   A.antiShockBlocked=false;
+  let liveGeom=null,livePenalty=0;
   if(A.drag.kind==='move'){
-    const targetL=snap(aClamp(o.l+dx,CITY_STAGE_EDGE_CM,ARCH_W-CITY_STAGE_EDGE_CM-o.w)),targetT=snap(aClamp(o.t+dy,CITY_STAGE_EDGE_CM,ARCH_H-CITY_STAGE_EDGE_CM-o.h));
-    const safe=cityResolveObjectMove(h,A.drag.key,targetL,targetT);
-    h.obj.l=safe.l;h.obj.t=safe.t;A.antiShockBlocked=safe.blocked;
+    const targetL=snap(aClamp(o.l+dx,CITY_STAGE_EDGE_CM,ARCH_W-CITY_STAGE_EDGE_CM-o.w));
+    const targetT=snap(aClamp(o.t+dy,CITY_STAGE_EDGE_CM,ARCH_H-CITY_STAGE_EDGE_CM-o.h));
+    /* V51 : le geste reste totalement libre. L'anti-choc devient un garde-fou
+       au lâcher au lieu de bloquer le doigt pendant le déplacement. */
+    h.obj.l=targetL;h.obj.t=targetT;
+    liveGeom={l:targetL,t:targetT,w:o.w,h:o.h};
   }else{
     const dir=A.drag.dir;let l=o.l,t=o.t,w=o.w,hh=o.h;
     if(dir.includes('e'))w=o.w+dx;if(dir.includes('s'))hh=o.h+dy;if(dir.includes('w')){l=o.l+dx;w=o.w-dx}if(dir.includes('n')){t=o.t+dy;hh=o.h-dy}
     if(w<min){if(dir.includes('w'))l=o.l+o.w-min;w=min}if(hh<min){if(dir.includes('n'))t=o.t+o.h-min;hh=min}
     l=aClamp(snap(l),CITY_STAGE_EDGE_CM,ARCH_W-CITY_STAGE_EDGE_CM-min);t=aClamp(snap(t),CITY_STAGE_EDGE_CM,ARCH_H-CITY_STAGE_EDGE_CM-min);w=Math.min(ARCH_W-CITY_STAGE_EDGE_CM-l,Math.max(min,snap(w)));hh=Math.min(ARCH_H-CITY_STAGE_EDGE_CM-t,Math.max(min,snap(hh)));
-    if(!cityObjectResizeAllowed(h,A.drag.key,l,t,w,hh)){A.antiShockBlocked=true}
-    else{h.obj.l=l;h.obj.t=t;h.obj.w=w;h.obj.h=hh}
+    h.obj.l=l;h.obj.t=t;h.obj.w=w;h.obj.h=hh;
+    liveGeom={l,t,w,h:hh};
   }
+  livePenalty=cityDragPenalty(h,A.drag.key,liveGeom);
+  cityRememberDragBest(A.drag,h,liveGeom,livePenalty);
+  A.antiShockBlocked=livePenalty>0;
   markDirty();
   const n=A.root.querySelector(`[data-arch-key="${CSS.escape(A.drag.key)}"]`);
   if(n)n.setAttribute('style',nodeStyle(h.obj)+(h.type==='zone'?`;--zone-color:${colorForZone(h.obj)};--zone-fill:${aClamp(h.obj.fillOpacity||15,3,55)}%;--zone-border:${aText(h.obj.borderStyle||'dashed')}`:h.type==='element'?cashCustomStyle(h.obj):''));
@@ -14821,10 +14874,16 @@ function pointerUp(e){
     if(!fired){archRelease(e);return}
   }
   if(A.drag&&A.drag.pointerId===e.pointerId){
-    const d=A.drag;A.drag=null;A.antiShockBlocked=false;archRelease(e);
+    const d=A.drag;const hit=byKey(d.key);
+    let adjusted=false;
+    if(d.moved&&hit?.obj){
+      const result=cityFinalizeSoftAntiShock(d,hit);
+      adjusted=!!result.adjusted;
+    }
+    A.drag=null;A.antiShockBlocked=false;archRelease(e);
     if(d.kind==='move'&&!d.moved&&!d.fromHold){A.selected=null;renderCanvas();aToast('Objet lâché');return}
     renderCanvas();
-    if(d.moved)aToast('Objet modifié · clic pour lâcher');
+    if(d.moved)aToast(adjusted?'🛡 Anti-choc : position sûre restaurée':'Objet modifié · clic pour lâcher');
     return;
   }
   if(A.releaseCandidate&&A.releaseCandidate.pointerId===e.pointerId){
@@ -14875,7 +14934,7 @@ function applyZoom(){
   try{localStorage.setItem('ichef_plan_zoom_pct_v28',String(A.zoom))}catch(_){}
 }
 
-async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_V48_SAFE_MARGIN'},updatedFrom:'PAD_ARCHITECT_V48_SAFE_MARGIN',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD ultra modulable');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
+async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_V51_SOFT_ANTISHOCK'},updatedFrom:'PAD_ARCHITECT_V51_SOFT_ANTISHOCK',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD ultra modulable');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
 function openExpress(){if(closePadArchitect()!==false)openExpressTableCreate()}
 function architectAccessKey(value){
   return aText(value).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[\s-]+/g,'_');
