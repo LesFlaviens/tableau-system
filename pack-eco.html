@@ -14306,6 +14306,74 @@ function cityClampZoneResizeToSafety(target){
   const blocked=Math.abs(l-Number(target?.l))>.01||Math.abs(t-Number(target?.t))>.01||Math.abs(w-Number(target?.w))>.01||Math.abs(h-Number(target?.h))>.01;
   return {geom:{l,t,w,h},blocked};
 }
+
+/* V66 — CONTACT EXACT POUR TOUS LES OBJETS
+   L'ancien moteur avançait par pas de quelques centimètres et pouvait laisser
+   un petit vide avant la limite. Ici on calcule directement l'enveloppe réelle
+   (rotation + chaises pour les tables) puis on la plaque exactement sur la
+   limite de salle. Aucun CITY_STAGE_EDGE_CM n'intervient dans ce calcul. */
+function cityShapeEnvelope(shapes){
+  if(!Array.isArray(shapes)||!shapes.length)return null;
+  const l=Math.min(...shapes.map(r=>Number(r.l)||0)),t=Math.min(...shapes.map(r=>Number(r.t)||0));
+  const r=Math.max(...shapes.map(r=>Number(r.r)||0)),b=Math.max(...shapes.map(r=>Number(r.b)||0));
+  return {l,t,r,b,w:r-l,h:b-t};
+}
+function cityClampObjectMoveToSafety(hit,targetL,targetT){
+  if(!hit?.obj)return {l:Number(targetL)||0,t:Number(targetT)||0,blocked:false};
+  if(hit.type==='zone')return cityClampZoneMoveToSafety(hit,targetL,targetT);
+  const d=defaults(hit.obj,hit.type),b=citySafetyBounds();
+  const probe=cityShapeEnvelope(cityCollisionShapesForHitAt(hit,Number(targetL),Number(targetT),d.w,d.h));
+  if(!probe)return {l:Number(targetL)||0,t:Number(targetT)||0,blocked:false};
+  const leftOffset=probe.l-Number(targetL),rightOffset=probe.r-Number(targetL);
+  const topOffset=probe.t-Number(targetT),bottomOffset=probe.b-Number(targetT);
+  const minL=b.minX-leftOffset,maxL=b.maxX-rightOffset,minT=b.minY-topOffset,maxT=b.maxY-bottomOffset;
+  const l=aClamp(Number(targetL),Math.min(minL,maxL),Math.max(minL,maxL));
+  const t=aClamp(Number(targetT),Math.min(minT,maxT),Math.max(minT,maxT));
+  return {l,t,blocked:Math.abs(l-Number(targetL))>.01||Math.abs(t-Number(targetT))>.01};
+}
+function cityClampObjectResizeToSafetyExact(hit,target){
+  if(!hit?.obj||!target)return {geom:target,blocked:false};
+  if(hit.type==='zone')return cityClampZoneResizeToSafety(target);
+  const safe=g=>citySafetyPenaltyAt(hit,g.l,g.t,g.w,g.h)<=1e-7;
+  if(safe(target))return {geom:target,blocked:false};
+  const start=cityDragGeom(hit);
+  if(!safe(start))return cityResolveResizeSafetyLive(A.drag,hit,target);
+  let lo=0,hi=1,best={...start};
+  for(let i=0;i<34;i++){
+    const f=(lo+hi)/2;
+    const g={l:start.l+(target.l-start.l)*f,t:start.t+(target.t-start.t)*f,w:start.w+(target.w-start.w)*f,h:start.h+(target.h-start.h)*f};
+    if(safe(g)){best=g;lo=f}else hi=f;
+  }
+  return {geom:best,blocked:true};
+}
+/* Petit aimant de précision : à moins de 12 cm d'un mur dessiné, l'enveloppe
+   de l'objet se pose exactement bord à bord. Il ne crée aucune marge et ne
+   transforme pas le mur en barrière : on peut toujours traverser si on insiste. */
+function citySnapObjectToWallContact(hit,l,t,threshold=12){
+  if(!hit?.obj)return {l,t,snapped:false};
+  const d=defaults(hit.obj,hit.type),mine=cityShapeEnvelope(cityCollisionShapesForHitAt(hit,l,t,d.w,d.h));
+  if(!mine)return {l,t,snapped:false};
+  let best=null;
+  for(const wall of roomElements().filter(o=>aText(o.type).toLowerCase()==='wall')){
+    const wallKey=getElemKey(wall);if(wallKey===hit.key)continue;
+    const wd=defaults(wall,'element'),wh={type:'element',obj:wall,key:wallKey};
+    const wr=cityShapeEnvelope(cityCollisionShapesForHitAt(wh,wd.l,wd.t,wd.w,wd.h));if(!wr)continue;
+    const vOverlap=Math.min(mine.b,wr.b)-Math.max(mine.t,wr.t);
+    const hOverlap=Math.min(mine.r,wr.r)-Math.max(mine.l,wr.l);
+    if(vOverlap>4){
+      const gaps=[{delta:wr.l-mine.r,axis:'x'},{delta:wr.r-mine.l,axis:'x'}];
+      for(const g of gaps)if(Math.abs(g.delta)<=threshold&&(!best||Math.abs(g.delta)<Math.abs(best.delta)))best=g;
+    }
+    if(hOverlap>4){
+      const gaps=[{delta:wr.t-mine.b,axis:'y'},{delta:wr.b-mine.t,axis:'y'}];
+      for(const g of gaps)if(Math.abs(g.delta)<=threshold&&(!best||Math.abs(g.delta)<Math.abs(best.delta)))best=g;
+    }
+  }
+  if(!best)return {l,t,snapped:false};
+  let nl=l,nt=t;if(best.axis==='x')nl+=best.delta;else nt+=best.delta;
+  const clamped=cityClampObjectMoveToSafety(hit,nl,nt);
+  return {l:clamped.l,t:clamped.t,snapped:true};
+}
 function citySafetyOverflowForShapes(shapes){
   const b=citySafetyBounds();
   let penalty=0;
@@ -14946,10 +15014,19 @@ function cityMetersToCm(value){const raw=String(value??'').trim().replace(',', '
 function propChange(e){const k=e.target.dataset.prop;if(!k)return;const hit=current();if(!hit?.obj)return;pushHistory();let v=e.target.value;const metric=e.target.dataset.unit==='m'&&['l','t','w','h'].includes(k);if(metric){const cm=cityMetersToCm(v);if(!Number.isFinite(cm)){aToast('Mesure invalide',true);renderAll();return}v=cm;}
   if(hit.type==='room'){if(k==='label'){if(!renameRoomTo(v)){renderAll();return}}else{const q=ensureRoomLayout(A.room),old={...q};if(k==='l'||k==='t'){const targetL=k==='l'?aClamp(Number(v)||old.l,20,ARCH_W-20-old.w):old.l,targetT=k==='t'?aClamp(Number(v)||old.t,20,ARCH_H-20-old.h):old.t,dx=targetL-old.l,dy=targetT-old.t;q.l=targetL;q.t=targetT;roomTables().forEach(o=>{o.l+=dx;o.t+=dy});roomZones().forEach(o=>{o.l+=dx;o.t+=dy});roomElements().forEach(o=>{o.l+=dx;o.t+=dy})}else{q[k]=Number(v)||0;Object.assign(q,clampRoomLayoutToContent(q))}}markDirty();renderAll();return}
   if(k==='chairsFree'&&hit.type==='table'){hit.obj.chairsFree=String(v)==='true';if(!hit.obj.chairsFree)hit.obj.chairLayout=[];markDirty();renderCanvas();return}if(k==='label'&&hit.type==='table'){const nv=aText(v),oldLabel=aText(hit.obj.label);if(!nv)return;if(activeOrder(oldLabel)){aToast('Renommer interdit : commande active',true);renderCanvas();return}if(A.tables.some(t=>t!==hit.obj&&aText(t.label).toUpperCase()===nv.toUpperCase())){aToast('Numéro de table déjà utilisé',true);renderCanvas();return}hit.obj.label=nv;if(!hit.obj.id||aText(hit.obj.id)===oldLabel)hit.obj.id=nv}else setObjProp(hit.obj,k,v);
-  if(hit.type==='zone'&&['l','t','w','h'].includes(k)){
-    const d=defaults(hit.obj,'zone'),q=cityClampZoneResizeToSafety({l:d.l,t:d.t,w:d.w,h:d.h});
-    cityApplyDragGeom(hit,q.geom);
-    if(q.blocked)aToast('Zone limitée exactement au bord de la salle');
+  if(['l','t','w','h'].includes(k)){
+    const d=defaults(hit.obj,hit.type);
+    if(hit.type==='zone'){
+      const q=cityClampZoneResizeToSafety({l:d.l,t:d.t,w:d.w,h:d.h});
+      cityApplyDragGeom(hit,q.geom);
+      if(q.blocked)aToast('Zone limitée exactement au bord de la salle');
+    }else if(k==='l'||k==='t'){
+      const q=cityClampObjectMoveToSafety(hit,d.l,d.t);hit.obj.l=q.l;hit.obj.t=q.t;
+      if(q.blocked)aToast('Objet limité exactement au bord de la salle');
+    }else{
+      const q=cityClampObjectResizeToSafetyExact(hit,{l:d.l,t:d.t,w:d.w,h:d.h});cityApplyDragGeom(hit,q.geom);
+      if(q.blocked)aToast('Objet redimensionné jusqu’au bord exact');
+    }
   }
   markDirty();renderCanvas()}
 function addObject(type,clientPoint=null){A.groupAll=false;A.groupDrag=null;if(A.mode!=='architect'||!canEdit()){aToast('Mode Architecte réservé Gérant / Directeur',true);return}pushHistory();const isZonePreset=['zone','bathroom_zone','bedroom_zone','office_zone'].includes(type),count=type==='table'?roomTables().length:isZonePreset?roomZones().length:roomElements().length;let x=220+(count%5)*105,y=150+Math.floor(count/5)*85;if(clientPoint){const p=pointInStage(clientPoint.x,clientPoint.y);x=p.x;y=p.y}if(type==='table'){const label=nextArchitectTableLabel();const t={id:label,label,room:A.room,pax:2,l:snap(x-50),t:snap(y-40),w:100,h:82,shape:'square',rotation:0,createdByRole:expressRoleLabel(),architectCreated:true};A.tables.push(t);A.selected=getTableKey(t)}else if(isZonePreset){const idx=roomZones().length+1,preset=type==='bathroom_zone'?{kind:'bathroom',label:'SALLE DE BAIN',color:'#55c7d9',w:300,h:240,serviceType:'Hébergement'}:type==='bedroom_zone'?{kind:'bedroom',label:'CHAMBRE',color:'#a785ff',w:500,h:360,serviceType:'Hébergement'}:type==='office_zone'?{kind:'office',label:'BUREAU',color:'#d59b54',w:360,h:260,serviceType:'Hébergement'}:{kind:'service',label:'ZONE '+idx,color:['#4cda8a','#58a9ff','#a785ff','#ffb13b'][idx%4],w:420,h:260,serviceType:'Dîner'};const z={id:aId('zone'),label:preset.label,room:A.room,l:snap(x-preset.w/2),t:snap(y-preset.h/2),w:preset.w,h:preset.h,rotation:0,color:preset.color,zoneKind:preset.kind,zoneShape:'rect',fillOpacity:preset.kind==='bathroom'?20:15,borderStyle:'dashed',responsible:'',serviceType:preset.serviceType,active:true,locked:false};A.zones.push(z);A.selected=getZoneKey(z)}else{const dims={wall:[300,18],door:[90,22],window:[120,18],bar:[220,100],kitchen:[260,150],cash:[120,80],buffet:[170,70],text:[240,45],plant:[65,65],pool:[320,180],roomservice:[180,80],bed_single:[115,210],bed_double:[195,210],desk:[170,75],sofa:[190,85],wardrobe:[150,65],sink:[85,65],toilet:[70,95],shower:[110,110]}[type]||[150,70];const e={id:aId(type),type,label:iconFor(type),room:A.room,l:snap(x-dims[0]/2),t:snap(y-dims[1]/2),w:dims[0],h:dims[1],rotation:0,locked:false};if(type==='cash')Object.assign(e,{label:'CAISSE',cashBg:'#d7b04a',cashText:'#17130a',cashPattern:'none',cashPatternColor:'#f7e4a3',cashBorder:'#816417',cashBorderStyle:'solid',cashBorderWidth:3,cashFontSize:18,cashRadius:8});A.elements.push(e);A.selected=getElemKey(e)}markDirty();renderCanvas()}
@@ -15167,7 +15244,9 @@ function pointerMove(e){
        Une zone n'a plus la marge technique invisible CITY_STAGE_EDGE_CM.
        Elle peut aller exactement jusqu'au mur / jusqu'à la ligne pointillée.
        La ligne pointillée reste la seule limite physique de la salle. */
-    const rawEdge=(h.type==='zone')?0:CITY_STAGE_EDGE_CM;
+    /* V66 : aucune marge brute pour aucun objet. La limite utile est uniquement
+       la salle / ligne pointillée, calculée ensuite avec la géométrie réelle. */
+    const rawEdge=0;
     const targetL=snap(aClamp(o.l+dx,rawEdge,ARCH_W-rawEdge-o.w));
     const targetT=snap(aClamp(o.t+dy,rawEdge,ARCH_H-rawEdge-o.h));
     /* V63 : une zone est clampée DIRECTEMENT contre le bord de la salle.
@@ -15178,8 +15257,10 @@ function pointerMove(e){
       liveGeom={l:h.obj.l,t:h.obj.t,w:o.w,h:o.h};
       blocked=!!resolved.blocked;
     }else{
-      const resolved=cityResolveSafetyMove(h,targetL,targetT);
-      h.obj.l=snap(resolved.l);h.obj.t=snap(resolved.t);
+      /* V66 : clamp exact, sans pas intermédiaire qui laissait un vide au mur. */
+      const resolved=cityClampObjectMoveToSafety(h,targetL,targetT);
+      const snapped=citySnapObjectToWallContact(h,resolved.l,resolved.t);
+      h.obj.l=snapped.l;h.obj.t=snapped.t;
       liveGeom={l:h.obj.l,t:h.obj.t,w:o.w,h:o.h};
       blocked=!!resolved.blocked;
     }
@@ -15189,14 +15270,15 @@ function pointerMove(e){
     if(w<min){if(dir.includes('w'))l=o.l+o.w-min;w=min}if(hh<min){if(dir.includes('n'))t=o.t+o.h-min;hh=min}
     /* V62 : redimensionnement des zones jusqu'au mur / à la limite pointillée,
        sans marge technique supplémentaire. Les autres objets gardent leur marge brute. */
-    const rawEdge=(h.type==='zone')?0:CITY_STAGE_EDGE_CM;
+    /* V66 : même règle au redimensionnement : 0 cm de marge brute. */
+    const rawEdge=0;
     l=aClamp(snap(l),rawEdge,ARCH_W-rawEdge-min);t=aClamp(snap(t),rawEdge,ARCH_H-rawEdge-min);w=Math.min(ARCH_W-rawEdge-l,Math.max(min,snap(w)));hh=Math.min(ARCH_H-rawEdge-t,Math.max(min,snap(hh)));
     const target={l,t,w,h:hh};
     if(h.type==='zone'){
       const resolved=cityClampZoneResizeToSafety(target);
       liveGeom=resolved.geom;blocked=!!resolved.blocked;
     }else{
-      const resolved=cityResolveResizeSafetyLive(A.drag,h,target);
+      const resolved=cityClampObjectResizeToSafetyExact(h,target);
       liveGeom=resolved.geom;blocked=!!resolved.blocked;
     }
     cityApplyDragGeom(h,liveGeom);
