@@ -13995,7 +13995,7 @@ try{ if(typeof scheduleRender==="function") scheduleRender(); }catch(_ ){}
   box-shadow:0 0 0 10px rgba(255,255,255,.10),0 0 0 12px rgba(112,119,27,.12)!important;
 }
 #ichefArchPad .city-room-boundary::after{
-  content:"MARGE 0,5 m";
+  content:"LIMITE SÉCURITÉ 0,5 m";
   position:absolute;right:10px;bottom:8px;
   padding:3px 7px;border-radius:999px;
   background:rgba(255,255,255,.88);color:#697016;
@@ -14008,7 +14008,7 @@ try{ if(typeof scheduleRender==="function") scheduleRender(); }catch(_ ){}
 
 <script id="ichef-pad-architect-js">
 /* =========================================================
-   V48 — Tout sélectionner + marge de sécurité écran
+   V53 — Limite de sécurité pointillée fixe
    iCHEF PAD — ÉDITEUR ARCHITECTURAL PERSONNALISABLE
    Même ARCHITECTURE serveur que téléphone / caisse / KDS.
    ========================================================= */
@@ -14020,7 +14020,7 @@ const ARCH_W=5000,ARCH_H=5000;
 const CITY_ROOM_MARGIN_CM=50;
 const CITY_STAGE_EDGE_CM=100;      // objets >= 1 m du bord brut => contour +0,5 m reste à 0,5 m du bord
 const CITY_VIEW_SAFE_GUTTER_PX=58; // marge écran minimale après « Ajuster à l'écran »
-const A={root:null,room:"",mode:"architect",tool:"select",selected:null,groupAll:false,groupDrag:null,dirty:false,grid:true,snap:true,zoom:100,showMeasures:true,history:[],future:[],drag:null,tables:[],zones:[],elements:[],rooms:[],archUnlocked:false,archRole:"",archPin:"",pinOpen:false,pinValue:"",pinMsg:""};
+const A={root:null,room:"",mode:"architect",tool:"select",selected:null,groupAll:false,groupDrag:null,safetyByRoom:{},dirty:false,grid:true,snap:true,zoom:100,showMeasures:true,history:[],future:[],drag:null,tables:[],zones:[],elements:[],rooms:[],archUnlocked:false,archRole:"",archPin:"",pinOpen:false,pinValue:"",pinMsg:""};
 const canEdit=()=>!!(STATE.demo||expressRoleLevel()>=2||A.archUnlocked);
 const aText=v=>String(v??"").trim();
 const aColor=(v,fallback='#000000')=>/^#[0-9a-f]{6}$/i.test(aText(v))?aText(v):fallback;
@@ -14040,7 +14040,7 @@ function dataNow(){
   const elements=Array.isArray(raw.elements)?raw.elements:[];
   return {rooms:clone(rooms),tables:clone(tables),zones:clone(zones),elements:clone(elements)};
 }
-function loadData(){const d=dataNow();A.rooms=d.rooms.length?d.rooms:['Salle Principale'];A.tables=d.tables;A.zones=d.zones;A.elements=d.elements;A.room=A.rooms.includes(STATE.room)?STATE.room:A.rooms[0];A.selected=null;A.groupAll=false;A.groupDrag=null;A.history=[];A.future=[];A.dirty=false}
+function loadData(){const d=dataNow();A.rooms=d.rooms.length?d.rooms:['Salle Principale'];A.tables=d.tables;A.zones=d.zones;A.elements=d.elements;A.room=A.rooms.includes(STATE.room)?STATE.room:A.rooms[0];A.selected=null;A.groupAll=false;A.groupDrag=null;A.safetyByRoom={};A.history=[];A.future=[];A.dirty=false}
 function snapshot(){return JSON.stringify({rooms:A.rooms,tables:A.tables,zones:A.zones,elements:A.elements,room:A.room})}
 function pushHistory(){A.history.push(snapshot());if(A.history.length>40)A.history.shift();A.future=[]}
 function restore(s){try{const d=JSON.parse(s);A.rooms=d.rooms;A.tables=d.tables;A.zones=d.zones;A.elements=d.elements;A.room=d.room;A.selected=null;A.groupAll=false;A.groupDrag=null;A.dirty=true;renderAll()}catch(_){}}
@@ -14164,7 +14164,9 @@ function moveGroupDrag(e){
   const p=pointInStage(e.clientX,e.clientY);
   let dx=p.x-g.start.x,dy=p.y-g.start.y;
   dx=A.snap?Math.round(dx/10)*10:Math.round(dx);dy=A.snap?Math.round(dy/10)*10:Math.round(dy);
-  dx=aClamp(dx,CITY_STAGE_EDGE_CM-g.bounds.minX,(ARCH_W-CITY_STAGE_EDGE_CM)-g.bounds.maxX);dy=aClamp(dy,CITY_STAGE_EDGE_CM-g.bounds.minY,(ARCH_H-CITY_STAGE_EDGE_CM)-g.bounds.maxY);
+  const sb=citySafetyBounds();
+  dx=aClamp(dx,sb.minX-g.bounds.minX,sb.maxX-g.bounds.maxX);
+  dy=aClamp(dy,sb.minY-g.bounds.minY,sb.maxY-g.bounds.maxY);
   g.items.forEach(it=>{it.obj.l=it.l+dx;it.obj.t=it.t+dy;const n=A.root.querySelector(`[data-arch-key="${CSS.escape(it.key)}"]`);if(n)n.setAttribute('style',nodeStyle(it.obj)+(it.type==='zone'?`;--zone-color:${colorForZone(it.obj)};--zone-fill:${aClamp(it.obj.fillOpacity||15,3,55)}%;--zone-border:${aText(it.obj.borderStyle||'dashed')}`:it.type==='element'?cashCustomStyle(it.obj):''))});
   markDirty();e.preventDefault();return true;
 }
@@ -14198,6 +14200,29 @@ function cityRoomBounds(pad=50){
   items.forEach(h=>{const d=defaults(h.obj,h.type);minX=Math.min(minX,d.l);minY=Math.min(minY,d.t);maxX=Math.max(maxX,d.l+d.w);maxY=Math.max(maxY,d.t+d.h)});
   minX=aClamp(minX-pad,0,ARCH_W);minY=aClamp(minY-pad,0,ARCH_H);maxX=aClamp(maxX+pad,0,ARCH_W);maxY=aClamp(maxY+pad,0,ARCH_H);
   return {minX,minY,maxX,maxY,w:Math.max(100,maxX-minX),h:Math.max(100,maxY-minY)};
+}
+function citySafetyBounds(){
+  const roomKey=aText(A.room||A.rooms[0]||'Salle Principale');
+  if(A.safetyByRoom&&A.safetyByRoom[roomKey])return A.safetyByRoom[roomKey];
+  const b=cityRoomBounds(CITY_ROOM_MARGIN_CM);
+  const fixed={minX:b.minX,minY:b.minY,maxX:b.maxX,maxY:b.maxY,w:b.w,h:b.h};
+  if(!A.safetyByRoom)A.safetyByRoom={};
+  A.safetyByRoom[roomKey]=fixed;
+  return fixed;
+}
+function citySafetyOverflowForShapes(shapes){
+  const b=citySafetyBounds();
+  let penalty=0;
+  for(const r of (shapes||[])){
+    const left=Math.max(0,b.minX-r.l),top=Math.max(0,b.minY-r.t),right=Math.max(0,r.r-b.maxX),bottom=Math.max(0,r.b-b.maxY);
+    penalty+=(left*left)+(top*top)+(right*right)+(bottom*bottom);
+  }
+  return penalty;
+}
+function cityOutsideSafetyBoundary(hit,l=null,t=null,w=null,h=null){
+  if(!hit?.obj)return false;
+  const d=defaults(hit.obj,hit.type),ll=l==null?d.l:l,tt=t==null?d.t:t,ww=w==null?d.w:w,hh=h==null?d.h:h;
+  return citySafetyOverflowForShapes(cityCollisionShapesForHitAt(hit,ll,tt,ww,hh))>0;
 }
 function cityRect(hit){if(!hit?.obj)return null;const d=defaults(hit.obj,hit.type);return {l:d.l,t:d.t,r:d.l+d.w,b:d.t+d.h,w:d.w,h:d.h}}
 function cityOverlaps(a,b,margin=4){return a.l+margin<b.r&&a.r-margin>b.l&&a.t+margin<b.b&&a.b-margin>b.t}
@@ -14321,6 +14346,8 @@ function cityElementKind(hit){
 function cityObjectsShouldCollide(a,b){
   if(!a||!b)return false;
   const ak=cityElementKind(a),bk=cityElementKind(b);
+  // Le texte n'est pas un obstacle physique, mais reste contraint par la limite pointillée.
+  if(ak==='text'||bk==='text')return false;
   // Les zones sont des conteneurs : elles se repoussent entre elles, mais peuvent contenir tables et mobilier.
   if(ak==='zone'||bk==='zone')return ak==='zone'&&bk==='zone';
   // Une porte ou une fenêtre doit pouvoir être intégrée à un mur.
@@ -14343,7 +14370,7 @@ function cityCollisionGapForShapes(hitA,shapeA,hitB,shapeB){
 function cityObjectCollisionPenaltyAt(hit,key,l,t,w=null,h=null){
   if(!hit?.obj)return 0;
   const mine=cityCollisionShapesForHitAt(hit,l,t,w,h);
-  let penalty=0;
+  let penalty=citySafetyOverflowForShapes(mine);
   for(const other of cityCollisionItems()){
     if(other.key===key||!cityObjectsShouldCollide(hit,other))continue;
     const od=defaults(other.obj,other.type),theirs=cityCollisionShapesForHitAt(other,od.l,od.t,od.w,od.h);
@@ -14400,7 +14427,6 @@ function cityApplyDragGeom(hit,g){
 }
 function cityDragPenalty(hit,key,g){
   if(!hit?.obj||!g)return 0;
-  if(cityElementKind(hit)==='text')return 0;
   return cityObjectCollisionPenaltyAt(hit,key,g.l,g.t,g.w,g.h);
 }
 function cityRememberDragBest(drag,hit,g,penalty){
@@ -14462,7 +14488,7 @@ function cityHasCollision(key=A.selected){
   const d=defaults(hit.obj,hit.type);
   return cityObjectCollisionPenaltyAt(hit,key,d.l,d.t,d.w,d.h)>0;
 }
-function cityRoomBoundaryHTML(){const b=cityRoomBounds(CITY_ROOM_MARGIN_CM);return `<div class="city-room-boundary" style="left:${b.minX/ARCH_W*100}%;top:${b.minY/ARCH_H*100}%;width:${b.w/ARCH_W*100}%;height:${b.h/ARCH_H*100}%"></div>`}
+function cityRoomBoundaryHTML(){const b=citySafetyBounds();return `<div class="city-room-boundary" style="left:${b.minX/ARCH_W*100}%;top:${b.minY/ARCH_H*100}%;width:${b.w/ARCH_W*100}%;height:${b.h/ARCH_H*100}%"></div>`}
 function citySelectionOverlayHTML(){
   if(A.mode!=='architect'||!canEdit())return '';
   if(A.groupAll){
@@ -14520,13 +14546,13 @@ function cityRefreshMeasuresLive(){
   if(host)host.innerHTML=cityMeasureGuidesHTML();
 }
 function cityMiniMapHTML(){
-  const b=cityRoomBounds(CITY_ROOM_MARGIN_CM),toX=x=>(x-b.minX)/b.w*100,toY=y=>(y-b.minY)/b.h*100;
+  const b=citySafetyBounds(),toX=x=>(x-b.minX)/b.w*100,toY=y=>(y-b.minY)/b.h*100;
   return cityPhysicalItems().map(h=>{const d=defaults(h.obj,h.type);return `<span class="mm ${h.type} ${(A.groupAll||A.selected===h.key)?'selected':''}" style="left:${aClamp(toX(d.l),0,100)}%;top:${aClamp(toY(d.t),0,100)}%;width:${aClamp(d.w/b.w*100,.8,100)}%;height:${aClamp(d.h/b.h*100,.8,100)}%"></span>`}).join('');
 }
-function cityRoomMetricsHTML(){const b=cityRoomBounds(CITY_ROOM_MARGIN_CM);return `${(b.w/100).toFixed(1).replace('.',',')} × ${(b.h/100).toFixed(1).replace('.',',')} m`}
+function cityRoomMetricsHTML(){const b=citySafetyBounds();return `${(b.w/100).toFixed(1).replace('.',',')} × ${(b.h/100).toFixed(1).replace('.',',')} m`}
 function cityFitRoom(show=true){
   const wrap=A.root?.querySelector('.archpad-stagewrap');if(!wrap)return;
-  const room=cityRoomBounds(CITY_ROOM_MARGIN_CM);
+  const room=citySafetyBounds();
   /* On réserve une marge supplémentaire à l'écran : même à faible zoom,
      le contour de salle ne vient jamais se coller aux panneaux noirs. */
   const b={
@@ -14558,10 +14584,10 @@ function cityAutoOrganize(){
   markDirty();renderCanvas();setTimeout(()=>cityFitRoom(false),0);aToast('Tables auto-organisées');
 }
 function cityToggleMeasures(){A.showMeasures=!A.showMeasures;renderCanvas();aToast(A.showMeasures?'Mesures activées':'Mesures masquées')}
-function cityUpdateBottom(){const m=A.root?.querySelector('[data-city-room-metrics]');if(m)m.innerHTML=cityRoomMetricsHTML()+' &nbsp;•&nbsp; Marge de sécurité 0,5 m';const mm=A.root?.querySelector('[data-city-minimap]');if(mm)mm.innerHTML=cityMiniMapHTML();const mb=A.root?.querySelector('[data-city-measures]');if(mb)mb.classList.toggle('active',!!A.showMeasures)}
+function cityUpdateBottom(){const m=A.root?.querySelector('[data-city-room-metrics]');if(m)m.innerHTML=cityRoomMetricsHTML()+' &nbsp;•&nbsp; Limite pointillée = bord de sécurité 0,5 m';const mm=A.root?.querySelector('[data-city-minimap]');if(mm)mm.innerHTML=cityMiniMapHTML();const mb=A.root?.querySelector('[data-city-measures]');if(mb)mb.classList.toggle('active',!!A.showMeasures)}
 function cityRotateSelected(){const h=current();if(!h?.obj||h.obj.locked)return;const oldRot=Number(h.obj.rotation)||0;pushHistory();h.obj.rotation=(oldRot+15)%360;if(cityHasCollision(A.selected)){h.obj.rotation=oldRot;A.antiShockBlocked=true;renderCanvas();aToast('🛡 Rotation bloquée par anti-choc');return}A.antiShockBlocked=false;markDirty();renderCanvas()}
 function cityFloatAction(action){if(action==='move')return aToast('Appui 0,3 s sur l’objet puis déplacez-le');if(action==='rotate')return cityRotateSelected();if(action==='duplicate')return duplicateSelected();if(action==='delete')return deleteSelected()}
-function cityRefreshAssistLive(){const n=A.root?.querySelector(`[data-arch-key="${CSS.escape(A.selected||'')}" ]`);const bad=cityHasCollision(A.selected);if(n){n.classList.toggle('city-collision',bad);n.classList.toggle('city-antishock-blocked',!!A.antiShockBlocked)}const b=A.root?.querySelector('[data-city-position]');if(b){b.classList.toggle('antishock',!!A.antiShockBlocked);b.classList.toggle('bad',bad&&!A.antiShockBlocked);b.classList.toggle('good',!bad&&!A.antiShockBlocked);b.textContent=A.antiShockBlocked?'🛡 Anti-choc':bad?'⚠ Trop proche':'✓ Position correcte'};cityRefreshMeasuresLive()}
+function cityRefreshAssistLive(){const n=A.root?.querySelector(`[data-arch-key="${CSS.escape(A.selected||'')}" ]`);const hit=byKey(A.selected),outside=hit?.obj?cityOutsideSafetyBoundary(hit):false,bad=cityHasCollision(A.selected);if(n){n.classList.toggle('city-collision',bad);n.classList.toggle('city-antishock-blocked',!!A.antiShockBlocked)}const b=A.root?.querySelector('[data-city-position]');if(b){b.classList.toggle('antishock',!!A.antiShockBlocked);b.classList.toggle('bad',bad&&!A.antiShockBlocked);b.classList.toggle('good',!bad&&!A.antiShockBlocked);b.textContent=A.antiShockBlocked?(outside?'⛔ Limite sécurité':'🛡 Anti-choc'):bad?(outside?'⛔ Limite sécurité':'⚠ Trop proche'):'✓ Position correcte'};cityRefreshMeasuresLive()}
 
 function archChairAutoPose(index,count){
   const angle=-90+((360/Math.max(1,count))*(index-1));
@@ -14877,10 +14903,7 @@ function pointerMove(e){
     const targetT=snap(aClamp(o.t+dy,CITY_STAGE_EDGE_CM,ARCH_H-CITY_STAGE_EDGE_CM-o.h));
     /* V52 : collision continue. L'objet va au plus loin possible et glisse
        le long de l'obstacle au lieu de le traverser puis revenir en arrière. */
-    if(cityElementKind(h)==='text'){
-      h.obj.l=targetL;h.obj.t=targetT;
-      liveGeom={l:targetL,t:targetT,w:o.w,h:o.h};
-    }else{
+    {
       const resolved=cityResolveObjectMove(h,A.drag.key,targetL,targetT);
       h.obj.l=snap(resolved.l);h.obj.t=snap(resolved.t);
       liveGeom={l:h.obj.l,t:h.obj.t,w:o.w,h:o.h};
@@ -14892,9 +14915,7 @@ function pointerMove(e){
     if(w<min){if(dir.includes('w'))l=o.l+o.w-min;w=min}if(hh<min){if(dir.includes('n'))t=o.t+o.h-min;hh=min}
     l=aClamp(snap(l),CITY_STAGE_EDGE_CM,ARCH_W-CITY_STAGE_EDGE_CM-min);t=aClamp(snap(t),CITY_STAGE_EDGE_CM,ARCH_H-CITY_STAGE_EDGE_CM-min);w=Math.min(ARCH_W-CITY_STAGE_EDGE_CM-l,Math.max(min,snap(w)));hh=Math.min(ARCH_H-CITY_STAGE_EDGE_CM-t,Math.max(min,snap(hh)));
     const target={l,t,w,h:hh};
-    if(cityElementKind(h)==='text'){
-      liveGeom=target;
-    }else{
+    {
       const resolved=cityResolveResizeLive(A.drag,h,target);
       liveGeom=resolved.geom;blocked=!!resolved.blocked;
     }
@@ -14979,7 +15000,7 @@ function applyZoom(){
   try{localStorage.setItem('ichef_plan_zoom_pct_v28',String(A.zoom))}catch(_){}
 }
 
-async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_V51_SOFT_ANTISHOCK'},updatedFrom:'PAD_ARCHITECT_V51_SOFT_ANTISHOCK',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD ultra modulable');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
+async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_V53_SAFETY_BOUNDARY'},updatedFrom:'PAD_ARCHITECT_V53_SAFETY_BOUNDARY',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD ultra modulable');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
 function openExpress(){if(closePadArchitect()!==false)openExpressTableCreate()}
 function architectAccessKey(value){
   return aText(value).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[\s-]+/g,'_');
