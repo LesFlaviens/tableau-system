@@ -14335,9 +14335,33 @@ function deleteAllRoomObjects(){
   if(!hits.length){A.groupAll=false;return renderCanvas()}
   cityEraseActiveRoomPlan();
 }
+/* V15 SAFE — DÉPLACER TOUT : mouvement vertical/horizontal réellement libre.
+   Certaines anciennes zones techniques / de protection peuvent couvrir presque tout
+   le terrain 50 × 50 m. Elles ne doivent pas bloquer le déplacement du restaurant.
+   On les ignore UNIQUEMENT pour le drag groupé ; tables, murs, mobilier et vraies
+   zones d'exploitation restent déplacés ensemble. */
+function cityIsGroupBackgroundZone(h){
+  if(!h?.obj||h.type!=='zone')return false;
+  const d=defaults(h.obj,'zone');
+  const label=aText(h.obj.label||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
+  const technical=/PROTECTION|SECURITE|MARGE|TERRAIN|LIMITE/.test(label);
+  const almostStage=d.w>=ARCH_W*.92||d.h>=ARCH_H*.92||(d.w*d.h)>=ARCH_W*ARCH_H*.82;
+  return technical||almostStage;
+}
+function cityGroupMovableHits(){
+  const all=cityGroupHits();
+  const filtered=all.filter(h=>!cityIsGroupBackgroundZone(h));
+  return filtered.length?filtered:all;
+}
+function cityBoundsForHits(hits){
+  if(!hits?.length)return null;
+  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+  hits.forEach(h=>{const d=defaults(h.obj,h.type);minX=Math.min(minX,d.l);minY=Math.min(minY,d.t);maxX=Math.max(maxX,d.l+d.w);maxY=Math.max(maxY,d.t+d.h)});
+  return Number.isFinite(minX)?{minX,minY,maxX,maxY,w:Math.max(1,maxX-minX),h:Math.max(1,maxY-minY)}:null;
+}
 function beginGroupDrag(e){
   if(!A.groupAll||A.mode!=='architect'||!canEdit())return false;
-  const hits=cityGroupHits(),bounds=cityGroupBounds();
+  const hits=cityGroupMovableHits(),bounds=cityBoundsForHits(hits);
   if(!hits.length||!bounds)return false;
   A.groupDrag={pointerId:e.pointerId,start:pointInStage(e.clientX,e.clientY),startClientX:e.clientX,startClientY:e.clientY,moved:false,historyPushed:false,bounds,items:hits.map(h=>{const d=defaults(h.obj,h.type);return {key:h.key,type:h.type,obj:h.obj,l:d.l,t:d.t}})};
   archCapture(e);return true;
@@ -14350,8 +14374,10 @@ function moveGroupDrag(e){
   let dx=p.x-g.start.x,dy=p.y-g.start.y;
   dx=A.snap?Math.round(dx/10)*10:Math.round(dx);dy=A.snap?Math.round(dy/10)*10:Math.round(dy);
   const sb=cityConstructionBounds();
-  dx=aClamp(dx,sb.minX-g.bounds.minX,sb.maxX-g.bounds.maxX);
-  dy=aClamp(dy,sb.minY-g.bounds.minY,sb.maxY-g.bounds.maxY);
+  const minDx=sb.minX-g.bounds.minX,maxDx=sb.maxX-g.bounds.maxX;
+  const minDy=sb.minY-g.bounds.minY,maxDy=sb.maxY-g.bounds.maxY;
+  dx=aClamp(dx,Math.min(minDx,maxDx),Math.max(minDx,maxDx));
+  dy=aClamp(dy,Math.min(minDy,maxDy),Math.max(minDy,maxDy));
   g.items.forEach(it=>{it.obj.l=it.l+dx;it.obj.t=it.t+dy;const n=A.root.querySelector(`[data-arch-key="${CSS.escape(it.key)}"]`);if(n)n.setAttribute('style',nodeStyle(it.obj)+(it.type==='zone'?`;--zone-color:${colorForZone(it.obj)};--zone-fill:${aClamp(it.obj.fillOpacity||15,3,55)}%;--zone-border:${aText(it.obj.borderStyle||'dashed')}`:it.type==='element'?cashCustomStyle(it.obj):''))});
   markDirty();e.preventDefault();return true;
 }
