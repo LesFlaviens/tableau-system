@@ -8,6 +8,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
 <title>iCHEF PAD — ARCHITECTURE DE SERVICE INTELLIGENTE</title>
+<!-- iCHEF V43 : cadrage design réel après PIN / retour -->
 <style>
 :root{
   --bg:#050607;--panel:#0b0e0f;--panel2:#111516;--line:#293033;--line2:#3a4346;
@@ -6312,6 +6313,72 @@ body.order-open #btnHeadWho .head-sub-v20{
   #ichefArchPad .archpad-main:has(.archpad-right .prop-empty) .archpad-right{display:none!important}
   #ichefArchPad .archpad-bottom{grid-template-columns:1fr!important;height:64px!important;flex-basis:64px!important}
   #ichefArchPad .city-bottom-room,#ichefArchPad .city-minimap-wrap{display:none!important}
+}
+</style>
+
+
+<style id="ichef-v44-plan-font-x2-safe">
+/* =========================================================
+   iCHEF V44 — TYPOGRAPHIE DU PLAN ×2
+   Uniquement le contenu du canvas Architecture / Service.
+   Aucun changement de géométrie, tactile, zoom ou données.
+   ========================================================= */
+#ichefArchPad .archpad-stage .arch-table .tlabel{
+  font-size:38px!important;
+  line-height:1!important;
+}
+#ichefArchPad .archpad-stage .arch-table .tpax{
+  font-size:16px!important;
+  line-height:1.05!important;
+}
+#ichefArchPad .archpad-stage .arch-generic{
+  font-size:20px!important;
+  line-height:1.05!important;
+}
+#ichefArchPad .archpad-stage .arch-cash,
+#ichefArchPad .archpad-stage .arch-cash .arch-cash-label{
+  font-size:36px!important;
+  line-height:1.05!important;
+}
+#ichefArchPad .archpad-stage .arch-object-label{
+  font-size:18px!important;
+  line-height:1.08!important;
+}
+#ichefArchPad .archpad-stage .arch-zone{
+  font-size:66px!important;
+}
+#ichefArchPad .archpad-stage .arch-zone .zone-label{
+  font-size:60px!important;
+  line-height:1.05!important;
+}
+#ichefArchPad .archpad-stage .arch-zone .zone-kind{
+  font-size:42px!important;
+  line-height:1.05!important;
+}
+#ichefArchPad .archpad-stage .arch-zone .zone-meta{
+  font-size:16px!important;
+  line-height:1.1!important;
+}
+#ichefArchPad .archpad-stage .arch-table-live-head{
+  font-size:13px!important;
+  line-height:1!important;
+}
+#ichefArchPad .archpad-stage .arch-table-live-head .state,
+#ichefArchPad .archpad-stage .arch-table-live-head .clock,
+#ichefArchPad .archpad-stage .arch-table-live-head .pax{
+  font-size:13px!important;
+}
+#ichefArchPad .archpad-stage .arch-chair>.seat-code-live{
+  font-size:200%!important;
+  line-height:1!important;
+}
+#ichefArchPad .archpad-stage .city-measure-line,
+#ichefArchPad .archpad-stage .city-measure-line span{
+  font-size:18px!important;
+  line-height:1.05!important;
+}
+#ichefArchPad .archpad-stage .city-measure-line span{
+  padding:4px 8px!important;
 }
 </style>
 
@@ -15511,25 +15578,79 @@ function cityMiniMapHTML(){
   return cityPhysicalItems().map(h=>{const d=defaults(h.obj,h.type);return `<span class="mm ${h.type} ${(A.groupAll||A.selected===h.key)?'selected':''}" style="left:${aClamp(toX(d.l),0,100)}%;top:${aClamp(toY(d.t),0,100)}%;width:${aClamp(d.w/b.w*100,.8,100)}%;height:${aClamp(d.h/b.h*100,.8,100)}%"></span>`}).join('');
 }
 function cityRoomMetricsHTML(){const b=citySafetyBounds();return `${(b.w/100).toFixed(1).replace('.',',')} × ${(b.h/100).toFixed(1).replace('.',',')} m`}
+/* V43 — AJUSTER / CENTRER = DESIGN RÉEL DE LA SALLE
+   Le cadrage automatique ne doit pas être faussé par une ancienne zone de service
+   très grande ou un objet isolé sur le terrain 50 × 50 m. Depuis V41, le contour
+   Salle est déjà calculé depuis le design (murs / fenêtres / portes, puis fallback).
+   C'est donc cette emprise qui devient la source unique du cadrage automatique. */
+function cityFitDesignBounds(){
+  try{citySyncRoomLayoutToDesign(A.room)}catch(_){}
+  const q=ensureRoomLayout(A.room);
+  const pad=Math.max(35,Number(CITY_ROOM_MARGIN_CM)||0);
+  const minX=aClamp((Number(q.l)||0)-pad,0,ARCH_W);
+  const minY=aClamp((Number(q.t)||0)-pad,0,ARCH_H);
+  const maxX=aClamp((Number(q.l)||0)+(Number(q.w)||300)+pad,0,ARCH_W);
+  const maxY=aClamp((Number(q.t)||0)+(Number(q.h)||300)+pad,0,ARCH_H);
+  return {minX,minY,maxX,maxY,w:Math.max(180,maxX-minX),h:Math.max(180,maxY-minY)};
+}
 function cityFitRoom(show=true){
-  const wrap=A.root?.querySelector('.archpad-stagewrap');if(!wrap)return;
-  const b=cityOperationalViewBounds();
+  const wrap=A.root?.querySelector('.archpad-stagewrap');
+  const sh=A.root?.querySelector('[data-stage-shell]');
+  const st=A.root?.querySelector('[data-stage]');
+  if(!wrap||!sh||!st)return;
+
+  const b=cityFitDesignBounds();
   const vw=Math.max(240,wrap.clientWidth),vh=Math.max(200,wrap.clientHeight);
-  const fitW=Math.max(180,vw-CITY_VIEW_SAFE_GUTTER_PX*2),fitH=Math.max(160,vh-CITY_VIEW_SAFE_GUTTER_PX*2);
-  const minScale=Math.max(vw/ARCH_W,vh/ARCH_H,0.05);
-  const scale=Math.max(minScale,Math.min(1.8,fitW/b.w,fitH/b.h));
-  A.zoom=Math.round(scale*100);
+  const fitW=Math.max(180,vw-CITY_VIEW_SAFE_GUTTER_PX*2);
+  const fitH=Math.max(160,vh-CITY_VIEW_SAFE_GUTTER_PX*2);
+
+  /* Important : aucun minimum lié au terrain complet 50 × 50 m.
+     Sinon, sur un écran large, la largeur du terrain imposait un zoom trop grand
+     et le bas du restaurant sortait de l'écran. */
+  const scale=aClamp(Math.min(1.8,fitW/b.w,fitH/b.h),0.05,2);
+  A.zoom=Math.round(scale*1000)/10;
   applyZoom();
-  requestAnimationFrame(()=>{
-    const factor=A.zoom/100;
+
+  const center=()=>{
+    if(!A.root?.classList.contains('open'))return;
+    const factor=(Number(A.zoom)||100)/100;
     const cx=(b.minX+b.maxX)/2,cy=(b.minY+b.maxY)/2;
-    wrap.scrollLeft=Math.max(0,cx*factor-vw/2);
-    wrap.scrollTop=Math.max(0,cy*factor-vh/2);
-  });
-  if(show)aToast('Salle centrée · terrain complet toujours accessible');
+    const stageW=ARCH_W*factor,stageH=ARCH_H*factor;
+
+    /* Quand le terrain réduit devient plus petit que la fenêtre sur un axe,
+       il n'existe plus de scroll sur cet axe. On crée alors un shell au moins
+       aussi grand que la fenêtre et on décale le stage lui-même pour que le
+       CENTRE DU DESIGN — et non le centre du terrain 50 × 50 — soit au milieu. */
+    const shellW=Math.max(stageW,vw),shellH=Math.max(stageH,vh);
+    sh.style.setProperty('width',shellW+'px','important');
+    sh.style.setProperty('height',shellH+'px','important');
+    sh.style.setProperty('margin','0','important');
+
+    let stageLeft=0,stageTop=0,scrollLeft=0,scrollTop=0;
+    if(stageW<=vw){
+      stageLeft=vw/2-cx*factor;
+    }else{
+      scrollLeft=cx*factor-vw/2;
+    }
+    if(stageH<=vh){
+      stageTop=vh/2-cy*factor;
+    }else{
+      scrollTop=cy*factor-vh/2;
+    }
+    st.style.setProperty('left',stageLeft+'px','important');
+    st.style.setProperty('top',stageTop+'px','important');
+    wrap.scrollLeft=Math.max(0,scrollLeft);
+    wrap.scrollTop=Math.max(0,scrollTop);
+  };
+
+  /* La largeur du shell avait une transition CSS de 120 ms. On centre après
+     le premier layout puis une seconde fois quand cette transition est finie. */
+  requestAnimationFrame(()=>requestAnimationFrame(center));
+  setTimeout(center,150);
+  if(show)setTimeout(()=>aToast('Plan entier ajusté et centré'),170);
 }
 
-/* V42 — CENTRAGE AUTOMATIQUE FIABLE DU PLAN
+/* V43 — CENTRAGE AUTOMATIQUE RÉEL DU PLAN
    Après PIN, réouverture ou retour Architecte, la mise en page peut encore bouger
    pendant quelques frames (barre des salles, panneau Propriétés, CSS responsive).
    On refait donc l'ajustement plusieurs fois, sans animation, jusqu'à stabilisation. */
@@ -16760,19 +16881,13 @@ function applyZoom(){
   const st=A.root?.querySelector('[data-stage]');
   if(!sh||!st)return;
 
-  /* V17 SAFE — LE TERRAIN ARCHITECTURAL ENTIER RESTE EXPLORABLE ET EXPLOITABLE.
-     On ne recadre plus le DOM sur la salle active : le stage complet 50 × 50 m reste
-     présent dans le scroll, donc piscine, terrasse, jardin, bar extérieur, etc. peuvent
-     être placés n'importe où. Le zoom ne peut simplement pas rendre le terrain plus
-     petit que la fenêtre visible, afin d'éviter une grande zone grise inutilisable. */
-  let requested=aClamp(Number(A.zoom)||100,5,200)/100;
-  if(wrap){
-    const vw=Math.max(1,wrap.clientWidth),vh=Math.max(1,wrap.clientHeight);
-    const minFactor=Math.max(vw/ARCH_W,vh/ARCH_H,0.05);
-    requested=Math.max(requested,minFactor);
-  }
-  const factor=Math.min(2,requested);
-  A.zoom=Math.round(factor*100);
+  /* V43 : le zoom demandé est respecté. Le terrain 50 × 50 m peut devenir plus
+     petit que le viewport sur un axe : cityFitRoom sait alors décaler le stage
+     pour garder le design réellement centré. L'ancien minFactor basé sur la
+     largeur/hauteur du terrain empêchait parfois le plan entier de tenir. */
+  const requested=aClamp(Number(A.zoom)||100,5,200)/100;
+  const factor=Math.min(2,Math.max(.05,requested));
+  A.zoom=Math.round(factor*1000)/10;
 
   sh.style.setProperty('position','relative','important');
   sh.style.setProperty('width',(ARCH_W*factor)+'px','important');
