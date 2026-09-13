@@ -16240,6 +16240,69 @@ function applyZoom(){
 }
 
 async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),roomLayouts:clone(A.roomLayouts),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_V77_TACTILE_POINTER_FIX'},updatedFrom:'PAD_ARCHITECT_V77_TACTILE_POINTER_FIX',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD V77 · tactile Pointer Events');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
+let citySaveBusy=false;
+async function citySafeSaveAll(e){
+  if(e){
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  if(citySaveBusy)return;
+  if(!canEdit())return aToast('Droit manager requis',true);
+
+  /* Si une poignée de redimensionnement gardait encore le pointer capture,
+     on finalise d'abord la géométrie déjà visible puis on sauvegarde. */
+  clearArchPress();
+  if(A.drag?.pointerId!=null){
+    try{archRelease({pointerId:A.drag.pointerId})}catch(_){}
+    A.drag=null;
+  }
+  if(A.groupDrag?.pointerId!=null){
+    try{archRelease({pointerId:A.groupDrag.pointerId})}catch(_){}
+    A.groupDrag=null;
+  }
+  if(A.chairDrag?.pointerId!=null){
+    try{archRelease({pointerId:A.chairDrag.pointerId})}catch(_){}
+    A.chairDrag=null;
+  }
+  A.releaseCandidate=null;
+
+  const btn=A.root?.querySelector('[data-save]');
+  citySaveBusy=true;
+  if(btn){
+    btn.disabled=true;
+    btn.classList.add('saving');
+    btn.dataset.oldText=btn.innerHTML;
+    btn.innerHTML='⏳ &nbsp; Enregistrement…';
+  }
+
+  try{
+    /* Sauvegarde de secours locale avant l'écriture serveur :
+       elle ne remplace pas le serveur, elle évite seulement une perte du plan
+       si le réseau se coupe exactement au même moment. */
+    try{
+      localStorage.setItem('ichef_architecture_emergency_backup_v26',JSON.stringify({
+        tenantID:STATE.tenantID||'',
+        savedAt:new Date().toISOString(),
+        rooms:A.rooms,
+        roomLayouts:A.roomLayouts,
+        tables:A.tables,
+        zones:A.zones,
+        elements:A.elements
+      }));
+    }catch(_){}
+
+    await saveAll();
+  }finally{
+    citySaveBusy=false;
+    const b=A.root?.querySelector('[data-save]');
+    if(b){
+      b.disabled=false;
+      b.classList.remove('saving');
+      b.innerHTML=b.dataset.oldText||'▣ &nbsp; Enregistrer';
+      delete b.dataset.oldText;
+    }
+  }
+}
 function openExpress(){if(closePadArchitect()!==false)openExpressTableCreate()}
 function architectAccessKey(value){
   return aText(value).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[\s-]+/g,'_');
@@ -16403,7 +16466,24 @@ function bindDynamic(){
 function bindAll(){
  bindDynamic();
  A.root.querySelector('[data-close]')?.addEventListener('click',closePadArchitect);
- A.root.querySelector('[data-save]')?.addEventListener('click',saveAll);
+ {
+   const saveBtn=A.root.querySelector('[data-save]');
+   if(saveBtn){
+     /* pointerup est plus fiable sur tactile ; click reste le fallback souris/clavier. */
+     let savePointerHandled=false;
+     saveBtn.addEventListener('pointerdown',e=>{e.stopPropagation()});
+     saveBtn.addEventListener('pointerup',e=>{
+       e.preventDefault();e.stopPropagation();
+       savePointerHandled=true;
+       citySafeSaveAll(e);
+       setTimeout(()=>{savePointerHandled=false},300);
+     });
+     saveBtn.addEventListener('click',e=>{
+       e.preventDefault();e.stopPropagation();
+       if(!savePointerHandled)citySafeSaveAll(e);
+     });
+   }
+ }
  A.root.querySelector('[data-plan-fullscreen]')?.addEventListener('click',cityPlanFullscreen);
  A.root.querySelector('[data-plan-standard]')?.addEventListener('click',cityPlanStandard);
  if(!A.fullscreenSyncBound){A.fullscreenSyncBound=true;document.addEventListener('fullscreenchange',()=>{if(!document.fullscreenElement&&A.planFullscreen){A.planFullscreen=false;cityApplyPlanScreenMode();cityRefitAfterLayout('↙ Vue standard restaurée')}})}
@@ -16456,6 +16536,10 @@ function installPermanentPlanTouchRouter(){
     const clearPlan=target.closest('[data-city-clear-plan]');
     if(clearPlan&&root.contains(clearPlan)){
       e.preventDefault();e.stopImmediatePropagation();cityEraseActiveRoomPlan();return;
+    }
+    const saveBtn=target.closest('[data-save]');
+    if(saveBtn&&root.contains(saveBtn)){
+      e.preventDefault();e.stopImmediatePropagation();citySafeSaveAll(e);return;
     }
     const action=target.closest('[data-close],[data-room-prev],[data-room-next],[data-toggle-mode],[data-express],[data-room],[data-arch-key]');
     if(!action||!root.contains(action))return;
@@ -19748,6 +19832,34 @@ html body.order-open .ticket-row{min-height:106px !important}
 /* Les éléments verrouillés restent volontairement non redimensionnables. */
 #ichefArchPad .arch-node.locked > .arch-handle{
   display:none !important;
+}
+</style>
+
+
+<style id="ichef-v26-save-priority-safe">
+/* V26 SAFE — la barre d'architecture reste au-dessus de tous les objets/poignées. */
+#ichefArchPad .archpad-top{
+  position:relative !important;
+  z-index:50000 !important;
+  isolation:isolate !important;
+  pointer-events:auto !important;
+}
+#ichefArchPad .city-save-wrap,
+#ichefArchPad .city-save{
+  position:relative !important;
+  z-index:50001 !important;
+  pointer-events:auto !important;
+}
+#ichefArchPad .city-save.saving{
+  opacity:.88 !important;
+  cursor:wait !important;
+}
+#ichefArchPad .city-save:disabled{
+  pointer-events:none !important;
+}
+#ichefArchPad .archpad-main{
+  position:relative !important;
+  z-index:1 !important;
 }
 </style>
 
