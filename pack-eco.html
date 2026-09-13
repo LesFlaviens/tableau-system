@@ -14574,7 +14574,7 @@ function zoneClass(z){const k=aText(z.zoneKind||'service'),shape=aText(z.zoneSha
 function iconFor(type){return ({wall:'🧱',door:'🚪',window:'🪟',bar:'🍸 BAR',kitchen:'👨‍🍳 CUISINE',cash:'💳 CAISSE',buffet:'🍽️ BUFFET',text:'✏️ TEXTE',plant:'🪴',tree:'ARBRE',palm:'PALMIER',pergola:'PERGOLA',pool_lowtable:'TABLE BASSE PISCINE',parasol:'PARASOL',pool:'🏊 PISCINE',roomservice:'🛎️ ROOM SERVICE',bed_single:'🛏️ LIT SIMPLE',bed_double:'🛏️ LIT DOUBLE',desk:'🖥️ BUREAU',sofa:'🛋️ CANAPÉ',wardrobe:'🚪 ARMOIRE',sink:'🚰 LAVABO',toilet:'🚽 WC',shower:'🚿 DOUCHE'})[type]||String(type||'').toUpperCase()}
 function classFor(type){return ({wall:'arch-wall',door:'arch-door',window:'arch-window',bar:'arch-bar',kitchen:'arch-kitchen',cash:'arch-cash',buffet:'arch-buffet',text:'arch-text',plant:'arch-plant',tree:'arch-tree',palm:'arch-palm',pergola:'arch-pergola',pool_lowtable:'arch-pool-lowtable',parasol:'arch-parasol',pool:'arch-pool',roomservice:'arch-roomservice',bed_single:'arch-bed-single',bed_double:'arch-bed-double',desk:'arch-desk',sofa:'arch-sofa',wardrobe:'arch-wardrobe',sink:'arch-bathfixture',toilet:'arch-bathfixture',shower:'arch-shower'})[type]||''}
 function nodeStyle(o){const d=defaults(o,o.__kind||'element'),z=Number(o.zIndex)||0;return `left:${d.l/ARCH_W*100}%;top:${d.t/ARCH_H*100}%;width:${d.w/ARCH_W*100}%;height:${d.h/ARCH_H*100}%;transform:rotate(${d.rotation||0}deg);${z?`z-index:${z};`:''}`}
-function handles(){if(A.mode!=='architect'||!canEdit())return '';return '<span class="arch-handle nw" data-resize="nw"></span><span class="arch-handle n" data-resize="n"></span><span class="arch-handle ne" data-resize="ne"></span><span class="arch-handle e" data-resize="e"></span><span class="arch-handle se" data-resize="se"></span><span class="arch-handle s" data-resize="s"></span><span class="arch-handle sw" data-resize="sw"></span><span class="arch-handle w" data-resize="w"></span><button type="button" class="arch-rotate" data-rotate title="Rotation +15°">↻</button>'}
+function handles(){if(A.mode!=='architect'||!canEdit())return '';return '<span class="arch-handle nw" data-resize="nw" title="Agrandir / rétrécir"></span><span class="arch-handle n" data-resize="n" title="Hauteur"></span><span class="arch-handle ne" data-resize="ne" title="Agrandir / rétrécir"></span><span class="arch-handle e" data-resize="e" title="Largeur"></span><span class="arch-handle se" data-resize="se" title="Agrandir / rétrécir"></span><span class="arch-handle s" data-resize="s" title="Hauteur"></span><span class="arch-handle sw" data-resize="sw" title="Agrandir / rétrécir"></span><span class="arch-handle w" data-resize="w" title="Largeur"></span><button type="button" class="arch-rotate" data-rotate title="Rotation +15°">↻</button>'}
 function elementInner(e){const label=esc(e.label||iconFor(e.type));if(e.type==='wall')return '';if(e.type==='cash')return `<span class="arch-cash-label">${label}</span>`;if(['bed_single','bed_double','desk','sofa','wardrobe','sink','toilet','shower'].includes(e.type))return `<span class="arch-object-label">${label}</span>`;return label}
 
 function cityGroupHits(){
@@ -14698,9 +14698,39 @@ function moveGroupDrag(e){
   markDirty();e.preventDefault();return true;
 }
 function cityGroupAction(action){
-  if(action==='move')return aToast('Glissez n’importe quel objet vert pour déplacer tout le groupe');
+  if(action==='move')return aToast('Maintenez « Déplacer tout » et glissez · ou glissez un objet sélectionné');
   if(action==='delete')return deleteAllRoomObjects();
   if(action==='cancel')return clearGroupSelection();
+}
+function cityGroupMoveButtonStart(e,btn){
+  if(!A.groupAll||A.mode!=='architect'||!canEdit())return;
+  e.preventDefault();e.stopPropagation();
+  clearArchPress();
+  if(!beginGroupDrag(e))return;
+  btn.dataset.groupDragging='1';
+  btn.classList.add('dragging');
+  try{btn.setPointerCapture?.(e.pointerId)}catch(_){}
+}
+function cityGroupMoveButtonMove(e,btn){
+  if(btn.dataset.groupDragging!=='1')return;
+  e.preventDefault();e.stopPropagation();
+  moveGroupDrag(e);
+}
+function cityGroupMoveButtonEnd(e,btn,cancel=false){
+  if(btn.dataset.groupDragging!=='1')return;
+  e.preventDefault();e.stopPropagation();
+  delete btn.dataset.groupDragging;
+  btn.classList.remove('dragging');
+  try{
+    if(btn.hasPointerCapture?.(e.pointerId))btn.releasePointerCapture(e.pointerId);
+  }catch(_){}
+  if(A.groupDrag&&A.groupDrag.pointerId===e.pointerId){
+    const g=A.groupDrag;
+    A.groupDrag=null;
+    archRelease(e);
+    renderCanvas();
+    if(g.moved&&!cancel)aToast('Tout le plan déplacé · salle + zones + objets');
+  }
 }
 
 function cityPhysicalItems(){
@@ -16299,13 +16329,50 @@ function bindDynamic(){
  A.root.querySelector('[data-room-style-reset]')?.addEventListener('click',resetRoomVisualStyle);
  A.root.querySelector('[data-duplicate]')?.addEventListener('click',duplicateSelected);
  A.root.querySelector('[data-delete]')?.addEventListener('click',deleteSelected);
- A.root.querySelector('[data-group-move]')?.addEventListener('click',()=>cityGroupAction('move'));
+
+ /* V25 SAFE — chaque poignée démarre directement son redimensionnement.
+    Cela évite que les styles internes de certains objets (bar, lit, plante,
+    piscine, caisse, table LIVE...) interceptent le pointerdown. */
+ A.root.querySelectorAll('[data-resize]').forEach(handle=>{
+   handle.addEventListener('pointerdown',e=>{
+     if(A.mode!=='architect'||!canEdit())return;
+     e.preventDefault();
+     e.stopPropagation();
+     const node=handle.closest('[data-arch-key]');
+     const key=node?.dataset.archKey;
+     if(!key)return;
+     const hit=byKey(key);
+     if(!hit?.obj)return;
+     if(hit.obj.locked)return aToast('Élément verrouillé · déverrouillez-le pour redimensionner',true);
+     A.groupAll=false;A.groupDrag=null;A.selected=key;clearArchPress();
+     beginArchDrag(key,e,'resize',handle.dataset.resize||'se',false);
+   });
+ });
+
+ const groupMoveBtn=A.root.querySelector('[data-group-move]');
+ if(groupMoveBtn){
+   groupMoveBtn.addEventListener('pointerdown',e=>cityGroupMoveButtonStart(e,groupMoveBtn));
+   groupMoveBtn.addEventListener('pointermove',e=>cityGroupMoveButtonMove(e,groupMoveBtn));
+   groupMoveBtn.addEventListener('pointerup',e=>cityGroupMoveButtonEnd(e,groupMoveBtn,false));
+   groupMoveBtn.addEventListener('pointercancel',e=>cityGroupMoveButtonEnd(e,groupMoveBtn,true));
+   groupMoveBtn.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();cityGroupAction('move')});
+ }
  A.root.querySelector('[data-group-delete]')?.addEventListener('click',()=>cityGroupAction('delete'));
  A.root.querySelector('[data-group-cancel]')?.addEventListener('click',()=>cityGroupAction('cancel'));
+
  A.root.querySelectorAll('[data-city-group]').forEach(b=>{
-   b.addEventListener('pointerdown',e=>e.stopPropagation());
-   b.addEventListener('pointerup',e=>{e.preventDefault();e.stopPropagation();cityGroupAction(b.dataset.cityGroup)});
-   b.addEventListener('click',e=>{e.preventDefault();e.stopPropagation()});
+   const act=b.dataset.cityGroup;
+   if(act==='move'){
+     b.addEventListener('pointerdown',e=>cityGroupMoveButtonStart(e,b));
+     b.addEventListener('pointermove',e=>cityGroupMoveButtonMove(e,b));
+     b.addEventListener('pointerup',e=>cityGroupMoveButtonEnd(e,b,false));
+     b.addEventListener('pointercancel',e=>cityGroupMoveButtonEnd(e,b,true));
+     b.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();cityGroupAction('move')});
+   }else{
+     b.addEventListener('pointerdown',e=>e.stopPropagation());
+     b.addEventListener('pointerup',e=>{e.preventDefault();e.stopPropagation();cityGroupAction(act)});
+     b.addEventListener('click',e=>{e.preventDefault();e.stopPropagation()});
+   }
  });
  /* V46 — DUPLIQUER + ROTATION + DÉPLACEMENT : géométrie rotation réelle + déplacement balayé. */
  /* V45 — MENU FLOTTANT : isoler les boutons du pointer router du plan.
@@ -19611,6 +19678,76 @@ html body.order-open .ticket-row{min-height:106px !important}
 #ichefArchPad .arch-node{
   position:absolute;
   z-index:5;
+}
+</style>
+
+
+<style id="ichef-v24-group-move-button-safe">
+#ichefArchPad [data-group-move],
+#ichefArchPad [data-city-group="move"]{
+  touch-action:none !important;
+  cursor:grab !important;
+  user-select:none !important;
+}
+#ichefArchPad [data-group-move].dragging,
+#ichefArchPad [data-city-group="move"].dragging{
+  cursor:grabbing !important;
+  transform:scale(.98);
+  box-shadow:0 0 0 3px rgba(85,217,135,.25) !important;
+}
+</style>
+
+
+<style id="ichef-v25-resize-all-safe">
+/* =========================================================
+   V25 SAFE — REDIMENSIONNEMENT UNIVERSEL
+   ========================================================= */
+
+/* Pendant l'édition d'un objet, ses poignées ne doivent jamais être coupées. */
+#ichefArchPad .arch-node.selected{
+  overflow:visible !important;
+}
+
+/* Les 8 poignées sont volontairement plus grandes pour souris + tactile. */
+#ichefArchPad .arch-node.selected > .arch-handle{
+  display:block !important;
+  width:26px !important;
+  height:26px !important;
+  min-width:26px !important;
+  min-height:26px !important;
+  box-sizing:border-box !important;
+  border:3px solid #102126 !important;
+  background:#ffd05a !important;
+  border-radius:50% !important;
+  z-index:9999 !important;
+  pointer-events:auto !important;
+  touch-action:none !important;
+  user-select:none !important;
+}
+
+/* Positions : moitié dehors / moitié dedans, donc faciles à saisir. */
+#ichefArchPad .arch-node.selected > .arch-handle.nw{left:-13px !important;top:-13px !important;}
+#ichefArchPad .arch-node.selected > .arch-handle.n{left:50% !important;top:-13px !important;transform:translateX(-50%) !important;}
+#ichefArchPad .arch-node.selected > .arch-handle.ne{right:-13px !important;top:-13px !important;}
+#ichefArchPad .arch-node.selected > .arch-handle.e{right:-13px !important;top:50% !important;transform:translateY(-50%) !important;}
+#ichefArchPad .arch-node.selected > .arch-handle.se{right:-13px !important;bottom:-13px !important;}
+#ichefArchPad .arch-node.selected > .arch-handle.s{left:50% !important;bottom:-13px !important;transform:translateX(-50%) !important;}
+#ichefArchPad .arch-node.selected > .arch-handle.sw{left:-13px !important;bottom:-13px !important;}
+#ichefArchPad .arch-node.selected > .arch-handle.w{left:-13px !important;top:50% !important;transform:translateY(-50%) !important;}
+
+/* Curseurs explicites. */
+#ichefArchPad .arch-node.selected > .arch-handle.n,
+#ichefArchPad .arch-node.selected > .arch-handle.s{cursor:ns-resize !important;}
+#ichefArchPad .arch-node.selected > .arch-handle.e,
+#ichefArchPad .arch-node.selected > .arch-handle.w{cursor:ew-resize !important;}
+#ichefArchPad .arch-node.selected > .arch-handle.nw,
+#ichefArchPad .arch-node.selected > .arch-handle.se{cursor:nwse-resize !important;}
+#ichefArchPad .arch-node.selected > .arch-handle.ne,
+#ichefArchPad .arch-node.selected > .arch-handle.sw{cursor:nesw-resize !important;}
+
+/* Les éléments verrouillés restent volontairement non redimensionnables. */
+#ichefArchPad .arch-node.locked > .arch-handle{
+  display:none !important;
 }
 </style>
 
