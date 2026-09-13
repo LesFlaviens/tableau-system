@@ -6101,6 +6101,27 @@ body.order-open #btnHeadWho .head-sub-v20{
 }
 </style>
 
+
+<style id="ichef-v37-touch-linear-live-safe">
+/* V37 SAFE — zone tactile élargie pour les éléments architecturaux très fins.
+   Le halo est transparent : aucune dimension, position ou mesure sauvegardée ne change. */
+#ichefArchPad .archpad-main:not(.service-layout) .arch-wall,
+#ichefArchPad .archpad-main:not(.service-layout) .arch-window,
+#ichefArchPad .archpad-main:not(.service-layout) .arch-door{overflow:visible!important}
+#ichefArchPad .archpad-main:not(.service-layout) .arch-linear-touch-hit{
+  position:absolute;inset:-14px;display:block;background:transparent!important;
+  pointer-events:auto!important;touch-action:none!important;-webkit-tap-highlight-color:transparent;
+  z-index:2;cursor:grab
+}
+#ichefArchPad .archpad-main:not(.service-layout) .arch-node.selected>.arch-linear-touch-hit{cursor:grabbing}
+#ichefArchPad .archpad-main:not(.service-layout) .arch-node.selected>.arch-handle,
+#ichefArchPad .archpad-main:not(.service-layout) .arch-node.selected>.arch-rotate,
+#ichefArchPad .archpad-main:not(.service-layout) .arch-node>.arch-lock-badge{z-index:12001!important}
+@media (pointer:coarse){
+  #ichefArchPad .archpad-main:not(.service-layout) .arch-linear-touch-hit{inset:-20px}
+  #ichefArchPad .archpad-main:not(.service-layout) .arch-node.selected>.arch-handle{min-width:28px!important;min-height:28px!important}
+}
+</style>
 </head>
 
 <!-- iCHEF V7 : piscine = choix 1 transat C1 ou 2 transats C1+C2 -->
@@ -9164,6 +9185,13 @@ function openReservations(){
   const rows=STATE.reservations.slice().sort((a,b)=>text(a.time||a.heure||a.date).localeCompare(text(b.time||b.heure||b.date)));openSheet(" RÉSERVATIONS",rows.length?`<div class="list">${rows.map(r=>`<div class="list-row"><div class="grow"><div class="title">${esc(r.name||r.nom||r.client||"Réservation")}</div><div class="sub">${esc(r.time||r.heure||"")} · ${esc(r.tableId||r.table||"Sans table")} · ${esc(r.pax||r.covers||"")} pers.</div></div>${r.tableId||r.table?`<button class="mini-btn" data-res-table="${esc(r.tableId||r.table)}">TABLE</button>`:""}</div>`).join("")}</div>`:'<div class="empty-state">Aucune réservation synchronisée.</div>');$("sheetBody").querySelectorAll("[data-res-table]").forEach(b=>b.onclick=()=>{closeSheet();openOrder(b.dataset.resTable)})
 }
 
+
+/* ICHEF V37 — TACTILE STABLE + PROPRIÉTÉS LIVE
+   - X/Y/longueur/épaisseur suivent le déplacement sans re-render du panneau
+   - prise tactile élargie pour murs / fenêtres / portes fins
+   - tolérance tactile renforcée sans changer la géométrie sauvegardée
+   - pinch 2 doigts prioritaire sans déplacement parasite
+*/
 
 /* ICHEF V36 — ENREGISTREMENT ARCHITECTURE RAPIDE
    - retour visuel immédiat après staging local
@@ -14354,8 +14382,20 @@ document.addEventListener('ichef-plan-pinch-start',e=>{
   A.releaseCandidate=null;
   A.groupDrag=null;
   A.chairDrag=null;
+  /* V37 : si le premier doigt avait commencé à déplacer un objet avant que le
+     second arrive, le zoom ne doit pas laisser ce micro-déplacement parasite. */
+  if(A.drag?.orig&&A.drag?.key){
+    const d=A.drag,h=byKey(d.key);
+    if(h?.obj){
+      if(h.type==='room'){
+        Object.assign(h.obj,{l:d.orig.l,t:d.orig.t,w:d.orig.w,h:d.orig.h});
+        (d.roomItems||[]).forEach(it=>{if(it?.obj){it.obj.l=it.l;it.obj.t=it.t}});
+      }else cityApplyDragGeom(h,{l:d.orig.l,t:d.orig.t,w:d.orig.w,h:d.orig.h});
+    }
+  }
   A.drag=null;
   A.antiShockBlocked=false;
+  try{renderCanvas()}catch(_){}
   const st=A.root?.querySelector('[data-stage]');
   const ids=Array.isArray(e?.detail?.pointerIds)?e.detail.pointerIds:[];
   ids.forEach(id=>{try{if(st?.hasPointerCapture?.(id))st.releasePointerCapture(id)}catch(_){}});
@@ -15719,7 +15759,7 @@ function archTableChairsHTML(t,live,service){
 }
 function canvasHTML(){
  const zones=roomZones().map(z=>{z.__kind='zone';const key=getZoneKey(z),locked=!!z.locked,fill=aClamp(z.fillOpacity||15,3,55),border=['solid','dashed','dotted'].includes(aText(z.borderStyle))?aText(z.borderStyle):'dashed';return `<div class="arch-node arch-zone ${zoneClass(z)} ${locked?'locked':''} ${A.selected===key?'selected':''} ${A.groupAll?'city-group-selected':''}" data-arch-key="${esc(key)}" style="${nodeStyle(z)};--zone-color:${esc(colorForZone(z))};--zone-fill:${fill}%;--zone-border:${border}"><span class="zone-label" data-zone-drag title="Maintenir et glisser pour déplacer la zone">${esc(z.label||'ZONE')}</span><span class="zone-kind" data-zone-drag title="Maintenir et glisser pour déplacer la zone">${esc(zoneKindLabel(z.zoneKind))}</span><span class="zone-meta">${esc(z.responsible||z.responsable||'')} ${z.capacity?'· '+esc(z.capacity)+' places':''}</span>${locked?'<span class="arch-lock-badge"></span>':''}${handles(z)}</div>`}).join('');
- const els=roomElements().map(e=>{e.__kind='element';const key=getElemKey(e),locked=!!e.locked;return `<div class="arch-node arch-generic ${classFor(e.type)} ${cashPatternClass(e)} ${locked?'locked':''} ${A.selected===key?'selected':''} ${A.groupAll?'city-group-selected':''}" data-arch-key="${esc(key)}" style="${nodeStyle(e)}${cashCustomStyle(e)}">${elementInner(e)}${locked?'<span class="arch-lock-badge"></span>':''}${handles(e)}</div>`}).join('');
+ const els=roomElements().map(e=>{e.__kind='element';const key=getElemKey(e),locked=!!e.locked,isLinearTouch=['wall','window','door'].includes(aText(e.type).toLowerCase()),touchHit=isLinearTouch?'<span class="arch-linear-touch-hit" aria-hidden="true"></span>':'';return `<div class="arch-node arch-generic ${classFor(e.type)} ${cashPatternClass(e)} ${locked?'locked':''} ${A.selected===key?'selected':''} ${A.groupAll?'city-group-selected':''}" data-arch-key="${esc(key)}" style="${nodeStyle(e)}${cashCustomStyle(e)}">${touchHit}${elementInner(e)}${locked?'<span class="arch-lock-badge"></span>':''}${handles(e)}</div>`}).join('');
  const tables=roomTables().map(t=>{t.__kind='table';const key=getTableKey(t),act=activeOrder(t.label),ex=isExpressTable(t),shape=aText(t.shape||'square'),locked=!!t.locked,service=A.mode==='service',live=planTableLive(t);const liveClass=service?`service-live live-${live.code}`:'';const serviceInner=service?`<span class="tlabel">${esc(t.label)}</span><span class="arch-table-live-head"><span class="state ${esc(live.code)}">${esc(live.label)}</span>${live.time?`<span class="clock">${esc(live.time)}</span>`:''}<span class="pax">${Math.max(1,Number(t.pax)||2)}</span></span>${live.seats?.length?`<span class="arch-seat-strip">${planSeatStripHTML(live)}</span>`:''}`:`<span class="tlabel">${esc(t.label)}</span><span class="tpax">CAP. ${Number(t.pax)||2}${t.zone?' · '+esc(t.zone):''}</span>`;const clientCount=`<span class="arch-client-count ${live.pax>0?'':'zero'}" title="${live.pax} client${live.pax===1?'':'s'}">${live.pax}</span>`;const chairs=archTableChairsHTML(t,live,service);const presetClass=aText(t.preset)?`table-preset-${aText(t.preset).replace(/[^a-z0-9_-]/gi,'').toLowerCase()}`:'';const seatClass=aText(t.seatStyle)?`table-seat-${aText(t.seatStyle).replace(/[^a-z0-9_-]/gi,'').toLowerCase()}`:'';return `<button type="button" class="arch-node arch-table ${shape==='round'?'round':''} ${presetClass} ${seatClass} ${act?'active-order':''} ${liveClass} ${ex?'express':''} ${locked?'locked':''} ${A.selected===key?'selected':''} ${A.groupAll?'city-group-selected':''}" data-arch-key="${esc(key)}" style="${nodeStyle(t)}">${chairs}${serviceInner}${clientCount}${locked?'<span class="arch-lock-badge"></span>':''}${handles(t)}</button>`}).join('');
  return `${cityRoomBoundaryHTML()}${zones}${els}${tables}${cityMeasureOverlayHTML()}${citySelectionOverlayHTML()}${cityRoomEditOverlayHTML()}`;
 }
@@ -16091,7 +16131,7 @@ function beginArchDrag(key,e,kind='move',dir='',fromHold=false){
   const orig=clone(defaults(h.obj,h.type));
   const startPenalty=cityDragPenalty(h,key,{l:orig.l,t:orig.t,w:orig.w,h:orig.h});
   const roomItems=h.type==='room'?[...roomTables().map(obj=>({obj,l:Number(obj.l)||0,t:Number(obj.t)||0})),...roomZones().map(obj=>({obj,l:Number(obj.l)||0,t:Number(obj.t)||0})),...roomElements().map(obj=>({obj,l:Number(obj.l)||0,t:Number(obj.t)||0}))]:null;
-  A.drag={kind,dir,key,start:pointInStage(e.clientX,e.clientY),startClientX:e.clientX,startClientY:e.clientY,orig,moved:false,historyPushed:false,fromHold:!!fromHold,pointerId:e.pointerId,startPenalty,bestPenalty:startPenalty,bestGeom:{l:orig.l,t:orig.t,w:orig.w,h:orig.h},lastSafeGeom:{l:orig.l,t:orig.t,w:orig.w,h:orig.h},blockedByAntiShock:false,roomItems};
+  A.drag={kind,dir,key,start:pointInStage(e.clientX,e.clientY),startClientX:e.clientX,startClientY:e.clientY,orig,moved:false,historyPushed:false,fromHold:!!fromHold,pointerId:e.pointerId,pointerType:e.pointerType||'',startPenalty,bestPenalty:startPenalty,bestGeom:{l:orig.l,t:orig.t,w:orig.w,h:orig.h},lastSafeGeom:{l:orig.l,t:orig.t,w:orig.w,h:orig.h},blockedByAntiShock:false,roomItems};
   archCapture(e);return true;
 }
 function cityUniversalResizeStart(e,handle){
@@ -16176,16 +16216,42 @@ function installUniversalResizeRouter(){
 }
 function scheduleArchPick(e,key){
   clearArchPress();archCapture(e);
-  const p={key,pointerId:e.pointerId,x:e.clientX,y:e.clientY,fired:false,timer:null};
+  /* V37 : un doigt bouge naturellement de quelques pixels. La souris garde la
+     tolérance historique, le tactile bénéficie d'une marge plus confortable. */
+  const pointerType=e.pointerType||'';
+  const p={key,pointerId:e.pointerId,pointerType,x:e.clientX,y:e.clientY,fired:false,timer:null,cancelPx:pointerType==='touch'?24:ARCH_PICK_CANCEL_PX};
   p.timer=setTimeout(()=>{
     if(A.press!==p)return;
     const h=byKey(key);if(!h?.obj){clearArchPress();return}
     p.fired=true;A.selected=key;
-    if(!h.obj.locked)beginArchDrag(key,{clientX:p.x,clientY:p.y,pointerId:p.pointerId},'move','',true);
+    if(!h.obj.locked)beginArchDrag(key,{clientX:p.x,clientY:p.y,pointerId:p.pointerId,pointerType:p.pointerType},'move','',true);
     renderCanvas();
     aToast(h.obj.locked?'Objet sélectionné · déverrouillez-le pour le déplacer':'Objet pris · modifiez-le · clic pour lâcher');
   },ARCH_PICK_MS);
   A.press=p;e.preventDefault();
+}
+
+/* V37 : mise à jour légère du panneau Propriétés. On modifie uniquement les
+   valeurs des inputs existants. Aucun renderAll()/innerHTML pendant un drag :
+   le Pointer Capture reste donc intact sur tablette et écran tactile Windows. */
+function citySyncSelectedPropertyInputsLive(hit=null){
+  const h=hit||byKey(A.selected);
+  if(!h?.obj||!A.root)return;
+  const host=A.root.querySelector('.archpad-right')||A.root;
+  const sync=(key,value,metric=false)=>{
+    const el=host.querySelector(`[data-prop="${key}"]`);
+    if(!el||document.activeElement===el)return;
+    const next=metric?cityMetersInput(value):String(value??'');
+    if(el.value!==next)el.value=next;
+  };
+  if(h.type==='room'){
+    const q=ensureRoomLayout(A.room);
+    sync('l',q.l,true);sync('t',q.t,true);sync('w',q.w,true);sync('h',q.h,true);
+    return;
+  }
+  const d=defaults(h.obj,h.type);
+  sync('l',d.l,true);sync('t',d.t,true);sync('w',d.w,true);sync('h',d.h,true);
+  sync('rotation',((Number(d.rotation)||0)%360+360)%360,false);
 }
 function pointerDown(e){
   if(A.pinchZooming&&e.pointerType==='touch'){e.preventDefault();return}
@@ -16277,12 +16343,13 @@ function pointerMove(e){
   if(A.chairPress&&!A.chairPress.fired&&A.chairPress.pointerId===e.pointerId){if(Math.hypot(e.clientX-A.chairPress.x,e.clientY-A.chairPress.y)>ARCH_PICK_CANCEL_PX){clearChairPress();archRelease(e)}}
   if(A.chairDrag&&A.chairDrag.pointerId===e.pointerId){moveFreeChair(e);return}
   if(A.press&&!A.press.fired&&A.press.pointerId===e.pointerId){
-    if(Math.hypot(e.clientX-A.press.x,e.clientY-A.press.y)>ARCH_PICK_CANCEL_PX){clearArchPress();archRelease(e)}
+    if(Math.hypot(e.clientX-A.press.x,e.clientY-A.press.y)>(A.press.cancelPx||ARCH_PICK_CANCEL_PX)){clearArchPress();archRelease(e)}
   }
   if(!A.drag||A.drag.pointerId!==e.pointerId)return;
   const h=byKey(A.drag.key);if(!h?.obj)return;
   const pxDist=Math.hypot(e.clientX-A.drag.startClientX,e.clientY-A.drag.startClientY);
-  if(!A.drag.moved&&pxDist<3)return;
+  const dragStartPx=A.drag.pointerType==='touch'?6:3;
+  if(!A.drag.moved&&pxDist<dragStartPx)return;
   if(!A.drag.moved){A.drag.moved=true;if(!A.drag.historyPushed){pushHistory();A.drag.historyPushed=true}}
   const p=pointInStage(e.clientX,e.clientY),dx=p.x-A.drag.start.x,dy=p.y-A.drag.start.y,o=A.drag.orig,min=16;
   let blocked=false,liveGeom=null;
@@ -16299,7 +16366,7 @@ function pointerMove(e){
       l=snap(aClamp(l,20,ARCH_W-320));t=snap(aClamp(t,20,ARCH_H-320));w=snap(aClamp(w,minRoom,ARCH_W-l-20));hh=snap(aClamp(hh,minRoom,ARCH_H-t-20));
       const q=clampRoomLayoutToContent({l,t,w,h:hh});Object.assign(h.obj,q);liveGeom={...q};
     }
-    markDirty();renderCanvas();e.preventDefault();return;
+    markDirty();citySyncSelectedPropertyInputsLive(h);renderCanvas();e.preventDefault();return;
   }
 
   if(A.drag.kind==='move'){
@@ -16362,6 +16429,7 @@ function pointerMove(e){
   A.drag.blockedByAntiShock=blocked;
   A.antiShockBlocked=blocked;
   markDirty();
+  citySyncSelectedPropertyInputsLive(h);
   const n=A.root.querySelector(`[data-arch-key="${CSS.escape(A.drag.key)}"]`);
   if(n)n.setAttribute('style',nodeStyle(h.obj)+(h.type==='zone'?`;--zone-color:${colorForZone(h.obj)};--zone-fill:${aClamp(h.obj.fillOpacity||15,3,55)}%;--zone-border:${aText(h.obj.borderStyle||'dashed')}`:h.type==='element'?cashCustomStyle(h.obj):''));
   cityRefreshAssistLive();
@@ -16381,6 +16449,7 @@ function pointerUp(e){
     const blocked=!!d.blockedByAntiShock;
     A.drag=null;A.antiShockBlocked=false;archRelease(e);
     if(d.kind==='move'&&!d.moved&&!d.fromHold){A.selected=null;renderCanvas();aToast('Objet lâché');return}
+    citySyncSelectedPropertyInputsLive(byKey(d.key));
     renderCanvas();
     if(d.moved)aToast(blocked?'⛔ Bord du plan atteint':'✓ Objet posé')
     return;
