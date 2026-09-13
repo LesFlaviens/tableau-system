@@ -6105,6 +6105,32 @@ body.order-open #btnHeadWho .head-sub-v20{
 #ichefArchPad .archpad-stage-shell{background:var(--city-floor)!important;}
 #ichefArchPad .archpad-stage{box-shadow:inset 0 0 0 3px rgba(94,86,56,.35)!important;}
 </style>
+
+<style id="ichef-v18-antirush-live-safe">
+/* V18 SAFE — simple témoin de liaison du bandeau Anti-Rush. */
+.arch-rush-link{
+  display:inline-flex;
+  align-items:center;
+  margin-left:7px;
+  padding:2px 6px;
+  border-radius:999px;
+  font-size:10px!important;
+  line-height:1!important;
+  letter-spacing:.4px;
+  vertical-align:middle;
+}
+.arch-rush-link.online{
+  color:#0d6b3a!important;
+  background:#dff8e9!important;
+  border:1px solid #55d987!important;
+}
+.arch-rush-link.fallback{
+  color:#765600!important;
+  background:#fff3c8!important;
+  border:1px solid #e2b84e!important;
+}
+</style>
+
 </head>
 
 <!-- iCHEF V7 : piscine = choix 1 transat C1 ou 2 transats C1+C2 -->
@@ -14299,7 +14325,11 @@ function planTableLive(t){
   return {code,label,pax:pax||Number(t.pax)||0,time:age?duration(age):'',seats};
 }
 function planSeatStripHTML(live){return (live.seats||[]).slice(0,9).map(x=>`<span class="arch-seat-chip seat-${x.code} ${x.allergy?'seat-allergy':''}" style="--seat:var(--c${x.seat})" title="C${x.seat} · ${esc(x.label)}${x.allergy?' · ALLERGIE':''}"><span class="seat-code">C${x.seat}</span><span class="seat-mark">${esc(x.mark)}</span></span>`).join('')}
-function planRushHTML(){const r=rushSnapshot(),color=r.level<=1?'#55d987':r.level<=3?'#e2b84e':r.level===4?'#ff9a45':'#ff5368';return `<div class="arch-live-rush" style="--rush-color:${color}"><div class="rush-main"> ANTI-RUSH · N${r.level} · ${esc(r.label)}</div><div class="rush-sub">Cuisine ${r.kitchen}% · Bar ${r.bar}% · Pât. ${r.patisserie}%</div><div class="rush-ready"> ${r.ready} PRÊT${r.ready>1?'S':''}</div></div><div class="arch-live-legend"><span class="arch-live-legend-label">QUI MANGE QUOI</span>${[1,2,3,4,5,6,7,8,9].map(n=>`<span class="arch-seat-legend" style="--seat:var(--c${n})">C${n}</span>`).join('')}</div><div class="arch-live-status-key"><b class="ready"> PRÊT</b><b class="request">↑ DEMANDE</b><b class="prep">… PRÉPA</b></div>`}
+function planRushHTML(){
+  const r=rushSnapshot(),color=r.level<=1?'#55d987':r.level<=3?'#e2b84e':r.level===4?'#ff9a45':'#ff5368';
+  const live=STATE.demo?'DÉMO':(STATE.connected?'LIVE':'SYNCHRO');
+  return `<div class="arch-live-rush" style="--rush-color:${color}"><div class="rush-main"> ANTI-RUSH · N${r.level} · ${esc(r.label)} <span class="arch-rush-link ${STATE.connected?'online':'fallback'}">${live}</span></div><div class="rush-sub">Cuisine ${r.kitchen}% · Bar ${r.bar}% · Pât. ${r.patisserie}%</div><div class="rush-ready"> ${r.ready} PRÊT${r.ready>1?'S':''}</div></div><div class="arch-live-legend"><span class="arch-live-legend-label">QUI MANGE QUOI</span>${[1,2,3,4,5,6,7,8,9].map(n=>`<span class="arch-seat-legend" style="--seat:var(--c${n})">C${n}</span>`).join('')}</div><div class="arch-live-status-key"><b class="ready"> PRÊT</b><b class="request">↑ DEMANDE</b><b class="prep">… PRÉPA</b></div>`
+}
 function colorForZone(z){return aText(z.color||z.colour||'#58a9ff')||'#58a9ff'}
 function zoneKindLabel(k){return ({service:'SERVICE',bathroom:'SALLE DE BAIN',bedroom:'CHAMBRE',office:'BUREAU',terrace:'TERRASSE',kitchen:'CUISINE',spa:'SPA',technical:'TECHNIQUE'})[aText(k)||'service']||aText(k).toUpperCase()}
 function zoneClass(z){const k=aText(z.zoneKind||'service'),shape=aText(z.zoneShape||'rect');return `zone-${k} ${shape==='rounded'?'zone-rounded':shape==='oval'?'zone-oval':''}`}
@@ -16065,7 +16095,24 @@ function installPermanentPlanTouchRouter(){
 }
 
 function ensureRoot(){let r=document.getElementById('ichefArchPad');if(!r){r=document.createElement('div');r.id='ichefArchPad';r.tabIndex=-1;document.body.appendChild(r)}A.root=r;installPermanentPlanTouchRouter();return r}
-function openPadArchitectEditor(){closeSheet?.();loadData();normaliseAll();A.archUnlocked=false;A.archRole='';A.archPin='';A.pinOpen=false;A.mode=expressRoleLevel()>=2||STATE.demo?'architect':'service';ensureRoot().classList.add('open');document.body.style.overflow='hidden';renderAll();A.root.focus();if(A.mode==='architect')setTimeout(()=>cityFitRoom(false),80);if(A.mode==='service')aToast('Mode SERVICE · architecture protégée par PIN')}
+function openPadArchitectEditor(){
+  closeSheet?.();
+
+  /* V18 SAFE — garder le temps réel iCHEF actif pendant l'Architecture.
+     L'Anti-Rush dépend de STATE.activeOrders : on maintient donc la connexion
+     WebSocket sans toucher au moteur du plan ni aux données en cours d'édition. */
+  try{if(typeof connectSocket==='function')connectSocket()}catch(_){}
+
+  loadData();normaliseAll();
+  A.archUnlocked=false;A.archRole='';A.archPin='';A.pinOpen=false;
+  A.mode=expressRoleLevel()>=2||STATE.demo?'architect':'service';
+  ensureRoot().classList.add('open');
+  document.body.style.overflow='hidden';
+  renderAll();
+  A.root.focus();
+  if(A.mode==='architect')setTimeout(()=>cityFitRoom(false),80);
+  if(A.mode==='service')aToast('Mode SERVICE · architecture protégée par PIN')
+}
 async function openPadServiceHome(options={}){
   closeSheet?.();
   const skipSync=options?.skipSync===true;
@@ -16086,28 +16133,51 @@ async function openPadServiceHome(options={}){
 }
 function closePadArchitect(){if(A.dirty&&canEdit()&&!confirm('Quitter sans enregistrer les modifications du plan ?'))return false;A.planFullscreen=false;A.root?.classList.remove('city-plan-fullscreen');A.root?.classList.remove('open');document.body.style.overflow='';A.drag=null;A.selected=null;A.tool='select';A.archUnlocked=false;A.archRole='';A.archPin='';A.pinOpen=false;A.pinValue='';A.mode='service';scheduleRender?.();return true}
 function refreshPadServiceLive(){
-  if(!A.root?.classList.contains('open')||A.mode!=='service')return;
-  /* Recharge aussi l'architecture reçue du serveur, pas seulement les états des commandes. */
-  const keepRoom=A.room;
-  const d=dataNow();
-  A.rooms=d.rooms.length?d.rooms:['Salle Principale'];
-  A.tables=d.tables;A.zones=d.zones;A.elements=d.elements;
-  A.room=A.rooms.includes(keepRoom)?keepRoom:(A.rooms.includes(STATE.room)?STATE.room:A.rooms[0]);
-  normaliseAll();
-  const stage=A.root.querySelector('[data-stage]');
-  if(stage){stage.innerHTML=canvasHTML();stage.classList.toggle('no-grid',!A.grid)}
+  if(!A.root?.classList.contains('open'))return;
+
+  /* V18 SAFE
+     - SERVICE : on recharge le plan live comme avant.
+     - ARCHITECTURE : on NE recharge PAS A.tables/A.zones/A.elements, pour ne jamais
+       écraser une modification non enregistrée. On garde seulement le temps réel
+       commandes / Anti-Rush actif dans STATE. */
+  if(A.mode==='service'){
+    const keepRoom=A.room;
+    const d=dataNow();
+    A.rooms=d.rooms.length?d.rooms:['Salle Principale'];
+    A.tables=d.tables;A.zones=d.zones;A.elements=d.elements;
+    A.room=A.rooms.includes(keepRoom)?keepRoom:(A.rooms.includes(STATE.room)?STATE.room:A.rooms[0]);
+    normaliseAll();
+
+    const stage=A.root.querySelector('[data-stage]');
+    if(stage){stage.innerHTML=canvasHTML();stage.classList.toggle('no-grid',!A.grid)}
+
+    const crumb=A.root.querySelector('[data-crumb]');
+    if(crumb)crumb.textContent=A.room;
+
+    bindDynamic();
+  }
+
+  /* Si un bandeau Anti-Rush est présent dans la vue, il reste alimenté par les
+     commandes live sans dépendre d'un nouveau rendu complet du plan. */
   const bar=A.root.querySelector('[data-livebar]');
   if(bar)bar.innerHTML=planRushHTML();
-  const crumb=A.root.querySelector('[data-crumb]');if(crumb)crumb.textContent=A.room;
-  bindDynamic();
 }
 window.addEventListener('ichef:live-state-updated',refreshPadServiceLive);
 const liveClockTimer=setInterval(async()=>{
-  if(!A.root?.classList.contains('open')||A.mode!=='service')return;
-  /* Socket.IO est prioritaire. HTTP devient le filet de sécurité si le temps réel est coupé. */
-  if(!STATE.connected && navigator.onLine && !STATE.syncing && typeof syncFull==='function'){
-    try{await syncFull('plan-live-http')}catch(_){}
+  if(!A.root?.classList.contains('open'))return;
+
+  /* V18 SAFE — Anti-Rush connecté aussi pendant l'Architecture.
+     1) WebSocket prioritaire.
+     2) Si coupure : tentative de reconnexion.
+     3) HTTP uniquement comme filet de sécurité.
+     Aucune donnée architecturale locale n'est écrasée en mode Architecte. */
+  if(!STATE.connected && navigator.onLine){
+    try{if(typeof connectSocket==='function')connectSocket()}catch(_){}
+    if(!STATE.syncing && typeof syncFull==='function'){
+      try{await syncFull(A.mode==='architect'?'architect-antirush-http':'plan-live-http')}catch(_){}
+    }
   }
+
   refreshPadServiceLive();
 },4000);
 window.refreshPadServiceLive=refreshPadServiceLive;
