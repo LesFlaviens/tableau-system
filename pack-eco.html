@@ -15453,15 +15453,50 @@ function cityAutoApply(){
 function cityAutoOrganize(){cityAutoOpen()}
 function cityToggleMeasures(){A.showMeasures=!A.showMeasures;renderCanvas();aToast(A.showMeasures?'Mesures activées':'Mesures masquées')}
 function cityUpdateBottom(){const m=A.root?.querySelector('[data-city-room-metrics]');if(m)m.innerHTML=cityRoomMetricsHTML()+' &nbsp;•&nbsp; Limite pointillée = bord de sécurité 0,5 m';const mm=A.root?.querySelector('[data-city-minimap]');if(mm)mm.innerHTML=cityMiniMapHTML();const mb=A.root?.querySelector('[data-city-measures]');if(mb)mb.classList.toggle('active',!!A.showMeasures)}
+/* V34 — ROTATION STABLE DES FENÊTRES
+   Une fenêtre est un élément très long et très fin : lors d'une rotation son AABB
+   peut dépasser légèrement du terrain même si son centre est parfaitement valide.
+   Au lieu d'annuler brutalement la rotation, on conserve son centre visuel puis on
+   translate seulement ce qu'il faut pour remettre l'enveloppe tournée dans le plan.
+   Aucun aimant au mur, aucune collision entre objets n'est réintroduite. */
+function cityKeepRotatedElementInsidePlan(hit){
+  if(!hit?.obj)return false;
+  const d=defaults(hit.obj,hit.type),b=cityConstructionBounds();
+  const box=cityMeasureRectForHit(hit);
+  if(!box)return false;
+  let dx=0,dy=0;
+  if(box.w>(b.maxX-b.minX)+.01||box.h>(b.maxY-b.minY)+.01)return false;
+  if(box.l<b.minX)dx=b.minX-box.l;
+  else if(box.r>b.maxX)dx=b.maxX-box.r;
+  if(box.t<b.minY)dy=b.minY-box.t;
+  else if(box.b>b.maxY)dy=b.maxY-box.b;
+  if(Math.abs(dx)>.001||Math.abs(dy)>.001){
+    hit.obj.l=d.l+dx;
+    hit.obj.t=d.t+dy;
+  }
+  return !cityOutsideSafetyBoundary(hit);
+}
 function cityRotateSelected(){
   const h=current();if(!h?.obj||h.obj.locked)return;
   const oldRot=((Number(h.obj.rotation)||0)%360+360)%360;
+  const oldL=Number(h.obj.l)||0,oldT=Number(h.obj.t)||0;
   pushHistory();
   const nextRot=(oldRot+15)%360;
   h.obj.rotation=nextRot;
+
+  /* Fenêtre : rotation libre par 15°, sans saut ni blocage artificiel au bord. */
+  const isWindow=h.type==='element'&&aText(h.obj.type).toLowerCase()==='window';
+  if(isWindow){
+    if(!cityKeepRotatedElementInsidePlan(h)){
+      h.obj.rotation=oldRot;h.obj.l=oldL;h.obj.t=oldT;
+      A.antiShockBlocked=true;renderCanvas();aToast('⛔ Fenêtre trop proche de la limite du plan');return;
+    }
+    A.antiShockBlocked=false;markDirty();renderCanvas();return;
+  }
+
   /* V78 : chairLayout reste strictement local à la table ; aucune réécriture des C1-C16. */
   if(cityOutsideSafetyBoundary(h)){
-    h.obj.rotation=oldRot;A.antiShockBlocked=true;renderCanvas();aToast('⛔ Rotation bloquée par la limite de sécurité');return;
+    h.obj.rotation=oldRot;h.obj.l=oldL;h.obj.t=oldT;A.antiShockBlocked=true;renderCanvas();aToast('⛔ Rotation bloquée par la limite de sécurité');return;
   }
   A.antiShockBlocked=false;markDirty();renderCanvas();
 }
@@ -15638,6 +15673,7 @@ function propHTML(){
  if(type==='element'){
   extra=`<div class="arch-prop-row"><label>Type</label><input value="${esc(o.type||'équipement')}" disabled></div>`;
   if(o.type==='wall')extra+=`<div class="arch-help">Mur ultra modulable : étire-le avec les 8 poignées, tourne-le par pas de 15°, ou saisis exactement largeur / hauteur / rotation ci-dessous.</div>`;
+  if(o.type==='window')extra+=`<div class="arch-help">Fenêtre : rotation stable par pas de 15°. Son centre et ses dimensions sont conservés ; près du bord du plan elle se recale sans saut.</div>`;
   if(o.type==='cash')extra+=`<div class="arch-help" style="margin-bottom:8px">CAISSE PERSONNALISABLE : le texte, les couleurs et le motif sont enregistrés avec le plan.</div><div class="arch-prop-row"><label>Fond</label><input data-prop="cashBg" type="color" value="${esc(aColor(o.cashBg,'#d7b04a'))}"></div><div class="arch-prop-row"><label>Couleur texte</label><input data-prop="cashText" type="color" value="${esc(aColor(o.cashText,'#17130a'))}"></div><div class="arch-prop-row"><label>Motif</label><select data-prop="cashPattern"><option value="none" ${cashPattern(o.cashPattern)==='none'?'selected':''}>Uni</option><option value="stripes" ${cashPattern(o.cashPattern)==='stripes'?'selected':''}>Rayures diagonales</option><option value="bands" ${cashPattern(o.cashPattern)==='bands'?'selected':''}>Bandes</option><option value="grid" ${cashPattern(o.cashPattern)==='grid'?'selected':''}>Grille</option><option value="dots" ${cashPattern(o.cashPattern)==='dots'?'selected':''}>Points</option><option value="checker" ${cashPattern(o.cashPattern)==='checker'?'selected':''}>Damier</option></select></div><div class="arch-prop-row"><label>Couleur motif</label><input data-prop="cashPatternColor" type="color" value="${esc(aColor(o.cashPatternColor,'#f7e4a3'))}"></div><div class="arch-prop-row"><label>Bordure</label><input data-prop="cashBorder" type="color" value="${esc(aColor(o.cashBorder,'#816417'))}"></div><div class="arch-prop-row"><label>Style bordure</label><select data-prop="cashBorderStyle">${['solid','dashed','dotted','double'].map(v=>`<option value="${v}" ${aText(o.cashBorderStyle||'solid')===v?'selected':''}>${v==='solid'?'Continue':v==='dashed'?'Tirets':v==='dotted'?'Points':'Double'}</option>`).join('')}</select></div><div class="arch-prop-row"><label>Épaisseur</label><input data-prop="cashBorderWidth" type="number" min="1" max="12" value="${aClamp(o.cashBorderWidth||3,1,12)}"></div><div class="arch-prop-row"><label>Taille texte</label><input data-prop="cashFontSize" type="number" min="8" max="72" value="${aClamp(o.cashFontSize||18,8,72)}"></div><div class="arch-prop-row"><label>Coins arrondis</label><input data-prop="cashRadius" type="number" min="0" max="60" value="${aClamp(o.cashRadius??8,0,60)}"></div>`;
  }
  const locked=!!o.locked;
@@ -15828,6 +15864,14 @@ function propChange(e){const k=e.target.dataset.prop;if(!k)return;const hit=curr
   if(k==='chairsFree'&&hit.type==='table'){hit.obj.chairsFree=String(v)==='true';if(!hit.obj.chairsFree)hit.obj.chairLayout=[];markDirty();renderCanvas();return}
   if(k==='pax'&&hit.type==='table'&&(aText(hit.obj.preset)==='pool'||aText(hit.obj.seatStyle)==='sunbed')){hit.obj.pax=aClamp(Number(v)||1,1,2);hit.obj.chairLayout=[];markDirty();renderCanvas();return}
   if(k==='label'&&hit.type==='table'){const nv=aText(v),oldLabel=aText(hit.obj.label);if(!nv)return;if(activeOrder(oldLabel)){aToast('Renommer interdit : commande active',true);renderCanvas();return}if(A.tables.some(t=>t!==hit.obj&&aText(t.label).toUpperCase()===nv.toUpperCase())){aToast('Numéro de table déjà utilisé',true);renderCanvas();return}hit.obj.label=nv;if(!hit.obj.id||aText(hit.obj.id)===oldLabel)hit.obj.id=nv}else setObjProp(hit.obj,k,v);
+  if(k==='rotation'&&hit.type==='element'&&aText(hit.obj.type).toLowerCase()==='window'){
+    let rot=Number(hit.obj.rotation)||0;
+    rot=((rot%360)+360)%360;
+    hit.obj.rotation=rot;
+    if(!cityKeepRotatedElementInsidePlan(hit)){
+      aToast('Rotation fenêtre limitée par le bord du plan',true);
+    }
+  }
   if(['l','t','w','h'].includes(k)){
     const d=defaults(hit.obj,hit.type);
     if(hit.type==='zone'){
@@ -16317,7 +16361,7 @@ function applyZoom(){
   try{localStorage.setItem('ichef_plan_zoom_pct_v28',String(A.zoom))}catch(_){}
 }
 
-async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),roomLayouts:clone(A.roomLayouts),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_V78_ROTATION_STABLE'},updatedFrom:'PAD_ARCHITECT_V78_ROTATION_STABLE',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD V78 · rotation assises stable');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
+async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),roomLayouts:clone(A.roomLayouts),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_V79_FENETRES_ROTATION_STABLE'},updatedFrom:'PAD_ARCHITECT_V79_FENETRES_ROTATION_STABLE',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD V79 · fenêtres rotation stable');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
 function openExpress(){if(closePadArchitect()!==false)openExpressTableCreate()}
 function architectAccessKey(value){
   return aText(value).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[\s-]+/g,'_');
