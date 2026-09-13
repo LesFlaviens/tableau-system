@@ -6098,6 +6098,13 @@ body.order-open #btnHeadWho .head-sub-v20{
 #ichefArchPad .arch-table.table-preset-pool{background:radial-gradient(circle,#f8fbfb 0 56%,#bdcbd0 57% 100%)!important;border-color:#8ca1a8!important}
 </style>
 
+
+<style id="ichef-v17-full-terrain-safe">
+/* V17 SAFE — toute la surface architecturale est un vrai espace de travail scrollable. */
+#ichefArchPad .archpad-stagewrap{background:var(--city-floor)!important;overflow:auto!important;overscroll-behavior:contain!important;}
+#ichefArchPad .archpad-stage-shell{background:var(--city-floor)!important;}
+#ichefArchPad .archpad-stage{box-shadow:inset 0 0 0 3px rgba(94,86,56,.35)!important;}
+</style>
 </head>
 
 <!-- iCHEF V7 : piscine = choix 1 transat C1 ou 2 transats C1+C2 -->
@@ -14966,16 +14973,17 @@ function cityFitRoom(show=true){
   const b=cityOperationalViewBounds();
   const vw=Math.max(240,wrap.clientWidth),vh=Math.max(200,wrap.clientHeight);
   const fitW=Math.max(180,vw-CITY_VIEW_SAFE_GUTTER_PX*2),fitH=Math.max(160,vh-CITY_VIEW_SAFE_GUTTER_PX*2);
-  const scale=Math.max(.1,Math.min(1.8,fitW/b.w,fitH/b.h));
+  const minScale=Math.max(vw/ARCH_W,vh/ARCH_H,0.05);
+  const scale=Math.max(minScale,Math.min(1.8,fitW/b.w,fitH/b.h));
   A.zoom=Math.round(scale*100);
   applyZoom();
   requestAnimationFrame(()=>{
-    const sh=A.root?.querySelector('[data-stage-shell]');
-    if(!sh)return;
-    wrap.scrollLeft=Math.max(0,(sh.offsetWidth-vw)/2);
-    wrap.scrollTop=Math.max(0,(sh.offsetHeight-vh)/2);
+    const factor=A.zoom/100;
+    const cx=(b.minX+b.maxX)/2,cy=(b.minY+b.maxY)/2;
+    wrap.scrollLeft=Math.max(0,cx*factor-vw/2);
+    wrap.scrollTop=Math.max(0,cy*factor-vh/2);
   });
-  if(show)aToast('Zone d’exploitation ajustée à l’écran');
+  if(show)aToast('Salle centrée · terrain complet toujours accessible');
 }
 function cityEraseActiveRoomPlan(){
   if(A.mode!=='architect'||!canEdit())return aToast('Mode Architecte requis',true);
@@ -15809,30 +15817,38 @@ function pointerCancel(e){
   archRelease(e);
 }
 function applyZoom(){
+  const wrap=A.root?.querySelector('.archpad-stagewrap');
   const sh=A.root?.querySelector('[data-stage-shell]');
   const st=A.root?.querySelector('[data-stage]');
   if(!sh||!st)return;
-  A.zoom=aClamp(Number(A.zoom)||0,0,200);
-  const factor=A.zoom/100;
-  const view=cityOperationalViewBounds();
 
-  /* V13 SAFE — le shell correspond uniquement à la ZONE D'EXPLOITATION stable.
-     Le grand terrain 50 x 50 m n'est PAS supprimé des données : il est simplement
-     recadré hors écran. Ainsi sauvegarde, objets, commandes et coordonnées restent
-     compatibles avec toutes les versions précédentes. */
+  /* V17 SAFE — LE TERRAIN ARCHITECTURAL ENTIER RESTE EXPLORABLE ET EXPLOITABLE.
+     On ne recadre plus le DOM sur la salle active : le stage complet 50 × 50 m reste
+     présent dans le scroll, donc piscine, terrasse, jardin, bar extérieur, etc. peuvent
+     être placés n'importe où. Le zoom ne peut simplement pas rendre le terrain plus
+     petit que la fenêtre visible, afin d'éviter une grande zone grise inutilisable. */
+  let requested=aClamp(Number(A.zoom)||100,5,200)/100;
+  if(wrap){
+    const vw=Math.max(1,wrap.clientWidth),vh=Math.max(1,wrap.clientHeight);
+    const minFactor=Math.max(vw/ARCH_W,vh/ARCH_H,0.05);
+    requested=Math.max(requested,minFactor);
+  }
+  const factor=Math.min(2,requested);
+  A.zoom=Math.round(factor*100);
+
   sh.style.setProperty('position','relative','important');
-  sh.style.setProperty('width',(view.w*factor)+'px','important');
-  sh.style.setProperty('height',(view.h*factor)+'px','important');
+  sh.style.setProperty('width',(ARCH_W*factor)+'px','important');
+  sh.style.setProperty('height',(ARCH_H*factor)+'px','important');
   sh.style.setProperty('min-width','0px','important');
   sh.style.setProperty('min-height','0px','important');
   sh.style.setProperty('max-width','none','important');
-  sh.style.setProperty('overflow','hidden','important');
+  sh.style.setProperty('max-height','none','important');
+  sh.style.setProperty('overflow','visible','important');
+  sh.style.setProperty('background','var(--city-floor)','important');
 
-  /* Le stage garde 5000 x 5000 unités. On le décale derrière la fenêtre recadrée.
-     getBoundingClientRect() continue donc de donner un repère exact à pointInStage(). */
   st.style.setProperty('position','absolute','important');
-  st.style.setProperty('left',(-view.minX*factor)+'px','important');
-  st.style.setProperty('top',(-view.minY*factor)+'px','important');
+  st.style.setProperty('left','0px','important');
+  st.style.setProperty('top','0px','important');
   st.style.setProperty('width',ARCH_W+'px','important');
   st.style.setProperty('height',ARCH_H+'px','important');
   st.style.setProperty('transform-origin','0 0','important');
