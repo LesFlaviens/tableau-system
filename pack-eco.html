@@ -14557,7 +14557,25 @@ beach_towel:'SERVIETTE PLAGE',pool_shower:'DOUCHE PISCINE',pool_ladder_obj:'ÉCH
 function classFor(type){return ({wall:'arch-wall',door:'arch-door',window:'arch-window',bar:'arch-bar',kitchen:'arch-kitchen',cash:'arch-cash',buffet:'arch-buffet',text:'arch-text',plant:'arch-plant',tree:'arch-tree',palm:'arch-palm',pergola:'arch-pergola',pool_lowtable:'arch-pool-lowtable',parasol:'arch-parasol',pool:'arch-pool',roomservice:'arch-roomservice',bed_single:'arch-bed-single',bed_double:'arch-bed-double',desk:'arch-desk',sofa:'arch-sofa',wardrobe:'arch-wardrobe',sink:'arch-bathfixture',toilet:'arch-bathfixture',shower:'arch-shower',stair_straight:'arch-stair arch-stair-straight',stair_quarter:'arch-stair arch-stair-quarter',stair_half:'arch-stair arch-stair-half',stair_double_quarter:'arch-stair arch-stair-double-quarter',stair_spiral:'arch-stair arch-stair-spiral',stair_curved:'arch-stair arch-stair-curved',stair_exterior:'arch-stair arch-stair-exterior',stair_ladder:'arch-stair arch-stair-ladder',
 beach_towel:'arch-furn arch-beach-towel',pool_shower:'arch-furn arch-pool-shower',pool_ladder_obj:'arch-furn arch-pool-ladder-obj',daybed_obj:'arch-furn arch-daybed-obj',cabana_obj:'arch-furn arch-cabana-obj',lounge_sofa_obj:'arch-furn arch-lounge-sofa-obj',lounge_armchair:'arch-furn arch-lounge-armchair',lounge_pouf:'arch-furn arch-lounge-pouf',bar_counter_curve:'arch-furn arch-bar-counter-curve',bottle_shelf:'arch-furn arch-bottle-shelf',wine_fridge:'arch-furn arch-wine-fridge',tea_sofa_obj:'arch-furn arch-tea-sofa-obj',tea_armchair:'arch-furn arch-tea-armchair',pastry_display:'arch-furn arch-pastry-display',coffee_counter:'arch-furn arch-coffee-counter',tea_trolley:'arch-furn arch-tea-trolley',banquette_wall:'arch-furn arch-banquette-wall',service_station:'arch-furn arch-service-station',host_stand:'arch-furn arch-host-stand',wine_cellar:'arch-furn arch-wine-cellar',gueridon:'arch-furn arch-gueridon',restaurant_screen:'arch-furn arch-restaurant-screen'})[type]||''}
 function nodeStyle(o){const d=defaults(o,o.__kind||'element'),z=Number(o.zIndex)||0;return `left:${d.l/ARCH_W*100}%;top:${d.t/ARCH_H*100}%;width:${d.w/ARCH_W*100}%;height:${d.h/ARCH_H*100}%;transform:rotate(${d.rotation||0}deg);${z?`z-index:${z};`:''}`}
-function handles(){if(A.mode!=='architect'||!canEdit())return '';return '<span class="arch-handle nw" data-resize="nw" title="Agrandir / rétrécir"></span><span class="arch-handle n" data-resize="n" title="Hauteur"></span><span class="arch-handle ne" data-resize="ne" title="Agrandir / rétrécir"></span><span class="arch-handle e" data-resize="e" title="Largeur"></span><span class="arch-handle se" data-resize="se" title="Agrandir / rétrécir"></span><span class="arch-handle s" data-resize="s" title="Hauteur"></span><span class="arch-handle sw" data-resize="sw" title="Agrandir / rétrécir"></span><span class="arch-handle w" data-resize="w" title="Largeur"></span><button type="button" class="arch-rotate" data-rotate title="Rotation +15°">↻</button>'}
+function cityResizeCursor(rotation,dir){
+  const rot=((Number(rotation)||0)%360+360)%360;
+  let angle=rot;
+  if(dir==='n'||dir==='s')angle+=90;
+  else if(dir==='nw'||dir==='se')angle+=45;
+  else if(dir==='ne'||dir==='sw')angle-=45;
+  angle=((angle%180)+180)%180;
+  const q=(Math.round(angle/45)*45)%180;
+  if(q===0)return 'ew-resize';
+  if(q===45)return 'nwse-resize';
+  if(q===90)return 'ns-resize';
+  return 'nesw-resize';
+}
+function handles(o=null){
+  if(A.mode!=='architect'||!canEdit())return '';
+  const rot=Number(o?.rotation)||0;
+  const h=(dir,title)=>`<span class="arch-handle ${dir}" data-resize="${dir}" title="${title}" style="cursor:${cityResizeCursor(rot,dir)}!important"></span>`;
+  return h('nw','Agrandir / rétrécir')+h('n','Redimensionner')+h('ne','Agrandir / rétrécir')+h('e','Redimensionner')+h('se','Agrandir / rétrécir')+h('s','Redimensionner')+h('sw','Agrandir / rétrécir')+h('w','Redimensionner')+'<button type="button" class="arch-rotate" data-rotate title="Rotation +15°">↻</button>';
+}
 function stairInner(e){
   const label=esc(e.label||iconFor(e.type));
   const arrow='<span class="stair-direction">↑</span>';
@@ -15037,6 +15055,51 @@ function cityDragGeom(hit){
 function cityApplyDragGeom(hit,g){
   if(!hit?.obj||!g)return;
   hit.obj.l=g.l;hit.obj.t=g.t;hit.obj.w=g.w;hit.obj.h=g.h;
+}
+/* V80 — REDIMENSIONNEMENT DANS L'AXE VISUEL DES OBJETS TOURNÉS
+   CSS tourne l'objet autour de son centre. Les poignées sont donc elles aussi tournées,
+   mais le déplacement du pointeur arrive en coordonnées écran. On projette le geste
+   sur les axes locaux de l'objet : à 90°, tirer vers le bas allonge réellement un mur
+   ou une fenêtre verticale, au lieu d'attendre un mouvement horizontal invisible. */
+function cityRotationAwareResizeTarget(orig,dir,dx,dy,rotation,min=16){
+  const a=(Number(rotation)||0)*Math.PI/180;
+  const ux=Math.cos(a),uy=Math.sin(a);      // axe local largeur / longueur
+  const vx=-Math.sin(a),vy=Math.cos(a);     // axe local hauteur / épaisseur
+  const du=dx*ux+dy*uy,dv=dx*vx+dy*vy;
+  let w=Number(orig.w)||min,h=Number(orig.h)||min;
+  if(dir.includes('e'))w=Math.max(min,snap((Number(orig.w)||min)+du));
+  if(dir.includes('w'))w=Math.max(min,snap((Number(orig.w)||min)-du));
+  if(dir.includes('s'))h=Math.max(min,snap((Number(orig.h)||min)+dv));
+  if(dir.includes('n'))h=Math.max(min,snap((Number(orig.h)||min)-dv));
+
+  let shiftU=0,shiftV=0;
+  if(dir.includes('e'))shiftU=(w-(Number(orig.w)||min))/2;
+  else if(dir.includes('w'))shiftU=((Number(orig.w)||min)-w)/2;
+  if(dir.includes('s'))shiftV=(h-(Number(orig.h)||min))/2;
+  else if(dir.includes('n'))shiftV=((Number(orig.h)||min)-h)/2;
+
+  const cx=(Number(orig.l)||0)+(Number(orig.w)||min)/2;
+  const cy=(Number(orig.t)||0)+(Number(orig.h)||min)/2;
+  const ncx=cx+ux*shiftU+vx*shiftV;
+  const ncy=cy+uy*shiftU+vy*shiftV;
+  return {l:snap(ncx-w/2),t:snap(ncy-h/2),w,h};
+}
+function cityClampRotatedResizeToPlan(hit,target){
+  if(!hit?.obj||!target)return {geom:target,blocked:false};
+  const b=cityConstructionBounds();
+  const shapes=cityCollisionShapesForHitAt(hit,target.l,target.t,target.w,target.h);
+  const env=cityShapeEnvelope(shapes);
+  if(!env)return {geom:target,blocked:false};
+  let dx=0,dy=0;
+  if(env.l<b.minX)dx=b.minX-env.l;
+  else if(env.r>b.maxX)dx=b.maxX-env.r;
+  if(env.t<b.minY)dy=b.minY-env.t;
+  else if(env.b>b.maxY)dy=b.maxY-env.b;
+  return {geom:{l:target.l+dx,t:target.t+dy,w:target.w,h:target.h},blocked:Math.abs(dx)>.01||Math.abs(dy)>.01};
+}
+function cityIsLinearArchitecturalElement(hit){
+  if(hit?.type!=='element')return false;
+  return ['wall','window','door'].includes(aText(hit.obj?.type).toLowerCase());
 }
 function cityDragPenalty(hit,key,g){
   if(!hit?.obj||!g)return 0;
@@ -15643,9 +15706,9 @@ function archTableChairsHTML(t,live,service){
   return `<span class="arch-chair-layer">${chairs.join('')}</span>`;
 }
 function canvasHTML(){
- const zones=roomZones().map(z=>{z.__kind='zone';const key=getZoneKey(z),locked=!!z.locked,fill=aClamp(z.fillOpacity||15,3,55),border=['solid','dashed','dotted'].includes(aText(z.borderStyle))?aText(z.borderStyle):'dashed';return `<div class="arch-node arch-zone ${zoneClass(z)} ${locked?'locked':''} ${A.selected===key?'selected':''} ${A.groupAll?'city-group-selected':''}" data-arch-key="${esc(key)}" style="${nodeStyle(z)};--zone-color:${esc(colorForZone(z))};--zone-fill:${fill}%;--zone-border:${border}"><span class="zone-label" data-zone-drag title="Maintenir et glisser pour déplacer la zone">${esc(z.label||'ZONE')}</span><span class="zone-kind" data-zone-drag title="Maintenir et glisser pour déplacer la zone">${esc(zoneKindLabel(z.zoneKind))}</span><span class="zone-meta">${esc(z.responsible||z.responsable||'')} ${z.capacity?'· '+esc(z.capacity)+' places':''}</span>${locked?'<span class="arch-lock-badge"></span>':''}${handles()}</div>`}).join('');
- const els=roomElements().map(e=>{e.__kind='element';const key=getElemKey(e),locked=!!e.locked;return `<div class="arch-node arch-generic ${classFor(e.type)} ${cashPatternClass(e)} ${locked?'locked':''} ${A.selected===key?'selected':''} ${A.groupAll?'city-group-selected':''}" data-arch-key="${esc(key)}" style="${nodeStyle(e)}${cashCustomStyle(e)}">${elementInner(e)}${locked?'<span class="arch-lock-badge"></span>':''}${handles()}</div>`}).join('');
- const tables=roomTables().map(t=>{t.__kind='table';const key=getTableKey(t),act=activeOrder(t.label),ex=isExpressTable(t),shape=aText(t.shape||'square'),locked=!!t.locked,service=A.mode==='service',live=planTableLive(t);const liveClass=service?`service-live live-${live.code}`:'';const serviceInner=service?`<span class="tlabel">${esc(t.label)}</span><span class="arch-table-live-head"><span class="state ${esc(live.code)}">${esc(live.label)}</span>${live.time?`<span class="clock">${esc(live.time)}</span>`:''}<span class="pax">${Math.max(1,Number(t.pax)||2)}</span></span>${live.seats?.length?`<span class="arch-seat-strip">${planSeatStripHTML(live)}</span>`:''}`:`<span class="tlabel">${esc(t.label)}</span><span class="tpax">CAP. ${Number(t.pax)||2}${t.zone?' · '+esc(t.zone):''}</span>`;const clientCount=`<span class="arch-client-count ${live.pax>0?'':'zero'}" title="${live.pax} client${live.pax===1?'':'s'}">${live.pax}</span>`;const chairs=archTableChairsHTML(t,live,service);const presetClass=aText(t.preset)?`table-preset-${aText(t.preset).replace(/[^a-z0-9_-]/gi,'').toLowerCase()}`:'';const seatClass=aText(t.seatStyle)?`table-seat-${aText(t.seatStyle).replace(/[^a-z0-9_-]/gi,'').toLowerCase()}`:'';return `<button type="button" class="arch-node arch-table ${shape==='round'?'round':''} ${presetClass} ${seatClass} ${act?'active-order':''} ${liveClass} ${ex?'express':''} ${locked?'locked':''} ${A.selected===key?'selected':''} ${A.groupAll?'city-group-selected':''}" data-arch-key="${esc(key)}" style="${nodeStyle(t)}">${chairs}${serviceInner}${clientCount}${locked?'<span class="arch-lock-badge"></span>':''}${handles()}</button>`}).join('');
+ const zones=roomZones().map(z=>{z.__kind='zone';const key=getZoneKey(z),locked=!!z.locked,fill=aClamp(z.fillOpacity||15,3,55),border=['solid','dashed','dotted'].includes(aText(z.borderStyle))?aText(z.borderStyle):'dashed';return `<div class="arch-node arch-zone ${zoneClass(z)} ${locked?'locked':''} ${A.selected===key?'selected':''} ${A.groupAll?'city-group-selected':''}" data-arch-key="${esc(key)}" style="${nodeStyle(z)};--zone-color:${esc(colorForZone(z))};--zone-fill:${fill}%;--zone-border:${border}"><span class="zone-label" data-zone-drag title="Maintenir et glisser pour déplacer la zone">${esc(z.label||'ZONE')}</span><span class="zone-kind" data-zone-drag title="Maintenir et glisser pour déplacer la zone">${esc(zoneKindLabel(z.zoneKind))}</span><span class="zone-meta">${esc(z.responsible||z.responsable||'')} ${z.capacity?'· '+esc(z.capacity)+' places':''}</span>${locked?'<span class="arch-lock-badge"></span>':''}${handles(z)}</div>`}).join('');
+ const els=roomElements().map(e=>{e.__kind='element';const key=getElemKey(e),locked=!!e.locked;return `<div class="arch-node arch-generic ${classFor(e.type)} ${cashPatternClass(e)} ${locked?'locked':''} ${A.selected===key?'selected':''} ${A.groupAll?'city-group-selected':''}" data-arch-key="${esc(key)}" style="${nodeStyle(e)}${cashCustomStyle(e)}">${elementInner(e)}${locked?'<span class="arch-lock-badge"></span>':''}${handles(e)}</div>`}).join('');
+ const tables=roomTables().map(t=>{t.__kind='table';const key=getTableKey(t),act=activeOrder(t.label),ex=isExpressTable(t),shape=aText(t.shape||'square'),locked=!!t.locked,service=A.mode==='service',live=planTableLive(t);const liveClass=service?`service-live live-${live.code}`:'';const serviceInner=service?`<span class="tlabel">${esc(t.label)}</span><span class="arch-table-live-head"><span class="state ${esc(live.code)}">${esc(live.label)}</span>${live.time?`<span class="clock">${esc(live.time)}</span>`:''}<span class="pax">${Math.max(1,Number(t.pax)||2)}</span></span>${live.seats?.length?`<span class="arch-seat-strip">${planSeatStripHTML(live)}</span>`:''}`:`<span class="tlabel">${esc(t.label)}</span><span class="tpax">CAP. ${Number(t.pax)||2}${t.zone?' · '+esc(t.zone):''}</span>`;const clientCount=`<span class="arch-client-count ${live.pax>0?'':'zero'}" title="${live.pax} client${live.pax===1?'':'s'}">${live.pax}</span>`;const chairs=archTableChairsHTML(t,live,service);const presetClass=aText(t.preset)?`table-preset-${aText(t.preset).replace(/[^a-z0-9_-]/gi,'').toLowerCase()}`:'';const seatClass=aText(t.seatStyle)?`table-seat-${aText(t.seatStyle).replace(/[^a-z0-9_-]/gi,'').toLowerCase()}`:'';return `<button type="button" class="arch-node arch-table ${shape==='round'?'round':''} ${presetClass} ${seatClass} ${act?'active-order':''} ${liveClass} ${ex?'express':''} ${locked?'locked':''} ${A.selected===key?'selected':''} ${A.groupAll?'city-group-selected':''}" data-arch-key="${esc(key)}" style="${nodeStyle(t)}">${chairs}${serviceInner}${clientCount}${locked?'<span class="arch-lock-badge"></span>':''}${handles(t)}</button>`}).join('');
  return `${cityRoomBoundaryHTML()}${zones}${els}${tables}${cityMeasureOverlayHTML()}${citySelectionOverlayHTML()}${cityRoomEditOverlayHTML()}`;
 }
 function roomEmoji(name){const n=aText(name).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();if(/HOTEL|CHAMBRE|ROOM/.test(n))return '🏨';if(/TERRASSE|PLAGE/.test(n))return '☀️';if(/BAR/.test(n))return '🍸';if(/PISCINE|POOL/.test(n))return '🏊';if(/CUISINE/.test(n))return '👨‍🍳';if(/BUREAU|REUNION/.test(n))return '🖥️';if(/KIOSQUE/.test(n))return '🏪';if(/YACHT/.test(n))return '🛥️';if(/MONTAGNE|CHALET/.test(n))return '🏔️';if(/LAC/.test(n))return '🏞️';return '🍽️'}
@@ -15678,7 +15741,10 @@ function propHTML(){
  }
  const locked=!!o.locked;
  const nameLabel=type==='element'&&o.type==='cash'?'Texte affiché':'Nom';
- return `<div class="arch-prop-group"><h4>${type==='table'?'TABLE':type==='zone'?'ZONE / PIÈCE':'ÉLÉMENT'} SÉLECTIONNÉ</h4><div class="arch-prop-row"><label>${nameLabel}</label><input data-prop="label" value="${esc(o.label||'')}"></div><div class="arch-prop-row"><label>Verrouillé</label><select data-prop="locked"><option value="false" ${!locked?'selected':''}>Non</option><option value="true" ${locked?'selected':''}>Oui</option></select></div>${extra}</div><div class="arch-prop-group"><h4>POSITION / DIMENSIONS</h4><div class="arch-prop-row"><label>X / Y (m)</label><div style="display:grid;grid-template-columns:1fr 1fr;gap:5px"><input data-prop="l" data-unit="m" type="text" inputmode="decimal" value="${cityMetersInput(d.l)}"><input data-prop="t" data-unit="m" type="text" inputmode="decimal" value="${cityMetersInput(d.t)}"></div></div><div class="arch-prop-row"><label>Largeur / Haut. (m)</label><div style="display:grid;grid-template-columns:1fr 1fr;gap:5px"><input data-prop="w" data-unit="m" type="text" inputmode="decimal" value="${cityMetersInput(d.w)}"><input data-prop="h" data-unit="m" type="text" inputmode="decimal" value="${cityMetersInput(d.h)}"></div></div><div class="arch-help" style="margin-top:8px">Mesures en mètres. Ex. : 1,20 = 1 m 20 cm.</div><div class="arch-prop-row"><label>Rotation</label><input data-prop="rotation" type="number" min="-360" max="360" value="${Math.round(d.rotation||0)}"></div></div><div class="arch-prop-group"><div class="arch-prop-actions"><button type="button" data-duplicate>Dupliquer</button><button type="button" class="red" data-delete>Supprimer</button></div><div class="arch-help" style="margin-top:8px">Suppression Architecture autorisée. Une commande active reste conservée dans la caisse. Tu peux verrouiller murs, zones et mobilier une fois leur position validée.</div></div>`;
+ const linearDims=type==='element'&&['wall','window','door'].includes(aText(o.type).toLowerCase());
+ const dimLabel=linearDims?'Longueur / Épais. (m)':'Largeur / Haut. (m)';
+ const dimHelp=linearDims?'La longueur suit l’axe de l’objet, même lorsqu’il est vertical. L’épaisseur reste la seconde valeur.':'Mesures en mètres. Ex. : 1,20 = 1 m 20 cm.';
+ return `<div class="arch-prop-group"><h4>${type==='table'?'TABLE':type==='zone'?'ZONE / PIÈCE':'ÉLÉMENT'} SÉLECTIONNÉ</h4><div class="arch-prop-row"><label>${nameLabel}</label><input data-prop="label" value="${esc(o.label||'')}"></div><div class="arch-prop-row"><label>Verrouillé</label><select data-prop="locked"><option value="false" ${!locked?'selected':''}>Non</option><option value="true" ${locked?'selected':''}>Oui</option></select></div>${extra}</div><div class="arch-prop-group"><h4>POSITION / DIMENSIONS</h4><div class="arch-prop-row"><label>X / Y (m)</label><div style="display:grid;grid-template-columns:1fr 1fr;gap:5px"><input data-prop="l" data-unit="m" type="text" inputmode="decimal" value="${cityMetersInput(d.l)}"><input data-prop="t" data-unit="m" type="text" inputmode="decimal" value="${cityMetersInput(d.t)}"></div></div><div class="arch-prop-row"><label>${dimLabel}</label><div style="display:grid;grid-template-columns:1fr 1fr;gap:5px"><input data-prop="w" data-unit="m" type="text" inputmode="decimal" value="${cityMetersInput(d.w)}"><input data-prop="h" data-unit="m" type="text" inputmode="decimal" value="${cityMetersInput(d.h)}"></div></div><div class="arch-help" style="margin-top:8px">${dimHelp}</div><div class="arch-prop-row"><label>Rotation</label><input data-prop="rotation" type="number" min="-360" max="360" value="${Math.round(d.rotation||0)}"></div></div><div class="arch-prop-group"><div class="arch-prop-actions"><button type="button" data-duplicate>Dupliquer</button><button type="button" class="red" data-delete>Supprimer</button></div><div class="arch-help" style="margin-top:8px">Suppression Architecture autorisée. Une commande active reste conservée dans la caisse. Tu peux verrouiller murs, zones et mobilier une fois leur position validée.</div></div>`;
 }
 function statsHTML(){const orders=roomTables().filter(t=>activeOrder(t.label)).length,express=roomTables().filter(isExpressTable).length,pax=roomTables().reduce((s,t)=>s+(activeOrder(t.label)?Number(getOrder(t.label)?.pax||t.pax||0):0),0);return {orders,express,pax}}
 function pinOverlayHTML(){if(!A.pinOpen)return '';const dots=Array.from({length:6},(_,i)=>`<i class="${i<A.pinValue.length?'on':''}"></i>`).join('');return `<div class="archpad-pin-overlay"><div class="archpad-pin-card"><h3>🛠️ MODE ARCHITECTE</h3><p>PIN iCHEF Cloud partagé avec Admin / RH. Autorisé : PIN principal, Gérant, Directeur, Admin / Manager actif.</p><div class="archpad-pin-dots">${dots}</div><div class="archpad-pin-grid">${[1,2,3,4,5,6,7,8,9].map(n=>`<button type="button" data-arch-pin="${n}">${n}</button>`).join('')}<button type="button" class="small" data-arch-pin-clear>EFFACER</button><button type="button" data-arch-pin="0">0</button><button type="button" class="small" data-arch-pin-back>←</button></div><div class="archpad-pin-msg">${esc(A.pinMsg||'')}</div><div class="archpad-pin-actions"><button type="button" data-arch-pin-cancel>Annuler</button><button type="button" class="ok" data-arch-pin-ok>VALIDER</button></div></div></div>`}
@@ -15882,7 +15948,10 @@ function propChange(e){const k=e.target.dataset.prop;if(!k)return;const hit=curr
       const q=cityClampObjectMoveToSafety(hit,d.l,d.t);hit.obj.l=q.l;hit.obj.t=q.t;
       if(q.blocked)aToast('Objet limité uniquement au bord du terrain');
     }else{
-      const q=cityClampObjectResizeToSafetyExact(hit,{l:d.l,t:d.t,w:d.w,h:d.h});cityApplyDragGeom(hit,q.geom);
+      const q=(cityIsLinearArchitecturalElement(hit)&&Math.abs(Number(hit.obj.rotation)||0)>.001)
+        ?cityClampRotatedResizeToPlan(hit,{l:d.l,t:d.t,w:d.w,h:d.h})
+        :cityClampObjectResizeToSafetyExact(hit,{l:d.l,t:d.t,w:d.w,h:d.h});
+      cityApplyDragGeom(hit,q.geom);
       if(q.blocked)aToast('Objet redimensionné jusqu’au bord exact');
     }
   }
@@ -16250,21 +16319,29 @@ function pointerMove(e){
       blocked=!!resolved.blocked;
     }
   }else{
-    const dir=A.drag.dir;let l=o.l,t=o.t,w=o.w,hh=o.h;
-    if(dir.includes('e'))w=o.w+dx;if(dir.includes('s'))hh=o.h+dy;if(dir.includes('w')){l=o.l+dx;w=o.w-dx}if(dir.includes('n')){t=o.t+dy;hh=o.h-dy}
-    if(w<min){if(dir.includes('w'))l=o.l+o.w-min;w=min}if(hh<min){if(dir.includes('n'))t=o.t+o.h-min;hh=min}
-    /* V62 : redimensionnement des zones jusqu'au mur / à la limite pointillée,
-       sans marge technique supplémentaire. Les autres objets gardent leur marge brute. */
-    /* V66 : même règle au redimensionnement : 0 cm de marge brute. */
-    const rawEdge=0;
-    l=aClamp(snap(l),rawEdge,ARCH_W-rawEdge-min);t=aClamp(snap(t),rawEdge,ARCH_H-rawEdge-min);w=Math.min(ARCH_W-rawEdge-l,Math.max(min,snap(w)));hh=Math.min(ARCH_H-rawEdge-t,Math.max(min,snap(hh)));
-    const target={l,t,w,h:hh};
-    if(h.type==='zone'){
-      const resolved=cityClampZoneResizeToSafety(target);
+    const dir=A.drag.dir;
+    /* Mur / fenêtre / porte tournés : la poignée travaille dans l'axe VISUEL de l'objet. */
+    if(cityIsLinearArchitecturalElement(h)&&Math.abs(((Number(o.rotation)||0)%360+360)%360)>.001){
+      const target=cityRotationAwareResizeTarget(o,dir,dx,dy,Number(o.rotation)||0,min);
+      const resolved=cityClampRotatedResizeToPlan(h,target);
       liveGeom=resolved.geom;blocked=!!resolved.blocked;
     }else{
-      const resolved=cityClampObjectResizeToSafetyExact(h,target);
-      liveGeom=resolved.geom;blocked=!!resolved.blocked;
+      let l=o.l,t=o.t,w=o.w,hh=o.h;
+      if(dir.includes('e'))w=o.w+dx;if(dir.includes('s'))hh=o.h+dy;if(dir.includes('w')){l=o.l+dx;w=o.w-dx}if(dir.includes('n')){t=o.t+dy;hh=o.h-dy}
+      if(w<min){if(dir.includes('w'))l=o.l+o.w-min;w=min}if(hh<min){if(dir.includes('n'))t=o.t+o.h-min;hh=min}
+      /* V62 : redimensionnement des zones jusqu'au mur / à la limite pointillée,
+         sans marge technique supplémentaire. Les autres objets gardent leur marge brute. */
+      /* V66 : même règle au redimensionnement : 0 cm de marge brute. */
+      const rawEdge=0;
+      l=aClamp(snap(l),rawEdge,ARCH_W-rawEdge-min);t=aClamp(snap(t),rawEdge,ARCH_H-rawEdge-min);w=Math.min(ARCH_W-rawEdge-l,Math.max(min,snap(w)));hh=Math.min(ARCH_H-rawEdge-t,Math.max(min,snap(hh)));
+      const target={l,t,w,h:hh};
+      if(h.type==='zone'){
+        const resolved=cityClampZoneResizeToSafety(target);
+        liveGeom=resolved.geom;blocked=!!resolved.blocked;
+      }else{
+        const resolved=cityClampObjectResizeToSafetyExact(h,target);
+        liveGeom=resolved.geom;blocked=!!resolved.blocked;
+      }
     }
     cityApplyDragGeom(h,liveGeom);
   }
@@ -16361,7 +16438,7 @@ function applyZoom(){
   try{localStorage.setItem('ichef_plan_zoom_pct_v28',String(A.zoom))}catch(_){}
 }
 
-async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),roomLayouts:clone(A.roomLayouts),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_V79_FENETRES_ROTATION_STABLE'},updatedFrom:'PAD_ARCHITECT_V79_FENETRES_ROTATION_STABLE',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD V79 · fenêtres rotation stable');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
+async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),roomLayouts:clone(A.roomLayouts),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_V80_MURS_FENETRES_RESIZE_ROTATION'},updatedFrom:'PAD_ARCHITECT_V80_MURS_FENETRES_RESIZE_ROTATION',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD V80 · murs/fenêtres redimensionnement rotation stable');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
 function openExpress(){if(closePadArchitect()!==false)openExpressTableCreate()}
 function architectAccessKey(value){
   return aText(value).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[\s-]+/g,'_');
@@ -20089,6 +20166,12 @@ html body.order-open .ticket-row{min-height:106px !important}
 #ichefArchPad .arch-node.selected > .arch-handle.e.resize-active,
 #ichefArchPad .arch-node.selected > .arch-handle.w.resize-active{
   transform:translateY(-50%) scale(1.12) !important;
+}
+
+/* ichef-v35-linear-rotated-resize-safe
+   Mur / fenêtre / porte : le curseur est défini inline selon la rotation réelle. */
+#ichefArchPad .arch-node.selected > .arch-handle[style*="cursor"]{
+  touch-action:none !important;
 }
 </style>
 
