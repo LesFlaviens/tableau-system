@@ -4195,25 +4195,7 @@ body.order-open .categories {
     content: " PAX" !important;
 }
 </style>
-<style id="fix-live-plan-colors-v3">
-/* On supprime les tailles forcées qui déformaient vos tables dans le Plan Live */
-.plan-visible-wrap .plan-table {
-    min-width: 0 !important;
-    min-height: 0 !important;
-    border: none !important;
-    box-shadow: 0 4px 10px rgba(0,0,0,0.15) !important;
-    padding: 4px !important;
-}
 
-/* Couleurs pleines pour le Live Plan (comme sur votre capture 2) */
-.plan-visible-wrap .plan-table.empty { background: #e9e9e9 !important; color: #111111 !important; }
-.plan-visible-wrap .plan-table.active { background: #e9e9e9 !important; color: #111111 !important; border: 2px solid #555 !important; }
-.plan-visible-wrap .plan-table.ready { background: #4de28a !important; color: #000000 !important; }
-.plan-visible-wrap .plan-table.wait { background: #ff9a45 !important; color: #ffffff !important; }
-.plan-visible-wrap .plan-table.late, 
-.plan-visible-wrap .plan-table.alert { background: #ff5368 !important; color: #ffffff !important; }
-.plan-visible-wrap .plan-table.payment { background: #58a9ff !important; color: #ffffff !important; }
-</style>
 <style id="fond-gris-titre-plat-uniquement">
 /* =========================================================
    FOND GRIS UNIQUEMENT SUR LE TITRE DU PLAT
@@ -14428,25 +14410,8 @@ function roomHexRgba(hex,alpha){
   const n=parseInt(h.slice(1),16),r=(n>>16)&255,g=(n>>8)&255,b=n&255;
   return `rgba(${r},${g},${b},${aClamp(Number(alpha)||0,0,1)})`;
 }
-function roomPatternImage(pattern,color){
-  const c=roomHexRgba(color,.34),c2=roomHexRgba(color,.18);
-  switch(aText(pattern)){
-    case 'stripes':return `repeating-linear-gradient(135deg,${c} 0 2px,transparent 2px 16px)`;
-    case 'bands':return `repeating-linear-gradient(0deg,${c2} 0 7px,transparent 7px 22px)`;
-    case 'grid':return `linear-gradient(${c2} 1px,transparent 1px),linear-gradient(90deg,${c2} 1px,transparent 1px)`;
-    case 'dots':return `radial-gradient(circle,${c} 1.7px,transparent 1.9px)`;
-    case 'checker':return `conic-gradient(from 90deg at 1px 1px,${c2} 90deg,transparent 0) 0 0/24px 24px`;
-    case 'waves':return `radial-gradient(ellipse at 50% 0,transparent 0 8px,${c2} 9px 10px,transparent 11px 20px)`;
-    default:return 'none';
-  }
-}
-function roomVisualVars(q){
-  ensureRoomVisualDefaults(q,q.label||A.room);
-  const fill=roomHexRgba(q.roomBg,aClamp(Number(q.roomFillOpacity)||28,5,80)/100);
-  const image=roomPatternImage(q.roomPattern,q.roomPatternColor);
-  const size=aText(q.roomPattern)==='grid'?'24px 24px':aText(q.roomPattern)==='dots'?'20px 20px':aText(q.roomPattern)==='waves'?'34px 22px':'auto';
-  return `--room-fill:${fill};--room-pattern-image:${image};--room-pattern-size:${size};--room-border:${aText(q.roomBorder)};--room-border-style:${aText(q.roomBorderStyle)};--room-border-width:${aClamp(Number(q.roomBorderWidth)||2,1,8)}px`;
-}
+
+
 function roomPatternSpec(pattern,color){
   const c=roomHexRgba(color,.34),c2=roomHexRgba(color,.18);
   switch(aText(pattern)){
@@ -14534,16 +14499,30 @@ function planItemExplicitPrep(i){if(!i||planItemReady(i)||planItemServed(i))retu
 function planItemRequested(i){if(!i||planItemReady(i)||planItemServed(i)||planItemExplicitPrep(i))return false;const st=planStateToken(i.status),seq=planStateToken(i.sequenceStatus),req=planStateToken(i.serviceRequest||i.requestType);return !!(i.plateRequested===true||i.demandePlat===true||i.courseRequested===true||i.requestedByServer===true||["DEMANDE_PLAT","PLATE_REQUESTED","COURSE_REQUESTED"].includes(req)||["DEMANDE_PLAT","PLATE_REQUESTED","COURSE_REQUESTED","REQUESTED"].includes(st)||["DEMANDE_PLAT","PLATE_REQUESTED","COURSE_REQUESTED","REQUESTED"].includes(seq))}
 function planItemPrep(i){if(!i||planItemReady(i)||planItemServed(i)||planItemRequested(i))return false;const st=planStateToken(i.status),seq=planStateToken(i.sequenceStatus);return !!(planItemExplicitPrep(i)||lineFired(i)||["PRODUCTION","SENT","ENVOYE"].includes(st)||["PRODUCTION","SENT","ENVOYE"].includes(seq))}
 function planHasAllergy(i){return !!aText(i?.allergy||i?.allergie||i?.allergies)}
+function planSeatConsumption(items){
+  const active=(items||[]).filter(Boolean);
+  if(!active.length)return {consume:'none',consumeLabel:'',consumeIcon:''};
+  let drink=false,food=false;
+  active.forEach(i=>{
+    const d=normalizeDestination(i?.dest||i?.destination||i?.station||i?.category||'cuisine');
+    if(d==='bar')drink=true;
+    else food=true;
+  });
+  if(drink&&food)return {consume:'mixed',consumeLabel:'MANGE + BOIT',consumeIcon:'🍽🍸'};
+  if(drink)return {consume:'drink',consumeLabel:'BOIT',consumeIcon:'🍸'};
+  return {consume:'food',consumeLabel:'MANGE',consumeIcon:'🍽'};
+}
 function planSeatState(order,seat){
   const items=(order?.items||[]).filter(i=>i&&!i.cancelled&&itemQty(i)>0&&itemSeat(i)===seat);
-  if(!items.length)return {code:'occupied',label:'OCCUPÉ',mark:'•',allergy:false};
+  const consumption=planSeatConsumption(items);
+  if(!items.length)return {code:'occupied',label:'OCCUPÉ',mark:'•',allergy:false,...consumption};
   const allergy=items.some(planHasAllergy);
-  if(items.some(planItemReady))return {code:'ready',label:'PRÊT',mark:'',allergy};
-  if(items.some(planItemRequested))return {code:'request',label:'DEMANDE PLAT',mark:'↑',allergy};
-  if(items.some(planItemPrep))return {code:'prep',label:'EN PRÉPA',mark:'…',allergy};
-  if(items.every(planItemServed))return {code:'served',label:'SERVI',mark:'',allergy};
-  if(items.some(i=>lineFired(i)))return {code:'sent',label:'ENVOYÉ',mark:'↑',allergy};
-  return {code:'draft',label:'À ENVOYER',mark:'○',allergy};
+  if(items.some(planItemReady))return {code:'ready',label:'PRÊT',mark:'',allergy,...consumption};
+  if(items.some(planItemRequested))return {code:'request',label:'DEMANDE PLAT',mark:'↑',allergy,...consumption};
+  if(items.some(planItemPrep))return {code:'prep',label:'EN PRÉPA',mark:'…',allergy,...consumption};
+  if(items.every(planItemServed))return {code:'served',label:'SERVI',mark:'',allergy,...consumption};
+  if(items.some(i=>lineFired(i)))return {code:'sent',label:'ENVOYÉ',mark:'↑',allergy,...consumption};
+  return {code:'draft',label:'À ENVOYER',mark:'○',allergy,...consumption};
 }
 function planTableLive(t){
   const order=getOrder(t.label),base=tableStats(t.label);
@@ -14562,17 +14541,19 @@ function planTableLive(t){
   const age=orderCreated(order);
   return {code,label,pax:pax||Number(t.pax)||0,time:age?duration(age):'',seats};
 }
-function planSeatStripHTML(live){return (live.seats||[]).slice(0,9).map(x=>`<span class="arch-seat-chip seat-${x.code} ${x.allergy?'seat-allergy':''}" style="--seat:var(--c${x.seat})" title="C${x.seat} · ${esc(x.label)}${x.allergy?' · ALLERGIE':''}"><span class="seat-code">C${x.seat}</span><span class="seat-mark">${esc(x.mark)}</span></span>`).join('')}
+function planSeatStripHTML(live){return (live.seats||[]).slice(0,9).map(x=>`<span class="arch-seat-chip seat-${x.code} consume-${esc(x.consume||'none')} ${x.allergy?'seat-allergy':''}" style="--seat:var(--c${x.seat})" title="C${x.seat}${x.consumeLabel?' · '+esc(x.consumeLabel):''} · ${esc(x.label)}${x.allergy?' · ALLERGIE':''}"><span class="seat-code">C${x.seat}</span>${x.consumeIcon?`<span class="seat-consume-icon">${esc(x.consumeIcon)}</span>`:''}<span class="seat-mark">${esc(x.mark)}</span></span>`).join('')}
 function planRushHTML(){
   const r=rushSnapshot(),color=r.level<=1?'#55d987':r.level<=3?'#e2b84e':r.level===4?'#ff9a45':'#ff5368';
   const live=STATE.demo?'DÉMO':(STATE.connected?'LIVE':'SYNCHRO');
-  return `<div class="arch-live-rush" style="--rush-color:${color}"><div class="rush-main"> ANTI-RUSH · N${r.level} · ${esc(r.label)} <span class="arch-rush-link ${STATE.connected?'online':'fallback'}">${live}</span></div><div class="rush-sub">Cuisine ${r.kitchen}% · Bar ${r.bar}% · Pât. ${r.patisserie}%</div><div class="rush-ready"> ${r.ready} PRÊT${r.ready>1?'S':''}</div></div><div class="arch-live-legend"><span class="arch-live-legend-label">QUI MANGE QUOI</span>${[1,2,3,4,5,6,7,8,9].map(n=>`<span class="arch-seat-legend" style="--seat:var(--c${n})">C${n}</span>`).join('')}</div><div class="arch-live-status-key"><b class="ready"> PRÊT</b><b class="request">↑ DEMANDE</b><b class="prep">… PRÉPA</b></div>`
+  return `<div class="arch-live-rush" style="--rush-color:${color}"><div class="rush-main"> ANTI-RUSH · N${r.level} · ${esc(r.label)} <span class="arch-rush-link ${STATE.connected?'online':'fallback'}">${live}</span></div><div class="rush-sub">Cuisine ${r.kitchen}% · Bar ${r.bar}% · Pât. ${r.patisserie}%</div><div class="rush-ready"> ${r.ready} PRÊT${r.ready>1?'S':''}</div></div><div class="arch-live-legend"><span class="arch-live-legend-label">QUI MANGE / BOIT QUOI</span>${[1,2,3,4,5,6,7,8,9].map(n=>`<span class="arch-seat-legend" style="--seat:var(--c${n})">C${n}</span>`).join('')}</div><div class="arch-live-status-key"><b class="ready"> PRÊT</b><b class="request">↑ DEMANDE</b><b class="prep">… PRÉPA</b></div>`
 }
 function colorForZone(z){return aText(z.color||z.colour||'#58a9ff')||'#58a9ff'}
 function zoneKindLabel(k){return ({service:'SERVICE',bathroom:'SALLE DE BAIN',bedroom:'CHAMBRE',office:'BUREAU',terrace:'TERRASSE',kitchen:'CUISINE',spa:'SPA',technical:'TECHNIQUE'})[aText(k)||'service']||aText(k).toUpperCase()}
 function zoneClass(z){const k=aText(z.zoneKind||'service'),shape=aText(z.zoneShape||'rect');return `zone-${k} ${shape==='rounded'?'zone-rounded':shape==='oval'?'zone-oval':''}`}
-function iconFor(type){return ({wall:'🧱',door:'🚪',window:'🪟',bar:'🍸 BAR',kitchen:'👨‍🍳 CUISINE',cash:'💳 CAISSE',buffet:'🍽️ BUFFET',text:'✏️ TEXTE',plant:'🪴',tree:'ARBRE',palm:'PALMIER',pergola:'PERGOLA',pool_lowtable:'TABLE BASSE PISCINE',parasol:'PARASOL',pool:'🏊 PISCINE',roomservice:'🛎️ ROOM SERVICE',bed_single:'🛏️ LIT SIMPLE',bed_double:'🛏️ LIT DOUBLE',desk:'🖥️ BUREAU',sofa:'🛋️ CANAPÉ',wardrobe:'🚪 ARMOIRE',sink:'🚰 LAVABO',toilet:'🚽 WC',shower:'🚿 DOUCHE',stair_straight:'ESCALIER DROIT',stair_quarter:'ESCALIER 1/4 TOURNANT',stair_half:'ESCALIER DEMI-TOUR',stair_double_quarter:'ESCALIER 2/4 TOURNANT',stair_spiral:'ESCALIER COLIMAÇON',stair_curved:'ESCALIER COURBE',stair_exterior:'ESCALIER EXTÉRIEUR',stair_ladder:'ÉCHELLE / MEZZANINE'})[type]||String(type||'').toUpperCase()}
-function classFor(type){return ({wall:'arch-wall',door:'arch-door',window:'arch-window',bar:'arch-bar',kitchen:'arch-kitchen',cash:'arch-cash',buffet:'arch-buffet',text:'arch-text',plant:'arch-plant',tree:'arch-tree',palm:'arch-palm',pergola:'arch-pergola',pool_lowtable:'arch-pool-lowtable',parasol:'arch-parasol',pool:'arch-pool',roomservice:'arch-roomservice',bed_single:'arch-bed-single',bed_double:'arch-bed-double',desk:'arch-desk',sofa:'arch-sofa',wardrobe:'arch-wardrobe',sink:'arch-bathfixture',toilet:'arch-bathfixture',shower:'arch-shower',stair_straight:'arch-stair arch-stair-straight',stair_quarter:'arch-stair arch-stair-quarter',stair_half:'arch-stair arch-stair-half',stair_double_quarter:'arch-stair arch-stair-double-quarter',stair_spiral:'arch-stair arch-stair-spiral',stair_curved:'arch-stair arch-stair-curved',stair_exterior:'arch-stair arch-stair-exterior',stair_ladder:'arch-stair arch-stair-ladder'})[type]||''}
+function iconFor(type){return ({wall:'🧱',door:'🚪',window:'🪟',bar:'🍸 BAR',kitchen:'👨‍🍳 CUISINE',cash:'💳 CAISSE',buffet:'🍽️ BUFFET',text:'✏️ TEXTE',plant:'🪴',tree:'ARBRE',palm:'PALMIER',pergola:'PERGOLA',pool_lowtable:'TABLE BASSE PISCINE',parasol:'PARASOL',pool:'🏊 PISCINE',roomservice:'🛎️ ROOM SERVICE',bed_single:'🛏️ LIT SIMPLE',bed_double:'🛏️ LIT DOUBLE',desk:'🖥️ BUREAU',sofa:'🛋️ CANAPÉ',wardrobe:'🚪 ARMOIRE',sink:'🚰 LAVABO',toilet:'🚽 WC',shower:'🚿 DOUCHE',stair_straight:'ESCALIER DROIT',stair_quarter:'ESCALIER 1/4 TOURNANT',stair_half:'ESCALIER DEMI-TOUR',stair_double_quarter:'ESCALIER 2/4 TOURNANT',stair_spiral:'ESCALIER COLIMAÇON',stair_curved:'ESCALIER COURBE',stair_exterior:'ESCALIER EXTÉRIEUR',stair_ladder:'ÉCHELLE / MEZZANINE',
+beach_towel:'SERVIETTE PLAGE',pool_shower:'DOUCHE PISCINE',pool_ladder_obj:'ÉCHELLE PISCINE',daybed_obj:'LIT BALINAIS',cabana_obj:'CABANA',lounge_sofa_obj:'CANAPÉ LOUNGE',lounge_armchair:'FAUTEUIL LOUNGE',lounge_pouf:'POUF',bar_counter_curve:'BAR COURBE',bottle_shelf:'ÉTAGÈRE BOUTEILLES',wine_fridge:'CAVE À VIN',tea_sofa_obj:'CANAPÉ SALON DE THÉ',tea_armchair:'FAUTEUIL SALON DE THÉ',pastry_display:'VITRINE PÂTISSERIE',coffee_counter:'COMPTOIR CAFÉ',tea_trolley:'CHARIOT THÉ',banquette_wall:'BANQUETTE MURALE',service_station:'DESSERTE',host_stand:'PUPITRE ACCUEIL',wine_cellar:'CAVE À VIN',gueridon:'GUÉRIDON',restaurant_screen:'PARAVENT'})[type]||String(type||'').toUpperCase()}
+function classFor(type){return ({wall:'arch-wall',door:'arch-door',window:'arch-window',bar:'arch-bar',kitchen:'arch-kitchen',cash:'arch-cash',buffet:'arch-buffet',text:'arch-text',plant:'arch-plant',tree:'arch-tree',palm:'arch-palm',pergola:'arch-pergola',pool_lowtable:'arch-pool-lowtable',parasol:'arch-parasol',pool:'arch-pool',roomservice:'arch-roomservice',bed_single:'arch-bed-single',bed_double:'arch-bed-double',desk:'arch-desk',sofa:'arch-sofa',wardrobe:'arch-wardrobe',sink:'arch-bathfixture',toilet:'arch-bathfixture',shower:'arch-shower',stair_straight:'arch-stair arch-stair-straight',stair_quarter:'arch-stair arch-stair-quarter',stair_half:'arch-stair arch-stair-half',stair_double_quarter:'arch-stair arch-stair-double-quarter',stair_spiral:'arch-stair arch-stair-spiral',stair_curved:'arch-stair arch-stair-curved',stair_exterior:'arch-stair arch-stair-exterior',stair_ladder:'arch-stair arch-stair-ladder',
+beach_towel:'arch-furn arch-beach-towel',pool_shower:'arch-furn arch-pool-shower',pool_ladder_obj:'arch-furn arch-pool-ladder-obj',daybed_obj:'arch-furn arch-daybed-obj',cabana_obj:'arch-furn arch-cabana-obj',lounge_sofa_obj:'arch-furn arch-lounge-sofa-obj',lounge_armchair:'arch-furn arch-lounge-armchair',lounge_pouf:'arch-furn arch-lounge-pouf',bar_counter_curve:'arch-furn arch-bar-counter-curve',bottle_shelf:'arch-furn arch-bottle-shelf',wine_fridge:'arch-furn arch-wine-fridge',tea_sofa_obj:'arch-furn arch-tea-sofa-obj',tea_armchair:'arch-furn arch-tea-armchair',pastry_display:'arch-furn arch-pastry-display',coffee_counter:'arch-furn arch-coffee-counter',tea_trolley:'arch-furn arch-tea-trolley',banquette_wall:'arch-furn arch-banquette-wall',service_station:'arch-furn arch-service-station',host_stand:'arch-furn arch-host-stand',wine_cellar:'arch-furn arch-wine-cellar',gueridon:'arch-furn arch-gueridon',restaurant_screen:'arch-furn arch-restaurant-screen'})[type]||''}
 function nodeStyle(o){const d=defaults(o,o.__kind||'element'),z=Number(o.zIndex)||0;return `left:${d.l/ARCH_W*100}%;top:${d.t/ARCH_H*100}%;width:${d.w/ARCH_W*100}%;height:${d.h/ARCH_H*100}%;transform:rotate(${d.rotation||0}deg);${z?`z-index:${z};`:''}`}
 function handles(){if(A.mode!=='architect'||!canEdit())return '';return '<span class="arch-handle nw" data-resize="nw" title="Agrandir / rétrécir"></span><span class="arch-handle n" data-resize="n" title="Hauteur"></span><span class="arch-handle ne" data-resize="ne" title="Agrandir / rétrécir"></span><span class="arch-handle e" data-resize="e" title="Largeur"></span><span class="arch-handle se" data-resize="se" title="Agrandir / rétrécir"></span><span class="arch-handle s" data-resize="s" title="Hauteur"></span><span class="arch-handle sw" data-resize="sw" title="Agrandir / rétrécir"></span><span class="arch-handle w" data-resize="w" title="Largeur"></span><button type="button" class="arch-rotate" data-rotate title="Rotation +15°">↻</button>'}
 function stairInner(e){
@@ -14588,7 +14569,14 @@ function stairInner(e){
   if(e.type==='stair_ladder')return `<span class="stair-drawing stair-drawing-ladder"><i></i>${arrow}</span><span class="stair-name">${label}</span>`;
   return label;
 }
-function elementInner(e){const label=esc(e.label||iconFor(e.type));if(e.type==='wall')return '';if(e.type==='cash')return `<span class="arch-cash-label">${label}</span>`;if(String(e.type||'').startsWith('stair_'))return stairInner(e);if(['bed_single','bed_double','desk','sofa','wardrobe','sink','toilet','shower'].includes(e.type))return `<span class="arch-object-label">${label}</span>`;return label}
+function furnitureInner(e){
+  const label=esc(e.label||iconFor(e.type));
+  const type=aText(e.type);
+  const known=['beach_towel','pool_shower','pool_ladder_obj','daybed_obj','cabana_obj','lounge_sofa_obj','lounge_armchair','lounge_pouf','bar_counter_curve','bottle_shelf','wine_fridge','tea_sofa_obj','tea_armchair','pastry_display','coffee_counter','tea_trolley','banquette_wall','service_station','host_stand','wine_cellar','gueridon','restaurant_screen'];
+  if(!known.includes(type))return '';
+  return `<span class="furn-visual furn-${esc(type)}" aria-hidden="true"><i class="furn-a"></i><i class="furn-b"></i><i class="furn-c"></i><i class="furn-d"></i></span><span class="furn-label">${label}</span>`;
+}
+function elementInner(e){const label=esc(e.label||iconFor(e.type));if(e.type==='wall')return '';if(e.type==='cash')return `<span class="arch-cash-label">${label}</span>`;if(String(e.type||'').startsWith('stair_'))return stairInner(e);const furn=furnitureInner(e);if(furn)return furn;if(['bed_single','bed_double','desk','sofa','wardrobe','sink','toilet','shower'].includes(e.type))return `<span class="arch-object-label">${label}</span>`;return label}
 
 function cityGroupHits(){
   /* Objets supprimables de la salle.
@@ -14640,14 +14628,7 @@ function deleteAllRoomObjects(){
    le terrain 50 × 50 m. Elles ne doivent pas bloquer le déplacement du restaurant.
    On les ignore UNIQUEMENT pour le drag groupé ; tables, murs, mobilier et vraies
    zones d'exploitation restent déplacés ensemble. */
-function cityIsGroupBackgroundZone(h){
-  if(!h?.obj||h.type!=='zone')return false;
-  const d=defaults(h.obj,'zone');
-  const label=aText(h.obj.label||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
-  const technical=/PROTECTION|SECURITE|MARGE|TERRAIN|LIMITE/.test(label);
-  const almostStage=d.w>=ARCH_W*.92||d.h>=ARCH_H*.92||(d.w*d.h)>=ARCH_W*ARCH_H*.82;
-  return technical||almostStage;
-}
+
 function cityGroupMovableHits(){
   /* V22 : aucun objet visible, aucune zone et aucune salle ne sont laissés derrière. */
   return cityGroupMoveHits();
@@ -14721,36 +14702,9 @@ function cityGroupAction(action){
   if(action==='delete')return deleteAllRoomObjects();
   if(action==='cancel')return clearGroupSelection();
 }
-function cityGroupMoveButtonStart(e,btn){
-  if(!A.groupAll||A.mode!=='architect'||!canEdit())return;
-  e.preventDefault();e.stopPropagation();
-  clearArchPress();
-  if(!beginGroupDrag(e))return;
-  btn.dataset.groupDragging='1';
-  btn.classList.add('dragging');
-  try{btn.setPointerCapture?.(e.pointerId)}catch(_){}
-}
-function cityGroupMoveButtonMove(e,btn){
-  if(btn.dataset.groupDragging!=='1')return;
-  e.preventDefault();e.stopPropagation();
-  moveGroupDrag(e);
-}
-function cityGroupMoveButtonEnd(e,btn,cancel=false){
-  if(btn.dataset.groupDragging!=='1')return;
-  e.preventDefault();e.stopPropagation();
-  delete btn.dataset.groupDragging;
-  btn.classList.remove('dragging');
-  try{
-    if(btn.hasPointerCapture?.(e.pointerId))btn.releasePointerCapture(e.pointerId);
-  }catch(_){}
-  if(A.groupDrag&&A.groupDrag.pointerId===e.pointerId){
-    const g=A.groupDrag;
-    A.groupDrag=null;
-    archRelease(e);
-    renderCanvas();
-    if(g.moved&&!cancel)aToast('Tout le plan déplacé · salle + zones + objets');
-  }
-}
+
+
+
 
 function cityPhysicalItems(){
   const out=[];
@@ -14759,24 +14713,7 @@ function cityPhysicalItems(){
   roomElements().forEach(o=>{if(aText(o.type)!=='text')out.push({type:'element',obj:o,key:getElemKey(o)})});
   return out;
 }
-function cityRoomBounds(pad=50){
-  let items=cityPhysicalItems();
-  if(!items.length)return {minX:100,minY:100,maxX:1300,maxY:900,w:1200,h:800};
-  /* Anti-outlier : les tables forment l'ancre principale de la salle. Un ancien objet
-     isolé à plusieurs dizaines de mètres ne doit jamais écraser le zoom du plan. */
-  const anchors=roomTables().map(o=>({type:'table',obj:o,key:getTableKey(o)}));
-  if(anchors.length>=4){
-    const centers=anchors.map(h=>{const d=defaults(h.obj,h.type);return {x:d.l+d.w/2,y:d.t+d.h/2}});
-    const xs=centers.map(c=>c.x).sort((a,b)=>a-b),ys=centers.map(c=>c.y).sort((a,b)=>a-b),med=a=>a[Math.floor(a.length/2)],mx=med(xs),my=med(ys);
-    const ds=centers.map(c=>Math.hypot(c.x-mx,c.y-my)).sort((a,b)=>a-b),md=med(ds),limit=Math.max(1200,md*4+300);
-    const core=items.filter(h=>{const d=defaults(h.obj,h.type),cx=d.l+d.w/2,cy=d.t+d.h/2;return Math.hypot(cx-mx,cy-my)<=limit||h.type==='zone'});
-    if(core.filter(h=>h.type==='table').length>=Math.ceil(anchors.length*.7))items=core;
-  }
-  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
-  items.forEach(h=>{const d=defaults(h.obj,h.type);minX=Math.min(minX,d.l);minY=Math.min(minY,d.t);maxX=Math.max(maxX,d.l+d.w);maxY=Math.max(maxY,d.t+d.h)});
-  minX=aClamp(minX-pad,0,ARCH_W);minY=aClamp(minY-pad,0,ARCH_H);maxX=aClamp(maxX+pad,0,ARCH_W);maxY=aClamp(maxY+pad,0,ARCH_H);
-  return {minX,minY,maxX,maxY,w:Math.max(100,maxX-minX),h:Math.max(100,maxY-minY)};
-}
+
 function cityOperationalViewBounds(){
   /* V13 SAFE — CADRAGE STABLE.
      La fenêtre visible part TOUJOURS des dimensions de la salle active.
@@ -14899,31 +14836,7 @@ function cityClampObjectResizeToSafetyExact(hit,target){
    À moins de 28 cm d'un mur dessiné, l'enveloppe réelle de l'objet
    (table + chaises/transats compris) se plaque exactement bord à bord.
    Aucune marge de protection n'est ajoutée contre un mur. */
-function citySnapObjectToWallContact(hit,l,t,threshold=28){
-  if(!hit?.obj)return {l,t,snapped:false};
-  const d=defaults(hit.obj,hit.type),mine=cityShapeEnvelope(cityCollisionShapesForHitAt(hit,l,t,d.w,d.h));
-  if(!mine)return {l,t,snapped:false};
-  let best=null;
-  for(const wall of roomElements().filter(o=>aText(o.type).toLowerCase()==='wall')){
-    const wallKey=getElemKey(wall);if(wallKey===hit.key)continue;
-    const wd=defaults(wall,'element'),wh={type:'element',obj:wall,key:wallKey};
-    const wr=cityShapeEnvelope(cityCollisionShapesForHitAt(wh,wd.l,wd.t,wd.w,wd.h));if(!wr)continue;
-    const vOverlap=Math.min(mine.b,wr.b)-Math.max(mine.t,wr.t);
-    const hOverlap=Math.min(mine.r,wr.r)-Math.max(mine.l,wr.l);
-    if(vOverlap>4){
-      const gaps=[{delta:wr.l-mine.r,axis:'x'},{delta:wr.r-mine.l,axis:'x'}];
-      for(const g of gaps)if(Math.abs(g.delta)<=threshold&&(!best||Math.abs(g.delta)<Math.abs(best.delta)))best=g;
-    }
-    if(hOverlap>4){
-      const gaps=[{delta:wr.t-mine.b,axis:'y'},{delta:wr.b-mine.t,axis:'y'}];
-      for(const g of gaps)if(Math.abs(g.delta)<=threshold&&(!best||Math.abs(g.delta)<Math.abs(best.delta)))best=g;
-    }
-  }
-  if(!best)return {l,t,snapped:false};
-  let nl=l,nt=t;if(best.axis==='x')nl+=best.delta;else nt+=best.delta;
-  const clamped=cityClampObjectMoveToSafety(hit,nl,nt);
-  return {l:clamped.l,t:clamped.t,snapped:true};
-}
+
 function citySafetyOverflowForShapes(shapes){
   const b=cityConstructionBounds();
   let penalty=0;
@@ -14939,17 +14852,13 @@ function cityOutsideSafetyBoundary(hit,l=null,t=null,w=null,h=null){
   const d=defaults(hit.obj,hit.type),ll=l==null?d.l:l,tt=t==null?d.t:t,ww=w==null?d.w:w,hh=h==null?d.h:h;
   return citySafetyOverflowForShapes(cityCollisionShapesForHitAt(hit,ll,tt,ww,hh))>0;
 }
-function cityRect(hit){if(!hit?.obj)return null;const d=defaults(hit.obj,hit.type);return {l:d.l,t:d.t,r:d.l+d.w,b:d.t+d.h,w:d.w,h:d.h}}
-function cityOverlaps(a,b,margin=4){return a.l+margin<b.r&&a.r-margin>b.l&&a.t+margin<b.b&&a.b-margin>b.t}
+
+
 const CITY_TABLE_ANTISHOCK=20; // 20 cm de tampon de sécurité
 const CITY_CHAIR_PHYS_W=56;     // encombrement physique approx. d'une chaise en cm
 const CITY_CHAIR_PHYS_H=44;
 const CITY_CHAIR_GAP=10;        // petit tampon autour des chaises
-function cityTableRectAt(obj,l,t,w=null,h=null){
-  const d=defaults(obj,'table');
-  const ww=w==null?d.w:w,hh=h==null?d.h:h;
-  return {l,t,r:l+ww,b:t+hh,w:ww,h:hh,kind:'body'};
-}
+
 function cityRectOverlapPenalty(a,b,gap=0){
   const ax1=a.l-gap,ay1=a.t-gap,ax2=a.r+gap,ay2=a.b+gap;
   const bx1=b.l-gap,by1=b.t-gap,bx2=b.r+gap,by2=b.b+gap;
@@ -15000,9 +14909,7 @@ function cityTableCollisionPenaltyAt(obj,key,l,t,w=null,h=null){
   });
   return penalty;
 }
-function cityTableTooCloseAt(obj,key,l,t,w=null,h=null){
-  return cityTableCollisionPenaltyAt(obj,key,l,t,w,h)>0;
-}
+
 function cityTraceTableMove(obj,key,fromL,fromT,toL,toT,w,h){
   const dx=toL-fromL,dy=toT-fromT,dist=Math.hypot(dx,dy);
   const steps=Math.max(1,Math.min(180,Math.ceil(dist/8))); // pas ~8 cm : évite de traverser une table d'un coup
@@ -15018,25 +14925,8 @@ function cityTraceTableMove(obj,key,fromL,fromT,toL,toT,w,h){
   }
   return {l,t,blocked,penalty:lastPenalty,travel:Math.hypot(l-fromL,t-fromT)};
 }
-function cityResolveTableMove(hit,key,targetL,targetT){
-  const d=defaults(hit.obj,'table');
-  const curL=Number(hit.obj.l)||0,curT=Number(hit.obj.t)||0;
-  const direct=cityTraceTableMove(hit.obj,key,curL,curT,targetL,targetT,d.w,d.h);
-  if(!direct.blocked)return {l:targetL,t:targetT,blocked:false};
 
-  /* V46 : si la diagonale rencontre un obstacle, on tente un glissement X ou Y
-     depuis la dernière position sûre. Cela reste naturel dans toutes les directions. */
-  const sx=cityTraceTableMove(hit.obj,key,direct.l,direct.t,targetL,direct.t,d.w,d.h);
-  const sy=cityTraceTableMove(hit.obj,key,direct.l,direct.t,direct.l,targetT,d.w,d.h);
-  const best=(sx.travel>=sy.travel)?sx:sy;
-  return {l:best.l,t:best.t,blocked:true};
-}
-function cityTableResizeAllowed(hit,key,l,t,w,h){
-  const current=defaults(hit.obj,'table');
-  const before=cityTableCollisionPenaltyAt(hit.obj,key,current.l,current.t,current.w,current.h);
-  const after=cityTableCollisionPenaltyAt(hit.obj,key,l,t,w,h);
-  return after===0||(before>0&&after<before);
-}
+
 /* ================================================================
    iCHEF V52 — ANTI-CHOC CONTINU + MANIPULATION STABLE
    - Tables + chaises contre tous les objets physiques
@@ -15127,32 +15017,8 @@ function cityTraceSafetyMove(hit,fromL,fromT,toL,toT,w,h){
   }
   return {l,t,blocked,penalty:lastPenalty,travel:Math.hypot(l-fromL,t-fromT)};
 }
-function cityResolveSafetyMove(hit,targetL,targetT){
-  const d=defaults(hit.obj,hit.type),curL=Number(hit.obj.l)||0,curT=Number(hit.obj.t)||0;
-  const direct=cityTraceSafetyMove(hit,curL,curT,targetL,targetT,d.w,d.h);
-  if(!direct.blocked)return {l:targetL,t:targetT,blocked:false};
-  /* La ligne pointillée reste la seule barrière : glissement le long du bord. */
-  const sx=cityTraceSafetyMove(hit,direct.l,direct.t,targetL,direct.t,d.w,d.h);
-  const sy=cityTraceSafetyMove(hit,direct.l,direct.t,direct.l,targetT,d.w,d.h);
-  const best=sx.travel>=sy.travel?sx:sy;
-  return {l:best.l,t:best.t,blocked:true};
-}
-function cityResolveResizeSafetyLive(drag,hit,target){
-  if(!drag||!hit?.obj||!target)return {geom:target,blocked:false};
-  const current=cityDragGeom(hit),targetPenalty=citySafetyPenaltyAt(hit,target.l,target.t,target.w,target.h);
-  if(targetPenalty===0)return {geom:target,blocked:false};
-  let best={...current},bestPenalty=citySafetyPenaltyAt(hit,current.l,current.t,current.w,current.h);
-  const steps=48;
-  for(let i=1;i<=steps;i++){
-    const f=i/steps;
-    const g={l:current.l+(target.l-current.l)*f,t:current.t+(target.t-current.t)*f,w:current.w+(target.w-current.w)*f,h:current.h+(target.h-current.h)*f};
-    const p=citySafetyPenaltyAt(hit,g.l,g.t,g.w,g.h);
-    const allowed=p===0||(bestPenalty>0&&p<=bestPenalty);
-    if(!allowed)break;
-    best=g;bestPenalty=p;
-  }
-  return {geom:best,blocked:true};
-}
+
+
 function cityTraceObjectMove(hit,key,fromL,fromT,toL,toT,w,h){
   const dx=toL-fromL,dy=toT-fromT,dist=Math.hypot(dx,dy);
   const steps=Math.max(1,Math.min(220,Math.ceil(dist/7)));
@@ -15166,22 +15032,8 @@ function cityTraceObjectMove(hit,key,fromL,fromT,toL,toT,w,h){
   }
   return {l,t,blocked,penalty:lastPenalty,travel:Math.hypot(l-fromL,t-fromT)};
 }
-function cityResolveObjectMove(hit,key,targetL,targetT){
-  const d=defaults(hit.obj,hit.type),curL=Number(hit.obj.l)||0,curT=Number(hit.obj.t)||0;
-  const direct=cityTraceObjectMove(hit,key,curL,curT,targetL,targetT,d.w,d.h);
-  if(!direct.blocked)return {l:targetL,t:targetT,blocked:false};
-  // Glissement naturel contre l'obstacle : teste l'axe horizontal puis vertical.
-  const sx=cityTraceObjectMove(hit,key,direct.l,direct.t,targetL,direct.t,d.w,d.h);
-  const sy=cityTraceObjectMove(hit,key,direct.l,direct.t,direct.l,targetT,d.w,d.h);
-  const best=sx.travel>=sy.travel?sx:sy;
-  return {l:best.l,t:best.t,blocked:true};
-}
-function cityObjectResizeAllowed(hit,key,l,t,w,h){
-  const cur=defaults(hit.obj,hit.type);
-  const before=cityObjectCollisionPenaltyAt(hit,key,cur.l,cur.t,cur.w,cur.h);
-  const after=cityObjectCollisionPenaltyAt(hit,key,l,t,w,h);
-  return after===0||(before>0&&after<before);
-}
+
+
 /* ================================================================
    iCHEF V52 — ANTI-CHOC CONTINU SANS SAUT AU LÂCHER
    L'objet suit le geste jusqu'à la dernière position sûre puis glisse le long
@@ -15201,59 +15053,12 @@ function cityDragPenalty(hit,key,g){
   if(!hit?.obj||!g)return 0;
   return cityObjectCollisionPenaltyAt(hit,key,g.l,g.t,g.w,g.h);
 }
-function cityRememberDragBest(drag,hit,g,penalty){
-  if(!drag||!hit||!g)return;
-  const eps=0.5;
-  if(!drag.bestGeom||penalty+eps<Number(drag.bestPenalty??Infinity)||penalty===0){
-    drag.bestGeom={...g};drag.bestPenalty=penalty;
-  }
-}
-function cityFinalizeSoftAntiShock(drag,hit){
-  if(!drag||!hit?.obj)return {adjusted:false,penalty:0};
-  const current=cityDragGeom(hit),penalty=cityDragPenalty(hit,drag.key,current);
-  if(penalty<=0)return {adjusted:false,penalty:0};
-  /* Si l'objet était déjà en collision avant le geste, conserver le meilleur
-     progrès obtenu permet de le sortir progressivement d'un ancien plan. */
-  const startPenalty=Number(drag.startPenalty||0);
-  const best=drag.bestGeom||drag.orig;
-  const bestPenalty=Number(drag.bestPenalty??startPenalty);
-  if(best&&(bestPenalty===0||bestPenalty<penalty||bestPenalty<startPenalty)){
-    cityApplyDragGeom(hit,best);
-    return {adjusted:true,penalty:bestPenalty};
-  }
-  cityApplyDragGeom(hit,drag.orig);
-  return {adjusted:true,penalty:startPenalty};
-}
+
+
 
 /* V52 : cherche la géométrie de redimensionnement la plus proche du doigt
    sans laisser l'objet pénétrer dans un obstacle. */
-function cityResolveResizeLive(drag,hit,target){
-  if(!drag||!hit?.obj||!target)return {geom:target,blocked:false};
-  const key=drag.key;
-  const base=drag.lastSafeGeom||drag.bestGeom||drag.orig;
-  const basePenalty=cityDragPenalty(hit,key,base);
-  const targetPenalty=cityDragPenalty(hit,key,target);
-  if(targetPenalty===0||(basePenalty>0&&targetPenalty<basePenalty)){
-    return {geom:target,blocked:false};
-  }
-  let best={...base};
-  let bestPenalty=basePenalty;
-  const steps=36;
-  for(let i=1;i<=steps;i++){
-    const f=i/steps;
-    const g={
-      l:base.l+(target.l-base.l)*f,
-      t:base.t+(target.t-base.t)*f,
-      w:base.w+(target.w-base.w)*f,
-      h:base.h+(target.h-base.h)*f
-    };
-    const p=cityDragPenalty(hit,key,g);
-    const allowed=p===0||(bestPenalty>0&&p<=bestPenalty);
-    if(!allowed)break;
-    best=g;bestPenalty=p;
-  }
-  return {geom:best,blocked:true};
-}
+
 
 /* ================================================================
    iCHEF V54 — COLLISION = ALERTE, PAS BLOCAGE
@@ -15726,7 +15531,11 @@ function moveFreeChair(e){
 }
 function archTableChairsHTML(t,live,service){
   const seatStyle=aText(t?.seatStyle||'chair');
-  const seatStyleClass=seatStyle==='sunbed'?'seat-sunbed':'';
+  const seatStyleClass=({
+    sunbed:'seat-sunbed',daybed:'seat-daybed',barstool:'seat-barstool',
+    lounge:'seat-lounge',club:'seat-club',cafe:'seat-cafe',
+    restaurant:'seat-restaurant',banquette:'seat-banquette'
+  })[seatStyle]||'seat-chair';
   const capacity=Math.max(1,Math.min(16,Number(t?.pax)||2));
   const livePax=Math.max(0,Math.min(16,Number(live?.pax)||0));
   const count=Math.max(capacity,livePax);
@@ -15740,9 +15549,11 @@ function archTableChairsHTML(t,live,service){
     const allergy=!!seat?.allergy;
     const color=occupied?`var(--c${Math.min(i,9)},#55d987)`:'#ad7b49';
     const label=occupied?`C${i}`:(t?.chairsFree?String(i):'');
-    const seatName=seatStyle==='sunbed'?'Transat':'Chaise';
-    const title=occupied?`Client C${i}${seat?.label?' · '+seat.label:''}`:`${seatName} ${i} / ${capacity}${t?.chairsFree?' · appui 0,3 s pour déplacer':''}`;
-    chairs.push(`<span class="arch-chair ${seatStyleClass} ${occupied?'occupied':'free'} ${occupied?'chair-'+esc(state):''} ${allergy?'chair-allergy':''} ${!service&&t?.chairsFree?'free-layout':''}" data-chair-seat="${i}" data-chair-table="${esc(getTableKey(t))}" style="--chair-x:${pose.x.toFixed(2)}%;--chair-y:${pose.y.toFixed(2)}%;--chair-r:${pose.r.toFixed(1)}deg;--chair-color:${color}" title="${esc(title)}"><span>${label}</span></span>`);
+    const seatName=({sunbed:'Transat',daybed:'Lit balinais',barstool:'Tabouret',lounge:'Fauteuil lounge',club:'Fauteuil club',cafe:'Chaise café',restaurant:'Chaise restaurant',banquette:'Banquette'})[seatStyle]||'Chaise';
+    const consumeLabel=seat?.consumeLabel||'';
+    const consumeIcon=seat?.consumeIcon||'';
+    const title=occupied?`Client C${i}${consumeLabel?' · '+consumeLabel:''}${seat?.label?' · '+seat.label:''}`:`${seatName} ${i} / ${capacity}${t?.chairsFree?' · appui 0,3 s pour déplacer':''}`;
+    chairs.push(`<span class="arch-chair ${seatStyleClass} ${occupied?'occupied':'free'} ${occupied?'chair-'+esc(state):''} ${allergy?'chair-allergy':''} ${!service&&t?.chairsFree?'free-layout':''}" data-chair-seat="${i}" data-chair-table="${esc(getTableKey(t))}" style="--chair-x:${pose.x.toFixed(2)}%;--chair-y:${pose.y.toFixed(2)}%;--chair-r:${pose.r.toFixed(1)}deg;--chair-color:${color}" title="${esc(title)}"><span class="seat-code-live">${label}</span>${occupied&&consumeIcon?`<span class="seat-consume">${esc(consumeIcon)}</span>`:''}</span>`);
   }
   return `<span class="arch-chair-layer">${chairs.join('')}</span>`;
 }
@@ -15750,7 +15561,7 @@ function canvasHTML(){
  const collision=cityHasCollision(A.selected);
  const zones=roomZones().map(z=>{z.__kind='zone';const key=getZoneKey(z),locked=!!z.locked,fill=aClamp(z.fillOpacity||15,3,55),border=['solid','dashed','dotted'].includes(aText(z.borderStyle))?aText(z.borderStyle):'dashed',coll=cityHasCollision(key);return `<div class="arch-node arch-zone ${zoneClass(z)} ${locked?'locked':''} ${A.selected===key?'selected':''} ${A.groupAll?'city-group-selected':''} ${coll?'city-collision':''}" data-arch-key="${esc(key)}" style="${nodeStyle(z)};--zone-color:${esc(colorForZone(z))};--zone-fill:${fill}%;--zone-border:${border}"><span class="zone-label" data-zone-drag title="Maintenir et glisser pour déplacer la zone">${esc(z.label||'ZONE')}</span><span class="zone-kind" data-zone-drag title="Maintenir et glisser pour déplacer la zone">${esc(zoneKindLabel(z.zoneKind))}</span><span class="zone-meta">${esc(z.responsible||z.responsable||'')} ${z.capacity?'· '+esc(z.capacity)+' places':''}</span>${locked?'<span class="arch-lock-badge"></span>':''}${handles()}</div>`}).join('');
  const els=roomElements().map(e=>{e.__kind='element';const key=getElemKey(e),locked=!!e.locked,coll=cityHasCollision(key);return `<div class="arch-node arch-generic ${classFor(e.type)} ${cashPatternClass(e)} ${locked?'locked':''} ${A.selected===key?'selected':''} ${A.groupAll?'city-group-selected':''} ${coll?'city-collision':''}" data-arch-key="${esc(key)}" style="${nodeStyle(e)}${cashCustomStyle(e)}">${elementInner(e)}${locked?'<span class="arch-lock-badge"></span>':''}${handles()}</div>`}).join('');
- const tables=roomTables().map(t=>{t.__kind='table';const key=getTableKey(t),act=activeOrder(t.label),ex=isExpressTable(t),shape=aText(t.shape||'square'),locked=!!t.locked,service=A.mode==='service',live=planTableLive(t),coll=cityHasCollision(key);const liveClass=service?`service-live live-${live.code}`:'';const serviceInner=service?`<span class="tlabel">${esc(t.label)}</span><span class="arch-table-live-head"><span class="state ${esc(live.code)}">${esc(live.label)}</span>${live.time?`<span class="clock">${esc(live.time)}</span>`:''}<span class="pax">${Math.max(1,Number(t.pax)||2)}</span></span>${live.seats?.length?`<span class="arch-seat-strip">${planSeatStripHTML(live)}</span>`:''}`:`<span class="tlabel">${esc(t.label)}</span><span class="tpax">CAP. ${Number(t.pax)||2}${t.zone?' · '+esc(t.zone):''}</span>`;const clientCount=`<span class="arch-client-count ${live.pax>0?'':'zero'}" title="${live.pax} client${live.pax===1?'':'s'}">${live.pax}</span>`;const chairs=archTableChairsHTML(t,live,service);return `<button type="button" class="arch-node arch-table ${shape==='round'?'round':''} ${aText(t.preset)==='bar'?'table-preset-bar':aText(t.preset)==='pool'?'table-preset-pool':''} ${act?'active-order':''} ${liveClass} ${ex?'express':''} ${locked?'locked':''} ${A.selected===key?'selected':''} ${A.groupAll?'city-group-selected':''} ${coll?'city-collision':''}" data-arch-key="${esc(key)}" style="${nodeStyle(t)}">${chairs}${serviceInner}${clientCount}${locked?'<span class="arch-lock-badge"></span>':''}${handles()}</button>`}).join('');
+ const tables=roomTables().map(t=>{t.__kind='table';const key=getTableKey(t),act=activeOrder(t.label),ex=isExpressTable(t),shape=aText(t.shape||'square'),locked=!!t.locked,service=A.mode==='service',live=planTableLive(t),coll=cityHasCollision(key);const liveClass=service?`service-live live-${live.code}`:'';const serviceInner=service?`<span class="tlabel">${esc(t.label)}</span><span class="arch-table-live-head"><span class="state ${esc(live.code)}">${esc(live.label)}</span>${live.time?`<span class="clock">${esc(live.time)}</span>`:''}<span class="pax">${Math.max(1,Number(t.pax)||2)}</span></span>${live.seats?.length?`<span class="arch-seat-strip">${planSeatStripHTML(live)}</span>`:''}`:`<span class="tlabel">${esc(t.label)}</span><span class="tpax">CAP. ${Number(t.pax)||2}${t.zone?' · '+esc(t.zone):''}</span>`;const clientCount=`<span class="arch-client-count ${live.pax>0?'':'zero'}" title="${live.pax} client${live.pax===1?'':'s'}">${live.pax}</span>`;const chairs=archTableChairsHTML(t,live,service);const presetClass=aText(t.preset)?`table-preset-${aText(t.preset).replace(/[^a-z0-9_-]/gi,'').toLowerCase()}`:'';const seatClass=aText(t.seatStyle)?`table-seat-${aText(t.seatStyle).replace(/[^a-z0-9_-]/gi,'').toLowerCase()}`:'';return `<button type="button" class="arch-node arch-table ${shape==='round'?'round':''} ${presetClass} ${seatClass} ${act?'active-order':''} ${liveClass} ${ex?'express':''} ${locked?'locked':''} ${A.selected===key?'selected':''} ${A.groupAll?'city-group-selected':''} ${coll?'city-collision':''}" data-arch-key="${esc(key)}" style="${nodeStyle(t)}">${chairs}${serviceInner}${clientCount}${locked?'<span class="arch-lock-badge"></span>':''}${handles()}</button>`}).join('');
  return `${cityRoomBoundaryHTML()}${zones}${els}${tables}${cityMeasureOverlayHTML()}${citySelectionOverlayHTML()}${cityRoomEditOverlayHTML()}`;
 }
 function roomEmoji(name){const n=aText(name).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();if(/HOTEL|CHAMBRE|ROOM/.test(n))return '🏨';if(/TERRASSE|PLAGE/.test(n))return '☀️';if(/BAR/.test(n))return '🍸';if(/PISCINE|POOL/.test(n))return '🏊';if(/CUISINE/.test(n))return '👨‍🍳';if(/BUREAU|REUNION/.test(n))return '🖥️';if(/KIOSQUE/.test(n))return '🏪';if(/YACHT/.test(n))return '🛥️';if(/MONTAGNE|CHALET/.test(n))return '🏔️';if(/LAC/.test(n))return '🏞️';return '🍽️'}
@@ -15788,7 +15599,83 @@ function statsHTML(){const orders=roomTables().filter(t=>activeOrder(t.label)).l
 function pinOverlayHTML(){if(!A.pinOpen)return '';const dots=Array.from({length:6},(_,i)=>`<i class="${i<A.pinValue.length?'on':''}"></i>`).join('');return `<div class="archpad-pin-overlay"><div class="archpad-pin-card"><h3>🛠️ MODE ARCHITECTE</h3><p>PIN iCHEF Cloud partagé avec Admin / RH. Autorisé : PIN principal, Gérant, Directeur, Admin / Manager actif.</p><div class="archpad-pin-dots">${dots}</div><div class="archpad-pin-grid">${[1,2,3,4,5,6,7,8,9].map(n=>`<button type="button" data-arch-pin="${n}">${n}</button>`).join('')}<button type="button" class="small" data-arch-pin-clear>EFFACER</button><button type="button" data-arch-pin="0">0</button><button type="button" class="small" data-arch-pin-back>←</button></div><div class="archpad-pin-msg">${esc(A.pinMsg||'')}</div><div class="archpad-pin-actions"><button type="button" data-arch-pin-cancel>Annuler</button><button type="button" class="ok" data-arch-pin-ok>VALIDER</button></div></div></div>`}
 function architectPaletteHTML(){
  const roomOpts=(A.rooms||[]).map(r=>`<option value="${esc(r)}" ${r===A.room?'selected':''}>${esc(r)}</option>`).join('');
- return `<aside class="archpad-left"><div class="city-room-box"><label>Salle active</label><select data-room-select>${roomOpts}</select><div class="city-room-actions"><button type="button" data-add-room>+ Salle</button><button type="button" data-rename-room>Renommer</button><button type="button" class="wide" data-edit-room>▣ Modifier la salle</button><button type="button" class="wide" data-toggle-mode>▶ Passer en service</button></div></div><div class="city-panel-title">CONSTRUIRE</div><div class="city-tool-list"><button type="button" data-tool="select"><span class="ico">✋</span><span>Déplacer</span></button><button type="button" data-select-all><span class="ico">☑</span><span>Tout sélectionner</span></button><button type="button" data-add="table"><span class="ico">◯</span><span>Table</span></button><button type="button" data-add="zone"><span class="ico">▰</span><span>Zone service</span></button><button type="button" data-add="wall"><span class="ico">▦</span><span>Mur</span></button><button type="button" data-add="door"><span class="ico">▯</span><span>Porte</span></button><button type="button" data-add="window"><span class="ico">▣</span><span>Fenêtre</span></button><button type="button" data-add="sofa"><span class="ico">▱</span><span>Mobilier</span></button><button type="button" data-add="plant"><span class="ico">♣</span><span>Plante</span></button><button type="button" data-add="tree"><span class="ico">🌳</span><span>Arbre</span></button><button type="button" data-add="palm"><span class="ico">🌴</span><span>Palmier</span></button><button type="button" data-add="text"><span class="ico">T</span><span>Texte</span></button></div><div class="city-more-title">PLUS D’OBJETS</div><div class="city-tool-list"><button type="button" data-add="cash"><span class="ico">▤</span><span>Comptoir / caisse</span></button><button type="button" data-add="bar"><span class="ico">▰</span><span>Bar</span></button><button type="button" data-add="bar_table"><span class="ico">◉</span><span>Petite table bar</span></button><button type="button" data-add="pool_table"><span class="ico">◎</span><span>Table piscine + transats C</span></button><button type="button" data-add="pool_lowtable"><span class="ico">▫</span><span>Table basse piscine</span></button><button type="button" data-add="parasol"><span class="ico">☂</span><span>Parasol</span></button><button type="button" data-add="pergola"><span class="ico">▥</span><span>Pergola</span></button><button type="button" data-add="kitchen"><span class="ico">⌂</span><span>Cuisine</span></button><button type="button" data-add="toilet"><span class="ico">♟</span><span>Sanitaires</span></button><button type="button" data-add="bed_double"><span class="ico">▱</span><span>Hôtellerie</span></button><button type="button" data-add="pool"><span class="ico">≈</span><span>Extérieur</span></button><button type="button" data-express><span class="ico">＋</span><span>Table express</span></button><button type="button" class="city-table-memo-btn" data-table-memo-open><span class="ico">📏</span><span>Mémo tailles</span></button></div><div class="city-more-title">ESCALIERS</div><div class="city-tool-list stair-tool-list"><button type="button" data-add="stair_straight"><span class="ico">⇧</span><span>Droit</span></button><button type="button" data-add="stair_quarter"><span class="ico">↱</span><span>1/4 tournant</span></button><button type="button" data-add="stair_half"><span class="ico">↶</span><span>Demi-tour</span></button><button type="button" data-add="stair_double_quarter"><span class="ico">⤴</span><span>2/4 tournant</span></button><button type="button" data-add="stair_spiral"><span class="ico">◎</span><span>Colimaçon</span></button><button type="button" data-add="stair_curved"><span class="ico">⌒</span><span>Courbe</span></button><button type="button" data-add="stair_exterior"><span class="ico">⇈</span><span>Extérieur</span></button><button type="button" data-add="stair_ladder"><span class="ico">H</span><span>Échelle / mezzanine</span></button></div></aside>`;
+ const folder=(icon,title,body,open=false)=>`<details class="city-furn-folder" ${open?'open':''}><summary><span class="folder-icon">${icon}</span><span>${title}</span><b>⌄</b></summary><div class="city-furn-grid">${body}</div></details>`;
+ const btn=(type,icon,label,service=false)=>`<button type="button" data-add="${type}" class="${service?'service-furn':''}"><span class="ico">${icon}</span><span>${label}</span>${service?'<small>C1…</small>':''}</button>`;
+ const pool=[
+   btn('pool_table','◎','Table + transats',true),btn('pool_sunbed1','▱','Transat client',true),
+   btn('pool_daybed2','▰','Lit balinais 2',true),btn('pool_cabana4','▥','Cabana 4',true),
+   btn('pool_lowtable','▫','Table basse'),btn('parasol','☂','Parasol'),
+   btn('daybed_obj','▱','Lit balinais déco'),btn('cabana_obj','▥','Cabana / tente'),
+   btn('beach_towel','▤','Serviette plage'),btn('pool_shower','🚿','Douche piscine'),
+   btn('pool_ladder_obj','∪','Échelle piscine'),btn('pool','≈','Piscine'),
+   btn('palm','🌴','Palmier'),btn('tree','🌳','Arbre'),btn('pergola','▥','Pergola')
+ ].join('');
+ const lounge=[
+   btn('bar_table','◉','Table bar 2',true),btn('bar_high4','◉','Table haute 4',true),
+   btn('lounge_low2','◌','Lounge 2',true),btn('lounge_sofa4','▰','Canapé lounge 4',true),
+   btn('lounge_club4','●','Club 4',true),btn('bar','▰','Comptoir bar'),
+   btn('bar_counter_curve','◒','Bar courbe'),btn('lounge_sofa_obj','▱','Canapé lounge'),
+   btn('lounge_armchair','◉','Fauteuil lounge'),btn('lounge_pouf','●','Pouf'),
+   btn('bottle_shelf','▤','Étagère bouteilles'),btn('wine_fridge','▣','Cave à vin')
+ ].join('');
+ const tea=[
+   btn('tea_round2','○','Table thé 2',true),btn('tea_round4','○','Table thé 4',true),
+   btn('cafe_square2','□','Table café 2',true),btn('tea_sofa4','▰','Salon canapé 4',true),
+   btn('tea_sofa_obj','▱','Canapé salon'),btn('tea_armchair','◉','Fauteuil salon'),
+   btn('pastry_display','▤','Vitrine pâtisserie'),btn('coffee_counter','▰','Comptoir café'),
+   btn('tea_trolley','▥','Chariot thé'),btn('plant','♣','Plante')
+ ].join('');
+ const restaurant=[
+   btn('rest_round2','○','Ronde 2',true),btn('rest_round4','○','Ronde 4',true),
+   btn('rest_round6','○','Ronde 6',true),btn('rest_square2','□','Carrée 2',true),
+   btn('rest_square4','□','Carrée 4',true),btn('rest_rect6','▭','Rectangulaire 6',true),
+   btn('rest_rect8','▭','Rectangulaire 8',true),btn('rest_booth4','▰','Banquette 4',true),
+   btn('banquette_wall','▱','Banquette murale'),btn('service_station','▤','Desserte'),
+   btn('host_stand','▥','Pupitre accueil'),btn('gueridon','○','Guéridon'),
+   btn('buffet','▰','Buffet'),btn('wine_cellar','▣','Cave à vin'),
+   btn('restaurant_screen','▥','Paravent')
+ ].join('');
+ return `<aside class="archpad-left">
+   <div class="city-room-box"><label>Salle active</label><select data-room-select>${roomOpts}</select><div class="city-room-actions"><button type="button" data-add-room>+ Salle</button><button type="button" data-rename-room>Renommer</button><button type="button" class="wide" data-edit-room>▣ Modifier la salle</button><button type="button" class="wide" data-toggle-mode>▶ Passer en service</button></div></div>
+   <div class="city-panel-title">CONSTRUIRE</div>
+   <div class="city-tool-list">
+     <button type="button" data-tool="select"><span class="ico">✋</span><span>Déplacer</span></button>
+     <button type="button" data-select-all><span class="ico">☑</span><span>Tout sélectionner</span></button>
+     <button type="button" data-add="table"><span class="ico">◯</span><span>Table libre</span></button>
+     <button type="button" data-add="zone"><span class="ico">▰</span><span>Zone service</span></button>
+     <button type="button" data-add="wall"><span class="ico">▦</span><span>Mur</span></button>
+     <button type="button" data-add="door"><span class="ico">▯</span><span>Porte</span></button>
+     <button type="button" data-add="window"><span class="ico">▣</span><span>Fenêtre</span></button>
+     <button type="button" data-add="text"><span class="ico">T</span><span>Texte</span></button>
+   </div>
+   <div class="city-panel-title city-library-title">MOBILIER ULTRA-RÉALISTE</div>
+   <div class="city-furn-library">
+     ${folder('🏖','PISCINE / PLAGE',pool,true)}
+     ${folder('🍸','LOUNGE / BAR',lounge)}
+     ${folder('🫖','SALON DE THÉ / CAFÉ',tea)}
+     ${folder('🍽','RESTAURANT',restaurant,true)}
+   </div>
+   <div class="city-more-title">TECHNIQUE / AUTRES</div>
+   <div class="city-tool-list">
+     <button type="button" data-add="cash"><span class="ico">▤</span><span>Comptoir / caisse</span></button>
+     <button type="button" data-add="kitchen"><span class="ico">⌂</span><span>Cuisine</span></button>
+     <button type="button" data-add="toilet"><span class="ico">♟</span><span>Sanitaires</span></button>
+     <button type="button" data-add="bed_double"><span class="ico">▱</span><span>Hôtellerie</span></button>
+     <button type="button" data-express><span class="ico">＋</span><span>Table express</span></button>
+     <button type="button" class="city-table-memo-btn" data-table-memo-open><span class="ico">📏</span><span>Mémo tailles</span></button>
+   </div>
+   <div class="city-more-title">ESCALIERS</div>
+   <div class="city-tool-list stair-tool-list">
+     <button type="button" data-add="stair_straight"><span class="ico">⇧</span><span>Droit</span></button>
+     <button type="button" data-add="stair_quarter"><span class="ico">↱</span><span>1/4 tournant</span></button>
+     <button type="button" data-add="stair_half"><span class="ico">↶</span><span>Demi-tour</span></button>
+     <button type="button" data-add="stair_double_quarter"><span class="ico">⤴</span><span>2/4 tournant</span></button>
+     <button type="button" data-add="stair_spiral"><span class="ico">◎</span><span>Colimaçon</span></button>
+     <button type="button" data-add="stair_curved"><span class="ico">⌒</span><span>Courbe</span></button>
+     <button type="button" data-add="stair_exterior"><span class="ico">⇈</span><span>Extérieur</span></button>
+     <button type="button" data-add="stair_ladder"><span class="ico">H</span><span>Échelle / mezzanine</span></button>
+   </div>
+ </aside>`;
 }
 function architectBottomHTML(st){
   const hasSelection=!!A.selected||!!A.groupAll;
@@ -15913,7 +15800,34 @@ function resetRoomVisualStyle(){
   const q=ensureRoomLayout(A.room),p=roomVisualPreset(A.room);pushHistory();
   Object.assign(q,p);markDirty();renderAll();aToast('Style de salle réinitialisé');
 }
-function addObject(type,clientPoint=null){A.groupAll=false;A.groupDrag=null;if(A.mode!=='architect'||!canEdit()){aToast('Mode Architecte réservé Gérant / Directeur',true);return}pushHistory();const isZonePreset=['zone','bathroom_zone','bedroom_zone','office_zone'].includes(type),isTablePreset=type==='bar_table'||type==='pool_table',count=(type==='table'||isTablePreset)?roomTables().length:isZonePreset?roomZones().length:roomElements().length;let x=220+(count%5)*105,y=150+Math.floor(count/5)*85;if(clientPoint){const p=pointInStage(clientPoint.x,clientPoint.y);x=p.x;y=p.y}if(type==='table'||isTablePreset){const label=nextArchitectTableLabel();const preset=type==='bar_table'?{pax:2,w:78,h:78,shape:'round',seatStyle:'chair',preset:'bar'}:type==='pool_table'?{pax:2,w:78,h:78,shape:'round',seatStyle:'sunbed',preset:'pool'}:{pax:2,w:100,h:82,shape:'square',seatStyle:'chair',preset:''};const t={id:label,label,room:A.room,pax:preset.pax,l:snap(x-preset.w/2),t:snap(y-preset.h/2),w:preset.w,h:preset.h,shape:preset.shape,rotation:0,createdByRole:expressRoleLabel(),architectCreated:true,seatStyle:preset.seatStyle};if(preset.preset)t.preset=preset.preset;A.tables.push(t);A.selected=getTableKey(t)}else if(isZonePreset){const idx=roomZones().length+1,preset=type==='bathroom_zone'?{kind:'bathroom',label:'SALLE DE BAIN',color:'#55c7d9',w:300,h:240,serviceType:'Hébergement'}:type==='bedroom_zone'?{kind:'bedroom',label:'CHAMBRE',color:'#a785ff',w:500,h:360,serviceType:'Hébergement'}:type==='office_zone'?{kind:'office',label:'BUREAU',color:'#d59b54',w:360,h:260,serviceType:'Hébergement'}:{kind:'service',label:'ZONE '+idx,color:['#4cda8a','#58a9ff','#a785ff','#ffb13b'][idx%4],w:420,h:260,serviceType:'Dîner'};const z={id:aId('zone'),label:preset.label,room:A.room,l:snap(x-preset.w/2),t:snap(y-preset.h/2),w:preset.w,h:preset.h,rotation:0,color:preset.color,zoneKind:preset.kind,zoneShape:'rect',fillOpacity:preset.kind==='bathroom'?20:15,borderStyle:'dashed',responsible:'',serviceType:preset.serviceType,active:true,locked:false};A.zones.push(z);A.selected=getZoneKey(z)}else{const dims={wall:[300,18],door:[90,22],window:[120,18],bar:[220,100],kitchen:[260,150],cash:[120,80],buffet:[170,70],text:[240,45],plant:[65,65],tree:[130,130],palm:[115,115],pergola:[360,260],pool_lowtable:[75,75],parasol:[130,130],pool:[320,180],roomservice:[180,80],bed_single:[115,210],bed_double:[195,210],desk:[170,75],sofa:[190,85],wardrobe:[150,65],sink:[85,65],toilet:[70,95],shower:[110,110],stair_straight:[120,320],stair_quarter:[240,240],stair_half:[260,300],stair_double_quarter:[300,260],stair_spiral:[220,220],stair_curved:[280,220],stair_exterior:[140,320],stair_ladder:[90,260]}[type]||[150,70];const e={id:aId(type),type,label:iconFor(type),room:A.room,l:snap(x-dims[0]/2),t:snap(y-dims[1]/2),w:dims[0],h:dims[1],rotation:0,locked:false};if(type==='cash')Object.assign(e,{label:'CAISSE',cashBg:'#d7b04a',cashText:'#17130a',cashPattern:'none',cashPatternColor:'#f7e4a3',cashBorder:'#816417',cashBorderStyle:'solid',cashBorderWidth:3,cashFontSize:18,cashRadius:8});A.elements.push(e);A.selected=getElemKey(e)}markDirty();renderCanvas()}
+function cityServiceFurniturePreset(type){
+  const p={
+    bar_table:{pax:2,w:78,h:78,shape:'round',seatStyle:'barstool',preset:'bar',label:'BAR 2'},
+    pool_table:{pax:2,w:78,h:78,shape:'round',seatStyle:'sunbed',preset:'pool',label:'POOL 2'},
+    pool_sunbed1:{pax:1,w:62,h:72,shape:'round',seatStyle:'sunbed',preset:'pool',label:'TRANSAT'},
+    pool_daybed2:{pax:2,w:95,h:75,shape:'round',seatStyle:'daybed',preset:'pool',label:'DAYBED'},
+    pool_cabana4:{pax:4,w:125,h:90,shape:'square',seatStyle:'daybed',preset:'pool',label:'CABANA'},
+    bar_high4:{pax:4,w:88,h:88,shape:'round',seatStyle:'barstool',preset:'bar',label:'BAR 4'},
+    lounge_low2:{pax:2,w:95,h:65,shape:'round',seatStyle:'lounge',preset:'lounge',label:'LOUNGE 2'},
+    lounge_sofa4:{pax:4,w:130,h:75,shape:'square',seatStyle:'lounge',preset:'lounge',label:'LOUNGE 4'},
+    lounge_club4:{pax:4,w:105,h:82,shape:'round',seatStyle:'club',preset:'lounge',label:'CLUB 4'},
+    tea_round2:{pax:2,w:72,h:72,shape:'round',seatStyle:'cafe',preset:'tea',label:'THÉ 2'},
+    tea_round4:{pax:4,w:88,h:88,shape:'round',seatStyle:'cafe',preset:'tea',label:'THÉ 4'},
+    cafe_square2:{pax:2,w:72,h:72,shape:'square',seatStyle:'cafe',preset:'tea',label:'CAFÉ 2'},
+    tea_sofa4:{pax:4,w:120,h:72,shape:'square',seatStyle:'lounge',preset:'tea',label:'SALON 4'},
+    rest_round2:{pax:2,w:80,h:80,shape:'round',seatStyle:'restaurant',preset:'restaurant',label:'ROND 2'},
+    rest_round4:{pax:4,w:105,h:105,shape:'round',seatStyle:'restaurant',preset:'restaurant',label:'ROND 4'},
+    rest_round6:{pax:6,w:135,h:135,shape:'round',seatStyle:'restaurant',preset:'restaurant',label:'ROND 6'},
+    rest_square2:{pax:2,w:80,h:80,shape:'square',seatStyle:'restaurant',preset:'restaurant',label:'CARRÉ 2'},
+    rest_square4:{pax:4,w:100,h:100,shape:'square',seatStyle:'restaurant',preset:'restaurant',label:'CARRÉ 4'},
+    rest_rect6:{pax:6,w:160,h:90,shape:'square',seatStyle:'restaurant',preset:'restaurant',label:'RECT. 6'},
+    rest_rect8:{pax:8,w:200,h:100,shape:'square',seatStyle:'restaurant',preset:'restaurant',label:'RECT. 8'},
+    rest_booth4:{pax:4,w:125,h:82,shape:'square',seatStyle:'banquette',preset:'booth',label:'BANQUETTE 4'}
+  };
+  return p[type]||null;
+}
+function addObject(type,clientPoint=null){A.groupAll=false;A.groupDrag=null;if(A.mode!=='architect'||!canEdit()){aToast('Mode Architecte réservé Gérant / Directeur',true);return}pushHistory();const isZonePreset=['zone','bathroom_zone','bedroom_zone','office_zone'].includes(type),servicePreset=cityServiceFurniturePreset(type),isTablePreset=!!servicePreset,count=(type==='table'||isTablePreset)?roomTables().length:isZonePreset?roomZones().length:roomElements().length;let x=220+(count%5)*105,y=150+Math.floor(count/5)*85;if(clientPoint){const p=pointInStage(clientPoint.x,clientPoint.y);x=p.x;y=p.y}if(type==='table'||isTablePreset){const label=nextArchitectTableLabel();const preset=servicePreset||{pax:2,w:100,h:82,shape:'square',seatStyle:'chair',preset:'',label:''};const t={id:label,label,room:A.room,pax:preset.pax,l:snap(x-preset.w/2),t:snap(y-preset.h/2),w:preset.w,h:preset.h,shape:preset.shape,rotation:0,createdByRole:expressRoleLabel(),architectCreated:true,seatStyle:preset.seatStyle};if(preset.preset)t.preset=preset.preset;if(preset.label)t.furnitureLabel=preset.label;A.tables.push(t);A.selected=getTableKey(t)}else if(isZonePreset){const idx=roomZones().length+1,preset=type==='bathroom_zone'?{kind:'bathroom',label:'SALLE DE BAIN',color:'#55c7d9',w:300,h:240,serviceType:'Hébergement'}:type==='bedroom_zone'?{kind:'bedroom',label:'CHAMBRE',color:'#a785ff',w:500,h:360,serviceType:'Hébergement'}:type==='office_zone'?{kind:'office',label:'BUREAU',color:'#d59b54',w:360,h:260,serviceType:'Hébergement'}:{kind:'service',label:'ZONE '+idx,color:['#4cda8a','#58a9ff','#a785ff','#ffb13b'][idx%4],w:420,h:260,serviceType:'Dîner'};const z={id:aId('zone'),label:preset.label,room:A.room,l:snap(x-preset.w/2),t:snap(y-preset.h/2),w:preset.w,h:preset.h,rotation:0,color:preset.color,zoneKind:preset.kind,zoneShape:'rect',fillOpacity:preset.kind==='bathroom'?20:15,borderStyle:'dashed',responsible:'',serviceType:preset.serviceType,active:true,locked:false};A.zones.push(z);A.selected=getZoneKey(z)}else{const dims={wall:[300,18],door:[90,22],window:[120,18],bar:[220,100],kitchen:[260,150],cash:[120,80],buffet:[170,70],text:[240,45],plant:[65,65],tree:[130,130],palm:[115,115],pergola:[360,260],pool_lowtable:[75,75],parasol:[130,130],pool:[320,180],roomservice:[180,80],bed_single:[115,210],bed_double:[195,210],desk:[170,75],sofa:[190,85],wardrobe:[150,65],sink:[85,65],toilet:[70,95],shower:[110,110],stair_straight:[120,320],stair_quarter:[240,240],stair_half:[260,300],stair_double_quarter:[300,260],stair_spiral:[220,220],stair_curved:[280,220],stair_exterior:[140,320],stair_ladder:[90,260],
+beach_towel:[75,165],pool_shower:[80,80],pool_ladder_obj:[75,115],daybed_obj:[165,210],cabana_obj:[300,240],lounge_sofa_obj:[220,95],lounge_armchair:[95,95],lounge_pouf:[70,70],bar_counter_curve:[260,135],bottle_shelf:[220,45],wine_fridge:[90,70],tea_sofa_obj:[210,90],tea_armchair:[90,90],pastry_display:[190,75],coffee_counter:[230,95],tea_trolley:[100,65],banquette_wall:[260,85],service_station:[125,70],host_stand:[90,65],wine_cellar:[160,70],gueridon:[65,65],restaurant_screen:[220,25]}[type]||[150,70];const e={id:aId(type),type,label:iconFor(type),room:A.room,l:snap(x-dims[0]/2),t:snap(y-dims[1]/2),w:dims[0],h:dims[1],rotation:0,locked:false};if(type==='cash')Object.assign(e,{label:'CAISSE',cashBg:'#d7b04a',cashText:'#17130a',cashPattern:'none',cashPatternColor:'#f7e4a3',cashBorder:'#816417',cashBorderStyle:'solid',cashBorderWidth:3,cashFontSize:18,cashRadius:8});A.elements.push(e);A.selected=getElemKey(e)}markDirty();renderCanvas()}
 function cityFindFreeDuplicateTablePose(c){
   const d=defaults(c,'table'),baseL=Number(c.l)||0,baseT=Number(c.t)||0;
   const offsets=[[60,0],[-60,0],[0,60],[0,-60],[90,90],[-90,90],[90,-90],[-90,-90]];
@@ -19663,7 +19577,9 @@ html body.order-open .ticket-row{min-height:106px !important}
 </script>
 
 
-<style id="ichef-v10b-hide-protection-safe">
+<style id="ichef-architecture-clean-v30">
+/* V30 — regroupement strict des patchs Architecture existants. */
+/* ichef-v10b-hide-protection-safe */
 /* V10B SAFE — uniquement visuel : le repère de protection disparaît, le moteur iCHEF reste intact. */
 #ichefArchPad .city-room-boundary{
   border:0 !important;
@@ -19677,9 +19593,8 @@ html body.order-open .ticket-row{min-height:106px !important}
   background:transparent !important;
   box-shadow:none !important;
 }
-</style>
 
-<style id="ichef-v21-room-visual-final-fix">
+/* ichef-v21-room-visual-final-fix */
 /* =========================================================
    V21 SAFE — salle/aire géométrique réellement personnalisable
    Correction CSS finale uniquement.
@@ -19735,20 +19650,16 @@ html body.order-open .ticket-row{min-height:106px !important}
 
 /* La grille générale reste au-dessus/visible par transparence :
    on ne transforme pas le terrain entier en couleur de salle. */
-</style>
 
-
-<style id="ichef-v22-group-move-100-safe">
+/* ichef-v22-group-move-100-safe */
 /* V22 SAFE — "Tout sélectionner" inclut visuellement et réellement la SALLE. */
 #ichefArchPad .city-room-boundary.city-group-room-selected{
   box-shadow:
     0 0 0 4px rgba(49,201,120,.34),
     inset 0 0 0 2px rgba(49,201,120,.55) !important;
 }
-</style>
 
-
-<style id="ichef-v23-room-area-real-surface-safe">
+/* ichef-v23-room-area-real-surface-safe */
 /* =========================================================
    V23 SAFE — AIRE GÉOMÉTRIQUE DE SALLE : COULEUR + MOTIF RÉELS
    La surface est un enfant dédié ; les anciens CSS de protection ne peuvent
@@ -19800,10 +19711,8 @@ html body.order-open .ticket-row{min-height:106px !important}
   position:absolute;
   z-index:5;
 }
-</style>
 
-
-<style id="ichef-v24-group-move-button-safe">
+/* ichef-v24-group-move-button-safe */
 #ichefArchPad [data-group-move],
 #ichefArchPad [data-city-group="move"]{
   touch-action:none !important;
@@ -19816,10 +19725,8 @@ html body.order-open .ticket-row{min-height:106px !important}
   transform:scale(.98);
   box-shadow:0 0 0 3px rgba(85,217,135,.25) !important;
 }
-</style>
 
-
-<style id="ichef-v25-resize-all-safe">
+/* ichef-v25-resize-all-safe */
 /* =========================================================
    V25 SAFE — REDIMENSIONNEMENT UNIVERSEL
    ========================================================= */
@@ -19870,10 +19777,8 @@ html body.order-open .ticket-row{min-height:106px !important}
 #ichefArchPad .arch-node.locked > .arch-handle{
   display:none !important;
 }
-</style>
 
-
-<style id="ichef-v27-save-groupmove-stable-safe">
+/* ichef-v27-save-groupmove-stable-safe */
 /* ENREGISTRER doit rester cliquable même si un objet est sélectionné près du haut. */
 #ichefArchPad .archpad-top{
   position:relative !important;
@@ -19905,10 +19810,8 @@ html body.order-open .ticket-row{min-height:106px !important}
 #ichefArchPad .archpad-stage{
   touch-action:none !important;
 }
-</style>
 
-
-<style id="ichef-v28-stairs-safe">
+/* ichef-v28-stairs-safe */
 /* =========================================================
    V28 SAFE — ESCALIERS ARCHITECTURAUX
    Tous restent déplaçables / rotatifs / redimensionnables.
@@ -20079,10 +19982,8 @@ html body.order-open .ticket-row{min-height:106px !important}
   font-size:10px;
   line-height:1.05;
 }
-</style>
 
-
-<style id="ichef-v29-universal-resize-safe">
+/* ichef-v29-universal-resize-safe */
 /* V29 — poignées universelles */
 #ichefArchPad .arch-node.selected{
   overflow:visible !important;
@@ -20106,6 +20007,132 @@ html body.order-open .ticket-row{min-height:106px !important}
 #ichefArchPad .arch-node.selected > .arch-handle.w.resize-active{
   transform:translateY(-50%) scale(1.12) !important;
 }
+</style>
+
+
+<style id="ichef-v31-ultra-real-furniture-safe">
+/* ===== Bibliothèque repliable ===== */
+#ichefArchPad .city-library-title{margin-top:10px}
+#ichefArchPad .city-furn-library{display:flex;flex-direction:column;gap:7px;padding:0 7px 8px}
+#ichefArchPad .city-furn-folder{
+  border:1px solid #2f4149;border-radius:12px;background:#0b1519;overflow:hidden
+}
+#ichefArchPad .city-furn-folder>summary{
+  min-height:44px;padding:8px 10px;display:grid;grid-template-columns:28px 1fr 18px;
+  align-items:center;gap:7px;cursor:pointer;list-style:none;color:#eaf3f5;font-size:11px;font-weight:1000
+}
+#ichefArchPad .city-furn-folder>summary::-webkit-details-marker{display:none}
+#ichefArchPad .city-furn-folder[open]>summary{background:#11242b;border-bottom:1px solid #2d4650}
+#ichefArchPad .city-furn-folder .folder-icon{font-size:19px}
+#ichefArchPad .city-furn-folder>summary b{font-size:15px;transition:.18s;transform-origin:center}
+#ichefArchPad .city-furn-folder[open]>summary b{transform:rotate(180deg)}
+#ichefArchPad .city-furn-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:7px}
+#ichefArchPad .city-furn-grid button{
+  position:relative;min-height:56px;padding:5px 4px;border:1px solid #33474f;border-radius:10px;
+  background:#0e1b20;color:#eef4f5;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:2px;font-size:9px;font-weight:900;text-align:center;line-height:1.08
+}
+#ichefArchPad .city-furn-grid button:hover{border-color:#e2b84e;background:#142329}
+#ichefArchPad .city-furn-grid button .ico{font-size:18px;line-height:1}
+#ichefArchPad .city-furn-grid button.service-furn{border-color:#3b7259;background:linear-gradient(180deg,#10271e,#0e1b20)}
+#ichefArchPad .city-furn-grid button.service-furn small{
+  position:absolute;right:4px;top:4px;padding:1px 4px;border-radius:999px;background:#1e7048;color:#dff9e9;
+  font-size:6px;font-weight:1000
+}
+
+/* ===== Mobilier décoratif top-down ===== */
+#ichefArchPad .arch-furn{
+  overflow:visible!important;background:transparent!important;border:0!important;
+  box-shadow:none!important;color:#253039!important;padding:0!important
+}
+#ichefArchPad .arch-furn .furn-visual{
+  position:absolute;inset:5px 5px 18px;display:block;filter:drop-shadow(0 3px 2px rgba(0,0,0,.22))
+}
+#ichefArchPad .arch-furn .furn-label{
+  position:absolute;left:4px;right:4px;bottom:1px;height:15px;display:flex;align-items:center;justify-content:center;
+  padding:0 3px;border-radius:5px;background:rgba(255,255,255,.92);border:1px solid rgba(70,65,55,.25);
+  color:#3c352d;font-size:7px;font-weight:1000;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:none
+}
+#ichefArchPad .furn-visual i{position:absolute;display:block}
+
+/* Piscine / plage */
+#ichefArchPad .arch-beach-towel .furn-visual{border-radius:7px;background:repeating-linear-gradient(90deg,#5bb8cc 0 9%,#f7efe1 9% 18%);border:2px solid #4a8793}
+#ichefArchPad .arch-beach-towel .furn-a{left:8%;right:8%;top:9%;height:10%;border-top:2px solid rgba(255,255,255,.75);border-bottom:2px solid rgba(255,255,255,.75)}
+#ichefArchPad .arch-pool-shower .furn-visual{border-radius:50%;background:radial-gradient(circle,#b9c9ce 0 18%,#6d858d 19% 28%,#dce7e9 29% 55%,#7ca8b2 56% 61%,transparent 62%)}
+#ichefArchPad .arch-pool-shower .furn-a{width:6px;height:78%;left:48%;top:4%;border-radius:6px;background:linear-gradient(#758a91,#c8d4d7)}
+#ichefArchPad .arch-pool-ladder-obj .furn-visual{border-left:6px solid #718b94;border-right:6px solid #718b94;background:repeating-linear-gradient(to bottom,transparent 0 13px,#8ca3ab 13px 17px,transparent 17px 28px)}
+#ichefArchPad .arch-daybed-obj .furn-visual{border-radius:18px;background:linear-gradient(180deg,#eee4d4 0 28%,#d5c3a8 29% 100%);border:4px solid #9c8060;box-shadow:inset 0 0 0 5px #f7f1e7}
+#ichefArchPad .arch-daybed-obj .furn-a{left:8%;right:8%;top:10%;height:25%;border-radius:12px;background:linear-gradient(#fffaf1,#ddd0bd);border:2px solid #b6a186}
+#ichefArchPad .arch-cabana-obj .furn-visual{border:5px solid #9c7a4f;border-radius:8px;background:repeating-linear-gradient(90deg,rgba(230,207,168,.65) 0 12px,rgba(255,248,231,.78) 12px 25px)}
+#ichefArchPad .arch-cabana-obj .furn-a{left:12%;right:12%;bottom:9%;height:46%;border-radius:16px;background:#eee2d0;border:3px solid #ab8c67}
+
+/* Lounge / bar */
+#ichefArchPad .arch-lounge-sofa-obj .furn-visual,
+#ichefArchPad .arch-tea-sofa-obj .furn-visual{border-radius:18px;background:linear-gradient(#c9b69e,#9f8467);border:4px solid #735b45;box-shadow:inset 0 0 0 8px rgba(255,245,230,.22)}
+#ichefArchPad .arch-lounge-sofa-obj .furn-a,
+#ichefArchPad .arch-tea-sofa-obj .furn-a{left:8%;right:8%;top:12%;height:34%;border-radius:12px;background:#d9c9b4;border:2px solid #9d8060}
+#ichefArchPad .arch-lounge-armchair .furn-visual,
+#ichefArchPad .arch-tea-armchair .furn-visual{border-radius:28% 28% 38% 38%;background:radial-gradient(ellipse at 50% 42%,#d9c7b0 0 38%,#aa8e70 39% 70%,#6d5642 71%);border:3px solid #705944}
+#ichefArchPad .arch-lounge-pouf .furn-visual{border-radius:50%;background:radial-gradient(circle,#d0b997 0 45%,#9c7f60 46% 67%,#6e5844 68%);border:2px solid #6f5742}
+#ichefArchPad .arch-bar-counter-curve .furn-visual{border-radius:55% 55% 20% 20%;background:radial-gradient(ellipse at 50% 75%,transparent 0 38%,#84542e 39% 55%,#b77b44 56% 75%,#6c4227 76%);border:3px solid #5d3822}
+#ichefArchPad .arch-bottle-shelf .furn-visual{border:4px solid #65482d;background:repeating-linear-gradient(90deg,#4f3422 0 12px,#8a613d 12px 15px,#342419 15px 27px)}
+#ichefArchPad .arch-bottle-shelf .furn-a{inset:16% 5%;background:repeating-radial-gradient(circle at 8px 50%,#8f2441 0 3px,#d4b36d 4px 5px,transparent 6px 15px)}
+#ichefArchPad .arch-wine-fridge .furn-visual,
+#ichefArchPad .arch-wine-cellar .furn-visual{border-radius:7px;background:linear-gradient(135deg,#263238,#66777c);border:4px solid #1f292d;box-shadow:inset 0 0 0 5px rgba(190,220,226,.22)}
+#ichefArchPad .arch-wine-fridge .furn-a,
+#ichefArchPad .arch-wine-cellar .furn-a{inset:12%;background:repeating-radial-gradient(circle at 10px 8px,#7d1e36 0 4px,#c6a65c 5px 6px,transparent 7px 19px)}
+
+/* Tea/Café */
+#ichefArchPad .arch-pastry-display .furn-visual{border-radius:8px;background:linear-gradient(180deg,rgba(194,230,238,.85),rgba(109,153,164,.45));border:4px solid #7b6651;box-shadow:inset 0 0 0 5px rgba(255,255,255,.48)}
+#ichefArchPad .arch-pastry-display .furn-a{left:8%;right:8%;top:18%;height:4px;background:#9a8063;box-shadow:0 15px 0 #9a8063,0 30px 0 #9a8063}
+#ichefArchPad .arch-coffee-counter .furn-visual{border-radius:10px;background:linear-gradient(180deg,#b27b48,#714727);border:4px solid #57341e;box-shadow:inset 0 8px 0 rgba(255,255,255,.16)}
+#ichefArchPad .arch-coffee-counter .furn-a{width:34%;height:45%;left:10%;top:20%;border-radius:8px;background:#353f43;border:3px solid #1f282b}
+#ichefArchPad .arch-coffee-counter .furn-b{width:22%;height:33%;right:12%;top:25%;border-radius:50%;background:radial-gradient(circle,#e6d2a3 0 32%,#8e6f3f 33% 46%,#d6c4a2 47%)}
+#ichefArchPad .arch-tea-trolley .furn-visual{border-radius:8px;background:#a97b4d;border:4px solid #67472d}
+#ichefArchPad .arch-tea-trolley .furn-a{left:8%;right:8%;top:45%;height:4px;background:#60422b}
+#ichefArchPad .arch-tea-trolley .furn-b,#ichefArchPad .arch-tea-trolley .furn-c{bottom:-5px;width:15px;height:15px;border-radius:50%;background:#32383a;border:3px solid #7a8589}
+#ichefArchPad .arch-tea-trolley .furn-b{left:8%}#ichefArchPad .arch-tea-trolley .furn-c{right:8%}
+
+/* Restaurant */
+#ichefArchPad .arch-banquette-wall .furn-visual{border-radius:10px;background:linear-gradient(#c9a178,#8b674a);border:4px solid #684a35;box-shadow:inset 0 -14px 0 rgba(255,236,210,.17)}
+#ichefArchPad .arch-service-station .furn-visual{border-radius:7px;background:linear-gradient(#aa7a4c,#714929);border:4px solid #55351f}
+#ichefArchPad .arch-service-station .furn-a{left:8%;right:8%;top:22%;height:4px;background:#d3b17f;box-shadow:0 15px 0 #d3b17f}
+#ichefArchPad .arch-host-stand .furn-visual{clip-path:polygon(12% 0,88% 0,100% 100%,0 100%);background:linear-gradient(#9a7149,#62432d);border-bottom:5px solid #48301f}
+#ichefArchPad .arch-gueridon .furn-visual{border-radius:50%;background:radial-gradient(circle,#c89c65 0 48%,#725037 49% 55%,transparent 56%);border:2px solid #65462f}
+#ichefArchPad .arch-restaurant-screen .furn-visual{border:4px solid #806849;background:repeating-linear-gradient(90deg,#d5c6a5 0 12px,#9d8968 12px 15px)}
+#ichefArchPad .arch-restaurant-screen .furn-a{inset:7%;background:repeating-linear-gradient(90deg,transparent 0 28px,rgba(82,64,43,.5) 28px 31px)}
+
+/* ===== Tables architecture : textures par univers, uniquement hors SERVICE LIVE ===== */
+#ichefArchPad .arch-table:not(.service-live).table-preset-pool{background:radial-gradient(circle at 35% 30%,#f7f7f1,#cfd4ca 68%,#899389)!important;border-color:#728279!important}
+#ichefArchPad .arch-table:not(.service-live).table-preset-bar{background:radial-gradient(circle at 35% 30%,#5c3d29,#2e211a 72%)!important;border-color:#b17a4b!important}
+#ichefArchPad .arch-table:not(.service-live).table-preset-lounge{background:linear-gradient(145deg,#b38d65,#78573c)!important;border-color:#5b402d!important}
+#ichefArchPad .arch-table:not(.service-live).table-preset-tea{background:radial-gradient(circle,#f1e7d4,#cbb58f 72%)!important;border-color:#8f785b!important;color:#372f27!important;text-shadow:none!important}
+#ichefArchPad .arch-table:not(.service-live).table-preset-restaurant,
+#ichefArchPad .arch-table:not(.service-live).table-preset-booth{background:linear-gradient(135deg,#b98655,#80552f)!important;border-color:#65401f!important}
+
+/* ===== Assises réalistes vu du dessus ===== */
+#ichefArchPad .arch-chair{overflow:visible!important}
+#ichefArchPad .arch-chair>.seat-code-live{position:relative;z-index:4}
+#ichefArchPad .arch-chair>.seat-consume{
+  position:absolute;right:-8px;top:-8px;z-index:7;min-width:18px;height:15px;padding:0 2px;border-radius:999px;
+  display:flex;align-items:center;justify-content:center;background:#fff;border:1px solid #5c6264;
+  font-size:7px;line-height:1;text-shadow:none;box-shadow:0 2px 4px rgba(0,0,0,.22)
+}
+#ichefArchPad .arch-chair.seat-barstool{width:32px!important;height:32px!important;border-radius:50%!important;background:radial-gradient(circle at 38% 32%,#d4b17f 0 42%,#6c4a30 43% 62%,#2e2d2b 63%)!important}
+#ichefArchPad .arch-chair.seat-cafe{width:34px!important;height:38px!important;border-radius:45% 45% 35% 35%!important;background:linear-gradient(#d7c6ac 0 28%,#a7855f 29% 78%,#644832 79%)!important}
+#ichefArchPad .arch-chair.seat-restaurant{width:34px!important;height:40px!important;border-radius:9px 9px 13px 13px!important;background:linear-gradient(#8f603c 0 27%,#c59a67 28% 78%,#5d3d29 79%)!important;box-shadow:inset 0 0 0 3px rgba(255,234,203,.22)!important}
+#ichefArchPad .arch-chair.seat-lounge,
+#ichefArchPad .arch-chair.seat-club{width:44px!important;height:44px!important;border-radius:38% 38% 48% 48%!important;background:radial-gradient(ellipse at 50% 45%,#d8c3a8 0 39%,#9e7c5d 40% 68%,#604733 69%)!important}
+#ichefArchPad .arch-chair.seat-club{background:radial-gradient(ellipse at 50% 45%,#a9584e 0 40%,#74372f 41% 68%,#3c2723 69%)!important}
+#ichefArchPad .arch-chair.seat-sunbed{width:42px!important;height:70px!important;border-radius:11px!important;background:linear-gradient(180deg,#f1e5cf 0 30%,#bca47e 31% 100%)!important;box-shadow:inset 0 0 0 4px #8c704f!important}
+#ichefArchPad .arch-chair.seat-daybed{width:58px!important;height:76px!important;border-radius:15px!important;background:linear-gradient(180deg,#fff9ef 0 30%,#dcc8a7 31% 100%)!important;box-shadow:inset 0 0 0 5px #997953!important}
+#ichefArchPad .arch-chair.seat-banquette{width:54px!important;height:36px!important;border-radius:12px!important;background:linear-gradient(#c69b72,#8a6347)!important;box-shadow:inset 0 0 0 4px rgba(255,231,204,.2)!important}
+
+/* C1..C9 + mange/boit */
+#ichefArchPad .arch-seat-chip .seat-consume-icon{font-size:7px;letter-spacing:-1px;filter:saturate(.9)}
+#ichefArchPad .arch-seat-chip.consume-drink{background:linear-gradient(90deg,#0c1011,#102138)}
+#ichefArchPad .arch-seat-chip.consume-food{background:linear-gradient(90deg,#0c1011,#1d2415)}
+#ichefArchPad .arch-seat-chip.consume-mixed{background:linear-gradient(90deg,#0c1011,#261829)}
 </style>
 
 </body>
