@@ -14298,6 +14298,20 @@ try{ if(typeof scheduleRender==="function") scheduleRender(); }catch(_ ){}
 #ichefArchPad .city-room-move-handle{position:absolute;left:50%;top:-44px;transform:translateX(-50%);pointer-events:auto!important;min-height:34px;padding:7px 14px;border-radius:999px;border:1px solid #55d987;background:#0d1c18;color:#8cf0b5;font-weight:950;white-space:nowrap;box-shadow:0 8px 20px rgba(0,0,0,.28);cursor:move}
 #ichefArchPad [data-edit-room]{border-color:#55d987!important;color:#8cf0b5!important;background:rgba(85,217,135,.08)!important}
 </style>
+
+<style id="ichef-arch-v78-rotation-stability-css">
+/* =========================================================
+   V78 SAFE — ROTATION / ASSISES STABLES
+   - le menu flottant reste hors de l'emprise réelle du mobilier
+   - le petit bouton de rotation embarqué est masqué (doublon du menu)
+   - le compteur clients ne recouvre plus les assises en mode Architecte
+   ========================================================= */
+#ichefArchPad .archpad-main:not(.service-layout) .arch-node .arch-rotate{display:none!important}
+#ichefArchPad .archpad-main:not(.service-layout) .arch-client-count{display:none!important}
+#ichefArchPad .arch-chair{transform-origin:50% 50%!important}
+#ichefArchPad .city-float-menu{max-width:min(440px,72vw)}
+</style>
+
 <script id="ichef-pad-architect-js">
 /* =========================================================
    V69 — Terrain complet constructible + zoom tactile corrigé
@@ -15089,13 +15103,17 @@ function citySelectionOverlayHTML(){
   if(A.mode!=='architect'||!canEdit())return '';
   if(A.groupAll){
     const b=cityGroupBounds();if(!b)return '';
-    const cx=b.minX+b.w/2,nearTop=b.minY<190,menuY=nearTop?b.maxY+22:b.minY-12;
+    const cx=aClamp(b.minX+b.w/2,120,ARCH_W-120),nearTop=b.minY<190,menuY=aClamp(nearTop?b.maxY+28:b.minY-24,50,ARCH_H-50);
     return `<div class="city-group-box" style="left:${b.minX/ARCH_W*100}%;top:${b.minY/ARCH_H*100}%;width:${b.w/ARCH_W*100}%;height:${b.h/ARCH_H*100}%"></div><div class="city-float-menu city-group-menu ${nearTop?'below':''}" style="left:${cx/ARCH_W*100}%;top:${menuY/ARCH_H*100}%"><button type="button" class="${A.groupMoveArmed?'active move-armed':''}" data-city-group="move"><span>✥</span>${A.groupMoveArmed?'Glissez maintenant':'Déplacer tout'}</button><button type="button" class="danger" data-city-group="delete"><span>▣</span>Supprimer tout</button><button type="button" data-city-group="cancel"><span>×</span>Annuler</button></div>`;
   }
   if(!A.selected)return '';
-  const hit=byKey(A.selected);if(!hit?.obj)return '';
-  if(hit.type==='room')return '';
-  const d=defaults(hit.obj,hit.type),cx=d.l+d.w/2,nearTop=d.t<190,menuY=nearTop?d.t+d.h+18:d.t-12;
+  const hit=byKey(A.selected);if(!hit?.obj||hit.type==='room')return '';
+
+  /* V78 — le menu utilise l'emprise VISUELLE réelle (rotation + assises),
+     pas le rectangle non tourné de la table. Il ne recouvre donc plus les C1/C2… */
+  const box=cityMeasureRectForHit(hit)||(()=>{const d=defaults(hit.obj,hit.type);return {l:d.l,t:d.t,r:d.l+d.w,b:d.t+d.h,w:d.w,h:d.h}})();
+  const cx=aClamp(box.l+box.w/2,120,ARCH_W-120),nearTop=box.t<190;
+  const menuY=aClamp(nearTop?box.b+30:box.t-26,50,ARCH_H-50);
   return `<div class="city-float-menu ${nearTop?'below':''}" style="left:${cx/ARCH_W*100}%;top:${menuY/ARCH_H*100}%"><button type="button" data-city-float="move"><span>✥</span>Déplacer</button><button type="button" data-city-float="rotate"><span>↻</span>Tourner</button><button type="button" data-city-float="duplicate"><span>⧉</span>Dupliquer</button><button type="button" class="danger" data-city-float="delete"><span>▣</span>Supprimer</button></div>`;
 }
 function cityMeasureRectForHit(hit){
@@ -15463,23 +15481,67 @@ function cityAutoApply(){
 function cityAutoOrganize(){cityAutoOpen()}
 function cityToggleMeasures(){A.showMeasures=!A.showMeasures;renderCanvas();aToast(A.showMeasures?'Mesures activées':'Mesures masquées')}
 function cityUpdateBottom(){const m=A.root?.querySelector('[data-city-room-metrics]');if(m)m.innerHTML=cityRoomMetricsHTML()+' &nbsp;•&nbsp; Limite pointillée = bord de sécurité 0,5 m';const mm=A.root?.querySelector('[data-city-minimap]');if(mm)mm.innerHTML=cityMiniMapHTML();const mb=A.root?.querySelector('[data-city-measures]');if(mb)mb.classList.toggle('active',!!A.showMeasures)}
-function cityRotateSelected(){const h=current();if(!h?.obj||h.obj.locked)return;const oldRot=Number(h.obj.rotation)||0;pushHistory();h.obj.rotation=(oldRot+15)%360;if(cityOutsideSafetyBoundary(h)){h.obj.rotation=oldRot;A.antiShockBlocked=true;renderCanvas();aToast('⛔ Rotation bloquée par la limite de sécurité');return}A.antiShockBlocked=false;markDirty();renderCanvas();if(cityHasCollision(A.selected))aToast('⚠ Collision : repositionnez l’objet');}
+function cityRotateSelected(){
+  const h=current();if(!h?.obj||h.obj.locked)return;
+  const oldRot=((Number(h.obj.rotation)||0)%360+360)%360;
+  pushHistory();
+  const nextRot=(oldRot+15)%360;
+  h.obj.rotation=nextRot;
+  /* V78 : chairLayout reste strictement local à la table ; aucune réécriture des C1-C16. */
+  if(cityOutsideSafetyBoundary(h)){
+    h.obj.rotation=oldRot;A.antiShockBlocked=true;renderCanvas();aToast('⛔ Rotation bloquée par la limite de sécurité');return;
+  }
+  A.antiShockBlocked=false;markDirty();renderCanvas();
+  if(cityHasCollision(A.selected))aToast('⚠ Collision : repositionnez l’objet');
+}
 function cityFloatAction(action){if(action==='move')return aToast('Maintiens Déplacer et glisse l’objet');if(action==='rotate')return cityRotateSelected();if(action==='duplicate')return duplicateSelected();if(action==='delete')return deleteSelected()}
 function cityRefreshAssistLive(){const n=A.root?.querySelector(`[data-arch-key="${CSS.escape(A.selected||'')}" ]`);const hit=byKey(A.selected),outside=hit?.obj?cityOutsideSafetyBoundary(hit):false,bad=cityHasCollision(A.selected);if(n){n.classList.toggle('city-collision',bad);n.classList.toggle('city-antishock-blocked',!!A.antiShockBlocked)}const b=A.root?.querySelector('[data-city-position]');if(b){b.classList.toggle('antishock',!!A.antiShockBlocked);b.classList.toggle('bad',bad||outside);b.classList.toggle('good',!bad&&!outside&&!A.antiShockBlocked);b.textContent=(outside||A.antiShockBlocked)?'⛔ Limite sécurité':bad?'⚠ Collision · déplacez vers une zone libre':'✓ Position correcte'};cityRefreshMeasuresLive()}
 
-function archChairAutoPose(index,count){
-  const angle=-90+((360/Math.max(1,count))*(index-1));
-  const rad=angle*Math.PI/180;
-  return {x:50+Math.cos(rad)*63,y:50+Math.sin(rad)*63,r:angle+90};
+function archSeatPhysicalMargin(t){
+  const style=aText(t?.seatStyle||'chair');
+  return ({sunbed:58,daybed:66,barstool:34,lounge:48,club:48,cafe:38,restaurant:40,banquette:46})[style]||40;
 }
-function archSunbedAutoPose(index,count){
-  /* Piscine : 1 ou 2 transats seulement, placés clairement autour de la petite table. */
-  if(count<=1)return {x:50,y:122,r:0};
-  if(count===2)return index===1?{x:50,y:-22,r:180}:{x:50,y:122,r:0};
-  return archChairAutoPose(index,count);
+function archChairAutoPose(index,count,t=null){
+  /* V78 — implantation déterministe dans le repère LOCAL de la table.
+     Les assises ne sont jamais recalculées dans le repère écran pendant une rotation. */
+  const n=Math.max(1,Number(count)||1),i=Math.max(1,Math.min(n,Number(index)||1));
+  const d=t?defaults(t,'table'):{w:100,h:82};
+  const w=Math.max(30,Number(d.w)||100),h=Math.max(30,Number(d.h)||82);
+  const margin=archSeatPhysicalMargin(t||{});
+  const round=aText(t?.shape||'square')==='round';
+
+  if(round){
+    const angle=-90+(360/n)*(i-1),rad=angle*Math.PI/180;
+    const rx=(w/2+margin)/w*100,ry=(h/2+margin)/h*100;
+    return {x:50+Math.cos(rad)*rx,y:50+Math.sin(rad)*ry,r:angle+90};
+  }
+
+  /* Rectangle : répartition régulière sur le périmètre extérieur.
+     4 places => haut/droite/bas/gauche ; 6/8+ => plusieurs places par côté,
+     ce qui évite les paquets de chaises visibles dans la vidéo. */
+  const left=-margin,top=-margin,right=w+margin,bottom=h+margin;
+  const ow=right-left,oh=bottom-top,per=2*(ow+oh);
+  let dist=((i-1)/n*per + ow/2)%per; // départ au milieu du côté haut
+  let px,py;
+  if(dist<ow){px=left+dist;py=top}
+  else if((dist-=ow)<oh){px=right;py=top+dist}
+  else if((dist-=oh)<ow){px=right-dist;py=bottom}
+  else {dist-=ow;px=left;py=bottom-dist}
+  const x=px/w*100,y=py/h*100;
+  const angle=Math.atan2(y-50,x-50)*180/Math.PI;
+  return {x,y,r:angle+90};
+}
+function archSunbedAutoPose(index,count,t=null){
+  /* Piscine : 1 ou 2 transats clairement séparés de la table. */
+  const d=t?defaults(t,'table'):{w:78,h:78},h=Math.max(30,Number(d.h)||78);
+  const margin=Math.max(58,archSeatPhysicalMargin(t||{}));
+  const off=margin/h*100;
+  if(count<=1)return {x:50,y:100+off,r:0};
+  if(count===2)return index===1?{x:50,y:-off,r:180}:{x:50,y:100+off,r:0};
+  return archChairAutoPose(index,count,t);
 }
 function archChairLayoutEntry(t,index,count){
-  const auto=aText(t?.seatStyle||'chair')==='sunbed'?archSunbedAutoPose(index,count):archChairAutoPose(index,count);
+  const auto=aText(t?.seatStyle||'chair')==='sunbed'?archSunbedAutoPose(index,count,t):archChairAutoPose(index,count,t);
   if(!t?.chairsFree)return auto;
   const arr=Array.isArray(t.chairLayout)?t.chairLayout:[];
   const p=arr[index-1];
@@ -15490,7 +15552,9 @@ function archEnsureChairLayout(t,count){
   if(!Array.isArray(t.chairLayout))t.chairLayout=[];
   for(let i=1;i<=count;i++){
     const p=t.chairLayout[i-1];
-    if(!p||!Number.isFinite(Number(p.x))||!Number.isFinite(Number(p.y)))t.chairLayout[i-1]=archChairAutoPose(i,count);
+    if(!p||!Number.isFinite(Number(p.x))||!Number.isFinite(Number(p.y))){
+      t.chairLayout[i-1]=aText(t?.seatStyle||'chair')==='sunbed'?archSunbedAutoPose(i,count,t):archChairAutoPose(i,count,t);
+    }
   }
   if(t.chairLayout.length>count)t.chairLayout=t.chairLayout.slice(0,count);
   return t.chairLayout;
@@ -15517,9 +15581,14 @@ function moveFreeChair(e){
   const d=A.chairDrag;if(!d||d.pointerId!==e.pointerId)return false;
   const h=byKey(d.key);if(!h?.obj||h.type!=='table')return false;
   const t=h.obj,td=defaults(t,'table'),count=Math.max(1,Math.min(16,Number(t.pax)||2));
-  const p=pointInStage(e.clientX,e.clientY);
+  const world=pointInStage(e.clientX,e.clientY);
+
+  /* V78 — IMPORTANT : chairLayout est stocké dans le repère LOCAL de la table.
+     Si la table est tournée, on annule d'abord sa rotation avant de convertir
+     le pointeur en pourcentages. Ainsi une chaise ne saute plus après rotation. */
+  const rot=Number(t.rotation)||0,cx=td.l+td.w/2,cy=td.t+td.h/2;
+  const p=rot?cityRotatePointAround(cx,cy,world.x,world.y,-rot):world;
   let x=(p.x-td.l)/Math.max(1,td.w)*100,y=(p.y-td.t)/Math.max(1,td.h)*100;
-  // Liberté réelle sur le plan, tout en évitant des coordonnées infinies accidentelles.
   x=aClamp(x,-2500,2600);y=aClamp(y,-2500,2600);
   const angle=Math.atan2(y-50,x-50)*180/Math.PI;
   const layout=archEnsureChairLayout(t,count);
@@ -16278,7 +16347,7 @@ function applyZoom(){
   try{localStorage.setItem('ichef_plan_zoom_pct_v28',String(A.zoom))}catch(_){}
 }
 
-async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),roomLayouts:clone(A.roomLayouts),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_V77_TACTILE_POINTER_FIX'},updatedFrom:'PAD_ARCHITECT_V77_TACTILE_POINTER_FIX',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD V77 · tactile Pointer Events');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
+async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),roomLayouts:clone(A.roomLayouts),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_V78_ROTATION_STABLE'},updatedFrom:'PAD_ARCHITECT_V78_ROTATION_STABLE',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD V78 · rotation assises stable');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
 function openExpress(){if(closePadArchitect()!==false)openExpressTableCreate()}
 function architectAccessKey(value){
   return aText(value).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[\s-]+/g,'_');
