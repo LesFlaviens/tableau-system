@@ -6832,11 +6832,17 @@ async function enqueueVersionedWrite(key,pending){
   task.finally(()=>{
     if(ICHEF_TABLE_WRITE_QUEUES.get(key)===task){
       ICHEF_TABLE_WRITE_QUEUES.delete(key);
-      setTimeout(()=>{
-        if(!ICHEF_LOCAL_PENDING.has(key)&&!ICHEF_TABLE_WRITE_QUEUES.has(key)&&STATE.authenticated&&!STATE.demo){
-          syncFull("write-settle");
-        }
-      },260);
+      /* Architecture : l'ACK du POST est suffisant. Une relecture complète de
+         tout l'état juste après chaque sauvegarde rendait le bouton inutilement
+         lent sur les plans chargés. Les autres écritures conservent le contrôle
+         de cohérence historique. */
+      if(key!=="ARCHITECTURE"){
+        setTimeout(()=>{
+          if(!ICHEF_LOCAL_PENDING.has(key)&&!ICHEF_TABLE_WRITE_QUEUES.has(key)&&STATE.authenticated&&!STATE.demo){
+            syncFull("write-settle");
+          }
+        },260);
+      }
     }
   });
 
@@ -9157,6 +9163,12 @@ function openKitchen(){
 function openReservations(){
   const rows=STATE.reservations.slice().sort((a,b)=>text(a.time||a.heure||a.date).localeCompare(text(b.time||b.heure||b.date)));openSheet(" RÉSERVATIONS",rows.length?`<div class="list">${rows.map(r=>`<div class="list-row"><div class="grow"><div class="title">${esc(r.name||r.nom||r.client||"Réservation")}</div><div class="sub">${esc(r.time||r.heure||"")} · ${esc(r.tableId||r.table||"Sans table")} · ${esc(r.pax||r.covers||"")} pers.</div></div>${r.tableId||r.table?`<button class="mini-btn" data-res-table="${esc(r.tableId||r.table)}">TABLE</button>`:""}</div>`).join("")}</div>`:'<div class="empty-state">Aucune réservation synchronisée.</div>');$("sheetBody").querySelectorAll("[data-res-table]").forEach(b=>b.onclick=()=>{closeSheet();openOrder(b.dataset.resTable)})
 }
+
+
+/* ICHEF V36 — ENREGISTREMENT ARCHITECTURE RAPIDE
+   - retour visuel immédiat après staging local
+   - suppression de la relecture serveur complète post-save pour ARCHITECTURE
+   - aucune modification caisse / commandes / paiement / Anti-Rush */
 
 /* ---------------- ARCHITECTURE / TABLE EXPRESS ---------------- */
 function expressRoleKey(){
@@ -16438,7 +16450,67 @@ function applyZoom(){
   try{localStorage.setItem('ichef_plan_zoom_pct_v28',String(A.zoom))}catch(_){}
 }
 
-async function saveAll(){if(!canEdit())return aToast('Droit manager requis',true);normaliseAll();const payload={rooms:clone(A.rooms),roomLayouts:clone(A.roomLayouts),tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_V80_MURS_FENETRES_RESIZE_ROTATION'},updatedFrom:'PAD_ARCHITECT_V80_MURS_FENETRES_RESIZE_ROTATION',updatedByArchitectRole:A.archRole||expressRoleLabel()};const oldPin=STATE.pin;if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;try{if(STATE.demo){STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};STATE.tables=clone(payload.tables);STATE.zones=clone(payload.zones);STATE.rooms=clone(payload.rooms);A.dirty=false;updateSaveState();aToast(' Architecture enregistrée en mode démo');return}const ok=await saveArchitecture(payload,'Architecture PAD V80 · murs/fenêtres redimensionnement rotation stable');if(ok!==false){A.dirty=false;updateSaveState();aToast(' Architecture synchronisée serveur')}else aToast('Synchronisation à vérifier',true)}catch(err){aToast(err?.message||'Enregistrement impossible',true)}finally{STATE.pin=oldPin}}
+async function saveAll(){
+  if(!canEdit())return aToast('Droit manager requis',true);
+
+  normaliseAll();
+  const payload={
+    rooms:clone(A.rooms),
+    roomLayouts:clone(A.roomLayouts),
+    tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),
+    zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),
+    elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),
+    canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_V81_SAVE_FAST'},
+    updatedFrom:'PAD_ARCHITECT_V81_SAVE_FAST',
+    updatedByArchitectRole:A.archRole||expressRoleLabel()
+  };
+
+  const oldPin=STATE.pin;
+  if(A.archUnlocked&&A.archPin)STATE.pin=A.archPin;
+
+  try{
+    if(STATE.demo){
+      STATE.activeOrders.ARCHITECTURE={data:architecturePayload(payload)};
+      STATE.tables=clone(payload.tables);
+      STATE.zones=clone(payload.zones);
+      STATE.rooms=clone(payload.rooms);
+      A.dirty=false;
+      updateSaveState();
+      aToast(' Architecture enregistrée en mode démo');
+      return;
+    }
+
+    /* Le staging local de saveArchitecture() est synchrone : dès son retour,
+       l'état courant contient déjà le nouveau plan. On libère donc l'interface
+       immédiatement au lieu de laisser le bouton sembler bloqué pendant le POST. */
+    const syncPromise=saveArchitecture(payload,'Architecture PAD V81 · enregistrement rapide');
+    A.dirty=false;
+    updateSaveState();
+
+    const stateEl=A.root?.querySelector('[data-arch-save-state]');
+    if(stateEl)stateEl.textContent=' ENREGISTRÉ · SYNCHRO SERVEUR…';
+    aToast(' Architecture enregistrée · synchronisation serveur…');
+
+    const ok=await syncPromise;
+    if(ok!==false){
+      if(!A.dirty){
+        updateSaveState();
+        const done=A.root?.querySelector('[data-arch-save-state]');
+        if(done)done.textContent=' ARCHITECTURE SYNCHRONISÉE';
+      }
+    }else{
+      const warn=A.root?.querySelector('[data-arch-save-state]');
+      if(warn&&!A.dirty)warn.textContent=' ENREGISTRÉ LOCAL · SYNCHRO À VÉRIFIER';
+      aToast('Synchronisation serveur à vérifier',true);
+    }
+  }catch(err){
+    const warn=A.root?.querySelector('[data-arch-save-state]');
+    if(warn&&!A.dirty)warn.textContent=' ENREGISTRÉ LOCAL · SYNCHRO À VÉRIFIER';
+    aToast(err?.message||'Synchronisation impossible',true);
+  }finally{
+    STATE.pin=oldPin;
+  }
+}
 function openExpress(){if(closePadArchitect()!==false)openExpressTableCreate()}
 function architectAccessKey(value){
   return aText(value).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[\s-]+/g,'_');
