@@ -5,11 +5,12 @@
 <!-- iCHEF V48 PRODUCTION CLEAN: exact duplicate CSS + dead same-script overrides removed; functional APIs preserved -->
 
 <!-- ICHEF PLAN SOCKET UNIQUE V25 -->
+<!-- ICHEF PAD V70 CODE ULTRA RAPIDE : Socket-first, PIN PAD, HTTP fallback seulement -->
 <!-- ICHEF PAD PRINCIPAL STABLE V1 — PIN + WS DIRECT + RETOUR ADMIN -->
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<!-- iCHEF PAD V68 — PREWARM SERVEUR + SOCKET.IO AVANT PIN -->
+<!-- iCHEF PAD V70 — CODE + SERVEUR ULTRA RAPIDE · SOCKET FIRST -->
 <link rel="preconnect" href="https://tableau-system.onrender.com" crossorigin>
 <link rel="dns-prefetch" href="//tableau-system.onrender.com">
 <link rel="preload" as="script" href="https://tableau-system.onrender.com/socket.io/socket.io.js" crossorigin="anonymous">
@@ -26,14 +27,14 @@
         method:'GET',cache:'no-store',credentials:'omit',keepalive:true
       }).catch(function(){return null});
     }
-    window.__ICHEF_PAD_WARM_PROMISE=Promise.allSettled([ping('/healthz'),ping('/readyz')]);
+    window.__ICHEF_PAD_WARM_PROMISE=ping('/healthz');
   }catch(_){ }
 })();
 </script>
 <script src="https://tableau-system.onrender.com/socket.io/socket.io.js" defer crossorigin="anonymous"></script>
 <!-- iCHEF V58 SOURIS + DOIGT + MULTITOUCH UNIFIÉ SAFE -->
-<title>iCHEF PAD V67 — PIN PAD CORRIGÉ · ARCHITECTURE LECTURE SEULE</title>
-<!-- iCHEF V67 : connexion PIN PAD conservée · plan architectural LIVE en lecture seule -->
+<title>iCHEF PAD V70 — CODE ULTRA RAPIDE · SERVER LIVE · ARCHITECTURE LECTURE SEULE</title>
+<!-- iCHEF V70 : PIN PAD sécurisé · Socket-first · HTTP secours · architecture LIVE lecture seule -->
 <!-- iCHEF V43 : cadrage design réel après PIN / retour -->
 <style>
 :root{
@@ -7759,128 +7760,98 @@ function startPadBootNonBlocking(){
    HYPER-BOOT V4 : DÉMARRAGE INSTANTANÉ (ZÉRO LATENCE)
 ========================================================= */
 async function verifyPin(){
-  const typedTenant=text($("tenantInput")?.value);
-  if(typedTenant&&typedTenant!==STATE.tenantID){
-    STATE.tenantID=typedTenant;
-    STORAGE.set("ichef_tenant_id",STATE.tenantID);
+  const typedTenant=text($("tenantInput")?.value).trim().slice(0,96);
+  const tenantCandidate=(typedTenant||text(STATE.tenantID)).trim();
+  if(!tenantCandidate){
+    loginMessage("Identifiant établissement requis");
+    try{syncTenantLoginField?.(true)}catch(_){}
+    return;
   }
-  if(!STATE.tenantID){
-    STATE.tenantID=typedTenant;
-    if(!STATE.tenantID){
-      loginMessage("Identifiant établissement requis");
-      if(typeof syncTenantLoginField === "function") syncTenantLoginField(true);
-      return;
-    }
-    STORAGE.set("ichef_tenant_id",STATE.tenantID);
+  if(!/^[A-Za-z0-9._:-]{1,96}$/.test(tenantCandidate)){
+    loginMessage("Identifiant établissement invalide");
+    return;
   }
   if(STATE.loginPin.length<4){loginMessage("Code incomplet");return}
   if(STATE.loginBusy)return;
-  
+  if(!navigator.onLine){loginMessage("Connexion Internet requise");return}
+
+  STATE.tenantID=tenantCandidate;
+  STORAGE.set("ichef_tenant_id",STATE.tenantID);
   STATE.loginBusy=true;
   const validateBtn=$("pinValidate");
   if(validateBtn)validateBtn.disabled=true;
-  loginMessage("Ouverture immédiate...");
 
-  // 1. COUPURE VISUELLE IMMÉDIATE (0 milliseconde d'attente)
-  const pinAttempt = String(STATE.loginPin);
-  STATE.pin = pinAttempt;
-  STATE.authenticated = true; 
-  
-  $("login")?.classList.add("hidden");
-  $("app")?.classList.remove("hidden");
-  $("tools")?.classList.remove("hidden");
+  const pinAttempt=String(STATE.loginPin);
+  STATE.pin=pinAttempt;
+  STATE.authenticated=false; /* jamais authentifié avant confirmation serveur */
 
-  // 2. RENDU DU PLAN DEPUIS LE CACHE LOCAL INSTANTANÉMENT
-  try {
-    if(typeof phoneHydrateArchitectureCache === "function") phoneHydrateArchitectureCache(); 
-    if(typeof preparePadFastStaticState === "function") preparePadFastStaticState();
-    if(typeof applyPadFastLayoutCache === "function") applyPadFastLayoutCache();
-
+  /* Affichage instantané d'un shell sûr : aucune commande client avant validation. */
+  try{
+    showPadFastLoginPreview();
+    preparePadFastStaticState();
+    applyPadFastLayoutCache();
     applyDisplay(STATE.display);
     autoDisplay();
     renderStatus();
     renderRooms();
     renderTables();
     updateToolBadges();
-  } catch(err) {
-    console.warn("[iCHEF] Erreur pré-rendu cache:", err);
-  }
+  }catch(err){console.warn("[iCHEF PAD V70] aperçu rapide",err)}
+  setConnection("VÉRIFICATION…","warn");
 
-  setConnection("VÉRIFICATION...", "warn");
-
-  // 3. PAUSE STRATÉGIQUE DE 50ms & REQUÊTE SERVEUR EN ARRIÈRE-PLAN
-  setTimeout(() => {
-    serverFetch("/api/verify-pin",{
+  /* V70 : aucune pause artificielle de 50 ms. Le PIN part immédiatement. */
+  try{
+    const r=await serverFetch("/api/verify-pin",{
       method:"POST",
       body:JSON.stringify({
         tenantID:STATE.tenantID,
         pin:pinAttempt,
         deviceId:STATE.deviceId,
-        terminal:"TELEPHONE",
-        module:"TELEPHONE",
-        source:"telephone.html"
+        page:"PAD",
+        terminal:"PAD",
+        module:"pack-eco",
+        source:"pack-eco.html"
       })
-    })
-    .then(async r => {
-      const j=await r.json().catch(()=>({}));
-      if(!r.ok||!j.success){
-        const base=text(j.error||j.message||"Code refusé");
-        const detail=text(j.detail||"");
-        throw new Error(detail&&detail!==base?`${base} · ${detail}`:base);
-      }
-      
-      // Confirmation serveur reçue
-      if(j.safeTenantID){
-        STATE.tenantID=text(j.safeTenantID);
-        STORAGE.set("ichef_tenant_id",STATE.tenantID);
-      }
-      STATE.role=j.role||"";
-      STATE.plan=j.plan||"";
-      STATE.specialite=j.specialite||"";
-      STATE.addons=Array.isArray(j.addons)?j.addons.slice():STATE.addons;
-      STATE.deviceReplaced=false;
-      
-      if(!STATE.featureRights||typeof STATE.featureRights!=="object")STATE.featureRights={};
-      if(typeof phonePlanRightFromEntitlements === "function") {
-        STATE.featureRights.PLAN_INTERACTIF = STATE.demo || phonePlanRightFromEntitlements(STATE.plan,STATE.addons);
-      }
-
-      STATE.loginPin="";
-      renderPin();
-      loginMessage("");
-
-      // On lance la récupération des commandes et la synchro temps réel
-      if (typeof bootApp === "function") {
-        bootApp().catch(err=>{
-          console.warn("[iCHEF TELEPHONE] démarrage",err?.message||err);
-          setConnection(navigator.onLine?"SYNCHRO HTTP":"HORS LIGNE",navigator.onLine?"warn":"bad");
-        });
-      } else if (typeof startPadBootNonBlocking === "function") {
-          startPadBootNonBlocking();
-      }
-
-      if (typeof loadLicenseRights === "function") {
-         setTimeout(()=>loadLicenseRights().catch(()=>{}),500);
-      }
-    })
-    .catch(e => {
-      // Si le code PIN est faux ou réseau coupé, on remet l'écran de login
-      STATE.authenticated=false;
-      STATE.pin="";
-      STATE.loginPin="";
-      renderPin();
-      if(typeof syncTenantLoginField === "function") syncTenantLoginField(true);
-      loginMessage(e?.message||"Connexion impossible");
-      
-      $("app")?.classList.add("hidden");
-      $("tools")?.classList.add("hidden");
-      $("login")?.classList.remove("hidden");
-    })
-    .finally(() => {
-      STATE.loginBusy=false;
-      if(validateBtn)validateBtn.disabled=false;
     });
-  }, 50);
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j.success){
+      const base=text(j.error||j.message||"Code refusé");
+      const detail=text(j.detail||"");
+      throw new Error(detail&&detail!==base?`${base} · ${detail}`:base);
+    }
+
+    if(j.safeTenantID){
+      const safeTenant=text(j.safeTenantID).trim().slice(0,96);
+      if(safeTenant)STATE.tenantID=safeTenant;
+      STORAGE.set("ichef_tenant_id",STATE.tenantID);
+    }
+    STATE.role=j.role||"";
+    STATE.plan=j.plan||"";
+    STATE.specialite=j.specialite||"";
+    STATE.addons=Array.isArray(j.addons)?j.addons.slice():STATE.addons;
+    STATE.sessionToken=j.sessionToken||STATE.sessionToken;
+    STATE.csrfToken=j.csrfToken||STATE.csrfToken;
+    STATE.deviceReplaced=false;
+    STATE.authenticated=true;
+    STATE.loginPin="";
+    renderPin();
+    loginMessage("");
+    showPadFreshSyncState();
+
+    /* Socket + bootstrap HTTP partent EN PARALLÈLE. */
+    startPadBootNonBlocking();
+
+    if(typeof loadLicenseRights==="function")setTimeout(()=>loadLicenseRights().catch(()=>{}),900);
+  }catch(e){
+    STATE.authenticated=false;
+    STATE.pin="";
+    STATE.loginPin="";
+    renderPin();
+    restorePadLoginAfterFastFailure(e?.message||"Connexion impossible");
+  }finally{
+    STATE.loginBusy=false;
+    if(validateBtn)validateBtn.disabled=false;
+  }
 }
 
 $("pinPad")?.addEventListener("click",e=>{
@@ -7958,20 +7929,38 @@ function loadSocket(){
   if(STATE.socketLoading)return STATE.socketLoading;
 
   STATE.socketLoading=new Promise((resolve,reject)=>{
-    const s=document.createElement("script");
-    s.src=APP_SERVER_URL+"/socket.io/socket.io.js";
-    s.async=true;
-    s.referrerPolicy="no-referrer";
-    s.onload=()=>{
-      if(window.io)return resolve(window.io);
-      STATE.socketLoading=null;
-      reject(new Error("Socket.IO serveur invalide"));
+    let settled=false;
+    const finishOk=()=>{
+      if(settled)return;
+      if(typeof window.io!=="function")return;
+      settled=true;
+      resolve(window.io);
     };
-    s.onerror=()=>{
+    const finishErr=()=>{
+      if(settled)return;
+      settled=true;
       STATE.socketLoading=null;
       reject(new Error("Socket.IO serveur indisponible"));
     };
-    document.head.appendChild(s);
+
+    /* V70 : réutilise le script déjà préchargé dans <head> au lieu d'en télécharger un second. */
+    let s=[...document.scripts].find(x=>String(x.src||"").includes("/socket.io/socket.io.js"));
+    if(!s){
+      s=document.createElement("script");
+      s.src=APP_SERVER_URL+"/socket.io/socket.io.js";
+      s.async=true;
+      s.referrerPolicy="no-referrer";
+      document.head.appendChild(s);
+    }
+
+    s.addEventListener("load",finishOk,{once:true});
+    s.addEventListener("error",finishErr,{once:true});
+    if(typeof window.io==="function")finishOk();
+
+    setTimeout(()=>{
+      if(typeof window.io==="function")finishOk();
+      else finishErr();
+    },7000);
   });
 
   return STATE.socketLoading;
@@ -7981,16 +7970,16 @@ async function connectSocket(){
   try{
     await loadSocket();
 
-    if(!document.hidden && STATE.deviceReplaced){
-      STATE.deviceReplaced=false;
-    }
+    if(!document.hidden && STATE.deviceReplaced)STATE.deviceReplaced=false;
 
     const identity={
       tenantID:String(STATE.tenantID||"").trim(),
       deviceId:String(STATE.deviceId||"").trim(),
-      page:"PLAN_INTERACTIF"
+      page:"PAD",
+      terminal:"PAD",
+      module:"pack-eco"
     };
-    const identityKey=`${identity.tenantID}|${identity.deviceId}|${identity.page}`;
+    const identityKey=`${identity.tenantID}|${identity.deviceId}|PAD`;
 
     if(STATE.socket && STATE.socketIdentityKey && STATE.socketIdentityKey!==identityKey){
       try{STATE.socket.removeAllListeners()}catch(_){}
@@ -8001,23 +7990,23 @@ async function connectSocket(){
 
     if(STATE.socket){
       if(STATE.socket.connected)return STATE.socket;
-      if(typeof STATE.socket.connect==="function"){
-        try{STATE.socket.connect()}catch(_){}
-      }
+      try{STATE.socket.connect?.()}catch(_){}
       return STATE.socket;
     }
 
     const socket=window.io(APP_SERVER_URL,{
       withCredentials:false,
-      transports:["polling","websocket"],
+      /* V70 : WebSocket direct d'abord, polling uniquement en secours. */
+      transports:["websocket","polling"],
+      tryAllTransports:true,
       upgrade:true,
-      rememberUpgrade:false,
+      rememberUpgrade:true,
       reconnection:true,
       reconnectionAttempts:Infinity,
-      reconnectionDelay:700,
-      reconnectionDelayMax:5000,
-      randomizationFactor:.35,
-      timeout:20000,
+      reconnectionDelay:350,
+      reconnectionDelayMax:3000,
+      randomizationFactor:.25,
+      timeout:8000,
       forceNew:false,
       multiplex:true,
       closeOnBeforeunload:false,
@@ -8032,48 +8021,45 @@ async function connectSocket(){
       const previousServerAt=Number(STATE.lastServerAt||0);
       STATE.connected=true;
       STATE.lastServerAt=now();
-
       setConnection("TEMPS RÉEL","good");
-      if(typeof hidePadNetworkOverlay === "function") hidePadNetworkOverlay();
+      try{hidePadNetworkOverlay?.()}catch(_){}
 
-      socket.emit("joinTenant",{
-        tenantID:STATE.tenantID,
-        deviceId:STATE.deviceId,
-        page:"PLAN_INTERACTIF"
-      });
-
-      try{
-        socket.emit("requestArchitectureState",{
-          tenantID:STATE.tenantID,
-          deviceId:STATE.deviceId,
-          page:"PLAN_INTERACTIF"
-        });
-      }catch(_){}
-
+      socket.emit("joinTenant",identity);
+      try{socket.emit("requestArchitectureState",identity)}catch(_){}
       retryFailedWrites();
 
-      if(!previousServerAt || now()-previousServerAt>5000){
-        syncFull("socket-connect");
+      /* Pas de deuxième lecture complète si le bootstrap HTTP vient de passer. */
+      if(!STATE.syncing && (!previousServerAt || now()-previousServerAt>20000)){
+        setTimeout(()=>{
+          if(STATE.authenticated && !STATE.syncing && (!STATE.lastServerAt || now()-STATE.lastServerAt>20000)){
+            syncFull("socket-connect-fallback");
+          }
+        },900);
       }
+    });
+
+    socket.on("tenant-joined",()=>{
+      STATE.connected=true;
+      STATE.lastServerAt=now();
+      setConnection("TEMPS RÉEL","good");
+      try{socket.emit("requestArchitectureState",identity)}catch(_){}
     });
 
     socket.on("updateState",s=>{
       STATE.connected=true;
       STATE.lastServerAt=now();
       setConnection("TEMPS RÉEL","good");
-      if(typeof hidePadNetworkOverlay === "function") hidePadNetworkOverlay();
+      try{hidePadNetworkOverlay?.()}catch(_){}
       applyServerState(s,"socket");
     });
 
     socket.on("paymentConfigUpdated",packet=>{
       if(packet?.paymentConfig){
-        if(typeof applyPaymentConfig === 'function') applyPaymentConfig(packet.paymentConfig);
-      }else{
-        STATE.paymentConfigLoadedAt=0;
-      }
+        if(typeof applyPaymentConfig==='function')applyPaymentConfig(packet.paymentConfig);
+      }else STATE.paymentConfigLoadedAt=0;
     });
 
-    const onSessionReplaced=info=>{
+    const onSessionReplaced=()=>{
       STATE.deviceReplaced=true;
       STATE.connected=false;
       setConnection("AUTRE ONGLET ACTIF","warn");
@@ -8081,44 +8067,37 @@ async function connectSocket(){
     socket.on("ichef-device-replaced",onSessionReplaced);
     socket.on("ichef-session-replaced",onSessionReplaced);
 
-    socket.on("disconnect",reason=>{
+    socket.on("disconnect",()=>{
       STATE.connected=false;
-
-      if(STATE.deviceReplaced){
-        setConnection("AUTRE ONGLET ACTIF","warn");
-        return;
-      }
-
-      setConnection(navigator.onLine?"RECONNEXION":"HORS LIGNE", navigator.onLine?"warn":"bad");
-
+      if(STATE.deviceReplaced){setConnection("AUTRE ONGLET ACTIF","warn");return}
+      setConnection(navigator.onLine?"RECONNEXION":"HORS LIGNE",navigator.onLine?"warn":"bad");
       if(!navigator.onLine){
-        if(typeof showPadNetworkOverlay === "function") showPadNetworkOverlay("Connexion Internet perdue. Les écritures serveur sont suspendues jusqu’au retour du réseau.");
+        try{showPadNetworkOverlay?.("Connexion Internet perdue. Reconnexion automatique en cours.")}catch(_){}
       }
     });
 
-    socket.on("connect_error",err=>{
+    socket.on("connect_error",()=>{
       STATE.connected=false;
-      setConnection(navigator.onLine?"SERVEUR À VÉRIFIER":"HORS LIGNE",navigator.onLine?"warn":"bad");
+      setConnection(navigator.onLine?"RECONNEXION":"HORS LIGNE",navigator.onLine?"warn":"bad");
     });
 
-    socket.io.on("reconnect_attempt",attempt=>{
-      setConnection("RECONNEXION","warn");
-    });
-
-    socket.io.on("reconnect",attempt=>{
+    socket.io.on("reconnect_attempt",()=>setConnection("RECONNEXION","warn"));
+    socket.io.on("reconnect",()=>{
       STATE.connected=true;
+      STATE.lastServerAt=now();
       setConnection("TEMPS RÉEL","good");
-      if(typeof hidePadNetworkOverlay === "function") hidePadNetworkOverlay();
-      syncFull("socket-reconnect");
+      try{hidePadNetworkOverlay?.()}catch(_){}
+      /* Le serveur rejoue l'état via Socket ; HTTP seulement si rien n'arrive. */
+      setTimeout(()=>{
+        if(STATE.authenticated && (!STATE.lastServerAt || now()-STATE.lastServerAt>20000))syncFull("socket-reconnect-fallback");
+      },1200);
     });
 
     return socket;
-
   }catch(err){
     STATE.connected=false;
     STATE.socket=null;
     STATE.socketLoading=null;
-
     setConnection(navigator.onLine?"SYNCHRO HTTP":"HORS LIGNE",navigator.onLine?"warn":"bad");
     return null;
   }
@@ -13838,62 +13817,52 @@ async function bootApp(){
   autoDisplay();
   setConnection(navigator.onLine?"CONNEXION SERVEUR":"HORS LIGNE",navigator.onLine?"warn":"bad");
 
-  /* V71 — démarrage rapide : une seule lecture HTTP bloquante suffit pour
-     afficher l'accueil avec des données fiables. Les contrôles secondaires
-     continuent juste après, sans retenir l'utilisateur sur l'écran PIN. */
-  const initialSyncOk=await syncFull("initial");
+  /* V70 — SOCKET-FIRST : le temps réel et le bootstrap HTTP démarrent ensemble. */
+  const socketPromise=Promise.resolve().then(()=>connectSocket()).catch(err=>{
+    console.warn("[iCHEF SOCKET] démarrage",err?.message||err);
+    return null;
+  });
+  const initialSyncPromise=syncFull("initial");
 
   Promise.resolve().then(()=>fiscalMaintenance()).catch(err=>{
     console.warn("[iCHEF FISCAL] contrôle initial",err);
     STATE.fiscalChainState="A_VERIFIER";
   });
-  try{connectSocket()}catch(err){console.warn("[iCHEF SOCKET] démarrage",err)}
 
-  setInterval(()=>{
-    renderStatus();
-    if(STATE.currentTable){const age=$("orderAge");if(age)age.textContent=duration(orderCreated(STATE.currentOrder)||Date.now())}
-    updateToolBadges();
-    autoDisplay();
-  },1000);
+  /* Les timers et listeners globaux ne sont installés qu'une seule fois. */
+  if(!window.__ICHEF_PAD_V70_RUNTIME_BOUND__){
+    window.__ICHEF_PAD_V70_RUNTIME_BOUND__=true;
 
-  /* Garde-fou : une lecture serveur régulière assure la symbiose même si un événement Socket est perdu. */
-  setInterval(()=>{
-    if(document.hidden||!navigator.onLine)return;
-    if(!STATE.lastServerAt||now()-STATE.lastServerAt>7000)syncFull("watchdog");
-  },5000);
+    setInterval(()=>{
+      renderStatus();
+      if(STATE.currentTable){const age=$("orderAge");if(age)age.textContent=duration(orderCreated(STATE.currentOrder)||Date.now())}
+      updateToolBadges();
+      autoDisplay();
+    },1000);
 
-  window.addEventListener("focus",()=>{
-    if(
-      navigator.onLine &&
-      STATE.authenticated
-    ){
+    /* HTTP seulement en secours : jamais de full-state toutes les 5 secondes quand Socket est sain. */
+    setInterval(()=>{
+      if(document.hidden||!navigator.onLine||!STATE.authenticated)return;
+      const stale=!STATE.lastServerAt||now()-STATE.lastServerAt>30000;
+      if(!STATE.connected&&stale)syncFull("watchdog-fallback");
+    },15000);
+
+    window.addEventListener("focus",()=>{
+      if(!navigator.onLine||!STATE.authenticated)return;
       connectSocket();
-      if(
-        !STATE.lastServerAt ||
-        now()-STATE.lastServerAt>10000
-      ){
-        syncFull("focus");
-      }
-    }
-  });
+      if(!STATE.connected&&(!STATE.lastServerAt||now()-STATE.lastServerAt>30000))syncFull("focus-fallback");
+    },{passive:true});
 
-  document.addEventListener("visibilitychange",()=>{
-    if(
-      !document.hidden &&
-      navigator.onLine &&
-      STATE.authenticated
-    ){
+    document.addEventListener("visibilitychange",()=>{
+      if(document.hidden||!navigator.onLine||!STATE.authenticated)return;
       connectSocket();
+      if(!STATE.connected&&(!STATE.lastServerAt||now()-STATE.lastServerAt>30000))syncFull("visible-fallback");
+    });
+  }
 
-      if(
-        !STATE.lastServerAt ||
-        now()-STATE.lastServerAt>10000
-      ){
-        syncFull("visible");
-      }
-    }
-  });
-
+  /* L'interface est déjà affichée ; on attend seulement le bootstrap pour lever le verrou live. */
+  const initialSyncOk=await initialSyncPromise;
+  socketPromise.catch(()=>{});
   return initialSyncOk;
 }
 
@@ -18135,6 +18104,9 @@ console.log(
       if(force && t-lastForcedRead<1200) return;
       if(force) lastForcedRead=t;
       try{
+        const socketLive=STATE?.socket?.connected===true;
+        const stale=!STATE.lastServerAt || t-Number(STATE.lastServerAt||0)>20000;
+        if(socketLive && !stale)return;
         await syncFull(reason);
       }catch(err){
         console.warn("[iCHEF PLAN] resynchronisation",reason,err?.message||err);
@@ -18176,14 +18148,14 @@ console.log(
   }
 
   /* Le socket peut être créé après le PIN : on le lie dès qu'il existe. */
-  setInterval(bindSocket,1000);
+  setInterval(bindSocket,3000);
 
   /* Réconciliation serveur courte : couvre aussi les moteurs qui écrivent MongoDB
      sans événement Socket dédié (ex. réservation automatique/IA). */
   setInterval(()=>{
     bindSocket();
-    if(planCanSync()) reconcile("plan-reconcile-5s",0,true);
-  },5000);
+    if(planCanSync()) reconcile("plan-reconcile-fallback",0,true);
+  },30000);
 
   /* Retour BFCache / changement d'onglet / réseau : toujours relire l'état serveur. */
   window.addEventListener("pageshow",event=>{
@@ -18245,14 +18217,15 @@ console.log(
 
   function identity(){
     return {
-      tenantID:String(window.STATE?.tenantID||'').trim(),
-      deviceId:String(window.STATE?.deviceId||'').trim(),
-      page:'PLAN_INTERACTIF'
+      tenantID:String(typeof STATE!=='undefined'?STATE.tenantID:'').trim(),
+      deviceId:String(typeof STATE!=='undefined'?STATE.deviceId:'').trim(),
+      page:'PAD',
+      terminal:'PAD'
     };
   }
 
   function publishArchitecture(architecture,serverTime){
-    if(!architecture||typeof architecture!=='object'||!window.STATE)return;
+    if(!architecture||typeof architecture!=='object'||typeof STATE==='undefined')return;
     if(!STATE.activeOrders||typeof STATE.activeOrders!=='object')STATE.activeOrders={};
     STATE.activeOrders.ARCHITECTURE={
       ...(STATE.activeOrders.ARCHITECTURE&&typeof STATE.activeOrders.ARCHITECTURE==='object'?STATE.activeOrders.ARCHITECTURE:{}),
@@ -18267,7 +18240,7 @@ console.log(
   }
 
   function requestArchitecture(reason='manual'){
-    const socket=window.STATE?.socket;
+    const socket=(typeof STATE!=='undefined'?STATE.socket:null);
     if(!navigator.onLine){badge('HORS LIGNE','offline');return}
     badge('↻ SYNC…','syncing');
     if(socket?.connected){
@@ -18276,15 +18249,17 @@ console.log(
     clearTimeout(syncTimer);
     syncTimer=setTimeout(async()=>{
       try{
-        if(typeof syncFull==='function'&&window.STATE?.authenticated)await syncFull('plan-architecture-'+reason);
+        const live=(typeof STATE!=='undefined'&&STATE.socket?.connected===true);
+        const stale=(typeof STATE==='undefined'||!STATE.lastServerAt||Date.now()-Number(STATE.lastServerAt||0)>20000);
+        if(!live && stale && typeof syncFull==='function'&&STATE?.authenticated)await syncFull('plan-architecture-fallback-'+reason);
         try{window.refreshPadServiceLive?.()}catch(_){}
-        badge(window.STATE?.connected?'✓ LIVE':'✓ HTTP','live');
+        badge(live?'✓ LIVE':'✓ HTTP','live');
       }catch(_){badge('SYNC ?','offline')}
-    },650);
+    },1500);
   }
 
   function bind(){
-    const socket=window.STATE?.socket;
+    const socket=(typeof STATE!=='undefined'?STATE.socket:null);
     if(!socket||socket===boundSocket)return;
     boundSocket=socket;
 
@@ -18322,7 +18297,7 @@ console.log(
     if(socket.connected)requestArchitecture('bind');
   }
 
-  setInterval(bind,700);
+  setInterval(bind,2500);
   window.addEventListener('online',()=>setTimeout(()=>{bind();requestArchitecture('online')},100),{passive:true});
   window.addEventListener('focus',()=>{bind();if(navigator.onLine)requestArchitecture('focus')},{passive:true});
   document.addEventListener('visibilitychange',()=>{
@@ -21162,11 +21137,11 @@ window.tableStats = function(table) {
 
 <script id="ichef-pad-v67-readonly-marker">
 window.__ICHEF_PAD_ARCHITECTURE_READONLY__=true;
-window.__ICHEF_PAD_VERSION__="PAD-V67-PIN-PAD-CORRIGE-ARCH-READONLY";
+window.__ICHEF_PAD_VERSION__="PAD-V70-CODE-ULTRA-RAPIDE-SOCKET-FIRST-READONLY";
 </script>
 
-<script id="ichef-pad-v68-ultra-fast-login-prewarm">
-/* V68 — aucun PIN n'est envoyé ici. On prépare seulement transport + serveur. */
+<script id="ichef-pad-v70-ultra-fast-login-prewarm">
+/* V70 — préchauffage léger : un seul healthz + bibliothèque Socket.IO. */
 (function(){
   let lastWarm=0;
   function warmServer(force){
@@ -21179,7 +21154,6 @@ window.__ICHEF_PAD_VERSION__="PAD-V67-PIN-PAD-CORRIGE-ARCH-READONLY";
           ? 'http://localhost:10000'
           : 'https://tableau-system.onrender.com');
       fetch(base+'/healthz?_padprewarm='+t,{method:'GET',cache:'no-store',credentials:'omit',keepalive:true}).catch(()=>{});
-      fetch(base+'/readyz?_padprewarm='+t,{method:'GET',cache:'no-store',credentials:'omit',keepalive:true}).catch(()=>{});
     }catch(_){ }
   }
   function warmSocketLibrary(){
@@ -21200,7 +21174,7 @@ window.__ICHEF_PAD_VERSION__="PAD-V67-PIN-PAD-CORRIGE-ARCH-READONLY";
   document.addEventListener('visibilitychange',()=>{ if(!document.hidden)warmAll(false); });
 })();
 </script>
-<!-- ICHEF PAD V68 SAFE — PIN PAD inchangé, serveur + Socket.IO préchauffés avant validation -->
+<!-- ICHEF PAD V70 SAFE — code allégé · Socket-first · HTTP uniquement en secours -->
 
 </body>
 </html>
