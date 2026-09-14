@@ -7723,128 +7723,130 @@ function startPadBootNonBlocking(){
    HYPER-BOOT V4 : DÉMARRAGE INSTANTANÉ (ZÉRO LATENCE)
 ========================================================= */
 async function verifyPin(){
+  const typedTenant=text($("tenantInput")?.value);
+  if(typedTenant&&typedTenant!==STATE.tenantID){
+    STATE.tenantID=typedTenant;
+    STORAGE.set("ichef_tenant_id",STATE.tenantID);
+  }
+  if(!STATE.tenantID){
+    STATE.tenantID=typedTenant;
+    if(!STATE.tenantID){
+      loginMessage("Identifiant établissement requis");
+      syncTenantLoginField(true);
+      return;
+    }
+    STORAGE.set("ichef_tenant_id",STATE.tenantID);
+  }
+  if(STATE.loginPin.length<4){loginMessage("Code incomplet");return}
   if(STATE.loginBusy)return;
-
-  if(!navigator.onLine){
-    loginMessage("Connexion Internet requise pour ouvrir le PAD");
-    updatePadLoginNetworkStatus();
-    showPadNetworkOverlay("Aucune connexion Internet. Le PAD principal ne peut pas être ouvert sans le serveur iCHEF.");
-    return;
-  }
-
-  const validateBtn=$("pinValidate");
-  const typedTenant=text($("tenantInput")?.value).trim().slice(0,96);
-  const tenantCandidate=(typedTenant||text(STATE.tenantID)).trim();
-
-  if(!tenantCandidate){
-    loginMessage("Identifiant établissement requis");
-    syncTenantLoginField(true);
-    return;
-  }
-
-  if(!/^[A-Za-z0-9._:-]{1,96}$/.test(tenantCandidate)){
-    loginMessage("Identifiant établissement invalide");
-    syncTenantLoginField(true);
-    return;
-  }
-
-  if(STATE.loginPin.length<4){
-    loginMessage("Code incomplet");
-    return;
-  }
-
+  
   STATE.loginBusy=true;
+  const validateBtn=$("pinValidate");
   if(validateBtn)validateBtn.disabled=true;
   loginMessage("Ouverture immédiate...");
 
-  // 1. COUPURE VISUELLE INSTANTANÉE (0 ms)
-  STATE.tenantID=tenantCandidate;
-  STORAGE.set("ichef_tenant_id",STATE.tenantID);
-  
-  const pinAttempt=String(STATE.loginPin);
-  STATE.pin=pinAttempt; 
+  // 1. COUPURE VISUELLE IMMÉDIATE (0 milliseconde d'attente)
+  const pinAttempt = String(STATE.loginPin);
+  STATE.pin = pinAttempt;
+  STATE.authenticated = true; 
   STATE.loginPin="";
   renderPin();
+  
+  const loginEl = document.getElementById("login");
+  const appEl = document.getElementById("app");
+  const toolsEl = document.getElementById("tools");
 
-  // V59: Affiche l'écran des tables instantanément avec un squelette/cache
-  showPadFastLoginPreview();
-  preparePadFastStaticState();
-  applyPadFastLayoutCache();
+  if (loginEl) loginEl.classList.add("hidden");
+  if (appEl) appEl.classList.remove("hidden");
+  if (toolsEl) toolsEl.classList.remove("hidden");
 
-  try{
+  // 2. RENDU DU CACHE LOCAL INSTANTANÉMENT
+  try {
+    if(typeof phoneHydrateArchitectureCache === "function") phoneHydrateArchitectureCache(); 
+    if(typeof preparePadFastStaticState === "function") preparePadFastStaticState();
+    if(typeof applyPadFastLayoutCache === "function") applyPadFastLayoutCache();
+
     applyDisplay(STATE.display);
     autoDisplay();
     renderStatus();
     renderRooms();
     renderTables();
     updateToolBadges();
-  }catch(renderErr){
-    console.warn('[iCHEF PAD] rendu immédiat',renderErr);
+  } catch(err) {
+    console.warn("[iCHEF] Erreur pré-rendu cache:", err);
   }
 
-  $("app")?.classList.remove("hidden");
-  $("tools")?.classList.remove("hidden");
-  $("login")?.classList.add("hidden");
-  loginMessage("");
+  setConnection("VÉRIFICATION...", "warn");
 
-  // 2. PAUSE STRATÉGIQUE DE 50ms (rend la main au navigateur pour l'affichage)
+  // 3. PAUSE STRATÉGIQUE DE 50ms & REQUÊTE SERVEUR EN ARRIÈRE-PLAN
   setTimeout(() => {
-    
-    // 3. REQUÊTE SERVEUR EN ARRIÈRE-PLAN
     serverFetch("/api/verify-pin",{
       method:"POST",
       body:JSON.stringify({
         tenantID:STATE.tenantID,
         pin:pinAttempt,
         deviceId:STATE.deviceId,
-        page:"PAD",
-        terminal:"PAD"
+        terminal:"TELEPHONE",
+        module:"TELEPHONE",
+        source:"telephone.html"
       })
     })
     .then(async r => {
       const j=await r.json().catch(()=>({}));
-      if(!r.ok||!j.success)throw new Error(j.error||j.message||"Code refusé");
-
+      if(!r.ok||!j.success){
+        const base=text(j.error||j.message||"Code refusé");
+        const detail=text(j.detail||"");
+        throw new Error(detail&&detail!==base?`${base} · ${detail}`:base);
+      }
+      
+      // Confirmation serveur reçue
       if(j.safeTenantID){
-        const safeTenant=text(j.safeTenantID).trim().slice(0,96);
-        if(safeTenant)STATE.tenantID=safeTenant;
+        STATE.tenantID=text(j.safeTenantID);
         STORAGE.set("ichef_tenant_id",STATE.tenantID);
       }
-
       STATE.role=j.role||"";
       STATE.plan=j.plan||"";
       STATE.specialite=j.specialite||"";
-      STATE.authenticated=true;
-      STATE.deviceReplaced=false;
-
-      if(typeof loadPaymentConfig === "function"){
-          loadPaymentConfig(true).catch(()=>{});
-      } else if (typeof loadTelephonePaymentConfig === "function") {
-          loadTelephonePaymentConfig(true).catch(()=>{});
+      STATE.addons=Array.isArray(j.addons)?j.addons.slice():STATE.addons;
+      
+      if(!STATE.featureRights||typeof STATE.featureRights!=="object")STATE.featureRights={};
+      if(typeof phonePlanRightFromEntitlements === "function") {
+        STATE.featureRights.PLAN_INTERACTIF = STATE.demo || phonePlanRightFromEntitlements(STATE.plan,STATE.addons);
       }
+
+      loginMessage("");
 
       try{window.closePadArchitect?.()}catch(_){}
       document.body.classList.remove("ichef-plan-toggle-open");
-
-      showPadFreshSyncState();
       try{window.ICHEF_PLAN_TABLE_TOGGLE?.sync?.()}catch(_){}
 
-      // Lancement en arrière-plan sans bloquer l'UI
-      startPadBootNonBlocking();
+      if (typeof bootApp === "function") {
+        bootApp().catch(err=>{
+          console.warn("[iCHEF TELEPHONE] démarrage",err?.message||err);
+          setConnection(navigator.onLine?"SYNCHRO HTTP":"HORS LIGNE",navigator.onLine?"warn":"bad");
+        });
+      }
+
+      if (typeof loadLicenseRights === "function") {
+         setTimeout(()=>loadLicenseRights().catch(()=>{}),500);
+      }
     })
     .catch(e => {
-      // Échec : restauration de l'écran de login
       STATE.authenticated=false;
       STATE.pin="";
       STATE.loginPin="";
       renderPin();
-      restorePadLoginAfterFastFailure(e?.message||"Connexion impossible");
+      if(typeof syncTenantLoginField === "function") syncTenantLoginField(true);
+      loginMessage(e?.message||"Connexion impossible");
+      
+      if (appEl) appEl.classList.add("hidden");
+      if (toolsEl) toolsEl.classList.add("hidden");
+      if (loginEl) loginEl.classList.remove("hidden");
     })
     .finally(() => {
       STATE.loginBusy=false;
       if(validateBtn)validateBtn.disabled=false;
     });
-
   }, 50);
 }
 function preparePadFastStaticState(){
