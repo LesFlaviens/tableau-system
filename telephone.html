@@ -13168,5 +13168,128 @@ window.renderLivePlan = function() {
   };
 };
 </script>
+  <!-- =========================================================
+     HYPER-BOOT PLAN DE SALLE : 0 SECONDE D'ATTENTE
+========================================================= -->
+<style id="ichef-zero-latency-plan">
+/* 1. Suppression totale des délais d'animation (Cut instantané) */
+.sheet, #ichefArchPad, .archpad-toast, #toast {
+    transition: none !important;
+    animation: none !important;
+    transition-duration: 0s !important;
+}
+.sheet {
+    display: flex !important;
+    opacity: 0 !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+    z-index: -100 !important; 
+}
+.sheet.open {
+    opacity: 1 !important;
+    visibility: visible !important;
+    pointer-events: auto !important;
+    z-index: 20000 !important;
+}
+#sheet.plan-interactive-open {
+    background: var(--city-floor, #eeeae0) !important;
+}
+</style>
+
+<script id="ichef-instant-plan-boot">
+// 2. Surcharge de la validation PIN pour un affichage immédiat
+window.verifyPin = async function() {
+  const typedTenant = document.getElementById("tenantInput")?.value || "";
+  if(typedTenant && typedTenant !== STATE.tenantID){
+    STATE.tenantID = typedTenant;
+    STORAGE.set("ichef_tenant_id", STATE.tenantID);
+  }
+  
+  if(!STATE.tenantID){
+    loginMessage("Identifiant requis");
+    syncTenantLoginField(true);
+    return;
+  }
+  
+  if(STATE.loginPin.length < 4){
+    loginMessage("Code incomplet");
+    return;
+  }
+  
+  if(STATE.loginBusy) return;
+  STATE.loginBusy = true;
+  
+  const validateBtn = document.getElementById("pinValidate");
+  if(validateBtn) validateBtn.disabled = true;
+
+  // --- HYPER-BOOT : BASCULE VISUELLE IMMÉDIATE (0 ms) ---
+  const loginScreen = document.getElementById("login");
+  if(loginScreen) loginScreen.classList.add("hidden");
+  document.getElementById("app")?.classList.remove("hidden");
+  document.getElementById("tools")?.classList.remove("hidden");
+  
+  // On force temporairement le droit au plan pour éviter un blocage de licence
+  STATE.featureRights = STATE.featureRights || {};
+  STATE.featureRights.PLAN_INTERACTIF = true;
+  
+  // On charge l'architecture depuis le cache du navigateur
+  if (typeof preparePadFastStaticState === "function") preparePadFastStaticState();
+  if (typeof applyPadFastLayoutCache === "function") applyPadFastLayoutCache();
+  
+  // OUVRE LE PLAN INTERACTIF INSTANTANÉMENT EN PAGE D'ACCUEIL
+  if (typeof openPlan === "function") {
+      openPlan(); 
+  }
+
+  // --- VÉRIFICATION SERVEUR EN ARRIÈRE-PLAN ---
+  try {
+    const pinAttempt = String(STATE.loginPin);
+    const r = await serverFetch("/api/verify-pin", {
+      method: "POST",
+      body: JSON.stringify({
+        tenantID: STATE.tenantID,
+        pin: pinAttempt,
+        deviceId: STATE.deviceId,
+        page: "PAD",
+        terminal: "PAD"
+      })
+    });
+    
+    const j = await r.json().catch(()=>({}));
+    if(!r.ok || !j.success) throw new Error(j.error || j.message || "Code refusé");
+    
+    STATE.pin = pinAttempt;
+    STATE.role = j.role || "";
+    STATE.plan = j.plan || "";
+    STATE.authenticated = true;
+    STATE.loginPin = "";
+    renderPin();
+
+    if(j.safeTenantID){
+      STATE.tenantID = text(j.safeTenantID).trim().slice(0,96);
+      STORAGE.set("ichef_tenant_id", STATE.tenantID);
+    }
+
+    // Lance la synchro lourde (commandes en cours) en fond sans bloquer l'interface
+    if (typeof startPadBootNonBlocking === "function") {
+        startPadBootNonBlocking();
+    }
+    
+  } catch (e) {
+    // En cas d'erreur de code PIN ou réseau, on restaure l'écran de connexion
+    STATE.authenticated = false;
+    STATE.pin = "";
+    STATE.loginPin = "";
+    renderPin();
+    if (typeof restorePadLoginAfterFastFailure === "function") {
+        restorePadLoginAfterFastFailure(e?.message || "Connexion impossible");
+    }
+    closeSheet(); 
+  } finally {
+    STATE.loginBusy = false;
+    if(validateBtn) validateBtn.disabled = false;
+  }
+};
+</script>
 </body>
 </html>
