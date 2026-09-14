@@ -1,6 +1,6 @@
 /**
  * ==============================================================
- * 🧠 iCHEF EMPIRE OS — CORE SERVER V56.6 · CONNEXION PAD/TÉLÉPHONE ULTRA RAPIDE (2026.09.14)
+ * 🧠 iCHEF EMPIRE OS — CORE SERVER V56.7 · CONNEXION PAD/TÉLÉPHONE ULTRA RAPIDE (2026.09.14)
  * ==============================================================
  * Contrat central stable pour multi-établissements :
  * Réservations · Plan/PAD/Téléphone · Cuisine/Bar/Pâtisserie · Anti-Rush
@@ -10469,6 +10469,100 @@ io.on("connection", socket => {
         }
     });
 
+    /* ==========================================================
+       V56.7 — SONNETTE SERVICE LIVE ULTRA RAPIDE
+       - validation PIN / terminal conservée
+       - écriture ciblée ALERTS_MASTER
+       - petit paquet Socket service-bell envoyé avant le gros état complet
+       ========================================================== */
+    socket.on("service-bell-send", async (packet = {}, callback) => {
+        const ack = typeof callback === 'function' ? callback : () => {};
+        try {
+            const safeID = cleanString(
+                packet?.tenantID ||
+                socket.data?.tenantID ||
+                socket.handshake?.auth?.tenantID
+            );
+            const joinedID = cleanString(socket.data?.tenantID || '');
+            if (!safeID || (joinedID && joinedID !== safeID)) {
+                return ack({ success:false, error:'Tenant Socket invalide.' });
+            }
+
+            const terminal = String(packet?.terminal || socket.data?.page || 'PAD').trim().toUpperCase();
+            const pin = String(packet?.pin || '').trim();
+            const deviceId = String(packet?.deviceId || socket.data?.deviceId || '').trim();
+            const bell = packet?.payload && typeof packet.payload === 'object' ? packet.payload : null;
+
+            if (!bell || String(bell.type || '').toUpperCase() !== 'RING') {
+                return ack({ success:false, error:'Sonnette invalide.' });
+            }
+            if (ichefJsonBytes(bell) > 128 * 1024) {
+                return ack({ success:false, error:'Sonnette trop volumineuse.' });
+            }
+
+            const terminalAccess = await ichefCheckServiceTerminalAccess({
+                tenantID: safeID,
+                pin,
+                terminal
+            });
+            if (!terminalAccess.ok) {
+                return ack({
+                    success:false,
+                    code:terminalAccess.requiresDuty === true && terminalAccess.onDuty !== true
+                        ? 'NOT_ON_DUTY'
+                        : 'TERMINAL_ACCESS_DENIED',
+                    error:terminalAccess.error || 'Accès sonnette refusé.'
+                });
+            }
+
+            const serverTime = new Date().toISOString();
+            const payload = {
+                ...bell,
+                ringId:String(bell.ringId || ('RING_'+Date.now()+'_'+crypto.randomBytes(4).toString('hex'))),
+                source:String(bell.source || terminal || 'PAD'),
+                deviceId:String(bell.deviceId || deviceId),
+                createdAt:bell.createdAt || serverTime
+            };
+            const node = { data:payload, updatedAt:serverTime };
+
+            await AppState.updateOne(
+                { tenantID:safeID },
+                { $set:{ 'activeOrders.ALERTS_MASTER':node } },
+                { upsert:true }
+            );
+
+            /* Priorité absolue : la sonnette part avant toute relecture complète. */
+            io.to(safeID).emit('service-bell', {
+                tenantID:safeID,
+                payload,
+                serverTime
+            });
+            io.to(safeID).emit('server-state-changed', {
+                tenantID:safeID,
+                tableId:'ALERTS_MASTER',
+                source:'service-bell-live',
+                persisted:true,
+                timestamp:serverTime
+            });
+
+            ack({ success:true, persisted:true, ringId:payload.ringId, serverTime });
+
+            /* Compatibilité anciens écrans : état complet en arrière-plan, jamais bloquant pour la sonnette. */
+            setImmediate(async () => {
+                try {
+                    const currentState = await AppState.findOne({ tenantID:safeID }).lean();
+                    if (currentState) io.to(safeID).emit('updateState', currentState);
+                } catch (error) {
+                    console.warn('[iCHEF SONNETTE] refresh compatibilité', error?.message || error);
+                }
+            });
+
+        } catch (error) {
+            console.error('[iCHEF SONNETTE LIVE]', error?.message || error);
+            return ack({ success:false, error:'Erreur serveur sonnette.' });
+        }
+    });
+
     /*
      * Reçoit les changements de :
      * - admin.html
@@ -11495,6 +11589,22 @@ app.post('/update-order', async (req, res) => {
                 tableId,
                 persistedAntiRushOrder.antiRush.releaseAt
             );
+        }
+
+        /* V56.7 : même le secours /update-order diffuse la sonnette immédiatement,
+           avant l'archive et avant le gros updateState. */
+        if (String(tableId || '').toUpperCase() === 'ALERTS_MASTER') {
+            const bellNode = finalPersistedState?.activeOrders?.ALERTS_MASTER;
+            const bellPayload = bellNode?.data && typeof bellNode.data === 'object'
+                ? bellNode.data
+                : bellNode;
+            if (bellPayload && String(bellPayload.type || '').toUpperCase() === 'RING') {
+                io.to(tenantID).emit('service-bell', {
+                    tenantID,
+                    payload:bellPayload,
+                    serverTime:new Date().toISOString()
+                });
+            }
         }
 
         // Archive durable séparée de la table active.
