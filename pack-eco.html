@@ -1220,7 +1220,69 @@ return enqueueVersionedWrite(key,pending);
 }
 
 function setConnection(label,kind="warn"){
-$("stLink").textContent=label;$("stLink").className="status-value "+(kind==="good"?"good":kind==="bad"?"bad":"warn");
+const el=$("stLink");
+if(!el)return;
+el.textContent=label;
+el.className="status-value "+(kind==="good"?"good":kind==="bad"?"bad":"warn");
+}
+
+/* V76 — statut réseau anti-saut.
+   Une erreur HTTP isolée ne peut plus écraser un WebSocket LIVE.
+   HORS LIGNE n'est confirmé qu'après perte réelle du réseau ou absence prolongée
+   de Socket + réponse serveur. */
+let ICHEF_CONNECTIVITY_GRACE_TIMER=0;
+function ichefSocketLive(){
+  try{return !!(STATE.socket&&STATE.socket.connected)}catch(_){return false}
+}
+function ichefServerRecent(maxAge=12000){
+  const t=Number(STATE.lastServerAt||0);
+  return !!t && (now()-t)<=maxAge;
+}
+function ichefClearConnectivityGrace(){
+  if(ICHEF_CONNECTIVITY_GRACE_TIMER){
+    clearTimeout(ICHEF_CONNECTIVITY_GRACE_TIMER);
+    ICHEF_CONNECTIVITY_GRACE_TIMER=0;
+  }
+}
+function ichefMarkServerAlive(label="TEMPS RÉEL"){
+  ichefClearConnectivityGrace();
+  STATE.lastServerAt=now();
+  if(ichefSocketLive())STATE.connected=true;
+  setConnection(label,"good");
+  try{hidePadNetworkOverlay()}catch(_){ }
+}
+function ichefConfirmOfflineLater(label="RECONNEXION"){
+  ichefClearConnectivityGrace();
+  if(!navigator.onLine){
+    STATE.connected=false;
+    setConnection("HORS LIGNE","bad");
+    return;
+  }
+  if(ichefSocketLive()){
+    STATE.connected=true;
+    setConnection("TEMPS RÉEL","good");
+    return;
+  }
+  setConnection(ichefServerRecent()?label:"CONNEXION SERVEUR","warn");
+  ICHEF_CONNECTIVITY_GRACE_TIMER=setTimeout(()=>{
+    ICHEF_CONNECTIVITY_GRACE_TIMER=0;
+    if(!navigator.onLine){
+      STATE.connected=false;
+      setConnection("HORS LIGNE","bad");
+      return;
+    }
+    if(ichefSocketLive()){
+      STATE.connected=true;
+      setConnection("TEMPS RÉEL","good");
+      return;
+    }
+    if(ichefServerRecent()){
+      ichefConfirmOfflineLater("RECONNEXION");
+      return;
+    }
+    STATE.connected=false;
+    setConnection("HORS LIGNE","bad");
+  },4000);
 }
 
 function loadSocket(){
@@ -1306,10 +1368,7 @@ STATE.socketIdentityKey=identityKey;
 socket.on("connect",()=>{
 const previousServerAt=Number(STATE.lastServerAt||0);
 STATE.connected=true;
-STATE.lastServerAt=now();
-
-setConnection("TEMPS RÉEL","good");
-hidePadNetworkOverlay();
+ichefMarkServerAlive("TEMPS RÉEL");
 
 socket.emit("joinTenant",{
 tenantID:STATE.tenantID,
@@ -1348,9 +1407,7 @@ transport:socket.io?.engine?.transport?.name||"websocket"
 socket.on("tenant-joined",info=>{
 if(info?.tenantID && String(info.tenantID).trim().toLowerCase()!==String(STATE.tenantID||'').trim().toLowerCase())return;
 STATE.connected=true;
-STATE.lastServerAt=now();
-setConnection("SERVEUR LIVE","good");
-hidePadNetworkOverlay();
+ichefMarkServerAlive("SERVEUR LIVE");
 try{
 socket.emit("requestArchitectureState",{
 tenantID:STATE.tenantID,
@@ -1363,9 +1420,7 @@ terminal:"PAD"
 
 socket.on("updateState",s=>{
 STATE.connected=true;
-STATE.lastServerAt=now();
-setConnection("TEMPS RÉEL","good");
-hidePadNetworkOverlay();
+ichefMarkServerAlive("TEMPS RÉEL");
 applyServerState(s,"socket");
 });
 
@@ -1398,18 +1453,13 @@ socket.on("disconnect",reason=>{
 STATE.connected=false;
 
 if(STATE.deviceReplaced){
+ichefClearConnectivityGrace();
 setConnection("AUTRE ONGLET ACTIF","warn");
 return;
 }
 
-setConnection(
-navigator.onLine
-?"RECONNEXION"
-:"HORS LIGNE",
-navigator.onLine
-?"warn"
-:"bad"
-);
+/* V76 : ne jamais annoncer HORS LIGNE sur une simple bascule polling/WebSocket. */
+ichefConfirmOfflineLater("RECONNEXION");
 
 console.warn(
 "[iCHEF PAD V1] Socket déconnecté :",
@@ -1425,15 +1475,8 @@ showPadNetworkOverlay(
 
 socket.on("connect_error",err=>{
 STATE.connected=false;
-
-setConnection(
-navigator.onLine
-?"SERVEUR À VÉRIFIER"
-:"HORS LIGNE",
-navigator.onLine
-?"warn"
-:"bad"
-);
+/* V76 : HTTP récent ou Socket en cours = connexion dégradée, pas hors ligne. */
+ichefConfirmOfflineLater("RECONNEXION");
 
 console.warn(
 "[iCHEF PAD V1] connect_error :",
@@ -1451,8 +1494,7 @@ attempt
 
 socket.io.on("reconnect",attempt=>{
 STATE.connected=true;
-setConnection("TEMPS RÉEL","good");
-hidePadNetworkOverlay();
+ichefMarkServerAlive("TEMPS RÉEL");
 
 syncFull("socket-reconnect");
 
@@ -1470,14 +1512,8 @@ STATE.connected=false;
 STATE.socket=null;
 STATE.socketLoading=null;
 
-setConnection(
-navigator.onLine
-?"SYNCHRO HTTP"
-:"HORS LIGNE",
-navigator.onLine
-?"warn"
-:"bad"
-);
+/* V76 : Socket indisponible ne veut pas dire serveur hors ligne. */
+ichefConfirmOfflineLater("SYNCHRO HTTP");
 
 console.warn(
 "[iCHEF PAD V1] Socket.IO non chargé :",
@@ -1495,12 +1531,27 @@ try{
 const s=await getState();
 STATE.lastServerAt=now();
 applyServerState(s,reason);
-if(!STATE.connected)setConnection("SYNCHRO OK","good");
+if(ichefSocketLive()){
+  STATE.connected=true;
+  ichefMarkServerAlive("TEMPS RÉEL");
+}else{
+  ichefClearConnectivityGrace();
+  setConnection("SYNCHRO SERVEUR","good");
+}
 return true;
 }catch(e){
-setConnection("HORS LIGNE","bad");
+/* V76 : une lecture HTTP ratée ne peut plus faire clignoter HORS LIGNE
+   lorsqu'un Socket est LIVE ou que le serveur a répondu récemment. */
+if(ichefSocketLive()){
+  STATE.connected=true;
+  ichefMarkServerAlive("TEMPS RÉEL");
+}else{
+  ichefConfirmOfflineLater("RECONNEXION");
+}
 console.warn("[iCHEF PAD] Synchronisation impossible",reason,e?.message||e);
-if(reason==="initial"||reason==="manual")toast("Serveur inaccessible : "+(e?.message||"erreur réseau"),true);
+if((reason==="initial"||reason==="manual")&&!ichefSocketLive()&&!ichefServerRecent()){
+  toast("Serveur temporairement indisponible : "+(e?.message||"erreur réseau"),true);
+}
 return false;
 }finally{STATE.syncing=false}
 }
@@ -1555,7 +1606,7 @@ try{window.dispatchEvent(new CustomEvent("ichef:live-state-updated",{detail:{sou
 
 window.addEventListener("online",()=>{
 updatePadLoginNetworkStatus();
-setConnection("RECONNEXION","warn");
+ichefConfirmOfflineLater("RECONNEXION");
 
 if(STATE.authenticated){
 connectSocket();
@@ -1568,6 +1619,7 @@ hidePadNetworkOverlay();
 
 window.addEventListener("offline",()=>{
 updatePadLoginNetworkStatus();
+ichefClearConnectivityGrace();
 STATE.connected=false;
 setConnection("HORS LIGNE","bad");
 
@@ -12653,5 +12705,10 @@ console.info('[iCHEF V72] PAD PRINCIPAL · SONNETTE LIVE Socket.IO + ACK + secou
 <script id="ichef-pad-v75-pin-plan-instant-marker">
 window.__ICHEF_PAD_VERSION__="PAD-PRINCIPAL-V75-PIN-PLAN-INSTANT-SAFE";
 window.__ICHEF_PIN_PLAN_INSTANT__=true;
+</script>
+
+<script id="ichef-pad-v76-connection-stability-marker">
+window.__ICHEF_PAD_VERSION__="PAD-V76-CONNEXION-STABLE-SANS-SAUT";
+window.__ICHEF_CONNECTION_STATUS_POLICY__="SOCKET_OR_HTTP_GRACE_12S";
 </script>
 </body></html>
