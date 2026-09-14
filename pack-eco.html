@@ -10479,6 +10479,7 @@ body.ichef-pad-fast-opening #statusbar{opacity:.95}
 <!-- iCHEF V60 MENU INTERACTIF TRANSITION FLUIDE SAFE -->
 
 <!-- iCHEF V62 — FIX CORE QUI MANGE QUOI : HANDLER PRODUIT UNIQUE -->
+<!-- iCHEF V63 — FIX RÉEL : aucun clone Produits, aucun override différé C/cuisson -->
 </body></html>`;
 }
 
@@ -13184,17 +13185,16 @@ function openProductSeatPicker(product,sourceButton=null){
   pendingProductSeatChoice={product,sourceButton};
 
   const o=STATE.currentOrder||ensureOrder(STATE.currentTable);
-  const pax=Math.max(1,Number(o.pax)||1);
-  const active=Math.max(1,Math.min(9,Number(STATE.activeSeat)||1));
+  const pax=Math.max(1,Math.min(9,Number(o.pax)||1));
+  const active=Math.max(1,Math.min(pax,Number(STATE.activeSeat)||1));
   const counts=productSeatCounts();
 
-  const seatButtons=Array.from({length:9},(_,idx)=>{
+  const seatButtons=Array.from({length:pax},(_,idx)=>{
     const seat=idx+1;
     const current=seat===active?" active":"";
-    const extra=seat>pax?" extra":"";
     const count=counts[seat]||0;
     return `<button type="button"
-                    class="who-seat-btn${current}${extra}"
+                    class="who-seat-btn${current}"
                     data-product-seat="${seat}"
                     data-seat="${seat}"
                     title="Ajouter ${esc(product.name)} à C${seat}">
@@ -13208,7 +13208,7 @@ function openProductSeatPicker(product,sourceButton=null){
     `<div class="who-active-card product-seat-choice-card">
        <div class="who-active-title">${esc(product.name)}</div>
        <div class="who-active-sub">
-         ${money(product.price)} · Choisissez C1 à C9. La cuisson sera demandée ensuite uniquement si nécessaire.
+         ${money(product.price)} · Choisissez C1 à C${pax}. La cuisson sera demandée ensuite uniquement si nécessaire.
        </div>
      </div>
      <div class="who-seat-grid product-seat-choice-grid">${seatButtons}</div>`
@@ -13335,10 +13335,10 @@ function showProductCookingPicker(pending,seat){
   const o=STATE.currentOrder||ensureOrder(STATE.currentTable);
   const pax=Math.max(1,Math.min(9,Number(o?.pax)||1));
 
-  const seatsHTML=Array.from({length:9},(_,idx)=>{
+  const seatsHTML=Array.from({length:pax},(_,idx)=>{
     const s=idx+1;
     return `<button type="button"
-                    class="product-cooking-seat-btn${s===n?" active":""}${s>pax?" extra":""}"
+                    class="product-cooking-seat-btn${s===n?" active":""}"
                     data-cooking-seat="${s}"
                     data-seat="${s}"
                     title="Attribuer ce plat à C${s}">
@@ -13384,15 +13384,11 @@ function showProductCookingPicker(pending,seat){
   const body=$("sheetBody");
   if(!body)return;
 
-  /* C1-C9 restent dans le même cadre de cuisson. */
+  /* Même liste de convives que le choix initial : aucune seconde logique. */
   body.querySelectorAll("[data-cooking-seat]").forEach(btn=>{
     btn.onclick=()=>{
       const nextSeat=Math.max(1,Math.min(9,Number(btn.dataset.cookingSeat)||1));
       pendingProductSeatChoice={...pendingProductSeatChoice,seat:nextSeat};
-
-      /* Si on sélectionne un C supérieur au PAX actuel, il devient un vrai convive. */
-      const current=STATE.currentOrder||ensureOrder(STATE.currentTable);
-      if(Number(current.pax||0)<nextSeat) current.pax=nextSeat;
 
       showProductCookingPicker(pendingProductSeatChoice,nextSeat);
     };
@@ -13533,8 +13529,9 @@ $("products").addEventListener("pointermove",e=>{
 
   const dx=Math.abs(e.clientX-productPress.startX);
   const dy=Math.abs(e.clientY-productPress.startY);
+  const tolerance=(e.pointerType==="touch"||e.pointerType==="pen")?24:10;
 
-  if(dx>10||dy>10){
+  if(dx>tolerance||dy>tolerance){
     clearProductPress();
     productPress.button=null;
   }
@@ -18695,85 +18692,8 @@ body.order-open #bottomObservationBar {
 <script id="restore-qui-mange-quoi-popup">
 (function restoreProductSeatPicker() {
     
-    // 1. RÉTABLIR L'OUVERTURE DE "QUI MANGE QUOI ?" AU CLIC SUR UN PLAT
-    const productsContainer = document.getElementById("products");
-    if (productsContainer) {
-        // Cloner pour détruire l'ancien comportement "ajout rapide"
-        const newProducts = productsContainer.cloneNode(true);
-        productsContainer.parentNode.replaceChild(newProducts, productsContainer);
-
-        newProducts.addEventListener("pointerdown", e => {
-            const b = e.target.closest("[data-product]");
-            if (!b || b.classList.contains("sold")) return;
-            
-            clearProductPress();
-            productPress.button = b;
-            productPress.startX = e.clientX;
-            productPress.startY = e.clientY;
-            productPress.long = false;
-            b.classList.add("longpress-active");
-            
-            productPress.timer = setTimeout(() => {
-                productPress.timer = null;
-                productPress.long = true;
-                b.classList.remove("longpress-active");
-                const p = findProductFromButton(b);
-                if (navigator.vibrate) { try { navigator.vibrate(35); } catch (_) {} }
-                if (typeof showFullProductTitle === "function") showFullProductTitle(p);
-            }, 600);
-        }, { passive: true });
-
-        newProducts.addEventListener("pointermove", e => {
-            if (!productPress.button) return;
-            const dx = Math.abs(e.clientX - productPress.startX);
-            const dy = Math.abs(e.clientY - productPress.startY);
-            if (dx > 10 || dy > 10) {
-                clearProductPress();
-                productPress.button = null;
-            }
-        }, { passive: true });
-
-        newProducts.addEventListener("pointerup", e => {
-            const b = e.target.closest("[data-product]");
-            if (!b || !productPress.button) return;
-
-            const wasLong = productPress.long;
-            const sameButton = b === productPress.button;
-
-            clearProductPress();
-            productPress.button = null;
-            productPress.long = false;
-
-            if (!sameButton || wasLong) return;
-
-            const pendingCookingItem = typeof getValidPendingCookingItem === "function" ? getValidPendingCookingItem() : null;
-            if (pendingCookingItem) {
-                if (typeof showQuickCooking === "function") showQuickCooking(pendingCookingItem);
-                if (typeof toast === "function") toast("Cuisson obligatoire", true);
-                return;
-            }
-
-            const key = b.dataset.product + "|" + b.dataset.pname;
-            const t = Date.now();
-
-            if (lastProductTap.key === key && t - lastProductTap.at < 135) return;
-            lastProductTap = { key, at: t };
-
-            const p = typeof findProductFromButton === "function" ? findProductFromButton(b) : null;
-            if (!p) return;
-
-            // 👉 C'EST ICI QU'ON RÉACTIVE LA FENÊTRE AU LIEU D'AJOUTER DIRECTEMENT
-            if (typeof openProductSeatPicker === "function") {
-                openProductSeatPicker(p, b);
-            }
-        }, { passive: true });
-
-        newProducts.addEventListener("pointercancel", () => {
-            clearProductPress();
-            productPress.button = null;
-            productPress.long = false;
-        });
-    }
+    // V63 : le menu Produits conserve son nœud DOM et son gestionnaire principal.
+    // Aucun cloneNode/replaceChild ici : cela supprimait les Pointer Events du moteur C/cuisson/serveur.
 
     // 2. EMPÊCHER LA FENÊTRE DE S'OUVRIR TOUTE SEULE QUAND ON OUVRE UNE TABLE
     const tablesContainer = document.getElementById("tables");
@@ -19056,145 +18976,8 @@ body.order-open .ticket-obs{
 <script id="script-limite-pax-boutons">
 setTimeout(() => {
 
-    // 1. Popup de choix du convive au moment de l'ajout d'un plat
-    if (typeof window.openProductSeatPicker === "function") {
-        window.openProductSeatPicker = function(product, sourceButton=null) {
-            if(!STATE.currentTable||!product) return;
-            pendingProductSeatChoice = {product, sourceButton};
-            
-            const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
-            const pax = Math.max(1, Number(o.pax) || 1); // <-- ICI : On récupère le nombre exact
-            const active = Math.max(1, Math.min(pax, Number(STATE.activeSeat) || 1));
-            const counts = productSeatCounts();
-
-            // On boucle uniquement jusqu'au "pax" au lieu de 9
-            const seatButtons = Array.from({length: pax}, (_, idx) => {
-                const seat = idx + 1;
-                const current = seat === active ? " active" : "";
-                const count = counts[seat] || 0;
-                return `<button type="button"
-                                class="who-seat-btn${current}"
-                                data-product-seat="${seat}"
-                                data-seat="${seat}"
-                                title="Ajouter ${esc(product.name)} à C${seat}">
-                          C${seat}
-                          <small>${count} sélection${count>1?"s":""}</small>
-                        </button>`;
-            }).join("");
-
-            openSheet(
-                "QUI MANGE QUOI ? · " + product.name,
-                `<div class="who-active-card product-seat-choice-card">
-                   <div class="who-active-title">${esc(product.name)}</div>
-                   <div class="who-active-sub">
-                     ${money(product.price)} · Choisissez C1 à C${pax}.
-                   </div>
-                 </div>
-                 <div class="who-seat-grid product-seat-choice-grid">${seatButtons}</div>`
-            );
-
-            document.getElementById("sheet").classList.add("product-seat-picker-open");
-
-            const body = document.getElementById("sheetBody");
-            body.querySelectorAll("[data-product-seat]").forEach(btn => {
-                btn.addEventListener("click", () => confirmProductSeat(Number(btn.dataset.productSeat)));
-            });
-        };
-    }
-
-    // 2. Popup de choix de cuisson intégrée
-    if (typeof window.showProductCookingPicker === "function") {
-        window.showProductCookingPicker = function(pending, seat) {
-            if(!pending||!pending.product) return;
-
-            const product = pending.product;
-            const n = Math.max(1, Math.min(9, Number(seat) || 1));
-            const dest = normalizeDestination(product.dest||product.raw?.dest||product.raw?.destination||"cuisine");
-            const profile = cookingProfileFor(product);
-
-            if(dest !== "cuisine" || !profile.required || !profile.levels.length) {
-                finalizeProductSeatChoice(n, profile.automatic||"");
-                return;
-            }
-
-            pendingProductSeatChoice = {...pending, seat: n};
-            const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
-            const pax = Math.max(1, Number(o?.pax) || 1); // <-- ICI : Limite stricte au pax
-
-            // On boucle uniquement jusqu'au "pax"
-            const seatsHTML = Array.from({length: pax}, (_, idx) => {
-                const s = idx + 1;
-                return `<button type="button"
-                                class="product-cooking-seat-btn${s===n?" active":""}"
-                                data-cooking-seat="${s}"
-                                data-seat="${s}"
-                                title="Attribuer ce plat à C${s}">
-                          C${s}
-                        </button>`;
-            }).join("");
-
-            openSheet(
-                `${seatLabel(n)} · ${profile.label||"CUISSON"}`,
-                `<div class="product-cooking-card">
-                   <div class="product-cooking-head">
-                     ${seatBadgeHTML(n)}
-                     <div>
-                       <div class="product-cooking-name" title="${esc(product.name)}">${esc(cookingPickerShortName(product.name,4))}</div>
-                       <div class="product-cooking-sub">Choisissez le convive puis la cuisson.</div>
-                     </div>
-                   </div>
-                   <div class="product-cooking-seat-wrap">
-                     <div class="product-cooking-seat-label">QUI MANGE QUOI ?</div>
-                     <div class="product-cooking-seat-grid">${seatsHTML}</div>
-                   </div>
-                   <div class="product-cooking-grid">
-                     ${profile.levels.map(level => `
-                       <button type="button"
-                               class="product-cooking-btn"
-                               data-product-cooking="${esc(level)}">
-                         ${esc(level)}
-                       </button>
-                     `).join("")}
-                   </div>
-                   <button type="button" class="product-cooking-back" data-product-cooking-back>
-                     RETOUR À QUI MANGE QUOI
-                   </button>
-                 </div>`
-            );
-
-            const sheet = document.getElementById("sheet");
-            if (sheet) {
-                sheet.classList.remove("product-seat-picker-open");
-                sheet.classList.add("product-cooking-picker-open");
-            }
-
-            const body = document.getElementById("sheetBody");
-            if(!body) return;
-
-            body.querySelectorAll("[data-cooking-seat]").forEach(btn => {
-                btn.onclick = () => {
-                    const nextSeat = Math.max(1, Math.min(9, Number(btn.dataset.cookingSeat) || 1));
-                    pendingProductSeatChoice = {...pendingProductSeatChoice, seat: nextSeat};
-                    showProductCookingPicker(pendingProductSeatChoice, nextSeat);
-                };
-            });
-
-            body.querySelectorAll("[data-product-cooking]").forEach(btn => {
-                btn.onclick = () => {
-                    const level = btn.dataset.productCooking || "";
-                    const selectedSeat = Math.max(1, Math.min(9, Number(pendingProductSeatChoice?.seat) || n));
-                    body.querySelectorAll("[data-product-cooking],[data-cooking-seat]").forEach(x => x.disabled = true);
-                    finalizeProductSeatChoice(selectedSeat, level);
-                };
-            });
-
-            body.querySelector("[data-product-cooking-back]")?.addEventListener("click", () => {
-                document.getElementById("sheet")?.classList.remove("product-cooking-picker-open");
-                pendingProductSeatChoice = null;
-                openWho();
-            });
-        };
-    }
+    // V63 : openProductSeatPicker() et showProductCookingPicker() restent les fonctions CORE.
+    // Pas de réécriture différée : le comportement ne change plus une seconde après le démarrage.
 
     // 3. Barre principale des convives (en bas de l'en-tête de commande)
     if (typeof window.renderGuestButtons === "function") {
