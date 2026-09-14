@@ -3938,17 +3938,19 @@ body.order-open .order-sync-state.bad{background:#fff2f4 !important;}
 .archpad-sync-badge.syncing{color:#e8c45e}.archpad-sync-badge.offline{color:#ff6b6b}
 </style>
 <script id="zoom-tactile-script">
-/* iCHEF Architecture V77 — tactile fiable : Pointer Events uniquement.
-   2 doigts = zoom doux. Compatible écrans tactiles Windows / tablettes.
-   Aucun mélange TouchEvent + PointerEvent afin d'éviter le conflit avec le déplacement. */
+/* iCHEF Architecture V55 — zoom + navigation tactile 360°.
+   Pointer Events uniquement :
+   - 2 doigts = zoom autour de la zone touchée + déplacement simultané du plan
+   - le point sous les doigts reste stable pendant le changement d'échelle
+   - aucun mélange TouchEvent / PointerEvent. */
 (function(){
-  if(window.__ICHEF_PLAN_POINTER_PINCH_V77__)return;
-  window.__ICHEF_PLAN_POINTER_PINCH_V77__=true;
+  if(window.__ICHEF_PLAN_POINTER_PINCH_V55__)return;
+  window.__ICHEF_PLAN_POINTER_PINCH_V55__=true;
 
   const MIN=10,MAX=200,STEP=10;
-  const SENSITIVITY=0.34;      // zoom volontairement doux
-  const START_THRESHOLD=5;    // évite les micro-mouvements involontaires
-  const MAX_STEP=2.5;         // variation max par frame
+  const SENSITIVITY=0.34;
+  const START_THRESHOLD=5;
+  const MAX_STEP=2.5;
   const active=new Map();
   let pinch=null;
   let suppressIds=new Set();
@@ -3962,12 +3964,17 @@ body.order-open .order-sync-state.bad{background:#fff2f4 !important;}
     const n=parseFloat(String(raw).replace(',','.').replace(/[^0-9.]/g,''));
     return clamp(Number.isFinite(n)?n:100);
   }
-  function setZoom(value,persist=false){
+  function setZoom(value,persist=false,anchor=null){
     const pct=Math.round(clamp(value)*10)/10;
-    document.dispatchEvent(new CustomEvent('ichef-plan-zoom',{detail:{value:pct}}));
+    const detail={value:pct};
+    if(anchor&&Number.isFinite(anchor.x)&&Number.isFinite(anchor.y)){
+      detail.clientX=anchor.x;detail.clientY=anchor.y;detail.keepAnchor=true;
+    }
+    document.dispatchEvent(new CustomEvent('ichef-plan-zoom',{detail}));
     if(persist){try{localStorage.setItem('ichef_plan_zoom_pct_v28',String(pct))}catch(_){}}
   }
   function distance(a,b){return Math.hypot(a.x-b.x,a.y-b.y)}
+  function center(a,b){return {x:(a.x+b.x)/2,y:(a.y+b.y)/2}}
   function pointsForPinch(){
     if(!pinch)return null;
     const a=active.get(pinch.ids[0]),b=active.get(pinch.ids[1]);
@@ -3976,6 +3983,7 @@ body.order-open .order-sync-state.bad{background:#fff2f4 !important;}
   function finishIfNeeded(){
     if(pinch && !pointsForPinch()){
       pinch=null;
+      if(raf){cancelAnimationFrame(raf);raf=0}
       document.dispatchEvent(new CustomEvent('ichef-plan-pinch-end'));
       try{localStorage.setItem('ichef_plan_zoom_pct_v28',String(currentZoom()))}catch(_){}
     }
@@ -3986,13 +3994,15 @@ body.order-open .order-sync-state.bad{background:#fff2f4 !important;}
     if(e.pointerType!=='touch')return;
     const wrap=e.target.closest?.('#ichefArchPad .archpad-stagewrap');
     if(!wrap)return;
-    active.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    active.set(e.pointerId,{x:e.clientX,y:e.clientY,wrap});
 
     if(!pinch && active.size>=2){
-      const ids=Array.from(active.keys()).slice(-2);
+      const candidates=Array.from(active.entries()).filter(([,p])=>p.wrap===wrap).slice(-2);
+      if(candidates.length<2)return;
+      const ids=candidates.map(([id])=>id);
       const p1=active.get(ids[0]),p2=active.get(ids[1]);
-      const d=distance(p1,p2);
-      pinch={ids,startDistance:d,lastDistance:d,startZoom:currentZoom(),appliedZoom:currentZoom(),active:false};
+      const d=distance(p1,p2),c=center(p1,p2);
+      pinch={ids,wrap,startDistance:d,lastDistance:d,startZoom:currentZoom(),appliedZoom:currentZoom(),startCenter:c,lastCenter:c,active:false};
       suppressIds=new Set(ids);
       document.dispatchEvent(new CustomEvent('ichef-plan-pinch-start',{detail:{pointerIds:ids}}));
       e.preventDefault();
@@ -4002,7 +4012,8 @@ body.order-open .order-sync-state.bad{background:#fff2f4 !important;}
 
   document.addEventListener('pointermove',e=>{
     if(e.pointerType!=='touch'||!active.has(e.pointerId))return;
-    active.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    const old=active.get(e.pointerId);
+    active.set(e.pointerId,{x:e.clientX,y:e.clientY,wrap:old.wrap});
     if(!pinch||!suppressIds.has(e.pointerId))return;
     const pts=pointsForPinch();
     if(!pts)return;
@@ -4010,9 +4021,19 @@ body.order-open .order-sync-state.bad{background:#fff2f4 !important;}
     e.preventDefault();
     e.stopImmediatePropagation();
     const d=distance(pts[0],pts[1]);
-    const travelled=Math.abs(d-pinch.startDistance);
-    if(!pinch.active&&travelled<START_THRESHOLD)return;
+    const c=center(pts[0],pts[1]);
+    const zoomTravel=Math.abs(d-pinch.startDistance);
+    const panTravel=Math.hypot(c.x-pinch.startCenter.x,c.y-pinch.startCenter.y);
+    if(!pinch.active&&Math.max(zoomTravel,panTravel)<START_THRESHOLD)return;
     pinch.active=true;
+
+    /* Déplacement tactile à 2 doigts : le contenu suit réellement les doigts. */
+    if(pinch.lastCenter&&pinch.wrap){
+      const dx=c.x-pinch.lastCenter.x,dy=c.y-pinch.lastCenter.y;
+      if(Math.abs(dx)>.05)pinch.wrap.scrollLeft-=dx;
+      if(Math.abs(dy)>.05)pinch.wrap.scrollTop-=dy;
+    }
+    pinch.lastCenter=c;
 
     const ratio=pinch.startDistance>0?d/pinch.startDistance:1;
     const damped=1+((ratio-1)*SENSITIVITY);
@@ -4026,7 +4047,8 @@ body.order-open .order-sync-state.bad{background:#fff2f4 !important;}
         const delta=Math.max(-MAX_STEP,Math.min(MAX_STEP,target-pinch.appliedZoom));
         if(Math.abs(delta)<0.05)return;
         pinch.appliedZoom=clamp(pinch.appliedZoom+delta);
-        setZoom(pinch.appliedZoom,false);
+        /* Le milieu des 2 doigts devient l'ancre du zoom. */
+        setZoom(pinch.appliedZoom,false,pinch.lastCenter);
       });
     }
   },true);
@@ -4046,12 +4068,12 @@ body.order-open .order-sync-state.bad{background:#fff2f4 !important;}
   document.addEventListener('pointerup',endPointer,true);
   document.addEventListener('pointercancel',endPointer,true);
 
-  /* Ctrl/Cmd + molette reste disponible sur PC. */
+  /* Ctrl/Cmd + molette sur PC : zoom centré sous le pointeur. */
   document.addEventListener('wheel',e=>{
     if(!(e.ctrlKey||e.metaKey))return;
     if(!e.target.closest?.('#ichefArchPad .archpad-stagewrap'))return;
     e.preventDefault();
-    setZoom(currentZoom()+(e.deltaY>0?-STEP:STEP),true);
+    setZoom(currentZoom()+(e.deltaY>0?-STEP:STEP),true,{x:e.clientX,y:e.clientY});
   },{passive:false,capture:true});
 })();
 </script>
@@ -6510,7 +6532,7 @@ body.order-open #btnHeadWho .head-sub-v20{
 <div id="tools" class="hidden">
   <button id="toolRush" class="tool rush0" type="button"><span class="tool-label">ANTI-RUSH</span><span id="rushTiny" class="tiny">Calme</span></button>
   <button id="toolWho" class="tool" type="button"><span class="tool-label">QUI MANGE ?</span><span class="tiny">Convives</span></button>
-  <button id="toolDisplay" class="tool" type="button" title="Ouvrir le plan de salle"><span class="tool-label">PLAN</span><span id="displayTiny" class="tiny">Auto</span></button>
+  <button id="toolDisplay" class="tool" type="button" title="Ouvrir le plan de salle"><span class="tool-label">PLAN INTERACTIF</span><span id="displayTiny" class="tiny">Aller / retour</span></button>
   <button id="toolKitchen" class="tool" type="button"><span class="tool-label">CUISINE</span><span id="readyTiny" class="tiny">0 prêt</span></button>
   <button id="toolMore" class="tool" type="button"><span class="tool-label">PLUS</span><span class="tiny">Outils</span></button>
 </div>
@@ -7538,15 +7560,13 @@ async function verifyPin(){
       console.warn("[iCHEF TPE] configuration indisponible au login",err?.message||err);
     });
 
-    /*
-       DÉMARRAGE SANS TRANSITION : on garde l'écran PIN au-dessus pendant
-       toute la synchro. Le plan architectural (z-index supérieur) est ouvert
-       AVANT de révéler l'application classique : aucune grille de tables
-       intermédiaire ne doit être visible après la connexion.
-    */
+    /* V54 — APRÈS LE PIN = ÉCRAN TABLES.
+       Le plan interactif devient une vue secondaire accessible par le bouton
+       PLAN INTERACTIF de la barre du bas. Aucun chargement Architecture n'est
+       déclenché au login : on conserve la prise de commande comme accueil. */
     $("app")?.classList.add("hidden");
     $("tools")?.classList.add("hidden");
-    loginMessage("Chargement du plan interactif…");
+    loginMessage("Chargement des tables…");
 
     try{
       await bootApp();
@@ -7555,28 +7575,15 @@ async function verifyPin(){
       try{setConnection("SERVEUR À VÉRIFIER","warn")}catch(_){}
     }
 
-    try{
-      if(typeof window.openPadServiceHome!=="function"){
-        throw new Error("Plan interactif indisponible");
-      }
-      /* V71 : bootApp() vient déjà de synchroniser le serveur.
-         Ne pas refaire une deuxième lecture HTTP avant d'afficher l'accueil. */
-      await window.openPadServiceHome({skipSync:true});
-
-      /* Le plan est maintenant réellement affiché. L'app reste disponible
-         dessous pour les commandes, sans jamais apparaître au démarrage. */
-      $("app")?.classList.remove("hidden");
-      $("tools")?.classList.remove("hidden");
-      $("login")?.classList.add("hidden");
-      loginMessage("");
-    }catch(planErr){
-      console.warn("[iCHEF PAD] Ouverture plan après PIN",planErr);
-      /* Sécurité : ne jamais montrer furtivement la grille classique. */
-      loginMessage("Chargement du plan impossible · réessayez");
-      STATE.authenticated=false;
-      STATE.pin="";
-      throw planErr;
-    }
+    /* Affichage direct de la vue Tables après authentification.
+       Pas de openPadServiceHome(), donc aucun rendu du plan ne bloque le login. */
+    try{window.closePadArchitect?.()}catch(_){}
+    document.body.classList.remove("ichef-plan-toggle-open");
+    $("app")?.classList.remove("hidden");
+    $("tools")?.classList.remove("hidden");
+    $("login")?.classList.add("hidden");
+    loginMessage("");
+    try{window.ICHEF_PLAN_TABLE_TOGGLE?.sync?.()}catch(_){}
 
   }catch(e){
     STATE.authenticated=false;
@@ -14612,7 +14619,7 @@ const ARCH_W=5000,ARCH_H=5000;
 const CITY_ROOM_MARGIN_CM=50;
 const CITY_STAGE_EDGE_CM=100;      // objets >= 1 m du bord brut => contour +0,5 m reste à 0,5 m du bord
 const CITY_VIEW_SAFE_GUTTER_PX=58; // marge écran minimale après « Ajuster à l'écran »
-const A={root:null,room:"",mode:"architect",tool:"select",selected:null,groupAll:false,groupDrag:null,safetyByRoom:{},roomLayouts:{},dirty:false,grid:true,snap:true,zoom:100,showMeasures:true,planFullscreen:false,overview:false,history:[],future:[],drag:null,tables:[],zones:[],elements:[],rooms:[],archUnlocked:false,archRole:"",archPin:"",pinOpen:false,pinValue:"",pinMsg:"",pinPreview:false,pinBusy:false,pinStartedAt:0};
+const A={root:null,room:"",mode:"architect",tool:"select",selected:null,groupAll:false,groupDrag:null,safetyByRoom:{},roomLayouts:{},dirty:false,grid:true,snap:true,zoom:100,showMeasures:true,planFullscreen:false,overview:false,history:[],future:[],drag:null,tables:[],zones:[],elements:[],rooms:[],archUnlocked:false,archRole:"",archPin:"",pinOpen:false,pinValue:"",pinMsg:"",pinPreview:false,pinBusy:false,pinStartedAt:0,viewPan:null};
 const canEdit=()=>!!(STATE.demo||expressRoleLevel()>=2||A.archUnlocked);
 const aText=v=>String(v??"").trim();
 const aColor=(v,fallback='#000000')=>/^#[0-9a-f]{6}$/i.test(aText(v))?aText(v):fallback;
@@ -14627,8 +14634,33 @@ const aClamp=(v,a,b)=>Math.max(a,Math.min(b,Number(v)||0));
 document.addEventListener('ichef-plan-zoom',e=>{
   const n=Number(e?.detail?.value);
   if(!Number.isFinite(n))return;
+
+  /* V55 — conserver exactement la zone située sous les doigts / le pointeur.
+     On mémorise sa position normalisée AVANT le changement d'échelle, puis on
+     compense le scroll immédiatement APRÈS applyZoom(). */
+  let anchor=null;
+  const cx=Number(e?.detail?.clientX),cy=Number(e?.detail?.clientY);
+  if(A.root&&e?.detail?.keepAnchor&&Number.isFinite(cx)&&Number.isFinite(cy)){
+    const wrap=A.root.querySelector('.archpad-stagewrap');
+    const st=A.root.querySelector('[data-stage]');
+    if(wrap&&st){
+      const r=st.getBoundingClientRect();
+      if(r.width>0&&r.height>0){
+        anchor={wrap,st,cx,cy,nx:(cx-r.left)/r.width,ny:(cy-r.top)/r.height};
+      }
+    }
+  }
+
   A.zoom=aClamp(n,10,200);
   if(A.root)applyZoom();
+
+  if(anchor){
+    const r2=anchor.st.getBoundingClientRect();
+    const nowX=r2.left+anchor.nx*r2.width;
+    const nowY=r2.top+anchor.ny*r2.height;
+    anchor.wrap.scrollLeft+=(nowX-anchor.cx);
+    anchor.wrap.scrollTop+=(nowY-anchor.cy);
+  }
 });
 /* V77 — quand le deuxième doigt arrive, le pinch devient prioritaire sur
    sélection / déplacement / redimensionnement. Cela évite qu'un objet soit
@@ -16016,6 +16048,12 @@ function cityRefreshAssistLive(){
   cityRefreshMeasuresLive();
 }
 
+function cityIsClientSeatingTable(t){
+  const style=aText(t?.seatStyle||'chair');
+  const preset=aText(t?.preset||'');
+  return ['sunbed','daybed','barstool','lounge','club','cafe','restaurant','banquette'].includes(style)
+    || ['pool','bar','barcounter','lounge','tea','restaurant','booth'].includes(preset);
+}
 function archSeatPhysicalMargin(t){
   const style=aText(t?.seatStyle||'chair');
   return ({sunbed:58,daybed:66,barstool:34,lounge:48,club:48,cafe:38,restaurant:40,banquette:46})[style]||40;
@@ -16119,6 +16157,7 @@ function moveFreeChair(e){
 }
 function archTableChairsHTML(t,live,service){
   const seatStyle=aText(t?.seatStyle||'chair');
+  const clientFurniture=cityIsClientSeatingTable(t);
   const seatStyleClass=({
     sunbed:'seat-sunbed',daybed:'seat-daybed',barstool:'seat-barstool',
     lounge:'seat-lounge',club:'seat-club',cafe:'seat-cafe',
@@ -16136,11 +16175,12 @@ function archTableChairsHTML(t,live,service){
     const state=seat?.code||'occupied';
     const allergy=!!seat?.allergy;
     const color=occupied?`var(--c${Math.min(i,9)},#55d987)`:'#ad7b49';
-    const label=occupied?`C${i}`:(t?.chairsFree?String(i):'');
+    /* V56 — tout mobilier client garde un repère C stable, même à vide. */
+    const label=occupied?`C${i}`:(clientFurniture?`C${i}`:(t?.chairsFree?String(i):''));
     const seatName=({sunbed:'Transat',daybed:'Lit balinais',barstool:'Tabouret',lounge:'Fauteuil lounge',club:'Fauteuil club',cafe:'Chaise café',restaurant:'Chaise restaurant',banquette:'Banquette'})[seatStyle]||'Chaise';
     const consumeLabel=seat?.consumeLabel||'';
     const consumeIcon=seat?.consumeIcon||'';
-    const title=occupied?`Client C${i}${consumeLabel?' · '+consumeLabel:''}${seat?.label?' · '+seat.label:''}`:`${seatName} ${i} / ${capacity}${t?.chairsFree?' · appui 0,3 s pour déplacer':''}`;
+    const title=occupied?`Client C${i}${consumeLabel?' · '+consumeLabel:''}${seat?.label?' · '+seat.label:''}`:`${seatName} ${clientFurniture?'C'+i:i} / ${capacity}${t?.chairsFree?' · appui 0,3 s pour déplacer':''}`;
     chairs.push(`<span class="arch-chair ${seatStyleClass} ${occupied?'occupied':'free'} ${occupied?'chair-'+esc(state):''} ${allergy?'chair-allergy':''} ${!service&&t?.chairsFree?'free-layout':''}" data-chair-seat="${i}" data-chair-table="${esc(getTableKey(t))}" style="--chair-x:${pose.x.toFixed(2)}%;--chair-y:${pose.y.toFixed(2)}%;--chair-r:${pose.r.toFixed(1)}deg;--chair-color:${color}" title="${esc(title)}"><span class="seat-code-live">${label}</span>${occupied&&consumeIcon?`<span class="seat-consume">${esc(consumeIcon)}</span>`:''}</span>`);
   }
   return `<span class="arch-chair-layer">${chairs.join('')}</span>`;
@@ -16163,14 +16203,21 @@ function propHTML(){
  };const zoneOpts=roomZones().map(z=>`<option value="${esc(z.label)}" ${aText(o.zone)===aText(z.label)?'selected':''}>${esc(z.label)}</option>`).join('');
  let extra='';
  if(type==='table'){
-  const poolSeat=aText(o.preset)==='pool'||aText(o.seatStyle)==='sunbed';
-  const paxField=poolSeat
-    ?`<div class="arch-prop-row"><label>Transats clients</label><select data-prop="pax"><option value="1" ${Number(o.pax)===1?'selected':''}>1 transat · C1</option><option value="2" ${Number(o.pax)!==1?'selected':''}>2 transats · C1 + C2</option></select></div>`
+  const clientSeat=cityIsClientSeatingTable(o);
+  const style=aText(o.seatStyle||'chair');
+  const paxField=clientSeat
+    ?`<div class="arch-prop-row"><label>Places clients C</label><input data-prop="pax" type="number" min="1" max="9" value="${aClamp(Number(o.pax)||1,1,9)}"></div>`
     :`<div class="arch-prop-row"><label>Couverts</label><input data-prop="pax" type="number" min="1" max="99" value="${Number(o.pax)||2}"></div>`;
-  const seatField=poolSeat
-    ?`<div class="arch-help" style="margin:0 0 8px">Piscine : le transat est le siège client. 1 transat = C1 · 2 transats = C1 + C2. Le système « Qui mange quoi » reste lié à ces C.</div>`
-    :`<div class="arch-prop-row"><label>Type de sièges</label><select data-prop="seatStyle"><option value="chair" ${aText(o.seatStyle||'chair')!=='sunbed'?'selected':''}>Chaises</option><option value="sunbed" ${aText(o.seatStyle)==='sunbed'?'selected':''}>Transats / chaises longues</option></select></div>`;
-  extra=`<div class="arch-prop-row"><label>Forme</label><select data-prop="shape"><option value="square" ${aText(o.shape)!=='round'?'selected':''}>Carrée</option><option value="round" ${aText(o.shape)==='round'?'selected':''}>Ronde</option></select></div>${paxField}${seatField}<div class="arch-prop-row"><label>Disposition ${poolSeat?'transats':'chaises'}</label><select data-prop="chairsFree"><option value="false" ${!o.chairsFree?'selected':''}>Automatique</option><option value="true" ${o.chairsFree?'selected':''}>Libre</option></select></div>${o.chairsFree?`<div class="arch-help" style="margin:-2px 0 8px">Appui 0,3 s sur ${poolSeat?'un transat':'une chaise'} puis déplace-le où tu veux. Il reste associé à cette table.</div><button type="button" class="city-chair-reset" data-chair-reset style="width:100%;min-height:38px;border:1px solid #46545a;border-radius:9px;background:#12191c;color:#d8e0e2;font-weight:900">↻ Réinitialiser les positions</button>`:''}<div class="arch-prop-row"><label>Zone</label><select data-prop="zone"><option value="">— aucune —</option>${zoneOpts}</select></div>`;
+  const seatOptions=[
+    ['chair','Chaise'],['restaurant','Chaise restaurant'],['barstool','Tabouret de bar'],
+    ['cafe','Chaise café'],['lounge','Fauteuil lounge'],['club','Fauteuil club'],
+    ['banquette','Banquette'],['sunbed','Transat / chaise longue'],['daybed','Lit balinais / cabana']
+  ].map(([v,l])=>`<option value="${v}" ${style===v?'selected':''}>${l}</option>`).join('');
+  const seatField=clientSeat
+    ?`<div class="arch-help city-client-seat-help" style="margin:0 0 8px"><b>PLACE CLIENT ACTIVE</b> · chaque assise est reliée à C1, C2, C3… et au système « Qui mange quoi ? ». Les boissons et plats suivent le même C jusqu’au ticket.</div><div class="arch-prop-row"><label>Type d’assise</label><select data-prop="seatStyle">${seatOptions}</select></div>`
+    :`<div class="arch-prop-row"><label>Type de sièges</label><select data-prop="seatStyle">${seatOptions}</select></div>`;
+  const seatWord=style==='sunbed'?'transat':style==='daybed'?'place':style==='barstool'?'tabouret':style==='banquette'?'place de banquette':'assise';
+  extra=`<div class="arch-prop-row"><label>Forme</label><select data-prop="shape"><option value="square" ${aText(o.shape)!=='round'?'selected':''}>Carrée</option><option value="round" ${aText(o.shape)==='round'?'selected':''}>Ronde</option></select></div>${paxField}${seatField}<div class="arch-prop-row"><label>Disposition ${clientSeat?'des places C':'des chaises'}</label><select data-prop="chairsFree"><option value="false" ${!o.chairsFree?'selected':''}>Automatique</option><option value="true" ${o.chairsFree?'selected':''}>Libre</option></select></div>${o.chairsFree?`<div class="arch-help" style="margin:-2px 0 8px">Appui 0,3 s sur ${clientSeat?'un '+seatWord:'une chaise'} puis déplace-le où tu veux. Son numéro C reste associé à la commande.</div><button type="button" class="city-chair-reset" data-chair-reset style="width:100%;min-height:38px;border:1px solid #46545a;border-radius:9px;background:#12191c;color:#d8e0e2;font-weight:900">↻ Réinitialiser les positions</button>`:''}<div class="arch-prop-row"><label>Zone</label><select data-prop="zone"><option value="">— aucune —</option>${zoneOpts}</select></div>`;
  }
  if(type==='zone')extra=`<div class="arch-prop-row"><label>Type zone</label><select data-prop="zoneKind">${[['service','Service'],['bathroom','Salle de bain'],['bedroom','Chambre'],['office','Bureau'],['terrace','Terrasse'],['kitchen','Cuisine'],['spa','Spa'],['technical','Technique']].map(([v,l])=>`<option value="${v}" ${aText(o.zoneKind||'service')===v?'selected':''}>${l}</option>`).join('')}</select></div><div class="arch-prop-row"><label>Forme</label><select data-prop="zoneShape"><option value="rect" ${aText(o.zoneShape||'rect')==='rect'?'selected':''}>Rectangle</option><option value="rounded" ${aText(o.zoneShape)==='rounded'?'selected':''}>Arrondie</option><option value="oval" ${aText(o.zoneShape)==='oval'?'selected':''}>Ovale</option></select></div><div class="arch-prop-row"><label>Couleur</label><input data-prop="color" type="color" value="${esc(colorForZone(o))}"></div><div class="arch-prop-row"><label>Transparence</label><input data-prop="fillOpacity" type="number" min="3" max="55" value="${aClamp(o.fillOpacity||15,3,55)}"></div><div class="arch-prop-row"><label>Bordure</label><select data-prop="borderStyle"><option value="dashed" ${aText(o.borderStyle||'dashed')==='dashed'?'selected':''}>Pointillés</option><option value="solid" ${aText(o.borderStyle)==='solid'?'selected':''}>Continue</option><option value="dotted" ${aText(o.borderStyle)==='dotted'?'selected':''}>Points</option></select></div><div class="arch-prop-row"><label>Responsable</label><input data-prop="responsible" value="${esc(o.responsible||o.responsable||'')}"></div><div class="arch-prop-row"><label>Service</label><select data-prop="serviceType">${['Dîner','Déjeuner','Petit-déjeuner','Bar','Room Service','Événement','Hébergement'].map(v=>`<option ${aText(o.serviceType)===v?'selected':''}>${v}</option>`).join('')}</select></div><div class="arch-prop-row"><label>Capacité</label><input data-prop="capacity" type="number" min="0" value="${Number(o.capacity)||0}"></div><div class="arch-prop-row"><label>Horaires</label><input data-prop="hours" value="${esc(o.hours||'')}"></div>`;
  if(type==='element'){
@@ -16210,25 +16257,27 @@ function architectPaletteHTML(){
  ].join('');
  const lounge=[
    btn('bar_table','◉','Table bar 2',true),btn('bar_high4','◉','Table haute 4',true),
+   btn('bar_counter4','▰','Comptoir + 4 clients',true),btn('bar_counter_curve4','◒','Bar courbe + 4 clients',true),
    btn('lounge_low2','◌','Lounge 2',true),btn('lounge_sofa4','▰','Canapé lounge 4',true),
-   btn('lounge_club4','●','Club 4',true),btn('bar','▰','Comptoir bar'),
-   btn('bar_counter_curve','◒','Bar courbe'),btn('lounge_sofa_obj','▱','Canapé lounge'),
-   btn('lounge_armchair','◉','Fauteuil lounge'),btn('lounge_pouf','●','Pouf'),
+   btn('lounge_club4','●','Club 4',true),btn('lounge_armchair1','◉','Fauteuil client',true),
+   btn('lounge_pouf1','●','Pouf client',true),btn('bar','▰','Comptoir bar déco'),
+   btn('bar_counter_curve','◒','Bar courbe déco'),btn('lounge_sofa_obj','▱','Canapé déco'),
+   btn('lounge_armchair','◉','Fauteuil déco'),btn('lounge_pouf','●','Pouf déco'),
    btn('bottle_shelf','▤','Étagère bouteilles'),btn('wine_fridge','▣','Cave à vin')
  ].join('');
  const tea=[
    btn('tea_round2','○','Table thé 2',true),btn('tea_round4','○','Table thé 4',true),
    btn('cafe_square2','□','Table café 2',true),btn('tea_sofa4','▰','Salon canapé 4',true),
-   btn('tea_sofa_obj','▱','Canapé salon'),btn('tea_armchair','◉','Fauteuil salon'),
-   btn('pastry_display','▤','Vitrine pâtisserie'),btn('coffee_counter','▰','Comptoir café'),
-   btn('tea_trolley','▥','Chariot thé'),btn('plant','♣','Plante')
+   btn('tea_armchair1','◉','Fauteuil client',true),btn('tea_sofa_obj','▱','Canapé déco'),
+   btn('tea_armchair','◉','Fauteuil déco'),btn('pastry_display','▤','Vitrine pâtisserie'),
+   btn('coffee_counter','▰','Comptoir café'),btn('tea_trolley','▥','Chariot thé'),btn('plant','♣','Plante')
  ].join('');
  const restaurant=[
    btn('rest_round2','○','Ronde 2',true),btn('rest_round4','○','Ronde 4',true),
    btn('rest_round6','○','Ronde 6',true),btn('rest_square2','□','Carrée 2',true),
    btn('rest_square4','□','Carrée 4',true),btn('rest_rect6','▭','Rectangulaire 6',true),
    btn('rest_rect8','▭','Rectangulaire 8',true),btn('rest_booth4','▰','Banquette 4',true),
-   btn('banquette_wall','▱','Banquette murale'),btn('service_station','▤','Desserte'),
+   btn('rest_banquette_wall4','▱','Banquette murale client 4',true),btn('banquette_wall','▱','Banquette murale déco'),btn('service_station','▤','Desserte'),
    btn('host_stand','▥','Pupitre accueil'),btn('gueridon','○','Guéridon'),
    btn('buffet','▰','Buffet'),btn('wine_cellar','▣','Cave à vin'),
    btn('restaurant_screen','▥','Paravent')
@@ -16280,7 +16329,7 @@ function architectBottomHTML(st){
   const boundary=!!A.selected&&!!A.antiShockBlocked;
   const statusText=A.groupAll?`☑ ${cityGroupHits().length} objets sélectionnés`:boundary?'⛔ Bord du terrain':'✓ Position libre';
   const statusClass=A.groupAll?'good':boundary?'bad':'good';
-  return `<div class="archpad-bottom"><div class="city-bottom-room"><button type="button" class="city-bottom-icon" data-city-clear-plan title="Effacer totalement le plan de la salle" aria-label="Effacer totalement le plan de la salle">↻</button><div><b>${esc(A.room)}</b><small data-city-room-metrics>${cityRoomMetricsHTML()} &nbsp;•&nbsp; Terrain 50 × 50 m constructible</small><small class="city-touch-help">🤏 2 doigts = zoom tactile</small></div></div><div class="city-bottom-center"><div class="archpad-city-hint" data-city-hint></div>${hasSelection?`<div class="city-position-badge ${statusClass}" data-city-position style="position:static;transform:none;display:inline-flex;align-items:center;justify-content:center;min-height:25px;padding:5px 12px;margin:0 auto 1px;white-space:nowrap;">${statusText}</div>`:''}<div class="city-bottom-actions"><button type="button" data-city-fit>⌗ &nbsp; Ajuster à l’écran</button><button type="button" data-city-auto>✣ &nbsp; Auto-organiser</button><button type="button" class="${A.showMeasures?'active':''}" data-city-measures>⌁ &nbsp; Mesures</button></div></div><div class="city-minimap-wrap"><div class="city-minimap" data-city-minimap>${cityMiniMapHTML()}</div><button type="button" class="city-minimap-expand" data-city-fit title="Ajuster à l’écran">⛶</button></div></div>`}
+  return `<div class="archpad-bottom"><div class="city-bottom-room"><button type="button" class="city-bottom-icon" data-city-clear-plan title="Effacer totalement le plan de la salle" aria-label="Effacer totalement le plan de la salle">↻</button><div><b>${esc(A.room)}</b><small data-city-room-metrics>${cityRoomMetricsHTML()} &nbsp;•&nbsp; Terrain 50 × 50 m constructible</small><small class="city-touch-help">☝ 1 doigt sur le fond = déplacer · 🤏 2 doigts = zoom + déplacement</small></div></div><div class="city-bottom-center"><div class="archpad-city-hint" data-city-hint></div>${hasSelection?`<div class="city-position-badge ${statusClass}" data-city-position style="position:static;transform:none;display:inline-flex;align-items:center;justify-content:center;min-height:25px;padding:5px 12px;margin:0 auto 1px;white-space:nowrap;">${statusText}</div>`:''}<div class="city-bottom-actions"><button type="button" data-city-fit>⌗ &nbsp; Ajuster à l’écran</button><button type="button" data-city-auto>✣ &nbsp; Auto-organiser</button><button type="button" class="${A.showMeasures?'active':''}" data-city-measures>⌁ &nbsp; Mesures</button></div></div><div class="city-minimap-wrap"><div class="city-minimap" data-city-minimap>${cityMiniMapHTML()}</div><button type="button" class="city-minimap-expand" data-city-fit title="Ajuster à l’écran">⛶</button></div></div>`}
 function cityTableMemoHTML(){
  return `<div class="city-table-memo-overlay" data-table-memo-overlay aria-hidden="true"><div class="city-table-memo-card" role="dialog" aria-modal="true" aria-label="Mémo tailles de tables"><div class="city-table-memo-head"><div><h3>📏 MÉMO TAILLES — RESTAURANT GASTRONOMIQUE</h3><p>Repères conseillés pour construire le plan. Les valeurs restent modifiables librement dans iCHEF.</p></div><button type="button" class="city-table-memo-close" data-table-memo-close aria-label="Fermer">×</button></div><table class="city-table-memo-table"><thead><tr><th>Couverts</th><th>Carrée</th><th>Rectangulaire</th><th>Ronde</th></tr></thead><tbody><tr><td>2 personnes</td><td><strong>0,80 × 0,80 m</strong></td><td>0,90 × 0,70 m</td><td>Ø 0,80–0,90 m</td></tr><tr><td>4 personnes</td><td><strong>1,00 × 1,00 m</strong></td><td>1,20 × 0,80 m</td><td>Ø 1,00–1,10 m</td></tr><tr><td>6 personnes</td><td>1,20 × 1,20 m</td><td><strong>1,60 × 0,90 m</strong></td><td>Ø 1,30–1,40 m</td></tr><tr><td>8 personnes</td><td>1,40 × 1,40 m</td><td><strong>2,00 × 1,00 m</strong></td><td>Ø 1,50–1,60 m</td></tr></tbody></table><div class="city-table-memo-note"><b>Repères de confort :</b> garde un passage généreux entre les tables pour le service. Les dimensions ci-dessus sont des repères ergonomiques pour une présentation gastronomique, pas des dimensions réglementaires obligatoires. La ligne pointillée représente la salle active ; le terrain complet reste constructible.</div></div></div>`;
 }
@@ -16522,7 +16571,7 @@ function propChange(e){const k=e.target.dataset.prop;if(!k)return;const hit=curr
     markDirty();renderAll();return
   }
   if(k==='chairsFree'&&hit.type==='table'){hit.obj.chairsFree=String(v)==='true';if(!hit.obj.chairsFree)hit.obj.chairLayout=[];markDirty();renderCanvas();return}
-  if(k==='pax'&&hit.type==='table'&&(aText(hit.obj.preset)==='pool'||aText(hit.obj.seatStyle)==='sunbed')){hit.obj.pax=aClamp(Number(v)||1,1,2);hit.obj.chairLayout=[];markDirty();renderCanvas();return}
+  if(k==='pax'&&hit.type==='table'&&cityIsClientSeatingTable(hit.obj)){hit.obj.pax=aClamp(Number(v)||1,1,9);hit.obj.chairLayout=[];markDirty();renderCanvas();return}
   if(k==='label'&&hit.type==='table'){const nv=aText(v),oldLabel=aText(hit.obj.label);if(!nv)return;if(activeOrder(oldLabel)){aToast('Renommer interdit : commande active',true);renderCanvas();return}if(A.tables.some(t=>t!==hit.obj&&aText(t.label).toUpperCase()===nv.toUpperCase())){aToast('Numéro de table déjà utilisé',true);renderCanvas();return}hit.obj.label=nv;if(!hit.obj.id||aText(hit.obj.id)===oldLabel)hit.obj.id=nv}else setObjProp(hit.obj,k,v);
   if(k==='rotation'&&hit.type==='element'&&aText(hit.obj.type).toLowerCase()==='window'){
     let rot=Number(hit.obj.rotation)||0;
@@ -16558,6 +16607,8 @@ function resetRoomVisualStyle(){
 function cityServiceFurniturePreset(type){
   const p={
     bar_table:{pax:2,w:78,h:78,shape:'round',seatStyle:'barstool',preset:'bar',label:'BAR 2'},
+    bar_counter4:{pax:4,w:220,h:92,shape:'square',seatStyle:'barstool',preset:'barcounter',label:'COMPTOIR 4'},
+    bar_counter_curve4:{pax:4,w:200,h:110,shape:'round',seatStyle:'barstool',preset:'barcounter',label:'BAR COURBE 4'},
     pool_table:{pax:2,w:78,h:78,shape:'round',seatStyle:'sunbed',preset:'pool',label:'POOL 2'},
     pool_sunbed1:{pax:1,w:62,h:72,shape:'round',seatStyle:'sunbed',preset:'pool',label:'TRANSAT'},
     pool_daybed2:{pax:2,w:95,h:75,shape:'round',seatStyle:'daybed',preset:'pool',label:'DAYBED'},
@@ -16566,10 +16617,13 @@ function cityServiceFurniturePreset(type){
     lounge_low2:{pax:2,w:95,h:65,shape:'round',seatStyle:'lounge',preset:'lounge',label:'LOUNGE 2'},
     lounge_sofa4:{pax:4,w:130,h:75,shape:'square',seatStyle:'lounge',preset:'lounge',label:'LOUNGE 4'},
     lounge_club4:{pax:4,w:105,h:82,shape:'round',seatStyle:'club',preset:'lounge',label:'CLUB 4'},
+    lounge_armchair1:{pax:1,w:70,h:70,shape:'round',seatStyle:'lounge',preset:'lounge',label:'FAUTEUIL'},
+    lounge_pouf1:{pax:1,w:58,h:58,shape:'round',seatStyle:'lounge',preset:'lounge',label:'POUF'},
     tea_round2:{pax:2,w:72,h:72,shape:'round',seatStyle:'cafe',preset:'tea',label:'THÉ 2'},
     tea_round4:{pax:4,w:88,h:88,shape:'round',seatStyle:'cafe',preset:'tea',label:'THÉ 4'},
     cafe_square2:{pax:2,w:72,h:72,shape:'square',seatStyle:'cafe',preset:'tea',label:'CAFÉ 2'},
     tea_sofa4:{pax:4,w:120,h:72,shape:'square',seatStyle:'lounge',preset:'tea',label:'SALON 4'},
+    tea_armchair1:{pax:1,w:68,h:68,shape:'round',seatStyle:'club',preset:'tea',label:'FAUTEUIL THÉ'},
     rest_round2:{pax:2,w:80,h:80,shape:'round',seatStyle:'restaurant',preset:'restaurant',label:'ROND 2'},
     rest_round4:{pax:4,w:105,h:105,shape:'round',seatStyle:'restaurant',preset:'restaurant',label:'ROND 4'},
     rest_round6:{pax:6,w:135,h:135,shape:'round',seatStyle:'restaurant',preset:'restaurant',label:'ROND 6'},
@@ -16577,7 +16631,8 @@ function cityServiceFurniturePreset(type){
     rest_square4:{pax:4,w:100,h:100,shape:'square',seatStyle:'restaurant',preset:'restaurant',label:'CARRÉ 4'},
     rest_rect6:{pax:6,w:160,h:90,shape:'square',seatStyle:'restaurant',preset:'restaurant',label:'RECT. 6'},
     rest_rect8:{pax:8,w:200,h:100,shape:'square',seatStyle:'restaurant',preset:'restaurant',label:'RECT. 8'},
-    rest_booth4:{pax:4,w:125,h:82,shape:'square',seatStyle:'banquette',preset:'booth',label:'BANQUETTE 4'}
+    rest_booth4:{pax:4,w:125,h:82,shape:'square',seatStyle:'banquette',preset:'booth',label:'BANQUETTE 4'},
+    rest_banquette_wall4:{pax:4,w:220,h:78,shape:'square',seatStyle:'banquette',preset:'booth',label:'BANQUETTE MURALE 4'}
   };
   return p[type]||null;
 }
@@ -16798,6 +16853,22 @@ function citySyncSelectedPropertyInputsLive(hit=null){
 function pointerDown(e){
   if(A.overview)return;
   if(A.pinchZooming&&e.pointerType==='touch'){e.preventDefault();return}
+
+  /* V55 — NAVIGATION TACTILE À 1 DOIGT SUR LE FOND DU PLAN.
+     Les objets gardent leurs gestes d'édition. Sur une zone vide, le doigt
+     déplace uniquement la caméra (scroll), dans les quatre directions. */
+  if(e.pointerType==='touch'&&A.mode==='architect'&&A.tool==='select'&&e.target.closest('[data-stage]')){
+    const blocksPan=e.target.closest('[data-arch-key],.arch-chair,[data-zone-drag],[data-room-resize],[data-room-move],[data-resize],[data-rotate],button,input,select,textarea,a,[contenteditable=\"true\"]');
+    if(!blocksPan){
+      const wrap=A.root?.querySelector('.archpad-stagewrap');
+      if(wrap){
+        A.viewPan={pointerId:e.pointerId,startX:e.clientX,startY:e.clientY,startLeft:wrap.scrollLeft,startTop:wrap.scrollTop,moved:false};
+        archCapture(e);
+        e.preventDefault();
+        return;
+      }
+    }
+  }
   /* V60 : l'étiquette d'une zone est une vraie poignée de déplacement.
      Elle fonctionne même si des tables / objets occupent la zone. */
   const zoneGrip=e.target.closest('[data-zone-drag]');
@@ -16882,6 +16953,15 @@ function pointerDown(e){
 }
 function pointerMove(e){
   if(A.pinchZooming&&e.pointerType==='touch'){e.preventDefault();return}
+  if(A.viewPan&&A.viewPan.pointerId===e.pointerId){
+    const p=A.viewPan,dx=e.clientX-p.startX,dy=e.clientY-p.startY;
+    if(!p.moved&&Math.hypot(dx,dy)<5)return;
+    p.moved=true;
+    const wrap=A.root?.querySelector('.archpad-stagewrap');
+    if(wrap){wrap.scrollLeft=p.startLeft-dx;wrap.scrollTop=p.startTop-dy}
+    e.preventDefault();
+    return;
+  }
   if(A.groupDrag&&A.groupDrag.pointerId===e.pointerId){moveGroupDrag(e);return}
   if(A.chairPress&&!A.chairPress.fired&&A.chairPress.pointerId===e.pointerId){if(Math.hypot(e.clientX-A.chairPress.x,e.clientY-A.chairPress.y)>ARCH_PICK_CANCEL_PX){clearChairPress();archRelease(e)}}
   if(A.chairDrag&&A.chairDrag.pointerId===e.pointerId){moveFreeChair(e);return}
@@ -16982,6 +17062,16 @@ function pointerMove(e){
 }
 function pointerUp(e){
   if(A.pinchZooming&&e.pointerType==='touch'){e.preventDefault();return}
+  if(A.viewPan&&A.viewPan.pointerId===e.pointerId){
+    const p=A.viewPan;A.viewPan=null;archRelease(e);
+    /* Un simple toucher garde le comportement naturel : lâcher la sélection. */
+    if(!p.moved){
+      if(A.groupAll){A.groupAll=false;A.groupMoveArmed=false;A.groupDrag=null;renderCanvas()}
+      else if(A.selected){A.selected=null;renderCanvas()}
+    }
+    e.preventDefault();
+    return;
+  }
   if(A.groupDrag&&A.groupDrag.pointerId===e.pointerId){const g=A.groupDrag;A.groupDrag=null;A.groupMoveArmed=false;archRelease(e);renderCanvas();if(g.moved)aToast('✓ Tout déplacé · salle + tables + zones + objets');return}
   if(A.chairPress&&A.chairPress.pointerId===e.pointerId){const fired=!!A.chairPress.fired;if(A.chairPress.timer)clearTimeout(A.chairPress.timer);A.chairPress=null;if(!fired){archRelease(e);return}}
   if(A.chairDrag&&A.chairDrag.pointerId===e.pointerId){const d=A.chairDrag;A.chairDrag=null;archRelease(e);renderCanvas();aToast(d.moved?'Chaise posée · position enregistrable':'Chaise sélectionnée');return}
@@ -17008,6 +17098,7 @@ function pointerUp(e){
 }
 function pointerCancel(e){
   if(A.pinchZooming&&e.pointerType==='touch')return;
+  if(A.viewPan&&A.viewPan.pointerId===e.pointerId){A.viewPan=null;archRelease(e);return}
   if(A.groupDrag&&A.groupDrag.pointerId===e.pointerId)A.groupDrag=null;
   clearChairPress();if(A.chairDrag&&A.chairDrag.pointerId===e.pointerId)A.chairDrag=null;
   clearArchPress();A.releaseCandidate=null;
@@ -21103,6 +21194,150 @@ html body.order-open .ticket-row{min-height:106px !important}
   #ichefArchPad .arch-prop-actions.v46-safe-actions{grid-template-columns:1fr!important}
   #ichefArchPad .arch-prop-actions.v46-safe-actions button{min-height:54px!important;font-size:11px!important}
 }
+</style>
+
+<style id="ichef-v54-tables-plan-toggle-safe">
+/* =========================================================
+   V54 — TABLES ⇄ PLAN INTERACTIF
+   - après le PIN : écran Tables
+   - le menu inférieur reste disponible dans le plan
+   - aucune nouvelle synchro HTTP pour l'aller/retour
+   ========================================================= */
+body.ichef-plan-toggle-open #ichefArchPad.open{
+  bottom:calc(94px + var(--safe-bottom, 0px))!important;
+}
+body.ichef-plan-toggle-open #tools{
+  display:grid!important;
+  z-index:46050!important;
+}
+body.ichef-plan-toggle-open .sheet,
+body.ichef-plan-toggle-open #sheet{
+  z-index:47000!important;
+}
+body.ichef-plan-toggle-open #toolDisplay{
+  background:#111!important;
+  color:#fff!important;
+  border-color:#111!important;
+}
+body.ichef-plan-toggle-open #toolDisplay .tool-label,
+body.ichef-plan-toggle-open #toolDisplay .tiny{
+  color:#fff!important;
+}
+#toolDisplay .tool-label{
+  line-height:1.05!important;
+}
+@media(max-width:700px){
+  body.ichef-plan-toggle-open #ichefArchPad.open{
+    bottom:calc(86px + var(--safe-bottom, 0px))!important;
+  }
+  #toolDisplay .tool-label{font-size:12px!important}
+}
+</style>
+<script id="ichef-v54-tables-plan-toggle-js">
+(function(){
+  const BODY_CLASS='ichef-plan-toggle-open';
+  let changing=false;
+
+  function planRoot(){return document.getElementById('ichefArchPad')}
+  function planIsOpen(){return !!planRoot()?.classList.contains('open')}
+
+  function syncButton(){
+    const btn=document.getElementById('toolDisplay');
+    if(!btn)return;
+    const open=planIsOpen();
+    document.body.classList.toggle(BODY_CLASS,open);
+    const label=btn.querySelector('.tool-label');
+    const tiny=btn.querySelector('.tiny');
+    if(label)label.textContent=open?'RETOUR TABLES':'PLAN INTERACTIF';
+    if(tiny)tiny.textContent=open?'Vue tables':'Aller / retour';
+    btn.setAttribute('aria-pressed',open?'true':'false');
+    btn.title=open?'Revenir immédiatement aux tables':'Ouvrir le plan de salle interactif';
+  }
+
+  async function togglePlan(){
+    if(changing)return;
+    changing=true;
+    try{
+      if(planIsOpen()){
+        /* Retour sans réseau et sans rechargement : on ferme seulement l'overlay. */
+        if(typeof window.closePadArchitect==='function')window.closePadArchitect();
+        else planRoot()?.classList.remove('open');
+        document.body.classList.remove(BODY_CLASS);
+        try{if(typeof scheduleRender==='function')scheduleRender()}catch(_){}
+      }else{
+        /* Aller sans deuxième sync HTTP : STATE vient déjà du PAD/WebSocket. */
+        if(typeof window.openPadServiceHome!=='function'){
+          console.error('[iCHEF V54] Plan interactif indisponible');
+          return;
+        }
+        document.body.classList.add(BODY_CLASS);
+        await window.openPadServiceHome({skipSync:true});
+      }
+    }finally{
+      changing=false;
+      syncButton();
+    }
+  }
+
+  function bind(){
+    const btn=document.getElementById('toolDisplay');
+    if(btn){
+      /* onclick écrase volontairement les anciens openPlan/openPadServiceHome
+         afin d'avoir un seul chemin canonique ALLER/RETOUR. */
+      btn.onclick=function(e){e?.preventDefault?.();e?.stopPropagation?.();togglePlan()};
+    }
+    syncButton();
+  }
+
+  /* Les autres boutons restent utilisables pendant le plan. Les sheets sont
+     simplement remontées au-dessus du plan par CSS ; aucune fonction métier
+     n'est remplacée. */
+  const observer=new MutationObserver(()=>syncButton());
+  function observeRoot(){
+    const root=planRoot();
+    if(root)observer.observe(root,{attributes:true,attributeFilter:['class']});
+  }
+
+  window.ICHEF_PLAN_TABLE_TOGGLE={toggle:togglePlan,sync:syncButton,isOpen:planIsOpen};
+  bind();
+  observeRoot();
+  document.addEventListener('DOMContentLoaded',()=>{bind();observeRoot()},{once:true});
+  window.addEventListener('ichef:live-state-updated',syncButton);
+
+  /* Certains anciens scripts réassignent toolDisplay après leur initialisation.
+     Un seul rebinding différé garantit que V54 reste le dernier propriétaire du bouton. */
+  setTimeout(bind,0);
+  setTimeout(bind,250);
+})();
+</script>
+
+<style id="ichef-v55-zoom-pan-tactile-360-safe">
+/* V55 SAFE — navigation tactile du plan architectural uniquement. */
+#ichefArchPad .archpad-main:not(.service-layout) .archpad-stagewrap,
+#ichefArchPad .archpad-main:not(.service-layout) .archpad-stage{
+  touch-action:none!important;
+  overscroll-behavior:contain!important;
+}
+#ichefArchPad .archpad-main:not(.service-layout) .archpad-stage{cursor:grab}
+#ichefArchPad .archpad-main:not(.service-layout) .archpad-stage:active{cursor:grabbing}
+#ichefArchPad .archpad-main:not(.service-layout) [data-arch-key],
+#ichefArchPad .archpad-main:not(.service-layout) .arch-chair,
+#ichefArchPad .archpad-main:not(.service-layout) [data-resize],
+#ichefArchPad .archpad-main:not(.service-layout) [data-rotate]{cursor:default}
+#ichefArchPad .city-touch-help{white-space:normal!important;line-height:1.25!important;text-align:left!important}
+@media (pointer:coarse){
+  #ichefArchPad .city-touch-help{font-size:9px!important}
+}
+</style>
+
+<style id="ichef-v56-mobilier-client-c-safe">
+/* V56 — toutes les assises client sont explicitement reliées à C1…C9. */
+#ichefArchPad .service-furn small{display:inline-flex!important;align-items:center;justify-content:center;min-width:34px;height:18px;padding:0 6px;border-radius:999px;background:#fff;color:#111;border:2px solid #55aaff;font-size:9px;font-weight:1000;letter-spacing:.2px}
+#ichefArchPad .city-client-seat-help{border:2px solid #58a9ff!important;background:rgba(88,169,255,.10)!important;color:#dfeeff!important;border-radius:10px;padding:9px!important;line-height:1.35}
+#ichefArchPad .city-client-seat-help b{color:#7dc0ff!important}
+#ichefArchPad .arch-table.table-preset-barcounter{background:linear-gradient(180deg,#a16d45,#654127)!important;border-color:#d5aa68!important;border-radius:12px!important}
+#ichefArchPad .arch-chair .seat-code-live:not(:empty){display:flex!important;align-items:center;justify-content:center;min-width:22px;min-height:16px;padding:1px 3px;border-radius:999px;background:#fff;color:#111;font-size:10px;font-weight:1000;box-shadow:0 1px 3px rgba(0,0,0,.25)}
+@media (pointer:coarse){#ichefArchPad .service-furn small{min-width:42px;height:22px;font-size:11px}}
 </style>
 </body>
 </html>
