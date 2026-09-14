@@ -7601,266 +7601,138 @@ function syncTenantLoginField(forceShow=false){
   if(box&&(forceShow||!STATE.tenantID))box.classList.add("show");
 }
 /* =========================================================
-   V59 — PIN PRINCIPAL -> PAGE TABLES < 0,5 S PERÇU
-   - le clic VALIDER bascule immédiatement sur l'écran Tables (squelette sûr)
-   - aucune donnée client n'est révélée avant confirmation du PIN
-   - après confirmation, le dernier PLAN DE TABLES statique peut être affiché depuis
-     un cache local sans commandes ni réservations, puis syncFull actualise le live
-   - l'écran reste verrouillé jusqu'à la première synchronisation serveur fraîche
-   ========================================================= */
-const ICHEF_FAST_LAYOUT_PREFIX='ichef_pad_fast_layout_v59:';
-let ICHEF_PAD_INITIAL_BOOT_PROMISE=null;
+   HYPER-BOOT V5 : CUT DIRECT (0 ms) SANS PLAN PARASITAIRE
+========================================================= */
+const ICHEF_FAST_LAYOUT_PREFIX = 'ichef_pad_fast_layout_v59:';
+let ICHEF_PAD_INITIAL_BOOT_PROMISE = null;
 
-function padFastLayoutKey(tenant=STATE.tenantID){
-  return ICHEF_FAST_LAYOUT_PREFIX+String(tenant||'').trim().slice(0,96);
+function padFastLayoutKey(tenant = STATE.tenantID) {
+  return ICHEF_FAST_LAYOUT_PREFIX + String(tenant || '').trim().slice(0, 96);
 }
-function cachePadFastLayout(){
-  try{
-    if(!STATE.tenantID)return;
-    const raw=unwrap(STATE.activeOrders?.ARCHITECTURE);
-    if(!raw||typeof raw!=='object')return;
-    const safe={
-      rooms:Array.isArray(raw.rooms)?clone(raw.rooms):[],
-      tables:Array.isArray(raw.tables)?clone(raw.tables):[],
-      zones:Array.isArray(raw.zones)?clone(raw.zones):[],
-      elements:Array.isArray(raw.elements)?clone(raw.elements):[],
-      canvas:raw.canvas&&typeof raw.canvas==='object'?clone(raw.canvas):{},
-      cachedAt:Date.now()
+
+function cachePadFastLayout() {
+  try {
+    if (!STATE.tenantID) return;
+    const raw = unwrap(STATE.activeOrders?.ARCHITECTURE);
+    if (!raw || typeof raw !== 'object') return;
+    const safe = {
+      rooms: Array.isArray(raw.rooms) ? clone(raw.rooms) : [],
+      tables: Array.isArray(raw.tables) ? clone(raw.tables) : [],
+      zones: Array.isArray(raw.zones) ? clone(raw.zones) : [],
+      elements: Array.isArray(raw.elements) ? clone(raw.elements) : [],
+      canvas: raw.canvas && typeof raw.canvas === 'object' ? clone(raw.canvas) : {},
+      cachedAt: Date.now()
     };
-    localStorage.setItem(padFastLayoutKey(),JSON.stringify(safe));
-  }catch(_){}
+    localStorage.setItem(padFastLayoutKey(), JSON.stringify(safe));
+  } catch (_) {}
 }
-function applyPadFastLayoutCache(){
-  try{
-    if(!STATE.tenantID)return false;
-    const raw=localStorage.getItem(padFastLayoutKey());
-    if(!raw)return false;
-    const c=JSON.parse(raw);
-    if(!c||!Array.isArray(c.tables))return false;
-    /* Le cache ne contient QUE l'architecture. Aucun ordre/réservation/menu. */
-    STATE.activeOrders.ARCHITECTURE={data:{
-      rooms:Array.isArray(c.rooms)&&c.rooms.length?c.rooms:['Salle Principale'],
-      tables:c.tables,
-      zones:Array.isArray(c.zones)?c.zones:[],
-      elements:Array.isArray(c.elements)?c.elements:[],
-      canvas:c.canvas&&typeof c.canvas==='object'?c.canvas:{}
-    }};
-    normalizeArchitecture();
-    return true;
-  }catch(_){return false}
-}
-function preparePadFastStaticState(){
-  /* Après confirmation PIN mais avant la synchro fraîche, on ne conserve jamais
-     d'anciennes commandes en mémoire visuelle. Seul un ancien plan statique peut
-     servir de secours pour dessiner la salle. */
-  const fallbackArch=STATE.activeOrders?.ARCHITECTURE?clone(STATE.activeOrders.ARCHITECTURE):null;
-  STATE.activeOrders={};
-  if(fallbackArch)STATE.activeOrders.ARCHITECTURE=fallbackArch;
-  STATE.reservations=[];STATE.menu=[];STATE.categories=[];STATE.currentTable=null;STATE.currentOrder=null;
-  try{normalizeArchitecture()}catch(_){}
-}
-function ensurePadFastLoginBanner(){
-  let el=document.getElementById('padFastLoginBanner');
-  if(el)return el;
-  el=document.createElement('div');
-  el.id='padFastLoginBanner';
-  el.innerHTML='<span class="pad-fast-login-spinner"></span><span><b>OUVERTURE IMMÉDIATE</b><small>Vérification sécurisée…</small></span>';
-  document.body.appendChild(el);
-  return el;
-}
-function setPadFastLoginBanner(title,sub){
-  const el=ensurePadFastLoginBanner();
-  const b=el.querySelector('b'),sm=el.querySelector('small');
-  if(b)b.textContent=title||'OUVERTURE IMMÉDIATE';
-  if(sm)sm.textContent=sub||'';
-  el.classList.add('open');
-}
-function renderPadFastSkeleton(){
-  try{
-    const rooms=$('rooms');
-    const tables=$('tables');
-    /* Sécurité : on efface le DOM visuel sans injecter le squelette parasitaire */
-    if(rooms){
-      rooms.innerHTML='';
-    }
-    if(tables){
-      tables.innerHTML='';
-    }
-  }catch(_){}
-}
-function showPadFastLoginPreview(){
-  const started=performance.now();
-  document.body.classList.add('ichef-pad-fast-opening','ichef-pad-live-locked');
-  $('login')?.classList.add('hidden');
-  $('app')?.classList.remove('hidden');
-  $('tools')?.classList.remove('hidden');
-  try{$('screenLabel').textContent='ÉCRAN 1 · TABLES'}catch(_){}
-  renderPadFastSkeleton();
-  setPadFastLoginBanner('VÉRIFICATION DU PIN','Page Tables déjà prête');
-  requestAnimationFrame(()=>{
-    try{document.body.dataset.pinPageVisibleMs=String(Math.round(performance.now()-started))}catch(_){}
-  });
-}
-function showPadFreshSyncState(){
-  document.body.classList.add('ichef-pad-live-locked');
-  setPadFastLoginBanner('TABLES PRÊTES','Synchronisation live…');
-}
-function finishPadFreshSync(ok=true){
-  document.body.classList.remove('ichef-pad-fast-opening');
-  if(ok)document.body.classList.remove('ichef-pad-live-locked');
-  else document.body.classList.add('ichef-pad-live-locked');
-  const b=document.getElementById('padFastLoginBanner');
-  if(b){
-    if(ok)b.classList.remove('open');
-    else{
-      b.classList.add('open');
-      const title=b.querySelector('b'),sub=b.querySelector('small');
-      if(title)title.textContent='SERVEUR À VÉRIFIER';
-      if(sub)sub.textContent='Les actions restent protégées';
-    }
-  }
-}
-function restorePadLoginAfterFastFailure(message='Connexion impossible'){
-  document.body.classList.remove('ichef-pad-fast-opening','ichef-pad-live-locked');
-  document.getElementById('padFastLoginBanner')?.classList.remove('open');
-  $('app')?.classList.add('hidden');
-  $('tools')?.classList.add('hidden');
-  $('login')?.classList.remove('hidden');
-  syncTenantLoginField(true);
-  loginMessage(message);
-}
-function startPadBootNonBlocking(){
-  if(ICHEF_PAD_INITIAL_BOOT_PROMISE)return ICHEF_PAD_INITIAL_BOOT_PROMISE;
-  ICHEF_PAD_INITIAL_BOOT_PROMISE=Promise.resolve().then(()=>bootApp()).then(ok=>{
-    finishPadFreshSync(ok!==false);
-    return ok;
-  }).catch(err=>{
-    console.warn('[iCHEF PAD V59] boot arrière-plan',err);
-    finishPadFreshSync(false);
-    return false;
-  });
+
+function startPadBootNonBlocking() {
+  if (ICHEF_PAD_INITIAL_BOOT_PROMISE) return ICHEF_PAD_INITIAL_BOOT_PROMISE;
+  ICHEF_PAD_INITIAL_BOOT_PROMISE = Promise.resolve()
+    .then(() => bootApp())
+    .catch(err => {
+      console.warn('[iCHEF PAD] synchro arrière-plan', err);
+      return false;
+    });
   return ICHEF_PAD_INITIAL_BOOT_PROMISE;
 }
 
-async function verifyPin(){
-  if(STATE.loginBusy)return;
+async function verifyPin() {
+  if (STATE.loginBusy) return;
 
-  if(!navigator.onLine){
+  if (!navigator.onLine) {
     loginMessage("Connexion Internet requise pour ouvrir le PAD");
     updatePadLoginNetworkStatus();
     showPadNetworkOverlay("Aucune connexion Internet. Le PAD principal ne peut pas être ouvert sans le serveur iCHEF.");
     return;
   }
 
-  const validateBtn=$("pinValidate");
-  const typedTenant=text($("tenantInput")?.value).trim().slice(0,96);
-  const tenantCandidate=(typedTenant||text(STATE.tenantID)).trim();
+  const validateBtn = $("pinValidate");
+  const typedTenant = text($("tenantInput")?.value).trim().slice(0, 96);
+  const tenantCandidate = (typedTenant || text(STATE.tenantID)).trim();
 
-  if(!tenantCandidate){
+  if (!tenantCandidate) {
     loginMessage("Identifiant établissement requis");
     syncTenantLoginField(true);
     return;
   }
 
-  /* Caractères volontairement simples : évite espaces invisibles et identifiants ambigus. */
-  if(!/^[A-Za-z0-9._:-]{1,96}$/.test(tenantCandidate)){
+  if (!/^[A-Za-z0-9._:-]{1,96}$/.test(tenantCandidate)) {
     loginMessage("Identifiant établissement invalide");
     syncTenantLoginField(true);
     return;
   }
 
-  if(STATE.loginPin.length<4){
+  if (STATE.loginPin.length < 4) {
     loginMessage("Code incomplet");
     return;
   }
 
-  STATE.loginBusy=true;
-  if(validateBtn)validateBtn.disabled=true;
-  loginMessage("Connexion…");
+  STATE.loginBusy = true;
+  if (validateBtn) validateBtn.disabled = true;
+  loginMessage("Connexion en cours…");
 
-  /* V59 : la page Tables apparaît immédiatement au clic, sans attendre le réseau.
-     Avant authentification il ne s'agit que d'un squelette générique, sans donnée client. */
-  showPadFastLoginPreview();
+  STATE.tenantID = tenantCandidate;
+  STORAGE.set("ichef_tenant_id", STATE.tenantID);
+  const pinAttempt = String(STATE.loginPin);
 
-  try{
-    STATE.tenantID=tenantCandidate;
-    STORAGE.set("ichef_tenant_id",STATE.tenantID);
-
-    const pinAttempt=String(STATE.loginPin);
-    const r=await serverFetch("/api/verify-pin",{
-      method:"POST",
-      body:JSON.stringify({
-        tenantID:STATE.tenantID,
-        pin:pinAttempt,
-        deviceId:STATE.deviceId,
-        page:"PAD",
-        terminal:"PAD"
+  try {
+    // Requête avec le délai serveur étendu à 45s
+    const r = await serverFetch("/api/verify-pin", {
+      method: "POST",
+      body: JSON.stringify({
+        tenantID: STATE.tenantID,
+        pin: pinAttempt,
+        deviceId: STATE.deviceId,
+        page: "PAD",
+        terminal: "PAD"
       })
     });
-    const j=await r.json().catch(()=>({}));
-    if(!r.ok||!j.success)throw new Error(j.error||j.message||"Code refusé");
 
-    STATE.pin=pinAttempt; /* mémoire vive uniquement : jamais localStorage */
-    STATE.loginPin="";
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.success) throw new Error(j.error || j.message || "Code refusé");
+
+    STATE.pin = pinAttempt;
+    STATE.loginPin = "";
     renderPin();
 
-    if(j.safeTenantID){
-      const safeTenant=text(j.safeTenantID).trim().slice(0,96);
-      if(safeTenant)STATE.tenantID=safeTenant;
-      STORAGE.set("ichef_tenant_id",STATE.tenantID);
+    if (j.safeTenantID) {
+      const safeTenant = text(j.safeTenantID).trim().slice(0, 96);
+      if (safeTenant) STATE.tenantID = safeTenant;
+      STORAGE.set("ichef_tenant_id", STATE.tenantID);
     }
 
-    STATE.role=j.role||"";
-    STATE.plan=j.plan||"";
-    STATE.specialite=j.specialite||"";
-    STATE.authenticated=true;
-    STATE.deviceReplaced=false;
+    STATE.role = j.role || "";
+    STATE.plan = j.plan || "";
+    STATE.specialite = j.specialite || "";
+    STATE.authenticated = true;
+    STATE.deviceReplaced = false;
 
-    /* Précharge les TPE de cet établissement depuis server.js.
-       L'échec ne bloque jamais la prise de commande. */
-    loadPaymentConfig(true).catch(err=>{
-      console.warn("[iCHEF TPE] configuration indisponible au login",err?.message||err);
-    });
+    loadPaymentConfig(true).catch(() => {});
 
-    /* V59 — APRÈS LE PIN = ÉCRAN TABLES SANS ATTENDRE syncFull().
-       1) on applique, si disponible, uniquement le dernier plan statique local ;
-       2) on rend immédiatement ;
-       3) bootApp/syncFull continue en arrière-plan et déverrouille ensuite le live. */
-    try{window.closePadArchitect?.()}catch(_){}
+    try { window.closePadArchitect?.(); } catch (_) {}
     document.body.classList.remove("ichef-plan-toggle-open");
 
-    preparePadFastStaticState();
-    const hadFastLayout=applyPadFastLayoutCache();
-    try{
-      applyDisplay(STATE.display);
-      autoDisplay();
-      renderStatus();
-      renderRooms();
-      renderTables();
-      updateToolBadges();
-    }catch(renderErr){
-      console.warn('[iCHEF PAD V59] rendu immédiat',renderErr);
-    }
-
+    // BASCULE INSTANTANÉE (0 ms) : On masque le login et on affiche directement l'app
+    $("login")?.classList.add("hidden");
     $("app")?.classList.remove("hidden");
     $("tools")?.classList.remove("hidden");
-    $("login")?.classList.add("hidden");
     loginMessage("");
-    showPadFreshSyncState();
-    try{window.ICHEF_PLAN_TABLE_TOGGLE?.sync?.()}catch(_){}
 
-    /* IMPORTANT : aucun await ici. Le réseau ne retient plus la page Tables. */
+    // Démarrage du flux sans injection de squelette ni plan fantôme
     startPadBootNonBlocking();
 
-  }catch(e){
-    STATE.authenticated=false;
-    STATE.pin="";
-    STATE.loginPin="";
+  } catch (e) {
+    STATE.authenticated = false;
+    STATE.pin = "";
+    STATE.loginPin = "";
     renderPin();
-    restorePadLoginAfterFastFailure(e?.message||"Connexion impossible");
-  }finally{
-    STATE.loginBusy=false;
-    if(validateBtn)validateBtn.disabled=false;
+    syncTenantLoginField(true);
+    loginMessage(e?.message || "Connexion impossible");
+  } finally {
+    STATE.loginBusy = false;
+    if (validateBtn) validateBtn.disabled = false;
   }
 }
 
