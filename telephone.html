@@ -7755,126 +7755,132 @@ function startPadBootNonBlocking(){
   return ICHEF_PAD_INITIAL_BOOT_PROMISE;
 }
 
+/* =========================================================
+   HYPER-BOOT V4 : DÉMARRAGE INSTANTANÉ (ZÉRO LATENCE)
+========================================================= */
 async function verifyPin(){
-  if(STATE.loginBusy)return;
-
-  if(!navigator.onLine){
-    loginMessage("Connexion Internet requise pour ouvrir le PAD");
-    updatePadLoginNetworkStatus();
-    showPadNetworkOverlay("Aucune connexion Internet. Le PAD principal ne peut pas être ouvert sans le serveur iCHEF.");
-    return;
-  }
-
-  const validateBtn=$("pinValidate");
-  const typedTenant=text($("tenantInput")?.value).trim().slice(0,96);
-  const tenantCandidate=(typedTenant||text(STATE.tenantID)).trim();
-
-  if(!tenantCandidate){
-    loginMessage("Identifiant établissement requis");
-    syncTenantLoginField(true);
-    return;
-  }
-
-  /* Caractères volontairement simples : évite espaces invisibles et identifiants ambigus. */
-  if(!/^[A-Za-z0-9._:-]{1,96}$/.test(tenantCandidate)){
-    loginMessage("Identifiant établissement invalide");
-    syncTenantLoginField(true);
-    return;
-  }
-
-  if(STATE.loginPin.length<4){
-    loginMessage("Code incomplet");
-    return;
-  }
-
-  STATE.loginBusy=true;
-  if(validateBtn)validateBtn.disabled=true;
-  loginMessage("Connexion…");
-
-  /* V59 : la page Tables apparaît immédiatement au clic, sans attendre le réseau.
-     Avant authentification il ne s'agit que d'un squelette générique, sans donnée client. */
-  showPadFastLoginPreview();
-
-  try{
-    STATE.tenantID=tenantCandidate;
+  const typedTenant=text($("tenantInput")?.value);
+  if(typedTenant&&typedTenant!==STATE.tenantID){
+    STATE.tenantID=typedTenant;
     STORAGE.set("ichef_tenant_id",STATE.tenantID);
+  }
+  if(!STATE.tenantID){
+    STATE.tenantID=typedTenant;
+    if(!STATE.tenantID){
+      loginMessage("Identifiant établissement requis");
+      if(typeof syncTenantLoginField === "function") syncTenantLoginField(true);
+      return;
+    }
+    STORAGE.set("ichef_tenant_id",STATE.tenantID);
+  }
+  if(STATE.loginPin.length<4){loginMessage("Code incomplet");return}
+  if(STATE.loginBusy)return;
+  
+  STATE.loginBusy=true;
+  const validateBtn=$("pinValidate");
+  if(validateBtn)validateBtn.disabled=true;
+  loginMessage("Ouverture immédiate...");
 
-    const pinAttempt=String(STATE.loginPin);
-    const r=await serverFetch("/api/verify-pin",{
+  // 1. COUPURE VISUELLE IMMÉDIATE (0 milliseconde d'attente)
+  const pinAttempt = String(STATE.loginPin);
+  STATE.pin = pinAttempt;
+  STATE.authenticated = true; 
+  
+  $("login")?.classList.add("hidden");
+  $("app")?.classList.remove("hidden");
+  $("tools")?.classList.remove("hidden");
+
+  // 2. RENDU DU PLAN DEPUIS LE CACHE LOCAL INSTANTANÉMENT
+  try {
+    if(typeof phoneHydrateArchitectureCache === "function") phoneHydrateArchitectureCache(); 
+    if(typeof preparePadFastStaticState === "function") preparePadFastStaticState();
+    if(typeof applyPadFastLayoutCache === "function") applyPadFastLayoutCache();
+
+    applyDisplay(STATE.display);
+    autoDisplay();
+    renderStatus();
+    renderRooms();
+    renderTables();
+    updateToolBadges();
+  } catch(err) {
+    console.warn("[iCHEF] Erreur pré-rendu cache:", err);
+  }
+
+  setConnection("VÉRIFICATION...", "warn");
+
+  // 3. PAUSE STRATÉGIQUE DE 50ms & REQUÊTE SERVEUR EN ARRIÈRE-PLAN
+  setTimeout(() => {
+    serverFetch("/api/verify-pin",{
       method:"POST",
       body:JSON.stringify({
         tenantID:STATE.tenantID,
         pin:pinAttempt,
         deviceId:STATE.deviceId,
-        page:"PAD",
-        terminal:"PAD"
+        terminal:"TELEPHONE",
+        module:"TELEPHONE",
+        source:"telephone.html"
       })
+    })
+    .then(async r => {
+      const j=await r.json().catch(()=>({}));
+      if(!r.ok||!j.success){
+        const base=text(j.error||j.message||"Code refusé");
+        const detail=text(j.detail||"");
+        throw new Error(detail&&detail!==base?`${base} · ${detail}`:base);
+      }
+      
+      // Confirmation serveur reçue
+      if(j.safeTenantID){
+        STATE.tenantID=text(j.safeTenantID);
+        STORAGE.set("ichef_tenant_id",STATE.tenantID);
+      }
+      STATE.role=j.role||"";
+      STATE.plan=j.plan||"";
+      STATE.specialite=j.specialite||"";
+      STATE.addons=Array.isArray(j.addons)?j.addons.slice():STATE.addons;
+      STATE.deviceReplaced=false;
+      
+      if(!STATE.featureRights||typeof STATE.featureRights!=="object")STATE.featureRights={};
+      if(typeof phonePlanRightFromEntitlements === "function") {
+        STATE.featureRights.PLAN_INTERACTIF = STATE.demo || phonePlanRightFromEntitlements(STATE.plan,STATE.addons);
+      }
+
+      STATE.loginPin="";
+      renderPin();
+      loginMessage("");
+
+      // On lance la récupération des commandes et la synchro temps réel
+      if (typeof bootApp === "function") {
+        bootApp().catch(err=>{
+          console.warn("[iCHEF TELEPHONE] démarrage",err?.message||err);
+          setConnection(navigator.onLine?"SYNCHRO HTTP":"HORS LIGNE",navigator.onLine?"warn":"bad");
+        });
+      } else if (typeof startPadBootNonBlocking === "function") {
+          startPadBootNonBlocking();
+      }
+
+      if (typeof loadLicenseRights === "function") {
+         setTimeout(()=>loadLicenseRights().catch(()=>{}),500);
+      }
+    })
+    .catch(e => {
+      // Si le code PIN est faux ou réseau coupé, on remet l'écran de login
+      STATE.authenticated=false;
+      STATE.pin="";
+      STATE.loginPin="";
+      renderPin();
+      if(typeof syncTenantLoginField === "function") syncTenantLoginField(true);
+      loginMessage(e?.message||"Connexion impossible");
+      
+      $("app")?.classList.add("hidden");
+      $("tools")?.classList.add("hidden");
+      $("login")?.classList.remove("hidden");
+    })
+    .finally(() => {
+      STATE.loginBusy=false;
+      if(validateBtn)validateBtn.disabled=false;
     });
-    const j=await r.json().catch(()=>({}));
-    if(!r.ok||!j.success)throw new Error(j.error||j.message||"Code refusé");
-
-    STATE.pin=pinAttempt; /* mémoire vive uniquement : jamais localStorage */
-    STATE.loginPin="";
-    renderPin();
-
-    if(j.safeTenantID){
-      const safeTenant=text(j.safeTenantID).trim().slice(0,96);
-      if(safeTenant)STATE.tenantID=safeTenant;
-      STORAGE.set("ichef_tenant_id",STATE.tenantID);
-    }
-
-    STATE.role=j.role||"";
-    STATE.plan=j.plan||"";
-    STATE.specialite=j.specialite||"";
-    STATE.authenticated=true;
-    STATE.deviceReplaced=false;
-
-    /* Précharge les TPE de cet établissement depuis server.js.
-       L'échec ne bloque jamais la prise de commande. */
-    loadPaymentConfig(true).catch(err=>{
-      console.warn("[iCHEF TPE] configuration indisponible au login",err?.message||err);
-    });
-
-    /* V59 — APRÈS LE PIN = ÉCRAN TABLES SANS ATTENDRE syncFull().
-       1) on applique, si disponible, uniquement le dernier plan statique local ;
-       2) on rend immédiatement ;
-       3) bootApp/syncFull continue en arrière-plan et déverrouille ensuite le live. */
-    try{window.closePadArchitect?.()}catch(_){}
-    document.body.classList.remove("ichef-plan-toggle-open");
-
-    preparePadFastStaticState();
-    const hadFastLayout=applyPadFastLayoutCache();
-    try{
-      applyDisplay(STATE.display);
-      autoDisplay();
-      renderStatus();
-      renderRooms();
-      renderTables();
-      updateToolBadges();
-    }catch(renderErr){
-      console.warn('[iCHEF PAD V59] rendu immédiat',renderErr);
-    }
-
-    $("app")?.classList.remove("hidden");
-    $("tools")?.classList.remove("hidden");
-    $("login")?.classList.add("hidden");
-    loginMessage("");
-    showPadFreshSyncState();
-    try{window.ICHEF_PLAN_TABLE_TOGGLE?.sync?.()}catch(_){}
-
-    /* IMPORTANT : aucun await ici. Le réseau ne retient plus la page Tables. */
-    startPadBootNonBlocking();
-
-  }catch(e){
-    STATE.authenticated=false;
-    STATE.pin="";
-    STATE.loginPin="";
-    renderPin();
-    restorePadLoginAfterFastFailure(e?.message||"Connexion impossible");
-  }finally{
-    STATE.loginBusy=false;
-    if(validateBtn)validateBtn.disabled=false;
-  }
+  }, 50);
 }
 
 $("pinPad")?.addEventListener("click",e=>{
@@ -7889,15 +7895,16 @@ $("pinPad")?.addEventListener("click",e=>{
   if(b.dataset.act==="back"){STATE.loginPin=STATE.loginPin.slice(0,-1);renderPin();loginMessage("")}
 });
 $("pinValidate")?.addEventListener("click",verifyPin);
-  $("btnAdminLogin")?.addEventListener("click", () => {
+$("btnAdminLogin")?.addEventListener("click", () => {
     const tenant = document.getElementById("tenantInput")?.value || STATE.tenantID || "";
     window.location.href = "admin.html" + (tenant ? "?tenantID=" + encodeURIComponent(tenant) : "");
 });
-$("padReturnAdminLogin")?.addEventListener("click",padReturnAdmin);
-$("padNetworkAdmin")?.addEventListener("click",padReturnAdmin);
-$("padNetworkRetry")?.addEventListener("click",retryPadNetwork);
-updatePadLoginNetworkStatus();
-syncTenantLoginField(false);
+if($("padReturnAdminLogin")) $("padReturnAdminLogin").addEventListener("click",padReturnAdmin);
+if($("padNetworkAdmin")) $("padNetworkAdmin").addEventListener("click",padReturnAdmin);
+if($("padNetworkRetry")) $("padNetworkRetry").addEventListener("click",retryPadNetwork);
+
+if(typeof updatePadLoginNetworkStatus === "function") updatePadLoginNetworkStatus();
+if(typeof syncTenantLoginField === "function") syncTenantLoginField(false);
 renderPin();
 
 /* ---------------- SERVER API ---------------- */
@@ -7909,6 +7916,7 @@ async function getState(){
   }
   return r.json();
 }
+
 async function updateServer(key,data,auditReason="Mise à jour PAD"){
   if(STATE.demo)return {success:true,demo:true};
   if(!STATE.authenticated)throw new Error("Session non authentifiée");
@@ -7930,6 +7938,7 @@ async function updateServer(key,data,auditReason="Mise à jour PAD"){
   if(j.persisted===false)throw new Error("Écriture reçue mais non persistée");
   return j;
 }
+
 async function optimisticWrite(key,data,reason){
   const pending=stageLocalValue(key,data,reason);
   return enqueueVersionedWrite(key,pending);
@@ -7937,7 +7946,11 @@ async function optimisticWrite(key,data,reason){
 
 /* ---------------- REALTIME ---------------- */
 function setConnection(label,kind="warn"){
-  $("stLink").textContent=label;$("stLink").className="status-value "+(kind==="good"?"good":kind==="bad"?"bad":"warn");
+  const st=$("stLink");
+  if(st){
+      st.textContent=label;
+      st.className="status-value "+(kind==="good"?"good":kind==="bad"?"bad":"warn");
+  }
 }
 
 function loadSocket(){
@@ -7968,8 +7981,6 @@ async function connectSocket(){
   try{
     await loadSocket();
 
-    /* Si l'utilisateur revient volontairement sur cet écran, il peut reprendre
-       la connexion active de cet appareil. Un onglet caché ne la vole jamais. */
     if(!document.hidden && STATE.deviceReplaced){
       STATE.deviceReplaced=false;
     }
@@ -7981,7 +7992,6 @@ async function connectSocket(){
     };
     const identityKey=`${identity.tenantID}|${identity.deviceId}|${identity.page}`;
 
-    /* Une seule instance Socket par page PAD, mais jamais réutilisée pour un autre tenant/appareil. */
     if(STATE.socket && STATE.socketIdentityKey && STATE.socketIdentityKey!==identityKey){
       try{STATE.socket.removeAllListeners()}catch(_){}
       try{STATE.socket.disconnect()}catch(_){}
@@ -7991,8 +8001,6 @@ async function connectSocket(){
 
     if(STATE.socket){
       if(STATE.socket.connected)return STATE.socket;
-
-      /* Socket.IO conserve son Manager et gère la reconnexion. */
       if(typeof STATE.socket.connect==="function"){
         try{STATE.socket.connect()}catch(_){}
       }
@@ -8001,12 +8009,9 @@ async function connectSocket(){
 
     const socket=window.io(APP_SERVER_URL,{
       withCredentials:false,
-
-      /* Connexion robuste Render / Edge : handshake HTTP puis upgrade WebSocket. */
       transports:["polling","websocket"],
       upgrade:true,
       rememberUpgrade:false,
-
       reconnection:true,
       reconnectionAttempts:Infinity,
       reconnectionDelay:700,
@@ -8016,7 +8021,6 @@ async function connectSocket(){
       forceNew:false,
       multiplex:true,
       closeOnBeforeunload:false,
-
       auth:identity,
       query:identity
     });
@@ -8030,7 +8034,7 @@ async function connectSocket(){
       STATE.lastServerAt=now();
 
       setConnection("TEMPS RÉEL","good");
-      hidePadNetworkOverlay();
+      if(typeof hidePadNetworkOverlay === "function") hidePadNetworkOverlay();
 
       socket.emit("joinTenant",{
         tenantID:STATE.tenantID,
@@ -8048,38 +8052,22 @@ async function connectSocket(){
 
       retryFailedWrites();
 
-      /* IMPORTANT : tester l'ancien horodatage, pas celui qu'on vient de mettre à jour. */
       if(!previousServerAt || now()-previousServerAt>5000){
         syncFull("socket-connect");
       }
-
-      console.info(
-        "[iCHEF PAD V1] WebSocket connecté",
-        {
-          id:socket.id,
-          tenantID:STATE.tenantID,
-          deviceId:STATE.deviceId,
-          page:"PLAN_INTERACTIF",
-          transport:socket.io?.engine?.transport?.name||"websocket"
-        }
-      );
     });
 
     socket.on("updateState",s=>{
       STATE.connected=true;
       STATE.lastServerAt=now();
       setConnection("TEMPS RÉEL","good");
-      hidePadNetworkOverlay();
+      if(typeof hidePadNetworkOverlay === "function") hidePadNetworkOverlay();
       applyServerState(s,"socket");
     });
 
     socket.on("paymentConfigUpdated",packet=>{
       if(packet?.paymentConfig){
-        applyPaymentConfig(packet.paymentConfig);
-        console.info("[iCHEF TPE] configuration actualisée en temps réel",{
-          tenantID:STATE.tenantID,
-          terminals:STATE.paymentConfig.terminals.length
-        });
+        if(typeof applyPaymentConfig === 'function') applyPaymentConfig(packet.paymentConfig);
       }else{
         STATE.paymentConfigLoadedAt=0;
       }
@@ -8089,7 +8077,6 @@ async function connectSocket(){
       STATE.deviceReplaced=true;
       STATE.connected=false;
       setConnection("AUTRE ONGLET ACTIF","warn");
-      console.info("[iCHEF PLAN] Connexion remplacée par un autre onglet/appareil",info||{});
     };
     socket.on("ichef-device-replaced",onSessionReplaced);
     socket.on("ichef-session-replaced",onSessionReplaced);
@@ -8102,66 +8089,27 @@ async function connectSocket(){
         return;
       }
 
-      setConnection(
-        navigator.onLine
-          ?"RECONNEXION"
-          :"HORS LIGNE",
-        navigator.onLine
-          ?"warn"
-          :"bad"
-      );
-
-      console.warn(
-        "[iCHEF PAD V1] Socket déconnecté :",
-        reason
-      );
+      setConnection(navigator.onLine?"RECONNEXION":"HORS LIGNE", navigator.onLine?"warn":"bad");
 
       if(!navigator.onLine){
-        showPadNetworkOverlay(
-          "Connexion Internet perdue. Les écritures serveur sont suspendues jusqu’au retour du réseau."
-        );
+        if(typeof showPadNetworkOverlay === "function") showPadNetworkOverlay("Connexion Internet perdue. Les écritures serveur sont suspendues jusqu’au retour du réseau.");
       }
     });
 
     socket.on("connect_error",err=>{
       STATE.connected=false;
-
-      setConnection(
-        navigator.onLine
-          ?"SERVEUR À VÉRIFIER"
-          :"HORS LIGNE",
-        navigator.onLine
-          ?"warn"
-          :"bad"
-      );
-
-      console.warn(
-        "[iCHEF PAD V1] connect_error :",
-        err?.message||err
-      );
+      setConnection(navigator.onLine?"SERVEUR À VÉRIFIER":"HORS LIGNE",navigator.onLine?"warn":"bad");
     });
 
     socket.io.on("reconnect_attempt",attempt=>{
       setConnection("RECONNEXION","warn");
-      console.info(
-        "[iCHEF PAD V1] Reconnexion WebSocket",
-        attempt
-      );
     });
 
     socket.io.on("reconnect",attempt=>{
       STATE.connected=true;
       setConnection("TEMPS RÉEL","good");
-      hidePadNetworkOverlay();
-
-      /* Une coupure peut avoir fait perdre des événements : relecture serveur obligatoire. */
+      if(typeof hidePadNetworkOverlay === "function") hidePadNetworkOverlay();
       syncFull("socket-reconnect");
-
-      console.info(
-        "[iCHEF PAD V1] WebSocket rétabli après",
-        attempt,
-        "tentative(s)"
-      );
     });
 
     return socket;
@@ -8171,20 +8119,7 @@ async function connectSocket(){
     STATE.socket=null;
     STATE.socketLoading=null;
 
-    setConnection(
-      navigator.onLine
-        ?"SYNCHRO HTTP"
-        :"HORS LIGNE",
-      navigator.onLine
-        ?"warn"
-        :"bad"
-    );
-
-    console.warn(
-      "[iCHEF PAD V1] Socket.IO non chargé :",
-      err?.message||err
-    );
-
+    setConnection(navigator.onLine?"SYNCHRO HTTP":"HORS LIGNE",navigator.onLine?"warn":"bad");
     return null;
   }
 }
@@ -8200,12 +8135,10 @@ async function syncFull(reason="manual"){
     return true;
   }catch(e){
     setConnection("HORS LIGNE","bad");
-    console.warn("[iCHEF PAD] Synchronisation impossible",reason,e?.message||e);
     if(reason==="initial"||reason==="manual")toast("Serveur inaccessible : "+(e?.message||"erreur réseau"),true);
     return false;
   }finally{STATE.syncing=false}
 }
-
 function applyServerState(serverState,source){
   if(!serverState||typeof serverState!=="object")return;
 
