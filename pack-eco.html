@@ -10477,6 +10477,8 @@ body.ichef-pad-fast-opening #statusbar{opacity:.95}
 
 
 <!-- iCHEF V60 MENU INTERACTIF TRANSITION FLUIDE SAFE -->
+
+<!-- iCHEF V62 — FIX CORE QUI MANGE QUOI : HANDLER PRODUIT UNIQUE -->
 </body></html>`;
 }
 
@@ -13570,18 +13572,10 @@ $("products").addEventListener("pointerup",e=>{
   const p=findProductFromButton(b);
   if(!p)return;
 
-  /* V24 : le convive a déjà été choisi dans QUI MANGE QUOI à l'ouverture de la table.
-     Un tap produit ajoute donc au convive actif. La fenêtre cuisson apparaît uniquement
-     lorsque la famille du plat exige un choix manuel. */
-  const seat=Math.max(1,Math.min(9,Number(STATE.activeSeat)||1));
-  const dest=normalizeDestination(p.dest||p.raw?.dest||p.raw?.destination||"cuisine");
-  const profile=cookingProfileFor(p);
-  pendingProductSeatChoice={product:p,sourceButton:b,seat};
-  if(dest==="cuisine" && profile.required===true && profile.levels.length){
-    showProductCookingPicker(pendingProductSeatChoice,seat);
-  }else{
-    finalizeProductSeatChoice(seat,profile.automatic||"");
-  }
+  /* V62 SAFE : un seul chemin de commande.
+     Tap plat -> choix du convive C -> cuisson si nécessaire -> addProduct() -> saveCurrent().
+     On utilise le moteur natif existant au lieu d'ajouter une seconde couche tactile. */
+  openProductSeatPicker(p,b);
 },{passive:true});
 
 $("products").addEventListener("pointercancel",()=>{
@@ -19270,122 +19264,7 @@ setTimeout(() => {
   <!-- =========================================================
      CORRECTION DÉFINITIVE : PRISE DE COMMANDE TACTILE (1 TAP)
      ========================================================= -->
-<script id="fix-prise-commande-tactile">
-/* =========================================================
-   V61 — PRISE DE COMMANDE TACTILE + QUI MANGE QUOI CONNECTÉ
-   Un tap sur un plat ouvre TOUJOURS le choix C du convive.
-   Ensuite seulement : cuisson si nécessaire, puis création de
-   la ligne complète (produit + C + cuisson) via saveCurrent(),
-   donc via la file d'écriture serveur existante.
-   ========================================================= */
-(function fixTactileOrderWithSeatPicker() {
-    const container = document.getElementById("products");
-    if (!container) return;
-
-    /* On purge uniquement les anciens écouteurs produits afin d'éviter
-       le double déclenchement ajout-direct + popup C. */
-    const newContainer = container.cloneNode(true);
-    container.parentNode.replaceChild(newContainer, container);
-
-    let press = { timer: null, button: null, startX: 0, startY: 0, long: false };
-
-    function clearPress() {
-        if (press.timer) clearTimeout(press.timer);
-        press.timer = null;
-        if (press.button) press.button.classList.remove("longpress-active");
-    }
-
-    newContainer.addEventListener("pointerdown", e => {
-        const b = e.target.closest("[data-product]");
-        if (!b || b.classList.contains("sold")) return;
-
-        clearPress();
-        press.button = b;
-        press.startX = e.clientX;
-        press.startY = e.clientY;
-        press.long = false;
-        b.classList.add("longpress-active");
-
-        press.timer = setTimeout(() => {
-            press.timer = null;
-            press.long = true;
-            b.classList.remove("longpress-active");
-
-            const p = typeof findProductFromButton === "function" ? findProductFromButton(b) : null;
-            if (p) {
-                if (navigator.vibrate) { try { navigator.vibrate(40); } catch (_) {} }
-                if (typeof showFullProductTitle === "function") showFullProductTitle(p);
-            }
-        }, 600);
-    }, { passive: true });
-
-    newContainer.addEventListener("pointermove", e => {
-        if (!press.button) return;
-        const dx = Math.abs(e.clientX - press.startX);
-        const dy = Math.abs(e.clientY - press.startY);
-        if (dx > 25 || dy > 25) {
-            clearPress();
-            press.button = null;
-        }
-    }, { passive: true });
-
-    newContainer.addEventListener("pointerup", e => {
-        const b = e.target.closest("[data-product]");
-        if (!b || !press.button) return;
-
-        const wasLong = press.long;
-        const sameButton = b === press.button;
-        clearPress();
-        press.button = null;
-        press.long = false;
-        if (!sameButton || wasLong) return;
-
-        /* Une cuisson précédente obligatoire doit être terminée avant
-           d'ouvrir un nouveau produit : on conserve cette sécurité. */
-        const pendingCookingItem = typeof getValidPendingCookingItem === "function"
-            ? getValidPendingCookingItem()
-            : null;
-        if (pendingCookingItem) {
-            if (typeof showQuickCooking === "function") showQuickCooking(pendingCookingItem);
-            if (typeof toast === "function") toast("Cuisson obligatoire en attente", true);
-            return;
-        }
-
-        /* Anti-double tap fantôme uniquement. */
-        const key = (b.dataset.product || "") + "|" + (b.dataset.pname || "");
-        const t = Date.now();
-        if (typeof lastProductTap !== "undefined") {
-            if (lastProductTap.key === key && t - lastProductTap.at < 135) return;
-            lastProductTap = { key, at: t };
-        }
-
-        const p = typeof findProductFromButton === "function" ? findProductFromButton(b) : null;
-        if (!p) return;
-
-        /* V61 : aucun ajout direct au C actif.
-           Tous les plats passent d'abord par C1/C2/C3... comme demandé.
-           confirmProductSeat() enchaîne ensuite vers la cuisson si nécessaire,
-           puis finalizeProductSeatChoice() -> addProduct() -> saveCurrent(). */
-        const picker = (typeof window.openProductSeatPicker === "function")
-            ? window.openProductSeatPicker
-            : (typeof openProductSeatPicker === "function" ? openProductSeatPicker : null);
-
-        if (!picker) {
-            if (typeof toast === "function") toast("Choix du convive indisponible", true);
-            return;
-        }
-
-        pendingProductSeatChoice = { product: p, sourceButton: b };
-        picker(p, b);
-    });
-
-    newContainer.addEventListener("pointercancel", () => {
-        clearPress();
-        press.button = null;
-        press.long = false;
-    });
-})();
-</script>
+<!-- V62 SAFE — ancien doublon tactile produits retiré : gestionnaire principal unique -->
 
 <script id="ichef-cuisson-complete-marker">
 window.__ICHEF_COOKING_PROFILE_VERSION__="CUISSON-COMPLETE-2026-09-04";
@@ -21472,7 +21351,5 @@ body.ichef-plan-toggle-open #toolDisplay .tiny{
   #ichefArchPad .archpad-zoom-controls button{min-width:44px;min-height:44px}
 }
 </style>
-
-<!-- iCHEF V61 — QUI MANGE QUOI CONNECTÉ SERVEUR : TAP PLAT -> C -> CUISSON -> SAVE -->
 </body>
 </html>
