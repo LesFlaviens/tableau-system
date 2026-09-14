@@ -7507,7 +7507,6 @@ async function serverFetch(path,options={}){
   }
 }
 
-
 function padAdminUrl(){
   const tenant=String(STATE.tenantID||"").trim();
   return tenant
@@ -7592,12 +7591,11 @@ function syncTenantLoginField(forceShow=false){
   if(input&&!input.value&&STATE.tenantID)input.value=STATE.tenantID;
   if(box&&(forceShow||!STATE.tenantID))box.classList.add("show");
 }
+
 /* =========================================================
    V59 — PIN PRINCIPAL -> PAGE TABLES < 0,5 S PERÇU
    - le clic VALIDER bascule immédiatement sur l'écran Tables (squelette sûr)
    - aucune donnée client n'est révélée avant confirmation du PIN
-   - après confirmation, le dernier PLAN DE TABLES statique peut être affiché depuis
-     un cache local sans commandes ni réservations, puis syncFull actualise le live
    - l'écran reste verrouillé jusqu'à la première synchronisation serveur fraîche
    ========================================================= */
 const ICHEF_FAST_LAYOUT_PREFIX='ichef_pad_fast_layout_v59:';
@@ -7640,6 +7638,147 @@ function applyPadFastLayoutCache(){
     normalizeArchitecture();
     return true;
   }catch(_){return false}
+}
+function preparePadFastStaticState(){
+  const fallbackArch=STATE.activeOrders?.ARCHITECTURE?clone(STATE.activeOrders.ARCHITECTURE):null;
+  STATE.activeOrders={};
+  if(fallbackArch)STATE.activeOrders.ARCHITECTURE=fallbackArch;
+  STATE.reservations=[];STATE.menu=[];STATE.categories=[];STATE.currentTable=null;STATE.currentOrder=null;
+  try{normalizeArchitecture()}catch(_){}
+}
+
+/* =========================================================
+   HYPER-BOOT V4 : DÉMARRAGE INSTANTANÉ (ZÉRO LATENCE)
+========================================================= */
+async function verifyPin(){
+  const typedTenant=text($("tenantInput")?.value);
+  if(typedTenant&&typedTenant!==STATE.tenantID){
+    STATE.tenantID=typedTenant;
+    STORAGE.set("ichef_tenant_id",STATE.tenantID);
+  }
+  if(!STATE.tenantID){
+    STATE.tenantID=typedTenant;
+    if(!STATE.tenantID){
+      loginMessage("Identifiant établissement requis");
+      syncTenantLoginField(true);
+      return;
+    }
+    STORAGE.set("ichef_tenant_id",STATE.tenantID);
+  }
+  if(STATE.loginPin.length<4){loginMessage("Code incomplet");return}
+  if(STATE.loginBusy)return;
+  
+  STATE.loginBusy=true;
+  const validateBtn=$("pinValidate");
+  if(validateBtn)validateBtn.disabled=true;
+  loginMessage("Ouverture immédiate...");
+
+  // 1. COUPURE VISUELLE IMMÉDIATE (0 milliseconde d'attente)
+  const pinAttempt = String(STATE.loginPin);
+  STATE.pin = pinAttempt;
+  STATE.authenticated = true; 
+  STATE.loginPin="";
+  renderPin();
+  
+  const loginEl = document.getElementById("login");
+  const appEl = document.getElementById("app");
+  const toolsEl = document.getElementById("tools");
+
+  if (loginEl) loginEl.classList.add("hidden");
+  if (appEl) appEl.classList.remove("hidden");
+  if (toolsEl) toolsEl.classList.remove("hidden");
+
+  // 2. RENDU DU CACHE LOCAL INSTANTANÉMENT
+  try {
+    if(typeof phoneHydrateArchitectureCache === "function") phoneHydrateArchitectureCache(); 
+    if(typeof preparePadFastStaticState === "function") preparePadFastStaticState();
+    if(typeof applyPadFastLayoutCache === "function") applyPadFastLayoutCache();
+
+    applyDisplay(STATE.display);
+    autoDisplay();
+    renderStatus();
+    renderRooms();
+    renderTables();
+    updateToolBadges();
+  } catch(err) {
+    console.warn("[iCHEF] Erreur pré-rendu cache:", err);
+  }
+
+  setConnection("VÉRIFICATION...", "warn");
+
+  // 3. PAUSE STRATÉGIQUE DE 50ms & REQUÊTE SERVEUR EN ARRIÈRE-PLAN
+  setTimeout(() => {
+    serverFetch("/api/verify-pin",{
+      method:"POST",
+      body:JSON.stringify({
+        tenantID:STATE.tenantID,
+        pin:pinAttempt,
+        deviceId:STATE.deviceId,
+        terminal:"TELEPHONE",
+        module:"TELEPHONE",
+        source:"telephone.html"
+      })
+    })
+    .then(async r => {
+      const j=await r.json().catch(()=>({}));
+      if(!r.ok||!j.success){
+        const base=text(j.error||j.message||"Code refusé");
+        const detail=text(j.detail||"");
+        throw new Error(detail&&detail!==base?`${base} · ${detail}`:base);
+      }
+      
+      // Confirmation serveur reçue
+      if(j.safeTenantID){
+        STATE.tenantID=text(j.safeTenantID);
+        STORAGE.set("ichef_tenant_id",STATE.tenantID);
+      }
+      STATE.role=j.role||"";
+      STATE.plan=j.plan||"";
+      STATE.specialite=j.specialite||"";
+      STATE.addons=Array.isArray(j.addons)?j.addons.slice():STATE.addons;
+      
+      if(!STATE.featureRights||typeof STATE.featureRights!=="object")STATE.featureRights={};
+      if(typeof phonePlanRightFromEntitlements === "function") {
+        STATE.featureRights.PLAN_INTERACTIF = STATE.demo || phonePlanRightFromEntitlements(STATE.plan,STATE.addons);
+      }
+
+      loginMessage("");
+
+      // Lancement du plan interactif si requis
+      try{window.closePadArchitect?.()}catch(_){}
+      document.body.classList.remove("ichef-plan-toggle-open");
+      try{window.ICHEF_PLAN_TABLE_TOGGLE?.sync?.()}catch(_){}
+
+      // On lance la récupération des commandes et la synchro temps réel
+      if (typeof bootApp === "function") {
+        bootApp().catch(err=>{
+          console.warn("[iCHEF TELEPHONE] démarrage",err?.message||err);
+          setConnection(navigator.onLine?"SYNCHRO HTTP":"HORS LIGNE",navigator.onLine?"warn":"bad");
+        });
+      }
+
+      if (typeof loadLicenseRights === "function") {
+         setTimeout(()=>loadLicenseRights().catch(()=>{}),500);
+      }
+    })
+    .catch(e => {
+      // Si le code PIN est faux ou réseau coupé, on remet l'écran de login
+      STATE.authenticated=false;
+      STATE.pin="";
+      STATE.loginPin="";
+      renderPin();
+      syncTenantLoginField(true);
+      loginMessage(e?.message||"Connexion impossible");
+      
+      if (appEl) appEl.classList.add("hidden");
+      if (toolsEl) toolsEl.classList.add("hidden");
+      if (loginEl) loginEl.classList.remove("hidden");
+    })
+    .finally(() => {
+      STATE.loginBusy=false;
+      if(validateBtn)validateBtn.disabled=false;
+    });
+  }, 50);
 }
 function preparePadFastStaticState(){
   /* Après confirmation PIN mais avant la synchro fraîche, on ne conserve jamais
