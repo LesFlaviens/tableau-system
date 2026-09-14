@@ -6435,6 +6435,13 @@ body.order-open #btnHeadWho .head-sub-v20{
 #ichefArchPad .ov-exact-stage *,#ichefArchPad .ov-exact-stage .arch-node,#ichefArchPad .ov-exact-stage [data-arch-key]{pointer-events:none!important}
 #ichefArchPad .ov-exact-stage .arch-handle,#ichefArchPad .ov-exact-stage .arch-rotate,#ichefArchPad .ov-exact-stage .city-position-badge,#ichefArchPad .ov-exact-stage .city-measure-overlay,#ichefArchPad .ov-exact-stage .city-float-menu{display:none!important}
 #ichefArchPad .ov-exact-stage .arch-node.selected{outline:none!important;box-shadow:none!important}
+/* V50 — chargement progressif des mini-plans : l'interface s'affiche d'abord,
+   chaque salle est hydratée ensuite sans bloquer le thread principal. */
+#ichefArchPad .arch-overview-room-plan.ov-faithful-plan{contain:layout paint style;will-change:auto}
+#ichefArchPad .ov-mini-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:18px;z-index:2;color:#617077;font-size:18px;font-weight:950;letter-spacing:.8px;background:linear-gradient(135deg,rgba(255,255,255,.82),rgba(239,236,226,.72))}
+#ichefArchPad .ov-mini-loading::before{content:"";width:46px;height:46px;border:5px solid rgba(40,52,58,.16);border-top-color:#d8aa36;border-radius:50%;animation:ovMiniSpin .8s linear infinite}
+#ichefArchPad .ov-mini-loading.done{display:none}
+@keyframes ovMiniSpin{to{transform:rotate(360deg)}}
 @media(max-width:900px){#ichefArchPad .archpad-top-room.overview-tab{min-width:135px}.arch-overview-room-head .open{display:none!important}}
 </style>
 
@@ -14654,13 +14661,13 @@ function dataNow(){
   const roomLayouts=(raw.roomLayouts&&typeof raw.roomLayouts==='object'&&!Array.isArray(raw.roomLayouts))?raw.roomLayouts:{};
   return {rooms:clone(rooms),tables:clone(tables),zones:clone(zones),elements:clone(elements),roomLayouts:clone(roomLayouts)};
 }
-function loadData(){const d=dataNow();A.rooms=d.rooms.length?d.rooms:['Salle Principale'];A.tables=d.tables;A.zones=d.zones;A.elements=d.elements;A.roomLayouts=d.roomLayouts||{};A.room=A.rooms.includes(STATE.room)?STATE.room:A.rooms[0];A.selected=null;A.groupAll=false;A.groupDrag=null;A.safetyByRoom={};A.history=[];A.future=[];A.dirty=false;ensureRoomLayout(A.room)}
+function loadData(){const d=dataNow();A.rooms=d.rooms.length?d.rooms:['Salle Principale'];A.tables=d.tables;A.zones=d.zones;A.elements=d.elements;A.roomLayouts=d.roomLayouts||{};A.room=A.rooms.includes(STATE.room)?STATE.room:A.rooms[0];A.selected=null;A.groupAll=false;A.groupDrag=null;A.safetyByRoom={};A.history=[];A.future=[];A.dirty=false;overviewInvalidateCache();ensureRoomLayout(A.room)}
 function snapshot(){return JSON.stringify({rooms:A.rooms,tables:A.tables,zones:A.zones,elements:A.elements,roomLayouts:A.roomLayouts,room:A.room})}
 function pushHistory(){A.history.push(snapshot());if(A.history.length>40)A.history.shift();A.future=[]}
 function restore(s){try{const d=JSON.parse(s);A.rooms=d.rooms;A.tables=d.tables;A.zones=d.zones;A.elements=d.elements;A.roomLayouts=d.roomLayouts||{};A.room=d.room;A.selected=null;A.groupAll=false;A.groupDrag=null;A.dirty=true;ensureRoomLayout(A.room);renderAll()}catch(_){}}
 function undo(){if(!A.history.length)return;const s=A.history.pop();A.future.push(snapshot());restore(s)}
 function redo(){if(!A.future.length)return;const s=A.future.pop();A.history.push(snapshot());restore(s)}
-function markDirty(){A.dirty=true;updateSaveState()}
+function markDirty(){A.dirty=true;if(OVERVIEW_RENDER_CACHE.size)overviewInvalidateCache();updateSaveState()}
 function updateSaveState(){const el=A.root?.querySelector('[data-arch-save-state]');if(el)el.textContent=A.dirty?'MODIFICATIONS NON ENREGISTRÉES':' ARCHITECTURE SYNCHRONISÉE';const b=A.root?.querySelector('[data-save]');if(b)b.classList.toggle('dirty',!!A.dirty)}
 function getTableKey(t){return 'table:'+aText(t.id||t.label)}
 function getZoneKey(z){return 'zone:'+aText(z.id||z.label)}
@@ -14905,7 +14912,14 @@ function cityResizeCursor(rotation,dir){
   return 'nesw-resize';
 }
 function handles(o=null){
+  /* V50 : optimisation DOM sûre.
+     - miniatures : aucune poignée interactive
+     - plan détaillé : les poignées n'existent que pour l'objet réellement sélectionné.
+     Avant, chaque objet transportait 9 contrôles invisibles, ce qui ralentissait fortement
+     les grandes salles sans apporter de fonction visible. */
+  if(A.overviewSnapshotRendering||A.groupAll)return '';
   if(A.mode!=='architect'||!canEdit())return '';
+  if(o){const sel=byKey(A.selected);if(!sel||sel.obj!==o)return '';}
   const rot=Number(o?.rotation)||0;
   const h=(dir,title)=>`<span class="arch-handle ${dir}" data-resize="${dir}" title="${title}" style="cursor:${cityResizeCursor(rot,dir)}!important"></span>`;
   return h('nw','Agrandir / rétrécir')+h('n','Redimensionner')+h('ne','Agrandir / rétrécir')+h('e','Redimensionner')+h('se','Agrandir / rétrécir')+h('s','Redimensionner')+h('sw','Agrandir / rétrécir')+h('w','Redimensionner')+'<button type="button" class="arch-rotate" data-rotate title="Rotation +15°">↻</button>';
@@ -16259,10 +16273,20 @@ function zoomOptionsHTML(){
 }
 
 /* =========================================================
-   V49 — PLAN D'ENSEMBLE FIDÈLE 1:1 / MASTER PLAN
-   Aucune duplication de données : les mini-plans sont calculés en direct depuis
-   les mêmes tables / zones / murs / équipements que chaque plan détaillé.
+   V50 — PLAN D'ENSEMBLE FIDÈLE 1:1 + CHARGEMENT RAPIDE
+   - structure du Plan d'ensemble rendue immédiatement
+   - mini-plans hydratés progressivement (1 salle à la fois)
+   - cache invalidé dès qu'une donnée Architecture change
+   - aucun changement des données, connexions ou plans détaillés
    ========================================================= */
+const OVERVIEW_RENDER_CACHE=new Map();
+let OVERVIEW_RENDER_REV=1;
+let OVERVIEW_RENDER_JOB=0;
+function overviewInvalidateCache(){
+  OVERVIEW_RENDER_REV++;
+  OVERVIEW_RENDER_JOB++;
+  if(OVERVIEW_RENDER_CACHE.size)OVERVIEW_RENDER_CACHE.clear();
+}
 function overviewRoomData(room){
   const rn=aText(room),first=A.rooms?.[0]||rn;
   return {
@@ -16294,14 +16318,14 @@ function overviewRoomBounds(room){
 }
 function overviewExactCanvasHTML(room,b,layout){
   /* Même moteur de rendu que le plan détaillé, seulement réduit et recadré.
-     Aucun deuxième dessin des tables / chaises / mobilier n'est maintenu. */
-  const oldRoom=A.room,oldSelected=A.selected,oldGroupAll=A.groupAll,oldGroupDrag=A.groupDrag,oldShowMeasures=A.showMeasures;
+     V50 : on supprime uniquement les contrôles invisibles (handles) dans la miniature. */
+  const oldRoom=A.room,oldSelected=A.selected,oldGroupAll=A.groupAll,oldGroupDrag=A.groupDrag,oldShowMeasures=A.showMeasures,oldSnapshot=!!A.overviewSnapshotRendering;
   let html='';
   try{
-    A.room=room;A.selected=null;A.groupAll=false;A.groupDrag=null;A.showMeasures=false;
+    A.room=room;A.selected=null;A.groupAll=false;A.groupDrag=null;A.showMeasures=false;A.overviewSnapshotRendering=true;
     html=canvasHTML();
   }finally{
-    A.room=oldRoom;A.selected=oldSelected;A.groupAll=oldGroupAll;A.groupDrag=oldGroupDrag;A.showMeasures=oldShowMeasures;
+    A.room=oldRoom;A.selected=oldSelected;A.groupAll=oldGroupAll;A.groupDrag=oldGroupDrag;A.showMeasures=oldShowMeasures;A.overviewSnapshotRendering=oldSnapshot;
   }
   const viewW=Math.max(120,Number(layout.w)-68),viewH=Math.max(120,Number(layout.h)-220);
   const scale=Math.max(.01,Math.min(viewW/b.w,viewH/b.h));
@@ -16309,11 +16333,56 @@ function overviewExactCanvasHTML(room,b,layout){
   return `<div class="ov-exact-stage" aria-hidden="true" style="width:${ARCH_W}px;height:${ARCH_H}px;transform:translate(${tx}px,${ty}px) scale(${scale})">${html}</div>`;
 }
 function overviewRoomCardHTML(room,index,layout){
-  const data=overviewRoomData(room),b=overviewRoomBounds(room),q=b.q;
+  /* V50 : aucune géométrie lourde ici. Le shell apparaît immédiatement. */
+  const data=overviewRoomData(room);
   const style=`left:${layout.x}px;top:${layout.y}px;width:${layout.w}px;height:${layout.h}px`;
-  const exact=overviewExactCanvasHTML(room,b,layout);
   const total=data.tables.length+data.zones.length+data.elements.filter(e=>aText(e.type)!=='text').length;
-  return `<div class="arch-overview-room-card" role="button" tabindex="0" data-overview-room="${esc(room)}" style="${style}" aria-label="Ouvrir le plan ${esc(room)}"><div class="arch-overview-room-head"><span class="ico">${roomEmoji(room)}</span><div><b>${esc(room)}</b><small>${data.tables.length} table${data.tables.length>1?'s':''} · ${data.zones.length} zone${data.zones.length>1?'s':''} · ${total} éléments</small></div><span class="open">OUVRIR LE PLAN →</span></div><div class="arch-overview-room-plan ov-faithful-plan">${exact}</div><span class="ov-room-dim">${(b.q.w/100).toFixed(1).replace('.',',')} × ${(b.q.h/100).toFixed(1).replace('.',',')} m</span></div>`;
+  return `<div class="arch-overview-room-card" role="button" tabindex="0" data-overview-room="${esc(room)}" data-overview-w="${layout.w}" data-overview-h="${layout.h}" style="${style}" aria-label="Ouvrir le plan ${esc(room)}"><div class="arch-overview-room-head"><span class="ico">${roomEmoji(room)}</span><div><b>${esc(room)}</b><small>${data.tables.length} table${data.tables.length>1?'s':''} · ${data.zones.length} zone${data.zones.length>1?'s':''} · ${total} éléments</small></div><span class="open">OUVRIR LE PLAN →</span></div><div class="arch-overview-room-plan ov-faithful-plan" data-overview-mini="${esc(room)}"><div class="ov-mini-loading">CHARGEMENT DU PLAN…</div></div><span class="ov-room-dim" data-overview-dim="${esc(room)}">—</span></div>`;
+}
+function overviewBuildCachedMini(room,layout){
+  const cached=OVERVIEW_RENDER_CACHE.get(room);
+  if(cached&&cached.rev===OVERVIEW_RENDER_REV&&cached.w===layout.w&&cached.h===layout.h)return cached;
+  const b=overviewRoomBounds(room);
+  const html=overviewExactCanvasHTML(room,b,layout);
+  const dim=`${(b.q.w/100).toFixed(1).replace('.',',')} × ${(b.q.h/100).toFixed(1).replace('.',',')} m`;
+  const value={rev:OVERVIEW_RENDER_REV,w:layout.w,h:layout.h,html,dim};
+  OVERVIEW_RENDER_CACHE.set(room,value);
+  return value;
+}
+function overviewHydrateMinis(){
+  if(!A.overview||!A.root)return;
+  const root=A.root;
+  const hosts=Array.from(root.querySelectorAll('[data-overview-mini]'));
+  if(!hosts.length)return;
+  const job=++OVERVIEW_RENDER_JOB;
+  let index=0;
+  const runOne=()=>{
+    if(job!==OVERVIEW_RENDER_JOB||!A.overview||A.root!==root||!root.isConnected)return;
+    const host=hosts[index++];
+    if(!host)return;
+    const card=host.closest('[data-overview-room]');
+    const room=host.dataset.overviewMini||card?.dataset.overviewRoom||'';
+    if(room&&host.isConnected){
+      const w=Math.max(240,Number(card?.dataset.overviewW)||900),h=Math.max(300,Number(card?.dataset.overviewH)||1200);
+      try{
+        const mini=overviewBuildCachedMini(room,{w,h});
+        if(job!==OVERVIEW_RENDER_JOB||!A.overview||!host.isConnected)return;
+        host.innerHTML=mini.html;
+        const dim=root.querySelector(`[data-overview-dim="${CSS.escape(room)}"]`);
+        if(dim)dim.textContent=mini.dim;
+      }catch(err){
+        console.warn('[iCHEF OVERVIEW] miniature',room,err);
+        host.innerHTML='<div class="ov-mini-loading done"></div>';
+      }
+    }
+    if(index<hosts.length){
+      /* Laisse le navigateur peindre et répondre au tactile entre deux salles. */
+      if(typeof requestIdleCallback==='function')requestIdleCallback(runOne,{timeout:90});
+      else requestAnimationFrame(()=>setTimeout(runOne,0));
+    }
+  };
+  /* Première miniature dès le prochain frame, jamais pendant le renderAll principal. */
+  requestAnimationFrame(runOne);
 }
 function overviewMasterHTML(){
   const rooms=(A.rooms||[]).filter(Boolean),n=Math.max(1,rooms.length),cols=n<=2?n:n<=6?3:4,rows=Math.ceil(n/cols);
@@ -16387,8 +16456,8 @@ function setCityBuildTool(type){
 }
 function cancelCityBuildTool(){A.tool='select';updateCityBuilderUI()}
 
-function renderCanvas(){normaliseAll();const stage=A.root?.querySelector('[data-stage]');if(stage){stage.innerHTML=A.overview?overviewMasterHTML():canvasHTML();stage.classList.toggle('overview-stage',!!A.overview);stage.classList.toggle('no-grid',!A.grid)}const props=A.root?.querySelector('[data-props]');if(props&&!A.overview)props.innerHTML=propHTML();const topRooms=A.root?.querySelector('[data-top-room-list]');if(topRooms)topRooms.innerHTML=topRoomTabsHTML();const list=A.root?.querySelector('[data-room-list]');if(list&&!A.overview)list.innerHTML=roomListHTML();if(!A.overview)cityUpdateBottom();bindDynamic();updateSaveState();updateCityBuilderUI()}
-function renderAll(){if(!A.root)return;A.root.innerHTML=fullHTML();bindAll();updateSaveState();applyZoom();updateCityBuilderUI();cityApplyPlanScreenMode()}
+function renderCanvas(){normaliseAll();const stage=A.root?.querySelector('[data-stage]');if(stage){stage.innerHTML=A.overview?overviewMasterHTML():canvasHTML();stage.classList.toggle('overview-stage',!!A.overview);stage.classList.toggle('no-grid',!A.grid)}const props=A.root?.querySelector('[data-props]');if(props&&!A.overview)props.innerHTML=propHTML();const topRooms=A.root?.querySelector('[data-top-room-list]');if(topRooms)topRooms.innerHTML=topRoomTabsHTML();const list=A.root?.querySelector('[data-room-list]');if(list&&!A.overview)list.innerHTML=roomListHTML();if(!A.overview)cityUpdateBottom();bindDynamic();updateSaveState();updateCityBuilderUI();if(A.overview)overviewHydrateMinis()}
+function renderAll(){if(!A.root)return;OVERVIEW_RENDER_JOB++;A.root.innerHTML=fullHTML();bindAll();updateSaveState();applyZoom();updateCityBuilderUI();cityApplyPlanScreenMode();if(A.overview)overviewHydrateMinis()}
 function select(key){A.groupAll=false;A.groupDrag=null;A.selected=key;renderCanvas()}
 function current(){return byKey(A.selected)}
 function setObjProp(o,k,v){if(['l','t','w','h','rotation','pax','capacity','fillOpacity','zIndex','cashBorderWidth','cashFontSize','cashRadius'].includes(k))v=Number(v)||0;if(k==='w'||k==='h')v=Math.max(16,v);if(k==='fillOpacity')v=aClamp(v,3,55);if(k==='cashBorderWidth')v=aClamp(v,1,12);if(k==='cashFontSize')v=aClamp(v,8,72);if(k==='cashRadius')v=aClamp(v,0,60);if(k==='locked'||k==='chairsFree')v=String(v)==='true';o[k]=v}
@@ -16982,8 +17051,8 @@ async function saveAll(){
     tables:clone(A.tables).map(x=>{const c={...x};delete c.__kind;return c}),
     zones:clone(A.zones).map(x=>{const c={...x};delete c.__kind;return c}),
     elements:clone(A.elements).map(x=>{const c={...x};delete c.__kind;return c}),
-    canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_V81_SAVE_FAST'},
-    updatedFrom:'PAD_ARCHITECT_V81_SAVE_FAST',
+    canvas:{width:ARCH_W,height:ARCH_H,version:'ICHEF_ARCHITECTURE_PAD_V82_OVERVIEW_FAST'},
+    updatedFrom:'PAD_ARCHITECT_V82_OVERVIEW_FAST',
     updatedByArchitectRole:A.archRole||expressRoleLabel()
   };
 
@@ -17005,7 +17074,7 @@ async function saveAll(){
     /* Le staging local de saveArchitecture() est synchrone : dès son retour,
        l'état courant contient déjà le nouveau plan. On libère donc l'interface
        immédiatement au lieu de laisser le bouton sembler bloqué pendant le POST. */
-    const syncPromise=saveArchitecture(payload,'Architecture PAD V81 · enregistrement rapide');
+    const syncPromise=saveArchitecture(payload,'Architecture PAD V82 · plan ensemble rapide');
     A.dirty=false;
     updateSaveState();
 
@@ -17048,7 +17117,21 @@ function architectStaffRoleLevel(staff){
   const access=architectAccessKey([staff.dept,staff.role,staff.title,staff.fonction,staff.rank].filter(Boolean).join(' '));
   return /(^|_)(MASTER|SUPER_ADMIN|SUPERADMIN|ADMIN|DIRECTEUR|DIRECTION|GERANT|MANAGER|PROPRIETAIRE|OWNER)(_|$)/.test(access)?2:1;
 }
+/* V51 — PIN -> PLAN ULTRA RAPIDE
+   - le clavier PIN ne reconstruit plus tout le DOM à chaque chiffre
+   - STAFF_ACCESS local est utilisé en priorité
+   - si une lecture Cloud est nécessaire, elle démarre en parallèle de verify-pin
+   - après validation, un seul rendu complet puis un centrage adapté à la vue */
+function architectStaffIdentityLocal(pin){
+  try{
+    const raw=unwrap(STATE.activeOrders?.STAFF_ACCESS);
+    const list=Array.isArray(raw)?raw:Array.isArray(raw?.data)?raw.data:[];
+    return list.find(s=>String(s?.pin??'').trim()===String(pin).trim())||null;
+  }catch(_){return null}
+}
 async function architectStaffIdentity(pin){
+  const local=architectStaffIdentityLocal(pin);
+  if(local)return local;
   try{
     const r=await serverFetch('/get-current-state?tenantID='+encodeURIComponent(STATE.tenantID));
     if(!r.ok)return null;
@@ -17058,12 +17141,37 @@ async function architectStaffIdentity(pin){
     return list.find(s=>String(s?.pin??'').trim()===String(pin).trim())||null;
   }catch(_){return null}
 }
+function architectPinRefresh(message=A.pinMsg,busy=false){
+  A.pinMsg=message||'';
+  if(!A.root)return;
+  const msg=A.root.querySelector('.archpad-pin-msg');
+  if(msg)msg.textContent=A.pinMsg;
+  const dots=A.root.querySelectorAll('.archpad-pin-dots i');
+  dots.forEach((d,i)=>d.classList.toggle('on',i<A.pinValue.length));
+  const ok=A.root.querySelector('[data-arch-pin-ok]');
+  if(ok){ok.disabled=!!busy;ok.textContent=busy?'VÉRIFICATION…':'VALIDER'}
+  A.root.querySelectorAll('[data-arch-pin],[data-arch-pin-back],[data-arch-pin-clear]').forEach(b=>{b.disabled=!!busy});
+}
+function architectPostUnlockFit(){
+  if(!A.root?.classList.contains('open'))return;
+  if(A.overview){
+    requestAnimationFrame(()=>requestAnimationFrame(()=>cityFitOverview(false)));
+    setTimeout(()=>{if(A.overview)cityFitOverview(false)},100);
+  }else{
+    cityCenterWholePlanStable(false);
+  }
+}
 function openArchitectPin(){A.pinOpen=true;A.pinValue='';A.pinMsg='PIN synchronisé iCHEF Cloud · Admin / RH';renderAll()}
 async function validateArchitectPin(){
-  if(A.pinValue.length<4){A.pinMsg='Code incomplet';return renderAll()}
-  A.pinMsg='Vérification serveur iCHEF…';renderAll();
+  if(A.pinValue.length<4){architectPinRefresh('Code incomplet',false);return}
+  const pin=A.pinValue;
+  architectPinRefresh('Vérification serveur iCHEF…',true);
   try{
-    const pin=A.pinValue;
+    /* Démarre la résolution du profil en parallèle. Si STAFF_ACCESS est déjà
+       synchronisé dans STATE, cette Promise est résolue immédiatement. */
+    const localStaff=architectStaffIdentityLocal(pin);
+    const staffPromise=localStaff?Promise.resolve(localStaff):architectStaffIdentity(pin);
+
     /* IMPORTANT : même deviceId que le PAD. Le mode Architecte ne doit pas
        consommer un écran supplémentaire dans la licence. */
     const r=await serverFetch('/api/verify-pin',{
@@ -17073,8 +17181,6 @@ async function validateArchitectPin(){
     const j=await r.json().catch(()=>({}));
     if(!r.ok||!j.success)throw new Error(j.error||j.message||'Code PIN refusé par le serveur');
 
-    /* Compatibilité avec le moteur de sécurité renforcé si le serveur renvoie
-       des jetons de session. */
     if(j.sessionToken)STATE.sessionToken=j.sessionToken;
     if(j.csrfToken)STATE.csrfToken=j.csrfToken;
 
@@ -17082,18 +17188,13 @@ async function validateArchitectPin(){
     let staff=null;
     let allowed=architectRoleLevel(serverRole)>=2;
 
-    /* RH/admin synchronisent les employés dans STAFF_ACCESS. On relit ce profil
-       après authentification pour prendre aussi en compte le titre/fonction
-       (Gérant, Directeur, Manager) et l'état actif. */
     if(architectAccessKey(serverRole)!=='MASTER'){
-      staff=await architectStaffIdentity(pin);
+      staff=await staffPromise;
       if(staff?.active===false)throw new Error('Ce profil est désactivé dans RH');
       if(staff)allowed=allowed||architectStaffRoleLevel(staff)>=2;
     }
 
-    if(!allowed){
-      throw new Error('PIN valide, mais profil Serveur : accès Architecte interdit');
-    }
+    if(!allowed)throw new Error('PIN valide, mais profil Serveur : accès Architecte interdit');
 
     const identityLabel=aText(staff?.role||staff?.name||serverRole||'MANAGER');
     A.archUnlocked=true;
@@ -17101,17 +17202,21 @@ async function validateArchitectPin(){
     A.archPin=pin;
     A.pinOpen=false;A.pinValue='';A.pinMsg='';A.mode='architect';A.overview=(A.rooms||[]).length>1;
     A.selected=null;A.groupAll=false;A.groupDrag=null;
+
+    /* Un seul rendu complet après authentification. Les mini-plans V50 restent
+       progressifs et ne bloquent pas l'apparition du Plan d'ensemble. */
     renderAll();
-    cityCenterWholePlanStable(false);
-    aToast(' Mode Architecte · plan centré · '+(architectAccessKey(serverRole)==='MASTER'?'PIN principal / Direction':identityLabel));
+    architectPostUnlockFit();
+    aToast(' Mode Architecte · '+(architectAccessKey(serverRole)==='MASTER'?'PIN principal / Direction':identityLabel));
   }catch(err){
-    A.pinMsg=err?.message||'PIN refusé';A.pinValue='';renderAll();
+    A.pinValue='';
+    architectPinRefresh(err?.message||'PIN refusé',false);
   }
 }
 function adjacentRoom(step){const rooms=(A.rooms||[]).filter(Boolean);if(!rooms.length)return;let i=rooms.indexOf(A.room);if(i<0)i=0;i=(i+step+rooms.length)%rooms.length;switchRoom(rooms[i])}
 function previousRoom(){adjacentRoom(-1)}
 function nextRoom(){adjacentRoom(1)}
-function toggleMode(){if(A.mode==='architect'){A.mode='service';A.overview=false;if(expressRoleLevel()<2){A.archUnlocked=false;A.archRole='';A.archPin=''}renderAll()}else{if(canEdit()){A.mode='architect';A.overview=(A.rooms||[]).length>1;A.selected=null;A.groupAll=false;A.groupDrag=null;renderAll();cityCenterWholePlanStable(false)}else openArchitectPin()}}
+function toggleMode(){if(A.mode==='architect'){A.mode='service';A.overview=false;if(expressRoleLevel()<2){A.archUnlocked=false;A.archRole='';A.archPin=''}renderAll()}else{if(canEdit()){A.mode='architect';A.overview=(A.rooms||[]).length>1;A.selected=null;A.groupAll=false;A.groupDrag=null;renderAll();architectPostUnlockFit()}else openArchitectPin()}}
 function bindDynamic(){
  /* V41 : géométrie Salle en lecture seule, calculée depuis le design. */
  if(A.selected===getRoomKey()){
@@ -17241,8 +17346,8 @@ function bindAll(){
  A.root.querySelector('[data-auto-apply]')?.addEventListener('click',cityAutoApply);
  A.root.querySelector('[data-auto-proposals]')?.addEventListener('click',e=>{const c=e.target.closest('[data-auto-plan-card]');if(!c)return;CITY_AUTO_SELECTED=aClamp(Number(c.dataset.autoPlanCard)||0,0,Math.max(0,CITY_AUTO_PLANS.length-1));cityAutoRenderPlans()});
  A.root.querySelector('[data-city-measures]')?.addEventListener('click',cityToggleMeasures);
- A.root.querySelectorAll('[data-arch-pin]').forEach(b=>b.addEventListener('click',()=>{if(A.pinValue.length<6)A.pinValue+=b.dataset.archPin;A.pinMsg='';renderAll()}));
- A.root.querySelector('[data-arch-pin-back]')?.addEventListener('click',()=>{A.pinValue=A.pinValue.slice(0,-1);A.pinMsg='';renderAll()});A.root.querySelector('[data-arch-pin-clear]')?.addEventListener('click',()=>{A.pinValue='';A.pinMsg='';renderAll()});A.root.querySelector('[data-arch-pin-cancel]')?.addEventListener('click',()=>{A.pinOpen=false;A.pinValue='';A.pinMsg='';renderAll()});A.root.querySelector('[data-arch-pin-ok]')?.addEventListener('click',validateArchitectPin);
+ A.root.querySelectorAll('[data-arch-pin]').forEach(b=>b.addEventListener('click',()=>{if(A.pinValue.length<6)A.pinValue+=b.dataset.archPin;architectPinRefresh('',false)}));
+ A.root.querySelector('[data-arch-pin-back]')?.addEventListener('click',()=>{A.pinValue=A.pinValue.slice(0,-1);architectPinRefresh('',false)});A.root.querySelector('[data-arch-pin-clear]')?.addEventListener('click',()=>{A.pinValue='';architectPinRefresh('',false)});A.root.querySelector('[data-arch-pin-cancel]')?.addEventListener('click',()=>{A.pinOpen=false;A.pinValue='';A.pinMsg='';renderAll()});A.root.querySelector('[data-arch-pin-ok]')?.addEventListener('click',validateArchitectPin);
  const st=A.root.querySelector('[data-stage]');st?.addEventListener('pointerdown',pointerDown);st?.addEventListener('pointermove',pointerMove);st?.addEventListener('pointerup',pointerUp);st?.addEventListener('pointercancel',pointerCancel);st?.addEventListener('dblclick',e=>{if(A.mode==='architect'&&canEdit()){e.preventDefault();cancelCityBuildTool()}});
  A.root.addEventListener('keydown',e=>{if(['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName))return;if(e.key==='Escape'){if(A.tool!=='select'){cancelCityBuildTool();aToast('Mode construction annulé');e.preventDefault();return}if(A.groupAll){A.groupAll=false;A.groupDrag=null;renderCanvas();e.preventDefault();return}if(A.selected){A.selected=null;renderCanvas();e.preventDefault();return}}if(e.key==='Delete'){if(A.groupAll)deleteAllRoomObjects();else deleteSelected();e.preventDefault()}if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){undo();e.preventDefault()}if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='y'){redo();e.preventDefault()}if(A.pinOpen&&e.key==='Enter'){validateArchitectPin();e.preventDefault()}})
 }
@@ -17298,7 +17403,7 @@ function openPadArchitectEditor(){
   document.body.style.overflow='hidden';
   renderAll();
   A.root.focus();
-  if(A.mode==='architect')cityCenterWholePlanStable(false);
+  if(A.mode==='architect')architectPostUnlockFit();
   if(A.mode==='service')aToast('Mode SERVICE · architecture protégée par PIN')
 }
 async function openPadServiceHome(options={}){
