@@ -1,11 +1,11 @@
 <!doctype html>
 <html lang="fr">
 <head>
-<!-- ICHEF TÉLÉPHONE V9 — ARCHITECTURE PAD = PRINCIPAL · MULTI-TPE -->
+<!-- ICHEF TÉLÉPHONE V13 — ARCHITECTURE 100% PAD · SERVER LIVE · SANS FAUX INDISPONIBLE -->
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<title>iCHEF TÉLÉPHONE V9 — ARCHITECTURE PAD = PRINCIPAL · MULTI-TPE</title>
+<title>iCHEF TÉLÉPHONE V13 — PLAN ARCHITECTURAL 100% PAD · SERVER LIVE</title>
 <style>
 :root{
   --bg:#050607;--panel:#0b0e0f;--panel2:#111516;--line:#293033;--line2:#3a4346;
@@ -7431,55 +7431,52 @@ function normalizeEntitlement(value){
   return String(value??"").trim().toUpperCase();
 }
 
+function phonePlanRightFromEntitlements(plan=STATE.plan,addons=STATE.addons){
+  const currentPlan=normalizeEntitlement(plan);
+  const list=Array.isArray(addons)?addons:[];
+  const telephoneInclusDansForfait=[
+    "PACK_A","ICHEF_OS","ECO","BUSINESS","RENTABILITE",
+    "EMPIRE","BRIGADE","BRIGADES","PREMIUM"
+  ].includes(currentPlan);
+  const telephoneEnAddon=list.some(x=>normalizeEntitlement(x)==="TELEPHONE.HTML");
+  const planInteractifEnAddon=list.some(x=>normalizeEntitlement(x)==="PLAN_INTERACTIF");
+  return telephoneInclusDansForfait||telephoneEnAddon||planInteractifEnAddon;
+}
+
 function hasFeatureRight(right){
   const wanted=normalizeEntitlement(right);
   if(!wanted)return false;
+  if(STATE.demo&&wanted==="PLAN_INTERACTIF")return true;
   if(STATE.featureRights && STATE.featureRights[wanted]===true)return true;
+  if(wanted==="PLAN_INTERACTIF" && phonePlanRightFromEntitlements())return true;
   return Array.isArray(STATE.addons) && STATE.addons.some(x=>normalizeEntitlement(x)===wanted);
 }
 
 async function loadLicenseRights(){
-  STATE.addons=[];
-  STATE.featureRights={PLAN_INTERACTIF:false};
-  if(STATE.demo){
-    STATE.featureRights.PLAN_INTERACTIF=true;
-    return STATE.featureRights;
-  }
+  /* V13 : ne jamais repasser le Plan à faux pendant une vérification réseau.
+     Le PIN nous donne déjà le forfait courant ; /api/check-license confirme ensuite. */
+  const previousPlanRight=hasFeatureRight("PLAN_INTERACTIF");
+  if(!STATE.featureRights||typeof STATE.featureRights!=="object")STATE.featureRights={};
+  STATE.featureRights.PLAN_INTERACTIF =
+    STATE.demo || previousPlanRight || phonePlanRightFromEntitlements();
+
+  if(STATE.demo)return STATE.featureRights;
+
   try{
     const r=await serverFetch("/api/check-license?tenantID="+encodeURIComponent(STATE.tenantID)+"&_t="+Date.now(),{method:"GET"});
     const j=await r.json().catch(()=>({}));
     if(!r.ok||!j.success)throw new Error(j.error||j.message||"Licence indisponible");
-    STATE.addons = Array.isArray(j.addons) ? j.addons.slice() : [];
 
-    const currentPlan = normalizeEntitlement(j.plan || STATE.plan);
-
-    const telephoneInclusDansForfait = [
-      "PACK_A",
-      "ICHEF_OS",
-      "ECO",
-      "BUSINESS",
-      "RENTABILITE",
-      "EMPIRE",
-      "BRIGADE",
-      "BRIGADES",
-      "PREMIUM"
-    ].includes(currentPlan);
-
-    const telephoneEnAddon = STATE.addons.some(x =>
-      normalizeEntitlement(x) === "TELEPHONE.HTML"
-    );
-
-    const planInteractifEnAddon = STATE.addons.some(x =>
-      normalizeEntitlement(x) === "PLAN_INTERACTIF"
-    );
-
+    if(j.plan)STATE.plan=j.plan;
+    STATE.addons=Array.isArray(j.addons)?j.addons.slice():STATE.addons;
     STATE.featureRights.PLAN_INTERACTIF =
-      telephoneInclusDansForfait ||
-      telephoneEnAddon ||
-      planInteractifEnAddon;
-
+      STATE.demo || phonePlanRightFromEntitlements(STATE.plan,STATE.addons);
     return STATE.featureRights;
   }catch(err){
+    /* Une micro-coupure licence ne doit jamais transformer un droit déjà connu
+       en faux "non actif". Le serveur reste maître dès qu'il répond de nouveau. */
+    STATE.featureRights.PLAN_INTERACTIF =
+      STATE.demo || previousPlanRight || phonePlanRightFromEntitlements();
     console.warn("[iCHEF] Droits de licence non vérifiés",err);
     return STATE.featureRights;
   }
@@ -7565,7 +7562,12 @@ async function verifyPin(){
     STATE.role=j.role||"";
     STATE.plan=j.plan||"";
     STATE.specialite=j.specialite||"";
+    STATE.addons=Array.isArray(j.addons)?j.addons.slice():STATE.addons;
     STATE.authenticated=true;
+    /* V13 : droit Plan disponible immédiatement après le PIN, sans attendre 500 ms. */
+    if(!STATE.featureRights||typeof STATE.featureRights!=="object")STATE.featureRights={};
+    STATE.featureRights.PLAN_INTERACTIF =
+      STATE.demo || phonePlanRightFromEntitlements(STATE.plan,STATE.addons);
 
     /* V10 : architecture locale prête immédiatement, serveur maître en arrière-plan. */
     try{phoneHydrateArchitectureCache()}catch(_){}
@@ -10292,33 +10294,42 @@ function stopLivePlan(){
 }
 
 async function openPlan(){
+  /* Si le routeur V13 est déjà prêt, il est l'unique entrée. */
+  if(typeof window.openPhoneCanonicalPlan==='function' && window.openPhoneCanonicalPlan!==openPlan){
+    return window.openPhoneCanonicalPlan();
+  }
+
+  /* Évite le faux DROIT NON ACTIF pendant la vérification licence différée. */
+  if(!hasFeatureRight("PLAN_INTERACTIF") && STATE.authenticated){
+    try{await loadLicenseRights()}catch(_){}
+  }
   if(!requireFeatureRight("PLAN_INTERACTIF","PLAN INTERACTIF"))return;
 
-  /* V9 — SOURCE UNIQUE : le bouton PLAN ouvre directement le moteur
-     Architecture principal. L'ancien rendu plan-table / plan-zone ne doit
-     jamais être utilisé depuis l'interface. Important : cette fonction est
-     celle que les menus ont mémorisée lors du bind initial ; la corriger ici
-     garantit que tous les boutons ouvrent le même plan que le PAD principal. */
   stopLivePlan();
   closeSheet?.();
+  try{phoneHydrateArchitectureCache?.()}catch(_){}
+  try{phoneRequestArchitectureState?.('legacy-plan-open')}catch(_){}
 
-  if(typeof window.openPadServiceHome==='function'){
-    try{
-      window.openPadServiceHome({skipSync:true,stableResume:true});
-      return;
-    }catch(err){
-      console.error('[iCHEF V9] ouverture moteur Architecture principal',err);
+  /* Le moteur principal doit être présent après chargement des scripts.
+     S'il démarre encore, on lui laisse jusqu'à 1,8 s sans jamais basculer
+     vers l'ancien renderer tables/zones. */
+  const started=Date.now();
+  while(Date.now()-started<1800){
+    if(typeof window.openPadServiceHome==='function'){
+      try{window.preparePadServiceHome?.()}catch(_){}
+      return window.openPadServiceHome({skipSync:true,stableResume:true});
     }
+    await new Promise(r=>setTimeout(r,16));
   }
 
-  /* Sécurité de repli : si le moteur principal n'est pas encore disponible,
-     on attend un frame puis on réessaie. Aucun retour au renderer simplifié. */
-  await new Promise(resolve=>requestAnimationFrame(resolve));
+  /* Dernière relance serveur : message de connexion seulement, jamais
+     "plan indisponible" lorsque le moteur ou le réseau est en cours. */
+  try{await syncFull?.('phone-plan-engine-wait')}catch(_){}
   if(typeof window.openPadServiceHome==='function'){
-    window.openPadServiceHome({skipSync:true,stableResume:true});
-    return;
+    try{window.preparePadServiceHome?.()}catch(_){}
+    return window.openPadServiceHome({skipSync:true,stableResume:true});
   }
-  toast('Plan Architecture principal indisponible',true);
+  toast('Connexion du plan architectural…',false);
 }
 
 /* ---------------- IMPRIMANTES 4 POSTES / MULTI-MARQUES ---------------- */
@@ -19481,11 +19492,11 @@ rebind();
 })();
 </script>
 <script id="ichef-telephone-v8-plan-principal-router">
-/* TÉLÉPHONE V12 — PLAN ARCHITECTURAL 100 % PAD V65.
+/* TÉLÉPHONE V13 — PLAN ARCHITECTURAL 100 % PAD V65 + DROIT STABLE + SERVER LIVE.
    Le renderer est le même moteur Architecture. Aucun fallback tables/zones simplifié. */
 (function(){
-  if(window.__ICHEF_PHONE_V12_CANONICAL_PLAN__)return;
-  window.__ICHEF_PHONE_V12_CANONICAL_PLAN__=true;
+  if(window.__ICHEF_PHONE_V13_CANONICAL_PLAN__)return;
+  window.__ICHEF_PHONE_V13_CANONICAL_PLAN__=true;
 
   function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
   async function waitForArchitectureEngine(timeout=1800){
@@ -19515,6 +19526,11 @@ rebind();
   }
 
   async function openCanonicalPhonePlan(){
+    /* V13 : si le droit n'est pas encore connu, on le vérifie maintenant avant
+       d'afficher ACCÈS RÉSERVÉ. Aucun faux refus dû au délai de 500 ms. */
+    if(typeof hasFeatureRight==='function' && !hasFeatureRight('PLAN_INTERACTIF') && STATE?.authenticated){
+      try{await loadLicenseRights?.()}catch(_){}
+    }
     if(typeof requireFeatureRight==='function' && !requireFeatureRight('PLAN_INTERACTIF','PLAN INTERACTIF'))return;
 
     /* Demande serveur immédiate, mais jamais bloquante si le cache existe. */
@@ -19523,7 +19539,7 @@ rebind();
 
     const ready=await waitForArchitectureEngine();
     if(!ready){
-      console.error('[iCHEF TELEPHONE V12] moteur Architecture non initialisé');
+      console.error('[iCHEF TELEPHONE V13] moteur Architecture non initialisé');
       /* Pas de renderer simplifié ni de faux plan : on retente après la synchro. */
       try{await syncFull?.('phone-plan-engine-retry')}catch(_){}
       if(!(await waitForArchitectureEngine(800))){
@@ -19551,13 +19567,13 @@ rebind();
       setTimeout(()=>{try{phoneRequestArchitectureState?.('plan-open-live')}catch(_){}},0);
       return result;
     }catch(err){
-      console.error('[iCHEF TELEPHONE V12] ouverture plan Architecture',err);
+      console.error('[iCHEF TELEPHONE V13] ouverture plan Architecture',err);
       try{
         await syncFull?.('phone-plan-open-recovery');
         window.preparePadServiceHome?.();
         return window.openPadServiceHome({skipSync:true,stableResume:true});
       }catch(recovery){
-        console.error('[iCHEF TELEPHONE V12] récupération plan',recovery);
+        console.error('[iCHEF TELEPHONE V13] récupération plan',recovery);
         if(typeof toast==='function')toast('Connexion du plan architectural…',false);
       }
     }
