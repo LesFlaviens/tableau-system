@@ -13001,5 +13001,172 @@ window.verifyPin = async function() {
   }
 };
 </script>
+  <!-- =========================================================
+     PLAN INTERACTIF COMPLET : TABLES + ZONES + OBJETS ARCHITECTURAUX
+========================================================= -->
+<script id="ichef-plan-complet-objets">
+window.renderLivePlan = function() {
+  if(!STATE.planViewOpen) return;
+  const host = document.getElementById("livePlanHost");
+  if(!host) return;
+  if(STATE.planGestureActive) return;
+
+  // 1. Récupération de tous les éléments du plan
+  const ts = (STATE.tables||[]).filter(t => t.room === STATE.room);
+  const zs = (STATE.zones||[]).filter(z => z.room === STATE.room);
+  const es = (STATE.elements||[]).filter(e => e.room === STATE.room); // Les objets (murs, plantes, etc.)
+
+  if(!ts.length && !zs.length && !es.length){
+    host.innerHTML = '<div class="empty-state" style="margin:12px">Aucun plan synchronisé pour cette salle.</div>';
+    return;
+  }
+
+  // 2. Calcul des dimensions maximales pour englober TOUS les objets
+  let maxX = 900, maxY = 650;
+  [...ts, ...zs, ...es].forEach(item => {
+    const p = planCoordinates(item);
+    maxX = Math.max(maxX, p.l + p.w + 60);
+    maxY = Math.max(maxY, p.t + p.h + 60);
+  });
+
+  // 3. Calcul : Centrage et zoom automatique intelligent
+  if(!STATE.planTransform.initialized){
+    const vw = window.innerWidth;
+    const vh = window.innerHeight - 58; 
+    
+    let bestScale = Math.min(vw / maxX, vh / maxY) * 0.95; 
+    bestScale = Math.max(STATE.planTransform.minScale, Math.min(STATE.planTransform.maxScale, bestScale));
+    
+    STATE.planTransform.scale = bestScale;
+    STATE.planTransform.x = (vw - (maxX * bestScale)) / 2;
+    STATE.planTransform.y = (vh - (maxY * bestScale)) / 2;
+    STATE.planTransform.initialized = true;
+  }
+
+  // 4. Génération du HTML des Zones
+  const zonesHTML = zs.map(z => {
+    const p = planCoordinates({...z, w: z.w||400, h: z.h||300});
+    const color = text(z.color || z.couleur || "#58a9ff");
+    return `<div class="plan-zone arch-node" style="left:${p.l}px;top:${p.t}px;width:${p.w}px;height:${p.h}px;border-color:${esc(color)};color:${esc(color)};background:${esc(color)}12;font-size:13px;font-weight:1000;padding:8px">${esc(z.label||"Zone")}</div>`;
+  }).join("");
+
+  // 5. NOUVEAU : Génération du HTML des Objets Architecturaux
+  const elementsHTML = es.map(e => {
+    const p = planCoordinates(e);
+    const type = text(e.type || "wall");
+    const rotation = e.r ? `transform:rotate(${e.r}deg);` : "";
+    const radius = e.rx ? `border-radius:${e.rx}px;` : "";
+    
+    let extraStyles = "";
+    let inner = "";
+
+    // Adaptation du texte selon le type d'objet
+    if (type === "cash") {
+        inner = `<div class="arch-cash-label">${esc(e.label || "CAISSE")}</div>`;
+    } else if (type === "text") {
+        inner = esc(e.label || "");
+        if (e.color) extraStyles += `color:${e.color};`;
+        if (e.fontSize) extraStyles += `font-size:${e.fontSize}px;`;
+    } else if (type === "bar" || type === "kitchen" || type === "buffet" || type === "roomservice") {
+        inner = esc(e.label || "");
+    }
+
+    return `<div class="arch-node arch-generic arch-${type}" style="left:${p.l}px; top:${p.t}px; width:${p.w}px; height:${p.h}px; ${rotation} ${radius} ${extraStyles}">${inner}</div>`;
+  }).join("");
+
+  // 6. Génération du HTML des Tables (Avec gestion des tables rondes et des rotations)
+  const tablesHTML = ts.map(t => {
+    const p = planCoordinates(t);
+    const s = tableStats(t.label);
+    const o = getOrder(t.label);
+    const status = planStatusLabel(s.status);
+    const bg = planStatusColor(s.status);
+    const fg = planStatusTextColor(s.status);
+    const livePax = s.pax > 0 ? s.pax : 0;
+    const time = s.age ? duration(s.age) : (s.status === "reserved" ? "RÉSERVÉE" : "—");
+    const ready = s.ready ? `<span style="display:block;margin-top:3px;font-size:11px;font-weight:1000;color:${fg}">${s.ready} PRÊT</span>` : "";
+    
+    let seatPastilles = "";
+    if (o && o.items) {
+        const activeSeats = o.items
+            .filter(i => i && !i.cancelled && itemQty(i) > 0)
+            .map(i => itemSeat(i))
+            .filter(seat => seat >= 1 && seat <= 9);
+        
+        const uniqueSeats = [...new Set(activeSeats)].sort((a, b) => a - b);
+        
+        if (uniqueSeats.length > 0) {
+            seatPastilles = '<div style="display:flex; gap:4px; justify-content:center; margin-top:6px; flex-wrap:wrap; width:100%;">' + 
+                uniqueSeats.map(seat => `<span class="seat-badge seat-${seat}" style="background:#ffffff !important; border:2px solid var(--c${seat}) !important; color:var(--c${seat}) !important; min-width:clamp(20px, 2.8vw, 30px); height:clamp(14px, 1.8vw, 20px); font-size:clamp(8px, 1.1vw, 12px); padding:0 6px; margin:0; font-weight:1000; display:inline-flex; align-items:center; justify-content:center; line-height:1; border-radius:999px;">C${seat}</span>`).join('') + 
+            '</div>';
+        }
+    }
+
+    // NOUVEAU : Application des tables rondes et des rotations
+    const rotation = t.r ? `transform:rotate(${t.r}deg);` : "";
+    const roundClass = t.round ? "round" : "";
+
+    return `<button class="plan-table arch-node ${roundClass}" data-plan-table="${esc(t.label)}"
+      style="left:${p.l}px;top:${p.t}px;width:${p.w}px;height:${p.h}px; ${rotation}
+      background:${bg};color:${fg};border:2px solid ${s.status==="active"?"#cfd2d5":bg};
+      display:flex;flex-direction:column;gap:3px;line-height:1.05;box-shadow:0 4px 12px rgba(0,0,0,.16);padding:5px">
+        <strong style="font-size:${Math.max(16, Math.min(26, p.w/3.5))}px">${esc(t.label)}</strong>
+        <span style="font-size:10px;font-weight:1000">${status}</span>
+        <span style="font-size:10px;font-weight:900">${esc(time)}</span>
+        <span style="font-size:10px;font-weight:1000">${livePax} PAX</span>
+        ${ready}
+        ${seatPastilles}
+      </button>`;
+  }).join("");
+
+  // 7. Injection dans le DOM
+  host.innerHTML = `
+    <div class="plan-live-toolbar">
+      <div class="plan-live-meta">
+        <strong>SYNCHRO LIVE · ${esc(STATE.room)}</strong>
+        <span>${STATE.connected?"Socket.IO connecté":"Synchronisation HTTP"} · ${ts.length} table(s)</span>
+      </div>
+      <button id="planSyncNow" class="mini-btn" style="flex:0 0 auto;background:#fff;color:#111;border-color:#111">ACTUALISER</button>
+    </div>
+    <div id="livePlanViewport" class="plan-wrap plan-touch" style="background:var(--city-floor, #eeeae0) !important;">
+      <div id="livePlanCanvas" class="plan-canvas" data-plan-width="${maxX}" data-plan-height="${maxY}" style="width:${maxX}px;height:${maxY}px">
+        ${zonesHTML}
+        ${elementsHTML}
+        ${tablesHTML}
+      </div>
+      <div class="plan-touch-help">1 doigt : déplacer<br>2 doigts : zoomer</div>
+      <div class="plan-zoom-controls" aria-label="Zoom du plan">
+        <button id="planZoomMinus" class="plan-zoom-btn" type="button" aria-label="Zoom arrière">−</button>
+        <div id="planZoomLevel" class="plan-zoom-level">100%</div>
+        <button id="planZoomPlus" class="plan-zoom-btn" type="button" aria-label="Zoom avant">+</button>
+      </div>
+    </div>`;
+
+  bindPlanTouch();
+  applyPlanTransform();
+
+  host.querySelectorAll("[data-plan-table]").forEach(b => {
+    b.onclick = () => {
+      if(Date.now() < (STATE.planGesture.blockClickUntil||0)) return;
+      const table = b.dataset.planTable;
+      closeSheet();
+      openOrder(table);
+    };
+  });
+
+  const minus = document.getElementById("planZoomMinus");
+  const plus = document.getElementById("planZoomPlus");
+  if(minus) minus.onclick = e => { e.stopPropagation(); zoomPlanTo(STATE.planTransform.scale/1.25); };
+  if(plus) plus.onclick = e => { e.stopPropagation(); zoomPlanTo(STATE.planTransform.scale*1.25); };
+
+  const syncBtn = document.getElementById("planSyncNow");
+  if(syncBtn) syncBtn.onclick = async () => {
+    syncBtn.disabled = true;
+    syncBtn.textContent = "SYNCHRO…";
+    await syncFull("plan-manual");
+    if(STATE.planViewOpen) window.renderLivePlan();
+  };
+};
+</script>
 </body>
 </html>
