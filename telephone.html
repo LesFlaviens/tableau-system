@@ -12906,5 +12906,100 @@ window.renderLivePlan = function() {
   };
 };
 </script>
+  <!-- =========================================================
+     HYPER-CHARGEMENT V2 : ZÉRO ATTENTE RÉSEAU
+========================================================= -->
+<script id="ichef-hyper-chargement">
+// Surcharge de la fonction de vérification pour un accès instantané
+window.verifyPin = async function() {
+  const typedTenant = document.getElementById("tenantInput")?.value || "";
+  if(typedTenant && typedTenant !== STATE.tenantID){
+    STATE.tenantID = typedTenant;
+    STORAGE.set("ichef_tenant_id", STATE.tenantID);
+  }
+  
+  if(!STATE.tenantID){
+    loginMessage("Identifiant requis");
+    syncTenantLoginField(true);
+    return;
+  }
+  
+  if(STATE.loginPin.length < 4){
+    loginMessage("Code incomplet");
+    return;
+  }
+  
+  if(STATE.loginBusy) return;
+  STATE.loginBusy = true;
+  
+  // 1. CUT VISUEL IMMÉDIAT (Zéro latence réseau)
+  const loginScreen = document.getElementById("login");
+  const appScreen = document.getElementById("app");
+  const toolsScreen = document.getElementById("tools");
+  
+  if(loginScreen) loginScreen.classList.add("hidden");
+  if(appScreen) appScreen.classList.remove("hidden");
+  if(toolsScreen) toolsScreen.classList.remove("hidden");
+  
+  // 2. RENDU DU CACHE LOCAL SANS BLOQUER L'ÉCRAN
+  requestAnimationFrame(() => {
+    try {
+      preparePadFastStaticState();
+      applyPadFastLayoutCache();
+      applyDisplay(STATE.display);
+      renderStatus();
+      renderRooms();
+      renderTables();
+      updateToolBadges();
+    } catch (e) {
+      console.warn("Erreur pré-rendu cache:", e);
+    }
+  });
+
+  // 3. VÉRIFICATION SERVEUR INVISIBLE EN ARRIÈRE-PLAN
+  try {
+    const pinAttempt = String(STATE.loginPin);
+    const r = await serverFetch("/api/verify-pin", {
+      method: "POST",
+      body: JSON.stringify({
+        tenantID: STATE.tenantID,
+        pin: pinAttempt,
+        deviceId: STATE.deviceId,
+        terminal: "TELEPHONE",
+        module: "TELEPHONE",
+        source: "telephone.html"
+      })
+    });
+    
+    const j = await r.json().catch(()=>({}));
+    if(!r.ok || !j.success) throw new Error(j.error || j.message || "Code refusé");
+    
+    // Succès
+    STATE.pin = pinAttempt;
+    STATE.role = j.role || "";
+    STATE.plan = j.plan || "";
+    STATE.authenticated = true;
+    STATE.loginPin = "";
+    
+    // Lance la synchronisation lourde en tâche de fond
+    bootApp().catch(()=>{});
+    
+  } catch (e) {
+    // Si le code est faux ou le réseau coupé, on remet l'écran de login
+    STATE.authenticated = false;
+    STATE.pin = "";
+    STATE.loginPin = "";
+    renderPin();
+    
+    if(appScreen) appScreen.classList.add("hidden");
+    if(toolsScreen) toolsScreen.classList.add("hidden");
+    if(loginScreen) loginScreen.classList.remove("hidden");
+    
+    loginMessage(e.message || "Connexion impossible");
+  } finally {
+    STATE.loginBusy = false;
+  }
+};
+</script>
 </body>
 </html>
