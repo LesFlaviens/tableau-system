@@ -295,7 +295,8 @@ menu:[],categories:[],category:"TOUT",reservations:[],settings:{},
 paymentConfig:{enabled:true,defaultCurrency:"CHF",defaultTerminalId:"",terminals:[],updatedAt:null},
 paymentConfigLoadedAt:0,
 currentTable:null,currentOrder:null,currentScreen:"tables",display:STORAGE.get("ichef_phone_display","auto")||"auto",
-renderPending:false,loginPin:"",lastAlertSignature:"",lastWriteAt:0,activeSeat:1,lastLineKey:"",pendingCookingLine:"",undoStack:[]
+renderPending:false,loginPin:"",lastAlertSignature:"",lastWriteAt:0,activeSeat:1,lastLineKey:"",pendingCookingLine:"",undoStack:[],
+__fastLayoutPreview:false
 };
 STORAGE.set("ichef_device_id",STATE.deviceId);
 if(STATE.tenantID)STORAGE.set("ichef_tenant_id",STATE.tenantID);
@@ -991,6 +992,47 @@ function padFastLayoutKey(tenant = STATE.tenantID) {
 return ICHEF_FAST_LAYOUT_PREFIX + String(tenant || '').trim().slice(0, 96);
 }
 
+/* V75 — cache local NON SENSIBLE : uniquement le plan statique.
+   Jamais de commandes, clients, paiements, PIN ou session dans ce cache. */
+function cachePadFastLayout(){
+try{
+const arch=unwrap(STATE.activeOrders?.ARCHITECTURE);
+if(!arch||typeof arch!=="object")return false;
+const tables=Array.isArray(arch.tables)?arch.tables:[];
+if(!tables.length)return false;
+const payload={
+v:75,
+savedAt:Date.now(),
+room:String(STATE.room||""),
+architecture:clone(arch)
+};
+localStorage.setItem(padFastLayoutKey(),JSON.stringify(payload));
+return true;
+}catch(_){return false}
+}
+
+function restorePadFastLayout(){
+try{
+const raw=localStorage.getItem(padFastLayoutKey());
+if(!raw)return false;
+const payload=JSON.parse(raw);
+const arch=payload?.architecture;
+if(!arch||typeof arch!=="object"||!Array.isArray(arch.tables)||!arch.tables.length)return false;
+
+/* Le cache n'est injecté qu'APRÈS validation serveur du PIN. */
+STATE.activeOrders={
+...STATE.activeOrders,
+ARCHITECTURE:{data:clone(arch),cachedAt:Number(payload.savedAt||0)}
+};
+STATE.__fastLayoutPreview=true;
+if(payload.room)STATE.room=String(payload.room);
+applyDerived();
+scheduleRender();
+try{window.refreshPadServiceLive?.()}catch(_){}
+return true;
+}catch(_){return false}
+}
+
 function startPadBootNonBlocking() {
 if (ICHEF_PAD_INITIAL_BOOT_PROMISE) return ICHEF_PAD_INITIAL_BOOT_PROMISE;
 
@@ -1081,6 +1123,11 @@ STATE.plan = j.plan || "";
 STATE.specialite = j.specialite || "";
 STATE.authenticated = true;
 STATE.deviceReplaced = false;
+
+/* V75 : le PIN reste contrôlé par le serveur. Une fois accepté,
+   le plan statique déjà connu s'affiche au prochain frame, sans attendre MongoDB. */
+const fastPlanRestored=restorePadFastLayout();
+if(fastPlanRestored)setConnection("PLAN PRÊT · SYNCHRO LIVE","warn");
 
 if(typeof loadPaymentConfig === "function") loadPaymentConfig(true).catch(() => {});
 
@@ -1282,7 +1329,7 @@ terminal:"PAD"
 
 retryFailedWrites();
 
-if(!previousServerAt || now()-previousServerAt>5000){
+if((!ICHEF_PAD_INITIAL_BOOT_PROMISE) && (!previousServerAt || now()-previousServerAt>5000)){
 syncFull("socket-connect");
 }
 
@@ -1481,10 +1528,11 @@ const hasLocalPending=openedTable?ICHEF_LOCAL_PENDING.has(openedTable):false;
 
 STATE.activeOrders=preservePendingOverServer(serverIncoming);
 if(serverState.sasConfig)STATE.sasConfig=serverState.sasConfig;
+STATE.__fastLayoutPreview=false;
 
 applyDerived();
 
-cachePadFastLayout();
+try{cachePadFastLayout()}catch(_){}
 
 if(
 openedTable &&
@@ -2349,19 +2397,20 @@ el.innerHTML=list.map(t=>{
 const s=tableStats(t.label);
 const o=getOrder(t.label);
 const z=getZone(t);
+const fastPreview=STATE.__fastLayoutPreview===true;
 
-let etatLabel = "LIBRE";
-if (s.status === 'reserved') etatLabel = "RÉSERVÉE";
-else if (s.status === 'payment') etatLabel = "PAIEMENT";
-else if (s.status === 'alert') etatLabel = "URGENT";
-else if (s.status === 'late') etatLabel = "RETARD";
-else if (s.status === 'ready') etatLabel = "PRÊT";
-else if (s.status === 'wait') etatLabel = "ATTENTE";
-else if (s.status === 'active') etatLabel = "OCCUPÉE";
+let etatLabel = fastPreview ? "SYNC LIVE…" : "LIBRE";
+if (!fastPreview && s.status === 'reserved') etatLabel = "RÉSERVÉE";
+else if (!fastPreview && s.status === 'payment') etatLabel = "PAIEMENT";
+else if (!fastPreview && s.status === 'alert') etatLabel = "URGENT";
+else if (!fastPreview && s.status === 'late') etatLabel = "RETARD";
+else if (!fastPreview && s.status === 'ready') etatLabel = "PRÊT";
+else if (!fastPreview && s.status === 'wait') etatLabel = "ATTENTE";
+else if (!fastPreview && s.status === 'active') etatLabel = "OCCUPÉE";
 
 const capacityPax = Math.max(1, Number(t.pax ?? t.capacity ?? 2) || 2);
 const paxLabel = `${capacityPax} PAX`;
-const time = s.age ? duration(s.age) : (s.status === "reserved" ? "—" : "00:00");
+const time = fastPreview ? "…" : (s.age ? duration(s.age) : (s.status === "reserved" ? "—" : "00:00"));
 const zoneLabel = text(z?.label||t.zone||"Nouvelle Zone");
 const zoneColor = text(z?.color||z?.couleur||(
 s.status==="ready"?"#36d98a":
@@ -2371,7 +2420,7 @@ s.status==="reserved"?"#9b74ff":
 "#b7bd00"
 ));
 
-const preview=(o?.items||[]).filter(Boolean).slice(0,2).map((item)=>{
+const preview=fastPreview?"":(o?.items||[]).filter(Boolean).slice(0,2).map((item)=>{
 const q=itemQty(item);
 const ready=lineReady(item);
 const sent=lineFired(item);
@@ -2383,7 +2432,7 @@ return `<span class="table-preview-line${klass}">• ${q>1?q+"× ":""}${esc(item
 const readyOverlay = s.ready ? `<div class="table-ready-overlay"> ${s.ready} PRÊT(S)</div>` : "";
 const isExpress = !!(t.express||t.temporary||t.isTemporary);
 
-return `<button class="table-card ${s.status} ${isExpress?"express-table":""}" data-table="${esc(t.label)}">
+return `<button class="table-card ${fastPreview?"wait":s.status} ${isExpress?"express-table":""}" data-table="${esc(t.label)}">
       ${isExpress?`<span class="express-badge">EXPRESS</span>`:""}
       
       <span class="num">${esc(t.label)}</span>
@@ -7078,7 +7127,7 @@ applyDisplay(STATE.display);
 autoDisplay();
 setConnection(navigator.onLine?"CONNEXION SERVEUR":"HORS LIGNE",navigator.onLine?"warn":"bad");
 
-const initialSyncOk=await syncFull("initial");
+const initialSyncPromise=syncFull("initial");
 
 Promise.resolve().then(()=>fiscalMaintenance()).catch(err=>{
 console.warn("[iCHEF FISCAL] contrôle initial",err);
@@ -7130,7 +7179,7 @@ syncFull("visible");
 }
 });
 
-return initialSyncOk;
+return await initialSyncPromise;
 }
 
 const bottomObservation=document.getElementById("bottomObservation");
@@ -10970,7 +11019,9 @@ STATE.activeOrders.ARCHITECTURE={
 data:architecture,
 updatedAt:serverTime||new Date().toISOString()
 };
+STATE.__fastLayoutPreview=false;
 try{if(typeof applyDerived==='function')applyDerived()}catch(_){}
+try{if(typeof cachePadFastLayout==='function')cachePadFastLayout()}catch(_){}
 try{if(typeof scheduleRender==='function')scheduleRender()}catch(_){}
 try{window.dispatchEvent(new CustomEvent('ichef:live-state-updated',{detail:{source:'architectureState'}}))}catch(_){}
 try{window.refreshPadServiceLive?.()}catch(_){}
@@ -12598,4 +12649,9 @@ return { status, pax: num(o.pax || o.covers || 0), ready, age, total: orderTotal
 </script><style id="ichef-transitions-ultra-rapides">.sheet,#ichefArchPad,.archpad-right,.archpad-toast,#toast {transition-duration:0.04s !important;} #ichefArchPad .archpad-tool[data-tool="select"],#ichefArchPad [data-add],.archpad-top-room,button[data-act="delete"] {transition-duration:0.04s !important;} .plan-visible-wrap,#ichefArchPad .archpad-stage {animation-duration:0.04s !important;}</style><script id="ichef-pad-principal-v72-sonnette-live-marker">
 window.__ICHEF_PAD_PRINCIPAL_SONNETTE_LIVE__='V72';
 console.info('[iCHEF V72] PAD PRINCIPAL · SONNETTE LIVE Socket.IO + ACK + secours HTTP active');
-</script></body></html>
+</script>
+<script id="ichef-pad-v75-pin-plan-instant-marker">
+window.__ICHEF_PAD_VERSION__="PAD-PRINCIPAL-V75-PIN-PLAN-INSTANT-SAFE";
+window.__ICHEF_PIN_PLAN_INSTANT__=true;
+</script>
+</body></html>
