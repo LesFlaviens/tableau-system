@@ -7409,6 +7409,149 @@ function syncTenantLoginField(forceShow=false){
   if(input&&!input.value&&STATE.tenantID)input.value=STATE.tenantID;
   if(box&&(forceShow||!STATE.tenantID))box.classList.add("show");
 }
+/* =========================================================
+   V59 — PIN PRINCIPAL -> PAGE TABLES < 0,5 S PERÇU
+   - le clic VALIDER bascule immédiatement sur l'écran Tables (squelette sûr)
+   - aucune donnée client n'est révélée avant confirmation du PIN
+   - après confirmation, le dernier PLAN DE TABLES statique peut être affiché depuis
+     un cache local sans commandes ni réservations, puis syncFull actualise le live
+   - l'écran reste verrouillé jusqu'à la première synchronisation serveur fraîche
+   ========================================================= */
+const ICHEF_FAST_LAYOUT_PREFIX='ichef_pad_fast_layout_v59:';
+let ICHEF_PAD_INITIAL_BOOT_PROMISE=null;
+
+function padFastLayoutKey(tenant=STATE.tenantID){
+  return ICHEF_FAST_LAYOUT_PREFIX+String(tenant||'').trim().slice(0,96);
+}
+function cachePadFastLayout(){
+  try{
+    if(!STATE.tenantID)return;
+    const raw=unwrap(STATE.activeOrders?.ARCHITECTURE);
+    if(!raw||typeof raw!=='object')return;
+    const safe={
+      rooms:Array.isArray(raw.rooms)?clone(raw.rooms):[],
+      tables:Array.isArray(raw.tables)?clone(raw.tables):[],
+      zones:Array.isArray(raw.zones)?clone(raw.zones):[],
+      elements:Array.isArray(raw.elements)?clone(raw.elements):[],
+      canvas:raw.canvas&&typeof raw.canvas==='object'?clone(raw.canvas):{},
+      cachedAt:Date.now()
+    };
+    localStorage.setItem(padFastLayoutKey(),JSON.stringify(safe));
+  }catch(_){}
+}
+function applyPadFastLayoutCache(){
+  try{
+    if(!STATE.tenantID)return false;
+    const raw=localStorage.getItem(padFastLayoutKey());
+    if(!raw)return false;
+    const c=JSON.parse(raw);
+    if(!c||!Array.isArray(c.tables))return false;
+    /* Le cache ne contient QUE l'architecture. Aucun ordre/réservation/menu. */
+    STATE.activeOrders.ARCHITECTURE={data:{
+      rooms:Array.isArray(c.rooms)&&c.rooms.length?c.rooms:['Salle Principale'],
+      tables:c.tables,
+      zones:Array.isArray(c.zones)?c.zones:[],
+      elements:Array.isArray(c.elements)?c.elements:[],
+      canvas:c.canvas&&typeof c.canvas==='object'?c.canvas:{}
+    }};
+    normalizeArchitecture();
+    return true;
+  }catch(_){return false}
+}
+function preparePadFastStaticState(){
+  /* Après confirmation PIN mais avant la synchro fraîche, on ne conserve jamais
+     d'anciennes commandes en mémoire visuelle. Seul un ancien plan statique peut
+     servir de secours pour dessiner la salle. */
+  const fallbackArch=STATE.activeOrders?.ARCHITECTURE?clone(STATE.activeOrders.ARCHITECTURE):null;
+  STATE.activeOrders={};
+  if(fallbackArch)STATE.activeOrders.ARCHITECTURE=fallbackArch;
+  STATE.reservations=[];STATE.menu=[];STATE.categories=[];STATE.currentTable=null;STATE.currentOrder=null;
+  try{normalizeArchitecture()}catch(_){}
+}
+function ensurePadFastLoginBanner(){
+  let el=document.getElementById('padFastLoginBanner');
+  if(el)return el;
+  el=document.createElement('div');
+  el.id='padFastLoginBanner';
+  el.innerHTML='<span class="pad-fast-login-spinner"></span><span><b>OUVERTURE IMMÉDIATE</b><small>Vérification sécurisée…</small></span>';
+  document.body.appendChild(el);
+  return el;
+}
+function setPadFastLoginBanner(title,sub){
+  const el=ensurePadFastLoginBanner();
+  const b=el.querySelector('b'),sm=el.querySelector('small');
+  if(b)b.textContent=title||'OUVERTURE IMMÉDIATE';
+  if(sm)sm.textContent=sub||'';
+  el.classList.add('open');
+}
+function renderPadFastSkeleton(){
+  try{
+    const rooms=$('rooms');
+    const tables=$('tables');
+    /* Sécurité : avant confirmation PIN, on efface l'ancien DOM visuel pour ne jamais
+       révéler les données d'une session précédente. Le STATE n'est pas modifié. */
+    if(rooms){
+      rooms.innerHTML='<button type="button" class="room active pad-fast-skeleton-room" tabindex="-1">SALLE</button>';
+    }
+    if(tables){
+      tables.innerHTML=Array.from({length:12},(_,i)=>`<div class="table-card pad-fast-table-skeleton" aria-hidden="true"><div class="pad-fast-sk-title">TABLE ${i+1}</div><div class="pad-fast-sk-line"></div><div class="pad-fast-sk-line short"></div></div>`).join('');
+    }
+  }catch(_){}
+}
+function showPadFastLoginPreview(){
+  const started=performance.now();
+  document.body.classList.add('ichef-pad-fast-opening','ichef-pad-live-locked');
+  $('login')?.classList.add('hidden');
+  $('app')?.classList.remove('hidden');
+  $('tools')?.classList.remove('hidden');
+  try{$('screenLabel').textContent='ÉCRAN 1 · TABLES'}catch(_){}
+  renderPadFastSkeleton();
+  setPadFastLoginBanner('VÉRIFICATION DU PIN','Page Tables déjà prête');
+  requestAnimationFrame(()=>{
+    try{document.body.dataset.pinPageVisibleMs=String(Math.round(performance.now()-started))}catch(_){}
+  });
+}
+function showPadFreshSyncState(){
+  document.body.classList.add('ichef-pad-live-locked');
+  setPadFastLoginBanner('TABLES PRÊTES','Synchronisation live…');
+}
+function finishPadFreshSync(ok=true){
+  document.body.classList.remove('ichef-pad-fast-opening');
+  if(ok)document.body.classList.remove('ichef-pad-live-locked');
+  else document.body.classList.add('ichef-pad-live-locked');
+  const b=document.getElementById('padFastLoginBanner');
+  if(b){
+    if(ok)b.classList.remove('open');
+    else{
+      b.classList.add('open');
+      const title=b.querySelector('b'),sub=b.querySelector('small');
+      if(title)title.textContent='SERVEUR À VÉRIFIER';
+      if(sub)sub.textContent='Les actions restent protégées';
+    }
+  }
+}
+function restorePadLoginAfterFastFailure(message='Connexion impossible'){
+  document.body.classList.remove('ichef-pad-fast-opening','ichef-pad-live-locked');
+  document.getElementById('padFastLoginBanner')?.classList.remove('open');
+  $('app')?.classList.add('hidden');
+  $('tools')?.classList.add('hidden');
+  $('login')?.classList.remove('hidden');
+  syncTenantLoginField(true);
+  loginMessage(message);
+}
+function startPadBootNonBlocking(){
+  if(ICHEF_PAD_INITIAL_BOOT_PROMISE)return ICHEF_PAD_INITIAL_BOOT_PROMISE;
+  ICHEF_PAD_INITIAL_BOOT_PROMISE=Promise.resolve().then(()=>bootApp()).then(ok=>{
+    finishPadFreshSync(ok!==false);
+    return ok;
+  }).catch(err=>{
+    console.warn('[iCHEF PAD V59] boot arrière-plan',err);
+    finishPadFreshSync(false);
+    return false;
+  });
+  return ICHEF_PAD_INITIAL_BOOT_PROMISE;
+}
+
 async function verifyPin(){
   if(STATE.loginBusy)return;
 
@@ -7444,6 +7587,10 @@ async function verifyPin(){
   STATE.loginBusy=true;
   if(validateBtn)validateBtn.disabled=true;
   loginMessage("Connexion…");
+
+  /* V59 : la page Tables apparaît immédiatement au clic, sans attendre le réseau.
+     Avant authentification il ne s'agit que d'un squelette générique, sans donnée client. */
+  showPadFastLoginPreview();
 
   try{
     STATE.tenantID=tenantCandidate;
@@ -7485,38 +7632,42 @@ async function verifyPin(){
       console.warn("[iCHEF TPE] configuration indisponible au login",err?.message||err);
     });
 
-    /* V54 — APRÈS LE PIN = ÉCRAN TABLES.
-       Le plan interactif devient une vue secondaire accessible par le bouton
-       PLAN INTERACTIF de la barre du bas. Aucun chargement Architecture n'est
-       déclenché au login : on conserve la prise de commande comme accueil. */
-    $("app")?.classList.add("hidden");
-    $("tools")?.classList.add("hidden");
-    loginMessage("Chargement des tables…");
-
-    try{
-      await bootApp();
-    }catch(bootErr){
-      console.warn("[iCHEF PAD] Synchronisation initiale à vérifier",bootErr);
-      try{setConnection("SERVEUR À VÉRIFIER","warn")}catch(_){}
-    }
-
-    /* Affichage direct de la vue Tables après authentification.
-       Pas de openPadServiceHome(), donc aucun rendu du plan ne bloque le login. */
+    /* V59 — APRÈS LE PIN = ÉCRAN TABLES SANS ATTENDRE syncFull().
+       1) on applique, si disponible, uniquement le dernier plan statique local ;
+       2) on rend immédiatement ;
+       3) bootApp/syncFull continue en arrière-plan et déverrouille ensuite le live. */
     try{window.closePadArchitect?.()}catch(_){}
     document.body.classList.remove("ichef-plan-toggle-open");
+
+    preparePadFastStaticState();
+    const hadFastLayout=applyPadFastLayoutCache();
+    try{
+      applyDisplay(STATE.display);
+      autoDisplay();
+      renderStatus();
+      renderRooms();
+      renderTables();
+      updateToolBadges();
+    }catch(renderErr){
+      console.warn('[iCHEF PAD V59] rendu immédiat',renderErr);
+    }
+
     $("app")?.classList.remove("hidden");
     $("tools")?.classList.remove("hidden");
     $("login")?.classList.add("hidden");
     loginMessage("");
+    showPadFreshSyncState();
     try{window.ICHEF_PLAN_TABLE_TOGGLE?.sync?.()}catch(_){}
+
+    /* IMPORTANT : aucun await ici. Le réseau ne retient plus la page Tables. */
+    startPadBootNonBlocking();
 
   }catch(e){
     STATE.authenticated=false;
     STATE.pin="";
     STATE.loginPin="";
     renderPin();
-    syncTenantLoginField(true);
-    loginMessage(e?.message||"Connexion impossible");
+    restorePadLoginAfterFastFailure(e?.message||"Connexion impossible");
   }finally{
     STATE.loginBusy=false;
     if(validateBtn)validateBtn.disabled=false;
@@ -7877,6 +8028,8 @@ function applyServerState(serverState,source){
   if(serverState.sasConfig)STATE.sasConfig=serverState.sasConfig;
 
   applyDerived();
+  /* V59 : cache local NON SENSIBLE du seul plan statique, pour réaffichage instantané au prochain PIN. */
+  cachePadFastLayout();
 
   if(
     openedTable &&
@@ -10294,6 +10447,36 @@ function systemPrintHTML(lines,title="iCHEF",paperWidth=80){
 </style>
 
 <!-- iCHEF V42 · plan centré automatiquement après PIN et à chaque retour -->
+
+<style id="ichef-v59-pin-page-fast-safe">
+/* V59 — transition PIN principal -> page Tables sans attente réseau */
+#padFastLoginBanner{
+  position:fixed;z-index:2147482500;left:50%;top:14px;transform:translate(-50%,-18px);
+  display:flex;align-items:center;gap:10px;min-width:min(360px,calc(100vw - 28px));
+  max-width:calc(100vw - 28px);padding:10px 14px;border:1px solid rgba(226,184,78,.76);
+  border-radius:14px;background:rgba(8,10,11,.96);box-shadow:0 12px 32px rgba(0,0,0,.28);
+  color:#fff;opacity:0;pointer-events:none;transition:opacity .12s ease,transform .12s ease;
+}
+#padFastLoginBanner.open{opacity:1;transform:translate(-50%,0)}
+#padFastLoginBanner>span:last-child{display:flex;flex-direction:column;gap:2px;line-height:1.08}
+#padFastLoginBanner b{font-size:11px;letter-spacing:.7px;color:#f0c85a}
+#padFastLoginBanner small{font-size:9px;color:#c8ced0;font-weight:750}
+.pad-fast-login-spinner{width:18px;height:18px;border-radius:50%;border:2px solid #50585a;border-top-color:#e2b84e;animation:ichefV59Spin .65s linear infinite;flex:0 0 auto}
+@keyframes ichefV59Spin{to{transform:rotate(360deg)}}
+body.ichef-pad-live-locked #app,body.ichef-pad-live-locked #tools{pointer-events:none!important;user-select:none!important}
+body.ichef-pad-fast-opening #statusbar{opacity:.95}
+.pad-fast-table-skeleton{position:relative;overflow:hidden;min-height:110px;opacity:.7;pointer-events:none!important}
+.pad-fast-table-skeleton:after{content:"";position:absolute;inset:0;transform:translateX(-110%);background:linear-gradient(90deg,transparent,rgba(255,255,255,.065),transparent);animation:ichefV59Shimmer 1s linear infinite}
+.pad-fast-sk-title{font-weight:950;font-size:14px;letter-spacing:.4px;opacity:.6}
+.pad-fast-sk-line{height:9px;width:72%;border-radius:999px;background:#252a2c;margin-top:15px}
+.pad-fast-sk-line.short{width:42%;margin-top:8px}
+.pad-fast-skeleton-room{opacity:.65;pointer-events:none!important}
+@keyframes ichefV59Shimmer{to{transform:translateX(110%)}}
+@media (prefers-reduced-motion:reduce){#padFastLoginBanner{transition:none}.pad-fast-login-spinner,.pad-fast-table-skeleton:after{animation:none}}
+</style>
+
+
+<!-- iCHEF V60 MENU INTERACTIF TRANSITION FLUIDE SAFE -->
 </body></html>`;
 }
 
@@ -13654,7 +13837,7 @@ async function bootApp(){
   /* V71 — démarrage rapide : une seule lecture HTTP bloquante suffit pour
      afficher l'accueil avec des données fiables. Les contrôles secondaires
      continuent juste après, sans retenir l'utilisateur sur l'écran PIN. */
-  await syncFull("initial");
+  const initialSyncOk=await syncFull("initial");
 
   Promise.resolve().then(()=>fiscalMaintenance()).catch(err=>{
     console.warn("[iCHEF FISCAL] contrôle initial",err);
@@ -13706,6 +13889,8 @@ async function bootApp(){
       }
     }
   });
+
+  return initialSyncOk;
 }
 
 
@@ -17071,7 +17256,39 @@ function architectPinSwitchToVerifyOverlay(){
   overlay.setAttribute('aria-live','polite');
   overlay.innerHTML=`<div class="archpad-pin-card"><span class="archpad-pin-fast-spinner"></span><span class="archpad-pin-fast-copy"><b>VÉRIFICATION CLOUD…</b><small>Plan visible · édition verrouillée</small></span></div>`;
 }
+function cityModeTransitionVeil(show,label='Préparation du plan…'){
+  let veil=document.getElementById('ichefPlanModeVeil');
+  if(show){
+    if(!veil){
+      veil=document.createElement('div');
+      veil.id='ichefPlanModeVeil';
+      veil.innerHTML='<div class="ichef-mode-veil-card"><span class="ichef-mode-veil-spinner"></span><span data-mode-veil-label></span></div>';
+      document.body.appendChild(veil);
+    }
+    const lab=veil.querySelector('[data-mode-veil-label]');
+    if(lab)lab.textContent=label;
+    veil.classList.add('show');
+    return veil;
+  }
+  if(veil)veil.classList.remove('show');
+  return veil;
+}
+function cityModeTransitionRender(label,work){
+  if(A.modeTransitionBusy)return;
+  A.modeTransitionBusy=true;
+  cityModeTransitionVeil(true,label);
+  /* 1 frame pour peindre le masque AVANT le rendu lourd : aucun état partiel visible. */
+  requestAnimationFrame(()=>{
+    try{work()}catch(err){console.error('[iCHEF MODE]',err)}
+    requestAnimationFrame(()=>requestAnimationFrame(()=>{
+      cityModeTransitionVeil(false);
+      A.modeTransitionBusy=false;
+    }));
+  });
+}
+
 function openArchitectPin(){
+  if(A.modeTransitionBusy||A.pinOpen)return;
   A.pinOpen=true;A.pinValue='';A.pinMsg='PIN synchronisé iCHEF Cloud · Admin / RH';
   A.pinBusy=false;A.pinStartedAt=performance.now();
 
@@ -17081,10 +17298,13 @@ function openArchitectPin(){
      aucun renderAll(), aucune reconstruction DOM ni recalcul lourd du plan. */
   A.pinPreview=true;
   A.selected=null;A.groupAll=false;A.groupDrag=null;A.tool='select';
-  renderAll();
 
-  /* Le plan détaillé de la salle active est centré pendant la saisie du PIN. */
-  requestAnimationFrame(()=>cityCenterWholePlanStable(false));
+  cityModeTransitionRender('Ouverture Architecture…',()=>{
+    renderAll();
+    A.root?.dataset&&(A.root.dataset.ichefServiceMounted='0');
+    /* Le plan détaillé de la salle active est centré une seule fois, une fois le DOM prêt. */
+    requestAnimationFrame(()=>cityCenterWholePlanStable(false));
+  });
 }
 async function validateArchitectPin(){
   if(A.pinBusy)return;
@@ -17127,6 +17347,7 @@ async function validateArchitectPin(){
     const identityLabel=aText(staff?.role||staff?.name||serverRole||'MANAGER');
     A.archUnlocked=true;A.archRole=identityLabel||'MANAGER';A.archPin=pin;
     A.mode='architect';A.pinOpen=false;A.pinValue='';A.pinMsg='';A.pinBusy=false;A.pinPreview=false;
+    if(A.root)A.root.dataset.ichefServiceMounted='0';
 
     /* IMPORTANT : aucun second renderAll(). Le DOM visible derrière l'overlay est
        déjà le DOM Architecte définitif. On enlève seulement le verrou visuel. */
@@ -17144,7 +17365,28 @@ async function validateArchitectPin(){
 function adjacentRoom(step){const rooms=(A.rooms||[]).filter(Boolean);if(!rooms.length)return;let i=rooms.indexOf(A.room);if(i<0)i=0;i=(i+step+rooms.length)%rooms.length;switchRoom(rooms[i])}
 function previousRoom(){adjacentRoom(-1)}
 function nextRoom(){adjacentRoom(1)}
-function toggleMode(){if(A.mode==='architect'){A.mode='service';if(expressRoleLevel()<2){A.archUnlocked=false;A.archRole='';A.archPin=''}renderAll()}else{if(canEdit()){A.mode='architect';A.selected=null;A.groupAll=false;A.groupDrag=null;renderAll();architectPostUnlockFit()}else openArchitectPin()}}
+function toggleMode(){
+  if(A.modeTransitionBusy)return;
+  if(A.mode==='architect'){
+    cityModeTransitionRender('Retour au plan interactif…',()=>{
+      A.mode='service';
+      if(expressRoleLevel()<2){A.archUnlocked=false;A.archRole='';A.archPin=''}
+      A.selected=null;A.groupAll=false;A.groupDrag=null;
+      renderAll();
+      if(A.root){A.root.dataset.ichefServiceMounted='1';A.root.dataset.ichefLiveStale='0'}
+      requestAnimationFrame(()=>cityCenterWholePlanStable(false));
+    });
+    return;
+  }
+  if(canEdit()){
+    cityModeTransitionRender('Ouverture Architecture…',()=>{
+      A.mode='architect';A.selected=null;A.groupAll=false;A.groupDrag=null;
+      if(A.root)A.root.dataset.ichefServiceMounted='0';
+      renderAll();
+      requestAnimationFrame(()=>architectPostUnlockFit());
+    });
+  }else openArchitectPin();
+}
 function bindDynamic(){
  /* V41 : géométrie Salle en lecture seule, calculée depuis le design. */
  if(A.selected===getRoomKey()){
@@ -17333,8 +17575,34 @@ function openPadArchitectEditor(){
 async function openPadServiceHome(options={}){
   closeSheet?.();
   const skipSync=options?.skipSync===true;
-  /* V71 : au login, bootApp() vient déjà de synchroniser les données.
-     Pour les ouvertures suivantes depuis l'application, on garde la lecture live. */
+  const stableResume=options?.stableResume===true;
+  const existing=ensureRoot();
+
+  /* V60 — reprise instantanée : si le Plan SERVICE est déjà monté, on ne relit
+     aucune donnée, on ne reconstruit aucun HTML et on conserve zoom/pan/salle. */
+  if(stableResume &&
+     existing.dataset.ichefServiceMounted==='1' &&
+     A.mode==='service' &&
+     !A.pinOpen &&
+     !A.dirty){
+    existing.classList.add('open');
+    existing.classList.remove('ichef-plan-suspended');
+    existing.setAttribute('aria-hidden','false');
+    document.body.style.overflow='hidden';
+    try{existing.focus({preventScroll:true})}catch(_){try{existing.focus()}catch(__){}}
+    /* Si des événements live sont arrivés pendant la suspension, la vue actuelle
+       est montrée d'abord, puis rafraîchie hors du chemin critique. */
+    if(existing.dataset.ichefLiveStale==='1'){
+      existing.dataset.ichefLiveStale='0';
+      const run=()=>{try{refreshPadServiceLive(true)}catch(_){}};
+      if('requestIdleCallback' in window)requestIdleCallback(run,{timeout:350});
+      else setTimeout(run,0);
+    }
+    return;
+  }
+
+  /* Première ouverture uniquement : la lecture live reste disponible, mais V54+
+     peut demander skipSync car STATE vient déjà du PAD/WebSocket. */
   if(!skipSync && STATE.authenticated && !STATE.demo && navigator.onLine && typeof syncFull==='function'){
     try{await syncFull('plan-open-live')}catch(err){console.warn('[iCHEF PLAN] synchro ouverture',err)}
   }
@@ -17342,16 +17610,28 @@ async function openPadServiceHome(options={}){
   loadData();
   normaliseAll();
   A.archUnlocked=false;A.archRole='';A.archPin='';A.pinOpen=false;A.pinValue='';A.pinMsg='';A.pinBusy=false;A.pinPreview=false;A.mode='service';
-  ensureRoot().classList.add('open');
+  existing.classList.add('open');
+  existing.classList.remove('ichef-plan-suspended');
+  existing.setAttribute('aria-hidden','false');
   document.body.style.overflow='hidden';
   renderAll();
-  A.root.focus();
+  existing.dataset.ichefServiceMounted='1';
+  existing.dataset.ichefLiveStale='0';
+  try{A.root.focus({preventScroll:true})}catch(_){A.root.focus()}
   cityCenterWholePlanStable(false);
   aToast(STATE.connected?'PLAN LIVE · TEMPS RÉEL':'PLAN LIVE · SYNCHRO HTTP');
 }
-function closePadArchitect(){if(A.dirty&&canEdit()&&!confirm('Quitter sans enregistrer les modifications du plan ?'))return false;A.planFullscreen=false;A.root?.classList.remove('city-plan-fullscreen');A.root?.classList.remove('open');document.body.style.overflow='';A.drag=null;A.selected=null;A.tool='select';A.archUnlocked=false;A.archRole='';A.archPin='';A.pinOpen=false;A.pinValue='';A.pinBusy=false;A.pinPreview=false;A.mode='service';scheduleRender?.();return true}
-function refreshPadServiceLive(){
+function closePadArchitect(){if(A.dirty&&canEdit()&&!confirm('Quitter sans enregistrer les modifications du plan ?'))return false;A.planFullscreen=false;A.root?.classList.remove('city-plan-fullscreen','ichef-plan-suspended','ichef-plan-transitioning');if(A.root){A.root.classList.remove('open');A.root.dataset.ichefServiceMounted='0';A.root.dataset.ichefLiveStale='0';A.root.setAttribute('aria-hidden','true')}document.body.style.overflow='';A.drag=null;A.selected=null;A.tool='select';A.archUnlocked=false;A.archRole='';A.archPin='';A.pinOpen=false;A.pinValue='';A.pinBusy=false;A.pinPreview=false;A.mode='service';scheduleRender?.();return true}
+function refreshPadServiceLive(force=false){
   if(!A.root?.classList.contains('open'))return;
+
+  /* V60 — lorsqu'on est revenu aux Tables, le DOM du plan reste monté mais caché.
+     On ne reconstruit jamais son canvas en arrière-plan : on marque seulement la
+     vue comme "stale". La reprise l'affiche immédiatement puis actualise au repos. */
+  if(!force&&A.root.classList.contains('ichef-plan-suspended')){
+    A.root.dataset.ichefLiveStale='1';
+    return;
+  }
 
   /* V18 SAFE
      - SERVICE : on recharge le plan live comme avant.
@@ -17373,6 +17653,8 @@ function refreshPadServiceLive(){
     if(crumb)crumb.textContent=A.room;
 
     bindDynamic();
+    A.root.dataset.ichefServiceMounted='1';
+    A.root.dataset.ichefLiveStale='0';
   }
 
   /* Si un bandeau Anti-Rush est présent dans la vue, il reste alimenté par les
@@ -18989,11 +19271,19 @@ setTimeout(() => {
      CORRECTION DÉFINITIVE : PRISE DE COMMANDE TACTILE (1 TAP)
      ========================================================= -->
 <script id="fix-prise-commande-tactile">
-(function fixTactileOrder() {
+/* =========================================================
+   V61 — PRISE DE COMMANDE TACTILE + QUI MANGE QUOI CONNECTÉ
+   Un tap sur un plat ouvre TOUJOURS le choix C du convive.
+   Ensuite seulement : cuisson si nécessaire, puis création de
+   la ligne complète (produit + C + cuisson) via saveCurrent(),
+   donc via la file d'écriture serveur existante.
+   ========================================================= */
+(function fixTactileOrderWithSeatPicker() {
     const container = document.getElementById("products");
     if (!container) return;
 
-    // 1. Clonage pour purger tous les écouteurs capricieux ou conflictuels
+    /* On purge uniquement les anciens écouteurs produits afin d'éviter
+       le double déclenchement ajout-direct + popup C. */
     const newContainer = container.cloneNode(true);
     container.parentNode.replaceChild(newContainer, container);
 
@@ -19016,7 +19306,6 @@ setTimeout(() => {
         press.long = false;
         b.classList.add("longpress-active");
 
-        // Appui long (0.6s) pour le nom complet et informations
         press.timer = setTimeout(() => {
             press.timer = null;
             press.long = true;
@@ -19034,8 +19323,6 @@ setTimeout(() => {
         if (!press.button) return;
         const dx = Math.abs(e.clientX - press.startX);
         const dy = Math.abs(e.clientY - press.startY);
-        
-        // 2. Tolérance augmentée à 25px : empêche l'annulation du tap si le doigt roule
         if (dx > 25 || dy > 25) {
             clearPress();
             press.button = null;
@@ -19048,24 +19335,24 @@ setTimeout(() => {
 
         const wasLong = press.long;
         const sameButton = b === press.button;
-
         clearPress();
         press.button = null;
         press.long = false;
-
         if (!sameButton || wasLong) return;
 
-        // --- LOGIQUE D'AJOUT IMMÉDIAT (1 TAP) ---
-        
-        const pendingCookingItem = typeof getValidPendingCookingItem === "function" ? getValidPendingCookingItem() : null;
+        /* Une cuisson précédente obligatoire doit être terminée avant
+           d'ouvrir un nouveau produit : on conserve cette sécurité. */
+        const pendingCookingItem = typeof getValidPendingCookingItem === "function"
+            ? getValidPendingCookingItem()
+            : null;
         if (pendingCookingItem) {
             if (typeof showQuickCooking === "function") showQuickCooking(pendingCookingItem);
             if (typeof toast === "function") toast("Cuisson obligatoire en attente", true);
             return;
         }
 
-        // 3. Anti-doublon frénétique (135ms)
-        const key = b.dataset.product + "|" + b.dataset.pname;
+        /* Anti-double tap fantôme uniquement. */
+        const key = (b.dataset.product || "") + "|" + (b.dataset.pname || "");
         const t = Date.now();
         if (typeof lastProductTap !== "undefined") {
             if (lastProductTap.key === key && t - lastProductTap.at < 135) return;
@@ -19075,25 +19362,21 @@ setTimeout(() => {
         const p = typeof findProductFromButton === "function" ? findProductFromButton(b) : null;
         if (!p) return;
 
-        const seat = Math.max(1, Math.min(9, Number(STATE.activeSeat) || 1));
-        const dest = typeof normalizeDestination === "function" ? normalizeDestination(p.dest || p.raw?.dest || p.raw?.destination || "cuisine") : "cuisine";
-        const profile = typeof cookingProfileFor === "function" ? cookingProfileFor(p) : { required: false, automatic: "", levels: [] };
+        /* V61 : aucun ajout direct au C actif.
+           Tous les plats passent d'abord par C1/C2/C3... comme demandé.
+           confirmProductSeat() enchaîne ensuite vers la cuisson si nécessaire,
+           puis finalizeProductSeatChoice() -> addProduct() -> saveCurrent(). */
+        const picker = (typeof window.openProductSeatPicker === "function")
+            ? window.openProductSeatPicker
+            : (typeof openProductSeatPicker === "function" ? openProductSeatPicker : null);
 
-        if (typeof window.ichefCancelPendingProductSelection !== "undefined") {
-             pendingProductSeatChoice = { product: p, sourceButton: b, seat: seat };
+        if (!picker) {
+            if (typeof toast === "function") toast("Choix du convive indisponible", true);
+            return;
         }
 
-        if (dest === "cuisine" && profile.required === true && profile.levels.length) {
-            // Ouvre la fenêtre de cuisson uniquement si requise
-            if (typeof showProductCookingPicker === "function") {
-                showProductCookingPicker(pendingProductSeatChoice, seat);
-            }
-        } else {
-            // AJOUT IMMÉDIAT AU CONVIVE ACTIF
-            if (typeof finalizeProductSeatChoice === "function") {
-                finalizeProductSeatChoice(seat, profile.automatic || "");
-            }
-        }
+        pendingProductSeatChoice = { product: p, sourceButton: b };
+        picker(p, b);
     });
 
     newContainer.addEventListener("pointercancel", () => {
@@ -20950,13 +21233,32 @@ html body.order-open .ticket-row{min-height:106px !important}
 }
 </style>
 
-<style id="ichef-v54-tables-plan-toggle-safe">
+<style id="ichef-v60-plan-toggle-fluid-safe">
 /* =========================================================
-   V54 — TABLES ⇄ PLAN INTERACTIF
-   - après le PIN : écran Tables
-   - le menu inférieur reste disponible dans le plan
-   - aucune nouvelle synchro HTTP pour l'aller/retour
+   V60 — TABLES ⇄ PLAN INTERACTIF SANS RECONSTRUCTION
+   - le plan reste monté en mémoire après la première ouverture
+   - retour Tables = suspension visuelle uniquement
+   - reprise = même DOM, même zoom, même pan, même salle
+   - aucun écran intermédiaire / aucun double rendu
    ========================================================= */
+#ichefArchPad.open{
+  will-change:opacity;
+  transition:opacity 120ms ease-out,visibility 0s linear 0s;
+}
+#ichefArchPad.open.ichef-plan-suspended{
+  display:flex!important;
+  opacity:0!important;
+  visibility:hidden!important;
+  pointer-events:none!important;
+  transition:opacity 95ms ease-in,visibility 0s linear 95ms;
+}
+#ichefArchPad.open:not(.ichef-plan-suspended){
+  opacity:1!important;
+  visibility:visible!important;
+}
+#ichefArchPad.ichef-plan-transitioning{
+  pointer-events:none!important;
+}
 body.ichef-plan-toggle-open #ichefArchPad.open{
   bottom:calc(94px + var(--safe-bottom, 0px))!important;
 }
@@ -20977,28 +21279,68 @@ body.ichef-plan-toggle-open #toolDisplay .tool-label,
 body.ichef-plan-toggle-open #toolDisplay .tiny{
   color:#fff!important;
 }
-#toolDisplay .tool-label{
-  line-height:1.05!important;
+#toolDisplay .tool-label{line-height:1.05!important}
+
+/* Masque propre pendant le seul rendu nécessaire SERVICE ⇄ ARCHITECTURE. */
+#ichefPlanModeVeil{
+  position:fixed;
+  inset:0 0 calc(94px + var(--safe-bottom,0px)) 0;
+  z-index:49990;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background:rgba(7,10,11,.94);
+  color:#fff;
+  opacity:0;
+  visibility:hidden;
+  pointer-events:none;
+  transition:opacity 90ms ease-out,visibility 0s linear 90ms;
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+}
+#ichefPlanModeVeil.show{
+  opacity:1;
+  visibility:visible;
+  pointer-events:auto;
+  transition:opacity 70ms ease-out,visibility 0s linear 0s;
+}
+#ichefPlanModeVeil .ichef-mode-veil-card{
+  display:flex;align-items:center;gap:12px;
+  padding:13px 18px;border:1px solid #465054;border-radius:12px;
+  background:#101516;font-size:12px;font-weight:900;letter-spacing:.2px;
+}
+#ichefPlanModeVeil .ichef-mode-veil-spinner{
+  width:18px;height:18px;border-radius:50%;
+  border:2px solid #556065;border-top-color:#f0bd45;
+  animation:ichefModeSpin .65s linear infinite;
+}
+@keyframes ichefModeSpin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){
+  #ichefArchPad.open,#ichefPlanModeVeil{transition:none!important}
+  #ichefPlanModeVeil .ichef-mode-veil-spinner{animation:none}
 }
 @media(max-width:700px){
   body.ichef-plan-toggle-open #ichefArchPad.open{
     bottom:calc(86px + var(--safe-bottom, 0px))!important;
   }
+  #ichefPlanModeVeil{inset:0 0 calc(86px + var(--safe-bottom,0px)) 0}
   #toolDisplay .tool-label{font-size:12px!important}
 }
 </style>
-<script id="ichef-v54-tables-plan-toggle-js">
+<script id="ichef-v60-plan-toggle-fluid-js">
 (function(){
   const BODY_CLASS='ichef-plan-toggle-open';
+  const SUSPENDED='ichef-plan-suspended';
+  const TRANSITIONING='ichef-plan-transitioning';
   let changing=false;
 
-  function planRoot(){return document.getElementById('ichefArchPad')}
-  function planIsOpen(){return !!planRoot()?.classList.contains('open')}
+  function root(){return document.getElementById('ichefArchPad')}
+  function mounted(){return !!root()?.classList.contains('open')}
+  function visible(){const r=root();return !!(r?.classList.contains('open')&&!r.classList.contains(SUSPENDED))}
 
   function syncButton(){
     const btn=document.getElementById('toolDisplay');
     if(!btn)return;
-    const open=planIsOpen();
+    const open=visible();
     document.body.classList.toggle(BODY_CLASS,open);
     const label=btn.querySelector('.tool-label');
     const tiny=btn.querySelector('.tiny');
@@ -21008,25 +21350,40 @@ body.ichef-plan-toggle-open #toolDisplay .tiny{
     btn.title=open?'Revenir immédiatement aux tables':'Ouvrir le plan de salle interactif';
   }
 
-  async function togglePlan(){
+  function suspendPlan(){
+    const r=root();
+    if(!r)return;
+    r.classList.add(TRANSITIONING,SUSPENDED);
+    r.setAttribute('aria-hidden','true');
+    document.body.classList.remove(BODY_CLASS);
+    document.body.style.overflow='';
+    /* Aucun scheduleRender(), aucun closePadArchitect() : le plan reste intact. */
+    setTimeout(()=>r.classList.remove(TRANSITIONING),125);
+  }
+
+  async function resumePlan(){
+    if(typeof window.openPadServiceHome!=='function'){
+      console.error('[iCHEF V60] Plan interactif indisponible');
+      return;
+    }
+    /* openPadServiceHome sait maintenant reprendre le DOM déjà monté sans renderAll(). */
+    await window.openPadServiceHome({skipSync:true,stableResume:true});
+    const r=root();
+    if(!r)return;
+    r.classList.add(TRANSITIONING);
+    r.classList.remove(SUSPENDED);
+    r.setAttribute('aria-hidden','false');
+    document.body.classList.add(BODY_CLASS);
+    document.body.style.overflow='hidden';
+    requestAnimationFrame(()=>requestAnimationFrame(()=>r.classList.remove(TRANSITIONING)));
+  }
+
+  async function toggle(){
     if(changing)return;
     changing=true;
     try{
-      if(planIsOpen()){
-        /* Retour sans réseau et sans rechargement : on ferme seulement l'overlay. */
-        if(typeof window.closePadArchitect==='function')window.closePadArchitect();
-        else planRoot()?.classList.remove('open');
-        document.body.classList.remove(BODY_CLASS);
-        try{if(typeof scheduleRender==='function')scheduleRender()}catch(_){}
-      }else{
-        /* Aller sans deuxième sync HTTP : STATE vient déjà du PAD/WebSocket. */
-        if(typeof window.openPadServiceHome!=='function'){
-          console.error('[iCHEF V54] Plan interactif indisponible');
-          return;
-        }
-        document.body.classList.add(BODY_CLASS);
-        await window.openPadServiceHome({skipSync:true});
-      }
+      if(visible())suspendPlan();
+      else await resumePlan();
     }finally{
       changing=false;
       syncButton();
@@ -21035,33 +21392,36 @@ body.ichef-plan-toggle-open #toolDisplay .tiny{
 
   function bind(){
     const btn=document.getElementById('toolDisplay');
-    if(btn){
-      /* onclick écrase volontairement les anciens openPlan/openPadServiceHome
-         afin d'avoir un seul chemin canonique ALLER/RETOUR. */
-      btn.onclick=function(e){e?.preventDefault?.();e?.stopPropagation?.();togglePlan()};
+    if(!btn)return;
+    /* Un seul propriétaire réel du bouton. Le listener capture neutralise les
+       anciens onclick sans cloner le DOM ni casser les références existantes. */
+    btn.onclick=null;
+    if(btn.dataset.ichefV60Bound!=='1'){
+      btn.dataset.ichefV60Bound='1';
+      btn.addEventListener('click',e=>{
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        toggle();
+      },true);
     }
     syncButton();
   }
 
-  /* Les autres boutons restent utilisables pendant le plan. Les sheets sont
-     simplement remontées au-dessus du plan par CSS ; aucune fonction métier
-     n'est remplacée. */
   const observer=new MutationObserver(()=>syncButton());
-  function observeRoot(){
-    const root=planRoot();
-    if(root)observer.observe(root,{attributes:true,attributeFilter:['class']});
+  function observe(){
+    const r=root();
+    if(r&&!r.dataset.ichefV60Observed){
+      r.dataset.ichefV60Observed='1';
+      observer.observe(r,{attributes:true,attributeFilter:['class']});
+    }
   }
 
-  window.ICHEF_PLAN_TABLE_TOGGLE={toggle:togglePlan,sync:syncButton,isOpen:planIsOpen};
-  bind();
-  observeRoot();
-  document.addEventListener('DOMContentLoaded',()=>{bind();observeRoot()},{once:true});
+  window.ICHEF_PLAN_TABLE_TOGGLE={toggle,sync:syncButton,isOpen:visible,suspend:suspendPlan,resume:resumePlan};
+  bind();observe();
+  document.addEventListener('DOMContentLoaded',()=>{bind();observe()},{once:true});
   window.addEventListener('ichef:live-state-updated',syncButton);
-
-  /* Certains anciens scripts réassignent toolDisplay après leur initialisation.
-     Un seul rebinding différé garantit que V54 reste le dernier propriétaire du bouton. */
-  setTimeout(bind,0);
-  setTimeout(bind,250);
+  setTimeout(()=>{bind();observe()},0);
+  setTimeout(()=>{bind();observe()},250);
 })();
 </script>
 
@@ -21112,5 +21472,7 @@ body.ichef-plan-toggle-open #toolDisplay .tiny{
   #ichefArchPad .archpad-zoom-controls button{min-width:44px;min-height:44px}
 }
 </style>
+
+<!-- iCHEF V61 — QUI MANGE QUOI CONNECTÉ SERVEUR : TAP PLAT -> C -> CUISSON -> SAVE -->
 </body>
 </html>
