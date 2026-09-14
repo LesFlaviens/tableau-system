@@ -5459,7 +5459,7 @@ function loadSocket(){
 
 
 /* =========================================================
-   TÉLÉPHONE V10 — ARCHITECTURE SOURCE UNIQUE + CACHE RAPIDE
+   TÉLÉPHONE V11 — ARCHITECTURE SOURCE UNIQUE + SERVER.JS RÉEL + CACHE RAPIDE
    - Même source serveur que PAD : activeOrders.ARCHITECTURE
    - Socket dédié architectureState / architecture-changed
    - Cache local = architecture uniquement (aucune commande/client)
@@ -5515,7 +5515,9 @@ function phoneHydrateArchitectureCache(){
   }catch(_){return false}
 }
 function phonePublishArchitecture(architecture,serverTime){
-  if(!architecture||typeof architecture!=="object"||!window.STATE)return false;
+  /* V11 : STATE est un const lexical, pas window.STATE.
+     L'ancien test !window.STATE rejetait donc TOUS les paquets architectureState. */
+  if(!architecture||typeof architecture!=="object")return false;
   if(!STATE.activeOrders||typeof STATE.activeOrders!=="object")STATE.activeOrders={};
   STATE.activeOrders.ARCHITECTURE={
     ...(STATE.activeOrders.ARCHITECTURE&&typeof STATE.activeOrders.ARCHITECTURE==="object"?STATE.activeOrders.ARCHITECTURE:{}),
@@ -5567,16 +5569,39 @@ async function connectSocket(){
       timeout:4500,
       auth:{
         tenantID:STATE.tenantID,
-        deviceId:STATE.deviceId
+        deviceId:STATE.deviceId,
+        page:"TELEPHONE",
+        terminal:"TELEPHONE",
+        module:"TELEPHONE"
       }
     });STATE.socket=socket;
     socket.on("connect",()=>{
       STATE.connected=true;setConnection("TEMPS RÉEL","good");
-      socket.emit("joinTenant",String(STATE.tenantID));
+      /* V11 : contrat exact de server.js / joinTenant. */
+      socket.emit("joinTenant",{
+        tenantID:String(STATE.tenantID||""),
+        deviceId:String(STATE.deviceId||""),
+        page:"TELEPHONE",
+        terminal:"TELEPHONE",
+        module:"TELEPHONE"
+      });
       retryFailedWrites();
       /* Architecture demandée immédiatement, sans attendre le syncFull complet. */
       phoneRequestArchitectureState("connect");
       if(!STATE.lastServerAt||now()-STATE.lastServerAt>5000)syncFull("reconnect");
+    });
+    socket.on("tenant-joined",packet=>{
+      if(packet?.tenantID&&text(packet.tenantID)!==text(STATE.tenantID))return;
+      STATE.connected=true;
+      STATE.lastServerAt=now();
+      setConnection("SERVEUR CONNECTÉ","good");
+      /* Une seconde demande après confirmation de room garantit l'état Architecture frais. */
+      phoneRequestArchitectureState("tenant-joined");
+    });
+    socket.on("ichef-auth-error",packet=>{
+      console.warn("[iCHEF TELEPHONE] Auth Socket refusée",packet?.error||packet);
+      STATE.connected=false;
+      setConnection("SOCKET REFUSÉ","bad");
     });
     socket.on("updateState",s=>{
       STATE.connected=true;STATE.lastServerAt=now();setConnection("TEMPS RÉEL","good");
