@@ -1,11 +1,12 @@
 /**
  * ==============================================================
- * 🧠 iCHEF EMPIRE OS — CORE SERVER V56.5 · ESPACE CLIENT DOCUMENTS (2026.09.07)
+ * 🧠 iCHEF EMPIRE OS — CORE SERVER V56.6 · CONNEXION PAD/TÉLÉPHONE ULTRA RAPIDE (2026.09.14)
  * ==============================================================
  * Contrat central stable pour multi-établissements :
  * Réservations · Plan/PAD/Téléphone · Cuisine/Bar/Pâtisserie · Anti-Rush
  * RH · Paiement/Caisse/Fiscal · Administration · Socket.IO.
  * Les évolutions UI doivent rester côté HTML tant que ce contrat suffit.
+ * V56.6 : préchauffage Render/Mongo + vérification PIN sans lectures DB en double.
  */
 const express = require('express');
 const cors = require('cors');
@@ -1067,9 +1068,22 @@ app.use((req, res, next) => {
 // ❤️ SANTÉ DU SERVICE
 // ==========================================================
 app.get('/healthz', (req, res) => {
+    /* V56.6 — le préchauffage PAD/Téléphone réveille aussi MongoDB.
+       La réponse HTTP reste immédiate : on ne bloque jamais /healthz sur la DB. */
+    const mongoState = mongoose.connection.readyState;
+    if (mongoURI && mongoState !== 1 && mongoState !== 2) {
+        Promise.resolve(ichefConnectMongo('healthz-prewarm')).catch(error => {
+            console.warn('[iCHEF PREWARM MongoDB]', error?.message || error);
+        });
+    }
+
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.setHeader('Connection', 'keep-alive');
+
     return res.status(200).json({
         ok: true,
         service: 'iCHEF',
+        prewarm: true,
         uptimeSeconds: Math.round(process.uptime()),
         mongoReadyState: mongoose.connection.readyState,
         socketEngine: true,
@@ -6197,7 +6211,9 @@ function ichefTerminalStaffIsServer(staff = {}) {
 async function ichefCheckServiceTerminalAccess({
     tenantID,
     pin,
-    terminal
+    terminal,
+    tenantDoc = null,
+    stateDoc = null
 }) {
 
     const safeID = cleanString(tenantID);
@@ -6226,7 +6242,10 @@ async function ichefCheckServiceTerminalAccess({
         };
     }
 
+    /* V56.6 : verify-pin peut fournir le Tenant déjà chargé afin d'éviter
+       une seconde requête MongoDB pour le même PIN. */
     const tenant =
+        tenantDoc ||
         await Tenant.findOne({
             tenantID: safeID
         });
@@ -6253,7 +6272,10 @@ async function ichefCheckServiceTerminalAccess({
         };
     }
 
+    /* Même optimisation pour STAFF_ACCESS : réutilise l'état déjà lu par
+       /api/verify-pin au lieu de refaire une requête complète. */
     const state =
+        stateDoc ||
         await AppState.findOne({
             tenantID: safeID
         });
@@ -6442,7 +6464,9 @@ app.post('/api/verify-pin', async (req, res) => {
             await ichefCheckServiceTerminalAccess({
                 tenantID: tenant.tenantID,
                 pin: submittedPin,
-                terminal
+                terminal,
+                tenantDoc: tenant,
+                stateDoc: state
             });
 
         if (!terminalAccess.ok) {
@@ -10383,9 +10407,11 @@ io.on("connection", socket => {
 
         if (!socket.recovered) {
             try {
+                /* V56.6 : objet brut MongoDB, sans hydratation Mongoose inutile.
+                   tenant-joined est déjà émis avant cette lecture : le PAD entre immédiatement. */
                 const currentState = await AppState.findOne({
                     tenantID: safeID
-                });
+                }).lean();
 
                 if (currentState) {
                     socket.emit("updateState", currentState);
