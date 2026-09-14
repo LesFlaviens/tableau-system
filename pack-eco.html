@@ -9,7 +9,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<!-- iCHEF PACK-ECO V69 — SERVEUR LIVE ULTRA RAPIDE · PREWARM AVANT PIN -->
+<!-- iCHEF PAD PRINCIPAL V72 — SERVEUR LIVE + SONNETTE LIVE ULTRA RAPIDE -->
 <link rel="preconnect" href="https://tableau-system.onrender.com" crossorigin>
 <link rel="dns-prefetch" href="//tableau-system.onrender.com">
 <link rel="preload" as="script" href="https://tableau-system.onrender.com/socket.io/socket.io.js" crossorigin="anonymous">
@@ -36,8 +36,8 @@
 </script>
 <script src="https://tableau-system.onrender.com/socket.io/socket.io.js" defer crossorigin="anonymous"></script>
 <!-- iCHEF V58 SOURIS + DOIGT + MULTITOUCH UNIFIÉ SAFE -->
-<title>iCHEF PACK-ECO V69 — SERVER LIVE ULTRA RAPIDE</title>
-<!-- iCHEF V69 : connexion PAD/server.js préchauffée + Socket LIVE immédiat -->
+<title>iCHEF PAD PRINCIPAL V72 — SONNETTE LIVE ULTRA RAPIDE</title>
+<!-- iCHEF V72 : PAD principal · Socket LIVE + sonnette prioritaire avec ACK serveur -->
 <!-- iCHEF V43 : cadrage design réel après PIN / retour -->
 <style>
 :root{
@@ -7951,6 +7951,11 @@ async function connectSocket(){
       applyServerState(s,"socket");
     });
 
+    /* V72 — SONNETTE LIVE PAD PRINCIPAL : paquet minuscule, prioritaire sur updateState. */
+    socket.on("service-bell",packet=>{
+      try{applyLiveServiceBell(packet)}catch(err){console.warn("[iCHEF SONNETTE] réception",err?.message||err)}
+    });
+
     socket.on("paymentConfigUpdated",packet=>{
       if(packet?.paymentConfig){
         applyPaymentConfig(packet.paymentConfig);
@@ -8690,6 +8695,62 @@ function applyDisplay(mode){STATE.display=mode;STORAGE.set("ichef_phone_display"
 function autoDisplay(){if(STATE.display!=="auto")return;const h=new Date().getHours();document.body.classList.toggle("night",h>=22||h<6);document.body.classList.remove("sun")}
 
 /* ---------------- KITCHEN COMM ---------------- */
+/* V72 — SONNETTE LIVE ULTRA RAPIDE · PAD PRINCIPAL
+   1) Socket.IO + ACK serveur en priorité.
+   2) Le serveur persiste ALERTS_MASTER et diffuse service-bell immédiatement.
+   3) /update-order reste le secours si le Socket est indisponible. */
+function applyLiveServiceBell(packet){
+  const payload=(packet&&typeof packet==='object'&&(packet.payload||packet.data))||packet;
+  if(!payload||typeof payload!=='object'||String(payload.type||'').toUpperCase()!=='RING')return false;
+  if(!STATE.activeOrders||typeof STATE.activeOrders!=='object')STATE.activeOrders={};
+  STATE.activeOrders.ALERTS_MASTER={
+    data:clone(payload),
+    updatedAt:packet?.serverTime||packet?.updatedAt||new Date().toISOString()
+  };
+  STATE.lastServerAt=now();
+  try{checkGlobalAlert()}catch(_){}
+  try{scheduleRender()}catch(_){}
+  return true;
+}
+
+async function sendServiceBellLive(payload,auditReason='Sonnette service'){
+  if(!payload||typeof payload!=='object')return false;
+  if(!payload.ringId)payload.ringId='RING_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8);
+
+  /* Retour local instantané : aucune attente réseau pour l'interface. */
+  applyLiveServiceBell({payload,serverTime:new Date().toISOString()});
+
+  const socket=STATE.socket;
+  if(socket?.connected){
+    const packet={
+      tenantID:STATE.tenantID,
+      pin:STATE.pin,
+      terminal:'PAD',
+      deviceId:STATE.deviceId,
+      payload,
+      auditReason
+    };
+    const ack=await new Promise(resolve=>{
+      let done=false;
+      const finish=value=>{if(done)return;done=true;clearTimeout(timer);resolve(value||null)};
+      const timer=setTimeout(()=>finish(null),1100);
+      try{socket.emit('service-bell-send',packet,response=>finish(response))}
+      catch(_){finish(null)}
+    });
+    if(ack?.success){
+      STATE.lastServerAt=now();
+      return true;
+    }
+  }
+
+  /* Secours HTTP historique : la sonnette n'est pas perdue. */
+  return optimisticWrite(
+    'ALERTS_MASTER',
+    {data:payload},
+    auditReason
+  );
+}
+
 async function productionAlert(item,type,detail=""){
   const table=STATE.currentTable||"SALLE";
   const dest=normalizeDestination(item?.dest||item?.destination||item?.category||"cuisine");
@@ -8728,10 +8789,9 @@ async function productionAlert(item,type,detail=""){
     deviceId:STATE.deviceId
   };
 
-  return optimisticWrite(
-    "ALERTS_MASTER",
-    {data:payload},
-    "Alerte production téléphone"
+  return sendServiceBellLive(
+    payload,
+    "Alerte production PAD principal · sonnette LIVE"
   );
 }
 
@@ -8763,10 +8823,9 @@ async function productionMessage(destination,type,detail=""){
     deviceId:STATE.deviceId
   };
 
-  const ok=await optimisticWrite(
-    "ALERTS_MASTER",
-    {data:payload},
-    `Message téléphone vers ${dName}`
+  const ok=await sendServiceBellLive(
+    payload,
+    `Sonnette LIVE PAD principal vers ${dName}`
   );
 
   if(ok){
@@ -21159,5 +21218,10 @@ button[data-act="delete"] {
     animation-duration: 0.04s !important;
 }
 </style>
+
+<script id="ichef-pad-principal-v72-sonnette-live-marker">
+window.__ICHEF_PAD_PRINCIPAL_SONNETTE_LIVE__='V72';
+console.info('[iCHEF V72] PAD PRINCIPAL · SONNETTE LIVE Socket.IO + ACK + secours HTTP active');
+</script>
 </body>
 </html>
