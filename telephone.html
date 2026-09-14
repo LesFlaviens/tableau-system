@@ -10,7 +10,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<!-- iCHEF PAD V70 — CODE + SERVEUR ULTRA RAPIDE · SOCKET FIRST -->
+<!-- iCHEF PAD V71 — CODE + SERVEUR ULTRA RAPIDE · SOCKET FIRST -->
 <link rel="preconnect" href="https://tableau-system.onrender.com" crossorigin>
 <link rel="dns-prefetch" href="//tableau-system.onrender.com">
 <link rel="preload" as="script" href="https://tableau-system.onrender.com/socket.io/socket.io.js" crossorigin="anonymous">
@@ -33,7 +33,7 @@
 </script>
 <script src="https://tableau-system.onrender.com/socket.io/socket.io.js" defer crossorigin="anonymous"></script>
 <!-- iCHEF V58 SOURIS + DOIGT + MULTITOUCH UNIFIÉ SAFE -->
-<title>iCHEF PAD V70 — CODE ULTRA RAPIDE · SERVER LIVE · ARCHITECTURE LECTURE SEULE</title>
+<title>iCHEF PAD V71 — CODE ULTRA RAPIDE · SERVER LIVE · ARCHITECTURE LECTURE SEULE</title>
 <!-- iCHEF V70 : PIN PAD sécurisé · Socket-first · HTTP secours · architecture LIVE lecture seule -->
 <!-- iCHEF V43 : cadrage design réel après PIN / retour -->
 <style>
@@ -7796,7 +7796,7 @@ async function verifyPin(){
     renderRooms();
     renderTables();
     updateToolBadges();
-  }catch(err){console.warn("[iCHEF PAD V70] aperçu rapide",err)}
+  }catch(err){console.warn("[iCHEF PAD V71] aperçu rapide",err)}
   setConnection("VÉRIFICATION…","warn");
 
   /* V70 : aucune pause artificielle de 50 ms. Le PIN part immédiatement. */
@@ -8051,6 +8051,11 @@ async function connectSocket(){
       setConnection("TEMPS RÉEL","good");
       try{hidePadNetworkOverlay?.()}catch(_){}
       applyServerState(s,"socket");
+    });
+
+    /* V71 — SONNETTE LIVE : paquet minuscule, prioritaire sur le gros updateState. */
+    socket.on("service-bell",packet=>{
+      try{applyLiveServiceBell(packet)}catch(err){console.warn("[iCHEF SONNETTE] réception",err?.message||err)}
     });
 
     socket.on("paymentConfigUpdated",packet=>{
@@ -8724,6 +8729,62 @@ function applyDisplay(mode){STATE.display=mode;STORAGE.set("ichef_phone_display"
 function autoDisplay(){if(STATE.display!=="auto")return;const h=new Date().getHours();document.body.classList.toggle("night",h>=22||h<6);document.body.classList.remove("sun")}
 
 /* ---------------- KITCHEN COMM ---------------- */
+/* V71 — SONNETTE LIVE ULTRA RAPIDE
+   1) Socket.IO + ACK serveur en priorité.
+   2) Le serveur persiste ALERTS_MASTER et diffuse immédiatement service-bell.
+   3) /update-order reste le secours si le Socket n'est pas disponible. */
+function applyLiveServiceBell(packet){
+  const payload=(packet&&typeof packet==='object'&&(packet.payload||packet.data))||packet;
+  if(!payload||typeof payload!=='object'||String(payload.type||'').toUpperCase()!=='RING')return false;
+  if(!STATE.activeOrders||typeof STATE.activeOrders!=='object')STATE.activeOrders={};
+  STATE.activeOrders.ALERTS_MASTER={
+    data:clone(payload),
+    updatedAt:packet?.serverTime||packet?.updatedAt||new Date().toISOString()
+  };
+  STATE.lastServerAt=now();
+  try{checkGlobalAlert()}catch(_){}
+  try{scheduleRender()}catch(_){}
+  return true;
+}
+
+async function sendServiceBellLive(payload,auditReason='Sonnette service'){
+  if(!payload||typeof payload!=='object')return false;
+  if(!payload.ringId)payload.ringId='RING_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8);
+
+  /* Retour local instantané, sans attendre le réseau. */
+  applyLiveServiceBell({payload,serverTime:new Date().toISOString()});
+
+  const socket=STATE.socket;
+  if(socket?.connected){
+    const packet={
+      tenantID:STATE.tenantID,
+      pin:STATE.pin,
+      terminal:'PAD',
+      deviceId:STATE.deviceId,
+      payload,
+      auditReason
+    };
+    const ack=await new Promise(resolve=>{
+      let done=false;
+      const finish=value=>{if(done)return;done=true;clearTimeout(timer);resolve(value||null)};
+      const timer=setTimeout(()=>finish(null),1100);
+      try{socket.emit('service-bell-send',packet,response=>finish(response))}
+      catch(_){finish(null)}
+    });
+    if(ack?.success){
+      STATE.lastServerAt=now();
+      return true;
+    }
+  }
+
+  /* Secours HTTP historique : aucune alerte n'est perdue. */
+  return optimisticWrite(
+    'ALERTS_MASTER',
+    {data:payload},
+    auditReason
+  );
+}
+
 async function productionAlert(item,type,detail=""){
   const table=STATE.currentTable||"SALLE";
   const dest=normalizeDestination(item?.dest||item?.destination||item?.category||"cuisine");
@@ -8762,10 +8823,9 @@ async function productionAlert(item,type,detail=""){
     deviceId:STATE.deviceId
   };
 
-  return optimisticWrite(
-    "ALERTS_MASTER",
-    {data:payload},
-    "Alerte production téléphone"
+  return sendServiceBellLive(
+    payload,
+    "Alerte production PAD · sonnette LIVE"
   );
 }
 
@@ -8797,10 +8857,9 @@ async function productionMessage(destination,type,detail=""){
     deviceId:STATE.deviceId
   };
 
-  const ok=await optimisticWrite(
-    "ALERTS_MASTER",
-    {data:payload},
-    `Message téléphone vers ${dName}`
+  const ok=await sendServiceBellLive(
+    payload,
+    `Sonnette LIVE vers ${dName}`
   );
 
   if(ok){
@@ -10472,6 +10531,7 @@ body.ichef-pad-fast-opening #statusbar{opacity:.95}
 
 <!-- iCHEF V62 — FIX CORE QUI MANGE QUOI : HANDLER PRODUIT UNIQUE -->
 <!-- iCHEF V63 — FIX RÉEL : aucun clone Produits, aucun override différé C/cuisson -->
+
 </body></html>`;
 }
 
@@ -21137,7 +21197,7 @@ window.tableStats = function(table) {
 
 <script id="ichef-pad-v67-readonly-marker">
 window.__ICHEF_PAD_ARCHITECTURE_READONLY__=true;
-window.__ICHEF_PAD_VERSION__="PAD-V70-CODE-ULTRA-RAPIDE-SOCKET-FIRST-READONLY";
+window.__ICHEF_PAD_VERSION__="PAD-V71-SONNETTE-LIVE-ULTRA-RAPIDE-READONLY";
 </script>
 
 <script id="ichef-pad-v70-ultra-fast-login-prewarm">
@@ -21176,5 +21236,10 @@ window.__ICHEF_PAD_VERSION__="PAD-V70-CODE-ULTRA-RAPIDE-SOCKET-FIRST-READONLY";
 </script>
 <!-- ICHEF PAD V70 SAFE — code allégé · Socket-first · HTTP uniquement en secours -->
 
+
+<script id="ichef-pad-v71-sonnette-live-marker">
+window.__ICHEF_PAD_SONNETTE_LIVE__='V71';
+console.info('[iCHEF V71] SONNETTE LIVE Socket.IO + ACK + secours HTTP active');
+</script>
 </body>
 </html>
