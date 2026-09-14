@@ -5328,6 +5328,9 @@ async function verifyPin(){
     STATE.specialite=j.specialite||"";
     STATE.authenticated=true;
 
+    /* V10 : architecture locale prête immédiatement, serveur maître en arrière-plan. */
+    try{phoneHydrateArchitectureCache()}catch(_){}
+
     /* CONNEXION STABLE RAPIDE : le PIN est la seule étape bloquante. */
     $("login")?.classList.add("hidden");
     $("app")?.classList.remove("hidden");
@@ -5454,6 +5457,103 @@ function loadSocket(){
   return STATE.socketLoading;
 }
 
+
+/* =========================================================
+   TÉLÉPHONE V10 — ARCHITECTURE SOURCE UNIQUE + CACHE RAPIDE
+   - Même source serveur que PAD : activeOrders.ARCHITECTURE
+   - Socket dédié architectureState / architecture-changed
+   - Cache local = architecture uniquement (aucune commande/client)
+   - Le cache sert uniquement au premier rendu immédiat ; le serveur reste maître.
+   ========================================================= */
+const ICHEF_PHONE_ARCH_CACHE_PREFIX="ichef_phone_architecture_v10_";
+let ICHEF_PHONE_ARCH_FALLBACK_TIMER=0;
+
+function phoneArchitectureCacheKey(){
+  return ICHEF_PHONE_ARCH_CACHE_PREFIX+encodeURIComponent(String(STATE?.tenantID||""));
+}
+function phoneArchitectureLooksUseful(raw){
+  return !!(raw&&typeof raw==="object"&&(
+    (Array.isArray(raw.rooms)&&raw.rooms.length)||
+    (Array.isArray(raw.tables)&&raw.tables.length)||
+    (Array.isArray(raw.zones)&&raw.zones.length)||
+    (Array.isArray(raw.elements)&&raw.elements.length)
+  ));
+}
+function phoneArchitectureCurrent(){
+  try{
+    const raw=unwrap(STATE?.activeOrders?.ARCHITECTURE)||{};
+    return raw&&typeof raw==="object"?raw:{};
+  }catch(_){return {}}
+}
+function phoneCacheArchitecture(raw=phoneArchitectureCurrent()){
+  if(!STATE?.tenantID||!phoneArchitectureLooksUseful(raw))return false;
+  try{
+    localStorage.setItem(phoneArchitectureCacheKey(),JSON.stringify({
+      tenantID:String(STATE.tenantID),
+      savedAt:Date.now(),
+      architecture:raw
+    }));
+    return true;
+  }catch(_){return false}
+}
+function phoneHydrateArchitectureCache(){
+  if(!STATE?.tenantID)return false;
+  /* Ne jamais remplacer une architecture déjà reçue du serveur. */
+  if(phoneArchitectureLooksUseful(phoneArchitectureCurrent()))return false;
+  try{
+    const parsed=JSON.parse(localStorage.getItem(phoneArchitectureCacheKey())||"null");
+    if(!parsed||String(parsed.tenantID||"")!==String(STATE.tenantID))return false;
+    if(Date.now()-Number(parsed.savedAt||0)>30*24*60*60*1000)return false;
+    const architecture=parsed.architecture;
+    if(!phoneArchitectureLooksUseful(architecture))return false;
+    if(!STATE.activeOrders||typeof STATE.activeOrders!=="object")STATE.activeOrders={};
+    STATE.activeOrders.ARCHITECTURE={data:architecture,updatedAt:new Date(Number(parsed.savedAt)||Date.now()).toISOString(),cache:true};
+    try{applyDerived()}catch(_){return false}
+    try{window.dispatchEvent(new CustomEvent('ichef:live-state-updated',{detail:{source:'architecture-cache'}}))}catch(_){}
+    try{window.schedulePadServicePrewarm?.()}catch(_){}
+    return true;
+  }catch(_){return false}
+}
+function phonePublishArchitecture(architecture,serverTime){
+  if(!architecture||typeof architecture!=="object"||!window.STATE)return false;
+  if(!STATE.activeOrders||typeof STATE.activeOrders!=="object")STATE.activeOrders={};
+  STATE.activeOrders.ARCHITECTURE={
+    ...(STATE.activeOrders.ARCHITECTURE&&typeof STATE.activeOrders.ARCHITECTURE==="object"?STATE.activeOrders.ARCHITECTURE:{}),
+    data:architecture,
+    updatedAt:serverTime||new Date().toISOString(),
+    cache:false
+  };
+  try{applyDerived()}catch(err){console.warn('[iCHEF TELEPHONE V10] architecture invalide',err);return false}
+  phoneCacheArchitecture(architecture);
+  try{window.dispatchEvent(new CustomEvent('ichef:live-state-updated',{detail:{source:'architectureState'}}))}catch(_){}
+  try{window.refreshPadServiceLive?.()}catch(_){}
+  try{window.schedulePadServicePrewarm?.()}catch(_){}
+  return true;
+}
+function phoneRequestArchitectureState(reason="manual"){
+  if(!STATE?.authenticated||STATE?.demo||!navigator.onLine)return false;
+  const socket=STATE.socket;
+  if(socket?.connected){
+    try{
+      socket.emit('requestArchitectureState',{
+        tenantID:String(STATE.tenantID||""),
+        deviceId:String(STATE.deviceId||""),
+        page:'TELEPHONE'
+      });
+      clearTimeout(ICHEF_PHONE_ARCH_FALLBACK_TIMER);
+      ICHEF_PHONE_ARCH_FALLBACK_TIMER=setTimeout(()=>{
+        if(!STATE.syncing&&navigator.onLine)syncFull('phone-architecture-'+reason).catch(()=>{});
+      },1200);
+      return true;
+    }catch(_){}
+  }
+  clearTimeout(ICHEF_PHONE_ARCH_FALLBACK_TIMER);
+  ICHEF_PHONE_ARCH_FALLBACK_TIMER=setTimeout(()=>{
+    if(!STATE.syncing&&navigator.onLine)syncFull('phone-architecture-'+reason).catch(()=>{});
+  },250);
+  return false;
+}
+
 async function connectSocket(){
   try{await loadSocket();if(STATE.socket)return;
     const socket=window.io(APP_SERVER_URL,{
@@ -5470,8 +5570,35 @@ async function connectSocket(){
         deviceId:STATE.deviceId
       }
     });STATE.socket=socket;
-    socket.on("connect",()=>{STATE.connected=true;setConnection("TEMPS RÉEL","good");socket.emit("joinTenant",String(STATE.tenantID));retryFailedWrites();if(!STATE.lastServerAt||now()-STATE.lastServerAt>5000)syncFull("reconnect")});
-    socket.on("updateState",s=>{STATE.connected=true;STATE.lastServerAt=now();setConnection("TEMPS RÉEL","good");applyServerState(s,"socket")});
+    socket.on("connect",()=>{
+      STATE.connected=true;setConnection("TEMPS RÉEL","good");
+      socket.emit("joinTenant",String(STATE.tenantID));
+      retryFailedWrites();
+      /* Architecture demandée immédiatement, sans attendre le syncFull complet. */
+      phoneRequestArchitectureState("connect");
+      if(!STATE.lastServerAt||now()-STATE.lastServerAt>5000)syncFull("reconnect");
+    });
+    socket.on("updateState",s=>{
+      STATE.connected=true;STATE.lastServerAt=now();setConnection("TEMPS RÉEL","good");
+      applyServerState(s,"socket");
+    });
+    socket.on("architectureState",packet=>{
+      if(packet?.tenantID&&text(packet.tenantID)!==text(STATE.tenantID))return;
+      clearTimeout(ICHEF_PHONE_ARCH_FALLBACK_TIMER);
+      phonePublishArchitecture(packet?.architecture||packet?.data||null,packet?.serverTime||packet?.updatedAt);
+    });
+    socket.on("architecture-changed",packet=>{
+      if(packet?.tenantID&&text(packet.tenantID)!==text(STATE.tenantID))return;
+      const architecture=packet?.architecture||packet?.data||null;
+      if(architecture){
+        clearTimeout(ICHEF_PHONE_ARCH_FALLBACK_TIMER);
+        phonePublishArchitecture(architecture,packet?.serverTime||packet?.updatedAt);
+      }else phoneRequestArchitectureState("changed");
+    });
+    socket.on("server-state-changed",evt=>{
+      if(evt?.tenantID&&text(evt.tenantID)!==text(STATE.tenantID))return;
+      if(String(evt?.tableId||"").toUpperCase()==="ARCHITECTURE")phoneRequestArchitectureState("server-state");
+    });
     socket.on("paymentConfigUpdated",packet=>{
       if(packet?.tenantID && text(packet.tenantID)!==text(STATE.tenantID))return;
       if(packet?.paymentConfig)applyTelephonePaymentConfig(packet.paymentConfig);
@@ -5526,6 +5653,8 @@ function applyServerState(serverState,source){
   if(serverState.sasConfig)STATE.sasConfig=serverState.sasConfig;
 
   applyDerived();
+  /* V10 : mémorise seulement l'architecture fraîche pour le prochain affichage instantané. */
+  try{phoneCacheArchitecture()}catch(_){}
 
   if(
     openedTable &&
@@ -5545,9 +5674,20 @@ function applyServerState(serverState,source){
   checkGlobalAlert();
 }
 
-window.addEventListener("online",()=>{setConnection("RECONNEXION","warn");connectSocket();retryFailedWrites();syncFull("online")},{passive:true});
+window.addEventListener("online",()=>{
+  setConnection("RECONNEXION","warn");connectSocket();retryFailedWrites();
+  phoneRequestArchitectureState("online");
+  syncFull("online");
+},{passive:true});
 window.addEventListener("offline",()=>{STATE.connected=false;setConnection("HORS LIGNE","bad")},{passive:true});
-document.addEventListener("visibilitychange",()=>{if(!document.hidden&&STATE.authenticated){connectSocket();if(!STATE.lastServerAt||now()-STATE.lastServerAt>10000)syncFull("visible")}});
+document.addEventListener("visibilitychange",()=>{
+  if(!document.hidden&&STATE.authenticated){
+    connectSocket();
+    phoneRequestArchitectureState("visible");
+    if(!STATE.lastServerAt||now()-STATE.lastServerAt>10000)syncFull("visible");
+  }
+});
+window.addEventListener("focus",()=>{if(STATE.authenticated)phoneRequestArchitectureState("focus")},{passive:true});
 
 /* ---------------- DATA NORMALIZATION ---------------- */
 function normalizeArchitecture(){
@@ -17090,8 +17230,12 @@ rebind();
       return;
     }
     try{
-      /* Affichage local immédiat. La synchro téléphone continue déjà via Socket.IO. */
-      return window.openPadServiceHome({skipSync:true,stableResume:true});
+      /* V10 : DOM préchauffé + cache architecture. Aucun HTTP dans le chemin critique. */
+      try{window.preparePadServiceHome?.()}catch(_){}
+      const result=window.openPadServiceHome({skipSync:true,stableResume:true});
+      /* Vérification serveur directe hors du chemin d'affichage. */
+      setTimeout(()=>{try{phoneRequestArchitectureState("plan-open")}catch(_){}},0);
+      return result;
     }catch(err){
       console.error('[iCHEF TELEPHONE] ouverture plan principal',err);
       if(typeof toast==='function')toast('Impossible d’ouvrir le plan interactif',true);
@@ -17140,5 +17284,7 @@ rebind();
     z-index: 2000 !important;
 }
 </style>
+
+<!-- ICHEF TELEPHONE V10 — architecture identique au PAD, Socket direct, cache structurel et préchauffage ultra rapide. -->
 </body>
 </html>
