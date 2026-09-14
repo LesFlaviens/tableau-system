@@ -7603,28 +7603,14 @@ function syncTenantLoginField(forceShow=false){
 /* =========================================================
    HYPER-BOOT V5 : CUT DIRECT (0 ms) SANS PLAN PARASITAIRE
 ========================================================= */
+/* =========================================================
+   HYPER-BOOT V6 : CUT DIRECT (0 ms) ASYNCHRONE ET SANS PARASITES
+========================================================= */
 const ICHEF_FAST_LAYOUT_PREFIX = 'ichef_pad_fast_layout_v59:';
 let ICHEF_PAD_INITIAL_BOOT_PROMISE = null;
 
 function padFastLayoutKey(tenant = STATE.tenantID) {
   return ICHEF_FAST_LAYOUT_PREFIX + String(tenant || '').trim().slice(0, 96);
-}
-
-function cachePadFastLayout() {
-  try {
-    if (!STATE.tenantID) return;
-    const raw = unwrap(STATE.activeOrders?.ARCHITECTURE);
-    if (!raw || typeof raw !== 'object') return;
-    const safe = {
-      rooms: Array.isArray(raw.rooms) ? clone(raw.rooms) : [],
-      tables: Array.isArray(raw.tables) ? clone(raw.tables) : [],
-      zones: Array.isArray(raw.zones) ? clone(raw.zones) : [],
-      elements: Array.isArray(raw.elements) ? clone(raw.elements) : [],
-      canvas: raw.canvas && typeof raw.canvas === 'object' ? clone(raw.canvas) : {},
-      cachedAt: Date.now()
-    };
-    localStorage.setItem(padFastLayoutKey(), JSON.stringify(safe));
-  } catch (_) {}
 }
 
 function startPadBootNonBlocking() {
@@ -7638,13 +7624,13 @@ function startPadBootNonBlocking() {
   return ICHEF_PAD_INITIAL_BOOT_PROMISE;
 }
 
-async function verifyPin() {
+function verifyPin() {
   if (STATE.loginBusy) return;
 
   if (!navigator.onLine) {
     loginMessage("Connexion Internet requise pour ouvrir le PAD");
-    updatePadLoginNetworkStatus();
-    showPadNetworkOverlay("Aucune connexion Internet. Le PAD principal ne peut pas être ouvert sans le serveur iCHEF.");
+    if(typeof updatePadLoginNetworkStatus === "function") updatePadLoginNetworkStatus();
+    if(typeof showPadNetworkOverlay === "function") showPadNetworkOverlay("Aucune connexion Internet. Le PAD principal ne peut pas être ouvert sans le serveur iCHEF.");
     return;
   }
 
@@ -7654,13 +7640,13 @@ async function verifyPin() {
 
   if (!tenantCandidate) {
     loginMessage("Identifiant établissement requis");
-    syncTenantLoginField(true);
+    if(typeof syncTenantLoginField === "function") syncTenantLoginField(true);
     return;
   }
 
   if (!/^[A-Za-z0-9._:-]{1,96}$/.test(tenantCandidate)) {
     loginMessage("Identifiant établissement invalide");
-    syncTenantLoginField(true);
+    if(typeof syncTenantLoginField === "function") syncTenantLoginField(true);
     return;
   }
 
@@ -7669,33 +7655,41 @@ async function verifyPin() {
     return;
   }
 
+  // 1. VERROUILLAGE ET MISE EN MÉMOIRE
   STATE.loginBusy = true;
   if (validateBtn) validateBtn.disabled = true;
-  loginMessage("Connexion en cours…");
-
+  
   STATE.tenantID = tenantCandidate;
   STORAGE.set("ichef_tenant_id", STATE.tenantID);
   const pinAttempt = String(STATE.loginPin);
+  STATE.pin = pinAttempt;
+  STATE.loginPin = "";
+  if(typeof renderPin === "function") renderPin();
 
-  try {
-    // Requête avec le délai serveur étendu à 45s
-    const r = await serverFetch("/api/verify-pin", {
-      method: "POST",
-      body: JSON.stringify({
-        tenantID: STATE.tenantID,
-        pin: pinAttempt,
-        deviceId: STATE.deviceId,
-        page: "PAD",
-        terminal: "PAD"
-      })
-    });
+  // 2. BASCULE VISUELLE IMMÉDIATE (0 ms)
+  $("login")?.classList.add("hidden");
+  $("app")?.classList.remove("hidden");
+  $("tools")?.classList.remove("hidden");
+  
+  // Nettoyage de sécurité pour garantir un écran noir propre sans tables parasites
+  const tablesEl = $("tables");
+  if(tablesEl) tablesEl.innerHTML = "";
+  setConnection("VÉRIFICATION...", "warn");
 
+  // 3. REQUÊTE RÉSEAU EN ARRIÈRE-PLAN (NON BLOQUANTE)
+  serverFetch("/api/verify-pin", {
+    method: "POST",
+    body: JSON.stringify({
+      tenantID: STATE.tenantID,
+      pin: pinAttempt,
+      deviceId: STATE.deviceId,
+      page: "PAD",
+      terminal: "PAD"
+    })
+  })
+  .then(async r => {
     const j = await r.json().catch(() => ({}));
     if (!r.ok || !j.success) throw new Error(j.error || j.message || "Code refusé");
-
-    STATE.pin = pinAttempt;
-    STATE.loginPin = "";
-    renderPin();
 
     if (j.safeTenantID) {
       const safeTenant = text(j.safeTenantID).trim().slice(0, 96);
@@ -7709,31 +7703,31 @@ async function verifyPin() {
     STATE.authenticated = true;
     STATE.deviceReplaced = false;
 
-    loadPaymentConfig(true).catch(() => {});
+    if(typeof loadPaymentConfig === "function") loadPaymentConfig(true).catch(() => {});
 
     try { window.closePadArchitect?.(); } catch (_) {}
     document.body.classList.remove("ichef-plan-toggle-open");
 
-    // BASCULE INSTANTANÉE (0 ms) : On masque le login et on affiche directement l'app
-    $("login")?.classList.add("hidden");
-    $("app")?.classList.remove("hidden");
-    $("tools")?.classList.remove("hidden");
-    loginMessage("");
-
-    // Démarrage du flux sans injection de squelette ni plan fantôme
+    // Démarrage du moteur pour récupérer les vraies tables
     startPadBootNonBlocking();
-
-  } catch (e) {
+  })
+  .catch(e => {
+    // 4. ROLLBACK INSTANTANÉ EN CAS D'ÉCHEC (Mauvais PIN ou Erreur Réseau)
     STATE.authenticated = false;
     STATE.pin = "";
     STATE.loginPin = "";
-    renderPin();
-    syncTenantLoginField(true);
+    if(typeof renderPin === "function") renderPin();
+    if(typeof syncTenantLoginField === "function") syncTenantLoginField(true);
+    
+    $("app")?.classList.add("hidden");
+    $("tools")?.classList.add("hidden");
+    $("login")?.classList.remove("hidden");
     loginMessage(e?.message || "Connexion impossible");
-  } finally {
+  })
+  .finally(() => {
     STATE.loginBusy = false;
     if (validateBtn) validateBtn.disabled = false;
-  }
+  });
 }
 
 $("pinPad")?.addEventListener("click",e=>{
