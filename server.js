@@ -2,11 +2,6 @@
  * ==============================================================
  * 🧠 iCHEF EMPIRE OS — CORE SERVER V56.7 · CONNEXION PAD/TÉLÉPHONE ULTRA RAPIDE (2026.09.14)
  * ==============================================================
- * Contrat central stable pour multi-établissements :
- * Réservations · Plan/PAD/Téléphone · Cuisine/Bar/Pâtisserie · Anti-Rush
- * RH · Paiement/Caisse/Fiscal · Administration · Socket.IO.
- * Les évolutions UI doivent rester côté HTML tant que ce contrat suffit.
- * V56.6 : préchauffage Render/Mongo + vérification PIN sans lectures DB en double.
  */
 const express = require('express');
 const cors = require('cors');
@@ -16,6 +11,7 @@ const mongoose = require('mongoose');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const twilio = require('twilio'); // 📡 INTÉGRATION TWILIO (SMS/WHATSAPP)
 const nodemailer = require('nodemailer');
+const compression = require('compression');
 
 // 🔥 WEBSOCKETS POUR LE TEMPS RÉEL 🔥
 const http = require('http');
@@ -45,6 +41,19 @@ server.on('clientError', (err, socket) => {
         socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
     }
 });
+// ==========================================================
+// 🌐 CONFIGURATION HTTP / CORS / CACHE
+// ==========================================================
+
+// 🔥 ACTIVATION DE LA COMPRESSION RÉSEAU (GZIP)
+app.use(compression({
+    level: 6, 
+    threshold: 10 * 1024 
+}));
+
+// IMPORTANT : le webhook Stripe doit recevoir le corps BRUT
+// avant express.json().
+app.use('/webhook', express.raw({ type: 'application/json' }));
 // ==========================================================
 // 🌐 CONFIGURATION CORS UNIFIÉE (API + WEBSOCKETS)
 // ==========================================================
@@ -3894,10 +3903,6 @@ mongoose.connection.on('disconnected', () => {
 mongoose.connection.on('error', err => {
     console.error('❌ MongoDB erreur :', err?.message || err);
 });
-
-// ==========================================================
-// 🏢 TENANT / LICENCE
-// ==========================================================
 
 // ==========================================================
  // 💳 CONFIGURATION DES TPE PAR ÉTABLISSEMENT
