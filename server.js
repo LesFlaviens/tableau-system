@@ -1020,24 +1020,25 @@ timestamp: new Date().toISOString()
 });
 return true;
 }
-async function ichefReleaseDueAntiRushOrders(tenantID) {
+async function ichefReleaseDueAntiRushOrders(tenantID, stateInput = null) {
 const safeID = cleanString(tenantID);
-const state = await AppState.findOne({ tenantID: safeID }, { activeOrders: 1 }).lean();
-if (!state?.activeOrders) return 0;
+const state = stateInput || await AppState.findOne({ tenantID: safeID }, { activeOrders: 1 }).lean();
+if (!state?.activeOrders) return { scheduled: 0, released: 0 };
 let scheduled = 0;
+let released = 0;
 for (const [tableId, order] of Object.entries(state.activeOrders)) {
 if (!ichefAntiRushIsLiveOrderKey(tableId)) continue;
 if (order?.antiRush?.managedByServer !== true || order?.antiRush?.state !== 'WAITING') continue;
 const when = new Date(order.antiRush.releaseAt || 0).getTime();
 if (!Number.isFinite(when)) continue;
 if (when <= Date.now()) {
-await ichefReleaseAntiRushOrder(safeID, tableId);
+if (await ichefReleaseAntiRushOrder(safeID, tableId)) released++;
 } else {
 ichefScheduleAntiRushRelease(safeID, tableId, when);
 }
 scheduled++;
 }
-return scheduled;
+return { scheduled, released };
 }
 function ichefAntiRushMenuPrepTime(item = {}) {
 return Number(
@@ -3076,6 +3077,7 @@ process.env.MONGO_MIN_POOL_SIZE ||
 );
 let ichefMongoRetryTimer = null;
 let ichefMongoConnectRunning = false;
+let ichefMongoConnectPromise = null;
 let ichefMongoRetryAttempt = 0;
 function ichefMongoRetryDelay() {
 return Math.min(
@@ -3117,14 +3119,17 @@ ichefMongoRetryTimer.unref?.();
 async function ichefConnectMongo(
 reason = 'startup'
 ) {
-if (
-!mongoURI ||
-ichefMongoConnectRunning ||
-mongoose.connection.readyState === 1
-) {
-return;
+if (!mongoURI) {
+return false;
+}
+if (mongoose.connection.readyState === 1) {
+return true;
+}
+if (ichefMongoConnectPromise) {
+return ichefMongoConnectPromise;
 }
 ichefMongoConnectRunning = true;
+ichefMongoConnectPromise = (async () => {
 try {
 console.log(
 `⏳ Connexion MongoDB iCHEF (${reason})…`
@@ -3154,6 +3159,7 @@ ichefMongoRetryAttempt = 0;
 console.log(
 `✅ Base de données iCHEF Online | pool=${ICHEF_MONGO_MIN_POOL}-${ICHEF_MONGO_MAX_POOL}`
 );
+return true;
 } catch (error) {
 ichefMongoRetryAttempt += 1;
 console.error(
@@ -3163,9 +3169,29 @@ error?.message || error
 ichefScheduleMongoReconnect(
 'connect-failed'
 );
+return false;
 } finally {
 ichefMongoConnectRunning = false;
+ichefMongoConnectPromise = null;
 }
+})();
+return ichefMongoConnectPromise;
+}
+async function ichefAwaitMongoReady(timeoutMs = 2500, reason = 'request') {
+if (!mongoURI) return false;
+if (mongoose.connection.readyState === 1) return true;
+const connectPromise = Promise.resolve(
+ichefConnectMongo(reason)
+).catch(() => false);
+const timeoutPromise = new Promise(resolve => {
+const timer = setTimeout(
+() => resolve(false),
+Math.max(250, Number(timeoutMs) || 2500)
+);
+timer.unref?.();
+});
+await Promise.race([connectPromise, timeoutPromise]);
+return mongoose.connection.readyState === 1;
 }
 if (!mongoURI) {
 console.error(
@@ -3427,7 +3453,8 @@ return 50;
 }
 return 5;
 }
-async function syncTenantScreenLimit(tenant) {
+async function syncTenantScreenLimit(tenant, options = {}) {
+const deferSave = options?.deferSave === true;
 if (!tenant) {
 return 5;
 }
@@ -3469,7 +3496,7 @@ tenant.demoTemporaryExtraScreens = 0;
 tenant.demoTemporaryScreensUntil = null;
 changed = true;
 }
-if (changed) {
+if (changed && !deferSave) {
 await tenant.save();
 }
 return effectiveLimit;
@@ -3482,7 +3509,9 @@ Number.isFinite(currentLimit) && currentLimit > 0
 : basePlanLimit;
 if (currentLimit !== effectiveLimit) {
 tenant.maxScreens = effectiveLimit;
+if (!deferSave) {
 await tenant.save();
+}
 console.log(
 `🖥️ Limite écrans mise à jour : ` +
 `${tenant.tenantID} → ${effectiveLimit}`
@@ -5060,6 +5089,7 @@ onDuty: true
 };
 }
 app.post('/api/verify-pin', async (req, res) => {
+const verifyStartedAt = Date.now();
 const {
 tenantID,
 pin,
@@ -5068,38 +5098,52 @@ terminal
 } = req.body || {};
 const safeID = cleanString(tenantID);
 const submittedPin = String(pin || '').trim();
-if (
-!mongoURI ||
-mongoose.connection.readyState !== 1
-) {
-res.setHeader(
-'Retry-After',
-'3'
-);
-ichefConnectMongo(
-'verify-pin'
-);
+if (!safeID || !/^\d{4,12}$/.test(submittedPin)) {
+return res.status(401).json({
+success: false,
+error: 'Session PAD/Téléphone invalide.'
+});
+}
+if (!mongoURI || mongoose.connection.readyState !== 1) {
+const ready = mongoURI
+? await ichefAwaitMongoReady(2800, 'verify-pin')
+: false;
+if (!ready) {
+res.setHeader('Retry-After', '2');
 return res.status(503).json({
 success: false,
 code: 'MONGO_NOT_READY',
-error:
-!mongoURI
+error: !mongoURI
 ? 'MONGO_URI n’est pas configurée sur le serveur.'
-: 'MongoDB n’est pas encore connecté.',
-mongoReadyState:
-mongoose.connection.readyState,
-retryAfterMs:
-3000
+: 'MongoDB est en cours de connexion.',
+mongoReadyState: mongoose.connection.readyState,
+retryAfterMs: 1500
 });
 }
+}
 try {
-const tenant = await Tenant.findOne({
-tenantID: safeID
-});
+const tenant = await Tenant.findOne(
+{ tenantID: safeID },
+{
+tenantID: 1,
+status: 1,
+plan: 1,
+specialite: 1,
+pin: 1,
+maxScreens: 1,
+registeredDevices: 1,
+moduleAccess: 1,
+demoExpiration: 1,
+demoBaseScreens: 1,
+stripeConnectionBaseScreens: 1,
+demoTemporaryExtraScreens: 1,
+demoTemporaryScreensUntil: 1
+}
+);
 if (!tenant) {
 return res.status(404).json({
 success: false,
-error: "Inconnu."
+error: 'Inconnu.'
 });
 }
 if (
@@ -5108,13 +5152,13 @@ new Date() > new Date(tenant.demoExpiration)
 ) {
 return res.status(403).json({
 success: false,
-error: "Démonstration expirée (limite de 24h atteinte)."
+error: 'Démonstration expirée (limite de 24h atteinte).'
 });
 }
 if (tenant.status === 'SUSPENDU') {
 return res.status(403).json({
 success: false,
-error: "Licence suspendue ou en attente d'approbation manuelle."
+error: 'Licence suspendue ou en attente d’approbation manuelle.'
 });
 }
 const isMaster =
@@ -5123,9 +5167,10 @@ let state = null;
 let staffMember = null;
 let roleAttribue = isMaster ? 'MASTER' : 'STAFF';
 if (!isMaster) {
-state = await AppState.findOne({
-tenantID: tenant.tenantID
-});
+state = await AppState.findOne(
+{ tenantID: tenant.tenantID },
+{ 'activeOrders.STAFF_ACCESS.data': 1 }
+).lean();
 const staffAccess =
 Array.isArray(state?.activeOrders?.STAFF_ACCESS?.data)
 ? state.activeOrders.STAFF_ACCESS.data
@@ -5137,7 +5182,7 @@ s?.active !== false
 if (!staffMember) {
 return res.status(401).json({
 success: false,
-error: "Code PIN incorrect."
+error: 'Code PIN incorrect.'
 });
 }
 roleAttribue =
@@ -5173,7 +5218,7 @@ terminalAccess.requiresDuty === true
 });
 }
 const screenLimit =
-await syncTenantScreenLimit(tenant);
+await syncTenantScreenLimit(tenant, { deferSave: true });
 if (!Array.isArray(tenant.registeredDevices)) {
 tenant.registeredDevices = [];
 }
@@ -5187,7 +5232,6 @@ uniqueDevices.length !==
 tenant.registeredDevices.length
 ) {
 tenant.registeredDevices = uniqueDevices;
-await tenant.save();
 }
 if (
 deviceId &&
@@ -5197,6 +5241,9 @@ if (
 tenant.registeredDevices.length >=
 screenLimit
 ) {
+if (tenant.isModified()) {
+await tenant.save();
+}
 return res.status(403).json({
 success: false,
 error:
@@ -5209,12 +5256,19 @@ availableScreens: 0
 });
 }
 tenant.registeredDevices.push(deviceId);
+tenant.markModified('registeredDevices');
+}
+if (tenant.isModified()) {
 await tenant.save();
 }
 const resolvedStaff =
 terminalAccess.staff ||
 staffMember ||
 null;
+res.setHeader(
+'Server-Timing',
+`verify-pin;dur=${Math.max(0, Date.now() - verifyStartedAt)}`
+);
 return res.json({
 success: true,
 plan: tenant.plan,
@@ -5268,7 +5322,7 @@ moduleID
 });
 } catch (error) {
 console.error(
-"Erreur verify-pin :",
+'Erreur verify-pin :',
 error
 );
 const mongoUnavailable =
@@ -5284,7 +5338,7 @@ ichefConnectMongo(
 );
 res.setHeader(
 'Retry-After',
-'3'
+'2'
 );
 return res.status(503).json({
 success: false,
@@ -5294,13 +5348,13 @@ error:
 mongoReadyState:
 mongoose.connection.readyState,
 retryAfterMs:
-3000
+1500
 });
 }
 return res.status(500).json({
 success: false,
 code: 'VERIFY_PIN_ERROR',
-error: "Erreur serveur."
+error: 'Erreur serveur.'
 });
 }
 });
@@ -8554,17 +8608,26 @@ console.log(
 });
 });
 app.get('/get-current-state', async (req, res) => {
+const startedAt = Date.now();
 try {
 const tenantID = cleanString(req.query.tenantID);
 if (!tenantID) return res.status(400).json({ success: false, error: 'tenantID manquant.' });
 res.setHeader('Cache-Control', 'no-store, max-age=0');
-await ichefReleaseDueAntiRushOrders(tenantID).catch(error =>
-console.warn('[iCHEF ANTI-RUSH recovery]', error?.message || error)
+let state = await AppState.findOne({ tenantID }).lean();
+const recovery = await ichefReleaseDueAntiRushOrders(tenantID, state).catch(error => {
+console.warn('[iCHEF ANTI-RUSH recovery]', error?.message || error);
+return { scheduled: 0, released: 0 };
+});
+if (Number(recovery?.released || 0) > 0) {
+state = await AppState.findOne({ tenantID }).lean();
+}
+res.setHeader(
+'Server-Timing',
+`get-state;dur=${Math.max(0, Date.now() - startedAt)}`
 );
-const state = await AppState.findOne({ tenantID }).lean();
 return res.json(state || { tenantID, activeOrders: {} });
 } catch(e) {
-console.error("Erreur /get-current-state:", e);
+console.error('Erreur /get-current-state:', e);
 return res.status(500).json({ success: false, error: 'État serveur indisponible.' });
 }
 });
