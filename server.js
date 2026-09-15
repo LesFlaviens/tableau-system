@@ -3340,6 +3340,21 @@ registeredDevices: {
 type: [String],
 default: []
 },
+// V57.0 — statistiques de connexions client.
+// Incrémentées uniquement après une authentification PAD/TÉLÉPHONE réussie.
+// Les reconnexions Socket.IO ne sont jamais comptées.
+loginCount: {
+type: Number,
+default: 0
+},
+lastLoginAt: {
+type: Date,
+default: null
+},
+lastLoginTerminal: {
+type: String,
+default: ''
+},
 config: {
 stripeCustomerId: String,
 stripeAccountId: String
@@ -5265,6 +5280,34 @@ const resolvedStaff =
 terminalAccess.staff ||
 staffMember ||
 null;
+
+// V57.0 — compteur d'utilisation client.
+// Uniquement après un PIN accepté sur un vrai terminal de service.
+// Une reconnexion Socket.IO, un changement de réseau ou un déverrouillage
+// d'architecture ne doit jamais augmenter ce compteur.
+const loginTerminal = String(terminal || '').trim().toUpperCase();
+if (loginTerminal === 'PAD' || loginTerminal === 'TELEPHONE') {
+const loginAt = new Date();
+setImmediate(() => {
+Tenant.updateOne(
+{ tenantID: tenant.tenantID },
+{
+$inc: { loginCount: 1 },
+$set: {
+lastLoginAt: loginAt,
+lastLoginTerminal: loginTerminal
+}
+}
+).catch(error => {
+console.warn(
+'[iCHEF V57.0] compteur connexion client',
+tenant.tenantID,
+error?.message || error
+);
+});
+});
+}
+
 res.setHeader(
 'Server-Timing',
 `verify-pin;dur=${Math.max(0, Date.now() - verifyStartedAt)}`
@@ -6733,6 +6776,10 @@ archivedAt: t.archivedAt || null,
 maxScreens: t.maxScreens,
 maxStaff: t.maxStaff,
 activeScreens: t.registeredDevices ? t.registeredDevices.length : 0,
+// V57.0 — nombre réel de PIN PAD/Téléphone acceptés.
+loginCount: Math.max(0, Number(t.loginCount) || 0),
+lastLoginAt: t.lastLoginAt || null,
+lastLoginTerminal: String(t.lastLoginTerminal || ''),
 paymentConfig: t.paymentConfig || {
 enabled: true,
 defaultCurrency: 'CHF',
