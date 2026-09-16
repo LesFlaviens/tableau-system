@@ -8795,7 +8795,7 @@ function renderDirectorRequests() {
 
     function payrollStaff(){try{return typeof getDir==='function'?(getDir()||[]).filter(s=>s.active!==false):[]}catch(e){return []}}
     function staffById(id){return payrollStaff().find(s=>String(s.id)===String(id))}
-    function profileFor(staff){const p=payrollProfiles()[staff.id]||{};return {...{mode:'hourly',payrollId:'',monthlySalary:0,hourlyRate:num(staff.hourlyCost),startDate:'',endDate:'',contractType:'',annualBonusPct:0,note:''},...p}}
+    function profileFor(staff){const p=payrollProfiles()[staff.id]||{};return {...{mode:'hourly',payrollId:'',monthlySalary:0,hourlyRate:0,startDate:'',endDate:'',contractType:'',annualBonusPct:0,note:''},...p}}
     function varsFor(staffId,month){return (((payrollVariables()[month]||{})[staffId])||{bonus:0,allowances:0,deductions:0,withholding:0,note:''})}
     function actualHours(staff,month){try{if(typeof getActualHoursSummary==='function'){const a=getActualHoursSummary(staff.id,month);if(a&&Number.isFinite(Number(a.total)))return Number(a.total)}}catch(e){}
         try{const rs=JSON.parse(localStorage.getItem('ichef_rh_real_timesheets')||'{}');const sm=rs?.months?.[month]?.[staff.id]||rs?.months?.[month]?.[String(staff.id)];if(sm?.days)return Object.values(sm.days).reduce((s,d)=>s+num(d?.workedHours),0)}catch(e){}
@@ -8905,10 +8905,187 @@ function renderDirectorRequests() {
     window.exportPayrollSnapshot=function(){const month=document.getElementById('payroll-month').value||monthNow(),s=payrollSettings(),calcs=payrollStaff().map(st=>calcPayroll(st,month));download(`iCHEF_PAIE_SNAPSHOT_${month}.json`,JSON.stringify({closedAt:new Date().toISOString(),engineVersion:ENGINE_VERSION,period:month,country:s.country,currency:s.currency,employees:calcs.map(c=>({id:c.staff.id,name:c.staff.name,hours:c.hours,gross:c.gross,net:c.net,employerCost:c.employerCost,anomalies:c.anomalies}))},null,2),'application/json;charset=utf-8');};
     window.lockPayrollPeriod=function(){const month=document.getElementById('payroll-month').value||monthNow();if(!confirm(`Clôturer la préparation de paie ${month} ?`))return;const locks=payrollLocks();locks[month]={lockedAt:new Date().toISOString(),country:payrollSettings().country};jset(PL_KEY,locks);renderPayrollCenter();if(typeof showToast==='function')showToast('Préparation paie clôturée');};
 
+
+    // ---------------------------------------------------------
+    // AUTOMATISATION PAIE MENSUELLE
+    // Génère une préparation persistante à partir des heures réelles.
+    // La paie réglementaire finale reste soumise aux paramètres validés
+    // et, le cas échéant, aux connecteurs DSN / Swissdec certifiés.
+    // ---------------------------------------------------------
+    const PRUN_KEY='ichef_payroll_runs_v1';
+    function payrollRuns(){return jget(PRUN_KEY,{})}
+    window.iChefPayrollGenerateAutomaticRun=function(month,opts={}){
+        month=month||document.getElementById('payroll-month')?.value||monthNow();
+        const s=payrollSettings();
+        const calcs=payrollStaff().map(st=>calcPayroll(st,month));
+        const run={
+            period:month,
+            country:s.country,
+            currency:s.currency,
+            generatedAt:new Date().toISOString(),
+            source:'AUTO_POINTAGE_PAIE',
+            status:'PREPARATION',
+            totals:{
+                employees:calcs.length,
+                hours:Number(calcs.reduce((a,c)=>a+c.hours,0).toFixed(2)),
+                gross:Number(calcs.reduce((a,c)=>a+c.gross,0).toFixed(2)),
+                netEstimated:Number(calcs.reduce((a,c)=>a+c.net,0).toFixed(2)),
+                employerCostEstimated:Number(calcs.reduce((a,c)=>a+c.employerCost,0).toFixed(2)),
+                anomalies:calcs.reduce((a,c)=>a+c.anomalies.length,0)
+            },
+            employees:calcs.map(c=>({
+                id:c.staff.id,
+                name:c.staff.name,
+                payrollId:c.profile.payrollId||'',
+                department:c.staff.dept||'',
+                mode:c.profile.mode,
+                hours:Number(c.hours.toFixed(2)),
+                target:Number(c.target.toFixed(2)),
+                overtime:Number(c.overtime.toFixed(2)),
+                leaveDays:Number(c.leaveDays.toFixed(2)),
+                base:Number(c.base.toFixed(2)),
+                overtimePay:Number(c.overtimePay.toFixed(2)),
+                annualBonus:Number(c.annualBonus.toFixed(2)),
+                variables:{
+                    bonus:num(c.variables.bonus),
+                    allowances:num(c.variables.allowances),
+                    deductions:num(c.variables.deductions),
+                    withholding:num(c.variables.withholding)
+                },
+                gross:Number(c.gross.toFixed(2)),
+                employeeDeductionsEstimated:Number(c.employeeDeductions.toFixed(2)),
+                netEstimated:Number(c.net.toFixed(2)),
+                employerChargesEstimated:Number(c.employerCharges.toFixed(2)),
+                employerCostEstimated:Number(c.employerCost.toFixed(2)),
+                anomalies:[...c.anomalies]
+            }))
+        };
+        const all=payrollRuns();
+        all[month]=run;
+        jset(PRUN_KEY,all);
+        try{if(typeof API!=='undefined'&&API?.update)API.update('RH_PAYROLL_PREPARATION',all);}catch(e){console.warn('[iCHEF RH] Sync préparation paie:',e)}
+        if(!opts.silent&&typeof showToast==='function')showToast('Salaires préparés automatiquement');
+        return run;
+    };
+    window.iChefPayrollGetAutomaticRun=function(month){return payrollRuns()[month||monthNow()]||null};
+
     function installPayrollEntry(){const grid=document.querySelector('#director-hub .grid-2');if(!grid||document.getElementById('ichef-payroll-entry'))return;const b=document.createElement('button');b.id='ichef-payroll-entry';b.className='pay-btn';b.style.cssText='border-color:var(--gold);color:var(--gold);background:rgba(212,175,55,.055);padding:30px;grid-column:span 2;margin-top:8px;';b.innerHTML='PAIE & CONFORMITÉ · FRANCE / SUISSE';b.onclick=openPayrollCenter;grid.insertBefore(b,grid.querySelector('button[onclick*="openPlanningAssistant"]')||null);}
     document.addEventListener('DOMContentLoaded',()=>{installPayrollEntry();const m=document.getElementById('payroll-month');if(m)m.value=monthNow();setTimeout(installPayrollEntry,600);});
 })();
 </script>
 
+
+<style id="ichef-rh-auto-style">
+    .rh-auto-bar{margin:0 20px 14px;padding:14px 16px;border:1px solid rgba(212,175,55,.38);border-radius:12px;background:linear-gradient(90deg,rgba(212,175,55,.07),rgba(255,255,255,.015));display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}
+    .rh-auto-copy strong{display:block;color:var(--gold);font-size:.72rem;letter-spacing:1.2px;text-transform:uppercase}.rh-auto-copy span{display:block;color:#888;font-size:.7rem;margin-top:5px;line-height:1.45}
+    .rh-auto-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.rh-auto-btn{border:1px solid var(--gold);background:var(--gold);color:#050505;border-radius:8px;padding:10px 13px;font-weight:900;font-size:.68rem;letter-spacing:.5px;cursor:pointer}.rh-auto-toggle{border:1px solid #333;background:#0b0b0b;color:#aaa;border-radius:999px;padding:9px 12px;font-weight:800;font-size:.64rem;cursor:pointer}.rh-auto-toggle.on{border-color:#10b981;color:#10b981;background:rgba(16,185,129,.06)}
+    .rh-auto-status{font-size:.64rem;color:#777;margin-left:4px}.rh-auto-status strong{color:#fff}
+</style>
+<script id="ichef-rh-auto-engine">
+(function(){
+    const AUTO_KEY='ichef_rh_auto_engine_v1';
+    function autoGet(){try{return {...{enabled:true,autoTimesheets:true,autoPayroll:true,lastRun:{}},...(JSON.parse(localStorage.getItem(AUTO_KEY)||'{}')||{})}}catch(e){return {enabled:true,autoTimesheets:true,autoPayroll:true,lastRun:{}}}}
+    function autoSet(v){localStorage.setItem(AUTO_KEY,JSON.stringify(v));return v}
+    function monthKeyFromTs(ts){const d=new Date(Number(ts||0));if(Number.isNaN(d.getTime()))return '';return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`}
+    function dateKeyFromTs(ts){const d=new Date(Number(ts||0));if(Number.isNaN(d.getTime()))return '';return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
+    function dayKeyFromDateKey(k){return String(Number(String(k||'').slice(8,10))).padStart(2,'0')}
+    function round2(v){return Math.round(Number(v||0)*100)/100}
+    function isManualDay(day){if(!day||typeof day!=='object')return false;return Boolean(day.correctedAt||day.correctionReason||day.manualCorrection||day.manuallyCorrected||day.adjustedBy||day.override===true||String(day.source||'').toUpperCase().includes('MANUAL'))}
+    function ensureDay(days,date){const dk=dayKeyFromDateKey(date);if(!days[dk])days[dk]={date,workedHours:0,sessions:[],anomalies:[],source:'AUTO_POINTAGE'};return days[dk]}
+    function pushAnomaly(days,date,message,punch){if(!date)return;const d=ensureDay(days,date);d.anomalies.push({type:'AUTO_CONTROL',message,punchId:punch?.id||null,timestamp:Number(punch?.timestamp||0)||null});}
+
+    function buildAutomaticDays(staffId,month){
+        const raw=(typeof getPunches==='function'?getPunches():[]).filter(p=>String(p?.staffId)===String(staffId)).slice().sort((a,b)=>Number(a?.timestamp||0)-Number(b?.timestamp||0));
+        const days={}; let open=null;
+        raw.forEach(p=>{
+            const type=String(p?.type||'').toUpperCase(); const pMonth=monthKeyFromTs(p?.timestamp); const pDate=dateKeyFromTs(p?.timestamp);
+            if(type==='ENTRÉE'||type==='ENTREE'){
+                if(open){const od=dateKeyFromTs(open.timestamp);if(monthKeyFromTs(open.timestamp)===month)pushAnomaly(days,od,'Entrée sans sortie avant le pointage suivant',open)}
+                open=p; return;
+            }
+            if(type==='SORTIE'){
+                if(!open){if(pMonth===month)pushAnomaly(days,pDate,'Sortie sans entrée correspondante',p);return}
+                const inTs=Number(open.timestamp||0),outTs=Number(p.timestamp||0),inMonth=monthKeyFromTs(inTs),inDate=dateKeyFromTs(inTs);
+                let hours=(outTs-inTs)/3600000;
+                if(inMonth===month){
+                    const d=ensureDay(days,inDate);
+                    const anomalies=[];
+                    if(!Number.isFinite(hours)||hours<0){hours=0;anomalies.push('Durée de pointage invalide')}
+                    if(hours>18)anomalies.push('Amplitude supérieure à 18 h à contrôler');
+                    const session={entry:open,exit:p,hours:round2(Math.max(0,hours)),source:'AUTO_POINTAGE'};
+                    d.sessions.push(session); d.workedHours=round2(d.workedHours+session.hours);
+                    anomalies.forEach(msg=>d.anomalies.push({type:'AUTO_CONTROL',message:msg,entryTimestamp:inTs,exitTimestamp:outTs}));
+                }
+                open=null;
+            }
+        });
+        if(open&&monthKeyFromTs(open.timestamp)===month)pushAnomaly(days,dateKeyFromTs(open.timestamp),'Entrée sans sortie',open);
+        return days;
+    }
+
+    async function buildAutomaticTimesheets(month){
+        if(typeof getRealTimesheets!=='function'||typeof saveRealTimesheetsLocal!=='function')return {employees:0,updated:0,skipped:0,anomalies:0};
+        const store=getRealTimesheets()||{months:{}};store.months=store.months||{};const monthNode=store.months[month]||{};monthNode.staff=monthNode.staff||{};store.months[month]=monthNode;
+        const staff=(typeof getDir==='function'?getDir():[]).filter(s=>s.active!==false);let updated=0,skipped=0,anomalies=0;
+        staff.forEach(st=>{
+            const id=String(st.id);const existing=monthNode.staff[id]||{};const status=String(existing.status||'').toUpperCase();
+            if(status==='LOCKED'||status==='VALIDATED'){skipped++;return}
+            const autoDays=buildAutomaticDays(st.id,month);const merged={};
+            const keys=new Set([...Object.keys(autoDays),...Object.keys(existing.days||{})]);
+            keys.forEach(k=>{const old=(existing.days||{})[k],fresh=autoDays[k];merged[k]=isManualDay(old)?old:(fresh||old);if(Array.isArray(merged[k]?.anomalies))anomalies+=merged[k].anomalies.length});
+            monthNode.staff[id]={...existing,staffId:st.id,staffName:st.name,month,status:'TO_VERIFY',days:merged,generatedAt:new Date().toISOString(),source:'AUTO_POINTAGE'};updated++;
+        });
+        saveRealTimesheetsLocal(store);
+        try{if(typeof API!=='undefined'&&API?.update)await API.update('RH_TIMESHEET_REAL',store)}catch(e){console.warn('[iCHEF RH] Sync feuilles automatiques:',e)}
+        try{if(typeof recordRhChange==='function')recordRhChange({type:'AUTO_TIMESHEETS',message:`Feuilles d'heures générées automatiquement pour ${month}`,month,updated,skipped,anomalies})}catch(e){}
+        return {employees:staff.length,updated,skipped,anomalies};
+    }
+
+    window.iChefRunAutomaticMonth=async function(month,opts={}){
+        month=month||document.getElementById('real-timesheet-month')?.value||document.getElementById('payroll-month')?.value||new Date().toISOString().slice(0,7);
+        const cfg=autoGet();if(!cfg.enabled&&!opts.force)return null;
+        let timeResult=null,payResult=null;
+        if(cfg.autoTimesheets!==false)timeResult=await buildAutomaticTimesheets(month);
+        if(cfg.autoPayroll!==false&&typeof window.iChefPayrollGenerateAutomaticRun==='function')payResult=window.iChefPayrollGenerateAutomaticRun(month,{silent:true});
+        cfg.lastRun=cfg.lastRun||{};cfg.lastRun[month]={at:new Date().toISOString(),timesheets:timeResult,payroll:payResult?.totals||null};autoSet(cfg);
+        try{if(typeof renderRealTimesheets==='function')renderRealTimesheets()}catch(e){}
+        try{if(typeof window.renderPayrollCenter==='function'&&document.getElementById('payroll-interface')?.style.display==='flex')window.renderPayrollCenter()}catch(e){}
+        updateAutoUi();
+        if(!opts.silent&&typeof showToast==='function')showToast('Heures et salaires préparés automatiquement');
+        return {timesheets:timeResult,payroll:payResult};
+    };
+
+    window.iChefToggleAutoRh=function(){const cfg=autoGet();cfg.enabled=!cfg.enabled;autoSet(cfg);updateAutoUi();if(cfg.enabled)window.iChefRunAutomaticMonth(null,{silent:true});};
+
+    function updateAutoUi(){
+        const cfg=autoGet();document.querySelectorAll('.rh-auto-toggle').forEach(b=>{b.classList.toggle('on',cfg.enabled);b.textContent=cfg.enabled?'AUTOMATIQUE : ACTIVÉ':'AUTOMATIQUE : ARRÊTÉ'});
+        const month=document.getElementById('real-timesheet-month')?.value||document.getElementById('payroll-month')?.value||new Date().toISOString().slice(0,7);const last=cfg.lastRun?.[month];
+        document.querySelectorAll('.rh-auto-status').forEach(el=>{el.innerHTML=last?`Dernière génération : <strong>${new Date(last.at).toLocaleString('fr-FR')}</strong>`:'Aucune génération pour ce mois';});
+    }
+
+    function installTimesheetAutoBar(){
+        const target=document.getElementById('real-timesheet-summary');if(!target||document.getElementById('rh-auto-timesheet-bar'))return;
+        const bar=document.createElement('div');bar.id='rh-auto-timesheet-bar';bar.className='rh-auto-bar';bar.innerHTML=`<div class="rh-auto-copy"><strong>Feuilles d'heures + salaires automatiques</strong><span>Pointages → heures réelles → préparation du salaire du mois. Les corrections manuelles et les mois validés/clôturés sont préservés.</span><div class="rh-auto-status"></div></div><div class="rh-auto-actions"><button class="rh-auto-toggle" onclick="iChefToggleAutoRh()"></button><button class="rh-auto-btn" onclick="iChefRunAutomaticMonth(document.getElementById('real-timesheet-month')?.value,{force:true})">GÉNÉRER LE MOIS</button></div>`;
+        target.parentNode.insertBefore(bar,target);updateAutoUi();
+    }
+    function installPayrollAutoControls(){
+        const top=document.querySelector('#payroll-interface .payroll-topbar');if(!top||document.getElementById('rh-auto-payroll-btn'))return;
+        const toggle=document.createElement('button');toggle.id='rh-auto-payroll-toggle';toggle.className='rh-auto-toggle';toggle.onclick=window.iChefToggleAutoRh;top.appendChild(toggle);
+        const btn=document.createElement('button');btn.id='rh-auto-payroll-btn';btn.className='rh-auto-btn';btn.textContent='RECALCULER HEURES + SALAIRES';btn.onclick=()=>window.iChefRunAutomaticMonth(document.getElementById('payroll-month')?.value,{force:true});top.appendChild(btn);updateAutoUi();
+    }
+    function installHubAutoButton(){
+        const grid=document.querySelector('#director-hub .grid-2');if(!grid||document.getElementById('rh-auto-hub-btn'))return;
+        const b=document.createElement('button');b.id='rh-auto-hub-btn';b.className='pay-btn';b.style.cssText='border-color:var(--success);color:var(--success);background:rgba(16,185,129,.04);padding:22px;grid-column:span 2;';b.textContent='AUTOMATISATION RH · HEURES + SALAIRES';b.onclick=()=>window.iChefRunAutomaticMonth(new Date().toISOString().slice(0,7),{force:true});grid.insertBefore(b,grid.firstChild);
+    }
+    function installHooks(){
+        installTimesheetAutoBar();installPayrollAutoControls();installHubAutoButton();updateAutoUi();
+        const tm=document.getElementById('real-timesheet-month');if(tm&&!tm.dataset.autoHook){tm.dataset.autoHook='1';tm.addEventListener('change',()=>{if(autoGet().enabled)window.iChefRunAutomaticMonth(tm.value,{silent:true})})}
+        const pm=document.getElementById('payroll-month');if(pm&&!pm.dataset.autoHook){pm.dataset.autoHook='1';pm.addEventListener('change',()=>{if(autoGet().enabled)window.iChefRunAutomaticMonth(pm.value,{silent:true})})}
+        if(typeof window.openPayrollCenter==='function'&&!window.openPayrollCenter.__autoWrapped){const orig=window.openPayrollCenter;const wrapped=function(){const r=orig.apply(this,arguments);const month=document.getElementById('payroll-month')?.value;if(autoGet().enabled)setTimeout(()=>window.iChefRunAutomaticMonth(month,{silent:true}),0);return r};wrapped.__autoWrapped=true;window.openPayrollCenter=wrapped;}
+        if(typeof window.submitPunch==='function'&&!window.submitPunch.__autoWrapped){const origPunch=window.submitPunch;const wrappedPunch=async function(){const r=await origPunch.apply(this,arguments);if(autoGet().enabled)setTimeout(()=>window.iChefRunAutomaticMonth(new Date().toISOString().slice(0,7),{silent:true}),250);return r};wrappedPunch.__autoWrapped=true;window.submitPunch=wrappedPunch;}
+    }
+    document.addEventListener('DOMContentLoaded',()=>{installHooks();setTimeout(installHooks,700);setTimeout(()=>{if(autoGet().enabled)window.iChefRunAutomaticMonth(new Date().toISOString().slice(0,7),{silent:true})},1200)});
+})();
+</script>
 </body>
 </html>
