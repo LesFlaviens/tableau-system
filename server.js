@@ -9188,6 +9188,102 @@ new Date().toISOString()
 };
 }
 
+
+/* =========================================================
+   iCHEF SERVICE CLOCK V1
+   Le temps de réclamation salle est horodaté par le serveur,
+   jamais par l'horloge du PAD / Pass.
+   ========================================================= */
+function ichefServiceClockToken(value) {
+  return String(value || '').trim().toUpperCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\s-]+/g, '_');
+}
+
+function ichefServiceClockUnwrap(raw) {
+  if (raw && typeof raw === 'object' && raw.data && typeof raw.data === 'object' && Array.isArray(raw.data.items)) {
+    return raw.data;
+  }
+  return raw && typeof raw === 'object' ? raw : null;
+}
+
+function ichefServiceClockRequested(item) {
+  if (!item || typeof item !== 'object') return false;
+  const seq = ichefServiceClockToken(item.sequenceStatus);
+  const status = ichefServiceClockToken(item.status || item.productionStatus);
+  const req = ichefServiceClockToken(item.serviceRequest || item.requestType);
+  const held = item.ichefServiceHold === true ||
+    ['WAIT_SERVICE','WAITING','DRAFT'].includes(seq) ||
+    ['WAIT_SERVICE','WAITING'].includes(status) ||
+    req === 'WAIT_SERVICE';
+  const explicit = item.ichefServiceRequested === true ||
+    item.plateRequested === true || item.demandePlat === true ||
+    item.courseRequested === true || item.requestedByServer === true ||
+    ['DEMANDE_PLAT','PLATE_REQUESTED','COURSE_REQUESTED','REQUESTED'].includes(req);
+  return !held && (explicit || seq === 'PRODUCTION' || status === 'EN_PREPARATION');
+}
+
+function ichefServiceClockItemKey(item, index = 0) {
+  if (!item || typeof item !== 'object') return `IDX_${index}`;
+  const explicit = item.lineId ?? item.itemId ?? item.id ?? item.uuid ?? item._id;
+  if (explicit !== undefined && explicit !== null && String(explicit).trim()) return String(explicit);
+  const name = String(item.name || item.n || item.label || 'ITEM').trim().toLowerCase();
+  const seat = Number(item.seat ?? item.guestSeat ?? item.seatNumber ?? 0) || 0;
+  const dest = String(item.dest || item.destination || item.station || item.category || '').trim().toLowerCase();
+  return `FALLBACK_${name}_${seat}_${dest}_${index}`;
+}
+
+function ichefStampServiceRequestTimes(previousRaw, incomingRaw) {
+  const incoming = ichefServiceClockUnwrap(incomingRaw);
+  if (!incoming || !Array.isArray(incoming.items)) return incomingRaw;
+  const previous = ichefServiceClockUnwrap(previousRaw);
+  const previousItems = Array.isArray(previous?.items) ? previous.items : [];
+  const previousByKey = new Map();
+  previousItems.forEach((item, index) => previousByKey.set(ichefServiceClockItemKey(item, index), item));
+
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  incoming.items.forEach((item, index) => {
+    if (!item || typeof item !== 'object') return;
+    const key = ichefServiceClockItemKey(item, index);
+    const prev = previousByKey.get(key) || previousItems[index] || null;
+    const currentRequested = ichefServiceClockRequested(item);
+    const previousRequested = ichefServiceClockRequested(prev);
+
+    if (currentRequested) {
+      const previousServerMs = Number(
+        prev?.serverRequestedAtMs ?? prev?.ichefServiceServerRequestedAtMs ?? 0
+      );
+      const previousServerIso = String(
+        prev?.serverRequestedAt || prev?.ichefServiceServerRequestedAt || ''
+      );
+      const canonicalMs = previousRequested && previousServerMs > 0 ? previousServerMs : nowMs;
+      const canonicalIso = previousRequested && previousServerIso ? previousServerIso : nowIso;
+
+      item.serverRequestedAtMs = canonicalMs;
+      item.serverRequestedAt = canonicalIso;
+      item.ichefServiceServerRequestedAtMs = canonicalMs;
+      item.ichefServiceServerRequestedAt = canonicalIso;
+      item.ichefServiceRequestedAt = canonicalMs;
+      item.requestedAt = canonicalMs;
+      if (item.plateRequested === true || item.demandePlat === true) item.plateRequestedAt = canonicalMs;
+    } else {
+      // Une ligne remise en attente repartira avec un nouveau chrono à la prochaine réclamation.
+      delete item.serverRequestedAtMs;
+      delete item.serverRequestedAt;
+      delete item.ichefServiceServerRequestedAtMs;
+      delete item.ichefServiceServerRequestedAt;
+      if (item.ichefServiceHold === true || ichefServiceClockToken(item.serviceRequest) === 'WAIT_SERVICE') {
+        item.ichefServiceRequestedAt = null;
+        item.requestedAt = null;
+        item.plateRequestedAt = null;
+      }
+    }
+  });
+  incoming.serviceServerUpdatedAt = nowIso;
+  return incomingRaw;
+}
+
 /* =========================================================
    iCHEF ORDER SYMBIOSE V1
    Synchronisation atomique et ciblée des commandes entre
@@ -9202,7 +9298,12 @@ const ICHEF_ORDER_SYMBIOSE_ITEM_FIELDS = new Set([
   'pickedByServer','takenByServer','pickedBy','runnerName','pickedAt',
   'served','servedBy','servedAt',
   'obs','observation','note',
-  'problem','problemReason','remake','remakeAt'
+  'problem','problemReason','remake','remakeAt',
+  'ichefServiceHold','ichefServiceRequested','ichefServiceRequestedAt',
+  'ichefServiceServerRequestedAt','ichefServiceServerRequestedAtMs',
+  'serverRequestedAt','serverRequestedAtMs','requestedAt','plateRequestedAt',
+  'plateRequested','demandePlat','courseRequested','requestedByServer',
+  'serviceRequest','requestType','ichefServiceWave','ichefServiceStage','ichefServiceSeparate'
 ]);
 const ICHEF_ORDER_SYMBIOSE_ORDER_FIELDS = new Set([
   'status','readyAt','barReady','barReadyAt',
@@ -9329,6 +9430,9 @@ function ichefOrderSymbioseApply(previousRaw, body = {}) {
     body.orderPatch || {},
     ICHEF_ORDER_SYMBIOSE_ORDER_FIELDS
   );
+
+  // Normalise / conserve les horodatages de demande avec l'heure du serveur.
+  ichefStampServiceRequestTimes(previousRaw, mergedOrder);
 
   const revision =
     Math.max(
@@ -9710,6 +9814,9 @@ tableId,
 orderToPersist,
 previousValueForHistory
 );
+}
+if (orderToPersist && typeof orderToPersist === 'object') {
+  orderToPersist = ichefStampServiceRequestTimes(previousValueForHistory, orderToPersist);
 }
 const centralHistoryEntries = ichefBuildCentralHistoryEntries(
 previousValueForHistory,
