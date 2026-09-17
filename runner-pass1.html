@@ -499,10 +499,22 @@
 
   <script>
     const urlParams = new URLSearchParams(window.location.search);
-    let tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id') || 'MASTER_STATE';
+    let tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id') || '';
+    if (urlParams.get('tenantID')) localStorage.setItem('ichef_tenant_id', urlParams.get('tenantID'));
     const SERVER_URL = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
       ? 'http://localhost:10000'
       : 'https://tableau-system.onrender.com';
+    const RUNNER_TERMINAL = 'PASS-RUNNER';
+    const RUNNER_PAGE = 'PASS_RUNNER';
+    function runnerDeviceId(){
+      let id=localStorage.getItem('ichef_runner_device_id') || localStorage.getItem('ichef_device_id') || localStorage.getItem('ichef_device_fingerprint');
+      if(!id){
+        id=(window.crypto&&crypto.randomUUID)?crypto.randomUUID():`runner_${Date.now()}_${Math.random().toString(36).slice(2,9)}`;
+        localStorage.setItem('ichef_runner_device_id',id);
+      }
+      return id;
+    }
+    const RUNNER_DEVICE_ID = runnerDeviceId();
 
     let activeOrders = {};
     let staffAccess = [];
@@ -819,53 +831,96 @@
       `;
     }
 
-    async function updateOrder(tableId, order) {
-      await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tableId, order })
+    function runnerItemKey(item,index=0) {
+      if(!item || typeof item!=='object') return `IDX_${index}`;
+      const explicit=item.lineId ?? item.itemId ?? item.id ?? item.uuid ?? item._id;
+      if(explicit!==undefined && explicit!==null && String(explicit).trim()) return String(explicit);
+      const name=String(item.name||item.n||item.label||item.title||'ITEM').trim().toLowerCase();
+      const seat=Number(item.seat ?? item.guestSeat ?? item.seatNumber ?? 0)||0;
+      const dest=String(item.dest||item.destination||item.station||item.category||'').trim().toLowerCase();
+      const created=String(item.createdAt||item.addedAt||item.created||index);
+      return `FALLBACK_${name}_${seat}_${dest}_${created}`;
+    }
+
+    function runnerMutationId(){
+      return (window.crypto&&crypto.randomUUID)?crypto.randomUUID():`RUN_${Date.now()}_${Math.random().toString(36).slice(2,9)}`;
+    }
+
+    function applyRunnerCanonicalOrder(tableId,rawOrder){
+      if(!tableId) return;
+      if(rawOrder===null){ delete activeOrders[tableId]; renderAll(); return; }
+      if(!rawOrder || typeof rawOrder!=='object') return;
+      activeOrders[tableId]=rawOrder;
+      renderAll();
+      try{ updateIAPrediction({activeOrders}); }catch(_){ }
+    }
+
+    async function sendRunnerMutation(tableId,{itemPatches=[],orderPatch={},auditReason='Pass Serveur · synchronisation'}={}) {
+      const response=await fetch(`${SERVER_URL}/api/order-symbiose?tenantID=${encodeURIComponent(tenantID)}`,{
+        method:'POST',
+        cache:'no-store',
+        credentials:'omit',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          tableId,
+          itemPatches,
+          orderPatch,
+          terminal:RUNNER_TERMINAL,
+          deviceId:RUNNER_DEVICE_ID,
+          mutationId:runnerMutationId(),
+          auditReason
+        })
       });
+      let data={};
+      try{ data=await response.json(); }catch(_){ }
+      if(!response.ok || data.success===false) throw new Error(data.error||`HTTP ${response.status}`);
+      if(Object.prototype.hasOwnProperty.call(data,'order')) applyRunnerCanonicalOrder(tableId,data.order);
+      return data;
     }
 
     async function takeTable(tableId) {
       const order = normalizeOrder(activeOrders[tableId], tableId);
       if (!order) return;
       const runner = getRunnerName();
+      const itemPatches=[];
 
-      order.items.forEach(item => {
+      order.items.forEach((item,index) => {
         if (isItemReadyForRunner(item) && !isItemTaken(item) && !isItemServed(item)) {
-          item.status = 'PRIS_PAR_SERVEUR';
-          item.pickedByServer = true;
-          item.pickedBy = runner;
-          item.pickedAt = Date.now();
+          const patch={status:'PRIS_PAR_SERVEUR',pickedByServer:true,pickedBy:runner,pickedAt:Date.now()};
+          Object.assign(item,patch);
+          itemPatches.push({itemKey:runnerItemKey(item,index),index,patch});
         }
       });
+      if(!itemPatches.length) return;
 
-      await updateOrder(tableId, order);
+      await sendRunnerMutation(tableId,{itemPatches,auditReason:'Pass Serveur · prise en charge'});
       showToast('Pris en charge');
-      await forceRefresh();
     }
 
     async function serveTable(tableId) {
       const order = normalizeOrder(activeOrders[tableId], tableId);
       if (!order) return;
       const runner = getRunnerName();
+      const itemPatches=[];
 
-      order.items.forEach(item => {
+      order.items.forEach((item,index) => {
         if ((isItemReadyForRunner(item) || isItemTaken(item)) && !isItemServed(item)) {
-          item.status = 'SERVI';
-          item.served = true;
-          item.servedBy = runner;
-          item.servedAt = Date.now();
+          const patch={status:'SERVI',served:true,servedBy:runner,servedAt:Date.now()};
+          Object.assign(item,patch);
+          itemPatches.push({itemKey:runnerItemKey(item,index),index,patch});
         }
       });
+      if(!itemPatches.length) return;
 
       const allServed = order.items.filter(i => i.isSent !== false).every(i => isItemServed(i));
       if (allServed) order.status = 'SERVI';
 
-      await updateOrder(tableId, order);
+      await sendRunnerMutation(tableId,{
+        itemPatches,
+        orderPatch:allServed?{status:'SERVI'}:{},
+        auditReason:'Pass Serveur · servi à table'
+      });
       showToast('Servi à table');
-      await forceRefresh();
     }
 
     function openProblemModal(tableId) {
@@ -885,24 +940,29 @@
       const order = normalizeOrder(activeOrders[tableId], tableId);
       if (!order) return;
       const reason = document.getElementById('problem-text').value.trim() || 'Problème signalé par la salle';
+      const itemPatches=[];
 
-      order.items.forEach(item => {
+      order.items.forEach((item,index) => {
         if ((isItemReadyForRunner(item) || isItemTaken(item)) && !isItemServed(item)) {
-          item.status = 'A_REFAIRE';
-          item.done = false;
-          item.served = false;
-          item.pickedByServer = false;
-          item.obs = item.obs ? `${item.obs} | À REFAIRE : ${reason}` : `À REFAIRE : ${reason}`;
-          item.readyAt = null;
-          item.pickedAt = null;
+          const patch={
+            status:'A_REFAIRE',done:false,served:false,pickedByServer:false,
+            obs:item.obs ? `${item.obs} | À REFAIRE : ${reason}` : `À REFAIRE : ${reason}`,
+            readyAt:null,pickedAt:null,remake:true,remakeAt:Date.now(),problem:true,problemReason:reason
+          };
+          Object.assign(item,patch);
+          itemPatches.push({itemKey:runnerItemKey(item,index),index,patch});
         }
       });
+      if(!itemPatches.length){ closeProblemModal(); return; }
 
       order.status = 'EN COURS';
-      await updateOrder(tableId, order);
+      await sendRunnerMutation(tableId,{
+        itemPatches,
+        orderPatch:{status:'EN COURS'},
+        auditReason:'Pass Serveur · retour à refaire'
+      });
       closeProblemModal();
       showToast('Retour cuisine envoyé', true);
-      await forceRefresh();
     }
 
     function updateIAPrediction(state) {
@@ -987,18 +1047,40 @@
     }
 
     try {
-      const socket = io(SERVER_URL, { transports: ['websocket', 'polling'] });
-      socket.emit('joinTenant', tenantID);
-      
-      socket.on('updateState', (state) => {
-          if (state && state.activeOrders) {
-              // Beep logic for newly ready items could go here if needed,
-              // but the collectRunnerData() already handles it via firstScan logic.
-          }
-          applyState(state);
+      const socket = io(SERVER_URL, {
+        transports:['websocket','polling'],
+        reconnection:true,
+        reconnectionAttempts:Infinity,
+        reconnectionDelay:350,
+        reconnectionDelayMax:2500,
+        auth:{tenantID,terminal:RUNNER_TERMINAL,page:RUNNER_PAGE,deviceId:RUNNER_DEVICE_ID},
+        query:{tenantID,terminal:RUNNER_TERMINAL,page:RUNNER_PAGE,deviceId:RUNNER_DEVICE_ID}
       });
-      
-      socket.on('connect', () => forceRefresh());
+      let runnerResyncTimer=0;
+      const fallbackSync=(delay=100)=>{
+        clearTimeout(runnerResyncTimer);
+        runnerResyncTimer=setTimeout(()=>forceRefresh(),delay);
+      };
+      const belongs=packet=>{
+        const tid=String(packet?.tenantID||packet?.tenantId||'').trim().toLowerCase();
+        return !tid || tid===String(tenantID||'').trim().toLowerCase();
+      };
+      const applyOrderPacket=packet=>{
+        if(!belongs(packet)) return;
+        const tableId=String(packet?.tableId||'').trim();
+        if(!tableId || !Object.prototype.hasOwnProperty.call(packet||{},'order')) return fallbackSync(60);
+        applyRunnerCanonicalOrder(tableId,packet.order);
+      };
+
+      socket.on('connect', () => {
+        socket.emit('joinTenant',{tenantID,terminal:RUNNER_TERMINAL,page:RUNNER_PAGE,deviceId:RUNNER_DEVICE_ID});
+        fallbackSync(80);
+      });
+      socket.on('updateState', state => applyState(state));
+      socket.on('orderUpdated',applyOrderPacket);
+      socket.on('order-updated',applyOrderPacket);
+      socket.on('tableUpdated',applyOrderPacket);
+      socket.on('server-state-changed',packet=>{ if(belongs(packet)) fallbackSync(120); });
     } catch(e) {
       console.warn('Socket indisponible, fallback fetch actif');
     }
