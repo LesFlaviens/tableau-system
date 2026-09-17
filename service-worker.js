@@ -1,5 +1,5 @@
-const CACHE_NAME = 'ichef-cache-v23';
-const DYNAMIC_CACHE = 'ichef-dynamic-v23';
+const CACHE_NAME = 'ichef-cache-v24';
+const DYNAMIC_CACHE = 'ichef-dynamic-v24';
 
 // ==========================================================
 // 📦 ASSETS iCHEF — PWA
