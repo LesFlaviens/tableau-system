@@ -15591,6 +15591,233 @@ error:
 });
 }
 });
+
+// ============================================================================
+// ICHÉF SWITCH V1 — Food Cost + Stock + Carte + Ventes
+// Moteur central serveur. Déclenché uniquement après fiscalisation confirmée.
+// ============================================================================
+const ICHEF_SWITCH_TENANT_QUEUES = global.ICHEF_SWITCH_TENANT_QUEUES || new Map();
+global.ICHEF_SWITCH_TENANT_QUEUES = ICHEF_SWITCH_TENANT_QUEUES;
+
+function ichefSwitchText(v){ return String(v == null ? '' : v).trim(); }
+function ichefSwitchNum(v, fallback=0){ const n=Number(v); return Number.isFinite(n)?n:fallback; }
+function ichefSwitchName(v){
+  return ichefSwitchText(v).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+}
+function ichefSwitchClone(v){ try{return JSON.parse(JSON.stringify(v));}catch(_){return v;} }
+function ichefSwitchUnwrap(node){ return node && typeof node==='object' && node.data!==undefined ? node.data : node; }
+function ichefSwitchWrapLike(oldNode, data){
+  if(oldNode && typeof oldNode==='object' && oldNode.data!==undefined) return {...oldNode,data,updatedAt:new Date().toISOString()};
+  return {data,updatedAt:new Date().toISOString()};
+}
+function ichefSwitchInventoryQty(item){ return ichefSwitchNum(item?.currentQty ?? item?.qty ?? item?.quantity ?? item?.stock,0); }
+function ichefSwitchInventoryUnit(item){ return ichefSwitchText(item?.unit ?? item?.unite ?? 'u').toLowerCase(); }
+function ichefSwitchIngredientUsage(ing, inventoryItem){
+  const raw=ichefSwitchNum(ing?.qtyPerPortion ?? ing?.qty ?? ing?.quantity ?? ing?.amount ?? ing?.grammage,0);
+  const recipeUnit=ichefSwitchText(ing?.unit ?? ing?.unite ?? ing?.inventoryUnit ?? '').toLowerCase();
+  const stockUnit=ichefSwitchInventoryUnit(inventoryItem);
+  if(raw<=0) return 0;
+  if(['kg','kilo','kilogramme','kilogrammes'].includes(stockUnit)){
+    if(['g','gr','gramme','grammes',''].includes(recipeUnit)) return raw/1000;
+    return raw;
+  }
+  if(['l','litre','litres'].includes(stockUnit)){
+    if(['ml',''].includes(recipeUnit)) return raw/1000;
+    if(recipeUnit==='cl') return raw/100;
+    return raw;
+  }
+  if(['g','gr','gramme','grammes'].includes(stockUnit) && ['kg','kilo'].includes(recipeUnit)) return raw*1000;
+  if(stockUnit==='ml' && ['l','litre'].includes(recipeUnit)) return raw*1000;
+  return raw;
+}
+function ichefSwitchRecipeCost(recipe, inventoryMap){
+  const ings=Array.isArray(recipe?.structuredIngs)?recipe.structuredIngs:[];
+  let cost=0, linked=0;
+  for(const ing of ings){
+    const inv=inventoryMap.get(String(ing?.inventoryItemId ?? ''));
+    if(!inv) continue;
+    linked++;
+    const use=ichefSwitchIngredientUsage(ing,inv);
+    const unitPrice=ichefSwitchNum(inv?.unitPrice ?? inv?.pricePerUnit ?? inv?.costPrice ?? ing?.unitPriceSnapshot,0);
+    cost += use*unitPrice;
+  }
+  return {cost:Math.round(cost*10000)/10000,linked,total:ings.length};
+}
+function ichefSwitchRecipeCapacity(recipe, inventoryMap){
+  const ings=Array.isArray(recipe?.structuredIngs)?recipe.structuredIngs:[];
+  let capacity=Infinity, constrained=false;
+  for(const ing of ings){
+    const inv=inventoryMap.get(String(ing?.inventoryItemId ?? ''));
+    if(!inv) continue;
+    const use=ichefSwitchIngredientUsage(ing,inv);
+    if(use<=0) continue;
+    constrained=true;
+    capacity=Math.min(capacity,Math.floor(Math.max(0,ichefSwitchInventoryQty(inv))/use));
+  }
+  return constrained ? Math.max(0,capacity===Infinity?0:capacity) : null;
+}
+function ichefSwitchFindRecipe(recipes,item){
+  const pid=String(item?.recipeId ?? item?.productId ?? item?.id ?? '');
+  if(pid){ const r=recipes.find(x=>String(x?.id??'')===pid || String(x?.productId??'')===pid); if(r)return r; }
+  const key=ichefSwitchName(item?.name ?? item?.n ?? item?.label);
+  return recipes.find(x=>ichefSwitchName(x?.name ?? x?.n)===key) || null;
+}
+function ichefSwitchFindMenuItem(menu,name){
+  const key=ichefSwitchName(name);
+  for(const [cat,arr] of Object.entries(menu||{})){
+    if(!Array.isArray(arr)) continue;
+    const found=arr.find(x=>ichefSwitchName(x?.name ?? x?.n ?? x?.label)===key);
+    if(found) return {cat,item:found};
+  }
+  return null;
+}
+function ichefSwitchIsFinalized(order){
+  const tokens=[order?.status,order?.paymentStatus,order?.fiscalStatus,order?.paymentDraft?.status,order?.paymentDraft?.fiscalStatus]
+    .map(v=>ichefSwitchText(v).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase());
+  return tokens.some(v=>['PAYE','PAID','FISCALIZED','FISCALISE','CLOSED_PAID','SEALED','SCELLE'].includes(v)) || !!order?.fiscalFinalizedAt || !!order?.fiscalTicket?.ticketNumber;
+}
+function ichefSwitchSaleKey(tableId,order){
+  return ichefSwitchText(order?.fiscalTicket?.ticketNumber || order?.fiscalReceiptReference || order?.paymentDraft?.receiptReference || order?.paymentRequestId || order?.operationId || `${tableId}|${order?.closedAt||order?.fiscalFinalizedAt||order?.updatedAt||''}`);
+}
+function ichefSwitchQueue(tenantID,fn){
+  const prev=ICHEF_SWITCH_TENANT_QUEUES.get(tenantID)||Promise.resolve();
+  const next=prev.catch(()=>{}).then(fn);
+  ICHEF_SWITCH_TENANT_QUEUES.set(tenantID,next.finally(()=>{if(ICHEF_SWITCH_TENANT_QUEUES.get(tenantID)===next)ICHEF_SWITCH_TENANT_QUEUES.delete(tenantID);}));
+  return next;
+}
+async function ichefSwitchProcessFinalizedOrder(tenantID,tableId,order,meta={}){
+  const safeID=cleanString(tenantID);
+  if(!safeID || !tableId || !order || !ichefSwitchIsFinalized(order)) return {success:false,skipped:true,reason:'NOT_FINALIZED'};
+  return ichefSwitchQueue(safeID,async()=>{
+    const state=await AppState.findOne({tenantID:safeID}).lean();
+    const ao=state?.activeOrders||{};
+    const inventory=ichefSwitchClone(ichefSwitchUnwrap(ao.INVENTORY_MASTER))||[];
+    const recipes=ichefSwitchClone(ichefSwitchUnwrap(ao.RECIPES_MASTER))||[];
+    const menu=ichefSwitchClone(ichefSwitchUnwrap(ao.MENU_MASTER)||ichefSwitchUnwrap(ao.MENU_CUISINE))||{};
+    const sales=ichefSwitchClone(ichefSwitchUnwrap(ao.SALES_MASTER))||[];
+    const master=ichefSwitchClone(ichefSwitchUnwrap(ao.ICHEF_SWITCH_MASTER))||{version:1,processedSales:[],lastEvents:[]};
+    if(!Array.isArray(master.processedSales)) master.processedSales=[];
+    if(!Array.isArray(master.lastEvents)) master.lastEvents=[];
+    const saleKey=ichefSwitchSaleKey(tableId,order);
+    if(!saleKey) return {success:false,skipped:true,reason:'NO_SALE_KEY'};
+    if(master.processedSales.includes(saleKey)) return {success:true,idempotent:true,saleKey};
+
+    const invMap=new Map((Array.isArray(inventory)?inventory:[]).map(x=>[String(x?.id??''),x]));
+    const soldItems=(Array.isArray(order.items)?order.items:[]).filter(i=>i && i.cancelled!==true && i.refunded!==true && ichefSwitchNum(i.qty??i.quantity,1)>0);
+    let revenue=0,estimatedCost=0,stockMovements=0,unlinkedLines=0;
+    const saleLines=[];
+    for(const line of soldItems){
+      const qty=Math.max(1,ichefSwitchNum(line.qty??line.quantity,1));
+      const name=ichefSwitchText(line.name??line.n??line.label??'Article');
+      const price=ichefSwitchNum(line.price??line.p??line.prix,0);
+      const recipe=ichefSwitchFindRecipe(recipes,line);
+      const menuRef=ichefSwitchFindMenuItem(menu,name);
+      const unitPrice=price || ichefSwitchNum(menuRef?.item?.price??menuRef?.item?.p,0);
+      revenue += unitPrice*qty;
+      let unitCost=ichefSwitchNum(recipe?.cost,0);
+      if(recipe){
+        const fresh=ichefSwitchRecipeCost(recipe,invMap);
+        if(fresh.linked>0) unitCost=fresh.cost;
+        for(const ing of (Array.isArray(recipe.structuredIngs)?recipe.structuredIngs:[])){
+          const inv=invMap.get(String(ing?.inventoryItemId??''));
+          if(!inv){unlinkedLines++;continue;}
+          const perPortion=ichefSwitchIngredientUsage(ing,inv);
+          if(perPortion<=0) continue;
+          const before=ichefSwitchInventoryQty(inv);
+          const consumed=perPortion*qty;
+          const after=Math.max(0,before-consumed);
+          inv.currentQty=Math.round(after*1000000)/1000000;
+          inv.updatedAt=new Date().toISOString();
+          inv.lastMovement={type:'SALE_CONSUMPTION',saleKey,tableId,qty:-consumed,at:new Date().toISOString()};
+          stockMovements++;
+        }
+      } else unlinkedLines++;
+      estimatedCost += unitCost*qty;
+      saleLines.push({name,qty,unitPrice,unitCost,revenue:unitPrice*qty,cost:unitCost*qty,recipeId:recipe?.id??null});
+    }
+
+    // Recalcul Food Cost + potentiel de production + disponibilité carte.
+    const refreshedInvMap=new Map((Array.isArray(inventory)?inventory:[]).map(x=>[String(x?.id??''),x]));
+    for(const recipe of (Array.isArray(recipes)?recipes:[])){
+      const calc=ichefSwitchRecipeCost(recipe,refreshedInvMap);
+      if(calc.linked>0){ recipe.cost=calc.cost; }
+      const menuRef=ichefSwitchFindMenuItem(menu,recipe?.name);
+      const sellingPrice=ichefSwitchNum(menuRef?.item?.price??recipe?.price,0);
+      recipe.fc=sellingPrice>0?Math.round((ichefSwitchNum(recipe.cost,0)/sellingPrice)*1000)/10:0;
+      recipe.switchCapacity=ichefSwitchRecipeCapacity(recipe,refreshedInvMap);
+      recipe.switchUpdatedAt=new Date().toISOString();
+      if(menuRef?.item){
+        const cap=recipe.switchCapacity;
+        menuRef.item.foodCost=recipe.cost;
+        menuRef.item.foodCostRate=recipe.fc;
+        menuRef.item.switchMaxPortions=cap;
+        menuRef.item.switchUnavailable=(cap!==null && cap<=0);
+        menuRef.item.switchStockState=cap===null?'UNLINKED':cap<=0?'OUT':cap<=5?'LOW':'OK';
+        menuRef.item.switchUpdatedAt=new Date().toISOString();
+        // stock représente ici le potentiel de vente; on ne touche pas au masquage manuel.
+        if(cap!==null) menuRef.item.stock=cap;
+      }
+    }
+
+    const saleRecord={saleKey,tableId,ticketNumber:saleKey,closedAt:order.closedAt||order.fiscalFinalizedAt||new Date().toISOString(),revenue:Math.round(revenue*100)/100,cost:Math.round(estimatedCost*100)/100,margin:Math.round((revenue-estimatedCost)*100)/100,foodCostRate:revenue>0?Math.round((estimatedCost/revenue)*1000)/10:0,lines:saleLines,source:meta.source||'CLOSE_PAID'};
+    sales.unshift(saleRecord); if(sales.length>2500)sales.length=2500;
+    master.processedSales.unshift(saleKey); if(master.processedSales.length>1200)master.processedSales.length=1200;
+    master.lastEvents.unshift({type:'SALE_CONFIRMED',saleKey,tableId,revenue:saleRecord.revenue,cost:saleRecord.cost,stockMovements,unlinkedLines,at:new Date().toISOString()}); if(master.lastEvents.length>250)master.lastEvents.length=250;
+    master.version=1; master.updatedAt=new Date().toISOString(); master.lastSale=saleRecord;
+    master.kpis={
+      inventoryItems:Array.isArray(inventory)?inventory.length:0,
+      recipes:Array.isArray(recipes)?recipes.length:0,
+      menuItems:Object.values(menu||{}).reduce((n,a)=>n+(Array.isArray(a)?a.length:0),0),
+      sales:Array.isArray(sales)?sales.length:0,
+      unavailable:Object.values(menu||{}).flatMap(a=>Array.isArray(a)?a:[]).filter(x=>x?.switchUnavailable===true).length,
+      lowStock:Object.values(menu||{}).flatMap(a=>Array.isArray(a)?a:[]).filter(x=>x?.switchStockState==='LOW').length
+    };
+
+    const set={
+      'activeOrders.INVENTORY_MASTER':ichefSwitchWrapLike(ao.INVENTORY_MASTER,inventory),
+      'activeOrders.RECIPES_MASTER':ichefSwitchWrapLike(ao.RECIPES_MASTER,recipes),
+      'activeOrders.MENU_MASTER':ichefSwitchWrapLike(ao.MENU_MASTER,menu),
+      'activeOrders.SALES_MASTER':ichefSwitchWrapLike(ao.SALES_MASTER,sales),
+      'activeOrders.ICHEF_SWITCH_MASTER':ichefSwitchWrapLike(ao.ICHEF_SWITCH_MASTER,master)
+    };
+    const next=await AppState.findOneAndUpdate({tenantID:safeID},{$set:set},{new:true,upsert:true}).lean();
+    io.to(safeID).emit('updateState',next);
+    io.to(safeID).emit('ichef-switch-updated',{tenantID:safeID,saleKey,tableId,kpis:master.kpis,updatedAt:master.updatedAt});
+    io.to(safeID).emit('inventory-updated',{tenantID:safeID,source:'ICHEF_SWITCH',saleKey});
+    io.to(safeID).emit('recipes-updated',{tenantID:safeID,source:'ICHEF_SWITCH',saleKey});
+    io.to(safeID).emit('menu-updated',{tenantID:safeID,source:'ICHEF_SWITCH',saleKey});
+    return {success:true,persisted:true,saleKey,kpis:master.kpis,sale:saleRecord};
+  });
+}
+
+app.post('/api/ichef-switch/recompute', async (req,res)=>{
+  const tenantID=cleanString(req.body?.tenantID||req.headers['x-ichef-tenant']);
+  const pin=String(req.body?.pin||req.headers['x-ichef-pin']||'').trim();
+  const auth=await ichefAuthorizePin(tenantID,pin);
+  if(!auth.ok)return res.status(auth.status||403).json({success:false,error:auth.error||'Accès refusé.'});
+  try{
+    const state=await AppState.findOne({tenantID}).lean();
+    const ao=state?.activeOrders||{};
+    const inventory=ichefSwitchClone(ichefSwitchUnwrap(ao.INVENTORY_MASTER))||[];
+    const recipes=ichefSwitchClone(ichefSwitchUnwrap(ao.RECIPES_MASTER))||[];
+    const menu=ichefSwitchClone(ichefSwitchUnwrap(ao.MENU_MASTER)||ichefSwitchUnwrap(ao.MENU_CUISINE))||{};
+    const invMap=new Map((Array.isArray(inventory)?inventory:[]).map(x=>[String(x?.id??''),x]));
+    for(const recipe of recipes){
+      const calc=ichefSwitchRecipeCost(recipe,invMap); if(calc.linked>0)recipe.cost=calc.cost;
+      const ref=ichefSwitchFindMenuItem(menu,recipe?.name); const price=ichefSwitchNum(ref?.item?.price??recipe?.price,0);
+      recipe.fc=price>0?Math.round((ichefSwitchNum(recipe.cost,0)/price)*1000)/10:0;
+      recipe.switchCapacity=ichefSwitchRecipeCapacity(recipe,invMap);
+      if(ref?.item){ref.item.foodCost=recipe.cost;ref.item.foodCostRate=recipe.fc;ref.item.switchMaxPortions=recipe.switchCapacity;ref.item.switchUnavailable=recipe.switchCapacity!==null&&recipe.switchCapacity<=0;ref.item.switchStockState=recipe.switchCapacity===null?'UNLINKED':recipe.switchCapacity<=0?'OUT':recipe.switchCapacity<=5?'LOW':'OK';if(recipe.switchCapacity!==null)ref.item.stock=recipe.switchCapacity;}
+    }
+    const master=ichefSwitchClone(ichefSwitchUnwrap(ao.ICHEF_SWITCH_MASTER))||{version:1,processedSales:[],lastEvents:[]};
+    master.updatedAt=new Date().toISOString();master.lastEvents=Array.isArray(master.lastEvents)?master.lastEvents:[];master.lastEvents.unshift({type:'RECOMPUTE',at:master.updatedAt,by:auth.name||auth.role||'MANAGER'});master.lastEvents=master.lastEvents.slice(0,250);
+    master.kpis={inventoryItems:inventory.length,recipes:recipes.length,menuItems:Object.values(menu).reduce((n,a)=>n+(Array.isArray(a)?a.length:0),0),unavailable:Object.values(menu).flatMap(a=>Array.isArray(a)?a:[]).filter(x=>x?.switchUnavailable===true).length,lowStock:Object.values(menu).flatMap(a=>Array.isArray(a)?a:[]).filter(x=>x?.switchStockState==='LOW').length};
+    const next=await AppState.findOneAndUpdate({tenantID},{$set:{'activeOrders.RECIPES_MASTER':ichefSwitchWrapLike(ao.RECIPES_MASTER,recipes),'activeOrders.MENU_MASTER':ichefSwitchWrapLike(ao.MENU_MASTER,menu),'activeOrders.ICHEF_SWITCH_MASTER':ichefSwitchWrapLike(ao.ICHEF_SWITCH_MASTER,master)}},{new:true,upsert:true}).lean();
+    io.to(tenantID).emit('updateState',next);io.to(tenantID).emit('ichef-switch-updated',{tenantID,kpis:master.kpis,updatedAt:master.updatedAt,source:'RECOMPUTE'});
+    return res.json({success:true,persisted:true,kpis:master.kpis});
+  }catch(error){console.error('[ICHEF SWITCH RECOMPUTE]',error);return res.status(500).json({success:false,error:'Recalcul ICHÉF SWITCH impossible.'});}
+});
+
 app.post('/api/orders/close-paid', async (req, res) => {
 const tenantID =
 cleanString(
@@ -15677,6 +15904,13 @@ success: false,
 error:
 'La table n’est pas fiscalisée avec ce ticket.'
 });
+}
+// ICHÉF SWITCH : traiter la vente AVANT de supprimer la table active.
+try {
+  await ichefSwitchProcessFinalizedOrder(tenantID, tableId, order, {source:'close-paid'});
+} catch (switchError) {
+  console.error('[ICHEF SWITCH close-paid] :', switchError);
+  return res.status(500).json({success:false,persisted:false,error:'Vente fiscalisée mais synchronisation Stock/Food Cost/Carte impossible. Table conservée pour reprise sûre.'});
 }
 const state =
 await AppState
