@@ -912,6 +912,19 @@
  const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
  ? "http://localhost:10000" : "https://tableau-system.onrender.com";
  const PASS_TERMINAL = 'PASS-CUISINE';
+ const PASS_PAGE = 'PASS_CUISINE';
+ const PASS_DEVICE_STORAGE_KEY = 'ichef_pass_cuisine_device_id';
+ function getPassDeviceId() {
+     let id = String(localStorage.getItem(PASS_DEVICE_STORAGE_KEY) || '').trim();
+     if (!id) {
+         id = (window.crypto && typeof window.crypto.randomUUID === 'function')
+             ? `PASS_${window.crypto.randomUUID()}`
+             : `PASS_${Date.now()}_${Math.random().toString(36).slice(2,10)}`;
+         localStorage.setItem(PASS_DEVICE_STORAGE_KEY, id);
+     }
+     return id;
+ }
+ const passDeviceId = getPassDeviceId();
 
  if (tenantID) localStorage.setItem('ichef_tenant_id', tenantID);
 
@@ -1617,7 +1630,7 @@
      cache: 'no-store',
      credentials: 'omit',
      headers: passHeaders(),
-     body: JSON.stringify({ tableId: orderId, order })
+     body: JSON.stringify({ tableId: orderId, order, terminal: PASS_TERMINAL, deviceId: passDeviceId, auditReason: 'Pass Cuisine · mise à jour production' })
  });
  if (!r.ok) throw new Error(`HTTP ${r.status}`);
  setConnectionBadge(true, order.items[itemIndex].done ? 'PRÊT enregistré' : 'Production enregistrée');
@@ -1648,7 +1661,7 @@
      cache: 'no-store',
      credentials: 'omit',
      headers: passHeaders(),
-     body: JSON.stringify({ tableId: orderId, order })
+     body: JSON.stringify({ tableId: orderId, order, terminal: PASS_TERMINAL, deviceId: passDeviceId, auditReason: 'Pass Cuisine · mise à jour production' })
  });
  if (!r.ok) throw new Error(`HTTP ${r.status}`);
  setConnectionBadge(true, 'PRÊT envoyé au PAD');
@@ -1948,7 +1961,15 @@
      timeout: 5000,
      auth: {
          tenantID,
-         terminal: PASS_TERMINAL
+         terminal: PASS_TERMINAL,
+         page: PASS_PAGE,
+         deviceId: passDeviceId
+     },
+     query: {
+         tenantID,
+         terminal: PASS_TERMINAL,
+         page: PASS_PAGE,
+         deviceId: passDeviceId
      }
  });
 
@@ -1971,7 +1992,12 @@
  }
 
  socket.on('connect', () => {
-     socket.emit('joinTenant', tenantID);
+     socket.emit('joinTenant', {
+         tenantID,
+         terminal: PASS_TERMINAL,
+         page: PASS_PAGE,
+         deviceId: passDeviceId
+     });
      setConnectionBadge(true, 'Connecté');
      schedulePassResync(30);
  });
@@ -1981,8 +2007,51 @@
      setConnectionBadge(true, 'Temps réel');
  });
 
- socket.on('server-state-changed', () => {
-     schedulePassResync(100);
+ function packetBelongsToThisTenant(packet) {
+     const tid = String(packet?.tenantID || packet?.tenantId || '').trim();
+     return !tid || tid.toLowerCase() === String(tenantID || '').trim().toLowerCase();
+ }
+
+ function applyOrderPacket(packet) {
+     if (!packetBelongsToThisTenant(packet)) return;
+     const tableId = String(packet?.tableId || packet?.key || '').trim();
+     if (!tableId) {
+         schedulePassResync(40);
+         return;
+     }
+
+     if (packet.order === null) {
+         if (Object.prototype.hasOwnProperty.call(activeOrdersData, tableId)) {
+             const next = { ...activeOrdersData };
+             delete next[tableId];
+             activeOrdersData = next;
+             renderBoardIfChanged(true);
+         }
+         return;
+     }
+
+     if (packet.order && typeof packet.order === 'object') {
+         const nextOrder = packet.order?.data && Array.isArray(packet.order.data?.items)
+             ? packet.order.data
+             : packet.order;
+         preserveWhoCookingOrder(nextOrder);
+         activeOrdersData = { ...activeOrdersData, [tableId]: nextOrder };
+         renderBoardIfChanged(true);
+         setConnectionBadge(true, 'Temps réel');
+         return;
+     }
+
+     schedulePassResync(40);
+ }
+
+ socket.on('orderUpdated', applyOrderPacket);
+ socket.on('order-updated', applyOrderPacket);
+ socket.on('tableUpdated', applyOrderPacket);
+
+ socket.on('server-state-changed', packet => {
+     if (!packetBelongsToThisTenant(packet)) return;
+     // Le serveur envoie normalement orderUpdated juste avant. Ce GET est le filet de sécurité.
+     schedulePassResync(80);
  });
 
  socket.on('disconnect', reason => {
@@ -1997,6 +2066,7 @@
 
  socket.on('updateState', (state) => {
  if (!state || !state.activeOrders) return;
+ if (state.tenantID && String(state.tenantID).trim().toLowerCase() !== String(tenantID).trim().toLowerCase()) return;
 
  let currentCount = Object.keys(activeOrdersData)
  .filter(k => activeOrdersData[k]?.status === 'NOUVELLE COMMANDE').length;
