@@ -13112,5 +13112,77 @@ document.addEventListener("visibilitychange",function(){
 setTimeout(bindSwitchSocket,250);
 })();
 </script>
-
+<script id="fix-supprimer-commande-histoire">
+window.deleteOrder = async function() {
+    if (!STATE.currentTable) return;
+    const reason = prompt("Motif obligatoire de correction / annulation :", "Annulation");
+    if (!text(reason) || text(reason).length < 3) {
+        if (typeof toast === "function") toast("Motif obligatoire (3 caractères min)", true);
+        return;
+    }
+    
+    const table = STATE.currentTable;
+    const o = STATE.currentOrder || getOrder(table) || ensureOrder(table);
+    
+    // 1. Cas d'une commande déjà encaissée/fiscalisée
+    if (fiscalOrderFinalized(o)) {
+        const ticketNumber = text(o.fiscalTicket?.ticketNumber || o.fiscalReceiptReference || o.paymentDraft?.receiptReference);
+        if (!ticketNumber) {
+            if (typeof toast === "function") toast("Ticket fiscal original introuvable", true);
+            return;
+        }
+        const confirmCorrection = confirm(`Créer une contre-écriture fiscale complète pour ${ticketNumber} ?\n\nL'original restera conservé.`);
+        if (!confirmCorrection) return;
+        try {
+            const id = serverPaymentId("CORRECTION");
+            const r = await paymentServerRequest('/api/fiscal/correction', {
+                method: 'POST',
+                idempotencyKey: id,
+                body: { ticketNumber, tableId: table, reason: text(reason), mode: "FULL_VOID", correctionRequestId: id }
+            });
+            closeSheet();
+            closeOrder();
+            await syncFull("fiscal-correction").catch(() => {});
+            if (typeof toast === "function") toast(` Correction fiscale ${r.correctionTicketNumber || r.ticketNumber || "enregistrée"}`);
+        } catch (err) {
+            if (typeof toast === "function") toast("Correction refusée : " + err.message, true);
+        }
+        return;
+    }
+    
+    // 2. Cas d'une commande en cours
+    const fiscal = fiscalBreakdown(o);
+    const trace = await fiscalEvent("CANCEL_ORDER", {
+        reason: text(reason),
+        signedTotal: fiscalRound2(-fiscal.gross),
+        tableId: table
+    });
+    
+    // CORRECTION : On autorise la suppression même si le profil fiscal n'est pas encore configuré
+    if (!trace?.ok && trace?.error !== "FISCAL_PROFILE_UNSET") {
+        if (typeof toast === "function") toast("Annulation refusée : journal indisponible", true);
+        return;
+    }
+    
+    // 3. Archivage de l'historique
+    const cancelled = { 
+        ...clone(o), 
+        status: "cancelled", 
+        cancelled: true, 
+        cancelledAt: new Date().toISOString(), 
+        cancellationReason: text(reason) 
+    };
+    
+    // On sauvegarde l'archive
+    await optimisticWrite("FISCAL_CANCEL_" + Date.now() + "_" + fiscalSafeId(table), { data: cancelled }, "Archive annulation commande");
+    
+    // On supprime la table active
+    await optimisticWrite(table, null, "Retrait commande annulée");
+    
+    closeSheet();
+    closeOrder();
+    
+    if (typeof toast === "function") toast(" Commande annulée et archivée");
+};
+</script>
 </body></html>
