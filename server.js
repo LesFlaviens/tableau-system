@@ -18,16 +18,70 @@ const incoming = String(req.headers['x-request-id'] || '').trim();
 const requestId = incoming.slice(0, 120) ||
 (crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'));
 req.ichefRequestId = requestId;
+req.ichefRequestAborted = false;
 res.setHeader('X-Request-ID', requestId);
+
+// Un navigateur peut interrompre un fetch pendant une navigation, un refresh
+// ou un changement d'écran. Ce n'est pas une panne serveur : on le mémorise
+// afin que le gestionnaire d'erreurs ne transforme pas l'abandon en erreur 500.
+req.once('aborted', () => {
+req.ichefRequestAborted = true;
+});
+
 next();
 });
+
 server.keepAliveTimeout = 65000;
 server.headersTimeout = 70000;
 server.requestTimeout = 120000;
+
+function ichefIsExpectedHttpAbort(error) {
+const code = String(error?.code || '').toUpperCase();
+const type = String(error?.type || '').toLowerCase();
+const message = String(error?.message || '').toLowerCase();
+
+return (
+code === 'ECONNRESET' ||
+code === 'ECONNABORTED' ||
+code === 'HPE_INVALID_EOF_STATE' ||
+type === 'request.aborted' ||
+message === 'request aborted' ||
+message.includes('socket hang up')
+);
+}
+
 server.on('clientError', (err, socket) => {
-console.warn('⚠️ HTTP clientError :', err?.message || err);
-if (socket && !socket.destroyed) {
-socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+const code = String(err?.code || '');
+
+// Connexion interrompue par le navigateur / proxy : comportement attendu,
+// notamment lors d'un refresh ou d'un changement d'écran. On ferme proprement
+// la socket sans produire une fausse alerte rouge côté serveur.
+if (ichefIsExpectedHttpAbort(err)) {
+if (socket && !socket.destroyed) socket.destroy();
+return;
+}
+
+console.warn('[iCHEF HTTP] requête HTTP invalide', {
+code,
+message: err?.message || String(err || 'Erreur HTTP')
+});
+
+if (!socket || socket.destroyed) return;
+
+// Header trop volumineux => 431, autre erreur de parsing => 400.
+const statusLine = code === 'HPE_HEADER_OVERFLOW'
+? 'HTTP/1.1 431 Request Header Fields Too Large'
+: 'HTTP/1.1 400 Bad Request';
+
+try {
+socket.end(
+statusLine +
+'\r\nConnection: close' +
+'\r\nContent-Length: 0' +
+'\r\n\r\n'
+);
+} catch (_) {
+try { socket.destroy(); } catch (_) {}
 }
 });
 const ICHEF_DEFAULT_ORIGINS = [
@@ -760,6 +814,7 @@ const ICHEF_TENANT_MUTATION_PATHS = new Set([
 '/api/client-space/admin/upload',
 '/api/client-space/admin/delete-document',
 '/api/client-space/admin/message',
+'/api/client-space/message',
 '/api/client-space/message/read',
 '/api/support/client/send',
 '/api/support/admin/send'
@@ -6061,7 +6116,7 @@ module:
 punchRoute:
 true,
 version:
-'RH-PUNCH-2026.08.29',
+'RH-PUNCH-OFFLINE-2026.09.17',
 timestamp:
 new Date().toISOString()
 });
@@ -6075,7 +6130,12 @@ tenantID,
 staffId,
 pin,
 deviceId,
-photo
+photo,
+offlineEventId,
+clientTimestamp,
+clientTimezoneOffset,
+offlineSync,
+queuedAt
 } = req.body || {};
 const safeID =
 cleanString(
@@ -6085,6 +6145,18 @@ const submittedPin =
 String(
 pin || ''
 ).trim();
+const clientEventId =
+String(
+offlineEventId ||
+req.headers['idempotency-key'] ||
+''
+).trim().slice(0, 160);
+const isDeferredOfflineSync =
+offlineSync === true;
+const rawClientTimestamp =
+Number(clientTimestamp || 0);
+const receivedAtMs =
+Date.now();
 if (
 !safeID ||
 !staffId ||
@@ -6099,6 +6171,37 @@ success: false,
 error:
 "Données de pointage invalides."
 });
+}
+if (
+clientEventId &&
+!/^[A-Za-z0-9._:-]{8,160}$/.test(clientEventId)
+) {
+return res.status(400).json({
+success: false,
+code: 'RH_OFFLINE_EVENT_ID_INVALID',
+error: 'Identifiant de pointage hors ligne invalide.'
+});
+}
+if (clientEventId && !Number.isFinite(rawClientTimestamp)) {
+return res.status(400).json({
+success: false,
+code: 'RH_OFFLINE_TIMESTAMP_INVALID',
+error: 'Horodatage du pointage hors ligne invalide.'
+});
+}
+if (clientEventId) {
+const maxPastMs = 14 * 24 * 60 * 60 * 1000;
+const maxFutureMs = 5 * 60 * 1000;
+if (
+rawClientTimestamp < receivedAtMs - maxPastMs ||
+rawClientTimestamp > receivedAtMs + maxFutureMs
+) {
+return res.status(409).json({
+success: false,
+code: 'RH_OFFLINE_TIMESTAMP_OUT_OF_RANGE',
+error: 'Horodatage hors ligne trop ancien ou incohérent. Validation manager requise.'
+});
+}
 }
 if (
 ichefIsForbiddenDefaultPin(
@@ -6198,6 +6301,43 @@ error:
 "PIN ou collaborateur incorrect."
 });
 }
+
+// Pointage hors ligne / retry réseau : idempotence forte par identifiant client.
+if (clientEventId) {
+const alreadyArchived = await RhPunchRecord.findOne({
+tenantID: safeID,
+punchId: clientEventId
+}).lean();
+if (alreadyArchived) {
+const currentPunches = Array.isArray(
+state.activeOrders?.PUNCHES_MASTER?.data
+) ? state.activeOrders.PUNCHES_MASTER.data.slice() : [];
+const currentTimesheets =
+state.activeOrders?.RH_TIMESHEET_REAL?.data || { months: {} };
+const existingPunch =
+currentPunches.find(p => String(p?.id || '') === clientEventId) ||
+{
+...(alreadyArchived.details || {}),
+id: clientEventId,
+tenantID: safeID,
+staffId: alreadyArchived.staffId,
+timestamp: alreadyArchived.timestamp,
+type: alreadyArchived.type,
+serverRecordedAt: alreadyArchived.createdAt || null,
+idempotentReplay: true
+};
+return res.json({
+success: true,
+idempotent: true,
+offlineAccepted: existingPunch?.offlineSync === true,
+punchType: existingPunch.type,
+punch: existingPunch,
+punches: currentPunches,
+timesheets: currentTimesheets,
+staffAccess
+});
+}
+}
 const punches =
 Array.isArray(
 state
@@ -6211,51 +6351,58 @@ state
 .data
 .slice()
 : [];
-const lastStaffPunch =
+const punchTimestamp =
+clientEventId
+? rawClientTimestamp
+: receivedAtMs;
+
+const laterStaffPunch =
 punches
-.filter(
-p =>
-String(
-p?.staffId
-) ===
-String(
-staff.id
+.find(p =>
+String(p?.staffId || '') === String(staff.id) &&
+Number(p?.timestamp || 0) > punchTimestamp
+);
+
+// Ne jamais réécrire silencieusement une chronologie déjà suivie d'autres pointages.
+if (isDeferredOfflineSync && laterStaffPunch) {
+return res.status(409).json({
+success: false,
+code: 'RH_OFFLINE_SEQUENCE_CONFLICT',
+error: 'Un pointage plus récent existe déjà pour ce collaborateur. Le pointage hors ligne doit être contrôlé par un manager.',
+conflictWith: {
+id: String(laterStaffPunch.id || ''),
+timestamp: Number(laterStaffPunch.timestamp || 0),
+type: String(laterStaffPunch.type || '')
+}
+});
+}
+
+const previousStaffPunch =
+punches
+.filter(p =>
+String(p?.staffId || '') === String(staff.id) &&
+Number(p?.timestamp || 0) < punchTimestamp
 )
-)
-.sort(
-(a, b) =>
-Number(
-a.timestamp || 0
-) -
-Number(
-b.timestamp || 0
-)
-)
+.sort((a, b) => Number(a.timestamp || 0) - Number(b.timestamp || 0))
 .pop();
 const punchType =
-lastStaffPunch &&
-String(
-lastStaffPunch.type ||
-''
-)
-.trim()
-.toUpperCase() ===
-'ENTRÉE'
+previousStaffPunch &&
+String(previousStaffPunch.type || '').trim().toUpperCase() === 'ENTRÉE'
 ? 'SORTIE'
 : 'ENTRÉE';
-const now =
-Date.now();
-const punch = {
-id:
+const now = punchTimestamp;
+const punchId =
+clientEventId ||
+(
 'rh_' +
 safeID +
 '_' +
-now +
+receivedAtMs +
 '_' +
-Math
-.random()
-.toString(36)
-.slice(2, 9),
+Math.random().toString(36).slice(2, 9)
+);
+const punch = {
+id: punchId,
 tenantID:
 safeID,
 staffId:
@@ -6274,9 +6421,21 @@ punchType,
 timestamp:
 now,
 serverRecordedAt:
-new Date(
-now
-).toISOString(),
+new Date(receivedAtMs).toISOString(),
+clientRecordedAt:
+clientEventId ? new Date(now).toISOString() : null,
+offlineSync:
+isDeferredOfflineSync,
+offlineEventId:
+clientEventId || '',
+queuedAt:
+String(queuedAt || '').slice(0, 80),
+clientTimezoneOffset:
+Number.isFinite(Number(clientTimezoneOffset)) ? Number(clientTimezoneOffset) : null,
+syncDelayMs:
+clientEventId ? Math.max(0, receivedAtMs - now) : 0,
+timestampSource:
+clientEventId ? 'CLIENT_DEVICE' : 'SERVER',
 deviceId:
 String(
 deviceId || ''
@@ -6391,7 +6550,7 @@ timestamp: Number(punch.timestamp),
 type: punch.type,
 photo: punch.photo || '',
 details: archiveDetails,
-createdAt: new Date()
+createdAt: new Date(receivedAtMs)
 } },
 { upsert: true }
 );
@@ -6492,6 +6651,8 @@ state
 );
 return res.json({
 success: true,
+idempotent: false,
+offlineAccepted: isDeferredOfflineSync,
 punchType,
 punch,
 punches:
@@ -17016,17 +17177,62 @@ res.end();
 }
 });
 app.use((error, req, res, next) => {
+const requestAborted =
+req?.ichefRequestAborted === true ||
+req?.aborted === true ||
+ichefIsExpectedHttpAbort(error);
+
+// express.json/body-parser lève "request aborted" lorsqu'un navigateur
+// annule un POST avant la fin du body. Le client n'attend déjà plus de réponse :
+// ne pas transformer ce cas en 500 ni tenter d'écrire sur une socket fermée.
+if (requestAborted) {
+if (process.env.ICHEF_HTTP_DEBUG === '1') {
+console.info('[iCHEF HTTP] requête interrompue par le client', {
+requestId: req?.ichefRequestId || '',
+method: req?.method || '',
+path: req?.originalUrl || req?.url || '',
+code: error?.code || '',
+type: error?.type || ''
+});
+}
+return;
+}
+
 console.error('[iCHEF HTTP]', {
 requestId: req?.ichefRequestId || '',
 method: req?.method || '',
 path: req?.originalUrl || req?.url || '',
+code: error?.code || '',
+type: error?.type || '',
 error: error?.message || String(error || 'Erreur inconnue')
 });
+
 if (res.headersSent) return next(error);
-const bodyTooLarge = error?.type === 'entity.too.large' || Number(error?.status) === 413;
-return res.status(bodyTooLarge ? 413 : (Number(error?.status) || 500)).json({
+if (res.destroyed || res.writableEnded) return;
+
+const bodyTooLarge =
+error?.type === 'entity.too.large' ||
+Number(error?.status) === 413;
+
+const invalidJson =
+error?.type === 'entity.parse.failed' ||
+(error instanceof SyntaxError && Number(error?.status) === 400);
+
+const status = bodyTooLarge
+? 413
+: invalidJson
+? 400
+: (Number(error?.status) || 500);
+
+return res.status(status).json({
 success: false,
-error: bodyTooLarge ? 'Requête trop volumineuse.' : 'Erreur serveur interne.',
+error: bodyTooLarge
+? 'Requête trop volumineuse.'
+: invalidJson
+? 'Corps JSON invalide.'
+: status >= 500
+? 'Erreur serveur interne.'
+: 'Requête invalide.',
 requestId: req?.ichefRequestId || undefined
 });
 });
