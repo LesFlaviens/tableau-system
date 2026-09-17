@@ -1016,7 +1016,14 @@
      return { wrapper: null, order: raw, wrapped: false };
  }
 
- function passApplyCanonicalOrder(orderId, rawOrder) {
+function passApplyCanonicalOrder(orderId, rawOrder) {
+     // BLOCAGE DU REBOND : On ignore la mise à jour serveur si la table est en cours de modification multiple
+     let lockCount = 0;
+     for (const k of PASS_MUTATION_LOCKS) {
+         if (k.startsWith(orderId + ':')) lockCount++;
+     }
+     if (lockCount > 1) return false; 
+
      const info = passUnwrapOrderNode(rawOrder);
      if (!info.order || !Array.isArray(info.order.items)) return false;
      const canonical = passDeepClone(info.order);
@@ -1024,94 +1031,7 @@
      activeOrdersData = { ...activeOrdersData, [orderId]: canonical };
      renderBoardIfChanged(true);
      return true;
- }
-
- async function passWriteSymbiose(orderId, {
-     itemPatches = [],
-     orderPatch = null,
-     auditReason = 'Pass Cuisine · synchronisation'
- } = {}) {
-     const mutationId = `CUISINE_${Date.now()}_${Math.random().toString(36).slice(2,9)}`;
-
-     /* Nouveau serveur : mutation atomique, sans renvoyer une ancienne commande complète. */
-     try {
-         const r = await fetch(`${SERVER_URL}/api/order-symbiose?tenantID=${encodeURIComponent(tenantID)}`, {
-             method: 'POST',
-             cache: 'no-store',
-             credentials: 'omit',
-             headers: passHeaders(),
-             body: JSON.stringify({
-                 tableId: orderId,
-                 itemPatches,
-                 orderPatch,
-                 terminal: PASS_TERMINAL,
-                 deviceId: passDeviceId,
-                 mutationId,
-                 auditReason
-             })
-         });
-         const data = await r.json().catch(() => ({}));
-         if (r.ok && data?.success !== false) {
-             if (data?.order) passApplyCanonicalOrder(orderId, data.order);
-             return { ...data, transport: 'symbiose' };
-         }
-         /* 404/405/501 = serveur pas encore mis à jour. 409 = commande déplacée : relire puis fusionner. */
-         if (![404,405,409,501].includes(r.status)) {
-             console.warn('[PASS CUISINE] endpoint symbiose indisponible, fallback sûr :', r.status, data?.error || '');
-         }
-     } catch (error) {
-         console.warn('[PASS CUISINE] symbiose directe indisponible, fallback :', error?.message || error);
-     }
-
-     /* Compatibilité serveur : relire la dernière commande puis appliquer UNIQUEMENT le patch Cuisine. */
-     const state = await passFetchState();
-     const currentRaw = state?.activeOrders?.[orderId];
-     const currentInfo = passUnwrapOrderNode(currentRaw);
-     if (!currentInfo.order || !Array.isArray(currentInfo.order.items)) {
-         throw new Error('Commande serveur introuvable');
-     }
-
-     const merged = passDeepClone(currentInfo.order);
-     const indexByKey = new Map();
-     merged.items.forEach((item, index) => indexByKey.set(passItemKey(item, index), index));
-
-     for (const mutation of itemPatches) {
-         if (!mutation || typeof mutation !== 'object') continue;
-         let idx = -1;
-         const key = String(mutation.itemKey || '').trim();
-         if (key && indexByKey.has(key)) idx = indexByKey.get(key);
-         else if (Number.isInteger(Number(mutation.index)) && Number(mutation.index) >= 0 && Number(mutation.index) < merged.items.length) idx = Number(mutation.index);
-         if (idx < 0) continue;
-         const target = merged.items[idx];
-         if (!target || typeof target !== 'object') continue;
-         Object.assign(target, mutation.patch || {});
-         (Array.isArray(mutation.unset) ? mutation.unset : []).forEach(field => delete target[field]);
-     }
-     if (orderPatch && typeof orderPatch === 'object') Object.assign(merged, orderPatch);
-     merged.updatedAt = new Date().toISOString();
-
-     const payloadOrder = currentInfo.wrapped
-         ? { ...currentInfo.wrapper, data: merged, updatedAt: merged.updatedAt }
-         : merged;
-
-     const r = await fetch(`${SERVER_URL}/update-order?tenantID=${encodeURIComponent(tenantID)}`, {
-         method: 'POST',
-         cache: 'no-store',
-         credentials: 'omit',
-         headers: passHeaders(),
-         body: JSON.stringify({
-             tableId: orderId,
-             order: payloadOrder,
-             terminal: PASS_TERMINAL,
-             deviceId: passDeviceId,
-             auditReason: `${auditReason} · fallback fusion canonique`
-         })
-     });
-     const data = await r.json().catch(() => ({}));
-     if (!r.ok || data?.success === false) throw new Error(data?.error || `HTTP ${r.status}`);
-     passApplyCanonicalOrder(orderId, data?.order || payloadOrder);
-     return { ...data, transport: 'update-order-safe' };
- }
+ }}
 
 
  function setStation(station) {
