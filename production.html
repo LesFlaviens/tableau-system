@@ -974,6 +974,58 @@
  }
 
 
+ function passSymbioseItemKey(item, index = 0) {
+     if (!item || typeof item !== 'object') return `IDX_${index}`;
+     const explicit = item.lineId ?? item.itemId ?? item.id ?? item.uuid ?? item._id;
+     if (explicit !== undefined && explicit !== null && String(explicit).trim()) return String(explicit);
+     const name = String(item.name || item.n || item.label || item.title || 'ITEM').trim().toLowerCase();
+     const seat = Number(item.seat ?? item.guestSeat ?? item.seatNumber ?? 0) || 0;
+     const dest = String(item.dest || item.destination || item.station || item.category || '').trim().toLowerCase();
+     const created = String(item.createdAt || item.addedAt || item.created || index);
+     return `FALLBACK_${name}_${seat}_${dest}_${created}`;
+ }
+
+ function passSymbioseMutationId(prefix = 'CUISINE') {
+     return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2,9)}`;
+ }
+
+ async function passSendOrderMutation(orderId, {
+     itemPatches = [],
+     orderPatch = null,
+     auditReason = 'Pass Cuisine · synchronisation commande'
+ } = {}) {
+     const mutationId = passSymbioseMutationId();
+     const r = await fetch(`${SERVER_URL}/api/order-symbiose?tenantID=${encodeURIComponent(tenantID)}`, {
+         method: 'POST',
+         cache: 'no-store',
+         credentials: 'omit',
+         headers: passHeaders(),
+         body: JSON.stringify({
+             tableId: orderId,
+             itemPatches,
+             orderPatch,
+             terminal: PASS_TERMINAL,
+             deviceId: passDeviceId,
+             mutationId,
+             auditReason
+         })
+     });
+     const data = await r.json().catch(() => ({}));
+     if (!r.ok || data?.success === false) {
+         throw new Error(data?.error || `HTTP ${r.status}`);
+     }
+     if (data?.order && typeof data.order === 'object') {
+         const canonical = data.order?.data && Array.isArray(data.order.data?.items)
+             ? data.order.data
+             : data.order;
+         preserveWhoCookingOrder(canonical);
+         activeOrdersData = { ...activeOrdersData, [orderId]: canonical };
+         renderBoardIfChanged(true);
+     }
+     return data;
+ }
+
+
  function setStation(station) {
  currentStation = station;
  document.querySelectorAll('.filter-btn').forEach(btn => {
@@ -1625,19 +1677,27 @@
  renderBoardIfChanged(true);
 
  try {
- const r = await fetch(`${SERVER_URL}/update-order?tenantID=${encodeURIComponent(tenantID)}`, {
-     method: 'POST',
-     cache: 'no-store',
-     credentials: 'omit',
-     headers: passHeaders(),
-     body: JSON.stringify({ tableId: orderId, order, terminal: PASS_TERMINAL, deviceId: passDeviceId, auditReason: 'Pass Cuisine · mise à jour production' })
+ const item = order.items[itemIndex];
+ await passSendOrderMutation(orderId, {
+     itemPatches: [{
+         index: itemIndex,
+         itemKey: passSymbioseItemKey(item, itemIndex),
+         patch: {
+             done: item.done === true,
+             status: item.status,
+             sequenceStatus: item.sequenceStatus,
+             readyAt: item.readyAt ?? null
+         },
+         unset: item.done === true ? [] : ['readyAt']
+     }],
+     orderPatch: { status: order.status },
+     auditReason: 'Pass Cuisine · article prêt / production'
  });
- if (!r.ok) throw new Error(`HTTP ${r.status}`);
- setConnectionBadge(true, order.items[itemIndex].done ? 'PRÊT enregistré' : 'Production enregistrée');
- schedulePassResync(80);
+ setConnectionBadge(true, item.done ? 'PRÊT enregistré' : 'Production enregistrée');
  } catch (e) {
  console.error("Erreur réseau", e);
  setConnectionBadge(false, 'Envoi impossible');
+ schedulePassResync(80);
  }
  }
 
@@ -1656,19 +1716,18 @@
  renderBoardIfChanged(true);
 
  try {
- const r = await fetch(`${SERVER_URL}/update-order?tenantID=${encodeURIComponent(tenantID)}`, {
-     method: 'POST',
-     cache: 'no-store',
-     credentials: 'omit',
-     headers: passHeaders(),
-     body: JSON.stringify({ tableId: orderId, order, terminal: PASS_TERMINAL, deviceId: passDeviceId, auditReason: 'Pass Cuisine · mise à jour production' })
+ await passSendOrderMutation(orderId, {
+     orderPatch: {
+         status: order.status,
+         readyAt: order.readyAt
+     },
+     auditReason: 'Pass Cuisine · commande prête'
  });
- if (!r.ok) throw new Error(`HTTP ${r.status}`);
- setConnectionBadge(true, 'PRÊT envoyé au PAD');
- schedulePassResync(80);
+ setConnectionBadge(true, 'PRÊT envoyé à tous les écrans');
  } catch (e) {
- console.error('Erreur synchronisation Pass vers Pad :', e);
- setConnectionBadge(false, 'PAD non mis à jour');
+ console.error('Erreur synchronisation Pass vers les écrans :', e);
+ setConnectionBadge(false, 'Commande non synchronisée');
+ schedulePassResync(80);
  }
  }
 
