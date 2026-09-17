@@ -416,6 +416,9 @@ function showToast(msg,isAlert=false){
 const urlParams=new URLSearchParams(window.location.search);
 let tenantID=window.ICHEF_BOOT?.tenantID || '';
 const SERVER_URL=window.ICHEF_BOOT?.SERVER_URL || ((window.location.hostname==="localhost"||window.location.hostname==="127.0.0.1")?"http://localhost:10000":"https://tableau-system.onrender.com");
+const BAR_TERMINAL='PASS-BAR';
+const BAR_PAGE='PASS_BAR';
+const BAR_DEVICE_ID=window.ICHEF_BOOT?.deviceId || localStorage.getItem('ichef_device_fingerprint') || `bar_${Date.now()}`;
 
 let activeOrders={};
 let lastBarHash="";
@@ -742,31 +745,84 @@ function renderBatchProduction(){
   return `<div class="batch-card ${delay>=limitLateMin||b.urgent?'hot':''}"><div class="batch-name"><span class="batch-qty">${b.qty}x</span>${escapeHTML(b.name)}</div><div class="batch-meta">Tables : ${tables.map(escapeHTML).join(', ')}<br>Attente max : ${delay} min${b.urgent?'<br>PRIORITÉ ABSOLUE':''}</div><button class="batch-btn" onclick="markBatchAsReady(${i})">Envoyer le lot au pass salle</button></div>`;
   }).join('');
 }
+function barItemKey(item,index=0){
+  if(!item||typeof item!=='object') return `IDX_${index}`;
+  const explicit=item.lineId ?? item.itemId ?? item.id ?? item.uuid ?? item._id;
+  if(explicit!==undefined&&explicit!==null&&String(explicit).trim()) return String(explicit);
+  const name=String(item.name||item.n||item.label||item.title||'ITEM').trim().toLowerCase();
+  const seat=Number(item.seat ?? item.guestSeat ?? item.seatNumber ?? 0)||0;
+  const dest=String(item.dest||item.destination||item.station||item.category||'').trim().toLowerCase();
+  const created=String(item.createdAt||item.addedAt||item.created||index);
+  return `FALLBACK_${name}_${seat}_${dest}_${created}`;
+}
+function barMutationId(){
+  return (window.crypto&&crypto.randomUUID)?crypto.randomUUID():`BAR_${Date.now()}_${Math.random().toString(36).slice(2,9)}`;
+}
+function normalizeBarOrder(raw){
+  const order=raw?.data && typeof raw.data==='object' && Array.isArray(raw.data.items) ? raw.data : raw;
+  if(!order||typeof order!=='object') return order;
+  if(Array.isArray(order.items)) order.items.forEach(i=>{
+    if(i.name&&!i.n)i.n=i.name;
+    if(i.price&&!i.p)i.p=i.price;
+    if(i.category&&!i.dest)i.dest=i.category;
+  });
+  return order;
+}
+function applyBarOrderPacket(packet){
+  const tid=String(packet?.tenantID||packet?.tenantId||'').trim().toLowerCase();
+  if(tid&&tid!==String(tenantID||'').trim().toLowerCase()) return false;
+  const tableId=String(packet?.tableId||'').trim();
+  if(!tableId||!Object.prototype.hasOwnProperty.call(packet||{},'order')) return false;
+  if(packet.order===null) delete activeOrders[tableId];
+  else activeOrders[tableId]=normalizeBarOrder(packet.order);
+  dispatchTickets();
+  renderAntiRush();
+  updateRunnerSaturationBanner();
+  if(batchModeOpen) renderBatchProduction();
+  return true;
+}
+async function sendBarMutation(tableId,{itemPatches=[],orderPatch={},auditReason='Pass Bar · synchronisation'}={}){
+  const r=await fetch(`${SERVER_URL}/api/order-symbiose?tenantID=${encodeURIComponent(tenantID)}`,{
+    method:'POST',cache:'no-store',credentials:'omit',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({tableId,itemPatches,orderPatch,terminal:BAR_TERMINAL,deviceId:BAR_DEVICE_ID,mutationId:barMutationId(),auditReason})
+  });
+  let data={};try{data=await r.json()}catch(_){ }
+  if(!r.ok||data.success===false) throw new Error(data.error||`HTTP ${r.status}`);
+  if(Object.prototype.hasOwnProperty.call(data,'order')) applyBarOrderPacket({tenantID,tableId,order:data.order});
+  return data;
+}
+
 async function markBatchAsReady(index){
   const batch=currentProductionBatches[index];
   if(!batch) return;
 
+  const grouped=new Map();
   for(const ref of batch.refs){
-  const order=activeOrders[ref.tableId];
-  if(!order?.items?.[ref.index]) continue;
-
-  const item=order.items[ref.index];
-  item.done=true;
-  item.status='PRET_AU_PASS';
-  item.readyAt=Date.now();
-
-  if(order.items.filter(i=>!i.done).length===0) order.status='PRET_AU_PASS';
-
-  await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`,{
-  method:'POST',
-  headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({tableId:ref.tableId,order})
-  });
+    const order=activeOrders[ref.tableId];
+    if(!order?.items?.[ref.index]) continue;
+    const item=order.items[ref.index];
+    const patch={done:true,status:'PRET_AU_PASS',readyAt:Date.now()};
+    Object.assign(item,patch);
+    if(!grouped.has(ref.tableId)) grouped.set(ref.tableId,[]);
+    grouped.get(ref.tableId).push({itemKey:barItemKey(item,ref.index),index:ref.index,patch});
   }
 
-  showToast('LOT ENVOYÉ AU PASS SALLE');
-  fetchProductionState();
+  try{
+    for(const [tableId,itemPatches] of grouped){
+      const order=activeOrders[tableId];
+      const allDone=Array.isArray(order?.items)&&order.items.every(i=>i.done===true);
+      if(allDone) order.status='PRET_AU_PASS';
+      await sendBarMutation(tableId,{itemPatches,orderPatch:allDone?{status:'PRET_AU_PASS'}:{},auditReason:'Pass Bar · lot prêt'});
+    }
+    showToast('LOT ENVOYÉ AU PASS SALLE');
+  }catch(e){
+    console.error(e);
+    showToast('ERREUR RÉSEAU SUR LE LOT',true);
+    fetchProductionState();
+  }
 }
+
 
 /* ===== PASS ===== */
 function updateRunnerSaturationBanner(){
@@ -972,61 +1028,62 @@ function renderColumn(scrollId,counterId,tickets){
 async function markItemAsReady(tableId,itemIndex){
   const order=activeOrders[tableId];
   if(!order?.items?.[itemIndex]) return;
-
   if((order.timeShifted && Number(order.releaseTime)>Date.now()) || order.status==='EN ATTENTE (TIME-SHIFT)') return;
 
   const item=order.items[itemIndex];
   item.done=!item.done;
-  item.status=item.done?'PRET_AU_PASS':'EN_PREPARATION';
+  const patch={done:item.done,status:item.done?'PRET_AU_PASS':'EN_PREPARATION'};
+  if(item.done){ item.readyAt=Date.now(); patch.readyAt=item.readyAt; }
+  else { delete item.readyAt; }
+  Object.assign(item,patch);
 
-  if(item.done) item.readyAt=Date.now();
-  else delete item.readyAt;
-
-  if(order.status==='NOUVELLE COMMANDE') order.status='EN PRÉPARATION';
-
+  const orderPatch={};
+  if(order.status==='NOUVELLE COMMANDE'){
+    order.status='EN PRÉPARATION';
+    orderPatch.status='EN PRÉPARATION';
+  }
   dispatchTickets();
   renderAntiRush();
 
   try{
-  await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`,{
-  method:'POST',
-  headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({tableId,order})
-  });
-  }catch(_){
-  showToast('RÉSEAU LENT — MODIFICATION CONSERVÉE LOCALEMENT',true);
+    await sendBarMutation(tableId,{
+      itemPatches:[{itemKey:barItemKey(item,itemIndex),index:itemIndex,patch,unset:item.done?[]:['readyAt']}],
+      orderPatch,
+      auditReason:item.done?'Pass Bar · article prêt':'Pass Bar · retour en préparation'
+    });
+  }catch(e){
+    console.error(e);
+    showToast('RÉSEAU LENT — RESYNCHRONISATION',true);
+    fetchProductionState();
   }
 }
 
 async function markBarOrderReady(tableId){
   const order=activeOrders[tableId];
   if(!order?.items) return;
-
   const barItems=order.items.filter(i=>String(i.dest||i.category||'').toLowerCase()==='bar' && !i.served);
   if(!barItems.length || !barItems.every(i=>i.done===true)) return;
 
   order.barReady=true;
   order.barReadyAt=Date.now();
-
   const otherPending=order.items.some(i=>String(i.dest||i.category||'').toLowerCase()!=='bar' && !i.done);
   order.status=otherPending?'EN PRÉPARATION':'PRET_AU_PASS';
-
   showToast('TICKET BAR ENVOYÉ AU PASS SALLE');
   dispatchTickets();
   renderAntiRush();
 
   try{
-  await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`,{
-  method:'POST',
-  headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({tableId,order})
-  });
-  }catch(_){
-  showToast('RÉSEAU LENT — TICKET CONSERVÉ LOCALEMENT',true);
+    await sendBarMutation(tableId,{
+      orderPatch:{barReady:true,barReadyAt:order.barReadyAt,status:order.status},
+      auditReason:'Pass Bar · ticket prêt au pass salle'
+    });
+  }catch(e){
+    console.error(e);
+    showToast('RÉSEAU LENT — RESYNCHRONISATION',true);
+    fetchProductionState();
   }
-
-  fetchProductionState();
 }
+
 
 /* ===== SON / TEMPS RÉEL ===== */
 let audioCtx=null;
@@ -1061,11 +1118,29 @@ window.startAuthenticatedPassBar=async function startAuthenticatedPassBar(){
   if(!tenantID) return;
   passBarStarted=true;
 
-  passBarSocket=io(SERVER_URL,{transports:['websocket','polling'],reconnection:true});
-  passBarSocket.on('connect',()=>passBarSocket.emit('joinTenant',String(tenantID)));
+  passBarSocket=io(SERVER_URL,{
+    transports:['websocket','polling'],reconnection:true,reconnectionAttempts:Infinity,
+    auth:{tenantID,terminal:BAR_TERMINAL,page:BAR_PAGE,deviceId:BAR_DEVICE_ID},
+    query:{tenantID,terminal:BAR_TERMINAL,page:BAR_PAGE,deviceId:BAR_DEVICE_ID}
+  });
+  let barResyncTimer=0;
+  const scheduleBarResync=(delay=120)=>{clearTimeout(barResyncTimer);barResyncTimer=setTimeout(fetchProductionState,delay)};
+  passBarSocket.on('connect',()=>{
+    passBarSocket.emit('joinTenant',{tenantID,terminal:BAR_TERMINAL,page:BAR_PAGE,deviceId:BAR_DEVICE_ID});
+    scheduleBarResync(80);
+  });
+  passBarSocket.on('orderUpdated',packet=>{if(!applyBarOrderPacket(packet))scheduleBarResync(60)});
+  passBarSocket.on('order-updated',packet=>{if(!applyBarOrderPacket(packet))scheduleBarResync(60)});
+  passBarSocket.on('tableUpdated',packet=>{if(!applyBarOrderPacket(packet))scheduleBarResync(60)});
+  passBarSocket.on('server-state-changed',packet=>{
+    const tid=String(packet?.tenantID||packet?.tenantId||'').trim().toLowerCase();
+    if(!tid||tid===String(tenantID||'').trim().toLowerCase()) scheduleBarResync(120);
+  });
   passBarSocket.on('updateState',state=>{
-  if(!state) return;
-  fetchProductionState();
+    if(!state) return;
+    // Les événements orderUpdated sont appliqués immédiatement; cet état complet garde
+    // paramètres/alertes en symbiose sans créer une seconde écriture.
+    scheduleBarResync(40);
   });
 
   passBarTimers.push(setInterval(()=>{
