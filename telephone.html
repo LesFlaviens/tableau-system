@@ -12893,4 +12893,158 @@ window.__ICHEF_ANTI_RUSH_EFFECTIVE_CONNECTION__=true;
 window.__ICHEF_CHRONOS_LOCAL_INDEPENDENT__=true;
 console.info("[iCHEF V80] Anti-Rush LIVE stable + chronomètres locaux indépendants du réseau");
 </script>
+
+<script id="ichef-command-sync-live-v1">
+(function(){
+  if(window.__ICHEF_COMMAND_SYNC_LIVE_V1__) return;
+  window.__ICHEF_COMMAND_SYNC_LIVE_V1__=true;
+
+  let boundSocket=null;
+  let resyncTimer=0;
+  let lastForcedRead=0;
+
+  function txt(v){ return String(v==null?'':v).trim(); }
+  function tenantMatches(packet){
+    const tid=txt(packet?.tenantID||packet?.tenantId||packet?.restaurantID||'');
+    const own=txt(typeof STATE!=='undefined' ? STATE?.tenantID : '');
+    return !tid || !own || tid.toLowerCase()===own.toLowerCase();
+  }
+  function systemKey(key){
+    return /MASTER|ARCHITECTURE|HISTORY|ARCHIVE|STAFF_|ALERTS_|SETTINGS_|MENU_/i.test(txt(key));
+  }
+  function hasLocalPending(key){
+    try{return !!(typeof ICHEF_LOCAL_PENDING!=='undefined' && ICHEF_LOCAL_PENDING?.has?.(key));}
+    catch(_){return false;}
+  }
+
+  function refreshOpenOrder(reason='live-order'){
+    try{
+      if(typeof STATE==='undefined' || !STATE?.currentTable) return;
+      const table=txt(STATE.currentTable);
+      if(!table || hasLocalPending(table)) return;
+      const live=(STATE.activeOrders&&STATE.activeOrders[table]) || (typeof getOrder==='function' ? getOrder(table) : null);
+      if(!live || typeof live!=='object') return;
+      STATE.currentOrder=(typeof clone==='function') ? clone(live) : JSON.parse(JSON.stringify(live));
+      if(typeof applyDerived==='function') applyDerived();
+      if(document.body.classList.contains('order-open')){
+        if(typeof renderOrder==='function') renderOrder();
+        else if(typeof renderTicket==='function') renderTicket();
+      }
+      if(document.body.classList.contains('summary-open') && typeof renderSummary==='function') renderSummary();
+      if(typeof scheduleRender==='function') scheduleRender();
+      console.info('[iCHEF COMMAND SYNC] commande ouverte actualisée',table,reason);
+    }catch(err){
+      console.warn('[iCHEF COMMAND SYNC] refresh commande ouverte',err?.message||err);
+    }
+  }
+
+  function scheduleFullSync(reason='order-event',delay=70,force=false){
+    clearTimeout(resyncTimer);
+    resyncTimer=setTimeout(async()=>{
+      try{
+        if(typeof STATE==='undefined' || STATE?.authenticated!==true || !navigator.onLine) return;
+        const t=Date.now();
+        if(force && t-lastForcedRead<180) return;
+        if(force) lastForcedRead=t;
+        if(typeof syncFull==='function') await syncFull('command-'+reason);
+        refreshOpenOrder(reason);
+      }catch(err){
+        console.warn('[iCHEF COMMAND SYNC] resynchronisation',reason,err?.message||err);
+      }
+    },Math.max(0,Number(delay)||0));
+  }
+
+  function applyTargetedPacket(packet,eventName){
+    try{
+      if(!packet || typeof packet!=='object' || !tenantMatches(packet)) return false;
+      const key=txt(packet.tableId||packet.tableID||packet.orderKey||packet.key||packet.table||'');
+      const order=(packet.order && typeof packet.order==='object') ? packet.order
+        : (packet.orderData && typeof packet.orderData==='object') ? packet.orderData
+        : (packet.data && typeof packet.data==='object' && Array.isArray(packet.data.items)) ? packet.data
+        : null;
+
+      if(!key || systemKey(key)){
+        scheduleFullSync(eventName,75,true);
+        return false;
+      }
+
+      if(!order){
+        scheduleFullSync(eventName+'-'+key,55,true);
+        return false;
+      }
+
+      if(hasLocalPending(key)){
+        scheduleFullSync(eventName+'-pending-'+key,140,true);
+        return false;
+      }
+
+      if(!STATE.activeOrders || typeof STATE.activeOrders!=='object') STATE.activeOrders={};
+      const normalized=(typeof normalizeCompatOrder==='function') ? normalizeCompatOrder(order) : order;
+      STATE.activeOrders[key]=(typeof clone==='function') ? clone(normalized) : JSON.parse(JSON.stringify(normalized));
+      STATE.lastServerAt=Date.now();
+      if(typeof applyDerived==='function') applyDerived();
+      if(STATE.currentTable===key) refreshOpenOrder(eventName);
+      if(typeof scheduleRender==='function') scheduleRender();
+      try{window.dispatchEvent(new CustomEvent('ichef:live-state-updated',{detail:{source:eventName,tableId:key}}));}catch(_){ }
+      console.info('[iCHEF COMMAND SYNC] mise à jour ciblée',eventName,key);
+      return true;
+    }catch(err){
+      console.warn('[iCHEF COMMAND SYNC] paquet ciblé',eventName,err?.message||err);
+      scheduleFullSync(eventName+'-fallback',90,true);
+      return false;
+    }
+  }
+
+  function bind(){
+    try{
+      if(typeof STATE==='undefined' || !STATE?.socket) return;
+      const socket=STATE.socket;
+      if(socket===boundSocket || socket.__ichefCommandSyncLiveV1) return;
+      boundSocket=socket;
+      socket.__ichefCommandSyncLiveV1=true;
+
+      ['orderUpdated','order-updated','tableUpdated'].forEach(eventName=>{
+        socket.on(eventName,packet=>applyTargetedPacket(packet,eventName));
+      });
+
+      socket.on('server-state-changed',packet=>{
+        if(!tenantMatches(packet)) return;
+        const key=txt(packet?.tableId||packet?.key||'');
+        if(key && systemKey(key)) return;
+        scheduleFullSync('server-state-changed'+(key?'-'+key:''),45,true);
+      });
+
+      /* Le handler principal applique déjà updateState. Ici on rafraîchit la copie
+         de la table actuellement ouverte juste après cette application. */
+      socket.on('updateState',state=>{
+        if(!state || typeof state!=='object') return;
+        setTimeout(()=>refreshOpenOrder('updateState'),0);
+      });
+
+      socket.on('tenant-joined',()=>scheduleFullSync('tenant-joined',35,true));
+      socket.on('connect',()=>scheduleFullSync('connect',50,true));
+
+      console.info('[iCHEF COMMAND SYNC] pont LIVE actif',{
+        tenantID:STATE.tenantID,
+        deviceId:STATE.deviceId,
+        socketId:socket.id||null
+      });
+    }catch(err){
+      console.warn('[iCHEF COMMAND SYNC] liaison Socket.IO',err?.message||err);
+    }
+  }
+
+  window.addEventListener('ichef:live-state-updated',()=>refreshOpenOrder('state-updated'));
+  window.addEventListener('online',()=>setTimeout(()=>{bind();scheduleFullSync('online',80,true)},80),{passive:true});
+  window.addEventListener('focus',()=>{bind();if(navigator.onLine)scheduleFullSync('focus',90,false)},{passive:true});
+  document.addEventListener('visibilitychange',()=>{
+    if(!document.hidden && navigator.onLine){bind();scheduleFullSync('visible',90,false);}
+  });
+
+  setInterval(bind,700);
+  setTimeout(()=>{bind();scheduleFullSync('boot',120,false)},500);
+  window.ICHEF_COMMAND_SYNC_NOW=()=>scheduleFullSync('manual',0,true);
+})();
+
+</script>
 </body></html>
