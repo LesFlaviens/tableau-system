@@ -12466,13 +12466,10 @@ if(document.getElementById("bottomTableTotal")) document.getElementById("bottomT
 
 svcServiceButton(o);
 
-document.getElementById("ticket").innerHTML=items.length
-?ticketGridHeaderHTML()+items.map(i=>{
+function renderSeatOrderItem(i){
 const key=lineKey(i);
 const q=itemQty(i);
-const seat=itemSeat(i);
 const sent=svcFired(i);
-const col=svcCourse(i);
 const fullName=itemName(i);
 const shortName=ticketShortTitle(fullName,3);
 const serviceState=svcState(o,i);
@@ -12482,41 +12479,75 @@ const actionAttrs=serviceState.action
 :"";
 const state=`<span class="line-state ${serviceState.cls}"${actionAttrs}>${serviceState.text}</span>`;
 const rhythm=svcRhythmHTML(o,i);
-
 const cooking=text(i.cooking)
 ?`<span class="cooking-tag">${esc(i.cooking)}</span>`
 :"";
-
-const seatBadge=seat?seatBadgeHTML(seat):'<span class="seat-badge">CTR</span>';
 const obs=text(i.obs);
 const critical=i.allergyCritical===true||/allerg/i.test(obs);
 
 const controls=sent
 ?`<button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
-            <button data-line="${esc(key)}" data-act="cooking" title="Cuisson">🌡️</button>
-            <button data-line="${esc(key)}" data-act="delete" title="Annuler au poste" style="width:52px">ANN.</button>`
-:`<button data-line="${esc(key)}" data-act="minus">−</button>
-            <button data-line="${esc(key)}" data-act="plus">+</button>
-            <button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
-            <button data-line="${esc(key)}" data-act="delete">×</button>`;
+  <button data-line="${esc(key)}" data-act="cooking" title="Cuisson">🌡️</button>
+  <button data-line="${esc(key)}" data-act="delete" title="Annuler au poste">ANN.</button>`
+:`<button data-line="${esc(key)}" data-act="minus" title="Retirer">−</button>
+  <button data-line="${esc(key)}" data-act="plus" title="Ajouter">+</button>
+  <button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
+  <button data-line="${esc(key)}" data-act="delete" title="Supprimer">×</button>`;
 
-return `<div class="ticket-row ${sent?"sent-lock":""}" data-course-col="${col}">
-          <div class="ticket-left" data-line="${esc(key)}" data-act="obs" style="cursor:pointer;" title="${esc(fullName)}">
-            <div class="ticket-name">
-              ${seatBadge}<span class="ticket-name-text">${esc(shortName)}</span>
-            </div>
-            <div class="ticket-tags">
-              ${destinationTagHTML(i)}${cooking}${state}${rhythm}
-            </div>
-            <div class="ticket-meta">x${q} · ${esc(i.course||i.category||"")}</div>
-            ${obs?`<span class="ticket-obs ${critical?"critical":""}">${critical?"🛑 ":"⚠️ "}${esc(obs)}</span>`:""}
-          </div>
-          <div class="ticket-right">
-            <div class="ticket-price">${money(itemPrice(i)*q)}</div>
-            <div class="qtybar">${controls}</div>
-          </div>
-        </div>`;
-}).join("")
+return `<article class="seat-order-item ${sent?"sent-lock":""}" data-item-key="${esc(key)}">
+  <div class="seat-item-main" data-line="${esc(key)}" data-act="obs" title="${esc(fullName)}">
+    <div class="seat-item-title"><strong>${q>1?`x${q} `:""}</strong>${esc(shortName)}</div>
+    <div class="ticket-tags">${destinationTagHTML(i)}${cooking}${state}${rhythm}</div>
+    ${obs?`<span class="ticket-obs ${critical?"critical":""}">${critical?"🛑 ":"⚠️ "}${esc(obs)}</span>`:""}
+  </div>
+  <div class="seat-item-bottom">
+    <span class="seat-item-price">${money(itemPrice(i)*q)}</span>
+    <span class="seat-item-controls">${controls}</span>
+  </div>
+</article>`;
+}
+
+function renderCourseCell(seatItems,col){
+const list=seatItems.filter(i=>Number(svcCourse(i))===Number(col));
+return `<div class="seat-course-cell course-${col}${list.length?"":" empty"}">
+  ${list.length?list.map(renderSeatOrderItem).join(""):'<span class="seat-course-empty">—</span>'}
+</div>`;
+}
+
+const seatMap=new Map();
+items.forEach(i=>{
+const seat=Number(itemSeat(i)||0);
+const key=seat>=1&&seat<=9?seat:0;
+if(!seatMap.has(key)) seatMap.set(key,[]);
+seatMap.get(key).push(i);
+});
+
+const seatRows=[...seatMap.entries()].sort((a,b)=>{
+if(a[0]===0&&b[0]!==0)return 1;
+if(b[0]===0&&a[0]!==0)return -1;
+return Number(a[0])-Number(b[0]);
+});
+
+const head=`<div class="seat-ticket-head" aria-hidden="true">
+  <span>CONVIVE</span><span>APÉRO</span><span>ENTRÉE</span><span>PLAT</span><span>DESSERT</span><span>PRIX</span>
+</div>`;
+
+const rows=seatRows.map(([seat,seatItems])=>{
+const rowTotal=seatItems.reduce((sum,i)=>sum+(itemPrice(i)*itemQty(i)),0);
+const label=seat?seatBadgeHTML(seat):'<span class="seat-badge seat-center">CTR</span>';
+const count=seatItems.reduce((sum,i)=>sum+itemQty(i),0);
+return `<div class="seat-ticket-row" data-seat-row="${seat||0}">
+  <div class="seat-row-label">${label}<small>${count} art.</small></div>
+  ${renderCourseCell(seatItems,1)}
+  ${renderCourseCell(seatItems,2)}
+  ${renderCourseCell(seatItems,3)}
+  ${renderCourseCell(seatItems,4)}
+  <div class="seat-row-total"><strong>${money(rowTotal)}</strong><small>${seat?`C${seat}`:"CENTRE"}</small></div>
+</div>`;
+}).join("");
+
+document.getElementById("ticket").innerHTML=items.length
+?`<div class="seat-ticket-board">${head}${rows}</div>`
 :'<div class="empty-state">Choisissez C1…C9 puis touchez les produits.<br><b>1 tap = ajout immédiat.</b></div>';
 
 try{ renderSendButton(o); }catch(_){}
@@ -13301,6 +13332,211 @@ body.order-open .ticket-name .line-state {
     body.order-open .ticket-grid-head, body.order-open .ticket-row {
         grid-template-columns: minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) minmax(90px,.9fr) !important;
     }
+}
+</style>
+
+<style id="ichef-seat-row-grid-v30">
+/* V30 — une seule ligne par convive : C1, C2, C3… sans toucher au réseau */
+body.order-open #ticket.ticket-items{
+  overflow:auto !important;
+  padding:0 !important;
+  background:#eef0f1 !important;
+  overscroll-behavior:contain;
+}
+body.order-open .seat-ticket-board{
+  width:100%;
+  min-width:780px;
+  background:#fff;
+}
+body.order-open .seat-ticket-head,
+body.order-open .seat-ticket-row{
+  display:grid !important;
+  grid-template-columns:76px repeat(4,minmax(135px,1fr)) 108px !important;
+  column-gap:4px !important;
+  align-items:stretch !important;
+}
+body.order-open .seat-ticket-head{
+  position:sticky;
+  top:0;
+  z-index:30;
+  min-height:42px;
+  padding:6px;
+  background:#111516 !important;
+  color:#e2b84e !important;
+  border-bottom:3px solid #e2b84e !important;
+  font-size:12px !important;
+  font-weight:1000 !important;
+  text-align:center;
+}
+body.order-open .seat-ticket-head>span{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  min-width:0;
+}
+body.order-open .seat-ticket-row{
+  min-height:82px;
+  padding:5px 6px;
+  background:#fff !important;
+  border-bottom:2px solid #c9ced1;
+}
+body.order-open .seat-ticket-row:nth-child(odd){background:#fafafa !important;}
+body.order-open .seat-row-label,
+body.order-open .seat-row-total{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:5px;
+  min-width:0;
+  background:#111516 !important;
+  border-radius:8px;
+  color:#fff;
+}
+body.order-open .seat-row-label .seat-badge{
+  min-width:48px !important;
+  height:31px !important;
+  padding:0 8px !important;
+  font-size:16px !important;
+  font-weight:1000 !important;
+  background:#fff !important;
+}
+body.order-open .seat-row-label small,
+body.order-open .seat-row-total small{
+  font-size:9px !important;
+  font-weight:900 !important;
+  color:#c7ced1 !important;
+}
+body.order-open .seat-row-total{
+  background:#f7f3e7 !important;
+  border:2px solid #d3ae45;
+  color:#111 !important;
+}
+body.order-open .seat-row-total strong{
+  font-size:15px !important;
+  font-weight:1000 !important;
+  color:#8c6900 !important;
+  white-space:nowrap;
+}
+body.order-open .seat-row-total small{color:#6b6250 !important;}
+body.order-open .seat-course-cell{
+  min-width:0;
+  display:flex;
+  flex-direction:column;
+  gap:5px;
+  padding:3px;
+  border:1px solid #d9dddf;
+  border-radius:8px;
+  background:#f7f8f9;
+}
+body.order-open .seat-course-cell.empty{
+  align-items:center;
+  justify-content:center;
+  background:#fbfbfb;
+}
+body.order-open .seat-course-empty{
+  color:#c1c6c8;
+  font-size:18px;
+  font-weight:900;
+}
+body.order-open .seat-order-item{
+  min-width:0;
+  padding:5px;
+  border:1px solid #bfc5c8;
+  border-radius:7px;
+  background:#fff;
+}
+body.order-open .seat-order-item.sent-lock{background:#fffaf0;}
+body.order-open .seat-item-main{
+  min-width:0;
+  cursor:pointer;
+}
+body.order-open .seat-item-title{
+  min-width:0;
+  color:#111 !important;
+  font-size:12px !important;
+  line-height:1.15 !important;
+  font-weight:1000 !important;
+  white-space:normal !important;
+  overflow-wrap:anywhere;
+}
+body.order-open .seat-item-title strong{color:#8c6900;}
+body.order-open .seat-order-item .ticket-tags{
+  display:flex !important;
+  flex-wrap:wrap !important;
+  justify-content:flex-start !important;
+  gap:2px !important;
+  margin-top:4px !important;
+  max-width:100% !important;
+  overflow:visible !important;
+}
+body.order-open .seat-order-item .ticket-tags .dest-tag,
+body.order-open .seat-order-item .ticket-tags .cooking-tag,
+body.order-open .seat-order-item .ticket-tags .line-state,
+body.order-open .seat-order-item .ichef-service-rhythm{
+  max-width:100% !important;
+  min-height:18px !important;
+  height:auto !important;
+  margin:0 !important;
+  padding:2px 4px !important;
+  font-size:8px !important;
+  line-height:1.05 !important;
+  white-space:normal !important;
+  overflow:visible !important;
+}
+body.order-open .seat-order-item .ticket-obs{
+  display:block !important;
+  margin-top:4px !important;
+  padding:3px 4px !important;
+  font-size:9px !important;
+  line-height:1.15 !important;
+  white-space:normal !important;
+}
+body.order-open .seat-item-bottom{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:4px;
+  margin-top:5px;
+  padding-top:4px;
+  border-top:1px solid #eceeef;
+}
+body.order-open .seat-item-price{
+  flex:0 0 auto;
+  color:#9a760d;
+  font-size:10px;
+  font-weight:1000;
+  white-space:nowrap;
+}
+body.order-open .seat-item-controls{
+  min-width:0;
+  display:flex;
+  justify-content:flex-end;
+  gap:2px;
+  flex-wrap:wrap;
+}
+body.order-open .seat-item-controls button{
+  min-width:25px !important;
+  width:auto !important;
+  height:25px !important;
+  padding:0 5px !important;
+  border:1px solid #8f979b !important;
+  border-radius:5px !important;
+  background:#fff !important;
+  color:#111 !important;
+  font-size:10px !important;
+  font-weight:1000 !important;
+}
+body.order-open .seat-item-controls button:active{
+  background:#111 !important;
+  color:#fff !important;
+}
+@media(max-width:820px){
+  body.order-open .seat-ticket-board{min-width:760px;}
+  body.order-open .seat-ticket-head,
+  body.order-open .seat-ticket-row{
+    grid-template-columns:68px repeat(4,132px) 94px !important;
+  }
 }
 </style>
 </body></html>
