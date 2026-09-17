@@ -9187,6 +9187,359 @@ profileUpdatedAt:
 new Date().toISOString()
 };
 }
+
+/* =========================================================
+   iCHEF ORDER SYMBIOSE V1
+   Synchronisation atomique et ciblée des commandes entre
+   Pass Cuisine / Bar / Runner / Mini Pass / PAD.
+   Une station ne renvoie plus une ancienne copie complète
+   de la commande : elle modifie uniquement les champs dont
+   elle est responsable.
+   ========================================================= */
+const ICHEF_ORDER_SYMBIOSE_ITEM_FIELDS = new Set([
+  'done','ready','status','sequenceStatus','productionStatus',
+  'readyAt','doneAt','startedAt','preparationStartedAt',
+  'pickedByServer','takenByServer','pickedBy','runnerName','pickedAt',
+  'served','servedBy','servedAt',
+  'obs','observation','note',
+  'problem','problemReason','remake','remakeAt'
+]);
+const ICHEF_ORDER_SYMBIOSE_ORDER_FIELDS = new Set([
+  'status','readyAt','barReady','barReadyAt',
+  'productionStatus','sequenceStatus',
+  'runnerStatus','runnerReadyAt'
+]);
+const ichefOrderSymbioseQueues = new Map();
+
+function ichefOrderSymbioseQueue(tenantID, tableId, task) {
+  const key = `${String(tenantID || '')}::${String(tableId || '')}`;
+  const previous = ichefOrderSymbioseQueues.get(key) || Promise.resolve();
+  const current = previous.catch(() => undefined).then(task);
+  ichefOrderSymbioseQueues.set(key, current);
+  current.finally(() => {
+    if (ichefOrderSymbioseQueues.get(key) === current) {
+      ichefOrderSymbioseQueues.delete(key);
+    }
+  }).catch(() => {});
+  return current;
+}
+
+function ichefOrderSymbioseItemKey(item, index = 0) {
+  if (!item || typeof item !== 'object') return `IDX_${index}`;
+  const explicit =
+    item.lineId ?? item.itemId ?? item.id ?? item.uuid ?? item._id;
+  if (explicit !== undefined && explicit !== null && String(explicit).trim()) {
+    return String(explicit);
+  }
+  const name = String(item.name || item.n || item.label || item.title || 'ITEM')
+    .trim().toLowerCase();
+  const seat = Number(item.seat ?? item.guestSeat ?? item.seatNumber ?? 0) || 0;
+  const dest = String(item.dest || item.destination || item.station || item.category || '')
+    .trim().toLowerCase();
+  const created = String(item.createdAt || item.addedAt || item.created || index);
+  return `FALLBACK_${name}_${seat}_${dest}_${created}`;
+}
+
+function ichefOrderSymbioseUnwrap(raw) {
+  if (
+    raw &&
+    typeof raw === 'object' &&
+    raw.data &&
+    typeof raw.data === 'object' &&
+    Array.isArray(raw.data.items)
+  ) {
+    return { wrapper: raw, order: raw.data, wrapped: true };
+  }
+  return { wrapper: null, order: raw, wrapped: false };
+}
+
+function ichefOrderSymbiosePatchAllowed(target, patch, allowedFields) {
+  if (!target || typeof target !== 'object' || !patch || typeof patch !== 'object') return;
+  for (const [field, value] of Object.entries(patch)) {
+    if (!allowedFields.has(field)) continue;
+    if (value === undefined) continue;
+    target[field] = value;
+  }
+}
+
+function ichefOrderSymbioseApply(previousRaw, body = {}) {
+  const previousInfo = ichefOrderSymbioseUnwrap(previousRaw);
+  const previousOrder =
+    previousInfo.order && typeof previousInfo.order === 'object'
+      ? previousInfo.order
+      : null;
+
+  // L'ordre doit déjà exister côté serveur. Cela empêche un écran de production
+  // de recréer une table à partir d'une copie locale obsolète.
+  if (!previousOrder || !Array.isArray(previousOrder.items)) {
+    const error = new Error('Commande serveur introuvable pour la synchronisation.');
+    error.code = 'ORDER_NOT_FOUND';
+    throw error;
+  }
+
+  const mergedOrder = {
+    ...previousOrder,
+    items: previousOrder.items.map(item => (
+      item && typeof item === 'object' ? { ...item } : item
+    ))
+  };
+
+  const byKey = new Map();
+  mergedOrder.items.forEach((item, index) => {
+    byKey.set(ichefOrderSymbioseItemKey(item, index), index);
+  });
+
+  const patches = Array.isArray(body.itemPatches)
+    ? body.itemPatches.slice(0, 250)
+    : [];
+
+  for (const mutation of patches) {
+    if (!mutation || typeof mutation !== 'object') continue;
+    let index = -1;
+    const requestedKey = String(mutation.itemKey || '').trim();
+    if (requestedKey && byKey.has(requestedKey)) {
+      index = byKey.get(requestedKey);
+    } else if (
+      Number.isInteger(Number(mutation.index)) &&
+      Number(mutation.index) >= 0 &&
+      Number(mutation.index) < mergedOrder.items.length
+    ) {
+      index = Number(mutation.index);
+    }
+    if (index < 0) continue;
+
+    const currentItem = mergedOrder.items[index];
+    if (!currentItem || typeof currentItem !== 'object') continue;
+    ichefOrderSymbiosePatchAllowed(
+      currentItem,
+      mutation.patch || {},
+      ICHEF_ORDER_SYMBIOSE_ITEM_FIELDS
+    );
+
+    const unset = Array.isArray(mutation.unset) ? mutation.unset : [];
+    for (const field of unset) {
+      if (ICHEF_ORDER_SYMBIOSE_ITEM_FIELDS.has(String(field))) {
+        delete currentItem[String(field)];
+      }
+    }
+  }
+
+  ichefOrderSymbiosePatchAllowed(
+    mergedOrder,
+    body.orderPatch || {},
+    ICHEF_ORDER_SYMBIOSE_ORDER_FIELDS
+  );
+
+  const revision =
+    Math.max(
+      0,
+      Number(previousOrder?._symbiose?.revision || 0),
+      Number(previousOrder?.syncRevision || 0)
+    ) + 1;
+  const now = new Date().toISOString();
+  mergedOrder._symbiose = {
+    revision,
+    updatedAt: now,
+    terminal: String(body.terminal || 'PRODUCTION').slice(0, 80),
+    deviceId: String(body.deviceId || '').slice(0, 180),
+    mutationId: String(body.mutationId || '').slice(0, 180)
+  };
+  mergedOrder.syncRevision = revision;
+  mergedOrder.updatedAt = now;
+
+  if (previousInfo.wrapped) {
+    return {
+      ...previousInfo.wrapper,
+      data: mergedOrder,
+      updatedAt: now,
+      _symbiose: mergedOrder._symbiose
+    };
+  }
+  return mergedOrder;
+}
+
+app.post('/api/order-symbiose', async (req, res) => {
+  const tenantID = cleanString(
+    req.query?.tenantID ||
+    req.body?.tenantID ||
+    req.headers['x-ichef-tenant'] ||
+    ''
+  );
+  const tableId = String(req.body?.tableId || '').trim();
+  const body = req.body || {};
+
+  if (!tenantID) {
+    return res.status(400).json({
+      success: false,
+      persisted: false,
+      code: 'TENANT_REQUIRED',
+      error: 'tenantID manquant.'
+    });
+  }
+  if (!ichefValidStateKey(tableId)) {
+    return res.status(400).json({
+      success: false,
+      persisted: false,
+      code: 'INVALID_TABLE',
+      error: 'Table / commande invalide.'
+    });
+  }
+  if (!Array.isArray(body.itemPatches) && !body.orderPatch) {
+    return res.status(400).json({
+      success: false,
+      persisted: false,
+      code: 'PATCH_REQUIRED',
+      error: 'Aucune modification de commande reçue.'
+    });
+  }
+
+  try {
+    const terminalAccess = await ichefCheckServiceTerminalAccess({
+      tenantID,
+      pin: body.pin,
+      terminal: body.terminal
+    });
+    if (!terminalAccess.ok) {
+      return res.status(terminalAccess.status || 403).json({
+        success: false,
+        persisted: false,
+        error: terminalAccess.error || 'Accès service refusé.'
+      });
+    }
+
+    const result = await ichefOrderSymbioseQueue(
+      tenantID,
+      tableId,
+      async () => {
+        const before = await AppState.findOne(
+          { tenantID },
+          {
+            [`activeOrders.${tableId}`]: 1,
+            'activeOrders.AUDIT_MASTER': 1
+          }
+        ).lean();
+
+        const previousOrder = before?.activeOrders?.[tableId];
+        if (!previousOrder) {
+          const error = new Error('Commande introuvable.');
+          error.code = 'ORDER_NOT_FOUND';
+          throw error;
+        }
+
+        const mergedOrder = ichefOrderSymbioseApply(previousOrder, body);
+        const actor = ichefHistoryActor(terminalAccess, body);
+        const historyEntries = ichefBuildCentralHistoryEntries(
+          previousOrder,
+          mergedOrder,
+          {
+            tableId,
+            terminal: String(body.terminal || 'PRODUCTION'),
+            deviceId: String(body.deviceId || ''),
+            auditReason: String(body.auditReason || 'Synchronisation production'),
+            operator: actor.operator,
+            role: actor.role,
+            source: 'order-symbiose'
+          }
+        );
+
+        const updateSet = {
+          [`activeOrders.${tableId}`]: mergedOrder
+        };
+        if (historyEntries.length && tableId !== 'AUDIT_MASTER') {
+          updateSet['activeOrders.AUDIT_MASTER'] =
+            ichefBuildAuditMasterNode(
+              before?.activeOrders?.AUDIT_MASTER,
+              historyEntries
+            );
+        }
+
+        const updatedState = await AppState.findOneAndUpdate(
+          { tenantID },
+          { $set: updateSet },
+          { upsert: true, new: true }
+        );
+        const finalState =
+          typeof updatedState?.toObject === 'function'
+            ? updatedState.toObject()
+            : updatedState;
+        const canonicalOrder =
+          finalState?.activeOrders?.[tableId] ?? mergedOrder;
+
+        await ichefArchiveCentralHistory(tenantID, historyEntries);
+
+        const packet = {
+          tenantID,
+          tableId,
+          order: canonicalOrder,
+          source: 'order-symbiose',
+          terminal: String(body.terminal || 'PRODUCTION'),
+          deviceId: String(body.deviceId || ''),
+          mutationId: String(body.mutationId || ''),
+          revision: Number(
+            (canonicalOrder?.data || canonicalOrder)?._symbiose?.revision ||
+            (canonicalOrder?.data || canonicalOrder)?.syncRevision ||
+            0
+          ),
+          persisted: true,
+          timestamp: new Date().toISOString()
+        };
+
+        // Un seul état canonique est rediffusé à tous les écrans.
+        io.to(tenantID).emit('orderUpdated', packet);
+        io.to(tenantID).emit('order-updated', packet);
+        io.to(tenantID).emit('tableUpdated', packet);
+        io.to(tenantID).emit('updateState', finalState);
+        io.to(tenantID).emit('server-state-changed', {
+          tenantID,
+          tableId,
+          source: 'order-symbiose',
+          terminal: packet.terminal,
+          mutationId: packet.mutationId,
+          revision: packet.revision,
+          persisted: true,
+          timestamp: packet.timestamp
+        });
+
+        if (historyEntries.length) {
+          io.to(tenantID).emit('auditUpdated', {
+            tenantID,
+            tableId,
+            entries: historyEntries,
+            timestamp: packet.timestamp
+          });
+        }
+
+        return {
+          order: canonicalOrder,
+          revision: packet.revision,
+          mutationId: packet.mutationId,
+          serverTime: packet.timestamp
+        };
+      }
+    );
+
+    return res.json({
+      success: true,
+      persisted: true,
+      symbiose: true,
+      ...result
+    });
+  } catch (error) {
+    const notFound = error?.code === 'ORDER_NOT_FOUND';
+    console.error('[iCHEF ORDER SYMBIOSE]', error?.message || error);
+    return res.status(notFound ? 404 : 500).json({
+      success: false,
+      persisted: false,
+      symbiose: false,
+      code: notFound ? 'ORDER_NOT_FOUND' : 'ORDER_SYMBIOSE_FAILED',
+      error: notFound
+        ? 'Commande serveur introuvable.'
+        : 'Synchronisation de commande impossible.'
+    });
+  }
+});
+
+
 app.post('/update-order', async (req, res) => {
 try {
 const tenantID =
@@ -9461,6 +9814,7 @@ const liveOrderPacket = {
 };
 io.to(tenantID).emit("orderUpdated", liveOrderPacket);
 io.to(tenantID).emit("order-updated", liveOrderPacket);
+io.to(tenantID).emit("tableUpdated", liveOrderPacket);
 
 io
 .to(tenantID)
