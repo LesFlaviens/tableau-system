@@ -9448,6 +9448,20 @@ io
 "updateState",
 finalPersistedState
 );
+
+// Pont temps réel ciblé : permet au Pass Cuisine et aux autres écrans
+// d'appliquer immédiatement UNE commande sans attendre un rechargement complet.
+const liveOrderPacket = {
+  tenantID,
+  tableId: String(tableId),
+  order: order === null ? null : (finalPersistedState?.activeOrders?.[tableId] ?? orderToPersist),
+  source: "update-order",
+  persisted: true,
+  timestamp: new Date().toISOString()
+};
+io.to(tenantID).emit("orderUpdated", liveOrderPacket);
+io.to(tenantID).emit("order-updated", liveOrderPacket);
+
 io
 .to(tenantID)
 .emit(
