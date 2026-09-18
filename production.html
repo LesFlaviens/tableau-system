@@ -6,7 +6,7 @@
  <meta http-equiv="Pragma" content="no-cache">
  <meta http-equiv="Expires" content="0">
  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
- <title>iCHEF OS - Pass Cuisine V22 · MENU CONNECTÉ · SYMBIOSE LIVE</title>
+ <title>iCHEF OS - Pass Cuisine V26 · MISE EN PLACE SYMBIOSE CANONIQUE</title>
  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&display=swap" rel="stylesheet">
  <style>
@@ -1493,7 +1493,7 @@ body > #v15-rush-strip{display:none!important}
          </div>
        </div>
 
-       <span class="v9-role">CHEF ORCHESTRATEUR · V24</span>
+       <span class="v9-role">CHEF ORCHESTRATEUR · V26</span>
        <span id="connection-badge" class="v9-live-badge">● CONNEXION</span>
      </div>
 
@@ -1566,7 +1566,7 @@ body > #v15-rush-strip{display:none!important}
      <div class="library-head">
        <div>
          <h2 class="library-title" id="mep-title">MISE EN PLACE &amp; PRODUCTION</h2>
-         <div class="readonly-note">Commandes PAD + réservations des 75 prochaines heures → production cuisine → mise en place prévisionnelle. Les fiches techniques restent celles du Chef.</div>
+         <div class="readonly-note">État LIVE identique au PAD / Pass / Runner + réservations des 75 prochaines heures. Les lignes prêtes, prises ou servies disparaissent immédiatement.</div>
        </div>
        <button class="close-library" id="mep-close-btn" type="button">X</button>
      </div>
@@ -3264,7 +3264,7 @@ body > #v15-rush-strip{display:none!important}
  function v9UpdateMiseCount() {
    const badge=document.getElementById('v9-mise-count'); if(!badge)return;
    let qty=0;
-   try{qty=mepCanonicalLiveLines().reduce((n,line)=>n+Math.max(1,Number(line.qty||1)),0)}catch(_){}
+   try{mepCanonicalLiveLines().forEach(({qty:q})=>{qty+=Math.max(1,Number(q||1))})}catch(_){}
    badge.textContent=String(qty); badge.style.opacity=qty?'1':'.55';
  }
  let mepActiveTab = 'now';
@@ -3275,22 +3275,62 @@ body > #v15-rush-strip{display:none!important}
      || (recipeLibrary||[]).find(r=>n.includes(String(r.name||'').trim().toLowerCase()) || String(r.name||'').trim().toLowerCase().includes(n))
      || null;
  }
+ function mepTruthyMarker(value) {
+   if(value===true) return true;
+   if(value===false || value==null || value===0) return false;
+   const s=String(value).trim().toUpperCase();
+   return !!s && !['FALSE','0','NULL','UNDEFINED','NONE'].includes(s);
+ }
+ function mepItemPastProduction(item) {
+   if(!item) return true;
+   if(isServedItem(item)) return true;
+   if(item.done===true || item.ready===true || item.isReady===true || item.served===true) return true;
+   if(mepTruthyMarker(item.servedAt) || mepTruthyMarker(item.servedBy)) return true;
+   if(mepTruthyMarker(item.pickedAt) || mepTruthyMarker(item.pickedBy)) return true;
+   if(mepTruthyMarker(item.takenAt) || mepTruthyMarker(item.deliveredAt)) return true;
+   if(mepTruthyMarker(item.pickedByServer) || mepTruthyMarker(item.takenByServer)) return true;
+   const tokens=[item.sequenceStatus,item.status,item.productionStatus,item.runnerStatus,item.serviceStatus]
+     .map(normalizeLifecycleValue).filter(Boolean);
+   const finished=new Set([
+     'READY','PRET','PRÊT','PRET_AU_PASS','READY_FOR_PASS','READY_AT_PASS',
+     'SERVED','SERVI','DELIVERED','LIVRE','LIVRÉ','POSE','POSE_TABLE','ON_TABLE',
+     'TAKEN','PICKED','PICKED_UP','COLLECTED','RUNNER_TAKEN','RUNNER_PICKED',
+     'DONE','COMPLETED','FINISHED','ARCHIVED','CANCELLED','CANCELED','REFUNDED'
+   ]);
+   return tokens.some(t=>finished.has(t));
+ }
  function mepItemStillToProduce(item) {
-   if(!item || item.isSent===false || isServedItem(item)) return false;
-   if(item.done===true || item.ready===true || item.isReady===true || item.served===true || item.pickedByServer===true || item.takenByServer===true) return false;
-   const seq=normalizeLifecycleValue(item.sequenceStatus);
-   const st=normalizeLifecycleValue(item.status);
-   const prod=normalizeLifecycleValue(item.productionStatus);
-   const finished=new Set(['READY','PRET','PRÊT','PRET_AU_PASS','SERVED','SERVI','TAKEN','PICKED','PICKED_UP','ARCHIVED','CANCELLED','CANCELED','REFUNDED']);
-   if(finished.has(seq) || finished.has(st) || finished.has(prod)) return false;
-   return true;
+   if(!item || item.isSent===false || mepItemPastProduction(item)) return false;
+   /* SYMBIOSE : une ligne de mise en place n'existe que si le PAD la classe
+      réellement DEMANDÉE ou ATTENTE SALLE. Les états ambigus/stales ne sont
+      plus inventés comme « à venir ». */
+   return serviceRequested(item) || serviceHeld(item);
+ }
+ function mepOrderProgressCourse(order) {
+   let floor=0;
+   for(const item of (order?.items||[])){
+     if(!item || item.isSent===false) continue;
+     const course=Number(serviceCourse(item)||0);
+     if(!course) continue;
+     if(serviceRequested(item) || mepItemPastProduction(item)) floor=Math.max(floor,course);
+   }
+   return floor;
  }
  function mepCanonicalLiveLines() {
    const lines=[];
-   for(const [orderId,order] of Object.entries(activeOrdersData||{})){
-     if(isSystemKey(orderId) || !order || !Array.isArray(order.items)) continue;
+   for(const [orderId,rawOrder] of Object.entries(activeOrdersData||{})){
+     if(isSystemKey(orderId) || !rawOrder) continue;
+     const info=typeof passUnwrapOrderNode==='function'?passUnwrapOrderNode(rawOrder):{order:rawOrder};
+     const order=info?.order||rawOrder;
+     if(!Array.isArray(order.items)) continue;
+     const progressCourse=mepOrderProgressCourse(order);
      order.items.forEach((item,index)=>{
        if(!mepItemStillToProduce(item)) return;
+       const course=Number(serviceCourse(item)||0);
+       /* Si la salle a déjà avancé à un cours supérieur (ex. desserts), une
+          ancienne ligne WAIT_SERVICE d'un cours précédent est considérée
+          comme un état résiduel et ne doit plus revenir dans la mise en place. */
+       if(serviceHeld(item) && progressCourse>0 && course>0 && course<progressCourse) return;
        lines.push({orderId,order,item,index,qty:Math.max(1,Number(item.qty||item.quantity||1))});
      });
    }
@@ -3308,13 +3348,12 @@ body > #v15-rush-strip{display:none!important}
      const g=groups.get(key);g.refs.push(line);
      const cook=kitchenSafeText(cookingValue(item));
      if(allergyValue(item))g.allergy=true;
-     if(serviceHeld(item)){
-       g.held+=qty;g.heldTables.add(String(line.orderId));if(cook)g.heldCookings.add(cook);
-     }else if(serviceRequested(item)){
+     if(serviceRequested(item)){
        g.requested+=qty;g.requestedTables.add(String(line.orderId));if(cook)g.requestedCookings.add(cook);
-     }else{
-       // Une ligne envoyée mais pas encore explicitement demandée reste dans « À venir ».
+     }else if(serviceHeld(item)){
        g.held+=qty;g.heldTables.add(String(line.orderId));if(cook)g.heldCookings.add(cook);
+     }else{
+       continue;
      }
    }
    return [...groups.values()].sort((a,b)=>(b.requested-a.requested)||(b.held-a.held)||a.name.localeCompare(b.name,'fr'));
@@ -3432,7 +3471,12 @@ body > #v15-rush-strip{display:none!important}
    const modal=document.getElementById('mep-modal'); if(!modal)return;
    modal.classList.add('open');modal.setAttribute('aria-hidden','false');
    renderMiseEnPlace();
-   try{schedulePassResync(20)}catch(_){}
+   /* Lecture canonique immédiate : la fenêtre ne vit jamais sur une copie
+      différente du Pass principal. */
+   try{
+     const p=fetchInitialState();
+     if(p&&typeof p.finally==='function') p.finally(()=>{if(modal.classList.contains('open'))renderMiseEnPlace()});
+   }catch(_){try{schedulePassResync(20)}catch(__){}}
  }
  function closeMiseEnPlace() { const modal=document.getElementById('mep-modal'); if(modal){modal.classList.remove('open');modal.setAttribute('aria-hidden','true')} }
  function mepRenderProductionRows(rows,mode){
@@ -3951,7 +3995,13 @@ body > #v15-rush-strip{display:none!important}
  }
 
  setInterval(() => { updateServiceRequestClocks(); }, 1000);
- setInterval(() => { try{mepRefreshIfOpen()}catch(_){} }, 1500);
+ setInterval(() => { try{mepRefreshIfOpen()}catch(_){} }, 1200);
+ setInterval(() => {
+   try{
+     const modal=document.getElementById('mep-modal');
+     if(modal?.classList.contains('open')) fetchInitialState();
+   }catch(_){}
+ }, 4000);
 
  setInterval(() => {
      // Anti-Rush évolue en temps réel sans reconstruire tous les tickets.
@@ -3979,7 +4029,7 @@ body > #v15-rush-strip{display:none!important}
    kitchenMarkBatchReady(key).finally(()=>{if(document.body.contains(btn)){btn.disabled=false;btn.textContent=old}});
  });
 
- console.info('[iCHEF] PASS CUISINE V25 · MISE EN PLACE SYNCHRONISÉE · RÉSERVATIONS 75H · SYMBIOSE LIVE');
+ console.info('[iCHEF] PASS CUISINE V26 · MISE EN PLACE CANONIQUE · SYMBIOSE LIVE');
  fetchInitialState();
  </script>
 
@@ -3987,8 +4037,8 @@ body > #v15-rush-strip{display:none!important}
 <script id="ichef-v21-native-controller">
 (function(){
   'use strict';
-  window.__ICHEF_PASS_VERSION__='V25';
-  document.documentElement.setAttribute('data-ichef-pass-version','V25');
+  window.__ICHEF_PASS_VERSION__='V26';
+  document.documentElement.setAttribute('data-ichef-pass-version','V26');
   function cleanLegacyVisibleScriptText(){
     try{
       var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
