@@ -43,7 +43,7 @@ body{
     height:100vh;display:flex;flex-direction:column;overflow:hidden;
     user-select:none;-webkit-user-select:none;overscroll-behavior:none;
 }
-button{font-family:inherit}
+button{font-family:inherit;touch-action:manipulation;-webkit-tap-highlight-color:transparent;pointer-events:auto}
 header{
     background:var(--panel);border-bottom:1px solid var(--border);
     padding:12px 18px;display:flex;justify-content:space-between;
@@ -236,7 +236,7 @@ header{
         <h1 class="ichef-access-title">Mini Pass Production</h1>
         <p class="ichef-access-text">Saisissez le code PIN de l’établissement. La validation est effectuée uniquement par le serveur iCHEF.</p>
         <input id="pin-input" type="password" inputmode="numeric" pattern="[0-9]*" autocomplete="off" maxlength="12" placeholder="CODE PIN" aria-label="Code PIN">
-        <button id="pin-submit-btn" type="button" onclick="checkPin()">DÉVERROUILLER</button>
+        <button id="pin-submit-btn" type="button">DÉVERROUILLER</button>
         <p id="pin-error"></p>
     </div>
 </div>
@@ -257,7 +257,7 @@ header{
         <div style="font-size:1rem;font-weight:900;letter-spacing:1px">ALERTE</div>
         <h2 style="margin:8px 0;text-transform:uppercase">Alerte Cuisine / Bar</h2>
         <p id="incident-message" style="font-size:1.05rem;font-weight:700;line-height:1.45"></p>
-        <button class="btn-top" style="background:#fff;color:var(--danger);border-color:#fff" onclick="document.getElementById('incident-popup').style.display='none'">J’ai compris</button>
+        <button class="btn-top" type="button" style="background:#fff;color:var(--danger);border-color:#fff" data-action="close-incident">J’ai compris</button>
     </div>
 </div>
 
@@ -498,10 +498,11 @@ function verifyImmersion(){
 
     const lock = document.getElementById('pwa-strict-lock');
     if(!lock) return;
-    lock.style.display = standalone ? 'none' : 'flex';
+    // V51 : la recommandation PWA ne doit jamais bloquer les touches de production.
+    lock.style.display = 'none';
 
-    if(/iPad|iPhone|iPod/.test(navigator.userAgent)){
-        document.getElementById('ios-instruction').style.display='block';
+    if(!standalone){
+        console.info('[iCHEF MINI PASS] Mode navigateur actif — PWA recommandée, commandes utilisables.');
     }
 }
 window.addEventListener('beforeinstallprompt',e=>{
@@ -931,12 +932,10 @@ function setView(view){
     document.getElementById('col-cuisine').style.display=(view==='bar')?'none':'flex';
     document.getElementById('col-bar').style.display=(view==='cuisine')?'none':'flex';
 }
-document.getElementById('btn-mixte').addEventListener('click',()=>setView('mixte'));
-document.getElementById('btn-cuisine').addEventListener('click',()=>setView('cuisine'));
-document.getElementById('btn-bar').addEventListener('click',()=>setView('bar'));
-document.getElementById('btn-admin').addEventListener('click',()=>{
-    window.location.href=`https://os.ichef.ch/admin.html?tenantID=${encodeURIComponent(tenantID)}`;
-});
+
+
+
+
 
 function dispatchTickets(){
     const cuisineTickets=[],barTickets=[],ordersArray=[];
@@ -1094,7 +1093,7 @@ function renderColumn(scrollId,counterId,tickets,station){
                     <div class="item-title"><span class="item-qty">${Number(item.qty||1)}x</span>${seqBadge}${cleanName}</div>
                     ${obs}${seat}
                 </div>
-                <button class="btn-ready" ${btnDisabled} data-key="${escapeHTML(ticket.tableId)}:${item.originalIndex}" onclick="markItemAsReady('${String(ticket.tableId).replace(/'/g,"\\'")}',${item.originalIndex},this)">${btnText}</button>
+                <button type="button" class="btn-ready" ${btnDisabled} data-key="${escapeHTML(ticket.tableId)}:${item.originalIndex}" data-ready-table="${escapeHTML(ticket.tableId)}" data-ready-index="${item.originalIndex}">${btnText}</button>
             </div>`;
         }).join('');
         }
@@ -1254,7 +1253,7 @@ function toggleBatchMode(){
     document.getElementById('btn-batch').classList.toggle('active',batchModeOpen);
     if(batchModeOpen) renderBatchProduction();
 }
-document.getElementById('btn-batch').addEventListener('click',toggleBatchMode);
+
 
 function renderBatchProduction(){
     const container=document.getElementById('batch-list');
@@ -1313,7 +1312,7 @@ function renderBatchProduction(){
             <span class="batch-qty">${batch.qty}x</span>${escapeHTML(batch.name)}</div>
             <div class="batch-meta">Tables : ${tables.map(escapeHTML).join(', ')}<br>
             Attente max : ${delay} min${batch.urgent?'<br> PRIORITÉ ABSOLUE':''}</div>
-            <button class="batch-btn" onclick="markBatchAsReady(${i},this)">Envoyer le lot au pass salle</button>
+            <button type="button" class="batch-btn" data-batch-index="${i}">Envoyer le lot au pass salle</button>
         </div>`;
     }).join('');
 }
@@ -1500,9 +1499,71 @@ function startRealtime(){
 }
 
 /* =========================================================
+   V51 — COUCHE TACTILE / BOUTONS ROBUSTES
+   Pas de onclick inline pour les tickets dynamiques.
+   ========================================================= */
+function ichefBindStaticButton(id,handler){
+    const el=document.getElementById(id);
+    if(!el || el.dataset.ichefBound==='1') return;
+    el.dataset.ichefBound='1';
+    el.addEventListener('click',async event=>{
+        event.preventDefault();
+        event.stopPropagation();
+        try{ await handler(event,el); }
+        catch(error){ console.error('[iCHEF BOUTON]',id,error); showToast(error?.message||'ACTION IMPOSSIBLE',true); }
+    });
+}
+function ichefBindControls(){
+    ichefBindStaticButton('pin-submit-btn',()=>checkPin());
+    ichefBindStaticButton('btn-mixte',()=>setView('mixte'));
+    ichefBindStaticButton('btn-cuisine',()=>setView('cuisine'));
+    ichefBindStaticButton('btn-bar',()=>setView('bar'));
+    ichefBindStaticButton('btn-batch',()=>toggleBatchMode());
+    ichefBindStaticButton('btn-admin',()=>{
+        window.location.href=`https://os.ichef.ch/admin.html?tenantID=${encodeURIComponent(tenantID)}`;
+    });
+}
+
+// Délégation : fonctionne aussi pour les boutons recréés par dispatchTickets().
+document.addEventListener('click',event=>{
+    const readyBtn=event.target.closest?.('[data-ready-table][data-ready-index]');
+    if(readyBtn){
+        event.preventDefault();
+        event.stopPropagation();
+        const tableId=readyBtn.dataset.readyTable||'';
+        const index=Number(readyBtn.dataset.readyIndex);
+        if(tableId && Number.isInteger(index)) markItemAsReady(tableId,index,readyBtn);
+        return;
+    }
+    const batchBtn=event.target.closest?.('[data-batch-index]');
+    if(batchBtn){
+        event.preventDefault();
+        event.stopPropagation();
+        const index=Number(batchBtn.dataset.batchIndex);
+        if(Number.isInteger(index)) markBatchAsReady(index,batchBtn);
+        return;
+    }
+    const closeIncident=event.target.closest?.('[data-action="close-incident"]');
+    if(closeIncident){
+        event.preventDefault();
+        const popup=document.getElementById('incident-popup');
+        if(popup) popup.style.display='none';
+    }
+});
+
+// Exposition volontaire pour compatibilité PWA / anciennes vues.
+window.checkPin=checkPin;
+window.setView=setView;
+window.toggleBatchMode=toggleBatchMode;
+window.markItemAsReady=markItemAsReady;
+window.markBatchAsReady=markBatchAsReady;
+ichefBindControls();
+
+/* =========================================================
    13. DÉMARRAGE
    ========================================================= */
 document.addEventListener('DOMContentLoaded',()=>{
+    ichefBindControls();
     localStorage.removeItem('ichef_master_pin');
     localStorage.removeItem('pin');
 
