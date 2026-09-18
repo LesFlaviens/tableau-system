@@ -1417,6 +1417,12 @@ body > #v15-rush-strip{display:none!important}
 }
 </style>
 
+
+<style id="ichef-v21-connected-controls">
+#v20-station-select,#v20-flow-select,#v20-chef-select,#v20-mise-en-place-btn{pointer-events:auto!important;position:relative!important;z-index:2147483000!important}
+.v20-select-wrap:focus-within{box-shadow:0 0 0 2px rgba(34,197,94,.35)!important;border-color:#22c55e!important}
+#v20-station-select:focus,#v20-flow-select:focus{outline:none!important}
+</style>
 </head>
 
 <body>
@@ -1459,7 +1465,7 @@ body > #v15-rush-strip{display:none!important}
      <div class="v9-menu-actions v20-native-actions" aria-label="Commandes du Pass Cuisine">
        <label class="v20-select-wrap" for="v20-station-select">
          <span class="v20-select-prefix">POSTES</span>
-         <select id="v20-station-select" class="v20-native-select" aria-label="Choisir le poste cuisine">
+         <select id="v20-station-select" class="v20-native-select" aria-label="Choisir le poste cuisine" onchange="try{setStation(this.value)}catch(e){console.error(e)}">
            <option value="all">TOUS</option>
            <option value="chaud">CHAUD</option>
            <option value="froid">FROID</option>
@@ -1471,7 +1477,7 @@ body > #v15-rush-strip{display:none!important}
 
        <label class="v20-select-wrap" for="v20-flow-select">
          <span class="v20-select-prefix">AFFICHAGE</span>
-         <select id="v20-flow-select" class="v20-native-select" aria-label="Choisir l'affichage du service">
+         <select id="v20-flow-select" class="v20-native-select" aria-label="Choisir l'affichage du service" onchange="try{setFlowFilter(this.value)}catch(e){console.error(e)}">
            <option value="all">TOUT</option>
            <option value="entree">ENTRÉES</option>
            <option value="plat">PLATS</option>
@@ -1767,14 +1773,57 @@ body > #v15-rush-strip{display:none!important}
  }
 
 
+
+ function kitchenNormalizeStationValue(value) {
+   const raw=String(value==null?'':value).normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase();
+   if(!raw) return '';
+   if(/dessert|patis|sucre|glace/.test(raw)) return 'dessert';
+   if(/pizza|pizzeria/.test(raw)) return 'pizza';
+   if(/grill|grille|braise|plancha/.test(raw)) return 'grill';
+   if(/froid|cold|salade|tartare|carpaccio/.test(raw)) return 'froid';
+   if(/chaud|hot|cuisine|kitchen/.test(raw)) return 'chaud';
+   return '';
+ }
+
+ function kitchenEffectiveStation(item) {
+   if(!item || typeof item!=='object') return 'chaud';
+   const explicit=[
+     item.productionStation,item.productionPoste,item.posteProduction,item.posteCuisine,
+     item.kitchenStation,item.workstation,item.poste,item.destination,item.station,item.dest
+   ];
+   for(const value of explicit){
+     const station=kitchenNormalizeStationValue(value);
+     if(station && !/^(cuisine|kitchen)$/i.test(String(value||'').trim())) return station;
+   }
+   const text=[item.category,item.categorie,item.family,item.famille,item.type,item.kind,item.section,
+     item.name,item.n,item.label,item.title].filter(Boolean).join(' ');
+   const inferred=kitchenNormalizeStationValue(text);
+   if(inferred) return inferred;
+   try{ if(serviceCourse(item)===3) return 'dessert'; }catch(_){}
+   // Une destination générique "cuisine" ne doit pas apparaître dans tous les postes.
+   // Sans poste plus précis, elle appartient au poste chaud par défaut.
+   return 'chaud';
+ }
+
+ function kitchenStationMatches(item, selected=currentStation) {
+   const station=String(selected||'all').toLowerCase();
+   return station==='all' || kitchenEffectiveStation(item)===station;
+ }
+
  function setStation(station) {
+ const allowed=['all','chaud','froid','grill','pizza','dessert'];
+ station=String(station||'all').toLowerCase();
+ if(!allowed.includes(station)) station='all';
  currentStation = station;
+ document.documentElement.setAttribute('data-ichef-station',station);
+ const nativeSelect=document.getElementById('v20-station-select');
+ if(nativeSelect && nativeSelect.value!==station) nativeSelect.value=station;
  const labels={all:'TOUS',chaud:'CHAUD',froid:'FROID',grill:'GRILL',pizza:'PIZZA',dessert:'DESSERT'};
  const label=document.getElementById('v9-station-label'); if(label) label.textContent=labels[station]||String(station||'TOUS').toUpperCase();
  document.querySelectorAll('[data-station]').forEach(btn => btn.classList.toggle('active', btn.dataset.station === station));
- v9CloseDropdowns();
+ try{v9CloseDropdowns()}catch(_){}
  renderBoard();
- v9UpdateMiseCount();
+ try{v9UpdateMiseCount()}catch(_){}
  }
 
  function parseServerTimestamp(value) {
@@ -2135,10 +2184,7 @@ body > #v15-rush-strip{display:none!important}
      if (isSystemKey(orderId) || !order || !Array.isArray(order.items)) continue;
      order.items.forEach((item,index)=>{
        if (!item || item.isSent===false || isServedItem(item)) return;
-       if (currentStation!=='all') {
-         const dest=String(item.dest||item.station||'').toLowerCase();
-         if(dest && dest!=='cuisine' && dest!==currentStation) return;
-       }
+       if (!kitchenStationMatches(item,currentStation)) return;
        lines.push({orderId,order,item,index,qty:Math.max(1,Number(item.qty||1))});
      });
    }
@@ -2484,13 +2530,19 @@ body > #v15-rush-strip{display:none!important}
  // RENDU KANBAN
 
  function setFlowFilter(flow) {
+ const allowed=['all','entree','plat','dessert'];
+ flow=String(flow||'all').toLowerCase();
+ if(!allowed.includes(flow)) flow='all';
  currentFlowFilter = flow;
+ document.documentElement.setAttribute('data-ichef-flow',flow);
+ const nativeSelect=document.getElementById('v20-flow-select');
+ if(nativeSelect && nativeSelect.value!==flow) nativeSelect.value=flow;
  const labels={all:'TOUT',entree:'ENTRÉES',plat:'PLATS',dessert:'DESSERTS'};
  const label=document.getElementById('v9-service-label'); if(label) label.textContent=labels[flow]||String(flow||'TOUT').toUpperCase();
  document.querySelectorAll('[data-flow]').forEach(btn => btn.classList.toggle('active', btn.dataset.flow === flow));
- v9CloseDropdowns();
+ try{v9CloseDropdowns()}catch(_){}
  renderBoard();
- v9UpdateMiseCount();
+ try{v9UpdateMiseCount()}catch(_){}
  }
 
  function itemText(item) {
@@ -2931,10 +2983,7 @@ body > #v15-rush-strip{display:none!important}
  for(const order of ordersArray){
    const stationItems=order.items.filter(item=>{
      if(!item||item.isSent===false||isServedItem(item)) return false;
-     if(currentStation!=='all'){
-       const dest=String(item.dest||item.station||'').toLowerCase();
-       if(dest&&dest!=='cuisine'&&dest!==currentStation) return false;
-     }
+     if(!kitchenStationMatches(item,currentStation)) return false;
      return true;
    });
    if(!stationItems.length) continue;
@@ -3702,45 +3751,69 @@ body > #v15-rush-strip{display:none!important}
    kitchenMarkBatchReady(key).finally(()=>{if(document.body.contains(btn)){btn.disabled=false;btn.textContent=old}});
  });
 
- console.info('[iCHEF] PASS CUISINE V19 · TOUCH SAFE MENU · COCKPIT · SYMBIOSE LIVE');
+ console.info('[iCHEF] PASS CUISINE V21 · POSTES/AFFICHAGE CONNECTÉS · COCKPIT · SYMBIOSE LIVE');
  fetchInitialState();
  </script>
 
 
-<script id="ichef-v20-native-controller">
+<script id="ichef-v21-native-controller">
 (function(){
   'use strict';
   function el(id){return document.getElementById(id)}
   function tenant(){
     try{return new URLSearchParams(location.search).get('tenantID')||localStorage.getItem('ichef_tenant_id')||''}catch(_){return ''}
   }
-  function safeCall(name,args){
-    try{var fn=window[name];if(typeof fn==='function'){fn.apply(window,args||[]);return true}}catch(err){console.error('[iCHEF V20]',name,err)}
+  function applyStation(value){
+    try{
+      if(typeof setStation==='function'){setStation(value);return true;}
+    }catch(err){console.error('[iCHEF V21] POSTES',err)}
     return false;
   }
-  function manualMep(){var m=el('mep-modal');if(m){m.classList.add('open');m.setAttribute('aria-hidden','false')}}
+  function applyFlow(value){
+    try{
+      if(typeof setFlowFilter==='function'){setFlowFilter(value);return true;}
+    }catch(err){console.error('[iCHEF V21] AFFICHAGE',err)}
+    return false;
+  }
+  function openMep(){
+    try{if(typeof openMiseEnPlace==='function'){openMiseEnPlace();return true}}catch(err){console.error('[iCHEF V21] MISE EN PLACE',err)}
+    var m=el('mep-modal');if(m){m.classList.add('open');m.setAttribute('aria-hidden','false');return true}return false;
+  }
+  function closeMep(){
+    try{if(typeof closeMiseEnPlace==='function'){closeMiseEnPlace();return true}}catch(err){}
+    var m=el('mep-modal');if(m){m.classList.remove('open');m.setAttribute('aria-hidden','true');return true}return false;
+  }
   function bind(){
-    var station=el('v20-station-select');
-    var flow=el('v20-flow-select');
-    var mep=el('v20-mise-en-place-btn');
-    var chef=el('v20-chef-select');
-    if(station&&!station.dataset.bound){station.dataset.bound='1';station.addEventListener('change',function(){safeCall('setStation',[this.value])});}
-    if(flow&&!flow.dataset.bound){flow.dataset.bound='1';flow.addEventListener('change',function(){safeCall('setFlowFilter',[this.value])});}
-    if(mep&&!mep.dataset.bound){mep.dataset.bound='1';mep.addEventListener('click',function(ev){ev.preventDefault();if(!safeCall('openMiseEnPlace'))manualMep()});}
-    if(chef&&!chef.dataset.bound){chef.dataset.bound='1';chef.addEventListener('change',function(){var path=this.value;if(!path)return;var t=tenant();location.href=path+(t?'?tenantID='+encodeURIComponent(t):'');this.value='';});}
-    var close=el('mep-close-btn');if(close&&!close.dataset.boundV20){close.dataset.boundV20='1';close.addEventListener('click',function(){if(!safeCall('closeMiseEnPlace')){var m=el('mep-modal');if(m){m.classList.remove('open');m.setAttribute('aria-hidden','true')}}});}
-    safeCall('v9UpdateMiseCount');
-    if(!window.__ICHEF_V20_MISE_TIMER__){window.__ICHEF_V20_MISE_TIMER__=setInterval(function(){safeCall('v9UpdateMiseCount')},2000);}
-    console.info('[iCHEF] V20 contrôles natifs actifs');
+    var station=el('v20-station-select'),flow=el('v20-flow-select'),mep=el('v20-mise-en-place-btn'),chef=el('v20-chef-select');
+    if(station&&!station.dataset.v21bound){
+      station.dataset.v21bound='1';
+      station.addEventListener('change',function(){applyStation(this.value)},true);
+      station.addEventListener('input',function(){applyStation(this.value)},true);
+    }
+    if(flow&&!flow.dataset.v21bound){
+      flow.dataset.v21bound='1';
+      flow.addEventListener('change',function(){applyFlow(this.value)},true);
+      flow.addEventListener('input',function(){applyFlow(this.value)},true);
+    }
+    if(mep&&!mep.dataset.v21bound){mep.dataset.v21bound='1';mep.addEventListener('click',function(ev){ev.preventDefault();ev.stopPropagation();openMep()},true)}
+    if(chef&&!chef.dataset.v21bound){
+      chef.dataset.v21bound='1';chef.addEventListener('change',function(){
+        var path=this.value;if(!path)return;var t=tenant();location.href=path+(t?'?tenantID='+encodeURIComponent(t):'');this.value='';
+      },true);
+    }
+    var close=el('mep-close-btn');if(close&&!close.dataset.v21bound){close.dataset.v21bound='1';close.addEventListener('click',function(ev){ev.preventDefault();closeMep()},true)}
+    try{ if(typeof setStation==='function') setStation(station?.value||'all'); }catch(_){}
+    try{ if(typeof setFlowFilter==='function') setFlowFilter(flow?.value||'all'); }catch(_){}
+    console.info('[iCHEF] V21 POSTES/AFFICHAGE reliés directement au moteur cuisine');
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bind,{once:true});else bind();
 })();
-</script
+</script>
 
 <script id="ichef-v11-deployment-guard">
 (function(){
-  window.__ICHEF_PASS_VERSION__='V19';
-  document.documentElement.setAttribute('data-ichef-pass-version','V19');
+  window.__ICHEF_PASS_VERSION__='V21';
+  document.documentElement.setAttribute('data-ichef-pass-version','V21');
   document.addEventListener('DOMContentLoaded',function(){
     document.querySelectorAll('body > .topbar').forEach(function(el){
       if(!el.classList.contains('topbar-v9')) el.remove();
