@@ -6,7 +6,7 @@
  <meta http-equiv="Pragma" content="no-cache">
  <meta http-equiv="Expires" content="0">
  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
- <title>iCHEF OS - Pass Cuisine V26 · MISE EN PLACE SYMBIOSE CANONIQUE</title>
+ <title>iCHEF OS - Pass Cuisine V27 · SYMBIOSE PAD SERVICE</title>
  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&display=swap" rel="stylesheet">
  <style>
@@ -1458,6 +1458,30 @@ body > #v15-rush-strip{display:none!important}
 @media(max-width:760px){.mep-res75-next{width:100%;margin-left:0}}
 @media(max-width:760px){.mep-prod-row{grid-template-columns:44px minmax(0,1fr)}.mep-prod-row>.mep-tech-btn{grid-column:2;justify-self:start}.mep-prep-row{grid-template-columns:1fr}.mep-tabs{overflow-x:auto}.mep-tab{white-space:nowrap}}
 </style>
+
+<style id="ichef-v28-reservations-menu-style">
+/* ===== V28 · RÉSERVATIONS SERVICE ACTUEL + PROCHAIN SERVICE DANS LE MENU ===== */
+.v28-res-menu{display:flex;align-items:center;gap:5px;flex:0 0 auto;min-width:0}
+.v28-res-card{height:40px;display:flex;align-items:center;gap:7px;padding:0 10px;border:1px solid rgba(147,197,253,.34);border-radius:9px;background:#101317;white-space:nowrap;min-width:0}
+.v28-res-card.current{border-color:rgba(34,197,94,.38);background:rgba(34,197,94,.045)}
+.v28-res-card.next{border-color:rgba(96,165,250,.40);background:rgba(59,130,246,.045)}
+.v28-res-card .k{font-size:.53rem;font-weight:1000;letter-spacing:.5px;color:#94a3b8}
+.v28-res-card.current .k{color:#86efac}.v28-res-card.next .k{color:#93c5fd}
+.v28-res-card .main{font-size:.72rem;font-weight:1000;color:#f8fafc}
+.v28-res-card .covers{font-size:.57rem;font-weight:900;color:#cbd5e1}
+.v28-res-card .countdown{font-size:.58rem;font-weight:1000;color:#fde68a;padding-left:3px}
+.v28-res-card.is-empty{opacity:.66}
+@media(max-width:1750px){
+ .v28-res-card{padding:0 7px;gap:5px}.v28-res-card .covers{display:none}.v28-res-card .k{font-size:.49rem}.v28-res-card .main{font-size:.67rem}
+}
+@media(max-width:1450px){
+ .v28-res-card .k{display:none}.v28-res-card{height:36px;padding:0 7px}.v28-res-card .main{font-size:.64rem}.v28-res-card .countdown{font-size:.54rem}
+}
+@media(max-width:1180px){
+ .v28-res-menu{display:none!important}
+}
+</style>
+
 </head>
 
 <body>
@@ -1493,7 +1517,16 @@ body > #v15-rush-strip{display:none!important}
          </div>
        </div>
 
-       <span class="v9-role">CHEF ORCHESTRATEUR · V26</span>
+       <div id="v28-res-menu" class="v28-res-menu" aria-label="Réservations services">
+         <div id="v28-res-current" class="v28-res-card current is-empty" title="Réservations du service actuel">
+           <span class="k">SERVICE</span><strong class="main" id="v28-res-current-main">0 RÉSA</strong><span class="covers" id="v28-res-current-covers">0 COUVERT</span>
+         </div>
+         <div id="v28-res-next" class="v28-res-card next is-empty" title="Réservations du prochain service">
+           <span class="k">PROCHAIN</span><strong class="main" id="v28-res-next-main">0 RÉSA</strong><span class="covers" id="v28-res-next-covers">0 COUVERT</span><span class="countdown" id="v28-res-next-countdown"></span>
+         </div>
+       </div>
+
+       <span class="v9-role">CHEF ORCHESTRATEUR · V28</span>
        <span id="connection-badge" class="v9-live-badge">● CONNEXION</span>
      </div>
 
@@ -2220,10 +2253,14 @@ body > #v15-rush-strip{display:none!important}
 
  function kitchenCollectLiveLines() {
    const lines=[];
-   for (const [orderId,order] of Object.entries(activeOrdersData||{})) {
-     if (isSystemKey(orderId) || !order || !Array.isArray(order.items)) continue;
+   for (const [orderId,rawOrder] of Object.entries(activeOrdersData||{})) {
+     if (isSystemKey(orderId) || !rawOrder) continue;
+     const info=typeof passUnwrapOrderNode==='function'?passUnwrapOrderNode(rawOrder):{order:rawOrder};
+     const order=info?.order||rawOrder;
+     if(!Array.isArray(order.items)) continue;
      order.items.forEach((item,index)=>{
        if (!item || item.isSent===false || isServedItem(item)) return;
+       if (serviceHeldIsResidual(order,item)) return;
        if (!kitchenStationMatches(item,currentStation)) return;
        lines.push({orderId,order,item,index,qty:Math.max(1,Number(item.qty||1))});
      });
@@ -2691,6 +2728,28 @@ body > #v15-rush-strip{display:none!important}
      normalizeLifecycleValue(item.serviceRequest) === 'WAIT_SERVICE';
  }
 
+ function serviceOrderCompletedWave(order) {
+   if(!order) return 0;
+   const meta=(order.orderMeta && typeof order.orderMeta==='object')?order.orderMeta:{};
+   const nums=[
+     order.lastServedWave,order.lastServedCourse,order.ichefLastServedWave,order.ichefLastServedCourse,
+     meta.lastServedWave,meta.lastServedCourse
+   ].map(Number).filter(n=>Number.isFinite(n)&&n>=1&&n<=3);
+   let wave=nums.length?Math.max(...nums):0;
+   const status=normalizeLifecycleValue(order.serviceStatus||meta.serviceStatus||'');
+   if(/DESSERT.*SERV/.test(status)) wave=Math.max(wave,3);
+   else if(/PLAT.*SERV|MAIN.*SERV/.test(status)) wave=Math.max(wave,2);
+   else if(/ENTREE.*SERV|STARTER.*SERV/.test(status)) wave=Math.max(wave,1);
+   return wave;
+ }
+
+ function serviceHeldIsResidual(order,item) {
+   if(!order||!item||!serviceHeld(item)) return false;
+   const completed=serviceOrderCompletedWave(order);
+   const course=Number(serviceCourse(item)||0);
+   return completed>0 && course>0 && course<=completed;
+ }
+
  function serviceRequestMs(item) {
    const raw = item?.serverRequestedAtMs ?? item?.ichefServiceServerRequestedAtMs ??
      item?.ichefServiceRequestedAt ?? item?.plateRequestedAt ?? item?.requestedAt ?? 0;
@@ -3023,6 +3082,7 @@ body > #v15-rush-strip{display:none!important}
  for(const order of ordersArray){
    const stationItems=order.items.filter(item=>{
      if(!item||item.isSent===false||isServedItem(item)) return false;
+     if(serviceHeldIsResidual(order,item)) return false;
      if(!kitchenStationMatches(item,currentStation)) return false;
      return true;
    });
@@ -3299,15 +3359,16 @@ body > #v15-rush-strip{display:none!important}
    ]);
    return tokens.some(t=>finished.has(t));
  }
- function mepItemStillToProduce(item) {
+ function mepItemStillToProduce(item,order=null) {
    if(!item || item.isSent===false || mepItemPastProduction(item)) return false;
-   /* SYMBIOSE : une ligne de mise en place n'existe que si le PAD la classe
-      réellement DEMANDÉE ou ATTENTE SALLE. Les états ambigus/stales ne sont
-      plus inventés comme « à venir ». */
+   /* V27 : le PAD est la source de vérité pour l'avancement du service.
+      Si la table a déjà validé une vague comme SERVIE, une ancienne ligne
+      WAIT_SERVICE de cette vague est résiduelle et ne doit plus réapparaître. */
+   if(order && serviceHeldIsResidual(order,item)) return false;
    return serviceRequested(item) || serviceHeld(item);
  }
  function mepOrderProgressCourse(order) {
-   let floor=0;
+   let floor=serviceOrderCompletedWave(order);
    for(const item of (order?.items||[])){
      if(!item || item.isSent===false) continue;
      const course=Number(serviceCourse(item)||0);
@@ -3325,7 +3386,7 @@ body > #v15-rush-strip{display:none!important}
      if(!Array.isArray(order.items)) continue;
      const progressCourse=mepOrderProgressCourse(order);
      order.items.forEach((item,index)=>{
-       if(!mepItemStillToProduce(item)) return;
+       if(!mepItemStillToProduce(item,order)) return;
        const course=Number(serviceCourse(item)||0);
        /* Si la salle a déjà avancé à un cours supérieur (ex. desserts), une
           ancienne ligne WAIT_SERVICE d'un cours précédent est considérée
@@ -3340,7 +3401,7 @@ body > #v15-rush-strip{display:none!important}
    const lines=mepCanonicalLiveLines();
    const groups=new Map();
    for(const line of lines){
-     const item=line.item;if(!mepItemStillToProduce(item))continue;
+     const item=line.item;if(!mepItemStillToProduce(item,line.order))continue;
      const qty=Math.max(1,Number(line.qty||1));
      const name=kitchenDisplayName(item),course=serviceCourse(item),dest=kitchenSafeText(item.dest||item.station||'cuisine').toUpperCase();
      const key=[course,kitchenNormalizedToken(name),dest].join('|');
@@ -3434,6 +3495,120 @@ body > #v15-rush-strip{display:none!important}
    }
    return `<div class="mep-res75"><span class="mep-res75-title">PRÉVISION 75H</span><span class="mep-res75-value">${resaLabel}</span><span class="mep-res75-cover">· ${coverLabel}</span>${next?`<span class="mep-res75-next">${escapeHtml(next)}</span>`:''}</div>`;
  }
+
+
+ function v28ReservationStatusAllowed(r){
+   const status=kitchenSafeText(r?.status||r?.reservationStatus||'confirmed').toLowerCase();
+   const excluded=new Set(['cancelled','canceled','annule','annulé','annulee','annulée','rejected','refused','refuse','noshow','no-show']);
+   return !excluded.has(status);
+ }
+ function v28ReservationPax(r){
+   return Math.max(0,Number.parseInt(r?.couverts??r?.pax??r?.guests??r?.persons??r?.people??0,10)||0);
+ }
+ function v28ExplicitServiceName(r){
+   return kitchenSafeText(r?.serviceName||r?.service||r?.meal||r?.serviceType||r?.typeService||r?.session||r?.shift||'').trim();
+ }
+ function v28ServiceSlotForDate(d,r){
+   const explicit=v28ExplicitServiceName(r);
+   if(explicit) return kitchenNormalizedToken(explicit).replace(/\s+/g,'_');
+   const h=d.getHours()+d.getMinutes()/60;
+   if(h<10.5) return 'MATIN';
+   if(h<16.5) return 'MIDI';
+   return 'SOIR';
+ }
+ function v28ServiceWindowForDate(d,r){
+   const slot=v28ServiceSlotForDate(d,r);
+   const day=new Date(d.getFullYear(),d.getMonth(),d.getDate(),0,0,0,0);
+   let start,end,label;
+   if(slot==='MATIN'){
+     start=new Date(day);start.setHours(6,0,0,0);end=new Date(day);end.setHours(10,29,59,999);label='MATIN';
+   }else if(slot==='MIDI' || /MIDI|DEJEUN|LUNCH/.test(slot)){
+     start=new Date(day);start.setHours(10,30,0,0);end=new Date(day);end.setHours(16,29,59,999);label='MIDI';
+   }else if(slot==='SOIR' || /SOIR|DINER|DINNER/.test(slot)){
+     start=new Date(day);start.setHours(16,30,0,0);end=new Date(day);end.setDate(end.getDate()+1);end.setHours(0,59,59,999);label='SOIR';
+   }else{
+     // Service nommé par l'établissement : fenêtre centrée sur la réservation,
+     // regroupée par même libellé et même date.
+     start=new Date(day);start.setHours(Math.max(0,d.getHours()-2),0,0,0);
+     end=new Date(day);end.setHours(Math.min(23,d.getHours()+4),59,59,999);
+     label=explicitServiceLabel(slot);
+   }
+   return {slot,start,end,label};
+ }
+ function explicitServiceLabel(slot){
+   return String(slot||'SERVICE').replace(/_/g,' ').slice(0,18);
+ }
+ function v28ReservationServices(){
+   const raw=activeOrdersData?.RESERVATIONS_MASTER?.data;
+   const reservations=Array.isArray(raw)?raw:[];
+   const now=new Date(), nowMs=now.getTime(), horizon=nowMs+75*60*60*1000;
+   const sessions=new Map();
+   for(const r of reservations){
+     if(!r||typeof r!=='object'||!v28ReservationStatusAllowed(r))continue;
+     const when=mepReservationDate(r);if(!when)continue;
+     const w=v28ServiceWindowForDate(when,r);
+     // On garde le service actuel même si certaines réservations sont déjà passées,
+     // et les services futurs sur 75h.
+     if(w.end.getTime()<nowMs || w.start.getTime()>horizon)continue;
+     const dayKey=`${w.start.getFullYear()}-${String(w.start.getMonth()+1).padStart(2,'0')}-${String(w.start.getDate()).padStart(2,'0')}`;
+     const explicit=v28ExplicitServiceName(r);
+     const key=`${dayKey}|${explicit?kitchenNormalizedToken(explicit):w.slot}`;
+     if(!sessions.has(key))sessions.set(key,{key,label:w.label,start:w.start,end:w.end,first:when,count:0,covers:0,rows:[]});
+     const s=sessions.get(key);s.count++;s.covers+=v28ReservationPax(r);s.rows.push(r);if(when<s.first)s.first=when;
+   }
+   const list=[...sessions.values()].sort((a,b)=>a.start-b.start||a.first-b.first);
+   let current=list.find(s=>nowMs>=s.start.getTime()&&nowMs<=s.end.getTime())||null;
+   let next=null;
+   if(current){next=list.find(s=>s.key!==current.key&&s.start.getTime()>nowMs)||null;}
+   else{next=list.find(s=>s.start.getTime()>nowMs)||null;}
+   return {current,next,list,now:nowMs};
+ }
+ function v28FormatServiceShort(service){
+   if(!service)return '';
+   const d=service.start;
+   const today=new Date();
+   const sameDay=d.getFullYear()===today.getFullYear()&&d.getMonth()===today.getMonth()&&d.getDate()===today.getDate();
+   const tomorrow=new Date(today.getFullYear(),today.getMonth(),today.getDate()+1);
+   const isTomorrow=d.getFullYear()===tomorrow.getFullYear()&&d.getMonth()===tomorrow.getMonth()&&d.getDate()===tomorrow.getDate();
+   let day='';
+   if(isTomorrow)day='DEM.';
+   else if(!sameDay){try{day=new Intl.DateTimeFormat('fr-FR',{weekday:'short'}).format(d).replace('.','').toUpperCase()}catch(_){day='';}}
+   return [day,service.label].filter(Boolean).join(' ');
+ }
+ function v28CountdownTo(ts){
+   const diff=Math.max(0,Number(ts||0)-Date.now());
+   if(!diff)return '';
+   const totalMin=Math.ceil(diff/60000),h=Math.floor(totalMin/60),m=totalMin%60;
+   if(h>=24){const d=Math.floor(h/24),rh=h%24;return `DANS ${d}J ${rh}H`;}
+   if(h>0)return `DANS ${h}H${String(m).padStart(2,'0')}`;
+   return `DANS ${m}MIN`;
+ }
+ function v28RenderReservationMenu(){
+   const currentCard=document.getElementById('v28-res-current');
+   const nextCard=document.getElementById('v28-res-next');
+   if(!currentCard||!nextCard)return;
+   const data=v28ReservationServices(),cur=data.current,nxt=data.next;
+   const curMain=document.getElementById('v28-res-current-main'),curC=document.getElementById('v28-res-current-covers');
+   const nextMain=document.getElementById('v28-res-next-main'),nextC=document.getElementById('v28-res-next-covers'),cd=document.getElementById('v28-res-next-countdown');
+   currentCard.classList.toggle('is-empty',!cur||cur.count===0);
+   nextCard.classList.toggle('is-empty',!nxt||nxt.count===0);
+   if(cur){
+     curMain.textContent=`${v28FormatServiceShort(cur)||'SERVICE'} · ${cur.count} RÉSA`;
+     curC.textContent=`${cur.covers} COUVERT${cur.covers>1?'S':''}`;
+     currentCard.title=`Service actuel : ${cur.count} réservation${cur.count>1?'s':''} · ${cur.covers} couvert${cur.covers>1?'s':''}`;
+   }else{
+     curMain.textContent='SERVICE · 0 RÉSA';curC.textContent='0 COUVERT';currentCard.title='Aucune réservation sur le service actuel';
+   }
+   if(nxt){
+     nextMain.textContent=`${v28FormatServiceShort(nxt)||'PROCHAIN'} · ${nxt.count} RÉSA`;
+     nextC.textContent=`${nxt.covers} COUVERT${nxt.covers>1?'S':''}`;
+     cd.textContent=v28CountdownTo(nxt.start.getTime());
+     nextCard.title=`Prochain service : ${nxt.count} réservation${nxt.count>1?'s':''} · ${nxt.covers} couvert${nxt.covers>1?'s':''}`;
+   }else{
+     nextMain.textContent='PROCHAIN · 0 RÉSA';nextC.textContent='0 COUVERT';cd.textContent='';nextCard.title='Aucun prochain service trouvé sur 75h';
+   }
+ }
+
  function mepBuildPrepNeeds(groups){
    const needs=new Map(),missing=new Map();
    for(const g of groups){
@@ -3837,6 +4012,7 @@ body > #v15-rush-strip{display:none!important}
          systemSettings;
 
      renderBoardIfChanged(false);
+     try{v28RenderReservationMenu()}catch(err){console.error('[iCHEF V28] menu réservations',err)}
      try{
        const mep=document.getElementById('mep-modal');
        if(mep?.classList.contains('open') && typeof renderMiseEnPlace==='function') renderMiseEnPlace();
@@ -3924,6 +4100,7 @@ body > #v15-rush-strip{display:none!important}
              delete next[tableId];
              activeOrdersData = next;
              renderBoardIfChanged(true);
+             try{v28RenderReservationMenu()}catch(_){}
              try{mepRefreshIfOpen()}catch(_){}
          }
          return;
@@ -3936,6 +4113,7 @@ body > #v15-rush-strip{display:none!important}
          preserveWhoCookingOrder(nextOrder);
          activeOrdersData = { ...activeOrdersData, [tableId]: nextOrder };
          renderBoardIfChanged(true);
+         try{v28RenderReservationMenu()}catch(_){}
          try{mepRefreshIfOpen()}catch(_){}
          setConnectionBadge(true, 'Temps réel');
          return;
@@ -3995,6 +4173,8 @@ body > #v15-rush-strip{display:none!important}
  }
 
  setInterval(() => { updateServiceRequestClocks(); }, 1000);
+ if(!window.__ICHEF_RES_MENU_TIMER__){ window.__ICHEF_RES_MENU_TIMER__=setInterval(()=>{try{v28RenderReservationMenu()}catch(_){}},30000); }
+ try{v28RenderReservationMenu()}catch(_){}
  setInterval(() => { try{mepRefreshIfOpen()}catch(_){} }, 1200);
  setInterval(() => {
    try{
@@ -4029,7 +4209,7 @@ body > #v15-rush-strip{display:none!important}
    kitchenMarkBatchReady(key).finally(()=>{if(document.body.contains(btn)){btn.disabled=false;btn.textContent=old}});
  });
 
- console.info('[iCHEF] PASS CUISINE V26 · MISE EN PLACE CANONIQUE · SYMBIOSE LIVE');
+ console.info('[iCHEF] PASS CUISINE V28 · RÉSERVATIONS SERVICE · SYMBIOSE PAD SERVICE · LIVE');
  fetchInitialState();
  </script>
 
@@ -4037,8 +4217,8 @@ body > #v15-rush-strip{display:none!important}
 <script id="ichef-v21-native-controller">
 (function(){
   'use strict';
-  window.__ICHEF_PASS_VERSION__='V26';
-  document.documentElement.setAttribute('data-ichef-pass-version','V26');
+  window.__ICHEF_PASS_VERSION__='V28';
+  document.documentElement.setAttribute('data-ichef-pass-version','V28');
   function cleanLegacyVisibleScriptText(){
     try{
       var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
