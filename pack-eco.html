@@ -13539,4 +13539,131 @@ body.order-open .seat-item-controls button:active{
   }
 }
 </style>
+<script id="ichef-sale-gate-table-release-v31">
+(()=>{
+"use strict";
+if(window.__ICHEF_SALE_GATE_TABLE_RELEASE_V31__) return;
+window.__ICHEF_SALE_GATE_TABLE_RELEASE_V31__ = true;
+
+function saleToken(v){
+  return String(v??"")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+    .replace(/[\s-]+/g,"_").toUpperCase();
+}
+
+function saleItemServed(item){
+  if(!item || item.cancelled===true) return false;
+  const st=saleToken(item.status ?? item.productionStatus ?? item.runnerStatus);
+  const seq=saleToken(item.sequenceStatus);
+  return item.served===true || item.isServed===true || !!item.servedAt ||
+    ["SERVI","SERVED","POSE_SUR_TABLE","ON_TABLE"].includes(st) ||
+    ["SERVI","SERVED","POSE_SUR_TABLE","ON_TABLE"].includes(seq);
+}
+
+function saleHasServedItem(order){
+  const items=Array.isArray(order?.items)?order.items:[];
+  return items.some(item=>item && item.cancelled!==true && saleItemServed(item));
+}
+
+function salePaymentAllowed(order,notify=true){
+  try{
+    if(typeof fiscalOrderFinalized==="function" && fiscalOrderFinalized(order)) return true;
+  }catch(_){ }
+  if(saleHasServedItem(order)) return true;
+  if(notify){
+    try{ toast("ENCAISSEMENT BLOQUÉ · aucun plat ou boisson n'est encore posé sur la table",true); }catch(_){ }
+  }
+  return false;
+}
+
+window.ichefSaleHasServedItem=saleHasServedItem;
+window.ichefSalePaymentAllowed=salePaymentAllowed;
+
+// Garde l'entrée CAISSE bloquée tant qu'aucun article n'est réellement SERVI.
+const originalOpenPayment=window.openPayment;
+if(typeof originalOpenPayment==="function"){
+  window.openPayment=async function(...args){
+    try{
+      if(STATE?.currentTable){
+        const order=(typeof getOrder==="function"&&getOrder(STATE.currentTable)) || STATE.currentOrder || (typeof ensureOrder==="function"?ensureOrder(STATE.currentTable):null);
+        const paid=order && typeof fiscalOrderFinalized==="function" && fiscalOrderFinalized(order);
+        if(order && !paid && !salePaymentAllowed(order,true)) return false;
+      }
+    }catch(err){ console.warn("[iCHEF V31] garde caisse",err); }
+    return originalOpenPayment.apply(this,args);
+  };
+}
+
+// Deuxième verrou : même un appel direct à recordPayment ne passe pas avant service.
+const originalRecordPayment=window.recordPayment;
+if(typeof originalRecordPayment==="function"){
+  window.recordPayment=async function(method,terminal=null){
+    try{
+      if(STATE?.currentTable){
+        const order=(typeof getOrder==="function"&&getOrder(STATE.currentTable)) || STATE.currentOrder || (typeof ensureOrder==="function"?ensureOrder(STATE.currentTable):null);
+        const paid=order && typeof fiscalOrderFinalized==="function" && fiscalOrderFinalized(order);
+        if(order && !paid && !salePaymentAllowed(order,true)) return false;
+      }
+    }catch(err){ console.warn("[iCHEF V31] garde paiement",err); }
+    return originalRecordPayment.call(this,method,terminal);
+  };
+}
+
+const originalStartStripePayment=window.startStripePayment;
+if(typeof originalStartStripePayment==="function"){
+  window.startStripePayment=async function(order){
+    if(!salePaymentAllowed(order,true)) throw new Error("Encaissement bloqué : aucun plat ou boisson n'est encore posé sur la table.");
+    return originalStartStripePayment.call(this,order);
+  };
+}
+
+const originalConfiguredTerminalPayment=window.configuredTerminalPayment;
+if(typeof originalConfiguredTerminalPayment==="function"){
+  window.configuredTerminalPayment=async function(order,terminal){
+    if(!salePaymentAllowed(order,true)) throw new Error("Encaissement bloqué : aucun plat ou boisson n'est encore posé sur la table.");
+    return originalConfiguredTerminalPayment.call(this,order,terminal);
+  };
+}
+
+// Dès que le serveur confirme le paiement total, on mémorise la table à libérer côté UI.
+const originalApplyServerFiscalResult=window.applyServerFiscalResult;
+if(typeof originalApplyServerFiscalResult==="function"){
+  window.applyServerFiscalResult=function(order,result,method){
+    const tableId=String(order?.tableId || STATE?.currentTable || "").trim();
+    const ticketNumber=String(result?.ticketNumber || result?.fiscalId || "").trim();
+    const out=originalApplyServerFiscalResult.call(this,order,result,method);
+    if(tableId && ticketNumber){
+      window.__ICHEF_PAID_TABLE_RELEASE_PENDING__={tableId,ticketNumber,at:Date.now()};
+    }
+    return out;
+  };
+}
+
+function closePaidTableUiIfReleased(){
+  const pending=window.__ICHEF_PAID_TABLE_RELEASE_PENDING__;
+  if(!pending?.tableId) return false;
+  if(Date.now()-Number(pending.at||0)>30000){
+    window.__ICHEF_PAID_TABLE_RELEASE_PENDING__=null;
+    return false;
+  }
+  let live=null;
+  try{ live=typeof getOrder==="function"?getOrder(pending.tableId):STATE?.activeOrders?.[pending.tableId]; }catch(_){ }
+  if(live) return false;
+  try{
+    if(STATE?.activeOrders) delete STATE.activeOrders[pending.tableId];
+    if(STATE?.currentTable===pending.tableId && typeof closeOrder==="function") closeOrder();
+    else if(typeof scheduleRender==="function") scheduleRender();
+    if(typeof closeSheet==="function") closeSheet();
+    toast(`PAIEMENT TOTAL · TABLE ${pending.tableId} LIBÉRÉE`);
+  }catch(err){ console.warn("[iCHEF V31] libération UI",err); }
+  window.__ICHEF_PAID_TABLE_RELEASE_PENDING__=null;
+  return true;
+}
+
+window.addEventListener("ichef:live-state-updated",()=>setTimeout(closePaidTableUiIfReleased,0));
+setInterval(closePaidTableUiIfReleased,750);
+
+console.info("[iCHEF V31] Vente protégée : 1 article servi minimum · paiement total = table libérée");
+})();
+</script>
 </body></html>
