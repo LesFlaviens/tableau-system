@@ -10438,6 +10438,60 @@ null
 });
 }
 }
+// iCHEF V7 — ENCAISSEMENT AUTORISÉ SEULEMENT APRÈS SERVICE RÉEL À TABLE.
+const saleTableId = String(orderSnapshot?.tableId || '').trim();
+const liveSaleOrder = state.activeOrders?.[saleTableId];
+const liveSaleItems = Array.isArray(liveSaleOrder?.items)
+? liveSaleOrder.items
+: Array.isArray(liveSaleOrder?.data?.items)
+? liveSaleOrder.data.items
+: [];
+const saleStateToken = value => String(value ?? '')
+.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+.replace(/[\s-]+/g, '_').toUpperCase();
+const saleItemServed = item => {
+if (!item || item.cancelled === true) return false;
+const st = saleStateToken(item.status ?? item.productionStatus ?? item.runnerStatus);
+const seq = saleStateToken(item.sequenceStatus);
+return item.served === true || item.isServed === true || Boolean(item.servedAt) ||
+['SERVI','SERVED','POSE_SUR_TABLE','ON_TABLE'].includes(st) ||
+['SERVI','SERVED','POSE_SUR_TABLE','ON_TABLE'].includes(seq);
+};
+if (!liveSaleOrder || !liveSaleItems.some(saleItemServed)) {
+await ichefFiscalDiagnostic(req, {
+tenantID,
+type: 'PAYMENT_ERROR',
+status: 'REFUSED',
+severity: 'WARNING',
+code: 'SERVICE_NOT_STARTED',
+message: 'Encaissement bloqué : aucun plat ou boisson n’est encore posé sur la table.',
+tableId: saleTableId
+});
+return res.status(409).json({
+success: false,
+code: 'SERVICE_NOT_STARTED',
+error: 'Encaissement bloqué : au moins un plat ou une boisson doit être servi à table avant le paiement.'
+});
+}
+const saleNumber = value => {
+const n = Number(String(value ?? 0).replace(',', '.'));
+return Number.isFinite(n) ? n : 0;
+};
+const liveSaleTotal = Math.round(liveSaleItems
+.filter(item => item && item.cancelled !== true)
+.reduce((sum, item) => {
+const qty = Math.max(0, saleNumber(item.qty ?? item.quantity ?? item.q ?? 1));
+const price = saleNumber(item.p ?? item.price ?? item.prix ?? item.unitPrice ?? item.priceTTC ?? 0);
+return sum + qty * price;
+}, 0) * 100) / 100;
+if (liveSaleTotal > 0 && Math.abs(amount - liveSaleTotal) > 0.02) {
+return res.status(409).json({
+success: false,
+code: 'FULL_PAYMENT_REQUIRED',
+error: `Paiement total requis : ${liveSaleTotal.toFixed(2)} à régler avant libération de la table.`
+});
+}
+
 const ticketNumber =
 'TCK-' +
 Date.now()
@@ -16366,12 +16420,16 @@ error:
 'La table n’est pas fiscalisée avec ce ticket.'
 });
 }
-// ICHÉF SWITCH : traiter la vente AVANT de supprimer la table active.
+// ICHÉF SWITCH : tentative de traitement avant suppression.
+// Une table déjà totalement payée doit être libérée même si SWITCH doit être repris ensuite.
+let closePaidSwitchDeferred = false;
+let closePaidSwitchWarning = '';
 try {
   await ichefSwitchProcessFinalizedOrder(tenantID, tableId, order, {source:'close-paid'});
 } catch (switchError) {
+  closePaidSwitchDeferred = true;
+  closePaidSwitchWarning = String(switchError?.message || 'Synchronisation Stock/Food Cost à reprendre').slice(0,300);
   console.error('[ICHEF SWITCH close-paid] :', switchError);
-  return res.status(500).json({success:false,persisted:false,error:'Vente fiscalisée mais synchronisation Stock/Food Cost/Carte impossible. Table conservée pour reprise sûre.'});
 }
 const state =
 await AppState
@@ -16413,8 +16471,11 @@ ticketNumber
 return res.json({
 success: true,
 persisted: true,
+tableReleased: true,
 ticketNumber,
-tableId
+tableId,
+switchDeferred: closePaidSwitchDeferred,
+warning: closePaidSwitchDeferred ? closePaidSwitchWarning : undefined
 });
 } catch (error) {
 console.error(
