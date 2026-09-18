@@ -3829,5 +3829,128 @@ body > #v15-rush-strip{display:none!important}
   },{once:true});
 })();
 </script>
+ <script id="fix-postes-independants-strict">
+// 1. Forcer l'ouverture tactile du menu déroulant POSTES
+document.addEventListener('click', function(e) {
+    const btn = e.target.closest('#v9-station-btn');
+    const option = e.target.closest('#v9-station-menu .v9-option');
+    const menu = document.getElementById('v9-station-menu');
+    
+    if (btn && menu) {
+        e.preventDefault(); 
+        e.stopPropagation();
+        const isOpen = menu.classList.contains('open');
+        document.querySelectorAll('.v9-dropdown').forEach(m => m.classList.remove('open'));
+        if (!isOpen) menu.classList.add('open');
+    } 
+    else if (option) {
+        e.preventDefault(); 
+        e.stopPropagation();
+        const station = option.dataset.station;
+        if (menu) menu.classList.remove('open');
+        if (typeof window.setStation === 'function') window.setStation(station);
+    }
+    else if (!e.target.closest('.v9-select')) {
+        document.querySelectorAll('.v9-dropdown').forEach(m => m.classList.remove('open'));
+    }
+});
+
+// 2. Moteur de rendu avec FILTRE STRICT (isolation totale des postes)
+window.renderBoard = function() {
+    const board = document.getElementById('board');
+    if(!board) return;
+    
+    board.classList.add('service-columns-board');
+    if (typeof kitchenBuildBatchCache === 'function') kitchenBuildBatchCache();
+    
+    const columns = { entree: [], plat: [], dessert: [] };
+    const totals = { entree: 0, plat: 0, dessert: 0 };
+    const requests = { entree: 0, plat: 0, dessert: 0 };
+    
+    const allowedStatuses = new Set(['PENDING','OPEN','NOUVELLE COMMANDE','EN PRÉPARATION','EN PREPARATION','EN ATTENTE (TIME-SHIFT)','EN ATTENTE','PRÊT','PRET']);
+    
+    const ordersArray = Object.keys(window.activeOrdersData || {})
+        .filter(k => typeof isSystemKey === 'function' ? !isSystemKey(k) : true)
+        .map(k => ({ id: k, ...activeOrdersData[k] }))
+        .filter(o => {
+            if(!o || !Array.isArray(o.items) || o.items.length === 0) return false;
+            const status = String(o.status || 'pending').trim().toUpperCase();
+            return allowedStatuses.has(status) || o.items.some(item => item && item.isSent === true);
+        })
+        .sort((a,b) => {
+            const pa = typeof orderPriority === 'function' ? orderPriority(a) : 0;
+            const pb = typeof orderPriority === 'function' ? orderPriority(b) : 0;
+            if(pa !== pb) return pa - pb;
+            const ta = Number(a.createdAt || a.items?.[0]?.itemId || 0);
+            const tb = Number(b.createdAt || b.items?.[0]?.itemId || 0);
+            if(ta !== tb) return ta - tb;
+            return String(a.id).localeCompare(String(b.id), 'fr');
+        });
+
+    for (const order of ordersArray) {
+        const stationItems = order.items.filter(item => {
+            if (!item || item.isSent === false || (typeof isServedItem === 'function' && isServedItem(item))) return false;
+            
+            // ISOLATION STRICTE : le plat doit correspondre exactement au poste sélectionné
+            if (window.currentStation && window.currentStation !== 'all') {
+                const dest = String(item.dest || item.station || '').toLowerCase().trim();
+                // Bloque tout plat qui n'appartient pas strictement à ce poste
+                if (dest !== window.currentStation) return false; 
+            }
+            return true;
+        });
+        
+        if (!stationItems.length) continue;
+        
+        const phaseInfo = typeof getPhaseInfo === 'function' ? getPhaseInfo(stationItems) : null;
+        for (const course of [1, 2, 3]) {
+            if (typeof serviceColumnMeta !== 'function') continue;
+            const meta = serviceColumnMeta(course);
+            const items = stationItems.filter(i => (typeof serviceCourse === 'function' ? serviceCourse(i) : 2) === course);
+            if (!items.length) continue;
+            
+            totals[meta.key] += items.reduce((n, i) => n + Number(i.qty || 1), 0);
+            requests[meta.key] += items.filter(i => typeof serviceRequested === 'function' && serviceRequested(i) && !i.done).length;
+            columns[meta.key].push({
+                score: typeof kitchenOrderAutoScore === 'function' ? kitchenOrderAutoScore(order, items) : 0,
+                html: typeof renderCourseTicket === 'function' ? renderCourseTicket(order, items, course, phaseInfo) : ''
+            });
+        }
+    }
+
+    const visible = {
+        entree: window.currentFlowFilter === 'all' || window.currentFlowFilter === 'entree',
+        plat: window.currentFlowFilter === 'all' || window.currentFlowFilter === 'plat',
+        dessert: window.currentFlowFilter === 'all' || window.currentFlowFilter === 'dessert'
+    };
+    
+    const makeColumn = (key, title) => `<section class="service-column ${key} ${visible[key] ? '' : 'hidden-column'}">
+        <header class="service-column-head"><span>${title}</span><span class="service-column-kpi">${totals[key]} ARTICLE(S)${requests[key] ? ` · ${requests[key]} DEMANDÉ(S)` : ''}</span></header>
+        <div class="service-column-body">${columns[key].length ? columns[key].sort((a,b) => b.score - a.score).map(x => x.html).join('') : `<div class="service-course-empty">Poste vide.</div>`}</div>
+    </section>`;
+    
+    board.innerHTML = makeColumn('entree', 'ENTRÉES') + makeColumn('plat', 'PLATS') + makeColumn('dessert', 'DESSERTS');
+    if (typeof updateAntiRush === 'function') updateAntiRush();
+};
+
+// 3. Application du filtre strict sur les listes "Auto-Pilot" (synthèses en haut de l'écran)
+window.kitchenCollectLiveLines = function() {
+    const lines = [];
+    for (const [orderId, order] of Object.entries(window.activeOrdersData || {})) {
+        if ((typeof isSystemKey === 'function' && isSystemKey(orderId)) || !order || !Array.isArray(order.items)) continue;
+        order.items.forEach((item, index) => {
+            if (!item || item.isSent === false || (typeof isServedItem === 'function' && isServedItem(item))) return;
+            
+            // ISOLATION STRICTE
+            if (window.currentStation && window.currentStation !== 'all') {
+                const dest = String(item.dest || item.station || '').toLowerCase().trim();
+                if (dest !== window.currentStation) return;
+            }
+            lines.push({ orderId, order, item, index, qty: Math.max(1, Number(item.qty || 1)) });
+        });
+    }
+    return lines;
+};
+</script>
 </body>
 </html>
