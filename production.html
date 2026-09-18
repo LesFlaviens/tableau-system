@@ -1572,7 +1572,7 @@ body > #v15-rush-strip{display:none!important}
      </div>
      <div class="mep-tabs" role="tablist" aria-label="Mise en place et production">
        <button class="mep-tab active" type="button" data-mep-tab="now" role="tab" aria-selected="true">MAINTENANT <span id="mep-tab-now-count" class="mep-tab-count">0</span></button>
-       <button class="mep-tab" type="button" data-mep-tab="upcoming" role="tab" aria-selected="false">À VENIR <span id="mep-tab-upcoming-count" class="mep-tab-count">0</span></button>
+       <button class="mep-tab" type="button" data-mep-tab="upcoming" role="tab" aria-selected="false">ATTENTE SALLE <span id="mep-tab-upcoming-count" class="mep-tab-count">0</span></button>
        <button class="mep-tab" type="button" data-mep-tab="prep" role="tab" aria-selected="false">MISE EN PLACE <span id="mep-tab-prep-count" class="mep-tab-count">0</span></button>
      </div>
      <div class="library-body">
@@ -3264,7 +3264,7 @@ body > #v15-rush-strip{display:none!important}
  function v9UpdateMiseCount() {
    const badge=document.getElementById('v9-mise-count'); if(!badge)return;
    let qty=0;
-   try{kitchenCollectLiveLines().forEach(({item,qty:q})=>{if(item&&item.done!==true&&!isServedItem(item)&&!serviceHeld(item))qty+=Math.max(1,Number(q||1))})}catch(_){}
+   try{qty=mepCanonicalLiveLines().reduce((n,line)=>n+Math.max(1,Number(line.qty||1)),0)}catch(_){}
    badge.textContent=String(qty); badge.style.opacity=qty?'1':'.55';
  }
  let mepActiveTab = 'now';
@@ -3275,11 +3275,32 @@ body > #v15-rush-strip{display:none!important}
      || (recipeLibrary||[]).find(r=>n.includes(String(r.name||'').trim().toLowerCase()) || String(r.name||'').trim().toLowerCase().includes(n))
      || null;
  }
+ function mepItemStillToProduce(item) {
+   if(!item || item.isSent===false || isServedItem(item)) return false;
+   if(item.done===true || item.ready===true || item.isReady===true || item.served===true || item.pickedByServer===true || item.takenByServer===true) return false;
+   const seq=normalizeLifecycleValue(item.sequenceStatus);
+   const st=normalizeLifecycleValue(item.status);
+   const prod=normalizeLifecycleValue(item.productionStatus);
+   const finished=new Set(['READY','PRET','PRÊT','PRET_AU_PASS','SERVED','SERVI','TAKEN','PICKED','PICKED_UP','ARCHIVED','CANCELLED','CANCELED','REFUNDED']);
+   if(finished.has(seq) || finished.has(st) || finished.has(prod)) return false;
+   return true;
+ }
+ function mepCanonicalLiveLines() {
+   const lines=[];
+   for(const [orderId,order] of Object.entries(activeOrdersData||{})){
+     if(isSystemKey(orderId) || !order || !Array.isArray(order.items)) continue;
+     order.items.forEach((item,index)=>{
+       if(!mepItemStillToProduce(item)) return;
+       lines.push({orderId,order,item,index,qty:Math.max(1,Number(item.qty||item.quantity||1))});
+     });
+   }
+   return lines;
+ }
  function mepProductionGroups() {
-   let lines=[];try{lines=kitchenCollectLiveLines()}catch(_){lines=[]}
+   const lines=mepCanonicalLiveLines();
    const groups=new Map();
    for(const line of lines){
-     const item=line.item;if(!item||item.done===true||isServedItem(item))continue;
+     const item=line.item;if(!mepItemStillToProduce(item))continue;
      const qty=Math.max(1,Number(line.qty||1));
      const name=kitchenDisplayName(item),course=serviceCourse(item),dest=kitchenSafeText(item.dest||item.station||'cuisine').toUpperCase();
      const key=[course,kitchenNormalizedToken(name),dest].join('|');
@@ -3400,12 +3421,18 @@ body > #v15-rush-strip{display:none!important}
    document.querySelectorAll('[data-mep-tab]').forEach(btn=>{const on=btn.dataset.mepTab===mepActiveTab;btn.classList.toggle('active',on);btn.setAttribute('aria-selected',on?'true':'false')});
    renderMiseEnPlace();
  }
+ function mepRefreshIfOpen() {
+   const modal=document.getElementById('mep-modal');
+   if(!modal?.classList.contains('open')) return;
+   requestAnimationFrame(()=>{try{renderMiseEnPlace();v9UpdateMiseCount()}catch(err){console.error('[iCHEF V25] refresh mise en place',err)}});
+ }
  function openMiseEnPlace() {
    try{collectRecipes()}catch(_){}
    mepActiveTab='now';
-   renderMiseEnPlace();
    const modal=document.getElementById('mep-modal'); if(!modal)return;
    modal.classList.add('open');modal.setAttribute('aria-hidden','false');
+   renderMiseEnPlace();
+   try{schedulePassResync(20)}catch(_){}
  }
  function closeMiseEnPlace() { const modal=document.getElementById('mep-modal'); if(modal){modal.classList.remove('open');modal.setAttribute('aria-hidden','true')} }
  function mepRenderProductionRows(rows,mode){
@@ -3432,12 +3459,12 @@ body > #v15-rush-strip{display:none!important}
    const setCount=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=String(v)};
    setCount('mep-tab-now-count',nowQty);setCount('mep-tab-upcoming-count',upcomingQty);setCount('mep-tab-prep-count',prep.needs.length);
    document.querySelectorAll('[data-mep-tab]').forEach(btn=>{const on=btn.dataset.mepTab===mepActiveTab;btn.classList.toggle('active',on);btn.setAttribute('aria-selected',on?'true':'false')});
-   const summary=reservation75+`<div class="mep-mini-summary"><div class="mep-mini-kpi">MAINTENANT <strong style="color:#fb7185">${nowQty}</strong></div><div class="mep-mini-kpi">À VENIR <strong style="color:#fde68a">${upcomingQty}</strong></div><div class="mep-mini-kpi">RÉSA 75H <strong style="color:#93c5fd">${forecast75.count}</strong></div><div class="mep-mini-kpi">COUVERTS 75H <strong style="color:#93c5fd">${forecast75.covers}</strong></div><div class="mep-mini-kpi">TABLES <strong>${tableCount}</strong></div><div class="mep-mini-kpi">FICHES CHEF <strong style="color:#f3d469">${(recipeLibrary||[]).length}</strong></div></div>`;
+   const summary=reservation75+`<div class="mep-mini-summary"><div class="mep-mini-kpi">MAINTENANT <strong style="color:#fb7185">${nowQty}</strong></div><div class="mep-mini-kpi">ATTENTE SALLE <strong style="color:#fde68a">${upcomingQty}</strong></div><div class="mep-mini-kpi">RÉSA 75H <strong style="color:#93c5fd">${forecast75.count}</strong></div><div class="mep-mini-kpi">COUVERTS 75H <strong style="color:#93c5fd">${forecast75.covers}</strong></div><div class="mep-mini-kpi">TABLES <strong>${tableCount}</strong></div><div class="mep-mini-kpi">FICHES CHEF <strong style="color:#f3d469">${(recipeLibrary||[]).length}</strong></div></div>`;
    if(mepActiveTab==='now'){
      host.innerHTML=summary+`<div class="mep-section-head"><h3>PRODUCTION À FAIRE MAINTENANT</h3><div class="hint">Uniquement ce que la salle a demandé.</div></div>`+mepRenderProductionRows(nowRows,'now');return;
    }
    if(mepActiveTab==='upcoming'){
-     host.innerHTML=summary+`<div class="mep-section-head"><h3>COMMANDES À VENIR</h3><div class="hint">Anticiper sans lancer avant la demande serveur.</div></div>`+mepRenderProductionRows(upcomingRows,'upcoming');return;
+     host.innerHTML=summary+`<div class="mep-section-head"><h3>COMMANDES EN ATTENTE SALLE</h3><div class="hint">Anticiper sans lancer avant la demande serveur.</div></div>`+mepRenderProductionRows(upcomingRows,'upcoming');return;
    }
    const prepRows=prep.needs.length?`<div class="mep-prep-list">${prep.needs.map(n=>{
      const need=n.hasQty?`${mepFormatQty(n.qty)} ${escapeHtml(n.unit||'')}`:`×${n.portions} portion${n.portions>1?'s':''}`;
@@ -3705,6 +3732,7 @@ body > #v15-rush-strip{display:none!important}
 
  if (!force && fingerprint === lastBoardFingerprint) {
  updateAntiRush();
+ try{mepRefreshIfOpen()}catch(_){}
  return;
  }
 
@@ -3715,6 +3743,7 @@ body > #v15-rush-strip{display:none!important}
  const previousScrollTop = board ? board.scrollTop : 0;
 
  renderBoard();
+ try{mepRefreshIfOpen()}catch(_){}
 
  requestAnimationFrame(() => {
  const currentBoard = document.getElementById('board');
@@ -3851,6 +3880,7 @@ body > #v15-rush-strip{display:none!important}
              delete next[tableId];
              activeOrdersData = next;
              renderBoardIfChanged(true);
+             try{mepRefreshIfOpen()}catch(_){}
          }
          return;
      }
@@ -3862,6 +3892,7 @@ body > #v15-rush-strip{display:none!important}
          preserveWhoCookingOrder(nextOrder);
          activeOrdersData = { ...activeOrdersData, [tableId]: nextOrder };
          renderBoardIfChanged(true);
+         try{mepRefreshIfOpen()}catch(_){}
          setConnectionBadge(true, 'Temps réel');
          return;
      }
@@ -3920,6 +3951,7 @@ body > #v15-rush-strip{display:none!important}
  }
 
  setInterval(() => { updateServiceRequestClocks(); }, 1000);
+ setInterval(() => { try{mepRefreshIfOpen()}catch(_){} }, 1500);
 
  setInterval(() => {
      // Anti-Rush évolue en temps réel sans reconstruire tous les tickets.
@@ -3947,7 +3979,7 @@ body > #v15-rush-strip{display:none!important}
    kitchenMarkBatchReady(key).finally(()=>{if(document.body.contains(btn)){btn.disabled=false;btn.textContent=old}});
  });
 
- console.info('[iCHEF] PASS CUISINE V24 · RÉSERVATIONS 75H · MISE EN PLACE & PRODUCTION · POSTES/AFFICHAGE CONNECTÉS · SYMBIOSE LIVE');
+ console.info('[iCHEF] PASS CUISINE V25 · MISE EN PLACE SYNCHRONISÉE · RÉSERVATIONS 75H · SYMBIOSE LIVE');
  fetchInitialState();
  </script>
 
@@ -3955,8 +3987,8 @@ body > #v15-rush-strip{display:none!important}
 <script id="ichef-v21-native-controller">
 (function(){
   'use strict';
-  window.__ICHEF_PASS_VERSION__='V24';
-  document.documentElement.setAttribute('data-ichef-pass-version','V24');
+  window.__ICHEF_PASS_VERSION__='V25';
+  document.documentElement.setAttribute('data-ichef-pass-version','V25');
   function cleanLegacyVisibleScriptText(){
     try{
       var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
