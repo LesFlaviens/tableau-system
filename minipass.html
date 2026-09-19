@@ -14,129 +14,26 @@
 
 <title>iCHEF — MINI PASS</title>
 
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;800;900&family=Montserrat:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 
-<style id="ichef-mini-v76-critical-auth-paint">
-/* =========================================================
-   V76 — PREMIER AFFICHAGE ATOMIQUE
-   Empêche tout flash de l'application avant la décision PIN/session.
-   ========================================================= */
-html,body{
-  background:#050505 !important;
+<style id="ichef-mini-v77-critical-boot">
+html,body{background:#050505!important}
+#ichef-boot-shield{
+  position:fixed!important;
+  inset:0!important;
+  z-index:14999999!important;
+  display:block!important;
+  background:#050505!important;
+  pointer-events:none!important;
 }
-
-/* PIN requis : seul le portail PIN a le droit d'être peint. */
-html.ichef-boot-pin body > *:not(#security-overlay):not(#phone-lock){
-  visibility:hidden !important;
+#security-overlay{
+  z-index:15000000!important;
 }
-html.ichef-boot-pin #security-overlay{
-  display:flex !important;
-  visibility:visible !important;
-  opacity:1 !important;
-}
-html.ichef-boot-pin #phone-lock{
-  display:none !important;
-}
-
-/* Session déjà valide : le portail PIN n'est jamais peint, même 1 frame. */
-html.ichef-boot-auth #security-overlay,
-html.ichef-boot-auth #phone-lock{
-  display:none !important;
-}
-
-/* Téléphone : blocage immédiat, sans passage par le PIN. */
-html.ichef-boot-phone body > *:not(#phone-lock):not(#security-overlay){
-  visibility:hidden !important;
-}
-html.ichef-boot-phone #security-overlay{
-  display:none !important;
-}
-html.ichef-boot-phone #phone-lock{
-  display:flex !important;
-  visibility:visible !important;
-  opacity:1 !important;
+#phone-lock{
+  z-index:20000000!important;
 }
 </style>
 
-<script id="ichef-mini-v76-critical-auth-boot">
-(function(){
-  "use strict";
-
-  const root=document.documentElement;
-  const SESSION_KEY='ichef_mini_pass_auth_v71';
-  const MAX_AGE=12*60*60*1000;
-
-  function clearModes(){
-    root.classList.remove('ichef-boot-pin','ichef-boot-auth','ichef-boot-phone');
-  }
-
-  function applyMode(mode){
-    clearModes();
-    root.classList.add('ichef-boot-'+mode);
-    root.dataset.ichefBoot=mode;
-  }
-
-  /* Accessible au moteur principal une fois le DOM chargé. */
-  window.ichefResolveBoot=function(mode){
-    applyMode(mode==='auth'?'auth':mode==='phone'?'phone':'pin');
-  };
-
-  function phoneDeviceEarly(){
-    try{
-      const ua=String(navigator.userAgent||'');
-      const uaMobile=!!(navigator.userAgentData && navigator.userAgentData.mobile===true);
-      const phoneUA=/iPhone|iPod|Windows Phone|IEMobile|Opera Mini|Android.*Mobile|Mobile Safari/i.test(ua);
-      const coarse=!!(window.matchMedia && window.matchMedia('(pointer:coarse)').matches);
-      const sw=Number(window.screen?.width||innerWidth||9999);
-      const sh=Number(window.screen?.height||innerHeight||9999);
-      const shortSide=Math.min(sw,sh);
-      return Boolean(uaMobile || phoneUA || (coarse && shortSide<=520));
-    }catch(_){
-      return false;
-    }
-  }
-
-  function validSavedSession(){
-    try{
-      const raw=sessionStorage.getItem(SESSION_KEY);
-      if(!raw) return false;
-
-      const saved=JSON.parse(raw);
-      const qs=new URLSearchParams(location.search);
-      const requestedTenant=String(
-        qs.get('tenantID') ||
-        localStorage.getItem('ichef_tenant_id') ||
-        saved?.tenantID ||
-        ''
-      ).trim().toLowerCase();
-
-      const savedTenant=String(saved?.tenantID||'').trim().toLowerCase();
-      const verifiedAt=Number(saved?.verifiedAt||0);
-
-      if(!savedTenant || !requestedTenant || savedTenant!==requestedTenant || !verifiedAt){
-        return false;
-      }
-
-      const maxExpiry=verifiedAt+MAX_AGE;
-      const serverExpiry=Number(saved?.sessionExpiresAt||0);
-      const effectiveExpiry=serverExpiry>0 ? Math.min(maxExpiry,serverExpiry) : maxExpiry;
-
-      return Date.now()<effectiveExpiry;
-    }catch(_){
-      return false;
-    }
-  }
-
-  if(phoneDeviceEarly()){
-    applyMode('phone');
-  }else if(validSavedSession()){
-    applyMode('auth');
-  }else{
-    applyMode('pin');
-  }
-})();
-</script>
-
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;800;900&family=Montserrat:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 
 <style>
@@ -2237,6 +2134,7 @@ body.mini-density-ultra .sync-advice{display:none}
 </head>
 
 <body>
+<div id="ichef-boot-shield" aria-hidden="true"></div>
 
 <div id="phone-lock" aria-live="polite">
     <div class="ichef-access-card">
@@ -2832,20 +2730,23 @@ async function checkPin(){
         localStorage.setItem('ichef_tenant_id',tenantID);
         localStorage.removeItem('ichef_master_pin');
         localStorage.removeItem('pin');
-        miniSaveAuthSession();
 
-        /* V76 : la classe critique PIN cachait volontairement tout le Mini Pass.
-           On bascule l'état AVANT de retirer l'overlay pour éviter toute frame
-           intermédiaire ou écran noir. */
-        window.ichefResolveBoot?.('auth');
+        /* V77 : PIN obligatoire à chaque ouverture/rechargement.
+           On ne mémorise donc plus un bypass d'authentification local. */
+        miniClearAuthSession();
 
         if(input) input.value='';
         if(error) error.style.display='none';
-        const __securityOverlay=document.getElementById('security-overlay');
-        if(__securityOverlay) __securityOverlay.style.display='none';
 
         verifyImmersion();
+
+        /* Prépare la connexion et l'état avant de retirer la porte PIN. */
         await startMiniPassAfterAuth();
+
+        const securityOverlay=document.getElementById('security-overlay');
+        const bootShield=document.getElementById('ichef-boot-shield');
+        if(securityOverlay) securityOverlay.style.display='none';
+        if(bootShield) bootShield.style.display='none';
     }catch(e){
         ichefPinFailures+=1;
         if(input) input.value='';
@@ -4505,43 +4406,46 @@ document.addEventListener('DOMContentLoaded',()=>{
     localStorage.removeItem('ichef_master_pin');
     localStorage.removeItem('pin');
 
+    /* V77 : aucune session locale ne peut désactiver le PIN. */
+    miniClearAuthSession();
+
     const security=document.getElementById('security-overlay');
     const pwa=document.getElementById('pwa-strict-lock');
+    const shield=document.getElementById('ichef-boot-shield');
 
     if(isPhoneDevice()){
         const phoneLock=document.getElementById('phone-lock');
         miniSetConnectionState(false,navigator.onLine?'CONNEXION':'HORS LIGNE');
         miniRenderReservationMenu();
-        window.ichefResolveBoot?.('phone');
         if(phoneLock) phoneLock.style.display='flex';
         if(security) security.style.display='none';
         if(pwa) pwa.style.display='none';
+        /* Le téléphone-lock est au-dessus du shield ; on peut retirer le shield. */
+        if(shield) shield.style.display='none';
         return;
     }
 
-    /* V71 : ne JAMAIS refaire apparaître le PIN après un simple reload
-       si ce terminal a déjà été validé dans cette session navigateur. */
-    const restored=miniRestoreAuthSession();
-
-    if(restored){
-        window.ichefResolveBoot?.('auth');
-        if(security) security.style.display='none';
-        if(pwa) pwa.style.display='none';
-        miniSetConnectionState(false,navigator.onLine?'RECONNEXION':'HORS LIGNE');
-        startMiniPassAfterAuth().catch(e=>{
-            console.warn('[iCHEF MINI PASS] reprise session',e);
-            miniSetConnectionState(false,navigator.onLine?'RECONNEXION':'HORS LIGNE');
-        });
-        return;
+    /* Ordinateur/tablette : PIN TOUJOURS actif.
+       Le shield noir reste derrière la porte PIN, donc aucun flash du Mini Pass. */
+    if(security){
+        security.style.display='flex';
+        security.style.visibility='visible';
+        security.style.opacity='1';
+        security.style.pointerEvents='auto';
     }
+    if(pwa) pwa.style.display='none';
 
-    /* Première ouverture / session réellement expirée : PIN requis. */
-    window.ichefResolveBoot?.('pin');
-    if(security) security.style.display='flex';
+    const submit=document.getElementById('pin-submit-btn');
+    if(submit){
+        submit.disabled=false;
+        submit.classList.remove('is-checking');
+        submit.style.pointerEvents='auto';
+    }
 
     const input=document.getElementById('pin-input');
-    if(input && input.dataset.v71EnterBound!=='1'){
-        input.dataset.v71EnterBound='1';
+    if(input && input.dataset.v77EnterBound!=='1'){
+        input.dataset.v77EnterBound='1';
+        input.disabled=false;
         input.addEventListener('keydown',e=>{
             if(e.key==='Enter'){
                 e.preventDefault();
@@ -7502,9 +7406,41 @@ console.info("[iCHEF MINI PASS V75] réservations 30 jours · filtres groupes/sa
 </script>
 
 
-<script id="ichef-mini-v76-marker">
-window.__ICHEF_MINI_PASS_VERSION__="V76-DEMARRAGE-PIN-SANS-FLASH";
-console.info("[iCHEF MINI PASS V76] premier affichage atomique · PIN/session sans micro-flash");
+<script id="ichef-mini-v77-pin-active-guard">
+(()=>{
+  function ensurePinActive(){
+    const overlay=document.getElementById('security-overlay');
+    if(!overlay || overlay.style.display==='none') return;
+
+    overlay.style.pointerEvents='auto';
+
+    const input=document.getElementById('pin-input');
+    if(input) input.disabled=false;
+
+    const submit=document.getElementById('pin-submit-btn');
+    if(submit && !submit.classList.contains('is-checking')){
+      submit.disabled=false;
+      submit.style.pointerEvents='auto';
+    }
+
+    document.querySelectorAll('#mini-premium-pin-pad button').forEach(btn=>{
+      btn.disabled=false;
+      btn.style.pointerEvents='auto';
+    });
+  }
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',ensurePinActive,{once:true});
+  }else{
+    ensurePinActive();
+  }
+})();
+</script>
+
+
+<script id="ichef-mini-v77-marker">
+window.__ICHEF_MINI_PASS_VERSION__="V77-PIN-ACTIF-SANS-MICRO-FLASH";
+console.info("[iCHEF MINI PASS V77] PIN obligatoire et actif · écran technique anti-flash");
 </script>
 
 </body>
