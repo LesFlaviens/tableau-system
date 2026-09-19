@@ -15,7 +15,7 @@
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="theme-color" content="#050505">
 
-    <title>La Carte - iCHEF Menu</title>
+    <title>La Carte - iCHEF Menu · ANTI-COUPURE</title>
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -179,8 +179,32 @@
 }
 </style>
 
+
+<style id="ichef-qr-anti-coupure-style">
+#ichef-network-state{
+    position:fixed;top:max(10px,env(safe-area-inset-top));left:50%;
+    transform:translateX(-50%) translateY(-90px);
+    z-index:10000100;display:flex;align-items:center;gap:8px;
+    max-width:calc(100vw - 28px);padding:9px 13px;border-radius:999px;
+    background:rgba(127,29,29,.96);border:1px solid rgba(252,165,165,.75);
+    color:#fff;font-family:var(--font-text);font-size:.72rem;font-weight:800;
+    letter-spacing:.35px;text-transform:uppercase;box-shadow:0 10px 30px rgba(0,0,0,.38);
+    transition:transform .28s ease;pointer-events:none;white-space:nowrap;
+}
+#ichef-network-state.show{transform:translateX(-50%) translateY(0)}
+#ichef-network-state.sync{background:rgba(120,83,10,.96);border-color:rgba(253,230,138,.75)}
+#ichef-network-state.ok{background:rgba(6,78,59,.96);border-color:rgba(110,231,183,.75)}
+#ichef-offline-order-note{
+    display:none;margin:0 0 14px;padding:10px 12px;border-radius:8px;
+    border:1px solid rgba(251,191,36,.42);background:rgba(251,191,36,.07);
+    color:#fde68a;font-size:.78rem;font-weight:700;line-height:1.45;text-align:left;
+}
+#ichef-offline-order-note.show{display:block}
+</style>
+
 </head>
 <body>
+<div id="ichef-network-state" aria-live="polite">● HORS CONNEXION · MODE SECOURS</div>
 
 <div id="ichef-owner-nav" aria-hidden="true">
   <button type="button" onclick="ichefOwnerBack()">← Retour</button>
@@ -226,7 +250,7 @@
     <div id="order-success-modal" class="modal-overlay">
         <div class="modal-box">
             <div style="font-size: 4rem; margin-bottom: 20px;">✅</div>
-            <h2 style="color: var(--gold); font-size: 1.8rem; font-weight: 900; margin: 0 0 15px 0; text-transform: uppercase; font-family: var(--font-title);">Commande Envoyée</h2>
+            <h2 id="order-success-title" style="color: var(--gold); font-size: 1.8rem; font-weight: 900; margin: 0 0 15px 0; text-transform: uppercase; font-family: var(--font-title);">Commande Envoyée</h2>
             
             <div style="background: rgba(255,255,255,0.05); border: 1px dashed var(--gold); padding: 15px; border-radius: 8px; margin-bottom: 20px; color: var(--gold); font-weight: bold; font-size: 1.3rem;">
                 N° <span id="success-order-num">---</span>
@@ -319,6 +343,7 @@
                     <span>Total</span>
                     <span id="cart-total-price" style="color: var(--gold);">0.00 €</span>
                 </div>
+                <div id="ichef-offline-order-note"></div>
                 <div id="checkout-buttons-container" class="checkout-buttons-container">
                     <button class="btn-checkout btn-stripe" id="btn-commander-ligne" onclick="checkout('online')">💳 PAYER EN LIGNE (CB / Apple Pay)</button>
                     <button class="btn-checkout btn-gold" id="btn-commander" onclick="checkout('table')">🛎️ COMMANDER ET PAYER À TABLE</button>
@@ -411,18 +436,7 @@
             modal.style.display = 'flex';
             setTimeout(() => modal.classList.add('show'), 10);
             
-            fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`).then(r=>r.json()).then(stateData => {
-                if(stateData.activeOrders && stateData.activeOrders[tableNum]) {
-                    let order = stateData.activeOrders[tableNum];
-                    order.status = "NOUVELLE COMMANDE";
-                    order.paid = true;
-                    order.alerteRouge = "📱 PAIEMENT REÇU EN LIGNE"; 
-                    fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
-                        method: 'POST', headers: {'Content-Type': 'application/json'}, 
-                        body: JSON.stringify({ tableId: tableNum, order: order }) 
-                    });
-                }
-            });
+            ichefQrFinalizeStripeReturn();
             window.history.replaceState({}, document.title, window.location.pathname + "?tenantID=" + tenantID + "&table=" + tableNum); 
         }
         if (paiementStatus === 'annule') { 
@@ -442,7 +456,278 @@
         
         let isKitchenInRush = false;
         let rushV3Settings = { cameleon: false, timeShift: { active: false, discount: 5, delay: 15 }, paceMaker: { active: false, max: 10 } };
-        let pendingCheckoutMode = null; 
+
+        let pendingCheckoutMode = null;
+
+        /* ==========================================================
+           iCHEF · PROTECTION ANTI-COUPURE INTERNET
+           - cache local de la carte et du panier
+           - file persistante des commandes "paiement à table"
+           - rejeu avec le même identifiant => pas de doublon
+           - paiement Stripe jamais déclaré payé hors ligne
+           ========================================================== */
+        const ICHEF_QR_OFFLINE_TTL = 12 * 60 * 60 * 1000;
+        const ICHEF_QR_CACHE_KEY = `ichef_qr_state_v2:${tenantID||''}`;
+        const ICHEF_QR_CART_KEY = `ichef_qr_cart_v2:${tenantID||''}:${tableNum||''}`;
+        const ICHEF_QR_QUEUE_KEY = `ichef_qr_queue_v2:${tenantID||''}:${tableNum||''}`;
+        const ICHEF_QR_POSTPAY_KEY = `ichef_qr_postpay_v2:${tenantID||''}:${tableNum||''}`;
+        let ichefQrFlushing = false;
+
+        function ichefQrClone(value){
+            try { return structuredClone(value); } catch(_) {
+                try { return JSON.parse(JSON.stringify(value)); } catch(__) { return value; }
+            }
+        }
+        function ichefQrId(prefix='QR'){
+            if(window.crypto?.randomUUID) return `${prefix}_${crypto.randomUUID()}`;
+            return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2,10)}`;
+        }
+        function ichefQrNetworkLike(err){
+            const status = Number(err?.status || 0);
+            if(!navigator.onLine) return true;
+            if(status >= 500) return true;
+            const s = String(err?.message || err || '').toLowerCase();
+            return !status && /network|fetch|failed|timeout|abort|connexion|inaccessible/.test(s);
+        }
+        function ichefQrSetNetwork(mode, text){
+            const el=document.getElementById('ichef-network-state');
+            if(!el) return;
+            el.classList.remove('show','sync','ok');
+            if(mode==='offline'){
+                el.textContent = text || '● HORS CONNEXION · MODE SECOURS';
+                el.classList.add('show');
+            }else if(mode==='sync'){
+                el.textContent = text || '● CONNEXION RÉTABLIE · SYNCHRONISATION';
+                el.classList.add('show','sync');
+            }else if(mode==='ok'){
+                el.textContent = text || '✓ SYNCHRONISÉ';
+                el.classList.add('show','ok');
+                setTimeout(()=>el.classList.remove('show','ok'),1800);
+            }
+            ichefQrUpdateOfflineCheckoutNote();
+        }
+        function ichefQrCacheState(state){
+            try{
+                localStorage.setItem(ICHEF_QR_CACHE_KEY, JSON.stringify({savedAt:Date.now(),state}));
+            }catch(_){}
+        }
+        function ichefQrReadCachedState(){
+            try{
+                const row=JSON.parse(localStorage.getItem(ICHEF_QR_CACHE_KEY)||'null');
+                if(!row?.state) return null;
+                if(Date.now()-Number(row.savedAt||0) > ICHEF_QR_OFFLINE_TTL) return null;
+                return row.state;
+            }catch(_){ return null; }
+        }
+        function ichefQrSaveCart(){
+            try{
+                if(cart?.length) localStorage.setItem(ICHEF_QR_CART_KEY, JSON.stringify({savedAt:Date.now(),cart}));
+                else localStorage.removeItem(ICHEF_QR_CART_KEY);
+            }catch(_){}
+        }
+        function ichefQrRestoreCart(){
+            try{
+                const row=JSON.parse(localStorage.getItem(ICHEF_QR_CART_KEY)||'null');
+                if(row?.cart && Array.isArray(row.cart) && Date.now()-Number(row.savedAt||0)<ICHEF_QR_OFFLINE_TTL){
+                    cart=row.cart;
+                }
+            }catch(_){}
+        }
+        function ichefQrReadQueue(){
+            try{
+                const rows=JSON.parse(localStorage.getItem(ICHEF_QR_QUEUE_KEY)||'[]');
+                const now=Date.now();
+                return (Array.isArray(rows)?rows:[])
+                    .filter(j=>j?.id && j?.items && now-Number(j.savedAt||0)<ICHEF_QR_OFFLINE_TTL)
+                    .slice(-30);
+            }catch(_){ return []; }
+        }
+        function ichefQrWriteQueue(rows){
+            try{
+                const clean=(Array.isArray(rows)?rows:[]).slice(-30);
+                if(clean.length) localStorage.setItem(ICHEF_QR_QUEUE_KEY,JSON.stringify(clean));
+                else localStorage.removeItem(ICHEF_QR_QUEUE_KEY);
+            }catch(_){}
+            ichefQrUpdateOfflineCheckoutNote();
+        }
+        function ichefQrQueueJob(job){
+            const rows=ichefQrReadQueue().filter(x=>x.id!==job.id);
+            rows.push({...ichefQrClone(job),savedAt:Date.now()});
+            ichefQrWriteQueue(rows);
+            ichefQrSetNetwork('offline',`● HORS CONNEXION · ${rows.length} COMMANDE${rows.length>1?'S':''} EN ATTENTE`);
+        }
+        function ichefQrUpdateOfflineCheckoutNote(){
+            const note=document.getElementById('ichef-offline-order-note');
+            if(!note) return;
+            const q=ichefQrReadQueue().length;
+            if(!navigator.onLine){
+                note.classList.add('show');
+                note.innerHTML = q
+                    ? `Connexion interrompue. <b>${q} commande${q>1?'s':''}</b> conservée${q>1?'s':''} sur cet appareil et transmise${q>1?'s':''} automatiquement dès le retour du réseau.`
+                    : `Connexion interrompue. Vous pouvez préparer votre panier. Le <b>paiement en ligne</b> nécessite Internet.`;
+            }else if(q){
+                note.classList.add('show');
+                note.innerHTML=`${q} commande${q>1?'s':''} en attente de synchronisation.`;
+            }else{
+                note.classList.remove('show');
+                note.textContent='';
+            }
+        }
+        async function ichefQrFetchJson(url,options={}){
+            let r;
+            try{ r=await fetch(url,options); }
+            catch(e){ throw e; }
+            let data={};
+            try{ data=await r.json(); }catch(_){}
+            if(!r.ok) throw Object.assign(new Error(data?.error||`HTTP ${r.status}`),{status:r.status,data});
+            return data;
+        }
+        function ichefQrUnwrapOrder(raw){
+            return raw?.data && typeof raw.data==='object' && Array.isArray(raw.data.items) ? raw.data : (raw||{});
+        }
+        function ichefQrBuildJob(mode,isTimeShifted,discountMultiplier){
+            const rawTotal=cart.reduce((sum,i)=>sum+(Number(i.price||0)*Number(i.qty||1)),0);
+            const finalTotal=rawTotal*discountMultiplier;
+            const id=ichefQrId('QRORDER');
+            const items=cart.map((item,index)=>({
+                name:item.name,n:item.name,
+                price:Number(item.price||0)*discountMultiplier,
+                p:Number(item.price||0)*discountMultiplier,
+                qty:Number(item.qty||1),
+                category:item.destination,dest:item.destination,isSent:true,
+                webMutationId:id,
+                webMutationItemId:`${id}:${index}`
+            }));
+            return {
+                id,mode,isTimeShifted,discountMultiplier,finalTotal,
+                tableId:tableNum,createdAt:Date.now(),items
+            };
+        }
+        async function ichefQrSubmitJob(job,{queueOnNetwork=true}={}){
+            try{
+                const stateData=await ichefQrFetchJson(
+                    `${SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(tenantID)}&_t=${Date.now()}`,
+                    {cache:'no-store'}
+                );
+                const active=stateData?.activeOrders||{};
+                const existing=ichefQrUnwrapOrder(active[job.tableId]);
+                const existingItems=Array.isArray(existing.items)?existing.items:[];
+                const existingIds=new Set(existingItems.map(i=>String(i?.webMutationItemId||'')).filter(Boolean));
+                const missing=job.items.filter(i=>!existingIds.has(String(i.webMutationItemId)));
+                const addedTotal=missing.reduce((sum,i)=>sum+(Number(i.price||i.p||0)*Number(i.qty||1)),0);
+
+                if(missing.length){
+                    const isOnlineChoice=job.mode==='online';
+                    const orderData={
+                        ...existing,
+                        items:[...existingItems,...missing],
+                        total:Number(existing.total||0)+addedTotal,
+                        time:Date.now(),table:job.tableId,
+                        status:isOnlineChoice?"EN ATTENTE PAIEMENT":(job.isTimeShifted?"EN ATTENTE (TIME-SHIFT)":"À VALIDER PAR LA CAISSE"),
+                        typePaiement:isOnlineChoice?"En Ligne":"À table",
+                        source:"QR Code",isWeb:true,
+                        timeShifted:job.isTimeShifted,
+                        releaseTime:job.isTimeShifted?Date.now()+(rushV3Settings.timeShift.delay*60000):Date.now(),
+                        alerteRouge:isOnlineChoice?null:"📱 COMMANDE WEB A VALIDER",
+                        lastWebMutationId:job.id
+                    };
+                    await ichefQrFetchJson(`${SERVER_URL}/update-order?tenantID=${encodeURIComponent(tenantID)}`,{
+                        method:'POST',headers:{'Content-Type':'application/json'},
+                        body:JSON.stringify({tableId:job.tableId,order:orderData})
+                    });
+                }
+
+                if(job.mode!=='online'){
+                    try{
+                        await ichefQrFetchJson(`${SERVER_URL}/update-order?tenantID=${encodeURIComponent(tenantID)}`,{
+                            method:'POST',headers:{'Content-Type':'application/json'},
+                            body:JSON.stringify({
+                                tableId:'ALERTS_MASTER',
+                                order:{data:{type:'RING',message:`📱 NOUVELLE COMMANDE WEB (Table ${job.tableId.replace('WEB_','')})`,timestamp:Date.now(),mutationId:job.id}}
+                            })
+                        });
+                    }catch(_){}
+                }
+                return {success:true,alreadyApplied:missing.length===0};
+            }catch(e){
+                if(queueOnNetwork && job.mode!=='online' && ichefQrNetworkLike(e)){
+                    ichefQrQueueJob(job);
+                    return {success:true,queuedOffline:true};
+                }
+                throw e;
+            }
+        }
+        async function ichefQrFlushQueue(){
+            if(ichefQrFlushing || !navigator.onLine || !tenantID) return;
+            const rows=ichefQrReadQueue();
+            if(!rows.length){ ichefQrUpdateOfflineCheckoutNote(); return; }
+            ichefQrFlushing=true;
+            ichefQrSetNetwork('sync',`● CONNEXION RÉTABLIE · ${rows.length} À SYNCHRONISER`);
+            const remaining=[];
+            try{
+                for(const job of rows){
+                    try{
+                        await ichefQrSubmitJob(job,{queueOnNetwork:false});
+                    }catch(e){
+                        remaining.push(job);
+                        if(ichefQrNetworkLike(e)) break;
+                    }
+                }
+                // If network failed mid-loop, retain all unprocessed tail too.
+                if(remaining.length){
+                    const firstFailed=rows.findIndex(r=>r.id===remaining[0].id);
+                    const kept=firstFailed>=0?rows.slice(firstFailed):remaining;
+                    ichefQrWriteQueue(kept);
+                    ichefQrSetNetwork('offline',`● SYNCHRONISATION EN ATTENTE · ${kept.length}`);
+                }else{
+                    ichefQrWriteQueue([]);
+                    ichefQrSetNetwork('ok','✓ COMMANDES SYNCHRONISÉES');
+                    fetchMenu().catch(()=>{});
+                }
+            }finally{
+                ichefQrFlushing=false;
+            }
+        }
+        function ichefQrShowQueued(job){
+            const title=document.getElementById('order-success-title');
+            const msg=document.getElementById('order-success-msg');
+            const num=document.getElementById('success-order-num');
+            if(title) title.textContent='Commande enregistrée';
+            if(num) num.innerText=displayOrderNum;
+            if(msg) msg.innerHTML="Connexion Internet interrompue. Votre commande est <b>conservée sur cet appareil</b> et sera transmise automatiquement dès le retour du réseau.";
+            const modal=document.getElementById('order-success-modal');
+            if(modal){modal.style.display='flex';setTimeout(()=>modal.classList.add('show'),10);}
+        }
+        async function ichefQrFinalizeStripeReturn(){
+            if(paiementStatus!=='ok' || !tenantID || !tableNum) return;
+            const payload={id:ichefQrId('STRIPERET'),tableId:tableNum,savedAt:Date.now()};
+            try{
+                const stateData=await ichefQrFetchJson(`${SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(tenantID)}`,{cache:'no-store'});
+                const existing=ichefQrUnwrapOrder(stateData?.activeOrders?.[tableNum]);
+                if(!existing?.items) return;
+                if(existing.paid===true || existing.paymentStatus==='PAID'){
+                    localStorage.removeItem(ICHEF_QR_POSTPAY_KEY);
+                    return;
+                }
+                const order={...existing,status:"NOUVELLE COMMANDE",paid:true,alerteRouge:"📱 PAIEMENT REÇU EN LIGNE"};
+                await ichefQrFetchJson(`${SERVER_URL}/update-order?tenantID=${encodeURIComponent(tenantID)}`,{
+                    method:'POST',headers:{'Content-Type':'application/json'},
+                    body:JSON.stringify({tableId:tableNum,order})
+                });
+                localStorage.removeItem(ICHEF_QR_POSTPAY_KEY);
+            }catch(e){
+                if(ichefQrNetworkLike(e)){
+                    try{localStorage.setItem(ICHEF_QR_POSTPAY_KEY,JSON.stringify(payload));}catch(_){}
+                    ichefQrSetNetwork('offline','● PAIEMENT REÇU · CONFIRMATION SERVEUR EN ATTENTE');
+                }
+            }
+        }
+        async function ichefQrRetryStripeReturn(){
+            let row=null;
+            try{row=JSON.parse(localStorage.getItem(ICHEF_QR_POSTPAY_KEY)||'null')}catch(_){}
+            if(row && navigator.onLine) await ichefQrFinalizeStripeReturn();
+        }
+
 
         function isTimeInSlot(current, start, end) {
             if (!start || !end) return false;
@@ -455,8 +740,18 @@
             if(!tenantID) return;
 
             try {
-                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}&_t=${Date.now()}`, { cache: 'no-store' });
-                let state = await r.json();
+                let state = null;
+                try {
+                    let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}&_t=${Date.now()}`, { cache: 'no-store' });
+                    if(!r.ok) throw Object.assign(new Error(`HTTP ${r.status}`),{status:r.status});
+                    state = await r.json();
+                    ichefQrCacheState(state);
+                    if(navigator.onLine) ichefQrSetNetwork('ok','✓ CARTE À JOUR');
+                } catch(networkError) {
+                    state = ichefQrReadCachedState();
+                    if(!state) throw networkError;
+                    ichefQrSetNetwork('offline','● HORS CONNEXION · CARTE EN MODE SECOURS');
+                }
                 let activeOrders = state.activeOrders || {};
                 
                 // 6.1 GESTION DES SETTINGS (Design, Anti-Rush, Fermeture)
@@ -683,6 +978,7 @@
             let name = decodeURIComponent(encodedName); let price = parseFloat(safePrice) || 0;
             let existing = cart.find(i => i.name === name);
             if (existing) existing.qty++; else cart.push({ name: name, price: price, qty: 1, destination: dest });
+            ichefQrSaveCart();
             updateCartUI();
             
             let fab = document.getElementById('cart-fab');
@@ -694,11 +990,13 @@
         window.changeQty = function(index, delta) {
             cart[index].qty += delta;
             if (cart[index].qty <= 0) cart.splice(index, 1);
+            ichefQrSaveCart();
             updateCartUI();
             if (cart.length === 0) toggleCart();
         };
 
         function updateCartUI() {
+            ichefQrSaveCart();
             let isManualClosed = (systemSettings.qrActive === false);
             let isAutoOpen = true;
             if (systemSettings.schedule && systemSettings.schedule.auto) {
@@ -782,78 +1080,85 @@
         async function proceedCheckout(mode, isTimeShifted, discountMultiplier) {
             document.querySelectorAll('.btn-checkout').forEach(btn => { btn.innerText = "Transmission..."; btn.disabled = true; });
 
-            let rawTotal = cart.reduce((sum, i) => sum + (i.price * i.qty), 0);
-            let finalTotal = rawTotal * discountMultiplier; 
-            
-            let isOnlineChoice = (mode === 'online');
+            const isOnlineChoice = (mode === 'online');
+            const job = ichefQrBuildJob(mode,isTimeShifted,discountMultiplier);
 
             try {
-                let r = await fetch(`${SERVER_URL}/get-current-state?tenantID=${tenantID}`);
-                let stateData = await r.json();
-                let existingOrder = (stateData.activeOrders && stateData.activeOrders[tableNum]) ? stateData.activeOrders[tableNum] : { items: [], total: 0 };
-                
-                let newItems = cart.map(item => ({ 
-                    name: item.name, n: item.name, price: item.price * discountMultiplier, p: item.price * discountMultiplier,
-                    qty: item.qty, category: item.destination, dest: item.destination, isSent: true
-                }));
-                
-                let orderData = { 
-                    items: [...(existingOrder.items || []), ...newItems], 
-                    total: (existingOrder.total || 0) + finalTotal, 
-                    time: Date.now(), table: tableNum, 
-                    status: isOnlineChoice ? "EN ATTENTE PAIEMENT" : (isTimeShifted ? "EN ATTENTE (TIME-SHIFT)" : "À VALIDER PAR LA CAISSE"), 
-                    typePaiement: isOnlineChoice ? "En Ligne" : "À table", 
-                    source: "QR Code", isWeb: true,
-                    timeShifted: isTimeShifted,
-                    releaseTime: isTimeShifted ? Date.now() + (rushV3Settings.timeShift.delay * 60000) : Date.now(),
-                    alerteRouge: isOnlineChoice ? null : "📱 COMMANDE WEB A VALIDER" 
-                };
-                
-                await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
-                    method: 'POST', headers: {'Content-Type': 'application/json'}, 
-                    body: JSON.stringify({ tableId: tableNum, order: orderData }) 
-                });
-                
-                if (isOnlineChoice) { 
-                    let stripeRes = await fetch(`${SERVER_URL}/api/create-checkout`, {
-                        method: 'POST', headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ total: finalTotal, table: tableNum, tenantID: tenantID })
-                    });
-                    let stripeData = await stripeRes.json();
-                    if(stripeData.url) window.location.href = stripeData.url;
-                    else alert("Erreur de connexion bancaire : " + stripeData.error);
-                } else { 
-                    try {
-                        await fetch(`${SERVER_URL}/update-order?tenantID=${tenantID}`, { 
-                            method: 'POST', headers: {'Content-Type': 'application/json'}, 
-                            body: JSON.stringify({ tableId: 'ALERTS_MASTER', order: { data: { type: 'RING', message: `📱 NOUVELLE COMMANDE WEB (Table ${tableNum.replace('WEB_','')})`, timestamp: Date.now() } } }) 
-                        });
-                    } catch(e) {}
-                    
-                    let isServiceAuBar = document.getElementById('service-bar-banner').style.display === 'block';
-
-                    document.getElementById('success-order-num').innerText = displayOrderNum;
-                    let msgBox = document.getElementById('order-success-msg');
-
-                    if (isServiceAuBar) {
-                        msgBox.innerHTML = "Préparez-vous, nous vous appellerons au comptoir avec votre numéro dès que c'est prêt ! 🍹";
-                    } else if (isTimeShifted) {
-                        msgBox.innerHTML = `Merci d'avoir décalé votre commande ! Votre réduction de ${rushV3Settings.timeShift.discount}% a bien été appliquée. 🍷`;
-                    } else {
-                        msgBox.innerHTML = "Détendez-vous, un serveur va vous apporter votre commande à table. 🍽️";
-                    }
-                    
-                    let successModal = document.getElementById('order-success-modal');
-                    successModal.style.display = 'flex';
-                    setTimeout(() => successModal.classList.add('show'), 10);
-
-                    window.hasBeenNotifiedReady = false; 
-                    cart = []; updateCartUI(); toggleCart(); 
+                if(isOnlineChoice && !navigator.onLine){
+                    ichefQrSetNetwork('offline','● PAIEMENT EN LIGNE INDISPONIBLE HORS CONNEXION');
+                    alert("Le paiement en ligne nécessite une connexion Internet. Votre panier est conservé.");
+                    return;
                 }
-            } catch(e) { 
-                alert("❌ Erreur réseau. Veuillez prévenir l'équipe en salle."); 
-            } finally { 
-                updateCartUI(); document.querySelectorAll('.btn-checkout').forEach(btn => btn.disabled = false); 
+
+                const result = await ichefQrSubmitJob(job,{queueOnNetwork:!isOnlineChoice});
+
+                if(result?.queuedOffline){
+                    ichefQrShowQueued(job);
+                    window.hasBeenNotifiedReady=false;
+                    cart=[]; ichefQrSaveCart(); updateCartUI();
+                    const cartModal=document.getElementById('cart-modal');
+                    if(cartModal) cartModal.style.display='none';
+                    return;
+                }
+
+                if(isOnlineChoice){
+                    let stripeRes;
+                    try{
+                        stripeRes = await ichefQrFetchJson(`${SERVER_URL}/api/create-checkout`,{
+                            method:'POST',headers:{'Content-Type':'application/json'},
+                            body:JSON.stringify({total:job.finalTotal,table:tableNum,tenantID:tenantID,webMutationId:job.id})
+                        });
+                    }catch(e){
+                        if(ichefQrNetworkLike(e)){
+                            ichefQrSetNetwork('offline','● COMMANDE ENREGISTRÉE · PAIEMENT EN LIGNE À REPRENDRE');
+                            alert("La commande a été enregistrée, mais la connexion a été coupée avant l'ouverture du paiement. Réessayez le paiement quand Internet revient.");
+                        }else{
+                            alert("Erreur de connexion bancaire : "+(e?.message||"inconnue"));
+                        }
+                        return;
+                    }
+                    if(stripeRes.url){
+                        try{localStorage.setItem(`ichef_qr_pending_stripe:${tenantID}:${tableNum}`,JSON.stringify({jobId:job.id,total:job.finalTotal,savedAt:Date.now()}))}catch(_){}
+                        window.location.href=stripeRes.url;
+                    }else{
+                        alert("Erreur de connexion bancaire : "+(stripeRes.error||"URL de paiement absente"));
+                    }
+                    return;
+                }
+
+                const title=document.getElementById('order-success-title');
+                if(title) title.textContent='Commande Envoyée';
+                document.getElementById('success-order-num').innerText=displayOrderNum;
+                let msgBox=document.getElementById('order-success-msg');
+                let isServiceAuBar=document.getElementById('service-bar-banner').style.display==='block';
+
+                if(isServiceAuBar){
+                    msgBox.innerHTML="Préparez-vous, nous vous appellerons au comptoir avec votre numéro dès que c'est prêt ! 🍹";
+                }else if(isTimeShifted){
+                    msgBox.innerHTML=`Merci d'avoir décalé votre commande ! Votre réduction de ${rushV3Settings.timeShift.discount}% a bien été appliquée. 🍷`;
+                }else{
+                    msgBox.innerHTML="Détendez-vous, un serveur va vous apporter votre commande à table. 🍽️";
+                }
+
+                let successModal=document.getElementById('order-success-modal');
+                successModal.style.display='flex';
+                setTimeout(()=>successModal.classList.add('show'),10);
+
+                window.hasBeenNotifiedReady=false;
+                cart=[]; ichefQrSaveCart(); updateCartUI();
+                const cartModal=document.getElementById('cart-modal');
+                if(cartModal) cartModal.style.display='none';
+
+            } catch(e) {
+                if(isOnlineChoice && ichefQrNetworkLike(e)){
+                    alert("Connexion Internet interrompue. Votre panier est conservé et aucun paiement n'a été déclaré.");
+                    ichefQrSetNetwork('offline','● PAIEMENT EN LIGNE INTERROMPU');
+                }else{
+                    alert("❌ Erreur réseau. Veuillez prévenir l'équipe en salle.");
+                }
+            } finally {
+                updateCartUI();
+                document.querySelectorAll('.btn-checkout').forEach(btn => btn.disabled=false);
             }
         };
 
@@ -1025,16 +1330,53 @@
         }
 
         // --- 9. WEBSOCKET PASSIF (Écoute les mises à jour sans bloquer l'UX) ---
-        const socket = io(SERVER_URL);
-        socket.emit('joinTenant', tenantID);
-        socket.on('updateState', (state) => {
-            if(!state) return;
+        const socket = io(SERVER_URL,{
+            transports:['websocket','polling'],
+            reconnection:true,reconnectionAttempts:Infinity,
+            query:{tenantID:tenantID||'',page:'QR_MENU',terminal:'QR_MENU',deviceId:tableNum||'WEB'}
+        });
+        socket.on('connect',()=>{
+            socket.emit('joinTenant',tenantID);
+            ichefQrSetNetwork('sync','● CONNECTÉ · SYNCHRONISATION');
+            ichefQrFlushQueue();
+            ichefQrRetryStripeReturn();
             fetchMenu();
         });
+        socket.on('disconnect',()=>ichefQrSetNetwork('offline','● CONNEXION PERDUE · MODE SECOURS'));
+        socket.on('connect_error',()=>ichefQrSetNetwork('offline','● SERVEUR INACCESSIBLE · MODE SECOURS'));
+        socket.on('updateState',(state)=>{
+            if(!state)return;
+            fetchMenu();
+        });
+        socket.on('orderUpdated',()=>fetchMenu());
+        socket.on('order-updated',()=>fetchMenu());
+        socket.on('tableUpdated',()=>fetchMenu());
+
+        window.addEventListener('online',()=>{
+            ichefQrSetNetwork('sync','● INTERNET RÉTABLI · SYNCHRONISATION');
+            ichefQrFlushQueue();
+            ichefQrRetryStripeReturn();
+            fetchMenu();
+        },{passive:true});
+        window.addEventListener('offline',()=>{
+            ichefQrSetNetwork('offline','● HORS CONNEXION · MODE SECOURS');
+        },{passive:true});
+
+        setInterval(()=>{
+            if(navigator.onLine){
+                ichefQrFlushQueue();
+                ichefQrRetryStripeReturn();
+            }
+        },5000);
 
         // Premier appel au chargement
+        ichefQrRestoreCart();
+        ichefQrUpdateOfflineCheckoutNote();
         renderDietaryFilters(); // On affiche la barre de filtre au chargement
+        updateCartUI();
         fetchMenu(); 
+
+        window.__ICHEF_QR_ANTI_COUPURE__ = 'V2';
     </script>
 
 <script id="ichef-owner-nav-script">
