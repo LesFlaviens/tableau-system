@@ -10203,6 +10203,11 @@ return res.status(400).json({ success:false, error:error?.message || 'Création 
 }
 });
 app.post('/api/fiscal/cash-in', async (req, res) => {
+const fiscalDiag = (data = {}) => {
+  Promise.resolve()
+    .then(() => ichefFiscalDiagnostic(req, data))
+    .catch(error => console.warn('[iCHEF fiscal diagnostic async]', error?.message || error));
+};
 try {
 const tenantID =
 cleanString(
@@ -10254,9 +10259,10 @@ pin &&
 String(tenant.pin || '').trim() !== pin
 ) {
 const state =
-await AppState.findOne({
-tenantID
-});
+await AppState.findOne(
+{ tenantID },
+{ 'activeOrders.STAFF_ACCESS': 1 }
+).lean();
 const staff =
 Array.isArray(
 state?.activeOrders
@@ -10271,8 +10277,7 @@ String(s?.pin || '').trim() === pin &&
 s?.active !== false
 );
 if (!member) {
-await ichefFiscalDiagnostic(
-req,
+fiscalDiag(
 {
 tenantID,
 type: 'PAYMENT_ERROR',
@@ -10309,8 +10314,7 @@ orderSnapshot.total ??
 ) * 100
 ) / 100;
 if (!(amount > 0)) {
-await ichefFiscalDiagnostic(
-req,
+fiscalDiag(
 {
 tenantID,
 type: 'PAYMENT_ERROR',
@@ -10458,7 +10462,7 @@ return item.served === true || item.isServed === true || Boolean(item.servedAt) 
 ['SERVI','SERVED','POSE_SUR_TABLE','ON_TABLE'].includes(seq);
 };
 if (!liveSaleOrder || !liveSaleItems.some(saleItemServed)) {
-await ichefFiscalDiagnostic(req, {
+fiscalDiag({
 tenantID,
 type: 'PAYMENT_ERROR',
 status: 'REFUSED',
@@ -10703,206 +10707,154 @@ transaction.receipt
 `?tenantID=${encodeURIComponent(tenantID)}` +
 `&token=${encodeURIComponent(receiptToken)}`;
 }
-history.unshift(transaction);
-state.activeOrders
-.FINANCIAL_HISTORY.data =
-history.slice(
-0,
-ICHEF_FINANCIAL_CACHE_LIMIT
-);
-const tableId =
-String(
-orderSnapshot.tableId
-);
+const tableId = String(orderSnapshot.tableId);
 const current =
-state.activeOrders[
-tableId
-] &&
-typeof state.activeOrders[
-tableId
-] === 'object'
-? state.activeOrders[
-tableId
-]
+state.activeOrders?.[tableId] && typeof state.activeOrders[tableId] === 'object'
+? state.activeOrders[tableId]
 : {};
-state.activeOrders[
-tableId
-] = {
+const paidOrder = {
 ...current,
 ...orderSnapshot,
-status:
-'FISCALIZED',
-fiscalStatus:
-'FISCALIZED',
-paymentStatus:
-'PAID',
-isArchived:
-true,
-closedAt:
-now,
-fiscalFinalizedAt:
-now,
-fiscalReceiptReference:
-ticketNumber,
-fiscalHash:
-ticketHash,
+status: 'FISCALIZED',
+fiscalStatus: 'FISCALIZED',
+paymentStatus: 'PAID',
+isArchived: true,
+closedAt: now,
+fiscalFinalizedAt: now,
+fiscalReceiptReference: ticketNumber,
+fiscalHash: ticketHash,
 fiscalTicket: {
-ticketNumber,
-ticketHash,
-date: now,
-controlToken: fiscalControlToken,
-controlPath: transaction.fiscalControlUrl,
-vatSummary
+  ticketNumber,
+  ticketHash,
+  date: now,
+  controlToken: fiscalControlToken,
+  controlPath: transaction.fiscalControlUrl,
+  vatSummary
 },
 paymentDraft: {
-version: 3,
-status:
-'PAYE',
-fiscalStatus:
-'SERVER_FISCALIZED',
-total:
-amount,
-remaining:
-0,
-payments,
-receiptReference:
-ticketNumber,
-fiscalHash:
-ticketHash,
-receiptPreference,
-updatedAt:
-now,
-updatedBy:
-orderSnapshot.waiter ||
-'SERVEUR',
-deviceId,
-fiscalCountry:
-String(
-fiscalContext.country ||
-''
-)
-.toUpperCase()
+  version: 3,
+  status: 'PAYE',
+  fiscalStatus: 'SERVER_FISCALIZED',
+  total: amount,
+  remaining: 0,
+  payments,
+  receiptReference: ticketNumber,
+  fiscalHash: ticketHash,
+  receiptPreference,
+  updatedAt: now,
+  updatedBy: orderSnapshot.waiter || 'SERVEUR',
+  deviceId,
+  fiscalCountry: String(fiscalContext.country || '').toUpperCase()
 }
 };
-state.markModified(
-'activeOrders'
-);
-await state.save();
-await ichefWriteFiscalRecord({
-tenantID,
-recordId:
-paymentRequestId ||
-ticketNumber,
-operationId:
-paymentRequestId,
-type:
-'SALE',
-subtype:
-'PAYMENT',
-tableId,
-ticketNumber,
-status:
-'PAID',
-amount,
-currency:
-transaction.currency,
-operator:
-orderSnapshot.waiter ||
-'SERVEUR',
-terminal:
-req.body?.terminal ||
-'PAD',
-deviceId,
-createdAt:
-now,
-details:
-transaction
+
+// V8 PAIEMENT RAPIDE : écriture atomique ciblée au lieu de state.save() sur tout AppState.
+// Le ticket fiscal et l'état PAYÉ sont persistés AVANT de répondre au PAD.
+const hadFinancialHistory = Array.isArray(state.activeOrders?.FINANCIAL_HISTORY?.data);
+const setOps = { [`activeOrders.${tableId}`]: paidOrder };
+let cashInUpdate;
+if (hadFinancialHistory) {
+  cashInUpdate = {
+    $set: setOps,
+    $push: {
+      'activeOrders.FINANCIAL_HISTORY.data': {
+        $each: [transaction],
+        $position: 0,
+        $slice: ICHEF_FINANCIAL_CACHE_LIMIT
+      }
+    }
+  };
+} else {
+  setOps['activeOrders.FINANCIAL_HISTORY'] = { data: [transaction] };
+  cashInUpdate = { $set: setOps };
+}
+const finalState = await AppState.findOneAndUpdate(
+  { tenantID },
+  cashInUpdate,
+  { new: true, upsert: true, setDefaultsOnInsert: true }
+).lean();
+if (!finalState) throw new Error('Persistance du paiement impossible.');
+
+const responsePayload = {
+  success: true,
+  ticketNumber,
+  fiscalId: ticketNumber,
+  ticketHash,
+  payments,
+  amount,
+  operationId: paymentRequestId,
+  publicReceiptUrl: transaction.receipt?.publicUrl || null,
+  serverTimestamp: now,
+  vatSummary,
+  fiscalControlToken,
+  fiscalControlPath: transaction.fiscalControlUrl,
+  fiscalControlVersion: 1
+};
+
+// Répondre dès que le paiement est durablement enregistré.
+res.status(200).json(responsePayload);
+
+// Les miroirs / audits / gros broadcasts ne doivent JAMAIS bloquer la caisse.
+setImmediate(() => {
+  Promise.resolve(ichefWriteFiscalRecord({
+    tenantID,
+    recordId: paymentRequestId || ticketNumber,
+    operationId: paymentRequestId,
+    type: 'SALE',
+    subtype: 'PAYMENT',
+    tableId,
+    ticketNumber,
+    status: 'PAID',
+    amount,
+    currency: transaction.currency,
+    operator: orderSnapshot.waiter || 'SERVEUR',
+    terminal: req.body?.terminal || 'PAD',
+    deviceId,
+    createdAt: now,
+    details: transaction
+  })).catch(error => console.error('[iCHEF FiscalRecord async]', error));
+
+  Promise.resolve(scellerOperation(
+    tenantID,
+    'CASH_IN',
+    'PAIEMENT',
+    ticketNumber,
+    pin || orderSnapshot.waiter || 'SYSTEM',
+    transaction
+  )).catch(error => console.error('[iCHEF CASH_IN audit async]', error));
+
+  try {
+    io.to(tenantID).emit('transactionSaved', { tenantID, transaction });
+    io.to(tenantID).emit('paymentUpdated', { tenantID, transaction });
+    io.to(tenantID).emit('orderUpdated', {
+      tenantID,
+      tableId,
+      order: paidOrder,
+      source: 'fiscal-cash-in',
+      persisted: true,
+      timestamp: now
+    });
+    io.to(tenantID).emit('server-state-changed', {
+      tenantID,
+      tableId,
+      source: 'fiscal-cash-in',
+      operationId: paymentRequestId,
+      persisted: true,
+      timestamp: now
+    });
+    // Compatibilité écrans anciens : état complet après le signal ciblé, hors chemin critique.
+    io.to(tenantID).emit('updateState', finalState);
+  } catch (emitError) {
+    console.warn('[iCHEF fiscal cash-in emit async]', emitError?.message || emitError);
+  }
 });
-await scellerOperation(
-tenantID,
-'CASH_IN',
-'PAIEMENT',
-ticketNumber,
-pin ||
-orderSnapshot.waiter ||
-'SYSTEM',
-transaction
-);
-const finalState =
-state.toObject();
-io.to(
-tenantID
-).emit(
-'transactionSaved',
-{
-tenantID,
-transaction
-}
-);
-io.to(
-tenantID
-).emit(
-'paymentUpdated',
-{
-tenantID,
-transaction
-}
-);
-io.to(
-tenantID
-).emit(
-'updateState',
-finalState
-);
-io.to(
-tenantID
-).emit(
-'server-state-changed',
-{
-tenantID,
-tableId,
-source:
-'fiscal-cash-in',
-operationId:
-paymentRequestId,
-persisted:
-true,
-timestamp:
-now
-}
-);
-return res.json({
-success:
-true,
-ticketNumber,
-fiscalId:
-ticketNumber,
-ticketHash,
-payments,
-amount,
-operationId:
-paymentRequestId,
-publicReceiptUrl:
-transaction.receipt
-?.publicUrl ||
-null,
-serverTimestamp:
-now,
-vatSummary,
-fiscalControlToken,
-fiscalControlPath:
-transaction.fiscalControlUrl,
-fiscalControlVersion:
-1
-});
+return;
 } catch (error) {
 console.error(
 '[iCHEF fiscal cash-in]',
 error
 );
-await ichefFiscalDiagnostic(
-req,
-{
+fiscalDiag({
 type:
 'PAYMENT_ERROR',
 status:
@@ -10914,8 +10866,7 @@ code:
 message:
 error?.message ||
 'Erreur encaissement.'
-}
-).catch(() => {});
+});
 return res
 .status(500)
 .json({
@@ -16420,17 +16371,10 @@ error:
 'La table n’est pas fiscalisée avec ce ticket.'
 });
 }
-// ICHÉF SWITCH : tentative de traitement avant suppression.
-// Une table déjà totalement payée doit être libérée même si SWITCH doit être repris ensuite.
-let closePaidSwitchDeferred = false;
-let closePaidSwitchWarning = '';
-try {
-  await ichefSwitchProcessFinalizedOrder(tenantID, tableId, order, {source:'close-paid'});
-} catch (switchError) {
-  closePaidSwitchDeferred = true;
-  closePaidSwitchWarning = String(switchError?.message || 'Synchronisation Stock/Food Cost à reprendre').slice(0,300);
-  console.error('[ICHEF SWITCH close-paid] :', switchError);
-}
+// V8 PAIEMENT RAPIDE : la table payée ne doit jamais attendre ICHÉF SWITCH.
+// SWITCH est lancé après libération de table, en tâche de fond.
+let closePaidSwitchDeferred = true;
+let closePaidSwitchWarning = 'Stock / Food Cost en synchronisation arrière-plan';
 const state =
 await AppState
 .findOneAndUpdate(
@@ -16443,40 +16387,39 @@ $unset: {
 { new: true }
 )
 .lean();
-ichefEmitFullState(
-tenantID,
-state,
-{
-tableId,
-source:
-'close-paid',
-extra: {
-ticketNumber
-}
-}
-);
-await scellerOperation(
-tenantID,
-'CLOSE_PAID',
-'TABLE',
-ticketNumber,
-auth.name ||
-auth.role ||
-'STAFF',
-{
-tableId,
-ticketNumber
-}
-);
-return res.json({
+const closePaidPayload = {
 success: true,
 persisted: true,
 tableReleased: true,
 ticketNumber,
 tableId,
 switchDeferred: closePaidSwitchDeferred,
-warning: closePaidSwitchDeferred ? closePaidSwitchWarning : undefined
+warning: closePaidSwitchWarning
+};
+res.status(200).json(closePaidPayload);
+setImmediate(() => {
+  Promise.resolve(ichefSwitchProcessFinalizedOrder(tenantID, tableId, order, {source:'close-paid'}))
+    .catch(switchError => console.error('[ICHEF SWITCH close-paid async] :', switchError));
+  Promise.resolve(scellerOperation(
+    tenantID,
+    'CLOSE_PAID',
+    'TABLE',
+    ticketNumber,
+    auth.name || auth.role || 'STAFF',
+    { tableId, ticketNumber }
+  )).catch(error => console.error('[iCHEF CLOSE_PAID audit async]', error));
+  try {
+    io.to(tenantID).emit('orderUpdated', {
+      tenantID, tableId, order: null, source: 'close-paid', persisted: true, timestamp: new Date().toISOString()
+    });
+    ichefEmitFullState(tenantID, state, {
+      tableId, source: 'close-paid', extra: { ticketNumber }
+    });
+  } catch (emitError) {
+    console.warn('[iCHEF close-paid emit async]', emitError?.message || emitError);
+  }
 });
+return;
 } catch (error) {
 console.error(
 '[iCHEF CLOSE PAID] :',
