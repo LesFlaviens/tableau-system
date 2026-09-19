@@ -21,8 +21,17 @@ html,body{background:#050505!important}
   position:fixed!important;
   inset:0!important;
   z-index:14999999!important;
-  display:block!important;
+  display:block;
   background:#050505!important;
+  pointer-events:none!important;
+}
+
+/* V80 : état authentifié = porte et écran technique réellement retirés. */
+html.ichef-mini-authenticated #ichef-boot-shield,
+html.ichef-mini-authenticated #security-overlay{
+  display:none!important;
+  visibility:hidden!important;
+  opacity:0!important;
   pointer-events:none!important;
 }
 #security-overlay{
@@ -3075,26 +3084,37 @@ async function checkPin(){
         /* 1. Restaure immédiatement l'écran local disponible. */
         try{ miniRestoreCachedState(); }catch(_){}
 
-        /* 2. Ouvre le Mini Pass TOUT DE SUITE. */
+        /* 2. PIN validé par le serveur = ouverture ATOMIQUE immédiate. */
+        document.documentElement.classList.add('ichef-mini-authenticated');
+
         const securityOverlay=document.getElementById('security-overlay');
         const bootShield=document.getElementById('ichef-boot-shield');
 
         if(securityOverlay){
-            securityOverlay.style.pointerEvents='none';
-            securityOverlay.style.display='none';
+            securityOverlay.style.setProperty('display','none','important');
+            securityOverlay.style.setProperty('visibility','hidden','important');
+            securityOverlay.style.setProperty('pointer-events','none','important');
         }
-        if(bootShield) bootShield.style.display='none';
+        if(bootShield){
+            bootShield.style.setProperty('display','none','important');
+            bootShield.style.setProperty('visibility','hidden','important');
+        }
+
+        /* Force un rendu immédiat avant toute synchronisation réseau. */
+        try{ document.body.offsetHeight; }catch(_){}
 
         /* 3. Les contrôles d'affichage locaux peuvent se faire sans attendre. */
         try{ verifyImmersion(); }catch(_){}
 
-        /* 4. Socket + état serveur se synchronisent en arrière-plan.
-              AUCUN await ici : l'entrée utilisateur n'est plus bloquée. */
-        startMiniPassAfterAuth().catch(e=>{
-            console.warn('[iCHEF MINI PASS] synchronisation arrière-plan',e);
-            miniSetConnectionState(false,navigator.onLine?'RECONNEXION':'HORS LIGNE');
+        /* 4. Socket + état serveur en arrière-plan : aucun blocage visuel. */
+        Promise.resolve().then(()=>{
+            startMiniPassAfterAuth().catch(e=>{
+                console.warn('[iCHEF MINI PASS] synchronisation arrière-plan',e);
+                miniSetConnectionState(false,navigator.onLine?'RECONNEXION':'HORS LIGNE');
+            });
         });
     }catch(e){
+        document.documentElement.classList.remove('ichef-mini-authenticated');
         ichefPinFailures+=1;
         if(input) input.value='';
         if(error){ error.style.display='block'; error.style.color='var(--danger)'; }
@@ -4746,6 +4766,11 @@ ichefBindControls();
    13. DÉMARRAGE
    ========================================================= */
 document.addEventListener('DOMContentLoaded',()=>{
+    /* V80 : un vrai reload repart bien sur le PIN. */
+    if(!window.ICHEF_SECURITY?.ready){
+        document.documentElement.classList.remove('ichef-mini-authenticated');
+    }
+
     ichefBindControls();
     localStorage.removeItem('ichef_master_pin');
     localStorage.removeItem('pin');
@@ -4769,13 +4794,29 @@ document.addEventListener('DOMContentLoaded',()=>{
         return;
     }
 
-    /* Ordinateur/tablette : PIN TOUJOURS actif.
-       Le shield noir reste derrière la porte PIN, donc aucun flash du Mini Pass. */
+    /* Si le PIN a déjà été validé avant DOMContentLoaded, ne surtout
+       pas réouvrir la porte de connexion. */
+    if(window.ICHEF_SECURITY?.ready || document.documentElement.classList.contains('ichef-mini-authenticated')){
+        document.documentElement.classList.add('ichef-mini-authenticated');
+        if(security){
+            security.style.setProperty('display','none','important');
+            security.style.setProperty('visibility','hidden','important');
+            security.style.setProperty('pointer-events','none','important');
+        }
+        if(shield){
+            shield.style.setProperty('display','none','important');
+            shield.style.setProperty('visibility','hidden','important');
+        }
+        if(pwa) pwa.style.display='none';
+        return;
+    }
+
+    /* Sinon : PIN obligatoire et actif. */
     if(security){
-        security.style.display='flex';
-        security.style.visibility='visible';
-        security.style.opacity='1';
-        security.style.pointerEvents='auto';
+        security.style.setProperty('display','flex','important');
+        security.style.setProperty('visibility','visible','important');
+        security.style.setProperty('opacity','1','important');
+        security.style.setProperty('pointer-events','auto','important');
     }
     if(pwa) pwa.style.display='none';
 
@@ -8103,6 +8144,12 @@ console.info("[iCHEF MINI PASS V78] bouton planning · secteur attribué uniquem
 <script id="ichef-mini-v79-marker">
 window.__ICHEF_MINI_PASS_VERSION__="V79-PIN-ENTREE-INSTANTANEE";
 console.info("[iCHEF MINI PASS V79] PIN valide = ouverture immédiate · sync arrière-plan");
+</script>
+
+
+<script id="ichef-mini-v80-marker">
+window.__ICHEF_MINI_PASS_VERSION__="V80-PIN-INSTANTANE-FIXE";
+console.info("[iCHEF MINI PASS V80] PIN valide = affichage immédiat réellement débloqué");
 </script>
 
 </body>
