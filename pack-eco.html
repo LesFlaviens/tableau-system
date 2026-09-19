@@ -464,6 +464,46 @@ const ICHEF_TABLE_WRITE_QUEUES = new Map();
 const ICHEF_TABLE_WRITE_TIMERS = new Map();
 const ICHEF_LOCAL_PENDING = new Map();
 const ICHEF_FAILED_WRITES = new Map();
+
+/* V85 ANTI-COUPURE — persistance locale des écritures de commande.
+   Protection uniquement : aucune modification de la logique métier existante. */
+const ICHEF_OFFLINE_WRITE_TTL = 12 * 60 * 60 * 1000;
+function ichefOfflineWriteStorageKey(){
+return "ichef_pad_offline_writes_v85:"+
+String(STATE.tenantID||"").trim()+":"+
+String(STATE.deviceId||"").trim();
+}
+function ichefReadOfflineWrites(){
+try{
+const rows=JSON.parse(localStorage.getItem(ichefOfflineWriteStorageKey())||"[]");
+const cutoff=Date.now()-ICHEF_OFFLINE_WRITE_TTL;
+return (Array.isArray(rows)?rows:[])
+.filter(row=>row&&row.key&&row.pending&&Number(row.savedAt||0)>=cutoff)
+.slice(-60);
+}catch(_){return []}
+}
+function ichefWriteOfflineWrites(rows){
+try{
+const safe=(Array.isArray(rows)?rows:[]).slice(-60);
+if(safe.length)localStorage.setItem(ichefOfflineWriteStorageKey(),JSON.stringify(safe));
+else localStorage.removeItem(ichefOfflineWriteStorageKey());
+}catch(_){}
+}
+function ichefPersistFailedWrite(key,pending){
+const rows=ichefReadOfflineWrites().filter(row=>row.key!==key);
+rows.push({key,pending:clone(pending),savedAt:Date.now()});
+ichefWriteOfflineWrites(rows);
+}
+function ichefForgetFailedWrite(key){
+ichefWriteOfflineWrites(ichefReadOfflineWrites().filter(row=>row.key!==key));
+}
+function ichefRestoreFailedWrites(){
+for(const row of ichefReadOfflineWrites()){
+if(!ICHEF_FAILED_WRITES.has(row.key))ICHEF_FAILED_WRITES.set(row.key,clone(row.pending));
+if(!ICHEF_LOCAL_PENDING.has(row.key))ICHEF_LOCAL_PENDING.set(row.key,clone(row.pending));
+}
+}
+
 let ICHEF_WRITE_VERSION = 0;
 
 const ACTIVE_SEAT_BY_TABLE = new Map();
@@ -831,6 +871,7 @@ const latest=ICHEF_LOCAL_PENDING.get(key);
 if(latest && latest.version===pending.version){
 ICHEF_LOCAL_PENDING.delete(key);
 ICHEF_FAILED_WRITES.delete(key);
+ichefForgetFailedWrite(key);
 
 if(result?.state && typeof result.state==="object" && result.state.activeOrders){
 STATE.lastServerAt=now();
@@ -857,6 +898,7 @@ if(attempt<2)await new Promise(r=>setTimeout(r,220*(attempt+1)));
 const latest=ICHEF_LOCAL_PENDING.get(key);
 if(latest && latest.version===pending.version){
 ICHEF_FAILED_WRITES.set(key,clone(latest));
+ichefPersistFailedWrite(key,latest);
 }
 
 setOrderSyncState(" À SYNCHRONISER","bad");
@@ -911,6 +953,7 @@ return enqueueVersionedWrite(key,clone(latest));
 }
 
 async function retryFailedWrites(){
+ichefRestoreFailedWrites();
 const entries=[...ICHEF_FAILED_WRITES.entries()];
 for(const [key,pending] of entries){
 const latest=ICHEF_LOCAL_PENDING.get(key)||pending;
@@ -1097,6 +1140,18 @@ function showPadNetworkOverlay(message=""){
 const overlay=$("padNetworkOverlay");
 const txt=$("padNetworkOverlayText");
 if(txt && message)txt.textContent=message;
+
+/* Une coupure pendant un service ne doit pas bloquer tout l'écran.
+   L'overlay reste obligatoire avant authentification, mais une session déjà
+   ouverte continue en mode local et sera resynchronisée au retour du réseau. */
+if(STATE.authenticated && $("login")?.classList.contains("hidden")){
+overlay?.classList.remove("open");
+setConnection("HORS LIGNE","bad");
+setOrderSyncState(" HORS LIGNE · SAUVEGARDE LOCALE","bad");
+if(message)toast(message,true);
+return;
+}
+
 overlay?.classList.add("open");
 }
 
@@ -1582,6 +1637,7 @@ terminal:"PAD"
 }catch(_){}
 
 retryFailedWrites();
+ichefFlushOfflinePayments();
 
 if((!STATE.__fastLayoutPreview) && (!ICHEF_PAD_INITIAL_BOOT_PROMISE) && (!previousServerAt || now()-previousServerAt>5000)){
 syncFull("socket-connect");
@@ -1825,6 +1881,7 @@ ichefConfirmOfflineLater("RECONNEXION");
 if(STATE.authenticated){
 connectSocket();
 retryFailedWrites();
+ichefFlushOfflinePayments();
 syncFull("online");
 }
 
@@ -4739,6 +4796,92 @@ const ICHEF_PAYMENT_SERVER_VERSION="FRCH-MULTI-TPE-V55-TPE-LIVE-2026.09.11";
 let ICHEF_STRIPE_WATCH=null;
 let ICHEF_TPE_WATCH=null;
 
+/* V85 ANTI-COUPURE — paiement manuel confirmé mais réponse réseau perdue.
+   Le même paymentRequestId est rejoué : le serveur garde l'idempotence.
+   STRIPE / TPE automatique ne sont jamais validés hors ligne. */
+const ICHEF_OFFLINE_PAYMENT_TTL = 12 * 60 * 60 * 1000;
+let ICHEF_OFFLINE_PAYMENT_FLUSHING=false;
+
+function ichefOfflinePaymentStorageKey(){
+return "ichef_pad_offline_payments_v85:"+
+String(STATE.tenantID||"").trim()+":"+
+String(STATE.deviceId||"").trim();
+}
+function ichefReadOfflinePayments(){
+try{
+const rows=JSON.parse(localStorage.getItem(ichefOfflinePaymentStorageKey())||"[]");
+const cutoff=Date.now()-ICHEF_OFFLINE_PAYMENT_TTL;
+return (Array.isArray(rows)?rows:[])
+.filter(row=>row&&row.id&&row.payload&&Number(row.savedAt||0)>=cutoff)
+.slice(-20);
+}catch(_){return []}
+}
+function ichefWriteOfflinePayments(rows){
+try{
+const safe=(Array.isArray(rows)?rows:[]).slice(-20);
+if(safe.length)localStorage.setItem(ichefOfflinePaymentStorageKey(),JSON.stringify(safe));
+else localStorage.removeItem(ichefOfflinePaymentStorageKey());
+}catch(_){}
+}
+function ichefQueueOfflinePayment(job){
+const rows=ichefReadOfflinePayments().filter(row=>row.id!==job.id);
+rows.push({...job,savedAt:Date.now()});
+ichefWriteOfflinePayments(rows);
+}
+function ichefPaymentNetworkError(error){
+const msg=String(error?.message||error||"").toLowerCase();
+return !navigator.onLine ||
+/hors ligne|sans réponse|network|failed to fetch|fetch failed|timeout|aborted|econn|socket hang up/.test(msg);
+}
+async function ichefFlushOfflinePayments(){
+if(ICHEF_OFFLINE_PAYMENT_FLUSHING||!STATE.authenticated||!navigator.onLine)return;
+
+const rows=ichefReadOfflinePayments();
+if(!rows.length)return;
+
+ICHEF_OFFLINE_PAYMENT_FLUSHING=true;
+const remaining=[];
+
+try{
+for(const job of rows){
+try{
+const result=await paymentServerRequest("/api/fiscal/cash-in",{
+method:"POST",
+body:job.payload,
+idempotencyKey:job.id
+});
+const ticketNumber=text(result?.ticketNumber||result?.fiscalId);
+if(!ticketNumber)throw new Error("Numéro de ticket fiscal serveur absent");
+
+await paymentServerRequest("/api/orders/close-paid",{
+method:"POST",
+body:{tableId:job.tableId,ticketNumber},
+idempotencyKey:job.id+":CLOSE"
+}).catch(err=>console.warn("[iCHEF] close-paid différé",err));
+}catch(err){
+remaining.push(job);
+if(!ichefPaymentNetworkError(err)){
+console.warn("[iCHEF paiement différé]",err);
+}
+if(!navigator.onLine)break;
+}
+}
+
+ichefWriteOfflinePayments(remaining);
+
+if(rows.length!==remaining.length){
+await syncFull("payment-offline-flush").catch(()=>{});
+toast(
+remaining.length
+?"Paiement synchronisé · autre paiement encore en attente"
+:"Paiement différé synchronisé"
+);
+}
+}finally{
+ICHEF_OFFLINE_PAYMENT_FLUSHING=false;
+}
+}
+
 function paymentServerHeaders(idempotencyKey=""){
 const h={
 "Accept":"application/json",
@@ -5171,10 +5314,35 @@ fiscalContext:{country:fiscalProfile().country,currency:paymentCurrency(),source
 payment:{method,amount:snap.total,currency:paymentCurrency(),details},
 orderSnapshot:snap
 };
-const result=await paymentServerRequest('/api/fiscal/cash-in',{method:'POST',body:payload,idempotencyKey:id});
+let result;
+try{
+result=await paymentServerRequest('/api/fiscal/cash-in',{method:'POST',body:payload,idempotencyKey:id});
+}catch(err){
+/* Après confirmation d'un règlement manuel, une coupure ne doit ni perdre
+   l'encaissement ni créer un doublon. On garde l'intention locale avec son ID. */
+if(method!=="STRIPE" && ichefPaymentNetworkError(err)){
+ichefQueueOfflinePayment({
+id,
+tableId:STATE.currentTable,
+method,
+payload
+});
+return {
+success:true,
+pendingOffline:true,
+paymentRequestId:id
+};
+}
+throw err;
+}
+
 const ticketNumber=text(result.ticketNumber||result.fiscalId);
 if(!ticketNumber)throw new Error("Numéro de ticket fiscal serveur absent");
-await paymentServerRequest('/api/orders/close-paid',{method:'POST',body:{tableId:STATE.currentTable,ticketNumber}}).catch(err=>console.warn('[iCHEF] close-paid',err));
+await paymentServerRequest('/api/orders/close-paid',{
+method:'POST',
+body:{tableId:STATE.currentTable,ticketNumber},
+idempotencyKey:id+":CLOSE"
+}).catch(err=>console.warn('[iCHEF] close-paid',err));
 return {...result,ticketNumber};
 }
 
@@ -6497,6 +6665,34 @@ confirmedAt:new Date().toISOString(),
 source:terminal?"PAYMENT_CONFIG":"PAD_MANUAL"
 }];
 const result=await fiscalizeWithServer(o,paymentMethod,details,serverPaymentId("FISCAL"));
+
+if(result?.pendingOffline){
+o.paymentStatus="PENDING_SYNC";
+o.paymentDraft={
+version:4,
+status:"PAIEMENT_EN_ATTENTE_SYNC",
+fiscalStatus:"NOT_FISCALIZED",
+total:orderTotal(o),
+remaining:0,
+payments:[{
+method:paymentMethod,
+amount:orderTotal(o),
+createdAt:new Date().toISOString(),
+source:"PAD_OFFLINE_PENDING"
+}],
+paymentRequestId:result.paymentRequestId,
+updatedAt:new Date().toISOString(),
+updatedBy:STATE.role||"SERVEUR",
+deviceId:STATE.deviceId,
+fiscalCountry:fiscalProfile().country
+};
+STATE.currentOrder=clone(o);
+if(STATE.currentTable)STATE.activeOrders[STATE.currentTable]=clone(o);
+scheduleRender();
+toast("Règlement confirmé · FISCALISATION EN ATTENTE DU RÉSEAU",true);
+return true;
+}
+
 applyServerFiscalResult(o,result,paymentMethod);
 await syncFull("payment-fiscalized").catch(()=>{});
 toast(` ${paymentMethod} fiscalisé · ${result.ticketNumber}`);
