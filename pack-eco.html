@@ -14213,12 +14213,10 @@ window.ticketCourseColumn = function(item) {
     return 3;
 };
 
-// 2. Nettoyage du nom du plat : Coupe la description et limite à 4 mots
+// 2. Nettoyage du nom du plat (4 mots max, pas de description)
 window.shortDishTitle = function(fullName) {
     if (!fullName) return "Article";
-    // Étape 1 : on coupe la description (tout ce qui suit une virgule, un tiret ou un retour à la ligne)
     let title = String(fullName).split(/[-–—\n,]/)[0].trim();
-    // Étape 2 : on compte les mots
     let words = title.split(/\s+/).filter(Boolean);
     if (words.length > 4) {
         return words.slice(0, 4).join(" ") + "…";
@@ -14226,15 +14224,17 @@ window.shortDishTitle = function(fullName) {
     return title;
 };
 
-// 3. En-tête avec bouton TOUT ENVOYER
+// 3. En-tête dynamique avec le VRAI bouton TOUT ENVOYER (utilise la fonction native iCHEF)
 window.ticketGridHeaderHTML = function() {
     const o = STATE.currentOrder || (typeof getOrder === 'function' ? getOrder(STATE.currentTable) : null);
     let hasUnsent = false;
     if (o && o.items) {
         hasUnsent = o.items.some(i => !i.cancelled && i.isSent !== true);
     }
+    
+    // On appelle sendKitchen() nativement pour garantir l'impression et les statuts
     const actionButton = hasUnsent 
-        ? `<button class="btn-send-all" onclick="sendAllToKitchen()">TOUT ENVOYER</button>`
+        ? `<button class="btn-send-all" onclick="sendKitchen().then(() => { if(window.renderTicket) window.renderTicket(); })">TOUT ENVOYER</button>`
         : `<button class="btn-send-all" disabled>✓ TOUT ENVOYÉ</button>`;
 
     return `<div class="ticket-grid-head" aria-hidden="true">
@@ -14244,7 +14244,7 @@ window.ticketGridHeaderHTML = function() {
     </div>`;
 };
 
-// 4. Moteur de rendu principal (qui applique la limite de 4 mots)
+// 4. Moteur de rendu horizontal
 window.renderTicket = function() {
     const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
     const items = (o.items || []).filter(Boolean);
@@ -14329,59 +14329,65 @@ window.renderTicket = function() {
     try { if (typeof updateUndoButton === 'function') updateUndoButton(); } catch(_) {}
 };
 
-// 5. Envoi partiel par convive
+// 5. Envoi partiel par convive (AVEC synchronisation native pour l'impression)
 window.sendSeatToKitchen = async function(seatNumber) {
     if (!STATE.currentTable) return;
     const table = STATE.currentTable;
-    const o = STATE.currentOrder || ensureOrder(table);
+    const o = ensureOrder(table);
     if (!o || !o.items) return;
     
-    let hasChanges = false;
+    let changed = 0;
     const stamp = Date.now();
-    
-    o.items.forEach(i => {
-        const s = (typeof itemSeat === 'function' ? itemSeat(i) : (i.seat || i.guestSeat || 1)) || 1;
-        if (!i.cancelled && s === seatNumber && i.isSent !== true) {
-            i.isSent = true;
-            i.sentAt = stamp;
-            i.status = 'EN_PREPARATION';
-            hasChanges = true;
-        }
-    });
-    
-    if (hasChanges) {
-        o.status = 'EN PRÉPARATION';
-        await optimisticWrite(table, o, `Envoi cuisine C${seatNumber}`);
-        if (typeof syncFull === 'function') syncFull();
-        if (typeof toast === 'function') toast(`Plats de C${seatNumber} envoyés en cuisine !`);
-        window.renderTicket();
-    }
-};
 
-// 6. Envoi global
-window.sendAllToKitchen = async function() {
-    if (!STATE.currentTable) return;
-    const table = STATE.currentTable;
-    const o = STATE.currentOrder || ensureOrder(table);
-    if (!o || !o.items) return;
-    
-    let hasChanges = false;
-    const stamp = Date.now();
-    
-    o.items.forEach(i => {
-        if (!i.cancelled && i.isSent !== true) {
+    o.items = o.items.map((raw, index) => {
+        const i = typeof normalizeCompatItem === 'function' ? normalizeCompatItem(raw) : raw;
+        i.dest = typeof normalizeDestination === 'function' ? normalizeDestination(i.dest||i.category||"cuisine") : (i.dest||"cuisine");
+        const s = (typeof itemSeat === 'function' ? itemSeat(i) : (i.seat || i.guestSeat || 1)) || 1;
+        
+        if (!i.cancelled && i.isSent !== true && s === seatNumber) {
+            // Mettre à jour tous les paramètres d'envoi natifs pour que la cuisine imprime
             i.isSent = true;
+            i.fired = true;
+            i.sent = true;
             i.sentAt = stamp;
-            i.status = 'EN_PREPARATION';
-            hasChanges = true;
+            i.itemId = stamp + index + Math.floor(Math.random() * 500);
+            i.menuKnownByKitchen = true;
+            i.sequenceStatus = "PRODUCTION";
+            i.requestedAt = stamp;
+            changed++;
         }
+        return i;
     });
     
-    if (hasChanges) {
-        o.status = 'EN PRÉPARATION';
-        await optimisticWrite(table, o, `Envoi global cuisine`);
-        if (typeof syncFull === 'function') syncFull();
-        if (typeof toast === 'function') toast(`Toute la table a été envoyée en cuisine !`);
+    if (!changed) return;
+    
+    o.time = new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"});
+    o.status = "pending";
+    o.productionStatus = "PRODUCTION";
+    o.paymentStatus = o.paymentStatus || "A_PAYER";
+    o.source = "PAD";
+    
+    o.orderMeta = {
+        ...(o.orderMeta || {}),
+        version: 1,
+        origin: "PAD",
+        productionStatus: "PRODUCTION",
+        destinations: [...new Set(o.items.filter(i=>!i.cancelled).map(i=>(typeof normalizeDestination === 'function' ? normalizeDestination(i.dest||i.category) : i.dest||"cuisine").toUpperCase()))],
+        tableId: table,
+        updatedAt: new Date().toISOString(),
+        updatedBy: STATE.role || "SERVEUR",
+        deviceId: STATE.deviceId,
+        terminal: "PAD"
+    };
+    
+    const ok = await optimisticWrite(table, o, `Envoi cuisine C${seatNumber}`);
+    if (ok) {
+        if (typeof clearUndo === 'function') clearUndo();
+        if (typeof toast === 'function') toast(` C${seatNumber} ENVOYÉ EN CUISINE`);
+        if (typeof printNewPrinterJobs === 'function') {
+            // Lance l'impression en cuisine !
+            printNewPrinterJobs(o, stamp).catch(err => console.warn("[iCHEF] Impression C"+seatNumber, err));
+        }
         window.renderTicket();
     }
 };
