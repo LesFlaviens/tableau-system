@@ -3010,7 +3010,11 @@ async function checkPin(){
         submit.disabled=true;
         submit.classList.add('is-checking');
     }
-    if(error){ error.textContent='Vérification auprès du serveur...'; error.style.display='block'; error.style.color='var(--text-muted)'; }
+    if(error){
+        error.textContent='VÉRIFICATION...';
+        error.style.display='block';
+        error.style.color='var(--text-muted)';
+    }
 
     try{
         const res=await fetch(`${SERVER_URL}/api/verify-pin`,{
@@ -3062,15 +3066,34 @@ async function checkPin(){
         if(input) input.value='';
         if(error) error.style.display='none';
 
-        verifyImmersion();
+        /* =========================================================
+           V79 — PIN OK = ENTRÉE IMMÉDIATE
+           Le serveur vient de valider le PIN : on ne bloque plus
+           l'utilisateur pendant la synchronisation de l'état.
+           ========================================================= */
 
-        /* Prépare la connexion et l'état avant de retirer la porte PIN. */
-        await startMiniPassAfterAuth();
+        /* 1. Restaure immédiatement l'écran local disponible. */
+        try{ miniRestoreCachedState(); }catch(_){}
 
+        /* 2. Ouvre le Mini Pass TOUT DE SUITE. */
         const securityOverlay=document.getElementById('security-overlay');
         const bootShield=document.getElementById('ichef-boot-shield');
-        if(securityOverlay) securityOverlay.style.display='none';
+
+        if(securityOverlay){
+            securityOverlay.style.pointerEvents='none';
+            securityOverlay.style.display='none';
+        }
         if(bootShield) bootShield.style.display='none';
+
+        /* 3. Les contrôles d'affichage locaux peuvent se faire sans attendre. */
+        try{ verifyImmersion(); }catch(_){}
+
+        /* 4. Socket + état serveur se synchronisent en arrière-plan.
+              AUCUN await ici : l'entrée utilisateur n'est plus bloquée. */
+        startMiniPassAfterAuth().catch(e=>{
+            console.warn('[iCHEF MINI PASS] synchronisation arrière-plan',e);
+            miniSetConnectionState(false,navigator.onLine?'RECONNEXION':'HORS LIGNE');
+        });
     }catch(e){
         ichefPinFailures+=1;
         if(input) input.value='';
@@ -3095,11 +3118,8 @@ async function startMiniPassAfterAuth(){
     if(ichefAppStarted || !window.ICHEF_SECURITY?.ready) return;
     ichefAppStarted=true;
 
-    /* Anti-coupure : écran local immédiat. */
-    miniRestoreCachedState();
-
-    /* V71 : Socket d'abord, resynchronisation HTTP en parallèle.
-       Une latence Render ne doit plus bloquer le démarrage du terminal. */
+    /* V79 : l'écran local est déjà visible.
+       On lance uniquement les connexions en arrière-plan. */
     try{ startRealtime(); }catch(e){
         console.warn('[iCHEF MINI PASS] démarrage Socket différé',e);
         miniSetConnectionState(false,'RECONNEXION');
@@ -8077,6 +8097,12 @@ console.info("[iCHEF MINI PASS V77] PIN obligatoire et actif · écran technique
 <script id="ichef-mini-v78-marker">
 window.__ICHEF_MINI_PASS_VERSION__="V78-PLANNING-SECTEUR";
 console.info("[iCHEF MINI PASS V78] bouton planning · secteur attribué uniquement · lecture seule");
+</script>
+
+
+<script id="ichef-mini-v79-marker">
+window.__ICHEF_MINI_PASS_VERSION__="V79-PIN-ENTREE-INSTANTANEE";
+console.info("[iCHEF MINI PASS V79] PIN valide = ouverture immédiate · sync arrière-plan");
 </script>
 
 </body>
