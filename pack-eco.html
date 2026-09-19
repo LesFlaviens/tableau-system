@@ -14068,4 +14068,322 @@ window.sendSeatToKitchen = async function(seatNumber) {
     }
 };
 </script>
+  <!-- ========================================================= -->
+<!-- MODULE DE COMMANDE CONVIVES : 7 COLONNES + 4 MOTS MAX + ENVOI -->
+<!-- ========================================================= -->
+<style id="ichef-grid-7cols-style">
+/* Grille à 7 colonnes */
+body.order-open .ticket-grid-head {
+    display: grid !important;
+    grid-template-columns: 75px 1fr 1fr 1fr 1fr 115px 105px !important;
+    gap: 6px !important;
+    padding: 8px 12px !important;
+    background: #111516 !important;
+    color: #e2b84e !important;
+    font-size: 13px !important;
+    font-weight: 1000 !important;
+    text-align: center !important;
+    align-items: center !important;
+    border-bottom: 3px solid #e2b84e !important;
+}
+
+body.order-open .ticket-row {
+    display: grid !important;
+    grid-template-columns: 75px 1fr 1fr 1fr 1fr 115px 105px !important;
+    align-items: center !important;
+    min-height: 85px !important;
+    padding: 8px 10px !important;
+    gap: 6px !important;
+    background: #ffffff !important;
+    border-bottom: 1px solid #d5d7da !important;
+}
+
+/* Distribution des colonnes */
+body.order-open .ticket-row .ticket-guest-col { grid-column: 1 !important; display: flex; justify-content: center; align-items: center; }
+body.order-open .ticket-row .ticket-col-1     { grid-column: 2 !important; }
+body.order-open .ticket-row .ticket-col-2     { grid-column: 3 !important; }
+body.order-open .ticket-row .ticket-col-3     { grid-column: 4 !important; }
+body.order-open .ticket-row .ticket-col-4     { grid-column: 5 !important; }
+body.order-open .ticket-row .ticket-action-col{ grid-column: 6 !important; display: flex; justify-content: center; align-items: center; }
+body.order-open .ticket-right                 { grid-column: 7 !important; display: flex; flex-direction: column; align-items: flex-end; justify-content: center; gap: 4px; }
+
+/* Cellules produits */
+.ticket-course-cell {
+    padding: 6px 8px !important;
+    background: #f7f8f9 !important;
+    border: 1px solid #e1e3e5 !important;
+    border-radius: 8px !important;
+    min-height: 65px !important;
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: center !important;
+    gap: 3px !important;
+}
+
+/* TITRE DU PLAT : On s'assure qu'il s'affiche proprement et prend max 2 lignes */
+.ticket-course-cell .dish-name {
+    font-size: 13px !important;
+    font-weight: 1000 !important;
+    color: #111 !important;
+    white-space: normal !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    display: -webkit-box !important;
+    -webkit-line-clamp: 2 !important;
+    -webkit-box-orient: vertical !important;
+}
+
+.ticket-course-cell .dish-meta {
+    font-size: 10px !important;
+    color: #666 !important;
+    font-weight: 800 !important;
+}
+body.order-open .ticket-price {
+    font-size: 14px !important;
+    font-weight: 1000 !important;
+    color: #b08d23 !important;
+}
+
+/* Bouton "TOUT ENVOYER" */
+.btn-send-all {
+    background: #059669 !important;
+    color: #ffffff !important;
+    border: none !important;
+    padding: 7px 5px !important;
+    border-radius: 6px !important;
+    font-weight: 1000 !important;
+    font-size: 10px !important;
+    cursor: pointer !important;
+    text-transform: uppercase !important;
+    width: 100% !important;
+    text-align: center !important;
+    box-shadow: 0 2px 6px rgba(5, 150, 105, 0.45) !important;
+    line-height: 1.15 !important;
+}
+.btn-send-all:active { transform: scale(0.95) !important; }
+.btn-send-all:disabled {
+    background: #1e293b !important;
+    color: #64748b !important;
+    box-shadow: none !important;
+    cursor: default !important;
+    border: 1px solid #334155 !important;
+}
+
+/* Bouton "ENVOYER C1" */
+.btn-send-seat {
+    background: #10b981 !important;
+    color: #ffffff !important;
+    border: 2px solid #059669 !important;
+    padding: 10px 6px !important;
+    border-radius: 8px !important;
+    font-weight: 1000 !important;
+    font-size: 11px !important;
+    cursor: pointer !important;
+    text-transform: uppercase !important;
+    width: 100% !important;
+    text-align: center !important;
+    box-shadow: 0 4px 10px rgba(16, 185, 129, 0.25) !important;
+    line-height: 1.2 !important;
+}
+.btn-send-seat:active { transform: scale(0.94) !important; }
+.btn-send-seat.sent {
+    background: #f1f5f9 !important;
+    color: #94a3b8 !important;
+    border-color: #cbd5e1 !important;
+    box-shadow: none !important;
+    cursor: default !important;
+}
+
+@media(max-width:960px) {
+    body.order-open .ticket-grid-head, body.order-open .ticket-row {
+        grid-template-columns: 65px 1fr 1fr 1fr 1fr 95px 95px !important;
+    }
+    .btn-send-seat { font-size: 9px !important; padding: 7px 3px !important; }
+    .btn-send-all  { font-size: 9px !important; }
+}
+</style>
+
+<script id="ichef-grid-7cols-logic-final">
+// 1. Classification (Apéro, Entrée, Plat, Dessert)
+window.ticketCourseColumn = function(item) {
+    const raw = `${text(item?.course||"")} ${text(item?.category||"")}`.normalize("NFD").replace(/[\u0300-\u036f]/g,"").toUpperCase();
+    if(/APERO|PARTAGER|TAPAS|PLANCHA|COCKTAIL|SNACK/.test(raw)) return 1;
+    if(/ENTREE|ENTREES|STARTER|APPETIZER/.test(raw)) return 2;
+    if(/DESSERT|DESSERTS|PATISSERIE|PATISSERIES|SWEET/.test(raw)) return 4;
+    return 3;
+};
+
+// 2. Nettoyage du nom du plat : Coupe la description et limite à 4 mots
+window.shortDishTitle = function(fullName) {
+    if (!fullName) return "Article";
+    // Étape 1 : on coupe la description (tout ce qui suit une virgule, un tiret ou un retour à la ligne)
+    let title = String(fullName).split(/[-–—\n,]/)[0].trim();
+    // Étape 2 : on compte les mots
+    let words = title.split(/\s+/).filter(Boolean);
+    if (words.length > 4) {
+        return words.slice(0, 4).join(" ") + "…";
+    }
+    return title;
+};
+
+// 3. En-tête avec bouton TOUT ENVOYER
+window.ticketGridHeaderHTML = function() {
+    const o = STATE.currentOrder || (typeof getOrder === 'function' ? getOrder(STATE.currentTable) : null);
+    let hasUnsent = false;
+    if (o && o.items) {
+        hasUnsent = o.items.some(i => !i.cancelled && i.isSent !== true);
+    }
+    const actionButton = hasUnsent 
+        ? `<button class="btn-send-all" onclick="sendAllToKitchen()">TOUT ENVOYER</button>`
+        : `<button class="btn-send-all" disabled>✓ TOUT ENVOYÉ</button>`;
+
+    return `<div class="ticket-grid-head" aria-hidden="true">
+      <span>CONVIVE</span><span>APÉRO</span><span>ENTRÉE</span><span>PLAT</span><span>DESSERT</span>
+      <div style="display:flex;align-items:center;justify-content:center;padding:0 2px;">${actionButton}</div>
+      <span>PRIX</span>
+    </div>`;
+};
+
+// 4. Moteur de rendu principal (qui applique la limite de 4 mots)
+window.renderTicket = function() {
+    const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
+    const items = (o.items || []).filter(Boolean);
+
+    const currentTableTotal = orderTotal(o);
+    if (document.getElementById("ticketTotal")) document.getElementById("ticketTotal").textContent = money(currentTableTotal);
+    if (document.getElementById("bottomTableTotal")) document.getElementById("bottomTableTotal").textContent = money(currentTableTotal);
+    if (typeof svcServiceButton === "function") svcServiceButton(o);
+
+    const seatMap = new Map();
+    items.forEach(i => {
+        if (i.cancelled) return;
+        const seat = (typeof itemSeat === 'function' ? itemSeat(i) : (i.seat || i.guestSeat || 1)) || 1;
+        if (!seatMap.has(seat)) seatMap.set(seat, []);
+        seatMap.get(seat).push(i);
+    });
+
+    const seats = [...seatMap.keys()].sort((a, b) => a - b);
+    const headerHTML = window.ticketGridHeaderHTML();
+
+    if (!seats.length) {
+        document.getElementById("ticket").innerHTML = headerHTML + '<div class="empty-state" style="grid-column: 1/-1; padding: 30px;">Choisissez C1…C9 puis touchez les produits.</div>';
+        return;
+    }
+
+    let rowsHTML = headerHTML;
+
+    seats.forEach(seat => {
+        const seatItems = seatMap.get(seat);
+        let col1Items = [], col2Items = [], col3Items = [], col4Items = [];
+        let seatTotal = 0;
+        let hasUnsent = false;
+
+        seatItems.forEach(i => {
+            const q = (typeof itemQty === 'function' ? itemQty(i) : Number(i.qty || 1));
+            seatTotal += (typeof itemPrice === 'function' ? itemPrice(i) : Number(i.price || 0)) * q;
+            const col = window.ticketCourseColumn(i);
+
+            if (col === 1) col1Items.push(i);
+            else if (col === 2) col2Items.push(i);
+            else if (col === 4) col4Items.push(i);
+            else col3Items.push(i);
+
+            if (i.isSent !== true) hasUnsent = true;
+        });
+
+        const renderCellContent = (arr) => {
+            if (!arr.length) return '<div style="color: #ccc; text-align: center; font-size: 11px;">—</div>';
+            return arr.map(i => {
+                const q = (typeof itemQty === 'function' ? itemQty(i) : Number(i.qty || 1));
+                const cooking = text(i.cooking) ? ` · ${i.cooking}` : "";
+                
+                // C'EST ICI QUE LE NOM EST COUPÉ À 4 MOTS
+                const cleanName = window.shortDishTitle(itemName(i));
+                
+                return `<div class="dish-name">${q > 1 ? q + "× " : ""}${esc(cleanName)}</div>
+                        <div class="dish-meta">${esc(i.course || i.category || "")}${cooking}</div>`;
+            }).join("");
+        };
+
+        const seatBadge = typeof seatBadgeHTML === 'function' ? seatBadgeHTML(seat) : `<div class="seat-badge">C${seat}</div>`;
+        const actionBtn = hasUnsent 
+            ? `<button class="btn-send-seat" onclick="sendSeatToKitchen(${seat})">ENVOYER<br>C${seat}</button>`
+            : `<button class="btn-send-seat sent" disabled>✓ ENVOYÉ</button>`;
+
+        rowsHTML += `<div class="ticket-row">
+            <div class="ticket-guest-col">${seatBadge}</div>
+            <div class="ticket-course-cell ticket-col-1">${renderCellContent(col1Items)}</div>
+            <div class="ticket-course-cell ticket-col-2">${renderCellContent(col2Items)}</div>
+            <div class="ticket-course-cell ticket-col-3">${renderCellContent(col3Items)}</div>
+            <div class="ticket-course-cell ticket-col-4">${renderCellContent(col4Items)}</div>
+            <div class="ticket-action-col">${actionBtn}</div>
+            <div class="ticket-right">
+                <div class="ticket-price">${money(seatTotal)}</div>
+                <div style="font-size: 10px; color: #666; font-weight: 900;">C${seat} total</div>
+            </div>
+        </div>`;
+    });
+
+    document.getElementById("ticket").innerHTML = rowsHTML;
+    try { if (typeof renderSendButton === 'function') renderSendButton(o); } catch(_) {}
+    try { if (typeof updateUndoButton === 'function') updateUndoButton(); } catch(_) {}
+};
+
+// 5. Envoi partiel par convive
+window.sendSeatToKitchen = async function(seatNumber) {
+    if (!STATE.currentTable) return;
+    const table = STATE.currentTable;
+    const o = STATE.currentOrder || ensureOrder(table);
+    if (!o || !o.items) return;
+    
+    let hasChanges = false;
+    const stamp = Date.now();
+    
+    o.items.forEach(i => {
+        const s = (typeof itemSeat === 'function' ? itemSeat(i) : (i.seat || i.guestSeat || 1)) || 1;
+        if (!i.cancelled && s === seatNumber && i.isSent !== true) {
+            i.isSent = true;
+            i.sentAt = stamp;
+            i.status = 'EN_PREPARATION';
+            hasChanges = true;
+        }
+    });
+    
+    if (hasChanges) {
+        o.status = 'EN PRÉPARATION';
+        await optimisticWrite(table, o, `Envoi cuisine C${seatNumber}`);
+        if (typeof syncFull === 'function') syncFull();
+        if (typeof toast === 'function') toast(`Plats de C${seatNumber} envoyés en cuisine !`);
+        window.renderTicket();
+    }
+};
+
+// 6. Envoi global
+window.sendAllToKitchen = async function() {
+    if (!STATE.currentTable) return;
+    const table = STATE.currentTable;
+    const o = STATE.currentOrder || ensureOrder(table);
+    if (!o || !o.items) return;
+    
+    let hasChanges = false;
+    const stamp = Date.now();
+    
+    o.items.forEach(i => {
+        if (!i.cancelled && i.isSent !== true) {
+            i.isSent = true;
+            i.sentAt = stamp;
+            i.status = 'EN_PREPARATION';
+            hasChanges = true;
+        }
+    });
+    
+    if (hasChanges) {
+        o.status = 'EN PRÉPARATION';
+        await optimisticWrite(table, o, `Envoi global cuisine`);
+        if (typeof syncFull === 'function') syncFull();
+        if (typeof toast === 'function') toast(`Toute la table a été envoyée en cuisine !`);
+        window.renderTicket();
+    }
+};
+</script>
 </body></html>
