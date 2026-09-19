@@ -13666,4 +13666,210 @@ setInterval(closePaidTableUiIfReleased,750);
 console.info("[iCHEF V31] Vente protégée : 1 article servi minimum · paiement total = table libérée");
 })();
 </script>
+  <style id="grille-tableau-envoi-separe-v20">
+/* On passe la grille sur 7 colonnes pour insérer le bouton d'envoi avant le prix */
+body.order-open .ticket-grid-head {
+    display: grid !important;
+    grid-template-columns: 80px 1fr 1fr 1fr 1fr 110px 110px !important;
+    gap: 6px !important;
+    padding: 10px 12px !important;
+    background: #111516 !important;
+    color: #e2b84e !important;
+    font-size: 13px !important;
+    font-weight: 1000 !important;
+    text-align: center !important;
+    border-bottom: 3px solid #e2b84e !important;
+}
+
+body.order-open .ticket-row {
+    display: grid !important;
+    grid-template-columns: 80px 1fr 1fr 1fr 1fr 110px 110px !important;
+    align-items: center !important;
+    min-height: 85px !important;
+    padding: 8px 10px !important;
+    gap: 6px !important;
+    background: #ffffff !important;
+    border-bottom: 1px solid #d5d7da !important;
+}
+
+/* Nouvel emplacement pour le bouton d'envoi (Colonne 6) */
+body.order-open .ticket-row .ticket-action-col { 
+    grid-column: 6 !important; 
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 0 4px !important;
+}
+
+/* Le prix est décalé dans la dernière colonne (Colonne 7) */
+body.order-open .ticket-right {
+    grid-column: 7 !important;
+}
+
+/* Design du bouton d'envoi partiel (par convive) */
+.btn-send-seat {
+    background: #10b981 !important;
+    color: #ffffff !important;
+    border: 2px solid #059669 !important;
+    padding: 10px 6px !important;
+    border-radius: 8px !important;
+    font-weight: 1000 !important;
+    font-size: 11px !important;
+    cursor: pointer !important;
+    text-transform: uppercase !important;
+    width: 100% !important;
+    text-align: center !important;
+    transition: 0.2s !important;
+    box-shadow: 0 4px 10px rgba(16, 185, 129, 0.2) !important;
+    line-height: 1.2 !important;
+}
+
+.btn-send-seat:active { 
+    transform: scale(0.94) !important; 
+}
+
+/* Style quand le convive a déjà été envoyé */
+.btn-send-seat.sent {
+    background: #f1f5f9 !important;
+    color: #94a3b8 !important;
+    border-color: #cbd5e1 !important;
+    box-shadow: none !important;
+    cursor: default !important;
+}
+
+@media(max-width:900px) {
+    body.order-open .ticket-grid-head, body.order-open .ticket-row {
+        grid-template-columns: 70px 1fr 1fr 1fr 1fr 90px 100px !important;
+    }
+    .btn-send-seat { font-size: 9px !important; padding: 8px 4px !important; }
+}
+</style>
+
+<script id="script-envoi-separe-v20">
+// 1. Mise à jour de l'en-tête (7 colonnes)
+window.ticketGridHeaderHTML = function() {
+    return `<div class="ticket-grid-head" aria-hidden="true">
+      <span>CONVIVE</span><span>APÉRO</span><span>ENTRÉE</span><span>PLAT</span><span>DESSERT</span><span>ACTION</span><span>PRIX</span>
+    </div>`;
+};
+
+// 2. Moteur de rendu : on injecte le bouton ENVOYER au bout de la ligne du convive
+window.renderTicket = function() {
+    const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
+    const items = (o.items || []).filter(Boolean);
+
+    const currentTableTotal = orderTotal(o);
+    if(document.getElementById("ticketTotal")) document.getElementById("ticketTotal").textContent = money(currentTableTotal);
+    if(document.getElementById("bottomTableTotal")) document.getElementById("bottomTableTotal").textContent = money(currentTableTotal);
+
+    if (typeof svcServiceButton === "function") svcServiceButton(o);
+
+    const seatMap = new Map();
+    items.forEach(i => {
+        if (i.cancelled) return;
+        const seat = (typeof itemSeat === 'function' ? itemSeat(i) : (i.seat || i.guestSeat || 1)) || 1;
+        if (!seatMap.has(seat)) seatMap.set(seat, []);
+        seatMap.get(seat).push(i);
+    });
+
+    const seats = [...seatMap.keys()].sort((a, b) => a - b);
+    const headerHTML = window.ticketGridHeaderHTML();
+
+    if (!seats.length) {
+        document.getElementById("ticket").innerHTML = headerHTML + '<div class="empty-state" style="grid-column: 1/-1; padding: 30px;">Choisissez C1…C9 puis touchez les produits.</div>';
+        return;
+    }
+
+    let rowsHTML = headerHTML;
+
+    seats.forEach(seat => {
+        const seatItems = seatMap.get(seat);
+        let col1Items = [], col2Items = [], col3Items = [], col4Items = [];
+        let seatTotal = 0;
+        let hasUnsent = false; // Permet de savoir s'il reste des plats à envoyer pour ce convive
+
+        seatItems.forEach(i => {
+            const q = (typeof itemQty === 'function' ? itemQty(i) : Number(i.qty||1));
+            seatTotal += (typeof itemPrice === 'function' ? itemPrice(i) : Number(i.price||0)) * q;
+            const col = window.ticketCourseColumn(i);
+            
+            if (col === 1) col1Items.push(i);
+            else if (col === 2) col2Items.push(i);
+            else if (col === 4) col4Items.push(i);
+            else col3Items.push(i);
+
+            if (i.isSent !== true) hasUnsent = true;
+        });
+
+        const renderCellContent = (arr) => {
+            if (!arr.length) return '<div style="color: #ccc; text-align: center; font-size: 11px;">—</div>';
+            return arr.map(i => {
+                const q = (typeof itemQty === 'function' ? itemQty(i) : Number(i.qty||1));
+                const cooking = text(i.cooking) ? ` · ${i.cooking}` : "";
+                return `<div class="dish-name">${q > 1 ? q + "× " : ""}${esc(itemName(i))}</div>
+                        <div class="dish-meta">${esc(i.course || i.category || "")}${cooking}</div>`;
+            }).join("");
+        };
+
+        const seatBadge = typeof seatBadgeHTML === 'function' ? seatBadgeHTML(seat) : `<div class="seat-badge">C${seat}</div>`;
+        
+        // Création du bouton dynamique (Vert si à envoyer, Gris si déjà envoyé)
+        const btnHtml = hasUnsent 
+            ? `<button class="btn-send-seat" onclick="sendSeatToKitchen(${seat})">ENVOYER<br>C${seat}</button>`
+            : `<button class="btn-send-seat sent" disabled>✓ ENVOYÉ</button>`;
+
+        rowsHTML += `<div class="ticket-row">
+            <div class="ticket-guest-col">${seatBadge}</div>
+            <div class="ticket-course-cell ticket-col-1">${renderCellContent(col1Items)}</div>
+            <div class="ticket-course-cell ticket-col-2">${renderCellContent(col2Items)}</div>
+            <div class="ticket-course-cell ticket-col-3">${renderCellContent(col3Items)}</div>
+            <div class="ticket-course-cell ticket-col-4">${renderCellContent(col4Items)}</div>
+            
+            <!-- Colonne 6 : Le bouton d'envoi partiel -->
+            <div class="ticket-action-col">${btnHtml}</div>
+            
+            <!-- Colonne 7 : Le prix total du convive -->
+            <div class="ticket-right">
+                <div class="ticket-price">${money(seatTotal)}</div>
+                <div style="font-size: 10px; color: #666; font-weight: 900;">C${seat} total</div>
+            </div>
+        </div>`;
+    });
+
+    document.getElementById("ticket").innerHTML = rowsHTML;
+
+    try { if(typeof renderSendButton === 'function') renderSendButton(o); } catch(_){}
+    try { if(typeof updateUndoButton === 'function') updateUndoButton(); } catch(_){}
+};
+
+// 3. Logique d'envoi en cuisine séparée (ne touche que les articles du Convive ciblé)
+window.sendSeatToKitchen = async function(seatNumber) {
+    if (!STATE.currentTable) return;
+    const table = STATE.currentTable;
+    const o = STATE.currentOrder || ensureOrder(table);
+    if (!o || !o.items) return;
+    
+    let hasChanges = false;
+    const stamp = Date.now();
+    o.items.forEach(i => {
+        const s = (typeof itemSeat === 'function' ? itemSeat(i) : (i.seat || i.guestSeat || 1)) || 1;
+        if (!i.cancelled && s === seatNumber && i.isSent !== true) {
+            i.isSent = true;
+            i.sentAt = stamp;
+            i.status = 'EN_PREPARATION';
+            hasChanges = true;
+        }
+    });
+    
+    if (hasChanges) {
+        o.status = 'EN PRÉPARATION';
+        await optimisticWrite(table, o, `Envoi cuisine C${seatNumber}`);
+        if (typeof syncFull === 'function') syncFull();
+        if (typeof toast === 'function') toast(`Plats de C${seatNumber} envoyés en cuisine !`);
+        
+        // Met à jour l'affichage immédiatement (le bouton passera en gris "✓ ENVOYÉ")
+        window.renderTicket(); 
+    }
+};
+</script>
 </body></html>
