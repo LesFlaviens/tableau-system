@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-<!-- ICHEF ADMIN V30 — DOSSIERS CLIENTS + CONSOMMATIONS + CLASSEMENT -->
+<!-- ICHEF ADMIN V31 — ATTRIBUTION PAD SERVEUR PAR ADMIN + DOSSIERS CLIENTS -->
 <!-- ICHEF ADMIN V19 — SOCKET STABLE POLLING→WEBSOCKET -->
 <!-- ICHEF ADMIN FINAL V18.1 — CARTE & CATEGORIES PRO -->
 <!-- ICHEF ADMIN V18 — CARTE & CATEGORIES PRO -->
@@ -2373,7 +2373,7 @@ input, select, textarea, button {
             <button class="ichef-pro-item ichef-link-item" data-nav-search="caisse centrale hub caisse"
                         onclick="window.location.href='pack-eco.html?tenantID=' + encodeURIComponent(window.tenantID || window.ICHEF_SECURITY?.tenantID || '')"> centre de commande principal <span>↗</span></button>
                  <button class="ichef-pro-item ichef-link-item" data-nav-search="caisse centrale hub caisse"
-                        onclick="window.location.href='telephone.html?tenantID=' + encodeURIComponent(window.tenantID || window.ICHEF_SECURITY?.tenantID || '')"> connexion pour serveur <span>↗</span></button>
+                        onclick="window.location.href='pad-serveur.html?tenantID=' + encodeURIComponent(window.tenantID || window.ICHEF_SECURITY?.tenantID || '')"> connexion PAD serveur <span>↗</span></button>
                 <button class="ichef-pro-item ichef-link-item" data-nav-search="caisse tactile encaissement paiement"
                         onclick="window.location.href='caissetactile.html?tenantID=' + window.tenantID">Caisse principal fiscal <span>↗</span></button>
                 <button class="nav-item ichef-pro-item" data-nav-search="architecture terrain plan zones caisse fiscal" data-title="Plan & caisse"
@@ -3826,6 +3826,39 @@ input, select, textarea, button {
                 <div class="toggle-info"><strong>Accès Activé</strong></div>
                 <label class="switch"><input type="checkbox" id="staff-active" checked><span class="slider"></span></label>
             </div>
+            <div id="staff-pad-assignment-card" class="staff-pad-assignment-card">
+                <div class="staff-pad-assignment-head">
+                    <div>
+                        <div class="staff-pad-assignment-title">PAD SERVEUR · CONNEXION ATTRIBUÉE</div>
+                        <div class="staff-pad-assignment-help">
+                            Le maître d'hôtel, le gérant ou le responsable attribue ici le périmètre du PAD.
+                            Le serveur ne peut pas le modifier depuis son terminal.
+                        </div>
+                    </div>
+                    <span class="staff-pad-admin-lock">ADMIN</span>
+                </div>
+
+                <div class="grid-2">
+                    <div class="input-group">
+                        <label>Périmètre du PAD serveur</label>
+                        <select id="staff-pad-scope" class="input-field" onchange="refreshStaffPadAssignmentValues()">
+                            <option value="none">Aucune connexion</option>
+                            <option value="all">Tout le restaurant</option>
+                            <option value="room">Une salle précise</option>
+                            <option value="zone">Une zone précise</option>
+                        </select>
+                    </div>
+
+                    <div class="input-group">
+                        <label id="staff-pad-value-label">Salle / Zone</label>
+                        <select id="staff-pad-value" class="input-field"></select>
+                    </div>
+                </div>
+
+                <div id="staff-pad-assignment-preview" class="staff-pad-assignment-preview">
+                    Aucune connexion attribuée au PAD serveur
+                </div>
+            </div>
         </div>
         <div class="modal-footer">
             <button class="btn-outline" onclick="closeModals()">Annuler</button>
@@ -4485,6 +4518,8 @@ input, select, textarea, button {
                     const roleColor = s.dept === 'admin' ? 'var(--gold)' : 'var(--text-muted)';
                     const safeName = escapeHTML(s.name || 'Sans nom');
                     const safeRank = escapeHTML((s.role || s.dept || 'Employé').toUpperCase());
+                    const padAssignment = normalizeStaffPadAssignment(s?.padAssignment);
+                    const padAssignmentText = staffPadAssignmentLabel(padAssignment);
                     const pin = String(s.pin || '').replace(/[^0-9]/g, '');
 
                     const dutyBtn = !isActive
@@ -4507,6 +4542,9 @@ input, select, textarea, button {
                             <strong>${safeName}</strong>
                             <span style="font-size:0.75rem; color:${roleColor}; margin-left:8px;">${safeRank}</span>
                             ${isActive ? '' : '<span class="staff-inactive-badge">INACTIF</span>'}
+                            <div class="staff-pad-list-badge ${padAssignment.type === 'none' ? 'unassigned' : 'assigned'}">
+                                PAD SERVEUR · ${escapeHTML(padAssignmentText)}
+                            </div>
                         </div>
                         <div class="staff-action-group">
                             ${dutyBtn}
@@ -4520,6 +4558,111 @@ input, select, textarea, button {
 
             const container = document.getElementById('admin-staff-list');
             if (container) container.innerHTML = html;
+        }
+
+
+        function normalizeStaffPadAssignment(raw) {
+            const a = raw && typeof raw === 'object' ? raw : {};
+            let type = String(a.type || a.mode || a.scope || 'none').toLowerCase().trim();
+            let value = String(a.value || a.zone || a.room || '').trim();
+
+            if (!['none','all','room','zone'].includes(type)) type = 'none';
+            if (type === 'all') value = '';
+            if ((type === 'room' || type === 'zone') && !value) type = 'none';
+
+            return { type, value };
+        }
+
+        function getStaffPadAssignmentOptions(type) {
+            const rooms = Array.isArray(globalArchitecture?.rooms)
+                ? globalArchitecture.rooms.filter(Boolean).map(r => String(r))
+                : [];
+
+            const zones = Array.isArray(globalArchitecture?.zones)
+                ? globalArchitecture.zones
+                    .filter(Boolean)
+                    .map(z => ({
+                        value: String(z?.label || z?.name || '').trim(),
+                        label: `${String(z?.label || z?.name || 'Zone').trim()} · ${String(z?.room || 'Salle').trim()}`
+                    }))
+                    .filter(z => z.value)
+                : [];
+
+            if (type === 'room') {
+                return [...new Set(rooms)].map(r => ({ value: r, label: r }));
+            }
+            if (type === 'zone') {
+                const seen = new Set();
+                return zones.filter(z => {
+                    if (seen.has(z.value)) return false;
+                    seen.add(z.value);
+                    return true;
+                });
+            }
+            return [];
+        }
+
+        function staffPadAssignmentLabel(raw) {
+            const a = normalizeStaffPadAssignment(raw);
+            if (a.type === 'all') return 'TOUT LE RESTAURANT';
+            if (a.type === 'room') return `SALLE · ${a.value || '—'}`;
+            if (a.type === 'zone') return `ZONE · ${a.value || '—'}`;
+            return 'NON ATTRIBUÉ';
+        }
+
+        function refreshStaffPadAssignmentValues(selectedValue = null) {
+            const scopeEl = document.getElementById('staff-pad-scope');
+            const valueEl = document.getElementById('staff-pad-value');
+            const labelEl = document.getElementById('staff-pad-value-label');
+            const preview = document.getElementById('staff-pad-assignment-preview');
+            if (!scopeEl || !valueEl) return;
+
+            const type = String(scopeEl.value || 'none');
+            const options = getStaffPadAssignmentOptions(type);
+
+            if (type === 'room') {
+                if (labelEl) labelEl.textContent = 'Salle attribuée';
+            } else if (type === 'zone') {
+                if (labelEl) labelEl.textContent = 'Zone attribuée';
+            } else {
+                if (labelEl) labelEl.textContent = 'Salle / Zone';
+            }
+
+            valueEl.innerHTML = options.map(o =>
+                `<option value="${escapeHTML(o.value)}">${escapeHTML(o.label)}</option>`
+            ).join('');
+
+            valueEl.disabled = !(type === 'room' || type === 'zone');
+
+            if (selectedValue && options.some(o => o.value === String(selectedValue))) {
+                valueEl.value = String(selectedValue);
+            }
+
+            const value = valueEl.disabled ? '' : String(valueEl.value || '');
+            const normalized = normalizeStaffPadAssignment({ type, value });
+
+            if (preview) {
+                preview.textContent = normalized.type === 'none'
+                    ? 'Aucune connexion attribuée au PAD serveur'
+                    : `Connexion active : ${staffPadAssignmentLabel(normalized)}`;
+                preview.classList.toggle('assigned', normalized.type !== 'none');
+            }
+        }
+
+        function setStaffPadAssignmentFields(staff) {
+            const assignment = normalizeStaffPadAssignment(staff?.padAssignment);
+            const scopeEl = document.getElementById('staff-pad-scope');
+            if (!scopeEl) return;
+
+            scopeEl.value = assignment.type;
+            refreshStaffPadAssignmentValues(assignment.value);
+        }
+
+        function getStaffPadAssignmentFromForm() {
+            const type = document.getElementById('staff-pad-scope')?.value || 'none';
+            const valueEl = document.getElementById('staff-pad-value');
+            const value = valueEl && !valueEl.disabled ? valueEl.value : '';
+            return normalizeStaffPadAssignment({ type, value });
         }
 
         function openStaffModal(pin = "") {
@@ -4553,12 +4696,14 @@ input, select, textarea, button {
                 document.getElementById('staff-pin').value = s.pin || "";
                 document.getElementById('staff-role').value = s.dept || "salle";
                 document.getElementById('staff-active').checked = s.active !== false;
+                setStaffPadAssignmentFields(s);
             } else {
                 document.getElementById('staff-name').value = "";
                 document.getElementById('staff-title').value = "";
                 document.getElementById('staff-pin').value = "";
                 document.getElementById('staff-role').value = "salle";
                 document.getElementById('staff-active').checked = true;
+                setStaffPadAssignmentFields(null);
             }
 
             // Important : closeModals() utilise une opacité inline.
@@ -4579,7 +4724,8 @@ input, select, textarea, button {
                     role: String(s?.role || ""),
                     dept: String(s?.dept || ""),
                     active: s?.active !== false,
-                    onDuty: s?.onDuty === true
+                    onDuty: s?.onDuty === true,
+                    padAssignment: normalizeStaffPadAssignment(s?.padAssignment)
                 }))
             );
         }
@@ -4763,7 +4909,22 @@ input, select, textarea, button {
             
             if (!name || !title || pin.length < 4) return alert("Le nom, le rang et un PIN (4 chiffres min) sont obligatoires."); 
             
-            let newStaff = { name: name, pin: pin, role: title, dept: document.getElementById('staff-role').value, active: document.getElementById('staff-active').checked, onDuty: false };
+            const padAssignment = getStaffPadAssignmentFromForm();
+            const padAssignmentSaved = {
+                ...padAssignment,
+                updatedAt: new Date().toISOString(),
+                updatedBy: String(window.ICHEF_SECURITY?.user?.role || window.ICHEF_SECURITY?.user?.name || 'ADMIN')
+            };
+
+            let newStaff = {
+                name: name,
+                pin: pin,
+                role: title,
+                dept: document.getElementById('staff-role').value,
+                active: document.getElementById('staff-active').checked,
+                onDuty: false,
+                padAssignment: padAssignmentSaved
+            };
             
             if (origPin) {
                 let existing = staffAccess.find(s => String(s.pin || '').trim() === String(origPin).trim());
@@ -4781,6 +4942,11 @@ input, select, textarea, button {
             closeModals(); renderStaffList(); renderActiveStaff(); updateDashboardStats();
             try {
                 await persistStaffAccess("Collaborateur synchronisé");
+                auditEvent("PAD_SERVER_ASSIGNMENT_UPDATED", {
+                    staffPin: pin,
+                    staffName: name,
+                    assignment: padAssignment
+                }).catch(() => {});
             } catch (e) {
                 await fetchStateFromCloud(false);
             }
@@ -9416,6 +9582,96 @@ setInterval(updateReservationServiceCounters,60000);
  function bind(){inject();const sock=state()?.socket||window.ichefSocket;if(sock&&!sock.__ichefSwitchBound){sock.__ichefSwitchBound=true;sock.on('ichef-switch-updated',async()=>{try{if(typeof syncFull==='function')await syncFull('ichef-switch-live');else if(typeof refreshChefSharedData==='function')await refreshChefSharedData({includeMenu:true});}catch(_){}})}}
  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bind,{once:true});else bind();setInterval(bind,1200);
 })();
+</script>
+
+
+<style id="ichef-admin-v31-pad-server-assignment">
+.staff-pad-assignment-card{
+    margin-top:18px;
+    padding:18px;
+    border:1px solid rgba(212,175,55,.42);
+    border-radius:14px;
+    background:
+        linear-gradient(180deg,rgba(212,175,55,.055),rgba(212,175,55,.018));
+}
+.staff-pad-assignment-head{
+    display:flex;
+    align-items:flex-start;
+    justify-content:space-between;
+    gap:14px;
+    margin-bottom:16px;
+}
+.staff-pad-assignment-title{
+    color:var(--gold);
+    font-size:.78rem;
+    font-weight:900;
+    letter-spacing:1px;
+    text-transform:uppercase;
+}
+.staff-pad-assignment-help{
+    margin-top:7px;
+    max-width:620px;
+    color:var(--text-muted);
+    font-size:.76rem;
+    line-height:1.5;
+}
+.staff-pad-admin-lock{
+    flex:0 0 auto;
+    padding:5px 8px;
+    border:1px solid rgba(212,175,55,.4);
+    border-radius:999px;
+    color:var(--gold);
+    background:rgba(212,175,55,.07);
+    font-size:.62rem;
+    font-weight:900;
+    letter-spacing:.8px;
+}
+.staff-pad-assignment-card select:disabled{
+    opacity:.4;
+    cursor:not-allowed;
+}
+.staff-pad-assignment-preview{
+    margin-top:2px;
+    padding:11px 12px;
+    border:1px solid rgba(239,68,68,.25);
+    border-radius:10px;
+    background:rgba(239,68,68,.055);
+    color:#fca5a5;
+    font-size:.78rem;
+    font-weight:800;
+}
+.staff-pad-assignment-preview.assigned{
+    border-color:rgba(16,185,129,.32);
+    background:rgba(16,185,129,.06);
+    color:#6ee7b7;
+}
+.staff-pad-list-badge{
+    margin-top:6px;
+    width:max-content;
+    max-width:100%;
+    padding:4px 8px;
+    border-radius:999px;
+    font-size:.64rem;
+    font-weight:850;
+    letter-spacing:.35px;
+}
+.staff-pad-list-badge.assigned{
+    color:#7dd3fc;
+    border:1px solid rgba(56,189,248,.30);
+    background:rgba(56,189,248,.07);
+}
+.staff-pad-list-badge.unassigned{
+    color:#fca5a5;
+    border:1px solid rgba(239,68,68,.28);
+    background:rgba(239,68,68,.055);
+}
+@media(max-width:680px){
+    .staff-pad-assignment-head{flex-direction:column;}
+    .staff-pad-admin-lock{align-self:flex-start;}
+}
+</style>
+<script id="ichef-admin-v31-pad-server-marker">
+window.__ICHEF_ADMIN_VERSION__ = "V31-PAD-SERVER-ASSIGNMENT";
 </script>
 
 </body>
