@@ -13331,16 +13331,8 @@ function bindSwitchSocket(){
   }
 }
 
-setInterval(bindSwitchSocket,1000);
-window.addEventListener("online",function(){setTimeout(bindSwitchSocket,100);},{passive:true});
-window.addEventListener("pageshow",function(){setTimeout(bindSwitchSocket,100);},{passive:true});
-document.addEventListener("visibilitychange",function(){
-  if(!document.hidden) setTimeout(bindSwitchSocket,100);
-});
-setTimeout(bindSwitchSocket,250);
-})();
-</script>
-<script id="fix-supprimer-commande-histoire">
+<script id="ichef-core-fixes">
+// 1. Correction annulation et suppression de commande sans blocage fiscal
 window.deleteOrder = async function() {
     if (!STATE.currentTable) return;
     const reason = prompt("Motif obligatoire de correction / annulation :", "Annulation");
@@ -13352,15 +13344,13 @@ window.deleteOrder = async function() {
     const table = STATE.currentTable;
     const o = STATE.currentOrder || getOrder(table) || ensureOrder(table);
     
-    // 1. Cas d'une commande déjà encaissée/fiscalisée
     if (fiscalOrderFinalized(o)) {
         const ticketNumber = text(o.fiscalTicket?.ticketNumber || o.fiscalReceiptReference || o.paymentDraft?.receiptReference);
         if (!ticketNumber) {
             if (typeof toast === "function") toast("Ticket fiscal original introuvable", true);
             return;
         }
-        const confirmCorrection = confirm(`Créer une contre-écriture fiscale complète pour ${ticketNumber} ?\n\nL'original restera conservé.`);
-        if (!confirmCorrection) return;
+        if (!confirm(`Créer une contre-écriture fiscale complète pour ${ticketNumber} ?\n\nL'original restera conservé.`)) return;
         try {
             const id = serverPaymentId("CORRECTION");
             const r = await paymentServerRequest('/api/fiscal/correction', {
@@ -13378,7 +13368,6 @@ window.deleteOrder = async function() {
         return;
     }
     
-    // 2. Cas d'une commande en cours
     const fiscal = fiscalBreakdown(o);
     const trace = await fiscalEvent("CANCEL_ORDER", {
         reason: text(reason),
@@ -13386,13 +13375,11 @@ window.deleteOrder = async function() {
         tableId: table
     });
     
-    // CORRECTION : On autorise la suppression même si le profil fiscal n'est pas encore configuré
     if (!trace?.ok && trace?.error !== "FISCAL_PROFILE_UNSET") {
         if (typeof toast === "function") toast("Annulation refusée : journal indisponible", true);
         return;
     }
     
-    // 3. Archivage de l'historique
     const cancelled = { 
         ...clone(o), 
         status: "cancelled", 
@@ -13401,485 +13388,46 @@ window.deleteOrder = async function() {
         cancellationReason: text(reason) 
     };
     
-    // On sauvegarde l'archive
     await optimisticWrite("FISCAL_CANCEL_" + Date.now() + "_" + fiscalSafeId(table), { data: cancelled }, "Archive annulation commande");
-    
-    // On supprime la table active
     await optimisticWrite(table, null, "Retrait commande annulée");
     
     closeSheet();
     closeOrder();
-    
     if (typeof toast === "function") toast(" Commande annulée et archivée");
 };
-</script>
 
-<script id="fix-tva-suisses-auto-correction">
-// Intercepte les taux de TVA pour convertir automatiquement les taux FR vers CH si besoin
+// 2. Conversion automatique des taux de TVA français vers la Suisse si nécessaire
 function itemVatRate(item) {
     const explicit = normalizeTaxRate(itemVat(item) ?? item?.taxRate ?? item?.tauxTVA);
     let rate = explicit !== null ? explicit : fiscalDefaultVatForProduct(item || {});
-    
     const profile = typeof fiscalProfile === 'function' ? fiscalProfile() : { country: "" };
-    
-    // Si l'établissement est en Suisse, on corrige les vieux taux français
     if (profile.country === "CH") {
-        if (rate === 10 || rate === 20) return 8.1; // Taux normal suisse
-        if (rate === 5.5 || rate === 2.1) return 2.6; // Taux réduit suisse
+        if (rate === 10 || rate === 20) return 8.1;
+        if (rate === 5.5 || rate === 2.1) return 2.6;
     }
-    
     return rate;
 }
 </script>
 
-<style id="grille-tableau-compacte-finale-v19">
-/* En-tête de la grille en 5 colonnes fixes */
+<style id="ichef-grid-7cols-style">
+/* Structure stricte en 7 colonnes : Convive | Apéro | Entrée | Plat | Dessert | Action | Prix */
 body.order-open .ticket-grid-head {
     display: grid !important;
-    grid-template-columns: 1fr 1fr 1fr 1fr 110px !important;
-    gap: 4px !important;
-    padding: 10px 12px !important;
+    grid-template-columns: 75px 1fr 1fr 1fr 1fr 115px 105px !important;
+    gap: 6px !important;
+    padding: 8px 12px !important;
     background: #111516 !important;
     color: #e2b84e !important;
     font-size: 13px !important;
     font-weight: 1000 !important;
     text-align: center !important;
-    border-bottom: 3px solid #e2b84e !important;
-}
-
-/* On supprime les marges et hauteurs excessives des lignes pour qu'elles se collent proprement */
-body.order-open .ticket-row {
-    display: grid !important;
-    grid-template-columns: 1fr 1fr 1fr 1fr 110px !important;
     align-items: center !important;
-    min-height: auto !important;
-    padding: 4px 10px !important;
-    gap: 4px !important;
-    background: #ffffff !important;
-    border-bottom: 1px solid #d5d7da !important;
-}
-
-/* Distribution exacte des plats dans les colonnes 1 à 4 selon leur type */
-body.order-open .ticket-row[data-course-col="1"] .ticket-left { grid-column: 1 !important; }
-body.order-open .ticket-row[data-course-col="2"] .ticket-left { grid-column: 2 !important; }
-body.order-open .ticket-row[data-course-col="3"] .ticket-left { grid-column: 3 !important; }
-body.order-open .ticket-row[data-course-col="4"] .ticket-left { grid-column: 4 !important; }
-
-/* Le prix et les boutons d'action restent bloqués dans la 5ème colonne à droite */
-body.order-open .ticket-right {
-    grid-column: 5 !important;
-    display: flex !important;
-    flex-direction: row !important;
-    align-items: center !important;
-    justify-content: flex-end !important;
-    gap: 6px !important;
-}
-
-/* Design compact de chaque case de plat */
-body.order-open .ticket-left {
-    padding: 4px 6px !important;
-    background: #f7f8f9 !important;
-    border: 1px solid #e1e3e5 !important;
-    border-radius: 6px !important;
-    min-height: 44px !important;
-    display: flex !important;
-    flex-direction: column !important;
-    justify-content: center !important;
-}
-
-body.order-open .ticket-name {
-    font-size: 12px !important;
-    font-weight: 1000 !important;
-    color: #111 !important;
-    display: flex !important;
-    align-items: center !important;
-    gap: 4px !important;
-    white-space: nowrap !important;
-    overflow: hidden !important;
-    text-overflow: ellipsis !important;
-}
-
-body.order-open .ticket-name .seat-badge {
-    min-width: 18px !important;
-    height: 15px !important;
-    padding: 0 3px !important;
-    font-size: 7px !important;
-}
-
-body.order-open .ticket-price {
-    font-size: 12px !important;
-    font-weight: 1000 !important;
-    color: #b08d23 !important;
-}
-
-body.order-open .qtybar button {
-    width: 22px !important;
-    height: 22px !important;
-    font-size: 10px !important;
-}
-
-html body.order-open .ticket-row .ticket-meta,
-body.order-open .ticket-name .dest-tag,
-body.order-open .ticket-name .line-state {
-    display: none !important;
-}
-
-@media(max-width:520px) {
-    body.order-open .ticket-grid-head, body.order-open .ticket-row {
-        grid-template-columns: minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) minmax(90px,.9fr) !important;
-    }
-}
-</style>
-
-<style id="ichef-seat-row-grid-v30">
-/* V30 — une seule ligne par convive : C1, C2, C3… sans toucher au réseau */
-body.order-open #ticket.ticket-items{
-  overflow:auto !important;
-  padding:0 !important;
-  background:#eef0f1 !important;
-  overscroll-behavior:contain;
-}
-body.order-open .seat-ticket-board{
-  width:100%;
-  min-width:780px;
-  background:#fff;
-}
-body.order-open .seat-ticket-head,
-body.order-open .seat-ticket-row{
-  display:grid !important;
-  grid-template-columns:76px repeat(4,minmax(135px,1fr)) 108px !important;
-  column-gap:4px !important;
-  align-items:stretch !important;
-}
-body.order-open .seat-ticket-head{
-  position:sticky;
-  top:0;
-  z-index:30;
-  min-height:42px;
-  padding:6px;
-  background:#111516 !important;
-  color:#e2b84e !important;
-  border-bottom:3px solid #e2b84e !important;
-  font-size:12px !important;
-  font-weight:1000 !important;
-  text-align:center;
-}
-body.order-open .seat-ticket-head>span{
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  min-width:0;
-}
-body.order-open .seat-ticket-row{
-  min-height:82px;
-  padding:5px 6px;
-  background:#fff !important;
-  border-bottom:2px solid #c9ced1;
-}
-body.order-open .seat-ticket-row:nth-child(odd){background:#fafafa !important;}
-body.order-open .seat-row-label,
-body.order-open .seat-row-total{
-  display:flex;
-  flex-direction:column;
-  align-items:center;
-  justify-content:center;
-  gap:5px;
-  min-width:0;
-  background:#111516 !important;
-  border-radius:8px;
-  color:#fff;
-}
-body.order-open .seat-row-label .seat-badge{
-  min-width:48px !important;
-  height:31px !important;
-  padding:0 8px !important;
-  font-size:16px !important;
-  font-weight:1000 !important;
-  background:#fff !important;
-}
-body.order-open .seat-row-label small,
-body.order-open .seat-row-total small{
-  font-size:9px !important;
-  font-weight:900 !important;
-  color:#c7ced1 !important;
-}
-body.order-open .seat-row-total{
-  background:#f7f3e7 !important;
-  border:2px solid #d3ae45;
-  color:#111 !important;
-}
-body.order-open .seat-row-total strong{
-  font-size:15px !important;
-  font-weight:1000 !important;
-  color:#8c6900 !important;
-  white-space:nowrap;
-}
-body.order-open .seat-row-total small{color:#6b6250 !important;}
-body.order-open .seat-course-cell{
-  min-width:0;
-  display:flex;
-  flex-direction:column;
-  gap:5px;
-  padding:3px;
-  border:1px solid #d9dddf;
-  border-radius:8px;
-  background:#f7f8f9;
-}
-body.order-open .seat-course-cell.empty{
-  align-items:center;
-  justify-content:center;
-  background:#fbfbfb;
-}
-body.order-open .seat-course-empty{
-  color:#c1c6c8;
-  font-size:18px;
-  font-weight:900;
-}
-body.order-open .seat-order-item{
-  min-width:0;
-  padding:5px;
-  border:1px solid #bfc5c8;
-  border-radius:7px;
-  background:#fff;
-}
-body.order-open .seat-order-item.sent-lock{background:#fffaf0;}
-body.order-open .seat-item-main{
-  min-width:0;
-  cursor:pointer;
-}
-body.order-open .seat-item-title{
-  min-width:0;
-  color:#111 !important;
-  font-size:12px !important;
-  line-height:1.15 !important;
-  font-weight:1000 !important;
-  white-space:normal !important;
-  overflow-wrap:anywhere;
-}
-body.order-open .seat-item-title strong{color:#8c6900;}
-body.order-open .seat-order-item .ticket-tags{
-  display:flex !important;
-  flex-wrap:wrap !important;
-  justify-content:flex-start !important;
-  gap:2px !important;
-  margin-top:4px !important;
-  max-width:100% !important;
-  overflow:visible !important;
-}
-body.order-open .seat-order-item .ticket-tags .dest-tag,
-body.order-open .seat-order-item .ticket-tags .cooking-tag,
-body.order-open .seat-order-item .ticket-tags .line-state,
-body.order-open .seat-order-item .ichef-service-rhythm{
-  max-width:100% !important;
-  min-height:18px !important;
-  height:auto !important;
-  margin:0 !important;
-  padding:2px 4px !important;
-  font-size:8px !important;
-  line-height:1.05 !important;
-  white-space:normal !important;
-  overflow:visible !important;
-}
-body.order-open .seat-order-item .ticket-obs{
-  display:block !important;
-  margin-top:4px !important;
-  padding:3px 4px !important;
-  font-size:9px !important;
-  line-height:1.15 !important;
-  white-space:normal !important;
-}
-body.order-open .seat-item-bottom{
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:4px;
-  margin-top:5px;
-  padding-top:4px;
-  border-top:1px solid #eceeef;
-}
-body.order-open .seat-item-price{
-  flex:0 0 auto;
-  color:#9a760d;
-  font-size:10px;
-  font-weight:1000;
-  white-space:nowrap;
-}
-body.order-open .seat-item-controls{
-  min-width:0;
-  display:flex;
-  justify-content:flex-end;
-  gap:2px;
-  flex-wrap:wrap;
-}
-body.order-open .seat-item-controls button{
-  min-width:25px !important;
-  width:auto !important;
-  height:25px !important;
-  padding:0 5px !important;
-  border:1px solid #8f979b !important;
-  border-radius:5px !important;
-  background:#fff !important;
-  color:#111 !important;
-  font-size:10px !important;
-  font-weight:1000 !important;
-}
-body.order-open .seat-item-controls button:active{
-  background:#111 !important;
-  color:#fff !important;
-}
-@media(max-width:820px){
-  body.order-open .seat-ticket-board{min-width:760px;}
-  body.order-open .seat-ticket-head,
-  body.order-open .seat-ticket-row{
-    grid-template-columns:68px repeat(4,132px) 94px !important;
-  }
-}
-</style>
-<script id="ichef-sale-gate-table-release-v31">
-(()=>{
-"use strict";
-if(window.__ICHEF_SALE_GATE_TABLE_RELEASE_V31__) return;
-window.__ICHEF_SALE_GATE_TABLE_RELEASE_V31__ = true;
-
-function saleToken(v){
-  return String(v??"")
-    .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
-    .replace(/[\s-]+/g,"_").toUpperCase();
-}
-
-function saleItemServed(item){
-  if(!item || item.cancelled===true) return false;
-  const st=saleToken(item.status ?? item.productionStatus ?? item.runnerStatus);
-  const seq=saleToken(item.sequenceStatus);
-  return item.served===true || item.isServed===true || !!item.servedAt ||
-    ["SERVI","SERVED","POSE_SUR_TABLE","ON_TABLE"].includes(st) ||
-    ["SERVI","SERVED","POSE_SUR_TABLE","ON_TABLE"].includes(seq);
-}
-
-function saleHasServedItem(order){
-  const items=Array.isArray(order?.items)?order.items:[];
-  return items.some(item=>item && item.cancelled!==true && saleItemServed(item));
-}
-
-function salePaymentAllowed(order,notify=true){
-  try{
-    if(typeof fiscalOrderFinalized==="function" && fiscalOrderFinalized(order)) return true;
-  }catch(_){ }
-  if(saleHasServedItem(order)) return true;
-  if(notify){
-    try{ toast("ENCAISSEMENT BLOQUÉ · aucun plat ou boisson n'est encore posé sur la table",true); }catch(_){ }
-  }
-  return false;
-}
-
-window.ichefSaleHasServedItem=saleHasServedItem;
-window.ichefSalePaymentAllowed=salePaymentAllowed;
-
-// Garde l'entrée CAISSE bloquée tant qu'aucun article n'est réellement SERVI.
-const originalOpenPayment=window.openPayment;
-if(typeof originalOpenPayment==="function"){
-  window.openPayment=async function(...args){
-    try{
-      if(STATE?.currentTable){
-        const order=(typeof getOrder==="function"&&getOrder(STATE.currentTable)) || STATE.currentOrder || (typeof ensureOrder==="function"?ensureOrder(STATE.currentTable):null);
-        const paid=order && typeof fiscalOrderFinalized==="function" && fiscalOrderFinalized(order);
-        if(order && !paid && !salePaymentAllowed(order,true)) return false;
-      }
-    }catch(err){ console.warn("[iCHEF V31] garde caisse",err); }
-    return originalOpenPayment.apply(this,args);
-  };
-}
-
-// Deuxième verrou : même un appel direct à recordPayment ne passe pas avant service.
-const originalRecordPayment=window.recordPayment;
-if(typeof originalRecordPayment==="function"){
-  window.recordPayment=async function(method,terminal=null){
-    try{
-      if(STATE?.currentTable){
-        const order=(typeof getOrder==="function"&&getOrder(STATE.currentTable)) || STATE.currentOrder || (typeof ensureOrder==="function"?ensureOrder(STATE.currentTable):null);
-        const paid=order && typeof fiscalOrderFinalized==="function" && fiscalOrderFinalized(order);
-        if(order && !paid && !salePaymentAllowed(order,true)) return false;
-      }
-    }catch(err){ console.warn("[iCHEF V31] garde paiement",err); }
-    return originalRecordPayment.call(this,method,terminal);
-  };
-}
-
-const originalStartStripePayment=window.startStripePayment;
-if(typeof originalStartStripePayment==="function"){
-  window.startStripePayment=async function(order){
-    if(!salePaymentAllowed(order,true)) throw new Error("Encaissement bloqué : aucun plat ou boisson n'est encore posé sur la table.");
-    return originalStartStripePayment.call(this,order);
-  };
-}
-
-const originalConfiguredTerminalPayment=window.configuredTerminalPayment;
-if(typeof originalConfiguredTerminalPayment==="function"){
-  window.configuredTerminalPayment=async function(order,terminal){
-    if(!salePaymentAllowed(order,true)) throw new Error("Encaissement bloqué : aucun plat ou boisson n'est encore posé sur la table.");
-    return originalConfiguredTerminalPayment.call(this,order,terminal);
-  };
-}
-
-// Dès que le serveur confirme le paiement total, on mémorise la table à libérer côté UI.
-const originalApplyServerFiscalResult=window.applyServerFiscalResult;
-if(typeof originalApplyServerFiscalResult==="function"){
-  window.applyServerFiscalResult=function(order,result,method){
-    const tableId=String(order?.tableId || STATE?.currentTable || "").trim();
-    const ticketNumber=String(result?.ticketNumber || result?.fiscalId || "").trim();
-    const out=originalApplyServerFiscalResult.call(this,order,result,method);
-    if(tableId && ticketNumber){
-      window.__ICHEF_PAID_TABLE_RELEASE_PENDING__={tableId,ticketNumber,at:Date.now()};
-    }
-    return out;
-  };
-}
-
-function closePaidTableUiIfReleased(){
-  const pending=window.__ICHEF_PAID_TABLE_RELEASE_PENDING__;
-  if(!pending?.tableId) return false;
-  if(Date.now()-Number(pending.at||0)>30000){
-    window.__ICHEF_PAID_TABLE_RELEASE_PENDING__=null;
-    return false;
-  }
-  let live=null;
-  try{ live=typeof getOrder==="function"?getOrder(pending.tableId):STATE?.activeOrders?.[pending.tableId]; }catch(_){ }
-  if(live) return false;
-  try{
-    if(STATE?.activeOrders) delete STATE.activeOrders[pending.tableId];
-    if(STATE?.currentTable===pending.tableId && typeof closeOrder==="function") closeOrder();
-    else if(typeof scheduleRender==="function") scheduleRender();
-    if(typeof closeSheet==="function") closeSheet();
-    toast(`PAIEMENT TOTAL · TABLE ${pending.tableId} LIBÉRÉE`);
-  }catch(err){ console.warn("[iCHEF V31] libération UI",err); }
-  window.__ICHEF_PAID_TABLE_RELEASE_PENDING__=null;
-  return true;
-}
-
-window.addEventListener("ichef:live-state-updated",()=>setTimeout(closePaidTableUiIfReleased,0));
-setInterval(closePaidTableUiIfReleased,750);
-
-console.info("[iCHEF V31] Vente protégée : 1 article servi minimum · paiement total = table libérée");
-})();
-</script>
-  <style id="grille-tableau-envoi-separe-v20">
-/* On passe la grille sur 7 colonnes pour insérer le bouton d'envoi avant le prix */
-body.order-open .ticket-grid-head {
-    display: grid !important;
-    grid-template-columns: 80px 1fr 1fr 1fr 1fr 110px 110px !important;
-    gap: 6px !important;
-    padding: 10px 12px !important;
-    background: #111516 !important;
-    color: #e2b84e !important;
-    font-size: 13px !important;
-    font-weight: 1000 !important;
-    text-align: center !important;
     border-bottom: 3px solid #e2b84e !important;
 }
 
 body.order-open .ticket-row {
     display: grid !important;
-    grid-template-columns: 80px 1fr 1fr 1fr 1fr 110px 110px !important;
+    grid-template-columns: 75px 1fr 1fr 1fr 1fr 115px 105px !important;
     align-items: center !important;
     min-height: 85px !important;
     padding: 8px 10px !important;
@@ -13888,21 +13436,72 @@ body.order-open .ticket-row {
     border-bottom: 1px solid #d5d7da !important;
 }
 
-/* Nouvel emplacement pour le bouton d'envoi (Colonne 6) */
-body.order-open .ticket-row .ticket-action-col { 
-    grid-column: 6 !important; 
+/* Distribution des colonnes */
+body.order-open .ticket-row .ticket-guest-col { grid-column: 1 !important; display: flex; justify-content: center; align-items: center; }
+body.order-open .ticket-row .ticket-col-1     { grid-column: 2 !important; }
+body.order-open .ticket-row .ticket-col-2     { grid-column: 3 !important; }
+body.order-open .ticket-row .ticket-col-3     { grid-column: 4 !important; }
+body.order-open .ticket-row .ticket-col-4     { grid-column: 5 !important; }
+body.order-open .ticket-row .ticket-action-col{ grid-column: 6 !important; display: flex; justify-content: center; align-items: center; }
+body.order-open .ticket-right                 { grid-column: 7 !important; display: flex; flex-direction: column; align-items: flex-end; justify-content: center; gap: 4px; }
+
+/* Cellule produit */
+.ticket-course-cell {
+    padding: 6px 8px !important;
+    background: #f7f8f9 !important;
+    border: 1px solid #e1e3e5 !important;
+    border-radius: 8px !important;
+    min-height: 65px !important;
     display: flex !important;
-    align-items: center !important;
+    flex-direction: column !important;
     justify-content: center !important;
-    padding: 0 4px !important;
+    gap: 3px !important;
+}
+.ticket-course-cell .dish-name {
+    font-size: 13px !important;
+    font-weight: 1000 !important;
+    color: #111 !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+}
+.ticket-course-cell .dish-meta {
+    font-size: 10px !important;
+    color: #666 !important;
+    font-weight: 800 !important;
+}
+body.order-open .ticket-price {
+    font-size: 14px !important;
+    font-weight: 1000 !important;
+    color: #b08d23 !important;
 }
 
-/* Le prix est décalé dans la dernière colonne (Colonne 7) */
-body.order-open .ticket-right {
-    grid-column: 7 !important;
+/* Bouton "TOUT ENVOYER" (En-tête) */
+.btn-send-all {
+    background: #059669 !important;
+    color: #ffffff !important;
+    border: none !important;
+    padding: 7px 5px !important;
+    border-radius: 6px !important;
+    font-weight: 1000 !important;
+    font-size: 10px !important;
+    cursor: pointer !important;
+    text-transform: uppercase !important;
+    width: 100% !important;
+    text-align: center !important;
+    box-shadow: 0 2px 6px rgba(5, 150, 105, 0.45) !important;
+    line-height: 1.15 !important;
+}
+.btn-send-all:active { transform: scale(0.95) !important; }
+.btn-send-all:disabled {
+    background: #1e293b !important;
+    color: #64748b !important;
+    box-shadow: none !important;
+    cursor: default !important;
+    border: 1px solid #334155 !important;
 }
 
-/* Design du bouton d'envoi partiel (par convive) */
+/* Bouton "ENVOYER C{X}" (Ligne convive) */
 .btn-send-seat {
     background: #10b981 !important;
     color: #ffffff !important;
@@ -13915,16 +13514,10 @@ body.order-open .ticket-right {
     text-transform: uppercase !important;
     width: 100% !important;
     text-align: center !important;
-    transition: 0.2s !important;
-    box-shadow: 0 4px 10px rgba(16, 185, 129, 0.2) !important;
+    box-shadow: 0 4px 10px rgba(16, 185, 129, 0.25) !important;
     line-height: 1.2 !important;
 }
-
-.btn-send-seat:active { 
-    transform: scale(0.94) !important; 
-}
-
-/* Style quand le convive a déjà été envoyé */
+.btn-send-seat:active { transform: scale(0.94) !important; }
 .btn-send-seat.sent {
     background: #f1f5f9 !important;
     color: #94a3b8 !important;
@@ -13933,139 +13526,17 @@ body.order-open .ticket-right {
     cursor: default !important;
 }
 
-@media(max-width:900px) {
+@media(max-width:960px) {
     body.order-open .ticket-grid-head, body.order-open .ticket-row {
-        grid-template-columns: 70px 1fr 1fr 1fr 1fr 90px 100px !important;
+        grid-template-columns: 65px 1fr 1fr 1fr 1fr 95px 95px !important;
     }
-    .btn-send-seat { font-size: 9px !important; padding: 8px 4px !important; }
+    .btn-send-seat { font-size: 9px !important; padding: 7px 3px !important; }
+    .btn-send-all  { font-size: 9px !important; }
 }
 </style>
 
-<script id="script-envoi-separe-v20">
-// 1. Mise à jour de l'en-tête (7 colonnes)
-window.ticketGridHeaderHTML = function() {
-    return `<div class="ticket-grid-head" aria-hidden="true">
-      <span>CONVIVE</span><span>APÉRO</span><span>ENTRÉE</span><span>PLAT</span><span>DESSERT</span><span>ACTION</span><span>PRIX</span>
-    </div>`;
-};
-
-// 2. Moteur de rendu : on injecte le bouton ENVOYER au bout de la ligne du convive
-window.renderTicket = function() {
-    const o = STATE.currentOrder || ensureOrder(STATE.currentTable);
-    const items = (o.items || []).filter(Boolean);
-
-    const currentTableTotal = orderTotal(o);
-    if(document.getElementById("ticketTotal")) document.getElementById("ticketTotal").textContent = money(currentTableTotal);
-    if(document.getElementById("bottomTableTotal")) document.getElementById("bottomTableTotal").textContent = money(currentTableTotal);
-
-    if (typeof svcServiceButton === "function") svcServiceButton(o);
-
-    const seatMap = new Map();
-    items.forEach(i => {
-        if (i.cancelled) return;
-        const seat = (typeof itemSeat === 'function' ? itemSeat(i) : (i.seat || i.guestSeat || 1)) || 1;
-        if (!seatMap.has(seat)) seatMap.set(seat, []);
-        seatMap.get(seat).push(i);
-    });
-
-    const seats = [...seatMap.keys()].sort((a, b) => a - b);
-    const headerHTML = window.ticketGridHeaderHTML();
-
-    if (!seats.length) {
-        document.getElementById("ticket").innerHTML = headerHTML + '<div class="empty-state" style="grid-column: 1/-1; padding: 30px;">Choisissez C1…C9 puis touchez les produits.</div>';
-        return;
-    }
-
-    let rowsHTML = headerHTML;
-
-    seats.forEach(seat => {
-        const seatItems = seatMap.get(seat);
-        let col1Items = [], col2Items = [], col3Items = [], col4Items = [];
-        let seatTotal = 0;
-        let hasUnsent = false; // Permet de savoir s'il reste des plats à envoyer pour ce convive
-
-        seatItems.forEach(i => {
-            const q = (typeof itemQty === 'function' ? itemQty(i) : Number(i.qty||1));
-            seatTotal += (typeof itemPrice === 'function' ? itemPrice(i) : Number(i.price||0)) * q;
-            const col = window.ticketCourseColumn(i);
-            
-            if (col === 1) col1Items.push(i);
-            else if (col === 2) col2Items.push(i);
-            else if (col === 4) col4Items.push(i);
-            else col3Items.push(i);
-
-            if (i.isSent !== true) hasUnsent = true;
-        });
-
-        const renderCellContent = (arr) => {
-            if (!arr.length) return '<div style="color: #ccc; text-align: center; font-size: 11px;">—</div>';
-            return arr.map(i => {
-                const q = (typeof itemQty === 'function' ? itemQty(i) : Number(i.qty||1));
-                const cooking = text(i.cooking) ? ` · ${i.cooking}` : "";
-                return `<div class="dish-name">${q > 1 ? q + "× " : ""}${esc(itemName(i))}</div>
-                        <div class="dish-meta">${esc(i.course || i.category || "")}${cooking}</div>`;
-            }).join("");
-        };
-
-        const seatBadge = typeof seatBadgeHTML === 'function' ? seatBadgeHTML(seat) : `<div class="seat-badge">C${seat}</div>`;
-        
-        // Création du bouton dynamique (Vert si à envoyer, Gris si déjà envoyé)
-        const btnHtml = hasUnsent 
-            ? `<button class="btn-send-seat" onclick="sendSeatToKitchen(${seat})">ENVOYER<br>C${seat}</button>`
-            : `<button class="btn-send-seat sent" disabled>✓ ENVOYÉ</button>`;
-
-        rowsHTML += `<div class="ticket-row">
-            <div class="ticket-guest-col">${seatBadge}</div>
-            <div class="ticket-course-cell ticket-col-1">${renderCellContent(col1Items)}</div>
-            <div class="ticket-course-cell ticket-col-2">${renderCellContent(col2Items)}</div>
-            <div class="ticket-course-cell ticket-col-3">${renderCellContent(col3Items)}</div>
-            <div class="ticket-course-cell ticket-col-4">${renderCellContent(col4Items)}</div>
-            
-            <!-- Colonne 6 : Le bouton d'envoi partiel -->
-            <div class="ticket-action-col">${btnHtml}</div>
-            
-            <!-- Colonne 7 : Le prix total du convive -->
-            <div class="ticket-right">
-                <div class="ticket-price">${money(seatTotal)}</div>
-                <div style="font-size: 10px; color: #666; font-weight: 900;">C${seat} total</div>
-            </div>
-        </div>`;
-    });
-
-    document.getElementById("ticket").innerHTML = rowsHTML;
-
-    try { if(typeof renderSendButton === 'function') renderSendButton(o); } catch(_){}
-    try { if(typeof updateUndoButton === 'function') updateUndoButton(); } catch(_){}
-};
-
-// 3. Logique d'envoi en cuisine séparée (ne touche que les articles du Convive ciblé)
-window.sendSeatToKitchen = async function(seatNumber) {
-    if (!STATE.currentTable) return;
-    const table = STATE.currentTable;
-    const o = STATE.currentOrder || ensureOrder(table);
-    if (!o || !o.items) return;
-    
-    let hasChanges = false;
-    const stamp = Date.now();
-    o.items.forEach(i => {
-        const s = (typeof itemSeat === 'function' ? itemSeat(i) : (i.seat || i.guestSeat || 1)) || 1;
-        if (!i.cancelled && s === seatNumber && i.isSent !== true) {
-            i.isSent = true;
-            i.sentAt = stamp;
-            i.status = 'EN_PREPARATION';
-            hasChanges = true;
-        }
-    });
-    
-    if (hasChanges) {
-        o.status = 'EN PRÉPARATION';
-        await optimisticWrite(table, o, `Envoi cuisine C${seatNumber}`);
-        if (typeof syncFull === 'function') syncFull();
-        if (typeof toast === 'function') toast(`Plats de C${seatNumber} envoyés en cuisine !`);
-        
-        // Met à jour l'affichage immédiatement (le bouton passera en gris "✓ ENVOYÉ")
-        window.renderTicket(); 
-    }
-};
-</script>
+<script id="ichef-grid-7cols-logic">
+// 1. Classification automatique des cours (1: Apéro, 2: Entrée, 3: Plat, 4: Dessert)
+window.ticketCourseColumn = function(item) {
+    const raw = `${text(item?.course\vert{}\vert{}"")} ${text(item?.
 </body></html>
