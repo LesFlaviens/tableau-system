@@ -6,7 +6,7 @@
  <meta http-equiv="Pragma" content="no-cache">
  <meta http-equiv="Expires" content="0">
  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
- <title>iCHEF OS - Pass Cuisine V29 · FISCAL CLEAN · RÉSERVATIONS SERVICE</title>
+ <title>iCHEF OS - Pass Cuisine V31 · COLONNES PAD CANONIQUES · SYMBIOSE</title>
  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&display=swap" rel="stylesheet">
  <style>
@@ -850,10 +850,10 @@
   background:rgba(16,185,129,.12)!important;
 }
 
-/* ===== iCHEF PASS CUISINE V5 — 3 VRAIES COLONNES ENTRÉES / PLATS / DESSERTS ===== */
+/* ===== iCHEF PASS CUISINE V31 — 4 COLONNES CANONIQUES PAD : APÉRO / ENTRÉE / PLAT / DESSERT ===== */
 #board.service-columns-board{
   flex:1;min-height:0;display:grid!important;
-  grid-template-columns:repeat(3,minmax(320px,1fr))!important;
+  grid-template-columns:repeat(4,minmax(270px,1fr))!important;
   gap:12px!important;padding:12px!important;
   overflow-x:auto!important;overflow-y:hidden!important;
   align-items:stretch!important;background:#050505;
@@ -871,6 +871,7 @@
   padding:11px 13px;border-bottom:1px solid var(--border);
   background:#0b0b0b;font-size:.82rem;font-weight:950;letter-spacing:1.2px;
 }
+.service-column.apero .service-column-head{color:#fde68a;border-bottom-color:rgba(245,158,11,.42)}
 .service-column.entree .service-column-head{color:#e9d5ff;border-bottom-color:rgba(168,85,247,.42)}
 .service-column.plat .service-column-head{color:#bfdbfe;border-bottom-color:rgba(59,130,246,.42)}
 .service-column.dessert .service-column-head{color:#fde68a;border-bottom-color:rgba(212,175,55,.42)}
@@ -900,10 +901,10 @@
   font-size:.72rem;font-weight:800;padding:14px;
 }
 @media(max-width:1100px){
-  #board.service-columns-board{grid-template-columns:repeat(3,minmax(300px,86vw))!important}
+  #board.service-columns-board{grid-template-columns:repeat(4,minmax(300px,86vw))!important}
 }
 @media(max-width:700px){
-  #board.service-columns-board{grid-template-columns:repeat(3,minmax(88vw,88vw))!important;padding:8px!important;gap:8px!important}
+  #board.service-columns-board{grid-template-columns:repeat(4,minmax(88vw,88vw))!important;padding:8px!important;gap:8px!important}
   .service-column{min-width:88vw}
 }
 </style>
@@ -1542,7 +1543,7 @@ body > #v15-rush-strip{display:none!important}
        </div>
 
 
-       <span class="v9-role">CHEF ORCHESTRATEUR · V30</span>
+       <span class="v9-role">CHEF ORCHESTRATEUR · V31</span>
        <span id="connection-badge" class="v9-live-badge">● CONNEXION</span>
      </div>
 
@@ -1563,6 +1564,7 @@ body > #v15-rush-strip{display:none!important}
          <span class="v20-select-prefix">AFFICHAGE</span>
          <select id="v20-flow-select" class="v20-native-select" aria-label="Choisir l'affichage du service" onchange="try{setFlowFilter(this.value)}catch(e){console.error(e)}">
            <option value="all">TOUT</option>
+           <option value="apero">APÉROS</option>
            <option value="entree">ENTRÉES</option>
            <option value="plat">PLATS</option>
            <option value="dessert">DESSERTS</option>
@@ -1863,6 +1865,66 @@ body > #v15-rush-strip{display:none!important}
 
 
 
+
+ /* ===== V32 · FILE D'ATTENTE ANTI-COUPURE CUISINE =====
+    On conserve des PATCHS ciblés, jamais une vieille commande complète. */
+ const PASS_OFFLINE_QUEUE_KEY=`ichef_pass_offline_v32:${String(tenantID||'')}:${String(passDeviceId||'')}`;
+ const PASS_OFFLINE_TTL=12*60*60*1000;
+ let PASS_OFFLINE_FLUSHING=false;
+ function passOfflineRead(){
+   try{
+     const rows=JSON.parse(localStorage.getItem(PASS_OFFLINE_QUEUE_KEY)||'[]');
+     const t=Date.now();
+     return (Array.isArray(rows)?rows:[]).filter(x=>x&&x.orderId&&x.args&&t-Number(x.savedAt||0)<PASS_OFFLINE_TTL).slice(-120);
+   }catch(_){return []}
+ }
+ function passOfflineWrite(rows){
+   try{
+     const clean=(Array.isArray(rows)?rows:[]).slice(-120);
+     if(clean.length)localStorage.setItem(PASS_OFFLINE_QUEUE_KEY,JSON.stringify(clean));
+     else localStorage.removeItem(PASS_OFFLINE_QUEUE_KEY);
+   }catch(_){}
+ }
+ function passOfflineQueue(orderId,args){
+   const rows=passOfflineRead();
+   rows.push({id:`${orderId}_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,orderId,args:passDeepClone(args),savedAt:Date.now()});
+   passOfflineWrite(rows);
+   setConnectionBadge(false,`Hors ligne · ${rows.length} attente`);
+ }
+ const passWriteSymbioseOnline=passWriteSymbiose;
+ passWriteSymbiose=async function(orderId,args={}){
+   try{
+     return await passWriteSymbioseOnline(orderId,args);
+   }catch(err){
+     passOfflineQueue(orderId,args);
+     console.warn('[PASS CUISINE] action conservée hors ligne',err?.message||err);
+     return {success:true,queuedOffline:true};
+   }
+ };
+ async function passFlushOfflineQueue(){
+   if(PASS_OFFLINE_FLUSHING||!navigator.onLine||!socket?.connected)return;
+   const rows=passOfflineRead();
+   if(!rows.length)return;
+   PASS_OFFLINE_FLUSHING=true;
+   const remaining=[];
+   try{
+     for(const row of rows){
+       try{await passWriteSymbioseOnline(row.orderId,row.args)}
+       catch(err){remaining.push(row); if(!navigator.onLine)break}
+     }
+     if(remaining.length<rows.length){
+       const pendingIds=new Set(remaining.map(x=>x.id));
+       passOfflineWrite(rows.filter(x=>pendingIds.has(x.id)));
+       schedulePassResync(20);
+     }
+     const left=passOfflineRead().length;
+     setConnectionBadge(true,left?`Temps réel · ${left} attente`:'Temps réel');
+   }finally{PASS_OFFLINE_FLUSHING=false}
+ }
+ window.addEventListener('online',()=>setTimeout(passFlushOfflineQueue,250),{passive:true});
+ setInterval(()=>{if(navigator.onLine&&socket?.connected)passFlushOfflineQueue()},5000);
+ socket.on('connect',()=>setTimeout(passFlushOfflineQueue,200));
+
  function kitchenNormalizeStationValue(value) {
    const raw=String(value==null?'':value).normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase();
    if(!raw) return '';
@@ -1888,7 +1950,7 @@ body > #v15-rush-strip{display:none!important}
      item.name,item.n,item.label,item.title].filter(Boolean).join(' ');
    const inferred=kitchenNormalizeStationValue(text);
    if(inferred) return inferred;
-   try{ if(serviceCourse(item)===3) return 'dessert'; }catch(_){}
+   try{ if(serviceCourse(item)===4) return 'dessert'; }catch(_){}
    // Une destination générique "cuisine" ne doit pas apparaître dans tous les postes.
    // Sans poste plus précis, elle appartient au poste chaud par défaut.
    return 'chaud';
@@ -2180,7 +2242,7 @@ body > #v15-rush-strip{display:none!important}
    }
    if(found) return Math.max(1,Math.min(180,found));
    const course=serviceCourse(item);
-   return course===1?7:course===3?5:12; // estimation uniquement si aucune fiche ne donne de temps
+   return course===1?7:course===2?10:course===4?5:12; // APÉRO / ENTRÉE / DESSERT / PLAT — estimation uniquement si aucune fiche ne donne de temps
  }
 
  function kitchenFamilyVariants(refs) {
@@ -2240,8 +2302,8 @@ body > #v15-rush-strip{display:none!important}
    if(!item||isServedItem(item)) return null;
    if(item.done===true||normalizeLifecycleValue(item.sequenceStatus)==='READY') return {label:'PRÊT PASS',className:'ready'};
    if(serviceHeld(item)||!serviceRequested(item)) return {label:'ATTENDRE SALLE',className:'wait'};
-   const course=serviceCourse(item);
-   const plan=kitchenWavePlan(order?.id||order?.table||'',course,(order?.items||[]).filter(i=>serviceCourse(i)===course));
+   const course=serviceWave(item);
+   const plan=kitchenWavePlan(order?.id||order?.table||'',course,(order?.items||[]).filter(i=>serviceWave(i)===course));
    const row=plan.rows?.find(r=>r.item===item);
    if(!row) return {label:'LANCER',className:'launch'};
    if(item.startedAt||item.preparationStartedAt) return {label:`EN COURS · ≈${row.remainingMin}m`,className:''};
@@ -2254,7 +2316,7 @@ body > #v15-rush-strip{display:none!important}
    const by=new Map();
    for(const line of lines){
      if(!serviceRequested(line.item)&&!line.item.done)continue;
-     const course=serviceCourse(line.item),key=`${line.orderId}|${course}`;
+     const course=serviceWave(line.item),key=`${line.orderId}|${course}`;
      if(!by.has(key))by.set(key,{orderId:line.orderId,order:line.order,course,items:[]});
      by.get(key).items.push(line.item);
    }
@@ -2462,10 +2524,10 @@ body > #v15-rush-strip{display:none!important}
    for(const line of lines){
      const item=line.item;if(!item||item.done||isServedItem(item)||serviceHeld(item)||!serviceRequested(item))continue;
      const advice=kitchenItemTimingAdvice(line.order,item);if(!advice)continue;
-     const plan=kitchenWavePlan(line.orderId,serviceCourse(item),(line.order?.items||[]).filter(i=>serviceCourse(i)===serviceCourse(item)));
+     const plan=kitchenWavePlan(line.orderId,serviceWave(item),(line.order?.items||[]).filter(i=>serviceWave(i)===serviceWave(item)));
      const row=plan.rows?.find(r=>r.item===item),wait=Math.max(0,row?.waitMin||0);
      const name=kitchenDisplayName(item), bucket=wait<=0?0:wait<=3?3:wait<=6?6:Math.ceil(wait/3)*3;
-     const key=`${bucket}|${kitchenNormalizedToken(name)}|${serviceCourse(item)}`;
+     const key=`${bucket}|${kitchenNormalizedToken(name)}|${serviceWave(item)}`;
      const qty=Math.max(1,Number(line.qty||item.qty||item.quantity||1));
      const g=groups.get(key)||{wait:bucket,name,qty:0,tables:new Set(),score:0,now:bucket===0};
      g.qty+=qty;g.tables.add(line.orderId);g.score=Math.max(g.score,kitchenLineUrgency(line));groups.set(key,g);
@@ -2639,14 +2701,14 @@ body > #v15-rush-strip{display:none!important}
  // RENDU KANBAN
 
  function setFlowFilter(flow) {
- const allowed=['all','entree','plat','dessert'];
+ const allowed=['all','apero','entree','plat','dessert'];
  flow=String(flow||'all').toLowerCase();
  if(!allowed.includes(flow)) flow='all';
  currentFlowFilter = flow;
  document.documentElement.setAttribute('data-ichef-flow',flow);
  const nativeSelect=document.getElementById('v20-flow-select');
  if(nativeSelect && nativeSelect.value!==flow) nativeSelect.value=flow;
- const labels={all:'TOUT',entree:'ENTRÉES',plat:'PLATS',dessert:'DESSERTS'};
+ const labels={all:'TOUT',apero:'APÉROS',entree:'ENTRÉES',plat:'PLATS',dessert:'DESSERTS'};
  const label=document.getElementById('v9-service-label'); if(label) label.textContent=labels[flow]||String(flow||'TOUT').toUpperCase();
  document.querySelectorAll('[data-flow]').forEach(btn => btn.classList.toggle('active', btn.dataset.flow === flow));
  try{v9CloseDropdowns()}catch(_){}
@@ -2693,11 +2755,12 @@ body > #v15-rush-strip{display:none!important}
  }
 
  function getItemKindLabel(item) {
- if (isDessertItem(item)) return 'Dessert';
+ const c=serviceCourse(item);
+ if(c===1) return 'Apéro';
+ if(c===2) return 'Entrée';
+ if(c===4) return 'Dessert';
  if (isMenuSequenceItem(item)) return 'Menu';
- const txt = itemText(item);
- if (/entree|entrée|starter|hors d.oeuvre/.test(txt)) return 'Entrée';
- return 'Plat direct';
+ return 'Plat';
  }
 
  function flowRank(item) {
@@ -2722,20 +2785,26 @@ body > #v15-rush-strip{display:none!important}
  }
 
 
- /* ===== SERVICE SALLE V3 — ENTRÉE / PLAT / DESSERT AU TEMPS SERVEUR ===== */
+ /* ===== V31 · COLONNE PRODUIT = EXACTEMENT LA COLONNE DU PAD =====
+    1 = APÉRO · 2 = ENTRÉE · 3 = PLAT · 4 = DESSERT.
+    La vague de service (ichefServiceWave) reste indépendante de la colonne produit. ===== */
  function serviceCourse(item) {
-   const explicit = Number(item?.ichefServiceWave || item?.serviceWave || 0);
-   if (explicit >= 1 && explicit <= 3) return Math.trunc(explicit);
-   const raw = `${item?.course || ''} ${item?.category || ''} ${item?.categorie || ''} ${itemText(item)}`
+   const raw = `${item?.course || ''} ${item?.category || ''}`
      .normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
-   if (/ENTREE|ENTREES|STARTER|APPETIZER/.test(raw)) return 1;
-   if (/DESSERT|DESSERTS|PATISSERIE|PATISSERIES|SWEET|GLACE|SORBET/.test(raw)) return 3;
-   return 2;
+   if (/APERO|PARTAGER|TAPAS|PLANCHA|COCKTAIL|SNACK/.test(raw)) return 1;
+   if (/ENTREE|ENTREES|STARTER|APPETIZER/.test(raw)) return 2;
+   if (/DESSERT|DESSERTS|PATISSERIE|PATISSERIES|SWEET/.test(raw)) return 4;
+   return 3;
  }
 
  function serviceCourseLabel(itemOrCourse) {
    const c = typeof itemOrCourse === 'number' ? itemOrCourse : serviceCourse(itemOrCourse);
-   return c === 1 ? 'ENTRÉE' : c === 3 ? 'DESSERT' : 'PLAT';
+   return c === 1 ? 'APÉRO' : c === 2 ? 'ENTRÉE' : c === 4 ? 'DESSERT' : 'PLAT';
+ }
+
+ function serviceWave(item) {
+   const n=Number(item?.ichefServiceWave || item?.serviceWave || 0);
+   return n>=1 && n<=4 ? Math.round(n) : serviceCourse(item);
  }
 
  function serviceRequested(item) {
@@ -2766,19 +2835,20 @@ body > #v15-rush-strip{display:none!important}
    const nums=[
      order.lastServedWave,order.lastServedCourse,order.ichefLastServedWave,order.ichefLastServedCourse,
      meta.lastServedWave,meta.lastServedCourse
-   ].map(Number).filter(n=>Number.isFinite(n)&&n>=1&&n<=3);
+   ].map(Number).filter(n=>Number.isFinite(n)&&n>=1&&n<=4);
    let wave=nums.length?Math.max(...nums):0;
    const status=normalizeLifecycleValue(order.serviceStatus||meta.serviceStatus||'');
-   if(/DESSERT.*SERV/.test(status)) wave=Math.max(wave,3);
-   else if(/PLAT.*SERV|MAIN.*SERV/.test(status)) wave=Math.max(wave,2);
-   else if(/ENTREE.*SERV|STARTER.*SERV/.test(status)) wave=Math.max(wave,1);
+   if(/DESSERT.*SERV/.test(status)) wave=Math.max(wave,4);
+   else if(/PLAT.*SERV|MAIN.*SERV/.test(status)) wave=Math.max(wave,3);
+   else if(/ENTREE.*SERV|STARTER.*SERV/.test(status)) wave=Math.max(wave,2);
+   else if(/APERO.*SERV|APERITIF.*SERV/.test(status)) wave=Math.max(wave,1);
    return wave;
  }
 
  function serviceHeldIsResidual(order,item) {
    if(!order||!item||!serviceHeld(item)) return false;
    const completed=serviceOrderCompletedWave(order);
-   const course=Number(serviceCourse(item)||0);
+   const course=Number(serviceWave(item)||0);
    return completed>0 && course>0 && course<=completed;
  }
 
@@ -2906,7 +2976,7 @@ body > #v15-rush-strip{display:none!important}
  const requested = live.filter(serviceRequested);
  if (requested.length) {
    const firstAt = Math.min(...requested.map(i => serviceRequestMs(i) || Number.MAX_SAFE_INTEGER));
-   const courses = [...new Set(requested.map(serviceCourse))].sort((a,b)=>a-b);
+   const courses = [...new Set(requested.map(serviceWave))].sort((a,b)=>a-b);
    const labels = courses.map(c => serviceCourseLabel(c)).join(' + ');
    return {
      phase:'service-request',
@@ -2916,7 +2986,7 @@ body > #v15-rush-strip{display:none!important}
  }
  const waiting = live.filter(serviceHeld);
  if (waiting.length) {
-   const courses = [...new Set(waiting.map(serviceCourse))].sort((a,b)=>a-b);
+   const courses = [...new Set(waiting.map(serviceWave))].sort((a,b)=>a-b);
    return { phase:'service-wait', label:`EN ATTENTE SERVEUR · ${courses.map(c=>serviceCourseLabel(c)).join(' + ')}` };
  }
  return { phase:'done', label:'PRODUCTION TERMINÉE' };
@@ -3018,8 +3088,9 @@ body > #v15-rush-strip{display:none!important}
 
  function serviceColumnMeta(course){
  const c=Number(course);
- if(c===1) return {key:'entree',title:'ENTRÉES'};
- if(c===3) return {key:'dessert',title:'DESSERTS'};
+ if(c===1) return {key:'apero',title:'APÉROS'};
+ if(c===2) return {key:'entree',title:'ENTRÉES'};
+ if(c===4) return {key:'dessert',title:'DESSERTS'};
  return {key:'plat',title:'PLATS'};
  }
 
@@ -3088,9 +3159,9 @@ body > #v15-rush-strip{display:none!important}
  const board=document.getElementById('board');
  board.classList.add('service-columns-board');
  kitchenBuildBatchCache();
- const columns={entree:[],plat:[],dessert:[]};
- const totals={entree:0,plat:0,dessert:0};
- const requests={entree:0,plat:0,dessert:0};
+ const columns={apero:[],entree:[],plat:[],dessert:[]};
+ const totals={apero:0,entree:0,plat:0,dessert:0};
+ const requests={apero:0,entree:0,plat:0,dessert:0};
  const allowedStatuses=new Set([
    'PENDING','OPEN','NOUVELLE COMMANDE','EN PRÉPARATION','EN PREPARATION',
    'EN ATTENTE (TIME-SHIFT)','EN ATTENTE','PRÊT','PRET'
@@ -3120,7 +3191,7 @@ body > #v15-rush-strip{display:none!important}
    });
    if(!stationItems.length) continue;
    const phaseInfo=getPhaseInfo(stationItems);
-   for(const course of [1,2,3]){
+   for(const course of [1,2,3,4]){
      const meta=serviceColumnMeta(course);
      const items=stationItems.filter(i=>serviceCourse(i)===course);
      if(!items.length) continue;
@@ -3131,6 +3202,7 @@ body > #v15-rush-strip{display:none!important}
  }
 
  const visible={
+   apero: currentFlowFilter==='all'||currentFlowFilter==='apero',
    entree: currentFlowFilter==='all'||currentFlowFilter==='entree',
    plat: currentFlowFilter==='all'||currentFlowFilter==='plat',
    dessert: currentFlowFilter==='all'||currentFlowFilter==='dessert'
@@ -3139,7 +3211,7 @@ body > #v15-rush-strip{display:none!important}
    <header class="service-column-head"><span>${title}</span><span class="service-column-kpi">${totals[key]} ARTICLE(S)${requests[key]?` · ${requests[key]} DEMANDÉ(S)`:''}</span></header>
    <div class="service-column-body">${columns[key].length?columns[key].sort((a,b)=>b.score-a.score).map(x=>x.html).join(''):`<div class="service-course-empty">Aucune commande ${title.toLowerCase()} pour le moment.</div>`}</div>
  </section>`;
- board.innerHTML=makeColumn('entree','ENTRÉES')+makeColumn('plat','PLATS')+makeColumn('dessert','DESSERTS');
+ board.innerHTML=makeColumn('apero','APÉROS')+makeColumn('entree','ENTRÉES')+makeColumn('plat','PLATS')+makeColumn('dessert','DESSERTS');
  updateAntiRush();
  }
 
@@ -3403,7 +3475,7 @@ body > #v15-rush-strip{display:none!important}
    let floor=serviceOrderCompletedWave(order);
    for(const item of (order?.items||[])){
      if(!item || item.isSent===false) continue;
-     const course=Number(serviceCourse(item)||0);
+     const course=Number(serviceWave(item)||0);
      if(!course) continue;
      if(serviceRequested(item) || mepItemPastProduction(item)) floor=Math.max(floor,course);
    }
@@ -3419,8 +3491,8 @@ body > #v15-rush-strip{display:none!important}
      const progressCourse=mepOrderProgressCourse(order);
      order.items.forEach((item,index)=>{
        if(!mepItemStillToProduce(item,order)) return;
-       const course=Number(serviceCourse(item)||0);
-       /* Si la salle a déjà avancé à un cours supérieur (ex. desserts), une
+       const course=Number(serviceWave(item)||0);
+       /* Si la salle a déjà avancé à une vague supérieure (ex. desserts), une
           ancienne ligne WAIT_SERVICE d'un cours précédent est considérée
           comme un état résiduel et ne doit plus revenir dans la mise en place. */
        if(serviceHeld(item) && progressCourse>0 && course>0 && course<progressCourse) return;
@@ -4281,7 +4353,7 @@ body > #v15-rush-strip{display:none!important}
    kitchenMarkBatchReady(key).finally(()=>{if(document.body.contains(btn)){btn.disabled=false;btn.textContent=old}});
  });
 
- console.info('[iCHEF] PASS CUISINE V30 · LIVE PRIORITAIRE SALLE↔CUISINE · SYMBIOSE');
+ console.info('[iCHEF] PASS CUISINE V31 · COLONNES PAD CANONIQUES APÉRO/ENTRÉE/PLAT/DESSERT · VAGUE SERVICE INDÉPENDANTE · SYMBIOSE');
  fetchInitialState();
  </script>
 
@@ -4289,8 +4361,8 @@ body > #v15-rush-strip{display:none!important}
 <script id="ichef-v21-native-controller">
 (function(){
   'use strict';
-  window.__ICHEF_PASS_VERSION__='V30';
-  document.documentElement.setAttribute('data-ichef-pass-version','V30');
+  window.__ICHEF_PASS_VERSION__='V31';
+  document.documentElement.setAttribute('data-ichef-pass-version','V31');
   function cleanLegacyVisibleScriptText(){
     try{
       var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
