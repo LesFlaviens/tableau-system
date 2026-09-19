@@ -12,7 +12,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#0b0f19">
 
-<title>iCHEF — Mini Pass Production V65 · BUGS CORRIGÉS · LOGO OFFICIEL · ANTI-COUPURE</title>
+<title>iCHEF — Mini Pass Production V66 · HISTORIQUE COMMANDES · AUDIT ERREUR HUMAINE · ANTI-COUPURE</title>
 
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;800;900&family=Montserrat:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
@@ -542,6 +542,9 @@ body.mini-density-ultra .sync-advice{display:none}
 
         <button id="mini-v64-mep-btn" class="v20-native-button v20-mep-button" type="button">
           MISE EN PLACE <span id="mini-v64-mep-count" class="v9-count">0</span>
+        </button>
+        <button id="mini-v66-history-btn" class="v20-native-button mini-v66-history-btn" type="button">
+          HISTORIQUE
         </button>
 
         <label class="v20-select-wrap v20-chef-wrap" for="mini-v64-chef-select">
@@ -1840,6 +1843,12 @@ function miniMutationId(){
     return (window.crypto&&crypto.randomUUID)?crypto.randomUUID():`MINI_${Date.now()}_${Math.random().toString(36).slice(2,9)}`;
 }
 function applyMiniOrderPacket(packet,options={}){
+    try{
+        if(packet?.tableId && Object.prototype.hasOwnProperty.call(packet||{},'order') && packet.order!==null){
+            const __historyRaw=packet.order?.data && Array.isArray(packet.order.data.items) ? packet.order.data : packet.order;
+            window.miniHistoryCaptureOrder?.(String(packet.tableId),__historyRaw,options?.force===true?'MUTATION_CONFIRMEE':'SOCKET_PACKET');
+        }
+    }catch(_){}
     const tid=String(packet?.tenantID||packet?.tenantId||'').trim().toLowerCase();
     if(tid&&tid!==String(tenantID||'').trim().toLowerCase()) return false;
     const tableId=String(packet?.tableId||'').trim();
@@ -1905,6 +1914,7 @@ function miniRestoreCachedState(){
         const cached=JSON.parse(localStorage.getItem(miniOfflineCacheKey())||'null');
         if(!cached?.activeOrders || typeof cached.activeOrders!=='object') return false;
         activeOrders=normalizeState(miniClone(cached.activeOrders));
+        try{ window.miniHistoryCaptureState?.(activeOrders,'CACHE_ANTI_COUPURE'); }catch(_){}
         applySettings();
         detectNewOrders();
         dispatchTickets();
@@ -1993,19 +2003,59 @@ async function persistOrderMutation(tableId,{itemPatches=[],orderPatch={},auditR
         mutationId:miniMutationId(),
         auditReason
     };
+
+    try{
+        window.miniHistoryEvent?.('ACTION_DEMANDEE',{
+            tableId,
+            auditReason,
+            mutationId:payload.mutationId,
+            terminal:MINI_TERMINAL,
+            deviceId:payload.deviceId,
+            itemPatches:miniClone(itemPatches),
+            orderPatch:miniClone(orderPatch)
+        });
+    }catch(_){}
+
     try{
         const data=await miniSendMutationPayload(payload);
         if(Object.prototype.hasOwnProperty.call(data,'order')){
             applyMiniOrderPacket({tenantID,tableId,order:data.order},{force:true});
         }
         miniCacheState();
+        try{
+            window.miniHistoryEvent?.('ACTION_CONFIRMEE',{
+                tableId,
+                auditReason,
+                mutationId:payload.mutationId,
+                terminal:MINI_TERMINAL,
+                deviceId:payload.deviceId
+            });
+        }catch(_){}
         return data;
     }catch(err){
         if(miniNetworkLikeError(err)){
             const queued=miniQueueMutation(tableId,payload);
+            try{
+                window.miniHistoryEvent?.('ACTION_EN_ATTENTE_RESEAU',{
+                    tableId,
+                    auditReason,
+                    mutationId:payload.mutationId,
+                    terminal:MINI_TERMINAL,
+                    deviceId:payload.deviceId,
+                    queued
+                });
+            }catch(_){}
             console.warn(`[iCHEF MINI PASS] hors ligne · mutation conservée (${queued})`,tableId);
             return {success:true,queuedOffline:true,mutationId:payload.mutationId};
         }
+        try{
+            window.miniHistoryEvent?.('ACTION_ECHOUEE',{
+                tableId,
+                auditReason,
+                mutationId:payload.mutationId,
+                error:String(err?.message||err||'Erreur')
+            });
+        }catch(_){}
         throw err;
     }
 }
@@ -2288,6 +2338,7 @@ function detectNewOrders(){
 }
 
 function applyIncomingState(state){
+    try{ window.miniHistoryCaptureState?.(state?.activeOrders||{},'ETAT_SERVEUR'); }catch(_){}
     const incoming=normalizeState(miniClone(state?.activeOrders || {}));
     for(const tableId of Object.keys(incoming)){
         if(miniTableLocked(tableId)) continue;
@@ -4513,6 +4564,630 @@ window.__ICHEF_MINI_PASS_VERSION__="V64-STRUCTURE-PASS-CUISINE";
 
 <script id="ichef-mini-v65-marker">
 window.__ICHEF_MINI_PASS_VERSION__="V65-BUGS-CORRIGES-LOGO";
+</script>
+
+
+<div id="mini-v66-history-modal" class="mini-v66-history-modal" aria-hidden="true">
+  <section class="mini-v66-history-panel" role="dialog" aria-modal="true" aria-labelledby="mini-v66-history-title">
+    <div class="mini-v66-history-head">
+      <div>
+        <div class="mini-v66-history-kicker">TRACABILITÉ MINI PASS</div>
+        <h2 id="mini-v66-history-title">HISTORIQUE DES COMMANDES</h2>
+        <p>
+          Les commandes anciennes restent hors du tableau LIVE, mais leur historique est conservé ici
+          pour analyser une erreur humaine, une annulation, une validation ou une modification.
+        </p>
+      </div>
+      <button id="mini-v66-history-close" class="mini-v66-history-close" type="button">×</button>
+    </div>
+
+    <div class="mini-v66-history-toolbar">
+      <input id="mini-v66-history-search" type="search"
+             placeholder="Table, article, statut, action..." autocomplete="off">
+      <select id="mini-v66-history-filter">
+        <option value="ALL">TOUT</option>
+        <option value="ACTION">ACTIONS HUMAINES</option>
+        <option value="SNAPSHOT">ÉTATS DE COMMANDE</option>
+        <option value="CANCEL">ANNULATIONS / REMBOURSEMENTS</option>
+        <option value="READY">PRÊTS / VALIDATIONS</option>
+        <option value="SERVED">SERVIS</option>
+      </select>
+      <button id="mini-v66-history-refresh" type="button">ACTUALISER</button>
+    </div>
+
+    <div id="mini-v66-history-summary" class="mini-v66-history-summary"></div>
+    <div id="mini-v66-history-list" class="mini-v66-history-list">
+      <div class="mini-v66-history-empty">Chargement de l'historique…</div>
+    </div>
+
+    <div class="mini-v66-history-footer">
+      <span id="mini-v66-history-storage">Historique local du terminal</span>
+      <button id="mini-v66-history-more" type="button">CHARGER PLUS</button>
+    </div>
+  </section>
+</div>
+
+
+<style id="ichef-mini-v66-history-style">
+.mini-v66-history-btn{
+  border-color:rgba(148,163,184,.42) !important;
+  background:#0b0c0d !important;
+  color:#e2e8f0 !important;
+}
+.mini-v66-history-btn:hover{
+  border-color:#d4af37 !important;
+  color:#fde68a !important;
+}
+
+.mini-v66-history-modal{
+  position:fixed;
+  inset:0;
+  z-index:300000;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  padding:18px;
+  background:rgba(0,0,0,.86);
+  backdrop-filter:blur(8px);
+  -webkit-backdrop-filter:blur(8px);
+}
+.mini-v66-history-modal.open{display:flex}
+.mini-v66-history-panel{
+  width:min(1280px,97vw);
+  max-height:92vh;
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+  border:1px solid rgba(212,175,55,.40);
+  border-radius:16px;
+  background:#090a0b;
+  box-shadow:0 30px 100px rgba(0,0,0,.80);
+  color:#fff;
+}
+.mini-v66-history-head{
+  flex:0 0 auto;
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:16px;
+  padding:18px 20px 15px;
+  border-bottom:1px solid rgba(255,255,255,.09);
+}
+.mini-v66-history-kicker{
+  color:#d4af37;
+  font-size:.62rem;
+  font-weight:950;
+  letter-spacing:1.2px;
+}
+.mini-v66-history-head h2{
+  margin:4px 0 5px;
+  font-size:1.15rem;
+  letter-spacing:.7px;
+}
+.mini-v66-history-head p{
+  margin:0;
+  max-width:850px;
+  color:#8f9aa5;
+  font-size:.72rem;
+  line-height:1.5;
+}
+.mini-v66-history-close{
+  width:40px;
+  height:40px;
+  flex:0 0 40px;
+  border:1px solid rgba(255,255,255,.16);
+  border-radius:9px;
+  background:#111;
+  color:#fff;
+  font-size:1.5rem;
+  cursor:pointer;
+}
+.mini-v66-history-toolbar{
+  flex:0 0 auto;
+  display:grid;
+  grid-template-columns:minmax(240px,1fr) 220px 120px;
+  gap:8px;
+  padding:12px 20px;
+  border-bottom:1px solid rgba(255,255,255,.07);
+}
+.mini-v66-history-toolbar input,
+.mini-v66-history-toolbar select,
+.mini-v66-history-toolbar button{
+  min-height:42px;
+  border:1px solid rgba(255,255,255,.14);
+  border-radius:8px;
+  background:#0d0e10;
+  color:#fff;
+  padding:0 11px;
+  font:inherit;
+  font-size:.72rem;
+  font-weight:750;
+  outline:none;
+}
+.mini-v66-history-toolbar input:focus,
+.mini-v66-history-toolbar select:focus{
+  border-color:#d4af37;
+}
+.mini-v66-history-summary{
+  flex:0 0 auto;
+  display:flex;
+  flex-wrap:wrap;
+  gap:7px;
+  padding:10px 20px 0;
+}
+.mini-v66-history-summary span{
+  display:inline-flex;
+  align-items:center;
+  min-height:26px;
+  padding:4px 8px;
+  border:1px solid rgba(255,255,255,.10);
+  border-radius:999px;
+  background:rgba(255,255,255,.035);
+  color:#9fb0bf;
+  font-size:.62rem;
+  font-weight:850;
+}
+.mini-v66-history-list{
+  flex:1;
+  min-height:0;
+  overflow-y:auto;
+  padding:12px 20px 18px;
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+  scrollbar-width:thin;
+}
+.mini-v66-history-row{
+  display:grid;
+  grid-template-columns:150px 150px minmax(180px,1fr) minmax(240px,2fr);
+  gap:10px;
+  padding:10px 11px;
+  border:1px solid rgba(255,255,255,.085);
+  border-radius:10px;
+  background:#0d0e10;
+}
+.mini-v66-history-row.action{
+  border-left:3px solid #d4af37;
+}
+.mini-v66-history-row.snapshot{
+  border-left:3px solid #3b82f6;
+}
+.mini-v66-history-row.cancel{
+  border-left-color:#ef4444;
+}
+.mini-v66-history-row.ready{
+  border-left-color:#10b981;
+}
+.mini-v66-history-time{
+  color:#77838f;
+  font-size:.63rem;
+  font-weight:800;
+}
+.mini-v66-history-table{
+  color:#fff;
+  font-size:.72rem;
+  font-weight:950;
+}
+.mini-v66-history-kind{
+  color:#9fb0bf;
+  font-size:.65rem;
+  font-weight:850;
+}
+.mini-v66-history-detail{
+  min-width:0;
+  color:#dbe3ea;
+  font-size:.70rem;
+  line-height:1.45;
+  overflow-wrap:anywhere;
+}
+.mini-v66-history-detail strong{color:#fff}
+.mini-v66-history-items{
+  margin-top:5px;
+  color:#87939f;
+  font-size:.63rem;
+}
+.mini-v66-history-empty{
+  padding:36px 20px;
+  border:1px dashed rgba(255,255,255,.10);
+  border-radius:10px;
+  color:#81909d;
+  text-align:center;
+  font-size:.78rem;
+}
+.mini-v66-history-footer{
+  flex:0 0 auto;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  padding:10px 20px 14px;
+  border-top:1px solid rgba(255,255,255,.07);
+  color:#6f7a84;
+  font-size:.62rem;
+}
+.mini-v66-history-more{
+  min-height:34px;
+  padding:0 12px;
+  border:1px solid rgba(212,175,55,.36);
+  border-radius:8px;
+  background:rgba(212,175,55,.05);
+  color:#fde68a;
+  font-size:.64rem;
+  font-weight:900;
+  cursor:pointer;
+}
+@media(max-width:850px){
+  .mini-v66-history-toolbar{grid-template-columns:1fr}
+  .mini-v66-history-row{grid-template-columns:1fr}
+}
+</style>
+
+
+<script id="ichef-mini-v66-history-script">
+(function(){
+"use strict";
+
+const MINI_HISTORY_DB="ichefMiniPassHistoryV66";
+const MINI_HISTORY_STORE="history";
+const MINI_HISTORY_VERSION=1;
+const MINI_HISTORY_FALLBACK_MAX=1200;
+let MINI_HISTORY_DB_PROMISE=null;
+let MINI_HISTORY_RENDER_LIMIT=400;
+let MINI_HISTORY_LAST_ROWS=[];
+let MINI_HISTORY_SIGS={};
+
+function mhText(v){ return String(v??"").trim(); }
+function mhNorm(v){
+  return mhText(v).normalize("NFD").replace(/[\u0300-\u036f]/g,"").toUpperCase();
+}
+function mhClone(v){
+  try{return structuredClone(v)}catch(_){try{return JSON.parse(JSON.stringify(v))}catch(__){return v}}
+}
+function mhEsc(v){
+  return mhText(v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+function mhTenant(){
+  try{return String(tenantID||"")}catch(_){return new URLSearchParams(location.search).get("tenantID")||""}
+}
+function mhTechnicalKey(key){
+  const k=mhNorm(key);
+  return /MASTER|ARCHIVE|CATEGORIES|ARCHITECTURE|HACCP|INVENTORY/.test(k) ||
+    /^(FISCAL_|PAYMENT_|REFUND_|CANCEL_|VOID_|AUDIT_|SESSION_|CACHE_|META_|SYSTEM_)/.test(k) ||
+    /FISCAL_CANCEL|PAYMENT_REQUEST|CASH_IN|CLOSE_PAID/.test(k);
+}
+function mhOrderId(tableId,order){
+  return mhText(order?.orderId||order?.id||order?._id||order?.uuid||tableId);
+}
+function mhItemKey(item,index){
+  try{
+    if(typeof miniItemKey==="function")return miniItemKey(item,index);
+  }catch(_){}
+  return mhText(item?.lineId||item?.itemId||item?.id||item?.uuid||item?._id||`${index}:${item?.n||item?.name||"ITEM"}`);
+}
+function mhSignature(order){
+  const relevant={
+    status:order?.status,
+    paymentStatus:order?.paymentStatus,
+    fiscalStatus:order?.fiscalStatus,
+    isArchived:order?.isArchived,
+    items:(Array.isArray(order?.items)?order.items:[]).map((i,index)=>({
+      k:mhItemKey(i,index),
+      q:i?.qty??i?.quantity??1,
+      n:i?.n??i?.name??i?.label??"",
+      status:i?.status,
+      done:i?.done,
+      ready:i?.ready,
+      isReady:i?.isReady,
+      served:i?.served,
+      isServed:i?.isServed,
+      cancelled:i?.cancelled,
+      refunded:i?.refunded,
+      voided:i?.voided,
+      readyAt:i?.readyAt,
+      servedAt:i?.servedAt,
+      cancelledAt:i?.cancelledAt,
+      updatedAt:i?.updatedAt
+    }))
+  };
+  const s=JSON.stringify(relevant);
+  let h=2166136261;
+  for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)}
+  return (h>>>0).toString(36)+":"+s.length;
+}
+function mhSigStorageKey(){return `ichef_mini_history_sigs_v66:${mhTenant()}`;}
+function mhLoadSigs(){
+  if(Object.keys(MINI_HISTORY_SIGS).length)return;
+  try{
+    const x=JSON.parse(localStorage.getItem(mhSigStorageKey())||"{}");
+    if(x&&typeof x==="object")MINI_HISTORY_SIGS=x;
+  }catch(_){}
+}
+function mhSaveSigs(){
+  try{localStorage.setItem(mhSigStorageKey(),JSON.stringify(MINI_HISTORY_SIGS))}catch(_){}
+}
+
+function mhOpenDb(){
+  if(MINI_HISTORY_DB_PROMISE)return MINI_HISTORY_DB_PROMISE;
+  MINI_HISTORY_DB_PROMISE=new Promise((resolve,reject)=>{
+    if(!window.indexedDB){reject(new Error("IndexedDB indisponible"));return}
+    const req=indexedDB.open(MINI_HISTORY_DB,MINI_HISTORY_VERSION);
+    req.onupgradeneeded=()=>{
+      const db=req.result;
+      let store;
+      if(!db.objectStoreNames.contains(MINI_HISTORY_STORE)){
+        store=db.createObjectStore(MINI_HISTORY_STORE,{keyPath:"id"});
+      }else{
+        store=req.transaction.objectStore(MINI_HISTORY_STORE);
+      }
+      if(!store.indexNames.contains("tenant_ts"))store.createIndex("tenant_ts",["tenantID","ts"],{unique:false});
+      if(!store.indexNames.contains("tenant_table_ts"))store.createIndex("tenant_table_ts",["tenantID","tableId","ts"],{unique:false});
+    };
+    req.onsuccess=()=>resolve(req.result);
+    req.onerror=()=>reject(req.error||new Error("IndexedDB erreur"));
+  });
+  return MINI_HISTORY_DB_PROMISE;
+}
+
+function mhFallbackKey(){return `ichef_mini_history_fallback_v66:${mhTenant()}`;}
+function mhFallbackAppend(row){
+  try{
+    const arr=JSON.parse(localStorage.getItem(mhFallbackKey())||"[]");
+    const rows=Array.isArray(arr)?arr:[];
+    rows.push(row);
+    localStorage.setItem(mhFallbackKey(),JSON.stringify(rows.slice(-MINI_HISTORY_FALLBACK_MAX)));
+  }catch(_){}
+}
+async function mhWrite(row){
+  const entry={
+    ...row,
+    tenantID:mhTenant(),
+    ts:Number(row.ts||Date.now()),
+    id:mhText(row.id)||`${mhTenant()}:${Date.now()}:${Math.random().toString(36).slice(2,10)}`
+  };
+  try{
+    const db=await mhOpenDb();
+    await new Promise((resolve,reject)=>{
+      const tx=db.transaction(MINI_HISTORY_STORE,"readwrite");
+      tx.objectStore(MINI_HISTORY_STORE).put(entry);
+      tx.oncomplete=()=>resolve();
+      tx.onerror=()=>reject(tx.error||new Error("historique écriture"));
+    });
+    return true;
+  }catch(e){
+    mhFallbackAppend(entry);
+    return false;
+  }
+}
+async function mhRead(limit=400){
+  const tenant=mhTenant();
+  let out=[];
+  try{
+    const db=await mhOpenDb();
+    out=await new Promise((resolve,reject)=>{
+      const tx=db.transaction(MINI_HISTORY_STORE,"readonly");
+      const idx=tx.objectStore(MINI_HISTORY_STORE).index("tenant_ts");
+      const range=IDBKeyRange.bound([tenant,0],[tenant,Number.MAX_SAFE_INTEGER]);
+      const req=idx.openCursor(range,"prev");
+      const rows=[];
+      req.onsuccess=()=>{
+        const cur=req.result;
+        if(!cur||rows.length>=limit){resolve(rows);return}
+        rows.push(cur.value);
+        cur.continue();
+      };
+      req.onerror=()=>reject(req.error);
+    });
+  }catch(_){}
+  try{
+    const fb=JSON.parse(localStorage.getItem(mhFallbackKey())||"[]");
+    if(Array.isArray(fb))out=out.concat(fb.filter(x=>x?.tenantID===tenant));
+  }catch(_){}
+  const seen=new Set();
+  return out
+    .sort((a,b)=>Number(b.ts||0)-Number(a.ts||0))
+    .filter(x=>{if(seen.has(x.id))return false;seen.add(x.id);return true})
+    .slice(0,limit);
+}
+
+function mhOrderSummary(order){
+  const items=Array.isArray(order?.items)?order.items:[];
+  const names=items.slice(0,8).map(i=>{
+    const q=Math.max(1,Number(i?.qty??i?.quantity??1)||1);
+    const n=mhText(i?.n||i?.name||i?.label||"ARTICLE");
+    let state="";
+    if(i?.cancelled||i?.voided)state=" [ANNULÉ]";
+    else if(i?.refunded)state=" [REMBOURSÉ]";
+    else if(i?.served||i?.isServed)state=" [SERVI]";
+    else if(i?.done||i?.ready||i?.isReady)state=" [PRÊT]";
+    return `${q}× ${n}${state}`;
+  });
+  return names.join(" · ")+(items.length>8?` · +${items.length-8}`:"");
+}
+function mhClassifyOrder(order){
+  const items=Array.isArray(order?.items)?order.items:[];
+  if(items.some(i=>i?.cancelled||i?.voided||i?.refunded))return "CANCEL";
+  if(items.some(i=>i?.served||i?.isServed))return "SERVED";
+  if(items.some(i=>i?.done||i?.ready||i?.isReady))return "READY";
+  return "SNAPSHOT";
+}
+
+window.miniHistoryCaptureOrder=function(tableId,order,source="STATE"){
+  try{
+    if(!tableId||!order||mhTechnicalKey(tableId))return;
+    mhLoadSigs();
+    const sig=mhSignature(order);
+    const orderId=mhOrderId(tableId,order);
+    const sigKey=`${tableId}:${orderId}`;
+    if(MINI_HISTORY_SIGS[sigKey]===sig)return;
+    MINI_HISTORY_SIGS[sigKey]=sig;
+    mhSaveSigs();
+
+    mhWrite({
+      type:"SNAPSHOT",
+      class:mhClassifyOrder(order),
+      tableId:String(tableId),
+      orderId,
+      source,
+      status:mhText(order?.status||""),
+      summary:mhOrderSummary(order),
+      order:mhClone(order),
+      ts:Date.now()
+    });
+  }catch(e){console.warn("[Mini Pass historique] capture",e)}
+};
+
+window.miniHistoryCaptureState=function(state,source="STATE"){
+  try{
+    const raw=state?.activeOrders&&typeof state.activeOrders==="object"?state.activeOrders:state;
+    if(!raw||typeof raw!=="object")return;
+    Object.entries(raw).forEach(([tableId,order])=>{
+      if(order?.data&&Array.isArray(order.data.items))order=order.data;
+      window.miniHistoryCaptureOrder(tableId,order,source);
+    });
+  }catch(e){console.warn("[Mini Pass historique] état",e)}
+};
+
+window.miniHistoryEvent=function(kind,data={}){
+  try{
+    const className=/CANCEL|REFUND|VOID/i.test(mhText(data.auditReason||kind))?"CANCEL":
+      /PRET|READY|VALID/i.test(mhText(data.auditReason||kind))?"READY":"ACTION";
+    mhWrite({
+      type:"ACTION",
+      class:className,
+      tableId:mhText(data.tableId||""),
+      orderId:mhText(data.orderId||""),
+      source:mhText(data.source||"MINI_PASS"),
+      status:mhText(kind),
+      summary:mhText(data.auditReason||kind),
+      detail:mhClone(data),
+      ts:Date.now()
+    });
+  }catch(e){console.warn("[Mini Pass historique] action",e)}
+};
+
+function mhDate(ts){
+  try{return new Date(Number(ts)).toLocaleString("fr-FR")}catch(_){return ""}
+}
+function mhRowText(row){
+  const raw=[
+    row.tableId,row.orderId,row.status,row.summary,row.source,row.class,row.type,
+    JSON.stringify(row.detail||{}),JSON.stringify(row.order||{})
+  ].join(" ");
+  return mhNorm(raw);
+}
+function mhMatchFilter(row,filter){
+  if(filter==="ALL")return true;
+  if(filter==="ACTION")return row.type==="ACTION";
+  if(filter==="SNAPSHOT")return row.type==="SNAPSHOT";
+  return row.class===filter;
+}
+function mhRender(){
+  const list=document.getElementById("mini-v66-history-list");
+  const summary=document.getElementById("mini-v66-history-summary");
+  if(!list||!summary)return;
+
+  const q=mhNorm(document.getElementById("mini-v66-history-search")?.value||"");
+  const filter=document.getElementById("mini-v66-history-filter")?.value||"ALL";
+  const rows=MINI_HISTORY_LAST_ROWS.filter(row=>{
+    if(!mhMatchFilter(row,filter))return false;
+    return !q||mhRowText(row).includes(q);
+  });
+
+  const actions=rows.filter(x=>x.type==="ACTION").length;
+  const snapshots=rows.filter(x=>x.type==="SNAPSHOT").length;
+  const tables=new Set(rows.map(x=>x.tableId).filter(Boolean)).size;
+  summary.innerHTML=
+    `<span>${rows.length} ÉVÉNEMENT(S)</span>`+
+    `<span>${tables} TABLE(S)</span>`+
+    `<span>${actions} ACTION(S)</span>`+
+    `<span>${snapshots} ÉTAT(S)</span>`;
+
+  if(!rows.length){
+    list.innerHTML=`<div class="mini-v66-history-empty">Aucun historique correspondant.</div>`;
+    return;
+  }
+
+  list.innerHTML=rows.map(row=>{
+    const klass=(row.type==="ACTION"?"action":"snapshot")+" "+
+      (row.class==="CANCEL"?"cancel":row.class==="READY"?"ready":"");
+    const table=row.tableId?`TABLE ${mhEsc(row.tableId)}`:"—";
+    const type=row.type==="ACTION"?"ACTION HUMAINE":"ÉTAT COMMANDE";
+    const detail=row.type==="ACTION"
+      ? `<strong>${mhEsc(row.summary||row.status||"Action")}</strong>
+         <div class="mini-v66-history-items">${mhEsc(row.status||"")} · ${mhEsc(row.source||"")}</div>`
+      : `<strong>${mhEsc(row.status||"COMMANDE")}</strong>
+         <div class="mini-v66-history-items">${mhEsc(row.summary||"")}</div>`;
+    return `<div class="mini-v66-history-row ${klass}">
+      <div class="mini-v66-history-time">${mhEsc(mhDate(row.ts))}</div>
+      <div class="mini-v66-history-table">${table}</div>
+      <div class="mini-v66-history-kind">${type}<br>${mhEsc(row.class||"")}</div>
+      <div class="mini-v66-history-detail">${detail}</div>
+    </div>`;
+  }).join("");
+}
+async function mhReload(){
+  const list=document.getElementById("mini-v66-history-list");
+  if(list)list.innerHTML=`<div class="mini-v66-history-empty">Chargement de l'historique…</div>`;
+  MINI_HISTORY_LAST_ROWS=await mhRead(MINI_HISTORY_RENDER_LIMIT);
+  mhRender();
+  const storage=document.getElementById("mini-v66-history-storage");
+  if(storage)storage.textContent=`Historique persistant du terminal · ${MINI_HISTORY_LAST_ROWS.length} élément(s) chargé(s)`;
+}
+function mhOpen(){
+  const modal=document.getElementById("mini-v66-history-modal");
+  if(!modal)return;
+  modal.classList.add("open");
+  modal.setAttribute("aria-hidden","false");
+  mhReload();
+}
+function mhClose(){
+  const modal=document.getElementById("mini-v66-history-modal");
+  if(!modal)return;
+  modal.classList.remove("open");
+  modal.setAttribute("aria-hidden","true");
+}
+
+document.addEventListener("click",e=>{
+  if(e.target.closest("#mini-v66-history-btn")){mhOpen();return}
+  if(e.target.closest("#mini-v66-history-close")){mhClose();return}
+  if(e.target===document.getElementById("mini-v66-history-modal")){mhClose();return}
+  if(e.target.closest("#mini-v66-history-refresh")){mhReload();return}
+  if(e.target.closest("#mini-v66-history-more")){
+    MINI_HISTORY_RENDER_LIMIT+=400;
+    mhReload();
+    return;
+  }
+});
+document.addEventListener("input",e=>{
+  if(e.target?.id==="mini-v66-history-search")mhRender();
+});
+document.addEventListener("change",e=>{
+  if(e.target?.id==="mini-v66-history-filter")mhRender();
+});
+document.addEventListener("keydown",e=>{
+  if(e.key==="Escape"&&document.getElementById("mini-v66-history-modal")?.classList.contains("open"))mhClose();
+});
+
+window.__ICHEF_MINI_HISTORY__="V66-INDEXEDDB";
+})();
+</script>
+
+
+<script id="ichef-mini-v66-history-bootstrap">
+document.addEventListener("DOMContentLoaded",()=>{
+  setTimeout(()=>{
+    try{
+      if(typeof activeOrders==="object" && activeOrders){
+        window.miniHistoryCaptureState?.(activeOrders,"ETAT_INITIAL");
+      }
+    }catch(_){}
+  },1200);
+},{once:true});
+</script>
+
+
+<script id="ichef-mini-v66-marker">
+window.__ICHEF_MINI_PASS_VERSION__="V66-HISTORIQUE-AUDIT";
 </script>
 
 </body>
