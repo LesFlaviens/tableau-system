@@ -15,6 +15,128 @@
 <title>iCHEF — MINI PASS</title>
 
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;800;900&family=Montserrat:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+
+<style id="ichef-mini-v76-critical-auth-paint">
+/* =========================================================
+   V76 — PREMIER AFFICHAGE ATOMIQUE
+   Empêche tout flash de l'application avant la décision PIN/session.
+   ========================================================= */
+html,body{
+  background:#050505 !important;
+}
+
+/* PIN requis : seul le portail PIN a le droit d'être peint. */
+html.ichef-boot-pin body > *:not(#security-overlay):not(#phone-lock){
+  visibility:hidden !important;
+}
+html.ichef-boot-pin #security-overlay{
+  display:flex !important;
+  visibility:visible !important;
+  opacity:1 !important;
+}
+html.ichef-boot-pin #phone-lock{
+  display:none !important;
+}
+
+/* Session déjà valide : le portail PIN n'est jamais peint, même 1 frame. */
+html.ichef-boot-auth #security-overlay,
+html.ichef-boot-auth #phone-lock{
+  display:none !important;
+}
+
+/* Téléphone : blocage immédiat, sans passage par le PIN. */
+html.ichef-boot-phone body > *:not(#phone-lock):not(#security-overlay){
+  visibility:hidden !important;
+}
+html.ichef-boot-phone #security-overlay{
+  display:none !important;
+}
+html.ichef-boot-phone #phone-lock{
+  display:flex !important;
+  visibility:visible !important;
+  opacity:1 !important;
+}
+</style>
+
+<script id="ichef-mini-v76-critical-auth-boot">
+(function(){
+  "use strict";
+
+  const root=document.documentElement;
+  const SESSION_KEY='ichef_mini_pass_auth_v71';
+  const MAX_AGE=12*60*60*1000;
+
+  function clearModes(){
+    root.classList.remove('ichef-boot-pin','ichef-boot-auth','ichef-boot-phone');
+  }
+
+  function applyMode(mode){
+    clearModes();
+    root.classList.add('ichef-boot-'+mode);
+    root.dataset.ichefBoot=mode;
+  }
+
+  /* Accessible au moteur principal une fois le DOM chargé. */
+  window.ichefResolveBoot=function(mode){
+    applyMode(mode==='auth'?'auth':mode==='phone'?'phone':'pin');
+  };
+
+  function phoneDeviceEarly(){
+    try{
+      const ua=String(navigator.userAgent||'');
+      const uaMobile=!!(navigator.userAgentData && navigator.userAgentData.mobile===true);
+      const phoneUA=/iPhone|iPod|Windows Phone|IEMobile|Opera Mini|Android.*Mobile|Mobile Safari/i.test(ua);
+      const coarse=!!(window.matchMedia && window.matchMedia('(pointer:coarse)').matches);
+      const sw=Number(window.screen?.width||innerWidth||9999);
+      const sh=Number(window.screen?.height||innerHeight||9999);
+      const shortSide=Math.min(sw,sh);
+      return Boolean(uaMobile || phoneUA || (coarse && shortSide<=520));
+    }catch(_){
+      return false;
+    }
+  }
+
+  function validSavedSession(){
+    try{
+      const raw=sessionStorage.getItem(SESSION_KEY);
+      if(!raw) return false;
+
+      const saved=JSON.parse(raw);
+      const qs=new URLSearchParams(location.search);
+      const requestedTenant=String(
+        qs.get('tenantID') ||
+        localStorage.getItem('ichef_tenant_id') ||
+        saved?.tenantID ||
+        ''
+      ).trim().toLowerCase();
+
+      const savedTenant=String(saved?.tenantID||'').trim().toLowerCase();
+      const verifiedAt=Number(saved?.verifiedAt||0);
+
+      if(!savedTenant || !requestedTenant || savedTenant!==requestedTenant || !verifiedAt){
+        return false;
+      }
+
+      const maxExpiry=verifiedAt+MAX_AGE;
+      const serverExpiry=Number(saved?.sessionExpiresAt||0);
+      const effectiveExpiry=serverExpiry>0 ? Math.min(maxExpiry,serverExpiry) : maxExpiry;
+
+      return Date.now()<effectiveExpiry;
+    }catch(_){
+      return false;
+    }
+  }
+
+  if(phoneDeviceEarly()){
+    applyMode('phone');
+  }else if(validSavedSession()){
+    applyMode('auth');
+  }else{
+    applyMode('pin');
+  }
+})();
+</script>
+
 <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 
 <style>
@@ -2711,9 +2833,17 @@ async function checkPin(){
         localStorage.removeItem('ichef_master_pin');
         localStorage.removeItem('pin');
         miniSaveAuthSession();
+
+        /* V76 : la classe critique PIN cachait volontairement tout le Mini Pass.
+           On bascule l'état AVANT de retirer l'overlay pour éviter toute frame
+           intermédiaire ou écran noir. */
+        window.ichefResolveBoot?.('auth');
+
         if(input) input.value='';
         if(error) error.style.display='none';
-        document.getElementById('security-overlay').style.display='none';
+        const __securityOverlay=document.getElementById('security-overlay');
+        if(__securityOverlay) __securityOverlay.style.display='none';
+
         verifyImmersion();
         await startMiniPassAfterAuth();
     }catch(e){
@@ -4382,6 +4512,7 @@ document.addEventListener('DOMContentLoaded',()=>{
         const phoneLock=document.getElementById('phone-lock');
         miniSetConnectionState(false,navigator.onLine?'CONNEXION':'HORS LIGNE');
         miniRenderReservationMenu();
+        window.ichefResolveBoot?.('phone');
         if(phoneLock) phoneLock.style.display='flex';
         if(security) security.style.display='none';
         if(pwa) pwa.style.display='none';
@@ -4393,6 +4524,7 @@ document.addEventListener('DOMContentLoaded',()=>{
     const restored=miniRestoreAuthSession();
 
     if(restored){
+        window.ichefResolveBoot?.('auth');
         if(security) security.style.display='none';
         if(pwa) pwa.style.display='none';
         miniSetConnectionState(false,navigator.onLine?'RECONNEXION':'HORS LIGNE');
@@ -4404,6 +4536,7 @@ document.addEventListener('DOMContentLoaded',()=>{
     }
 
     /* Première ouverture / session réellement expirée : PIN requis. */
+    window.ichefResolveBoot?.('pin');
     if(security) security.style.display='flex';
 
     const input=document.getElementById('pin-input');
@@ -7366,6 +7499,12 @@ console.info("[iCHEF MINI PASS V74] réservations distinguées ACTUEL / SUIVANT"
 <script id="ichef-mini-v75-marker">
 window.__ICHEF_MINI_PASS_VERSION__="V75-RESERVATIONS-MOIS-GROUPES";
 console.info("[iCHEF MINI PASS V75] réservations 30 jours · filtres groupes/sans groupe");
+</script>
+
+
+<script id="ichef-mini-v76-marker">
+window.__ICHEF_MINI_PASS_VERSION__="V76-DEMARRAGE-PIN-SANS-FLASH";
+console.info("[iCHEF MINI PASS V76] premier affichage atomique · PIN/session sans micro-flash");
 </script>
 
 </body>
