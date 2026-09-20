@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
+<!-- ICHEF ADMIN V35 — ACCUEIL MASTER VERT SI SOCKET CONNECTÉ / JAUNE SINON -->
 <!-- ICHEF ADMIN V32 — ENTRÉE PIN PREMIUM iCHEF + ATTRIBUTION PAD SERVEUR -->
 <!-- ICHEF ADMIN V19 — SOCKET STABLE POLLING→WEBSOCKET -->
 <!-- ICHEF ADMIN FINAL V18.1 — CARTE & CATEGORIES PRO -->
@@ -1484,7 +1485,22 @@ async function verifyAdminPin() {
             }
         }
 
-</style>
+
+        /* V35 — Accueil Master : témoin de connexion */
+        #btn-accueil-master{
+            transition:color .2s ease,border-color .2s ease,background .2s ease,box-shadow .2s ease,transform .2s ease;
+        }
+        #btn-accueil-master:hover{
+            transform:translateY(-1px);
+        }
+        #accueil-master-dot{
+            display:inline-block;
+            margin-right:5px;
+            font-size:.78em;
+            transition:color .2s ease,text-shadow .2s ease;
+        }
+
+    </style>
 
 <style id="ichef-qrnfc-centre-v9">
 @media (max-width: 1050px) {
@@ -2558,7 +2574,14 @@ body:not(.ichef-admin-locked) .app-container{
                     
                 </h2>
                 <div class="topbar-actions">
-                    <button class="btn-outline" onclick="window.location.href='administration.html'" style="border-color: var(--gold); color: var(--gold);"> Accueil Master</button>
+                    <button
+                        id="btn-accueil-master"
+                        class="btn-outline"
+                        onclick="window.location.href='administration.html'"
+                        title="État de connexion iCHEF"
+                        style="border-color:#d4af37;color:#d4af37;background:rgba(212,175,55,.06);">
+                        <span id="accueil-master-dot">●</span> Accueil Master
+                    </button>
                     <button class="btn-sync" id="sync-status" onclick="forceSync()"><span>● En Direct</span> </button>
                     
                     <button id="btn-kill-switch" class="btn-save" style="background: var(--danger); color: white; box-shadow: 0 4px 15px rgba(239, 68, 68, 0.4);" onclick="toggleKillSwitch()"> COUPER LE SYSTÈME</button>
@@ -7400,6 +7423,48 @@ function updateDashboardStats() {
 
         let socket = null;
 
+        // =========================================================
+        // V35 — ÉTAT ACCUEIL MASTER
+        // Vert = Socket iCHEF réellement connecté
+        // Jaune = hors ligne / reconnexion / initialisation
+        // =========================================================
+        function updateAccueilMasterStatus(forceOnline = null) {
+            const btn = document.getElementById('btn-accueil-master');
+            const dot = document.getElementById('accueil-master-dot');
+            if (!btn) return;
+
+            const isOnline = forceOnline === true ||
+                (forceOnline === null && !!(socket && socket.connected));
+
+            if (isOnline) {
+                btn.style.setProperty('color', '#10b981', 'important');
+                btn.style.setProperty('border-color', '#10b981', 'important');
+                btn.style.setProperty('background', 'rgba(16,185,129,.09)', 'important');
+                btn.style.setProperty('box-shadow', '0 0 0 1px rgba(16,185,129,.08), 0 4px 15px rgba(16,185,129,.12)', 'important');
+                btn.title = 'iCHEF connecté — Accueil Master disponible';
+                if (dot) {
+                    dot.style.color = '#10b981';
+                    dot.style.textShadow = '0 0 10px rgba(16,185,129,.75)';
+                }
+            } else {
+                btn.style.setProperty('color', '#d4af37', 'important');
+                btn.style.setProperty('border-color', '#d4af37', 'important');
+                btn.style.setProperty('background', 'rgba(212,175,55,.06)', 'important');
+                btn.style.setProperty('box-shadow', 'none', 'important');
+                btn.title = 'iCHEF non connecté / reconnexion en cours';
+                if (dot) {
+                    dot.style.color = '#d4af37';
+                    dot.style.textShadow = '0 0 8px rgba(212,175,55,.45)';
+                }
+            }
+        }
+
+        window.updateAccueilMasterStatus = updateAccueilMasterStatus;
+        window.addEventListener('DOMContentLoaded', () => {
+            updateAccueilMasterStatus(false);
+        }, { once: true });
+
+
 // =========================================
 //  CONFIGURATION ET INFRASTRUCTURE FRONT-END
 // =========================================
@@ -7547,6 +7612,7 @@ async function startAuthenticatedApplication() {
 
     socket.on('connect', () => {
         window.ICHEF_SECURITY.connectionState = 'online';
+        updateAccueilMasterStatus(true);
         console.info('[iCHEF CONFIG] ✅ Socket connecté', {
             id: socket.id,
             transport: socket.io?.engine?.transport?.name || 'inconnu',
@@ -7594,6 +7660,7 @@ async function startAuthenticatedApplication() {
     socket.on('tenant-joined', (payload = {}) => {
         if (String(payload.tenantID || '') !== String(tenantID || '')) return;
         window.ICHEF_SECURITY.connectionState = 'online';
+        updateAccueilMasterStatus(true);
         updateCashRegisterSyncStatus();
         if (typeof updateAutomaticCashRegisterRows === 'function') {
             updateAutomaticCashRegisterRows();
@@ -7602,6 +7669,7 @@ async function startAuthenticatedApplication() {
 
     socket.on('disconnect', (reason) => {
         window.ICHEF_SECURITY.connectionState = 'offline';
+        updateAccueilMasterStatus(false);
         updateCashRegisterSyncStatus();
         if (typeof updateAutomaticCashRegisterRows === 'function') updateAutomaticCashRegisterRows();
         setQrNfcSaveIndicator('offline');
@@ -7620,6 +7688,7 @@ async function startAuthenticatedApplication() {
     if (socket.io) {
         socket.io.on('reconnect_attempt', (attempt) => {
             window.ICHEF_SECURITY.connectionState = 'degraded';
+            updateAccueilMasterStatus(false);
             updateCashRegisterSyncStatus();
             setQrNfcSaveIndicator('offline');
 
@@ -7634,6 +7703,7 @@ async function startAuthenticatedApplication() {
 
     socket.on('connect_error', (error) => {
         window.ICHEF_SECURITY.connectionState = 'degraded';
+        updateAccueilMasterStatus(false);
         updateCashRegisterSyncStatus();
         if (typeof updateAutomaticCashRegisterRows === 'function') updateAutomaticCashRegisterRows();
         if (qrNfcHasUnsavedChanges) {
