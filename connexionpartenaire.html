@@ -2224,15 +2224,23 @@ async function login() {
                         'Content-Type':
                             'application/json',
                         'Accept':
-                            'application/json'
+                            'application/json',
+                        'X-iCHEF-Device':
+                            getDeviceFingerprint(),
+                        'X-iCHEF-Tenant':
+                            tenant
                     },
                     credentials: 'include',
+                    cache: 'no-store',
                     body: JSON.stringify({
                         tenantID: tenant,
                         pin,
                         deviceId:
                             getDeviceFingerprint(),
-                        terminal: 'ADMIN'
+                        terminal: 'ADMIN',
+                        module: 'ADMIN',
+                        source:
+                            'connexionpartenaire.html'
                     })
                 }
             );
@@ -2271,6 +2279,35 @@ async function login() {
             );
 
             try {
+                const handoffAt = Date.now();
+
+                /* Session temporaire attendue par administration.html.
+                   Le PIN n'est PAS stocké en localStorage. */
+                sessionStorage.setItem(
+                    'ichef_partner_pin',
+                    pin
+                );
+                sessionStorage.setItem(
+                    'ichef_partner_authenticated',
+                    '1'
+                );
+                sessionStorage.setItem(
+                    'ichef_partner_tenant',
+                    String(safeTenant).toLowerCase()
+                );
+                sessionStorage.setItem(
+                    'ichef_partner_role',
+                    String(data.role || '')
+                );
+                sessionStorage.setItem(
+                    'ichef_partner_handoff_at',
+                    String(handoffAt)
+                );
+                sessionStorage.setItem(
+                    'ichef_partner_origin',
+                    window.location.origin
+                );
+
                 sessionStorage.setItem(
                     'ichef_login_context',
                     JSON.stringify({
@@ -2305,15 +2342,60 @@ async function login() {
                             data.csrfToken
                         )
                     );
+                } else {
+                    sessionStorage.removeItem(
+                        'ichef_csrf_token'
+                    );
                 }
-            } catch (_) {}
+
+                /* Handoff de secours si connexionpartenaire et administration
+                   ne sont pas exactement sur la même origine. Le cookie expire
+                   automatiquement après 2 minutes et administration.html le supprime. */
+                const handoffPayload =
+                    encodeURIComponent(
+                        JSON.stringify({
+                            tenantID:
+                                String(safeTenant).toLowerCase(),
+                            pin,
+                            role:
+                                data.role || '',
+                            createdAt:
+                                handoffAt,
+                            origin:
+                                window.location.origin
+                        })
+                    );
+
+                const secureFlag =
+                    location.protocol === 'https:'
+                        ? '; Secure'
+                        : '';
+
+                document.cookie =
+                    `ichef_partner_handoff=${handoffPayload}; Max-Age=120; Path=/; SameSite=Lax${secureFlag}`;
+
+                if (
+                    location.hostname === 'ichef.ch' ||
+                    location.hostname.endsWith('.ichef.ch')
+                ) {
+                    document.cookie =
+                        `ichef_partner_handoff=${handoffPayload}; Max-Age=120; Path=/; Domain=.ichef.ch; SameSite=Lax${secureFlag}`;
+                }
+
+            } catch (handoffError) {
+                console.warn(
+                    '[iCHEF AUTH] Handoff partenaire impossible',
+                    handoffError
+                );
+            }
 
             pinInput.value = '';
 
-            window.location.href =
+            window.location.replace(
                 `administration.html?tenantID=${encodeURIComponent(
                     safeTenant
-                )}`;
+                )}`
+            );
 
             return;
         }
