@@ -580,10 +580,6 @@ const SERVER_URL =
     ? 'http://localhost:10000'
     : 'https://tableau-system.onrender.com';
 
-const ALLOWED_STAFF_ROLES = new Set([
-  'salle','serveur','employe','employee','staff'
-]);
-
 function normalizeRole(v){
   return String(v || '')
     .trim()
@@ -615,22 +611,64 @@ function currentTenant(){
 }
 
 function authHeaders(){
-  const token = sessionStorage.getItem('ichef_auth_token');
+  const token =
+    sessionStorage.getItem('ichef_auth_token') ||
+    sessionStorage.getItem('ichef_access_token');
   const headers = {
     'Accept':'application/json'
   };
   if(token){
     headers.Authorization = `Bearer ${token}`;
   }
+
+  const deviceId =
+    localStorage.getItem('ichef_device_id');
+
+  if(deviceId){
+    headers['X-iCHEF-Device'] = deviceId;
+  }
+
   return headers;
 }
 
 function requireStaffSession(){
-  const role = normalizeRole(sessionStorage.getItem('ichef_user_role'));
+  const role = normalizeRole(
+    sessionStorage.getItem('ichef_user_role')
+  );
   const tenant = currentTenant();
+  const profile = readProfile();
+  const token =
+    sessionStorage.getItem('ichef_auth_token') ||
+    sessionStorage.getItem('ichef_access_token');
 
-  if(!tenant || !ALLOWED_STAFF_ROLES.has(role)){
-    location.replace('https://os.ichef.ch/');
+  const management = new Set([
+    'master','admin','manager','direction',
+    'gerant','directeur','directrice'
+  ]);
+
+  if(!tenant){
+    location.replace('connexionpartenaire.html');
+    throw new Error('Établissement absent.');
+  }
+
+  if(management.has(role)){
+    location.replace(
+      `admin.html?tenantID=${encodeURIComponent(tenant)}`
+    );
+    throw new Error('Compte Direction.');
+  }
+
+  /* Le rôle staff peut être un intitulé libre.
+     On valide donc la session issue de la porte officielle,
+     pas une petite liste de métiers codés en dur. */
+  if(
+    !role &&
+    !profile?.id &&
+    !token
+  ){
+    location.replace(
+      `connexionpartenaire.html?tenantID=${encodeURIComponent(tenant)}`
+    );
     throw new Error('Session staff absente.');
   }
 }
@@ -998,7 +1036,9 @@ async function loadStaffDashboard(){
       sessionStorage.removeItem('ichef_auth_token');
       sessionStorage.removeItem('ichef_user_role');
       sessionStorage.removeItem('ichef_staff_profile');
-      location.replace('https://os.ichef.ch/');
+      location.replace(
+        `connexionpartenaire.html?tenantID=${encodeURIComponent(tenantID)}&reason=SESSION_EXPIRED`
+      );
       return;
     }
 
@@ -1016,11 +1056,12 @@ async function loadStaffDashboard(){
   }catch(error){
     console.warn('[iCHEF Staff Dashboard]',error);
 
-    // L'identité personnelle déjà renvoyée par /api/verify-pin reste affichée.
-    // Les blocs RH réels attendent l'endpoint serveur /api/staff/dashboard.
     showSync(
-      "Votre accès personnel est bien reconnu. Les heures, demandes, missions, messages et documents seront affichés ici dès que l’API /api/staff/dashboard sera reliée au serveur.",
-      'warning'
+      safeText(
+        error?.message,
+        "Impossible de synchroniser votre espace staff. Vérifiez la connexion serveur."
+      ),
+      'error'
     );
   }
 }
@@ -1190,7 +1231,9 @@ function logout(){
   sessionStorage.removeItem('ichef_user_role');
   sessionStorage.removeItem('ichef_staff_profile');
   sessionStorage.removeItem('ichef_authenticated_at');
-  location.replace('https://os.ichef.ch/');
+  location.replace(
+    `connexionpartenaire.html?tenantID=${encodeURIComponent(currentTenant())}`
+  );
 }
 
 document.getElementById('logout-btn').addEventListener('click',logout);
