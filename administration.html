@@ -2,6 +2,9 @@
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     
     <link rel="manifest" href="manifest.json">
@@ -15,52 +18,146 @@
     
     <title>iCHEF OS — Administration · 18 modules</title>
     
-<script>
+    <script>
         "use strict";
-        console.info("[iCHEF] Administration CLEAN V6 · 2026-09-09");
-        window.__ICHEF_STRIPE_FIX_VERSION = "2026-09-09-STRIPE-DIAG-V1";
-        console.info("[iCHEF] Stripe fix chargé:", window.__ICHEF_STRIPE_FIX_VERSION);
+        // ==========================================================
+        // 🌐 DOMAINE CANONIQUE iCHEF OS
+        // Important : sessionStorage est lié au domaine. La connexion et
+        // l’Administration doivent donc vivre sur EXACTEMENT le même origin.
+        // ==========================================================
+        const ICHEF_CANONICAL_ORIGIN = "https://os.ichef.ch";
+
+        if (
+            window.location.protocol !== 'file:' &&
+            window.location.hostname !== 'localhost' &&
+            window.location.hostname !== '127.0.0.1' &&
+            window.location.origin !== ICHEF_CANONICAL_ORIGIN
+        ) {
+            const canonicalUrl =
+                ICHEF_CANONICAL_ORIGIN +
+                '/administration.html' +
+                window.location.search +
+                window.location.hash;
+
+            window.location.replace(canonicalUrl);
+            throw new Error('ICHEF_CANONICAL_REDIRECT');
+        }
+
         // Déclaration globale du cerveau
         window.tenantID = new URLSearchParams(window.location.search).get('tenantID') || localStorage.getItem('ichef_tenant_id');
         // Domaine public officiel des modules iCHEF OS.
-        window.ICHEF_FRONTEND_URL = "https://os.ichef.ch";
-        window.SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
-            ? "http://localhost:10000"
-            : "https://tableau-system.onrender.com";
-        
-        
-        // ==========================================================
-        // 💳 LIENS STRIPE TEST — CONNEXIONS iCHEF
-        // ==========================================================
+        // Après canonicalisation, on conserve le même origin pour tous les retours.
+        window.ICHEF_FRONTEND_URL =
+            (window.location.protocol === 'http:' || window.location.protocol === 'https:')
+                ? window.location.origin
+                : ICHEF_CANONICAL_ORIGIN;
+        window.SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") 
+            ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+        // 💳 Payment Link Stripe TEST fourni pour la démonstration iCHEF.
+        // MODE TEST : aucune carte réelle n’est débitée.
+        window.ICHEF_DEMO_STRIPE_PAYMENT_LINK = "https://buy.stripe.com/test_8x29AVekh8tPb3Zgrz1kA06";
 
-        // Lien Stripe officiel iCHEF pour +1 connexion EUR (TEST)
-        window.ICHEF_DEMO_STRIPE_PAYMENT_LINK = "https://buy.stripe.com/test_dRmfZj4JHdO91tp1wF1kA07";
-        window.ICHEF_STRIPE_FORCE_EUR_1 = "https://buy.stripe.com/test_dRmfZj4JHdO91tp1wF1kA07";
-
+        // 💳 LIENS STRIPE — CLIENTS RÉELS
+        // Remplacer chaque valeur par le Payment Link Stripe correspondant.
         window.ICHEF_STRIPE_CONNECTION_LINKS = {
             CHF: {
-                1: "COLLE_ICI_LE_LIEN_STRIPE_9_CHF",
-                2: "",
-                3: "",
-                4: "",
-                5: ""
+                1: "LIEN_STRIPE_9_CHF",
+                2: "LIEN_STRIPE_15_CHF",
+                3: "LIEN_STRIPE_22_CHF",
+                4: "LIEN_STRIPE_29_CHF",
+                5: "LIEN_STRIPE_35_CHF"
             },
             EUR: {
-               1: "https://buy.stripe.com/test_dRmfZj4JHdO91tp1wF1kA07",
-                2: "",
-                3: "",
-                4: "",
-                5: ""
+                1: "LIEN_STRIPE_9_EUR",
+                2: "LIEN_STRIPE_15_EUR",
+                3: "LIEN_STRIPE_22_EUR",
+                4: "LIEN_STRIPE_29_EUR",
+                5: "LIEN_STRIPE_35_EUR"
             }
         };
 
-        // 🔒 SÉCURITÉ : Générateur d'empreinte numérique
-        function getDeviceFingerprint() {
-            let deviceId = localStorage.getItem('ichef_device_fingerprint');
-            if (!deviceId) {
-                deviceId = 'device_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
-                localStorage.setItem('ichef_device_fingerprint', deviceId);
+        // ==========================================================
+        // 🔐 HANDOFF TEMPORAIRE CONNEXION → ADMINISTRATION (V14)
+        // sessionStorage reste la source principale. Un cookie de 90 s
+        // sert uniquement de pont si le navigateur passe de ichef.ch à
+        // os.ichef.ch. Il est supprimé dès sa lecture.
+        // ==========================================================
+        function ichefReadCookie(name) {
+            const prefix = `${name}=`;
+            const row = String(document.cookie || '')
+                .split(';')
+                .map(v => v.trim())
+                .find(v => v.startsWith(prefix));
+            return row ? row.slice(prefix.length) : '';
+        }
+
+        function ichefDeleteHandoffCookie() {
+            try {
+                document.cookie = 'ichef_partner_handoff=; Max-Age=0; Path=/; Domain=.ichef.ch; Secure; SameSite=Lax';
+                document.cookie = 'ichef_partner_handoff=; Max-Age=0; Path=/; Secure; SameSite=Lax';
+            } catch (_) {}
+        }
+
+        function ichefRecoverPartnerHandoff(expectedTenant) {
+            let pin = String(sessionStorage.getItem('ichef_partner_pin') || '').trim();
+            if (pin) return pin;
+
+            const encoded = ichefReadCookie('ichef_partner_handoff');
+            if (!encoded) return '';
+
+            try {
+                const payload = JSON.parse(decodeURIComponent(encoded));
+                const tenant = String(payload?.tenantID || '').trim().toLowerCase();
+                const expected = String(expectedTenant || '').trim().toLowerCase();
+                const createdAt = Number(payload?.createdAt || 0);
+                const age = Date.now() - createdAt;
+                const recoveredPin = String(payload?.pin || '').trim();
+
+                if (
+                    recoveredPin &&
+                    /^\d{4,12}$/.test(recoveredPin) &&
+                    tenant &&
+                    (!expected || tenant === expected) &&
+                    createdAt > 0 &&
+                    age >= 0 &&
+                    age <= 120000
+                ) {
+                    sessionStorage.setItem('ichef_partner_pin', recoveredPin);
+                    sessionStorage.setItem('ichef_partner_authenticated', '1');
+                    sessionStorage.setItem('ichef_partner_tenant', tenant);
+                    if (payload?.role) sessionStorage.setItem('ichef_partner_role', String(payload.role));
+                    sessionStorage.setItem('ichef_partner_handoff_at', String(createdAt));
+                    sessionStorage.setItem('ichef_partner_origin', String(payload?.origin || ''));
+                    pin = recoveredPin;
+                }
+            } catch (error) {
+                console.warn('[iCHEF AUTH] Handoff temporaire illisible :', error);
+            } finally {
+                ichefDeleteHandoffCookie();
             }
+
+            return pin;
+        }
+
+        // 🔒 SÉCURITÉ : identifiant d’écran UNIQUE partagé avec connexionpartenaire.
+        function getDeviceFingerprint() {
+            const primaryKey = 'ichef_device_id';
+            const legacyKey = 'ichef_device_fingerprint';
+
+            let deviceId =
+                localStorage.getItem(primaryKey) ||
+                localStorage.getItem(legacyKey);
+
+            if (!deviceId) {
+                if (window.crypto && typeof crypto.randomUUID === 'function') {
+                    deviceId = `dev_${crypto.randomUUID()}`;
+                } else {
+                    deviceId = `dev_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+                }
+            }
+
+            localStorage.setItem(primaryKey, deviceId);
+            localStorage.setItem(legacyKey, deviceId);
             return deviceId;
         }
 
@@ -84,46 +181,33 @@
             'portail-staff.html',
             'reservation.html',
             'rh.html',
-            
             'roadmap.html',
-            'runner-pass1.html',
-            'production.html',
+            'runner-pass1.html'
         ]);
 
-        var ICHEF_PACK_ESSENTIAL = Object.freeze([
+        const ICHEF_PACK_ESSENTIAL = Object.freeze([
             'administration.html',
             'caissetactile.html',
             'pack-eco.html',
             'reservation.html',
             'portail-client.html',
-            'admin.html',
-            'minipass.html',
-            'menu-qr.html'
+            'runner-pass1.html'
         ]);
 
-        var ICHEF_PACK_PRO = Object.freeze([
-    ...ICHEF_PACK_ESSENTIAL,
-    'menu-bar.html',
-    'menu-pure.html',
-    'chef.html',
-    'chef-bar.html',
-    'chef-patissier.html',
-    'bar.html',
-    'economat.html',
-    'haccp.html',
-    'portail-staff.html',
-    'rh.html',
-    'roadmap.html',
-    'runner-pass1.html',
-    'production.html'
-]);
+        const ICHEF_PACK_PRO = Object.freeze([
+            ...ICHEF_PACK_ESSENTIAL,
+            'chef.html',
+            'chef-bar.html',
+            'chef-patissier.html',
+            'bar.html',
+            'economat.html',
+            'haccp.html',
+            'portail-staff.html',
+            'roadmap.html'
+        ]);
 
-        var ICHEF_PACK_COMPLETE = Object.freeze([
-            ...new Set([
-                ...window.ICHEF_OFFICIAL_MODULES,
-                ...ICHEF_PACK_ESSENTIAL,
-                ...ICHEF_PACK_PRO
-            ])
+        const ICHEF_PACK_COMPLETE = Object.freeze([
+            ...window.ICHEF_OFFICIAL_MODULES
         ]);
 
         window.ICHEF_PACK_MATRIX = Object.freeze({
@@ -175,33 +259,121 @@
             return window.ICHEF_PACK_META[key] || { label: key || 'FORFAIT' };
         };
 
-        // ==========================================================
-        // 🔐 ADMINISTRATION V10 — PORTE PIN LOCALE + VALIDATION SERVEUR
-        // ==========================================================
-        (function prepareAdministrationPinGate() {
+        // 🔒 SÉCURITÉ : Validation de licence stricte & ADD-ONS avant affichage du DOM
+        (async function enforceSecurity() {
             const urlParams = new URLSearchParams(window.location.search);
-            const urlTenantID = urlParams.get('tenantID');
+            let urlTenantID = urlParams.get('tenantID');
 
             if (urlTenantID && urlTenantID !== window.tenantID) {
                 localStorage.removeItem('EMPIRE_GLOBAL_SYNC');
+                localStorage.removeItem('ichef_master_pin');
                 if (urlTenantID) localStorage.setItem('ichef_tenant_id', urlTenantID);
                 window.tenantID = urlTenantID;
             }
 
-            /* V12 : le tenantID peut être saisi directement dans la porte.
-               On ne redirige donc plus si aucun restaurant n'est encore choisi. */
+            let pin =
+                ichefRecoverPartnerHandoff(window.tenantID) ||
+                sessionStorage.getItem('ichef_partner_pin') ||
+                localStorage.getItem('ichef_master_pin') ||
+                localStorage.getItem('pin') ||
+                '';
 
-            /* La porte Administration doit être demandée à chaque ouverture.
-               Aucun ancien PIN ne doit contourner l'écran d'entrée. */
-            localStorage.removeItem('ichef_master_pin');
-            localStorage.removeItem('pin');
+            const handoffTenant = String(
+                sessionStorage.getItem('ichef_partner_tenant') || ''
+            ).trim().toLowerCase();
+            const currentTenant = String(window.tenantID || '').trim().toLowerCase();
 
-            window.__ICHEF_ADMIN_AUTH_READY = false;
-            window.__ICHEF_ADMIN_AUTH_DATA = null;
-            window.__ICHEF_ADMIN_MANAGER_STARTED = false;
+            // Si une session partenaire existe, elle doit appartenir au même restaurant.
+            if (handoffTenant && currentTenant && handoffTenant !== currentTenant) {
+                sessionStorage.removeItem('ichef_partner_pin');
+                sessionStorage.removeItem('ichef_partner_authenticated');
+                sessionStorage.removeItem('ichef_partner_tenant');
+                sessionStorage.removeItem('ichef_partner_role');
+                    sessionStorage.removeItem('ichef_partner_handoff_at');
+                    sessionStorage.removeItem('ichef_partner_origin');
+                window.location.replace(`${window.ICHEF_FRONTEND_URL}/connexionpartenaire.html?reason=tenant&build=14`);
+                return;
+            }
+            if(!window.tenantID) {
+                window.location.replace(`${window.ICHEF_FRONTEND_URL}/connexionpartenaire.html`);
+                return;
+            }
 
-            /* Le fond noir / la porte doivent pouvoir être peints immédiatement. */
-            document.documentElement.style.opacity = "1";
+            if (!pin) {
+                console.warn('[iCHEF AUTH] Session partenaire absente sur', window.location.origin);
+                window.location.replace(`${window.ICHEF_FRONTEND_URL}/connexionpartenaire.html?reason=session&build=14&tenantID=${encodeURIComponent(window.tenantID || '')}`);
+                return;
+            }
+
+
+            try {
+                const res = await fetch(`${window.SERVER_URL}/api/verify-pin`, {
+                    method: 'POST',
+                    credentials: 'include',
+                    cache: 'no-store',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        tenantID: window.tenantID,
+                        pin,
+                        deviceId: getDeviceFingerprint(),
+                        terminal: 'ADMIN',
+                        module: 'administration.html'
+                    })
+                });
+                const data = await res.json();
+
+                if(!data.success) {
+                    const authError = String(data.error || "ACCÈS REFUSÉ (Limite d'écrans atteinte ou compte invalide).");
+                    console.error('[iCHEF AUTH] Revalidation refusée :', authError);
+                    sessionStorage.setItem('ichef_last_auth_error', authError);
+                    window.location.replace(`${window.ICHEF_FRONTEND_URL}/connexionpartenaire.html?reason=verify&build=14&tenantID=${encodeURIComponent(window.tenantID || '')}`);
+                    return;
+                }
+
+                const currentPlan = data.plan
+                    ? String(data.plan).toUpperCase()
+                    : 'CHEF';
+
+                const userAddons = Array.isArray(data.addons)
+                    ? data.addons.map(v => String(v).toLowerCase())
+                    : [];
+
+                const blockedModules = Array.isArray(data.blockedModules)
+                    ? data.blockedModules.map(v => String(v).toLowerCase())
+                    : [];
+
+                window.ICHEF_AUTH_PLAN = currentPlan;
+                window.ICHEF_AUTH_ADDONS = userAddons;
+                window.ICHEF_BLOCKED_MODULES = blockedModules;
+
+                let currentPage = window.location.pathname
+                    .split('/')
+                    .pop()
+                    .toLowerCase();
+
+                if(currentPage === '') currentPage = 'administration.html';
+
+                const commercialModules = new Set([
+                    ...window.ichefPlanModules(currentPlan),
+                    ...userAddons
+                ]);
+
+                const currentAllowed =
+                    commercialModules.has(currentPage) &&
+                    !blockedModules.includes(currentPage);
+
+                if (currentPage !== 'administration.html' && !currentAllowed) {
+                    alert(`ACCÈS REFUSÉ : votre forfait (${currentPlan}) n'inclut pas ce module ou il a été bloqué.`);
+                    window.location.replace(`${window.ICHEF_FRONTEND_URL}/administration.html?tenantID=${encodeURIComponent(window.tenantID)}`);
+                    return;
+                }
+
+                document.documentElement.style.opacity = "1";
+            } catch (e) { 
+                console.error("Erreur de sécurité réseau", e); 
+                // Tolérance en mode hors-ligne si déjà identifié, affichage du DOM forcé
+                document.documentElement.style.opacity = "1";
+            }
         })();
     </script>
     
@@ -932,27 +1104,12 @@
            Lecture seule côté restaurant, alimentation Tour de Contrôle
            ========================================================= */
         .client-message-card{margin:18px 0 0;padding:16px 18px;border:1px solid rgba(56,189,248,.34);background:linear-gradient(135deg,rgba(56,189,248,.08),rgba(212,175,55,.045));border-radius:14px;display:flex;gap:13px;align-items:flex-start;box-shadow:0 12px 32px rgba(0,0,0,.18)}
-        .client-message-card[hidden]{display:none!important}.client-message-icon{width:38px;height:38px;border-radius:11px;display:grid;place-items:center;background:rgba(56,189,248,.12);border:1px solid rgba(56,189,248,.28);font-size:1.1rem;flex:none}.client-message-body{min-width:0;flex:1}.client-message-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:5px}.client-message-title{font-size:.74rem;font-weight:900;letter-spacing:1.1px;text-transform:uppercase;color:#7dd3fc}.client-message-state{display:inline-flex;align-items:center;padding:4px 8px;border-radius:999px;border:1px solid rgba(56,189,248,.32);background:rgba(56,189,248,.08);color:#bae6fd;font-size:.6rem;font-weight:900;letter-spacing:.6px;text-transform:uppercase;white-space:nowrap}.client-message-state.new{border-color:rgba(245,158,11,.42);background:rgba(245,158,11,.10);color:#fcd34d}.client-message-state.read{border-color:rgba(16,185,129,.38);background:rgba(16,185,129,.09);color:#86efac}.client-message-text{font-size:.9rem;line-height:1.55;color:#e6edf5;white-space:pre-wrap;overflow-wrap:anywhere}.client-message-date{font-size:.68rem;color:var(--text-muted);margin-top:7px}
+        .client-message-card[hidden]{display:none!important}.client-message-icon{width:38px;height:38px;border-radius:11px;display:grid;place-items:center;background:rgba(56,189,248,.12);border:1px solid rgba(56,189,248,.28);font-size:1.1rem;flex:none}.client-message-title{font-size:.74rem;font-weight:900;letter-spacing:1.1px;text-transform:uppercase;color:#7dd3fc;margin-bottom:5px}.client-message-text{font-size:.9rem;line-height:1.55;color:#e6edf5;white-space:pre-wrap;overflow-wrap:anywhere}.client-message-date{font-size:.68rem;color:var(--text-muted);margin-top:7px}
         .client-documents-grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(260px,.7fr);gap:16px;margin-top:18px}.client-contract-panel,.client-qr-panel,.client-invoices-panel{border:1px solid rgba(255,255,255,.10);background:rgba(5,14,24,.54);border-radius:15px;padding:17px}.client-panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px}.client-panel-head h3{margin:0;font-size:.92rem;letter-spacing:.8px;text-transform:uppercase}.client-panel-head p{margin:4px 0 0;color:var(--text-muted);font-size:.72rem}.doc-badge{display:inline-flex;align-items:center;gap:6px;padding:5px 8px;border-radius:999px;font-size:.64rem;font-weight:900;letter-spacing:.7px;text-transform:uppercase;border:1px solid rgba(16,185,129,.32);color:#4ade80;background:rgba(16,185,129,.08)}
         .client-contract-preview{min-height:340px;border:1px solid rgba(255,255,255,.09);background:#06111d;border-radius:12px;overflow:hidden;display:flex;align-items:center;justify-content:center}.client-contract-preview iframe{width:100%;height:440px;border:0;background:#fff}.client-empty{padding:34px;text-align:center;color:#6d8199;font-size:.84rem;line-height:1.5}.client-current-doc{margin-top:12px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;padding:12px;border:1px solid rgba(255,255,255,.09);border-radius:11px;background:rgba(255,255,255,.025)}.client-current-doc strong{display:block;font-size:.84rem}.client-current-doc small{display:block;color:var(--text-muted);font-size:.68rem;margin-top:3px}.client-open-btn{border:1px solid rgba(56,189,248,.45);background:rgba(56,189,248,.08);color:#bae6fd;border-radius:9px;padding:9px 12px;font-size:.7rem;font-weight:900;cursor:pointer;white-space:nowrap}.client-open-btn:hover{border-color:#38bdf8}.client-open-btn:disabled{opacity:.45;cursor:not-allowed}
         .client-contract-history{margin-top:12px;display:flex;flex-direction:column;gap:7px}.client-history-title{font-size:.68rem;font-weight:900;color:#9fb0c2;letter-spacing:.8px;text-transform:uppercase;margin-bottom:2px}.client-history-row,.client-invoice-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;padding:10px 11px;border:1px solid rgba(255,255,255,.075);border-radius:10px;background:rgba(255,255,255,.018)}.client-history-row strong,.client-invoice-row strong{font-size:.78rem}.client-history-row small,.client-invoice-row small{display:block;color:var(--text-muted);font-size:.66rem;margin-top:3px}.client-history-row button,.client-invoice-row button{border:1px solid rgba(255,255,255,.16);background:transparent;color:#dce7f2;border-radius:8px;padding:7px 9px;cursor:pointer;font-size:.66rem;font-weight:800}
         .client-qr-panel{display:flex;flex-direction:column}.client-qr-box{min-height:230px;border:1px dashed rgba(255,255,255,.16);border-radius:12px;background:#fff;display:flex;align-items:center;justify-content:center;padding:16px;margin-top:4px}.client-qr-box canvas,.client-qr-box img{max-width:190px!important;max-height:190px!important}.client-qr-help{font-size:.71rem;color:#91a4b9;line-height:1.5;margin:11px 0 0}.client-qr-link{font-size:.64rem;color:#5f7892;overflow-wrap:anywhere;margin-top:7px}
         .client-invoices-panel{margin-top:16px}.client-invoices-list{display:flex;flex-direction:column;gap:8px}.invoice-state{display:inline-flex;align-items:center;gap:5px;font-size:.62rem;font-weight:900;color:#4ade80;text-transform:uppercase;margin-left:7px}.invoice-state::before{content:'●';font-size:.55rem}.client-invoice-source{display:inline-block;margin-left:6px;color:#60a5fa;font-size:.58rem;font-weight:800;text-transform:uppercase}.client-doc-loading{padding:28px;text-align:center;color:#7e91a7;border:1px dashed rgba(255,255,255,.12);border-radius:12px}
-        .screen-invoice-layout{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(260px,.72fr);gap:16px;align-items:stretch}.screen-invoice-summary{border:1px solid rgba(56,189,248,.20);border-radius:12px;padding:15px;background:rgba(56,189,248,.035);display:flex;flex-direction:column;gap:11px}.screen-license-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.screen-license-stat{border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:11px;background:rgba(255,255,255,.018)}.screen-license-stat span{display:block;color:var(--text-muted);font-size:.62rem;text-transform:uppercase;letter-spacing:.7px}.screen-license-stat strong{display:block;color:var(--text-main);font-size:1.05rem;margin-top:4px}.screen-license-stat.total{border-color:rgba(56,189,248,.34)}.screen-license-stat.total strong{color:#7dd3fc}.screen-invoice-current{margin-top:11px}.screen-invoice-qr{min-height:150px;background:#fff;border-radius:11px;display:flex;align-items:center;justify-content:center;padding:10px}.screen-invoice-qr canvas,.screen-invoice-qr img{max-width:130px!important;max-height:130px!important}.screen-license-state{display:inline-flex;align-items:center;gap:6px;padding:5px 8px;border-radius:999px;border:1px solid rgba(16,185,129,.35);color:#4ade80;background:rgba(16,185,129,.08);font-size:.62rem;font-weight:900;text-transform:uppercase}.screen-license-state.off{border-color:rgba(239,68,68,.35);color:#f87171;background:rgba(239,68,68,.07)}.screen-invoice-amount{color:var(--gold);font-weight:900;margin-left:7px}.screen-invoice-history{display:flex;flex-direction:column;gap:8px;margin-top:12px}
-        
-        .sos-support-thread{margin-top:18px;border:1px solid rgba(56,189,248,.22);border-radius:12px;background:rgba(2,12,22,.72);overflow:hidden;text-align:left}
-        .sos-support-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 13px;border-bottom:1px solid rgba(255,255,255,.08);font-size:.74rem;font-weight:900;letter-spacing:.7px;text-transform:uppercase;color:#bae6fd}
-        .sos-support-head button{border:1px solid rgba(255,255,255,.14);background:#0b1621;color:#cbd5e1;border-radius:8px;padding:6px 9px;cursor:pointer;font-size:.67rem}
-        .sos-support-messages{max-height:230px;overflow:auto;padding:10px;display:flex;flex-direction:column;gap:8px}
-        .sos-support-empty{padding:18px;text-align:center;color:#64748b;font-size:.76rem}
-        .sos-support-msg{max-width:86%;padding:9px 11px;border-radius:11px;border:1px solid rgba(255,255,255,.10);font-size:.78rem;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere}
-        .sos-support-msg.client{align-self:flex-end;background:rgba(212,175,55,.10);border-color:rgba(212,175,55,.28);color:#fff7d6}
-        .sos-support-msg.ichef{align-self:flex-start;background:rgba(56,189,248,.09);border-color:rgba(56,189,248,.28);color:#dff6ff}
-        .sos-support-meta{display:block;margin-top:5px;color:#718096;font-size:.61rem}
-        .sos-support-status{min-height:18px;margin-top:8px;color:#94a3b8;font-size:.7rem;text-align:left}
-        .sos-support-status.ok{color:#86efac}.sos-support-status.bad{color:#fca5a5}
-@media(max-width:900px){.screen-invoice-layout{grid-template-columns:1fr}.screen-license-grid{grid-template-columns:repeat(3,1fr)}}
-        @media(max-width:600px){.screen-license-grid{grid-template-columns:1fr}.screen-invoice-summary{padding:12px}}
         .sos-close-x{position:absolute;top:13px;right:13px;width:44px;height:44px;border-radius:50%;border:1px solid rgba(255,255,255,.22);background:#111;color:#fff;font-size:1.25rem;line-height:1;cursor:pointer;display:grid;place-items:center;z-index:2}.sos-close-x:hover{border-color:var(--alert);color:var(--alert);background:rgba(239,68,68,.08)}
         @media(max-width:900px){.client-documents-grid{grid-template-columns:1fr}.client-contract-preview iframe{height:390px}.client-qr-panel{min-height:auto}}
         @media(max-width:600px){.client-current-doc,.client-history-row,.client-invoice-row{grid-template-columns:1fr}.client-open-btn,.client-history-row button,.client-invoice-row button{width:100%;min-height:42px}.client-contract-panel,.client-qr-panel,.client-invoices-panel{padding:13px}.client-contract-preview{min-height:260px}.client-contract-preview iframe{height:330px}.client-message-card{padding:14px}.sos-close-x{top:10px;right:10px}}
@@ -1165,2038 +1322,17 @@ body>nav{display:none!important}
 
     <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js" defer></script>
 
-
-
-<style id="ichef-admin-v10-pin-gate-style">
-/* =========================================================
-   iCHEF ADMINISTRATION V10 — PORTE PIN PREMIUM
-   ========================================================= */
-html{background:#000!important;}
-html:not(.ichef-admin-authenticated) body{
-  overflow:hidden!important;
-}
-
-#ichef-admin-pin-gate{
-  position:fixed;
-  inset:0;
-  z-index:2147483000;
-  display:flex;
-  align-items:flex-start;
-  justify-content:center;
-  overflow:hidden;
-  padding:52px 18px 30px;
-  box-sizing:border-box;
-  background:#000;
-  color:#fff;
-  font-family:'Inter',Arial,sans-serif;
-}
-
-#ichef-admin-pin-gate[hidden]{
-  display:none!important;
-}
-
-#ichef-admin-pin-gate *{
-  box-sizing:border-box;
-}
-
-/* Courbes champagne latérales */
-.admin-pin-arc{
-  position:absolute;
-  z-index:0;
-  pointer-events:none;
-  border:1.3px solid rgba(205,174,101,.72);
-  border-radius:50%;
-  box-shadow:0 0 20px rgba(205,174,101,.045);
-}
-.admin-pin-arc.left{
-  width:1020px;
-  height:1510px;
-  left:-782px;
-  bottom:-510px;
-  transform:rotate(-8deg);
-}
-.admin-pin-arc.right{
-  width:1020px;
-  height:1510px;
-  right:-785px;
-  top:-510px;
-  transform:rotate(8deg);
-}
-
-.admin-pin-center{
-  position:relative;
-  z-index:2;
-  width:min(570px,calc(100vw - 42px));
-  max-height:calc(100dvh - 72px);
-  margin:0 auto;
-  padding:0 8px 8px;
-  overflow:auto;
-  text-align:center;
-  scrollbar-width:none;
-}
-.admin-pin-center::-webkit-scrollbar{display:none;}
-
-.admin-pin-logo-wrap{
-  height:126px;
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  margin:0 0 7px;
-}
-.admin-pin-logo{
-  display:block;
-  width:min(305px,52vw);
-  max-height:118px;
-  object-fit:contain;
-  filter:brightness(1.05);
-}
-
-.admin-pin-line{
-  width:212px;
-  height:1px;
-  margin:0 auto 24px;
-  background:linear-gradient(
-    90deg,
-    transparent,
-    rgba(182,151,87,.78) 18%,
-    rgba(225,202,145,.96) 50%,
-    rgba(182,151,87,.78) 82%,
-    transparent
-  );
-}
-
-.admin-pin-module{
-  margin:0 0 16px;
-  color:#f8f8f6;
-  font-size:22px;
-  line-height:1;
-  font-weight:500;
-  letter-spacing:7px;
-  text-transform:uppercase;
-}
-.admin-pin-subtitle{
-  margin:0 0 27px;
-  color:#969ca0;
-  font-size:9px;
-  line-height:1;
-  font-weight:600;
-  letter-spacing:5px;
-  text-transform:uppercase;
-}
-
-.admin-pin-dots{
-  min-height:22px;
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  gap:18px;
-  margin:0 auto 26px;
-}
-.admin-pin-dot{
-  width:15px;
-  height:15px;
-  flex:0 0 15px;
-  border:1.8px solid rgba(255,255,255,.91);
-  border-radius:50%;
-  background:transparent;
-  transition:.12s ease;
-}
-.admin-pin-dot.filled{
-  background:#fff;
-  box-shadow:0 0 8px rgba(255,255,255,.24);
-}
-
-.admin-pin-pad{
-  width:100%;
-  display:grid;
-  grid-template-columns:repeat(3,1fr);
-  gap:12px;
-}
-.admin-pin-key{
-  height:86px;
-  border:1.4px solid rgba(255,255,255,.88);
-  border-radius:18px;
-  background:#050505;
-  color:#fff;
-  font:800 21px/1 'Inter',sans-serif;
-  cursor:pointer;
-  transition:background .12s ease,border-color .12s ease,transform .06s ease;
-  -webkit-tap-highlight-color:transparent;
-}
-.admin-pin-key:hover{
-  background:#0d0d0d;
-  border-color:#fff;
-}
-.admin-pin-key:active{
-  transform:scale(.985);
-  background:#151515;
-}
-.admin-pin-key.text{
-  font-size:10px;
-  letter-spacing:2px;
-}
-.admin-pin-key.back{
-  font-size:21px;
-  font-weight:500;
-}
-
-#ichef-admin-pin-submit{
-  width:100%;
-  min-height:84px;
-  display:grid;
-  grid-template-columns:1fr auto 1fr;
-  align-items:center;
-  margin:16px auto 0;
-  padding:0 30px;
-  border:1px solid #fff;
-  border-radius:18px;
-  background:#f6f6f4;
-  color:#050505;
-  font:800 14px/1 'Inter',sans-serif;
-  letter-spacing:4.6px;
-  cursor:pointer;
-}
-#ichef-admin-pin-submit .label{
-  grid-column:2;
-  white-space:nowrap;
-}
-#ichef-admin-pin-submit .arrow{
-  grid-column:3;
-  justify-self:end;
-  font-size:29px;
-  line-height:1;
-  font-weight:300;
-}
-#ichef-admin-pin-submit:disabled{
-  opacity:.62;
-  cursor:wait;
-}
-
-#ichef-admin-pin-error{
-  min-height:16px;
-  margin:8px 0 0;
-  color:#fca5a5;
-  font-size:9px;
-  font-weight:700;
-  letter-spacing:1.2px;
-  text-transform:uppercase;
-}
-
-.admin-pin-network{
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  gap:10px;
-  margin:11px auto 0;
-  color:#8d9498;
-  font-size:7.4px;
-  font-weight:600;
-  letter-spacing:2.9px;
-  text-transform:uppercase;
-}
-.admin-pin-network-dot{
-  width:12px;
-  height:12px;
-  flex:0 0 12px;
-  border-radius:50%;
-  background:#10d98a;
-  box-shadow:0 0 13px rgba(16,217,138,.35);
-}
-.admin-pin-network.offline .admin-pin-network-dot{
-  background:#ef4444;
-  box-shadow:0 0 13px rgba(239,68,68,.32);
-}
-.admin-pin-control{
-  display:inline-block;
-  margin:14px auto 0;
-  padding-bottom:5px;
-  border-bottom:1px solid rgba(255,255,255,.26);
-  color:#727a7e;
-  font-size:6.5px;
-  font-weight:600;
-  letter-spacing:2.8px;
-  text-transform:uppercase;
-}
-
-.admin-pin-footer{
-  position:absolute;
-  z-index:2;
-  bottom:26px;
-  color:#858d91;
-  font-size:7px;
-  line-height:1.75;
-  font-weight:600;
-  letter-spacing:2.7px;
-  text-transform:uppercase;
-}
-.admin-pin-footer.left{left:38px;text-align:left;}
-.admin-pin-footer.right{right:38px;text-align:right;}
-.admin-pin-footer::after{
-  content:'';
-  display:block;
-  width:56px;
-  height:1px;
-  margin-top:8px;
-  background:rgba(255,255,255,.65);
-}
-.admin-pin-footer.right::after{margin-left:auto;}
-
-/* L'administration reste inaccessible derrière la porte. */
-html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
-  pointer-events:none!important;
-  user-select:none!important;
-}
-
-/* Ecran bas : même composition, plus compacte. */
-@media(max-height:850px) and (min-width:800px){
-  #ichef-admin-pin-gate{padding-top:18px;}
-  .admin-pin-center{width:min(470px,calc(100vw - 36px));max-height:calc(100dvh - 30px);}
-  .admin-pin-logo-wrap{height:82px;}
-  .admin-pin-logo{width:225px;max-height:78px;}
-  .admin-pin-line{width:155px;margin-bottom:12px;}
-  .admin-pin-module{font-size:16px;letter-spacing:5px;margin-bottom:9px;}
-  .admin-pin-subtitle{font-size:7px;letter-spacing:3.7px;margin-bottom:12px;}
-  .admin-pin-dots{margin-bottom:12px;gap:14px;}
-  .admin-pin-dot{width:11px;height:11px;flex-basis:11px;}
-  .admin-pin-pad{gap:8px;}
-  .admin-pin-key{height:54px;border-radius:13px;font-size:17px;}
-  #ichef-admin-pin-submit{min-height:56px;margin-top:9px;border-radius:13px;font-size:11px;}
-  .admin-pin-network{margin-top:8px;}
-  .admin-pin-control{margin-top:6px;}
-}
-
-/* Téléphone / petite tablette */
-@media(max-width:650px){
-  #ichef-admin-pin-gate{
-    padding:16px 9px 22px;
-    overflow:auto;
-  }
-  .admin-pin-center{
-    width:100%;
-    max-height:none;
-    padding:5px;
-  }
-  .admin-pin-logo-wrap{height:88px;}
-  .admin-pin-logo{width:min(245px,72vw);}
-  .admin-pin-line{width:145px;margin-bottom:15px;}
-  .admin-pin-module{font-size:15px;letter-spacing:4px;}
-  .admin-pin-subtitle{font-size:7px;letter-spacing:2.7px;margin-bottom:17px;}
-  .admin-pin-dots{gap:13px;margin-bottom:18px;}
-  .admin-pin-dot{width:12px;height:12px;flex-basis:12px;}
-  .admin-pin-pad{gap:8px;}
-  .admin-pin-key{height:61px;border-radius:14px;font-size:18px;}
-  #ichef-admin-pin-submit{
-    min-height:61px;
-    margin-top:10px;
-    border-radius:14px;
-    padding:0 20px;
-    font-size:11px;
-    letter-spacing:2.8px;
-  }
-  .admin-pin-footer{display:none;}
-}
-</style>
-
-
-<style id="ichef-admin-v11-luxury-door-style">
-/* =========================================================
-   ADMINISTRATION V11 — VRAIE PORTE D'ENTRÉE iCHEF
-   ========================================================= */
-
-/* Profondeur très légère derrière le clavier */
-#ichef-admin-pin-gate{
-  perspective:1800px;
-  isolation:isolate;
-}
-
-/* Halo central pour donner de la profondeur sans éclaircir le noir */
-#ichef-admin-pin-gate .admin-entry-halo{
-  position:absolute;
-  z-index:0;
-  left:50%;
-  top:45%;
-  width:min(900px,78vw);
-  height:min(900px,92vh);
-  transform:translate(-50%,-50%);
-  border-radius:50%;
-  pointer-events:none;
-  background:
-    radial-gradient(
-      circle,
-      rgba(212,175,55,.055) 0%,
-      rgba(212,175,55,.022) 33%,
-      transparent 69%
-    );
-  filter:blur(3px);
-}
-
-/* Grand encadrement "porte" champagne, très fin */
-#ichef-admin-pin-gate .admin-entry-arch{
-  position:absolute;
-  z-index:1;
-  left:50%;
-  top:20px;
-  bottom:24px;
-  width:min(790px,67vw);
-  transform:translateX(-50%);
-  pointer-events:none;
-  border:1px solid rgba(207,177,105,.33);
-  border-bottom-color:rgba(207,177,105,.18);
-  border-radius:390px 390px 24px 24px / 185px 185px 24px 24px;
-  box-shadow:
-    inset 0 0 0 1px rgba(255,255,255,.012),
-    0 0 45px rgba(212,175,55,.025);
-}
-
-/* Les deux vantaux restent derrière le clavier : ils donnent l'idée
-   d'une entrée sans rendre l'écran chargé. */
-#ichef-admin-pin-gate .admin-door-leaf{
-  position:absolute;
-  z-index:1;
-  top:76px;
-  bottom:43px;
-  width:min(330px,27vw);
-  overflow:hidden;
-  pointer-events:none;
-  background:
-    linear-gradient(90deg,rgba(255,255,255,.012),transparent 28%),
-    linear-gradient(180deg,#070707 0%,#020202 44%,#060606 100%);
-  border:1px solid rgba(201,169,95,.30);
-  box-shadow:
-    inset 0 0 38px rgba(212,175,55,.018),
-    0 24px 60px rgba(0,0,0,.45);
-  transition:
-    transform .42s cubic-bezier(.22,.8,.2,1),
-    opacity .30s ease;
-  transform-style:preserve-3d;
-}
-
-#ichef-admin-pin-gate .admin-door-leaf.left{
-  left:calc(50% - min(395px,33.5vw));
-  border-radius:190px 10px 10px 18px / 105px 10px 10px 18px;
-  transform-origin:left center;
-}
-#ichef-admin-pin-gate .admin-door-leaf.right{
-  right:calc(50% - min(395px,33.5vw));
-  border-radius:10px 190px 18px 10px / 10px 105px 18px 10px;
-  transform-origin:right center;
-}
-
-/* Double filet intérieur : esprit hôtellerie luxe */
-#ichef-admin-pin-gate .admin-door-inner{
-  position:absolute;
-  inset:16px;
-  border:1px solid rgba(212,175,55,.14);
-  border-radius:inherit;
-}
-#ichef-admin-pin-gate .admin-door-inner::before{
-  content:'';
-  position:absolute;
-  left:13%;
-  right:13%;
-  top:23%;
-  height:1px;
-  background:linear-gradient(90deg,transparent,rgba(212,175,55,.19),transparent);
-}
-#ichef-admin-pin-gate .admin-door-inner::after{
-  content:'';
-  position:absolute;
-  left:13%;
-  right:13%;
-  bottom:23%;
-  height:1px;
-  background:linear-gradient(90deg,transparent,rgba(212,175,55,.12),transparent);
-}
-
-/* Poignées centrales, presque joaillerie */
-#ichef-admin-pin-gate .admin-door-handle{
-  position:absolute;
-  top:51%;
-  width:5px;
-  height:52px;
-  margin-top:-26px;
-  border-radius:999px;
-  background:
-    linear-gradient(
-      180deg,
-      #8d7137 0%,
-      #e2c779 42%,
-      #9a7b3e 100%
-    );
-  box-shadow:
-    0 0 0 1px rgba(255,255,255,.10),
-    0 0 16px rgba(212,175,55,.13);
-}
-#ichef-admin-pin-gate .admin-door-leaf.left .admin-door-handle{
-  right:20px;
-}
-#ichef-admin-pin-gate .admin-door-leaf.right .admin-door-handle{
-  left:20px;
-}
-
-/* Le panneau PIN reste prioritaire et net */
-#ichef-admin-pin-gate .admin-pin-center{
-  z-index:5;
-}
-
-/* Au survol du bouton : juste un petit reflet */
-#ichef-admin-pin-submit{
-  position:relative;
-  overflow:hidden;
-}
-#ichef-admin-pin-submit::before{
-  content:'';
-  position:absolute;
-  top:-20%;
-  bottom:-20%;
-  left:-38%;
-  width:24%;
-  opacity:0;
-  transform:skewX(-18deg);
-  background:linear-gradient(90deg,transparent,rgba(255,255,255,.72),transparent);
-  transition:left .55s ease,opacity .18s ease;
-}
-#ichef-admin-pin-submit:hover::before{
-  left:116%;
-  opacity:.38;
-}
-
-/* PIN accepté : l'Administration est déjà active derrière,
-   puis les vantaux s'écartent rapidement. */
-#ichef-admin-pin-gate.is-opening{
-  pointer-events:none!important;
-  background:rgba(0,0,0,.80);
-  transition:background .42s ease,opacity .42s ease;
-}
-#ichef-admin-pin-gate.is-opening .admin-door-leaf.left{
-  transform:translateX(-54%) rotateY(23deg);
-  opacity:.24;
-}
-#ichef-admin-pin-gate.is-opening .admin-door-leaf.right{
-  transform:translateX(54%) rotateY(-23deg);
-  opacity:.24;
-}
-#ichef-admin-pin-gate.is-opening .admin-pin-center{
-  opacity:0;
-  transform:scale(.985);
-  transition:opacity .17s ease,transform .22s ease;
-}
-#ichef-admin-pin-gate.is-opening .admin-entry-arch,
-#ichef-admin-pin-gate.is-opening .admin-pin-arc,
-#ichef-admin-pin-gate.is-opening .admin-entry-halo,
-#ichef-admin-pin-gate.is-opening .admin-pin-footer{
-  opacity:0;
-  transition:opacity .30s ease;
-}
-
-/* Sur écran très large, la porte prend un peu plus de présence */
-@media(min-width:1450px) and (min-height:850px){
-  #ichef-admin-pin-gate .admin-entry-arch{
-    width:820px;
-  }
-  #ichef-admin-pin-gate .admin-door-leaf{
-    width:340px;
-  }
-}
-
-/* Sur écran plus court on garde la porte discrète derrière le clavier */
-@media(max-height:850px) and (min-width:800px){
-  #ichef-admin-pin-gate .admin-entry-arch{
-    top:8px;
-    bottom:9px;
-    width:min(620px,64vw);
-  }
-  #ichef-admin-pin-gate .admin-door-leaf{
-    top:25px;
-    bottom:18px;
-    width:min(255px,26vw);
-  }
-  #ichef-admin-pin-gate .admin-door-leaf.left{
-    left:calc(50% - min(305px,31vw));
-  }
-  #ichef-admin-pin-gate .admin-door-leaf.right{
-    right:calc(50% - min(305px,31vw));
-  }
-}
-
-/* Mobile : pas de gros vantaux qui mangent l'espace.
-   On garde l'encadrement élégant. */
-@media(max-width:650px){
-  #ichef-admin-pin-gate .admin-entry-arch{
-    width:calc(100vw - 20px);
-    top:8px;
-    bottom:8px;
-    border-radius:180px 180px 20px 20px / 90px 90px 20px 20px;
-  }
-  #ichef-admin-pin-gate .admin-door-leaf{
-    opacity:.26;
-    width:30vw;
-    top:44px;
-    bottom:28px;
-  }
-  #ichef-admin-pin-gate .admin-door-leaf.left{
-    left:-9vw;
-  }
-  #ichef-admin-pin-gate .admin-door-leaf.right{
-    right:-9vw;
-  }
-  #ichef-admin-pin-gate .admin-door-handle{
-    display:none;
-  }
-}
-</style>
-
-
-<style id="ichef-admin-v12-partner-gate-style">
-/* =========================================================
-   ADMINISTRATION V12 — PORTAIL PARTENAIRE COMPLET
-   Anciennes fonctions + porte luxe V11
-   ========================================================= */
-
-#ichef-admin-pin-gate{
-  overflow:auto !important;
-  padding-top:28px !important;
-}
-
-#ichef-admin-pin-gate .admin-partner-center{
-  width:min(590px,calc(100vw - 42px)) !important;
-  max-height:none !important;
-  padding-bottom:42px !important;
-}
-
-#ichef-admin-pin-gate .admin-pin-logo-wrap{
-  min-height:92px !important;
-  height:92px !important;
-  margin-bottom:2px !important;
-}
-#ichef-admin-pin-gate .admin-pin-logo{
-  width:min(275px,48vw) !important;
-  max-height:86px !important;
-}
-#ichef-admin-pin-gate .admin-pin-line{
-  width:180px !important;
-  margin-bottom:16px !important;
-}
-#ichef-admin-pin-gate .admin-partner-title{
-  font-size:17px !important;
-  letter-spacing:4.4px !important;
-  margin-bottom:10px !important;
-}
-#ichef-admin-pin-gate .admin-pin-subtitle{
-  font-size:7.5px !important;
-  letter-spacing:3.1px !important;
-  margin-bottom:16px !important;
-}
-
-/* Carte de connexion semblable à l'ancienne porte mais plus premium */
-.admin-partner-card{
-  width:100%;
-  padding:22px 26px 24px;
-  border:1px solid rgba(255,255,255,.10);
-  border-radius:18px;
-  background:
-    linear-gradient(180deg,rgba(255,255,255,.026),rgba(255,255,255,.010)),
-    rgba(6,6,6,.90);
-  box-shadow:
-    0 24px 70px rgba(0,0,0,.50),
-    inset 0 0 0 1px rgba(212,175,55,.015);
-  text-align:left;
-  backdrop-filter:blur(9px);
-}
-
-.admin-gate-label{
-  display:block;
-  margin:0 0 7px;
-  color:#c6c8ca;
-  font-size:10px;
-  font-weight:800;
-  letter-spacing:1.1px;
-  text-transform:uppercase;
-}
-.admin-gate-label:not(:first-child){
-  margin-top:15px;
-}
-.admin-gate-label span{
-  color:#777;
-  font-weight:600;
-}
-
-.admin-gate-input{
-  width:100%;
-  height:54px;
-  padding:0 16px;
-  border:1px solid rgba(255,255,255,.18);
-  border-radius:9px;
-  outline:none;
-  background:#111;
-  color:#fff;
-  font:600 16px/1 'Inter',sans-serif;
-  letter-spacing:.4px;
-  transition:border-color .16s ease,box-shadow .16s ease,background .16s ease;
-}
-.admin-gate-input::placeholder{
-  color:#777;
-}
-.admin-gate-input:focus{
-  border-color:rgba(212,175,55,.72);
-  background:#0e0e0e;
-  box-shadow:0 0 0 3px rgba(212,175,55,.07);
-}
-.admin-gate-pin-input{
-  text-align:center;
-  letter-spacing:7px;
-  font-size:18px;
-}
-
-.admin-gate-login-btn{
-  width:100%;
-  min-height:58px;
-  display:grid;
-  grid-template-columns:1fr auto 1fr;
-  align-items:center;
-  margin-top:20px;
-  padding:0 18px;
-  border:1px solid #d4af37;
-  border-radius:10px;
-  background:linear-gradient(135deg,#e0ba38,#b99421);
-  color:#070707;
-  font:900 15px/1 'Inter',sans-serif;
-  letter-spacing:1.7px;
-  text-transform:uppercase;
-  cursor:pointer;
-  box-shadow:0 10px 25px rgba(212,175,55,.15);
-}
-.admin-gate-login-btn span{
-  grid-column:2;
-}
-.admin-gate-login-btn strong{
-  grid-column:3;
-  justify-self:end;
-  font-size:22px;
-  font-weight:400;
-}
-.admin-gate-login-btn:hover:not(:disabled){
-  filter:brightness(1.06);
-}
-.admin-gate-login-btn:disabled{
-  opacity:.66;
-  cursor:wait;
-}
-
-.admin-gate-error{
-  display:none;
-  margin-top:11px;
-  padding:9px 11px;
-  border:1px solid rgba(239,68,68,.34);
-  border-radius:8px;
-  background:rgba(239,68,68,.055);
-  color:#ff8e8e;
-  font-size:11px;
-  line-height:1.4;
-  font-weight:700;
-}
-.admin-gate-error.warning{
-  color:#fcd34d;
-  border-color:rgba(245,158,11,.38);
-  background:rgba(245,158,11,.06);
-}
-
-.admin-gate-note{
-  margin:12px 0 0;
-  color:#777;
-  font-size:10px;
-  line-height:1.45;
-  text-align:center;
-}
-.admin-gate-master-link{
-  display:block;
-  margin-top:8px;
-  color:#d4af37;
-  font-size:10px;
-  font-weight:900;
-  letter-spacing:.45px;
-  text-align:center;
-  text-decoration:none;
-}
-.admin-gate-master-link:hover{
-  color:#f7dc79;
-}
-
-.admin-gate-separator{
-  position:relative;
-  margin:20px 0 14px;
-  padding-top:17px;
-  border-top:1px solid rgba(255,255,255,.09);
-  color:#858585;
-  font-size:10px;
-  font-weight:800;
-  letter-spacing:.7px;
-  text-align:center;
-}
-
-.admin-gate-secondary-btn{
-  width:100%;
-  min-height:48px;
-  margin-top:9px;
-  border:1px solid rgba(212,175,55,.45);
-  border-radius:9px;
-  background:rgba(212,175,55,.035);
-  color:#d4af37;
-  font:850 11px/1 'Inter',sans-serif;
-  letter-spacing:1.25px;
-  cursor:pointer;
-  text-transform:uppercase;
-}
-.admin-gate-secondary-btn:hover{
-  background:rgba(212,175,55,.10);
-  border-color:#d4af37;
-  color:#f5dc7b;
-}
-
-.admin-gate-security-state{
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  gap:9px;
-  margin-top:17px;
-  color:#777;
-  font-size:8px;
-  font-weight:700;
-  letter-spacing:2px;
-}
-.admin-gate-security-state .admin-pin-network-dot{
-  width:9px !important;
-  height:9px !important;
-  flex-basis:9px !important;
-}
-
-.admin-gate-build{
-  display:inline-flex;
-  align-items:center;
-  gap:8px;
-  margin-top:12px;
-  padding:6px 10px;
-  border:1px solid rgba(212,175,55,.30);
-  border-radius:999px;
-  background:#070707;
-  color:#d4af37;
-  font-size:8px;
-  font-weight:900;
-  letter-spacing:.5px;
-}
-#admin-gate-server-health{
-  color:#999;
-}
-#admin-gate-server-health[data-state="ok"]{color:#4ade80;}
-#admin-gate-server-health[data-state="warn"]{color:#fbbf24;}
-#admin-gate-server-health[data-state="bad"]{color:#ff7676;}
-
-.admin-gate-visit-site{
-  position:absolute;
-  z-index:20;
-  top:16px;
-  left:20px;
-  display:inline-flex;
-  align-items:center;
-  min-height:38px;
-  padding:0 13px;
-  border:1px solid rgba(255,255,255,.12);
-  border-radius:8px;
-  background:rgba(8,8,8,.82);
-  color:#aaa;
-  text-decoration:none;
-  font-size:10px;
-  font-weight:800;
-  letter-spacing:.5px;
-  backdrop-filter:blur(8px);
-}
-.admin-gate-visit-site:hover{
-  border-color:rgba(212,175,55,.55);
-  color:#fff;
-}
-
-/* Modales internes : restent au-dessus de la porte */
-.admin-gate-modal{
-  position:fixed;
-  inset:0;
-  z-index:2147483640;
-  display:none;
-  align-items:center;
-  justify-content:center;
-  padding:18px;
-  background:rgba(0,0,0,.88);
-  backdrop-filter:blur(10px);
-}
-.admin-gate-modal.open{
-  display:flex;
-}
-.admin-gate-modal-card{
-  position:relative;
-  width:min(470px,94vw);
-  max-height:90dvh;
-  overflow:auto;
-  padding:28px;
-  border:1px solid rgba(212,175,55,.42);
-  border-radius:16px;
-  background:#090909;
-  box-shadow:0 28px 80px rgba(0,0,0,.72);
-  text-align:left;
-}
-.admin-gate-modal-card h2{
-  margin:2px 0 7px;
-  color:#fff;
-  font-size:20px;
-  letter-spacing:1px;
-}
-.admin-gate-modal-card > p{
-  margin:0 0 18px;
-  color:#8b8b8b;
-  font-size:12px;
-  line-height:1.45;
-}
-.admin-gate-modal-kicker{
-  color:#d4af37;
-  font-size:9px;
-  font-weight:900;
-  letter-spacing:2px;
-}
-.admin-gate-modal-x{
-  position:absolute;
-  right:13px;
-  top:13px;
-  width:36px;
-  height:36px;
-  border:1px solid rgba(255,255,255,.16);
-  border-radius:50%;
-  background:#111;
-  color:#fff;
-  font-size:21px;
-  cursor:pointer;
-}
-.admin-gate-demo-result{
-  min-height:18px;
-  margin-top:12px;
-  color:#aaa;
-  font-size:11px;
-  line-height:1.4;
-}
-.admin-gate-demo-result.ok{color:#86efac;}
-.admin-gate-demo-result.bad{color:#fca5a5;}
-
-.admin-gate-install-guide{
-  display:flex;
-  flex-direction:column;
-  gap:8px;
-  margin:14px 0 4px;
-  padding:15px;
-  border:1px solid rgba(255,255,255,.09);
-  border-radius:10px;
-  background:#111;
-  color:#c8c8c8;
-  font-size:11px;
-  line-height:1.4;
-}
-.admin-gate-install-guide strong{
-  color:#d4af37;
-}
-
-/* La porte V11 reste décorative derrière la vraie connexion. */
-#ichef-admin-pin-gate .admin-door-leaf{
-  opacity:.48;
-}
-
-/* Desktop court : que tout reste visible */
-@media(max-height:900px) and (min-width:800px){
-  #ichef-admin-pin-gate{
-    padding-top:12px !important;
-  }
-  #ichef-admin-pin-gate .admin-partner-center{
-    width:min(510px,calc(100vw - 34px)) !important;
-    padding-bottom:20px !important;
-  }
-  #ichef-admin-pin-gate .admin-pin-logo-wrap{
-    height:61px !important;
-    min-height:61px !important;
-  }
-  #ichef-admin-pin-gate .admin-pin-logo{
-    width:205px !important;
-    max-height:58px !important;
-  }
-  #ichef-admin-pin-gate .admin-pin-line{
-    margin-bottom:8px !important;
-  }
-  #ichef-admin-pin-gate .admin-partner-title{
-    font-size:13px !important;
-    margin-bottom:6px !important;
-  }
-  #ichef-admin-pin-gate .admin-pin-subtitle{
-    margin-bottom:9px !important;
-  }
-  .admin-partner-card{
-    padding:14px 19px 16px;
-  }
-  .admin-gate-input{
-    height:42px;
-    font-size:14px;
-  }
-  .admin-gate-label:not(:first-child){
-    margin-top:9px;
-  }
-  .admin-gate-login-btn{
-    min-height:44px;
-    margin-top:12px;
-    font-size:12px;
-  }
-  .admin-gate-note{margin-top:8px;}
-  .admin-gate-separator{
-    margin:12px 0 7px;
-    padding-top:10px;
-  }
-  .admin-gate-secondary-btn{
-    min-height:37px;
-    margin-top:6px;
-  }
-  .admin-gate-security-state{
-    margin-top:10px;
-  }
-  .admin-gate-build{
-    margin-top:7px;
-  }
-}
-
-/* Mobile */
-@media(max-width:650px){
-  #ichef-admin-pin-gate{
-    padding:52px 9px 20px !important;
-  }
-  #ichef-admin-pin-gate .admin-partner-center{
-    width:100% !important;
-  }
-  .admin-partner-card{
-    padding:18px 14px 20px;
-  }
-  .admin-gate-input{
-    height:50px;
-    font-size:16px;
-  }
-  .admin-gate-visit-site{
-    top:9px;
-    left:9px;
-    min-height:34px;
-    font-size:9px;
-  }
-}
-</style>
-
-
-<style id="ichef-admin-v13-no-yellow-gate">
-/* =========================================================
-   ADMINISTRATION V13 — PORTE SANS JAUNE DANS LES TEXTES/BOUTONS
-   Les filets champagne décoratifs restent uniquement dans le décor.
-   ========================================================= */
-
-/* Titres / textes : blanc et gris uniquement */
-#ichef-admin-pin-gate .admin-pin-module,
-#ichef-admin-pin-gate .admin-partner-title,
-#ichef-admin-pin-gate .admin-gate-master-link,
-#ichef-admin-pin-gate .admin-gate-modal-kicker,
-#ichef-admin-pin-gate .admin-gate-install-guide strong{
-  color:#f5f5f5 !important;
-}
-
-#ichef-admin-pin-gate .admin-pin-subtitle,
-#ichef-admin-pin-gate .admin-gate-label,
-#ichef-admin-pin-gate .admin-gate-note,
-#ichef-admin-pin-gate .admin-gate-separator,
-#ichef-admin-pin-gate .admin-gate-security-state{
-  color:#9b9b9b !important;
-}
-
-#ichef-admin-pin-gate .admin-gate-label span{
-  color:#707070 !important;
-}
-
-/* Bouton principal : blanc / noir, comme une porte premium */
-#ichef-admin-pin-gate .admin-gate-login-btn{
-  border:1px solid rgba(255,255,255,.92) !important;
-  background:#f5f5f3 !important;
-  color:#050505 !important;
-  box-shadow:0 10px 28px rgba(255,255,255,.06) !important;
-}
-#ichef-admin-pin-gate .admin-gate-login-btn:hover:not(:disabled){
-  background:#ffffff !important;
-  filter:none !important;
-  box-shadow:0 12px 32px rgba(255,255,255,.10) !important;
-}
-
-/* Boutons secondaires : noirs, bordure gris clair */
-#ichef-admin-pin-gate .admin-gate-secondary-btn{
-  border:1px solid rgba(255,255,255,.22) !important;
-  background:#0c0c0c !important;
-  color:#e8e8e8 !important;
-}
-#ichef-admin-pin-gate .admin-gate-secondary-btn:hover{
-  border-color:rgba(255,255,255,.55) !important;
-  background:#151515 !important;
-  color:#ffffff !important;
-}
-
-/* Lien Master : neutre */
-#ichef-admin-pin-gate .admin-gate-master-link:hover{
-  color:#ffffff !important;
-}
-
-/* Inputs : focus blanc/gris, plus jaune */
-#ichef-admin-pin-gate .admin-gate-input:focus{
-  border-color:rgba(255,255,255,.58) !important;
-  box-shadow:0 0 0 3px rgba(255,255,255,.045) !important;
-}
-
-/* Badge serveur : neutre sauf état technique */
-#ichef-admin-pin-gate .admin-gate-build{
-  border-color:rgba(255,255,255,.18) !important;
-  background:#070707 !important;
-  color:#b8b8b8 !important;
-}
-#ichef-admin-pin-gate #admin-gate-server-health{
-  color:#8f8f8f !important;
-}
-#ichef-admin-pin-gate #admin-gate-server-health[data-state="ok"]{
-  color:#4ade80 !important;
-}
-#ichef-admin-pin-gate #admin-gate-server-health[data-state="warn"]{
-  color:#b7b7b7 !important;
-}
-#ichef-admin-pin-gate #admin-gate-server-health[data-state="bad"]{
-  color:#ff7676 !important;
-}
-
-/* Bouton Visiter : aucun jaune au survol */
-#ichef-admin-pin-gate .admin-gate-visit-site:hover{
-  border-color:rgba(255,255,255,.42) !important;
-  color:#fff !important;
-}
-
-/* Modales : enlever également les accents jaunes de texte/boutons */
-#ichef-admin-pin-gate .admin-gate-modal-card{
-  border-color:rgba(255,255,255,.18) !important;
-}
-#ichef-admin-pin-gate .admin-gate-modal-card h2{
-  color:#fff !important;
-}
-
-/* Résultats techniques conservent uniquement vert/rouge */
-#ichef-admin-pin-gate .admin-gate-demo-result.ok{
-  color:#86efac !important;
-}
-#ichef-admin-pin-gate .admin-gate-demo-result.bad{
-  color:#fca5a5 !important;
-}
-</style>
-
-
-<style id="ichef-admin-v14-door-opening-effect">
-/* =========================================================
-   ADMINISTRATION V14 — OUVERTURE RÉELLE DE LA PORTE
-   L'Administration est déjà active derrière : animation non bloquante.
-   ========================================================= */
-
-#ichef-admin-pin-gate{
-  perspective:2200px !important;
-  transform-style:preserve-3d;
-}
-
-/* Fine lumière au milieu des deux vantaux */
-#ichef-admin-pin-gate .admin-door-light-seam{
-  position:absolute;
-  z-index:3;
-  left:50%;
-  top:86px;
-  bottom:52px;
-  width:1px;
-  transform:translateX(-50%) scaleY(.94);
-  transform-origin:center;
-  opacity:.16;
-  pointer-events:none;
-  background:linear-gradient(
-    180deg,
-    transparent 0%,
-    rgba(255,255,255,.10) 10%,
-    rgba(255,255,255,.62) 48%,
-    rgba(255,255,255,.10) 90%,
-    transparent 100%
-  );
-  box-shadow:
-    0 0 6px rgba(255,255,255,.12),
-    0 0 18px rgba(255,255,255,.04);
-  transition:
-    width .22s ease,
-    opacity .22s ease,
-    box-shadow .22s ease;
-}
-
-/* Vantaux : aspect plus physique */
-#ichef-admin-pin-gate .admin-door-leaf{
-  backface-visibility:hidden;
-  will-change:transform,opacity;
-  transition:
-    transform .62s cubic-bezier(.20,.78,.18,1),
-    opacity .48s ease,
-    filter .45s ease !important;
-}
-
-#ichef-admin-pin-gate .admin-door-leaf.left{
-  transform-origin:0% 50% !important;
-}
-#ichef-admin-pin-gate .admin-door-leaf.right{
-  transform-origin:100% 50% !important;
-}
-
-/* Au moment du PIN correct : petite lumière centrale */
-#ichef-admin-pin-gate.is-opening .admin-door-light-seam{
-  width:8px;
-  opacity:.88;
-  box-shadow:
-    0 0 10px rgba(255,255,255,.42),
-    0 0 32px rgba(255,255,255,.16),
-    0 0 80px rgba(255,255,255,.06);
-}
-
-/* Ouverture des deux battants */
-#ichef-admin-pin-gate.is-opening .admin-door-leaf.left{
-  transform:
-    translateX(-46%)
-    rotateY(-58deg)
-    scaleX(.98) !important;
-  opacity:.52 !important;
-  filter:brightness(.82);
-}
-#ichef-admin-pin-gate.is-opening .admin-door-leaf.right{
-  transform:
-    translateX(46%)
-    rotateY(58deg)
-    scaleX(.98) !important;
-  opacity:.52 !important;
-  filter:brightness(.82);
-}
-
-/* Le bloc de connexion s'efface rapidement, comme si on entrait */
-#ichef-admin-pin-gate.is-opening .admin-pin-center{
-  opacity:0 !important;
-  transform:translateZ(-35px) scale(.965) !important;
-  transition:
-    opacity .18s ease,
-    transform .28s ease !important;
-}
-
-/* Le fond noir devient transparent pour révéler l'Administration */
-#ichef-admin-pin-gate.is-opening{
-  background:rgba(0,0,0,0) !important;
-  transition:background .56s ease !important;
-}
-
-/* Décor latéral et arche s'effacent après le départ des vantaux */
-#ichef-admin-pin-gate.is-opening .admin-entry-arch,
-#ichef-admin-pin-gate.is-opening .admin-pin-arc,
-#ichef-admin-pin-gate.is-opening .admin-entry-halo,
-#ichef-admin-pin-gate.is-opening .admin-pin-footer,
-#ichef-admin-pin-gate.is-opening .admin-gate-visit-site{
-  opacity:0 !important;
-  transition:opacity .35s ease !important;
-}
-
-/* Réduit l'animation si l'utilisateur le demande au système */
-@media (prefers-reduced-motion: reduce){
-  #ichef-admin-pin-gate .admin-door-leaf,
-  #ichef-admin-pin-gate .admin-door-light-seam,
-  #ichef-admin-pin-gate.is-opening,
-  #ichef-admin-pin-gate.is-opening .admin-pin-center{
-    transition-duration:.08s !important;
-  }
-  #ichef-admin-pin-gate.is-opening .admin-door-leaf.left{
-    transform:translateX(-18%) !important;
-  }
-  #ichef-admin-pin-gate.is-opening .admin-door-leaf.right{
-    transform:translateX(18%) !important;
-  }
-}
-
-@media(max-width:650px){
-  #ichef-admin-pin-gate .admin-door-light-seam{
-    top:52px;
-    bottom:30px;
-  }
-}
-</style>
+    <!-- Stripe Buy Button — MODE TEST / DEMO -->
+    <script async src="https://js.stripe.com/v3/buy-button.js"></script>
 
 </head>
 <body>
-
-
-<div id="ichef-admin-pin-gate" aria-label="Portail partenaire Administration iCHEF">
-  <div class="admin-entry-halo"></div>
-  <div class="admin-entry-arch"></div>
-  <div class="admin-door-light-seam" aria-hidden="true"></div>
-
-  <div class="admin-door-leaf left" aria-hidden="true">
-    <div class="admin-door-inner"></div>
-    <span class="admin-door-handle"></span>
-  </div>
-  <div class="admin-door-leaf right" aria-hidden="true">
-    <div class="admin-door-inner"></div>
-    <span class="admin-door-handle"></span>
-  </div>
-
-  <div class="admin-pin-arc left"></div>
-  <div class="admin-pin-arc right"></div>
-
-  <a class="admin-gate-visit-site"
-     href="https://ichef.ch/"
-     target="_blank"
-     rel="noopener noreferrer">← VISITER ICHEF.CH</a>
-
-  <main class="admin-pin-center admin-partner-center">
-    <div class="admin-pin-logo-wrap">
-      <img
-        class="admin-pin-logo"
-        src="Gemini_Generated_Image_q748ueq748ueq748-Photoroom(1)(1)(1).png"
-        alt="iCHEF Operating System"
-        onerror="this.onerror=null;this.src='Gemini_Generated_Image_q748ueq748ueq748-Photoroom (1) (1) (1).png';">
-    </div>
-
-    <div class="admin-pin-line"></div>
-
-    <h1 class="admin-pin-module admin-partner-title">PORTAIL PARTENAIRE</h1>
-    <div class="admin-pin-subtitle">ADMINISTRATION · CONNEXION SÉCURISÉE</div>
-
-    <section class="admin-partner-card" aria-label="Connexion partenaire">
-      <label class="admin-gate-label" for="admin-gate-tenant">ID RESTAURANT</label>
-      <input
-        id="admin-gate-tenant"
-        class="admin-gate-input"
-        type="text"
-        placeholder="Ex : CHEZMARC"
-        autocomplete="off"
-        autocapitalize="characters"
-        spellcheck="false">
-
-      <label class="admin-gate-label" for="admin-gate-pin">
-        CODE PIN RESTAURANT
-        <span>(4 À 12 CHIFFRES)</span>
-      </label>
-      <input
-        id="admin-gate-pin"
-        class="admin-gate-input admin-gate-pin-input"
-        type="password"
-        placeholder="••••"
-        autocomplete="off"
-        inputmode="numeric"
-        pattern="[0-9]*"
-        maxlength="12">
-
-      <button id="admin-gate-login-btn" class="admin-gate-login-btn" type="button">
-        <span>SE CONNECTER</span>
-        <strong>→</strong>
-      </button>
-
-      <div id="admin-gate-error" class="admin-gate-error" aria-live="polite"></div>
-
-      <p class="admin-gate-note">
-        Le PIN restaurant est différent de la clé Master de la Tour de Contrôle.
-      </p>
-
-      <a class="admin-gate-master-link" href="trour.de.control.html">
-        ACCÈS MASTER · TOUR DE CONTRÔLE
-      </a>
-
-      <div class="admin-gate-separator">
-        <span>PAS ENCORE PARTENAIRE ?</span>
-      </div>
-
-      <button id="admin-gate-demo-btn" class="admin-gate-secondary-btn" type="button">
-        CRÉER UNE DÉMO PRIVÉE
-      </button>
-
-      <button id="admin-gate-install-btn" class="admin-gate-secondary-btn" type="button">
-        INSTALLER L’APP ICHEF OS
-      </button>
-
-      <div class="admin-gate-security-state">
-        <span class="admin-pin-network-dot"></span>
-        <span>ACCÈS CHIFFRÉ &amp; SÉCURISÉ</span>
-      </div>
-    </section>
-
-    <div class="admin-gate-build">
-      <span>iCHEF OS</span>
-      <strong id="admin-gate-server-health">· SERVEUR…</strong>
-    </div>
-  </main>
-
-  <div class="admin-pin-footer left">
-    GÉRER<br>PILOTER<br>PERFORMER
-  </div>
-
-  <div class="admin-pin-footer right">
-    ICHEF OS<br>ADMINISTRATION
-  </div>
-
-  <!-- DÉMO PRIVÉE : même fonction serveur que l'ancienne porte -->
-  <div id="admin-gate-demo-modal" class="admin-gate-modal" aria-hidden="true">
-    <div class="admin-gate-modal-card">
-      <button type="button" class="admin-gate-modal-x" data-admin-gate-close="demo">×</button>
-      <div class="admin-gate-modal-kicker">ICHEF OS</div>
-      <h2>DÉMO PRIVÉE</h2>
-      <p>Création de votre demande d’évaluation 48h.</p>
-
-      <form id="admin-gate-demo-form">
-        <label class="admin-gate-label" for="admin-demo-resto">NOM DE L’ÉTABLISSEMENT *</label>
-        <input id="admin-demo-resto" class="admin-gate-input" required>
-
-        <label class="admin-gate-label" for="admin-demo-siret">N° D’IDENTIFICATION / SIRET *</label>
-        <input id="admin-demo-siret" class="admin-gate-input" required>
-
-        <label class="admin-gate-label" for="admin-demo-email">EMAIL DU GÉRANT *</label>
-        <input id="admin-demo-email" class="admin-gate-input" type="email" required>
-
-        <label class="admin-gate-label" for="admin-demo-phone">TÉLÉPHONE MOBILE *</label>
-        <input id="admin-demo-phone" class="admin-gate-input" type="tel" required>
-
-        <button id="admin-demo-submit" class="admin-gate-login-btn" type="submit">
-          <span>ACTIVER MON ESSAI DE 48H</span>
-          <strong>→</strong>
-        </button>
-      </form>
-
-      <div id="admin-demo-result" class="admin-gate-demo-result"></div>
-    </div>
-  </div>
-
-  <!-- INSTALLATION PWA intégrée à la porte -->
-  <div id="admin-gate-pwa-modal" class="admin-gate-modal" aria-hidden="true">
-    <div class="admin-gate-modal-card">
-      <button type="button" class="admin-gate-modal-x" data-admin-gate-close="pwa">×</button>
-      <div class="admin-gate-modal-kicker">ICHEF OS</div>
-      <h2>MODE APPLICATION</h2>
-      <p id="admin-gate-pwa-help">
-        Pour installer iCHEF OS sur votre tablette ou smartphone.
-      </p>
-
-      <div class="admin-gate-install-guide">
-        <strong>iPhone / iPad</strong>
-        <span>1. Ouvrez le menu Partager dans Safari.</span>
-        <span>2. Choisissez « Sur l’écran d’accueil ».</span>
-        <span>3. Validez l’ajout.</span>
-      </div>
-
-      <button id="admin-gate-pwa-prompt" class="admin-gate-login-btn" type="button">
-        <span>INSTALLER L’APP</span>
-        <strong>→</strong>
-      </button>
-    </div>
-  </div>
-</div>
-
-<script id="ichef-admin-v12-partner-gate-script">
-(function(){
-  "use strict";
-
-  const SERVER =
-    window.SERVER_URL ||
-    ((location.hostname==="localhost" || location.hostname==="127.0.0.1")
-      ? "http://localhost:10000"
-      : "https://tableau-system.onrender.com");
-
-  let failedAttempts=0;
-  let cooldownTimer=null;
-  let submitting=false;
-  let installPrompt=null;
-
-  const gate=()=>document.getElementById('ichef-admin-pin-gate');
-  const tenantEl=()=>document.getElementById('admin-gate-tenant');
-  const pinEl=()=>document.getElementById('admin-gate-pin');
-  const loginBtn=()=>document.getElementById('admin-gate-login-btn');
-  const errorEl=()=>document.getElementById('admin-gate-error');
-
-  function normalizeTenant(value){
-    return String(value||'')
-      .trim()
-      .toLowerCase()
-      .replace(/\s+/g,'')
-      .replace(/[^a-z0-9_-]/g,'');
-  }
-
-  function showError(message,isWarning=false){
-    const el=errorEl();
-    if(!el) return;
-    const msg=String(message||'').trim();
-    el.textContent=msg;
-    el.classList.toggle('warning',!!isWarning);
-    el.style.display=msg?'block':'none';
-  }
-
-  function setLoginLabel(label){
-    const btn=loginBtn();
-    if(!btn) return;
-    const span=btn.querySelector('span');
-    if(span) span.textContent=label;
-  }
-
-  function sleep(ms){
-    return new Promise(resolve=>setTimeout(resolve,ms));
-  }
-
-  async function probeBackend(){
-    try{
-      const response=await fetch(
-        `${SERVER}/healthz?_t=${Date.now()}`,
-        {cache:'no-store',credentials:'include'}
-      );
-
-      let data={};
-      try{ data=await response.json(); }catch(_){}
-
-      return {
-        ok:response.ok,
-        status:response.status,
-        data
-      };
-    }catch(error){
-      return {
-        ok:false,
-        status:0,
-        data:{
-          error:'NETWORK_UNAVAILABLE',
-          message:error?.message||''
-        }
-      };
-    }
-  }
-
-  async function ensureBackendReady(){
-    const delays=[0,2500,4000,6000];
-    let last=null;
-
-    for(let i=0;i<delays.length;i+=1){
-      if(delays[i]){
-        setLoginLabel(`SERVEUR ICHEF · ${i+1}/${delays.length}`);
-        await sleep(delays[i]);
-      }
-
-      last=await probeBackend();
-
-      if(last.ok){
-        const mongoReady=Number(last.data?.mongoReadyState)===1;
-        if(mongoReady){
-          return {ok:true,detail:last};
-        }
-
-        showError(
-          'Le serveur iCHEF est en ligne mais la base de données n’est pas encore prête. Reconnexion automatique…',
-          true
-        );
-      }else{
-        showError(
-          last.status
-            ? `Serveur iCHEF indisponible (HTTP ${last.status}). Nouvelle tentative automatique…`
-            : 'Impossible de joindre le serveur iCHEF. Nouvelle tentative automatique…',
-          true
-        );
-      }
-    }
-
-    return {ok:false,detail:last};
-  }
-
-  function updateServerHealth(){
-    const el=document.getElementById('admin-gate-server-health');
-    if(!el) return;
-
-    fetch(`${SERVER}/healthz?_t=${Date.now()}`,{
-      cache:'no-store',
-      credentials:'include'
-    })
-    .then(async response=>{
-      if(!response.ok){
-        el.textContent=`· HTTP ${response.status}`;
-        el.dataset.state='warn';
-        return;
-      }
-      const data=await response.json().catch(()=>({}));
-      const mongoOK=Number(data.mongoReadyState)===1;
-      el.textContent=mongoOK?'· SERVEUR OK':'· BASE INDISPONIBLE';
-      el.dataset.state=mongoOK?'ok':'warn';
-    })
-    .catch(()=>{
-      el.textContent='· SERVEUR HORS LIGNE';
-      el.dataset.state='bad';
-    });
-  }
-
-  function startCooldown(seconds=15){
-    let remaining=Math.max(1,Number(seconds)||15);
-    const btn=loginBtn();
-    if(cooldownTimer) clearInterval(cooldownTimer);
-    if(btn) btn.disabled=true;
-
-    const render=()=>setLoginLabel(`RÉESSAYER DANS ${remaining}S`);
-    render();
-
-    cooldownTimer=setInterval(()=>{
-      remaining-=1;
-      if(remaining<=0){
-        clearInterval(cooldownTimer);
-        cooldownTimer=null;
-        failedAttempts=0;
-        if(btn) btn.disabled=false;
-        setLoginLabel('SE CONNECTER');
-        showError('');
-        return;
-      }
-      render();
-    },1000);
-  }
-
-  function applyAuthData(data,pin,safeTenant){
-    const currentPlan=data?.plan
-      ? String(data.plan).toUpperCase()
-      : 'CHEF';
-
-    const userAddons=Array.isArray(data?.addons)
-      ? data.addons.map(v=>String(v).toLowerCase())
-      : [];
-
-    const blockedModules=Array.isArray(data?.blockedModules)
-      ? data.blockedModules.map(v=>String(v).toLowerCase())
-      : [];
-
-    window.tenantID=safeTenant;
-    window.ICHEF_AUTH_PLAN=currentPlan;
-    window.ICHEF_AUTH_ADDONS=userAddons;
-    window.ICHEF_BLOCKED_MODULES=blockedModules;
-    window.__ICHEF_ADMIN_AUTH_DATA=data||{};
-    window.__ICHEF_ADMIN_AUTH_READY=true;
-
-    /* V15 : même handoff que le portail partenaire stable.
-       Le PIN reste uniquement dans la session de l'onglet. */
-    localStorage.setItem('ichef_tenant_id',safeTenant);
-    localStorage.setItem('tenantID',safeTenant);
-    localStorage.removeItem('ichef_master_pin');
-    localStorage.removeItem('pin');
-
-    try{
-      sessionStorage.setItem('ichef_partner_pin',pin);
-      sessionStorage.setItem(
-        'ichef_login_context',
-        JSON.stringify({
-          tenantID:safeTenant,
-          role:data?.role||'',
-          plan:data?.plan||'',
-          allowedModules:Array.isArray(data?.allowedModules)?data.allowedModules:[],
-          blockedModules:Array.isArray(data?.blockedModules)?data.blockedModules:[],
-          authenticatedAt:new Date().toISOString()
-        })
-      );
-      sessionStorage.setItem('ichef_partner_authenticated','1');
-      sessionStorage.setItem('ichef_partner_tenant',safeTenant);
-      sessionStorage.setItem('ichef_partner_role',String(data?.role||''));
-      sessionStorage.setItem('ichef_partner_handoff_at',String(Date.now()));
-      sessionStorage.setItem('ichef_partner_origin','administration-v12');
-
-      if(data?.csrfToken){
-        sessionStorage.setItem('ichef_csrf_token',String(data.csrfToken));
-      }
-    }catch(_){}
-  }
-
-  function openAdministration(){
-    document.documentElement.classList.add('ichef-admin-authenticated');
-
-    const g=gate();
-    document.body.style.overflow='';
-
-    if(g){
-      g.classList.add('is-opening');
-      g.style.pointerEvents='none';
-
-      setTimeout(()=>{
-        g.style.setProperty('display','none','important');
-        g.hidden=true;
-      },640);
-    }
-
-    if(
-      !window.__ICHEF_ADMIN_MANAGER_STARTED &&
-      window.logicielManager &&
-      typeof window.logicielManager.init==='function'
-    ){
-      window.__ICHEF_ADMIN_MANAGER_STARTED=true;
-      Promise.resolve().then(()=>{
-        const result=window.logicielManager.init();
-        if(result && typeof result.catch==='function'){
-          result.catch(e=>console.error('[iCHEF ADMIN] init',e));
-        }
-      });
-    }
-  }
-
-  async function login(){
-    if(submitting) return;
-
-    const tenant=normalizeTenant(tenantEl()?.value);
-    const pin=String(pinEl()?.value||'')
-      .replace(/\D/g,'')
-      .slice(0,12);
-
-    showError('');
-
-    if(!tenant){
-      showError('Identifiant restaurant manquant.');
-      tenantEl()?.focus();
-      return;
-    }
-
-    if(!/^\d{4,12}$/.test(pin)){
-      showError('Le PIN restaurant doit contenir entre 4 et 12 chiffres.');
-      pinEl()?.focus();
-      return;
-    }
-
-    if(failedAttempts>=3){
-      startCooldown(15);
-      return;
-    }
-
-    submitting=true;
-    const btn=loginBtn();
-    if(btn) btn.disabled=true;
-    setLoginLabel('AUTHENTIFICATION…');
-
-    try{
-      const currentTenant=String(window.tenantID||'').trim().toLowerCase();
-
-      if(currentTenant && currentTenant!==tenant){
-        localStorage.removeItem('EMPIRE_GLOBAL_SYNC');
-        sessionStorage.removeItem('ichef_partner_pin');
-        sessionStorage.removeItem('ichef_partner_authenticated');
-        sessionStorage.removeItem('ichef_partner_tenant');
-        sessionStorage.removeItem('ichef_partner_role');
-      }
-
-      /* V15 : connexion directe comme le portail partenaire stable.
-         Le healthcheck n'est plus une condition préalable. */
-      const controller=new AbortController();
-      const timeout=setTimeout(()=>controller.abort(),15000);
-
-      let res;
-      try{
-        res=await fetch(`${SERVER}/api/verify-pin`,{
-          method:'POST',
-          headers:{
-            'Content-Type':'application/json',
-            'Accept':'application/json'
-          },
-          credentials:'include',
-          cache:'no-store',
-          signal:controller.signal,
-          body:JSON.stringify({
-            tenantID:tenant,
-            pin,
-            deviceId:getDeviceFingerprint(),
-            terminal:'ADMIN',
-            module:'administration.html'
-          })
-        });
-      }finally{
-        clearTimeout(timeout);
-      }
-
-      const data=await res.json().catch(()=>({}));
-
-      if(!res.ok || data?.success!==true){
-        failedAttempts+=1;
-        if(pinEl()) pinEl().value='';
-
-        const serverMessage=String(data?.error||'').trim();
-        let message=serverMessage || `Connexion refusée (${res.status}).`;
-
-        if(res.status===401){
-          message=serverMessage || 'Code PIN incorrect.';
-        }else if(res.status===404){
-          message=serverMessage || 'Restaurant introuvable. Vérifiez l’identifiant.';
-        }else if(res.status===403){
-          message=serverMessage || 'Accès refusé : licence, écran ou permission.';
-        }else if(res.status>=500){
-          message=serverMessage || `Erreur serveur iCHEF (${res.status}).`;
-        }
-
-        if(failedAttempts>=3){
-          showError(
-            `${message} Trois essais ont échoué : nouvel essai dans 15 secondes.`,
-            true
-          );
-          startCooldown(15);
-        }else{
-          showError(message);
-          pinEl()?.focus();
-        }
-        return;
-      }
-
-      /* Le portail partenaire est réservé au gérant / administration. */
-      const serverRole=String(data?.role||'')
-        .trim()
-        .toUpperCase();
-
-      if(
-        serverRole &&
-        serverRole!=='MASTER' &&
-        serverRole!=='ADMIN' &&
-        serverRole!=='MANAGER'
-      ){
-        throw new Error(
-          'Ce code correspond à un membre du personnel. Utilisez le portail staff.'
-        );
-      }
-
-      failedAttempts=0;
-
-      const safeTenant=String(
-        data.safeTenantID || tenant
-      ).trim().toLowerCase();
-
-      applyAuthData(data,pin,safeTenant);
-
-      if(pinEl()) pinEl().value='';
-
-      /* URL mise à jour sans rechargement. */
-      try{
-        const url=new URL(location.href);
-        url.searchParams.set('tenantID',safeTenant);
-        history.replaceState({},document.title,url.pathname+url.search+url.hash);
-      }catch(_){}
-
-      showError('');
-      openAdministration();
-
-    }catch(error){
-      console.error('[iCHEF portail partenaire Administration]',error);
-
-      if(error?.name==='AbortError'){
-        showError(
-          'Le serveur iCHEF met trop de temps à répondre. Réessayez dans quelques secondes.',
-          true
-        );
-      }else{
-        showError(
-          error?.message ||
-          'Impossible de joindre le serveur iCHEF. Vérifiez la connexion réseau.'
-        );
-      }
-
-      if(pinEl()){
-        pinEl().value='';
-        pinEl().focus();
-      }
-    }finally{
-      submitting=false;
-
-      if(!cooldownTimer && btn){
-        btn.disabled=false;
-        setLoginLabel('SE CONNECTER');
-      }
-
-      /* Indicateur seulement : il ne bloque jamais l'authentification. */
-      updateServerHealth();
-    }
-  }
-
-  /* --------------------------------------------------------
-     DÉMO PRIVÉE — même route serveur que l'ancienne porte
-     -------------------------------------------------------- */
-  function toggleModal(id,show){
-    const modal=document.getElementById(id);
-    if(!modal) return;
-    modal.classList.toggle('open',!!show);
-    modal.setAttribute('aria-hidden',show?'false':'true');
-  }
-
-  async function createDemo(event){
-    event.preventDefault();
-
-    const btn=document.getElementById('admin-demo-submit');
-    const result=document.getElementById('admin-demo-result');
-
-    const restaurant=String(document.getElementById('admin-demo-resto')?.value||'').trim();
-    const siret=String(document.getElementById('admin-demo-siret')?.value||'').trim();
-    const email=String(document.getElementById('admin-demo-email')?.value||'').trim();
-    const phone=String(document.getElementById('admin-demo-phone')?.value||'').trim();
-
-    if(btn){
-      btn.disabled=true;
-      const span=btn.querySelector('span');
-      if(span) span.textContent='CRÉATION EN COURS…';
-    }
-    if(result){
-      result.textContent='';
-      result.className='admin-gate-demo-result';
-    }
-
-    try{
-      const res=await fetch(`${SERVER}/api/nouvelle-demande-demo`,{
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({
-          restaurant,
-          phone,
-          email,
-          details:{
-            type:'Démo 48h',
-            siret
-          }
-        })
-      });
-
-      const data=await res.json().catch(()=>({}));
-
-      if(!res.ok || data?.success!==true){
-        throw new Error(data?.error||'Impossible de créer la demande de démo.');
-      }
-
-      if(result){
-        result.className='admin-gate-demo-result ok';
-        result.textContent='Demande enregistrée. Votre espace d’évaluation 48h est en cours de validation.';
-      }
-
-      event.currentTarget?.reset?.();
-
-    }catch(error){
-      if(result){
-        result.className='admin-gate-demo-result bad';
-        result.textContent=error?.message||'Erreur de connexion au serveur.';
-      }
-    }finally{
-      if(btn){
-        btn.disabled=false;
-        const span=btn.querySelector('span');
-        if(span) span.textContent='ACTIVER MON ESSAI DE 48H';
-      }
-    }
-  }
-
-  /* --------------------------------------------------------
-     PWA — même comportement : prompt natif si disponible,
-     sinon guide d'installation.
-     -------------------------------------------------------- */
-  window.addEventListener('beforeinstallprompt',event=>{
-    event.preventDefault();
-    installPrompt=event;
-  });
-
-  async function requestInstall(){
-    if(installPrompt){
-      try{
-        installPrompt.prompt();
-        await installPrompt.userChoice;
-      }catch(_){}
-      installPrompt=null;
-      toggleModal('admin-gate-pwa-modal',false);
-      return;
-    }
-
-    toggleModal('admin-gate-pwa-modal',true);
-  }
-
-  /* --------------------------------------------------------
-     Bindings
-     -------------------------------------------------------- */
-  loginBtn()?.addEventListener('click',login);
-
-  pinEl()?.addEventListener('keydown',event=>{
-    if(event.key==='Enter'){
-      event.preventDefault();
-      login();
-    }
-  });
-
-  tenantEl()?.addEventListener('keydown',event=>{
-    if(event.key==='Enter'){
-      event.preventDefault();
-      pinEl()?.focus();
-    }
-  });
-
-  document.getElementById('admin-gate-demo-btn')
-    ?.addEventListener('click',()=>toggleModal('admin-gate-demo-modal',true));
-
-  document.getElementById('admin-gate-install-btn')
-    ?.addEventListener('click',requestInstall);
-
-  document.getElementById('admin-gate-pwa-prompt')
-    ?.addEventListener('click',requestInstall);
-
-  document.getElementById('admin-gate-demo-form')
-    ?.addEventListener('submit',createDemo);
-
-  document.querySelectorAll('[data-admin-gate-close]').forEach(btn=>{
-    btn.addEventListener('click',()=>{
-      const type=btn.dataset.adminGateClose;
-      toggleModal(
-        type==='demo'
-          ? 'admin-gate-demo-modal'
-          : 'admin-gate-pwa-modal',
-        false
-      );
-    });
-  });
-
-  document.querySelectorAll('.admin-gate-modal').forEach(modal=>{
-    modal.addEventListener('click',event=>{
-      if(event.target===modal){
-        toggleModal(modal.id,false);
-      }
-    });
-  });
-
-  document.addEventListener('keydown',event=>{
-    if(event.key==='Escape'){
-      toggleModal('admin-gate-demo-modal',false);
-      toggleModal('admin-gate-pwa-modal',false);
-    }
-  });
-
-  /* Pré-remplit l'identifiant connu, sans pré-remplir le PIN. */
-  const knownTenant=String(
-    new URLSearchParams(location.search).get('tenantID') ||
-    window.tenantID ||
-    localStorage.getItem('ichef_tenant_id') ||
-    ''
-  ).trim();
-
-  if(knownTenant && tenantEl()){
-    tenantEl().value=knownTenant;
-  }
-
-  /* Le PIN ne doit pas être restauré automatiquement sur une nouvelle porte. */
-  localStorage.removeItem('ichef_master_pin');
-  localStorage.removeItem('pin');
-  sessionStorage.removeItem('ichef_partner_pin');
-  sessionStorage.removeItem('ichef_partner_authenticated');
-
-  updateServerHealth();
-  window.addEventListener('online',updateServerHealth);
-  window.addEventListener('offline',updateServerHealth);
-  setInterval(updateServerHealth,30000);
-})();
-</script>
-
-
-<!-- iCHEF Administration V9 · PDF Stripe direct · Stripe License Sync · 2026-09-09 -->
+<!-- iCHEF Administration V14 · Payment Link Stripe démo · 2026-09-08 -->
     
     <aside class="ichef-sidebar" aria-label="Navigation iCHEF OS">
         <div class="sidebar-brand">
             <img class="sidebar-logo" src="Gemini_Generated_Image_q748ueq748ueq748-Photoroom(1)(1)(1).png" alt="iCHEF OS" onerror="this.onerror=null;this.src='Gemini_Generated_Image_q748ueq748ueq748-Photoroom (1) (1) (1).png'">
-            <strong></strong>
+            <strong>iCHEF OS</strong>
             <small>Tout votre restaurant<br>dans une seule solution</small>
         </div>
         <div class="sidebar-menu">
@@ -3283,14 +1419,7 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
             </div>
             <div id="client-message-card" class="client-message-card" hidden>
                 <div class="client-message-icon">✉</div>
-                <div class="client-message-body">
-                    <div class="client-message-head">
-                        <div class="client-message-title">Message iCHEF</div>
-                        <span id="client-message-state" class="client-message-state">Reçu</span>
-                    </div>
-                    <div id="client-message-text" class="client-message-text"></div>
-                    <div id="client-message-date" class="client-message-date"></div>
-                </div>
+                <div><div class="client-message-title">Message iCHEF</div><div id="client-message-text" class="client-message-text"></div><div id="client-message-date" class="client-message-date"></div></div>
             </div>
 
             <div class="client-documents-grid" id="client-documents">
@@ -3311,36 +1440,8 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
                 </aside>
             </div>
 
-            <div class="client-invoices-panel" id="screen-invoices-panel">
-                <div class="client-panel-head">
-                    <div><h3>▣ Mes connexions & factures écrans</h3><p>Chaque achat Stripe est relié au nombre de connexions réellement activées.</p></div>
-                    <span id="screen-invoice-count" class="plan-badge">0 facture</span>
-                </div>
-                <div class="screen-invoice-layout">
-                    <div>
-                        <div style="font-size:.68rem;font-weight:900;color:var(--text-muted);letter-spacing:.8px;text-transform:uppercase;margin-bottom:8px;">Dernière facture Stripe connexions</div>
-                        <div id="screen-invoice-current" class="client-current-doc screen-invoice-current" style="margin-top:0;">
-                            <div><strong id="screen-invoice-title">Aucune facture écran</strong><small id="screen-invoice-meta">Les achats de connexions payés apparaîtront ici.</small></div>
-                            <button id="screen-invoice-open" class="client-open-btn" type="button" disabled>Ouvrir le PDF Stripe ↗</button>
-                        </div>
-                        <div style="margin-top:10px;color:var(--text-muted);font-size:.67rem;line-height:1.45;">Le PDF est ouvert directement depuis Stripe dans un nouvel onglet. Aucun aperçu intermédiaire iCHEF n’est utilisé.</div>
-                    </div>
-                    <aside class="screen-invoice-summary">
-                        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;"><strong style="font-size:.78rem;letter-spacing:.8px;text-transform:uppercase;">Licence connexions</strong><span id="screen-license-state" class="screen-license-state">Active</span></div>
-                        <div class="screen-license-grid">
-                            <div class="screen-license-stat"><span>Contrat</span><strong id="screen-license-base">—</strong></div>
-                            <div class="screen-license-stat"><span>Stripe actif</span><strong id="screen-license-extra">+0</strong></div>
-                            <div class="screen-license-stat total"><span>Total autorisé</span><strong id="screen-license-total">—</strong></div>
-                        </div>
-                        <div class="screen-invoice-qr" id="screen-invoice-qr"><span style="color:#555;font-size:.75rem;">QR</span></div>
-                        <div style="font-size:.65rem;color:var(--text-muted);line-height:1.4;">Le QR ouvre directement la zone « Connexions & factures écrans » de ce dossier iCHEF.</div>
-                    </aside>
-                </div>
-                <div id="screen-invoice-history" class="screen-invoice-history"></div>
-            </div>
-
             <div class="client-invoices-panel">
-                <div class="client-panel-head"><div><h3>🧾 Mes autres factures payées</h3><p>Factures publiées par iCHEF et autres factures Stripe du compte.</p></div><span id="client-invoice-count" class="plan-badge">0 facture</span></div>
+                <div class="client-panel-head"><div><h3>🧾 Mes factures payées</h3><p>Factures publiées par iCHEF et, lorsque disponible, factures Stripe du compte.</p></div><span id="client-invoice-count" class="plan-badge">0 facture</span></div>
                 <div id="client-invoices-list" class="client-invoices-list"><div class="client-doc-loading">Chargement de vos factures…</div></div>
             </div>
         </section>
@@ -3363,24 +1464,6 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
                     <button class="btn-outline" onclick="window.logicielManager.buyScreens('6')">6+</button>
                 </div>
                 <div id="connections-help" style="font-size:.68rem;color:var(--text-muted);line-height:1.4;margin-top:9px;"></div>
-                <div id="stripe-diagnostic-panel" style="margin-top:12px;padding:12px;border:1px solid rgba(56,189,248,.28);border-radius:11px;background:rgba(56,189,248,.045);font-size:.72rem;line-height:1.5;">
-                    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;">
-                        <strong style="color:#7dd3fc;letter-spacing:.8px;">🩺 DIAGNOSTIC STRIPE</strong>
-                        <span id="stripe-diag-version" style="color:var(--text-muted);font-size:.62rem;">DIAG V1</span>
-                    </div>
-                    <div id="stripe-diag-content" style="color:var(--text-muted);">Diagnostic en attente…</div>
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:10px;">
-                        <button type="button" class="btn-outline" style="min-height:42px;padding:8px;font-size:.67rem;" onclick="window.logicielManager.runStripeDiagnostic({silent:false})">Vérifier Stripe</button>
-                        <button type="button" class="btn-outline" style="min-height:42px;padding:8px;font-size:.67rem;border-color:rgba(16,185,129,.5);" onclick="window.logicielManager.verifyAndActivateStripeConnection()">Vérifier & activer +1</button>
-                    </div>
-                    <div style="margin-top:9px;padding-top:9px;border-top:1px solid rgba(255,255,255,.08);">
-                        <div style="color:#94a3b8;margin-bottom:6px;">Connexions incluses au contrat (hors Stripe)</div>
-                        <div style="display:grid;grid-template-columns:90px 1fr;gap:7px;">
-                            <input id="stripe-base-screens-input" type="number" min="1" max="100" value="3" class="input-field" style="min-height:42px;padding:8px;font-size:.8rem;">
-                            <button type="button" class="btn-outline" style="min-height:42px;padding:8px;font-size:.67rem;border-color:rgba(251,191,36,.5);" onclick="window.logicielManager.setStripeScreenBase()">Corriger la base</button>
-                        </div>
-                    </div>
-                </div>
                 <button class="btn-return" style="width:100%;margin-top:10px;border-color:var(--danger)!important;color:var(--danger);" onclick="window.logicielManager.resetEcrans()">Libérer les connexions</button>
             </div>
             <div class="card" id="security-section">
@@ -3392,7 +1475,7 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
         <section class="bottom-admin-grid" id="settings-section">
             <div class="card"><h2 class="card-title">Mes coordonnées</h2><p class="card-desc">Informations de contact liées à cette licence.</p><div style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px;"><div><div class="field-label">EMAIL</div><input type="email" id="user-email" class="input-field" placeholder="Adresse Email de contact"></div><div><div class="field-label">TÉLÉPHONE</div><input type="tel" id="user-phone" class="input-field" placeholder="Numéro de Téléphone"></div></div><button class="btn-return" style="width:100%;margin-top:auto" onclick="window.logicielManager.sauvegarderCoordonnees()">Enregistrer</button></div>
             <div class="card" id="billing-section"><h2 class="card-title">Paiement & facturation</h2><p class="card-desc">Vos factures payées sont visibles dans « Mes documents ». Utilisez Stripe uniquement pour gérer votre moyen de paiement ou votre abonnement.</p><button class="btn-return" style="width:100%;margin-top:auto" id="billing-portal-btn" onclick="window.logicielManager.openBillingPortal()">Gérer mon moyen de paiement</button></div>
-            <div class="card"><h2 class="card-title">Assistance iCHEF</h2><p class="card-desc">Un problème de caisse, d'affichage ou de matériel ? Contactez l'équipe technique.</p><button class="btn-return" style="width:100%;margin-top:auto" onclick="window.logicielManager.openSupportModal()">Signaler un problème</button></div>
+            <div class="card"><h2 class="card-title">Assistance iCHEF</h2><p class="card-desc">Un problème de caisse, d'affichage ou de matériel ? Contactez l'équipe technique.</p><button class="btn-return" style="width:100%;margin-top:auto" onclick="document.getElementById('sos-modal').style.display='flex'">Signaler un problème</button></div>
         </section>
     </main>
 
@@ -3465,18 +1548,22 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
             </div>
 
 
-           <div id="stripe-embedded-step" class="stripe-embedded-step" aria-live="polite">
-    <div class="stripe-embedded-head">
-        <strong>Étape 2 — Finaliser avec Stripe</strong>
-        <span>Vous êtes sur l’environnement Stripe Test. Aucune carte réelle ne sera débitée.</span>
-        <div class="stripe-demo-badge">✓ STRIPE MODE TEST</div>
-    </div>
-    <div class="stripe-buy-wrap">
-        <!-- Lien Stripe officiel unique : évite qu'un ancien buy-button Stripe ouvre une mauvaise page -->
-        <a href="https://buy.stripe.com/test_dRmfZj4JHdO91tp1wF1kA07" target="_blank" rel="noopener noreferrer" style="display:block;margin-top:12px;text-align:center;color:#60a5fa;font-weight:800;text-decoration:none;">Ouvrir le Payment Link Stripe Test ↗</a>
-    </div>
-    <button type="button" class="stripe-embedded-back" onclick="window.logicielManager.hideEmbeddedStripeStep()">← Revenir à mon choix</button>
-</div>
+            <div id="stripe-embedded-step" class="stripe-embedded-step" aria-live="polite">
+                <div class="stripe-embedded-head">
+                    <strong>Étape 2 — Finaliser avec Stripe</strong>
+                    <span>Vous êtes sur l’environnement Stripe Test. Aucune carte réelle ne sera débitée.</span>
+                    <div class="stripe-demo-badge">✓ STRIPE MODE TEST</div>
+                </div>
+                <div class="stripe-buy-wrap">
+                    <stripe-buy-button
+                      id="ichef-stripe-buy-button-demo"
+                      buy-button-id="buy_btn_1UDNiNQ9Dw3nOFa4HLvCrv56"
+                      publishable-key="pk_test_51TN80JQ9Dw3nOFa4hqTSWbnGRhWF75RnOrmMNapqcGRtRx67uqsj8VbJqPOKh2qTaf2TFrMsO4he0aNal0ebqY3v00VN1nlQdO">
+                    </stripe-buy-button>
+                    <a href="https://buy.stripe.com/test_8x29AVekh8tPb3Zgrz1kA06" target="_blank" rel="noopener noreferrer" style="display:block;margin-top:12px;text-align:center;color:#60a5fa;font-weight:800;text-decoration:none;">Ouvrir le Payment Link Stripe Test ↗</a>
+                </div>
+                <button type="button" class="stripe-embedded-back" onclick="window.logicielManager.hideEmbeddedStripeStep()">← Revenir à mon choix</button>
+            </div>
 
             <div class="stripe-confirm-actions">
                 <button type="button" class="stripe-back-btn" onclick="window.logicielManager.closeStripeConfirm()">← Pas maintenant</button>
@@ -3487,16 +1574,16 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
     </div>
 
    <!-- BOUTON FLOTTANT SOS -->
-    <button class="btn-sos-float" onclick="window.logicielManager.openSupportModal()">
+    <button class="btn-sos-float" onclick="document.getElementById('sos-modal').style.display='flex'">
         Signaler un problème
     </button>
 
     <!-- FENÊTRE SOS -->
     <div id="sos-modal" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 10000; display: none; align-items: center; justify-content: center; padding: 20px; box-sizing: border-box;">
         <div style="position:relative; background: var(--panel); border: 1px solid var(--border-strong); border-radius: 12px; padding: 40px; width: 100%; max-width: 500px; text-align: center;">
-            <button type="button" class="sos-close-x" aria-label="Fermer" title="Fermer" onclick="window.logicielManager.closeSupportModal()">✕</button>
+            <button type="button" class="sos-close-x" aria-label="Fermer" title="Fermer" onclick="document.getElementById('sos-modal').style.display='none'">✕</button>
             <h2 style="margin-top: 0; color: var(--alert); font-weight: 600; text-transform: uppercase; letter-spacing: 1px;">Signaler un problème</h2>
-            <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 25px; line-height: 1.5;">Votre message est envoyé directement à la Tour de Contrôle iCHEF.</p>
+            <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 25px; line-height: 1.5;">Choisissez comment contacter l'équipe technique.</p>
             
             <div style="text-align: left;">
                 <select id="sos-type" style="width: 100%; padding: 15px; background: var(--bg); border: 1px solid var(--border-strong); color: white; border-radius: 8px; margin-bottom: 15px; font-family: 'Inter', sans-serif; font-size: 0.95rem; outline: none;">
@@ -3519,13 +1606,9 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
             </div>
             
             <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                <button class="btn-return" onclick="window.logicielManager.closeSupportModal()" style="flex: 1; min-width: 80px;">Annuler</button>
+                <button class="btn-return" onclick="document.getElementById('sos-modal').style.display='none'" style="flex: 1; min-width: 80px;">Annuler</button>
                 
-                <button id="sos-btn-send" class="btn-return" onclick="window.logicielManager.sendSOS('ichef')" style="flex: 1; min-width: 150px; background: #3b82f6; border: none; color: white;">
-                    ✉ Envoyer à iCHEF
-                </button>
-
-                <button class="btn-return" onclick="window.logicielManager.sendSOS('email')" style="flex: 1; min-width: 120px; background: #1d4ed8; border: none; color: white;">
+                <button class="btn-return" onclick="window.logicielManager.sendSOS('email')" style="flex: 1; min-width: 120px; background: #3b82f6; border: none; color: white;">
                     📧 Email
                 </button>
 
@@ -3538,11 +1621,6 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
                     📞 Appeler
                 </button>
             </div>
-            <div class="sos-support-thread">
-                <div class="sos-support-head"><span>🛟 Conversation avec iCHEF</span><button type="button" onclick="window.logicielManager.loadSupportConversation()">Actualiser</button></div>
-                <div id="sos-support-messages" class="sos-support-messages"><div class="sos-support-empty">Aucun message support pour le moment.</div></div>
-            </div>
-            <div id="sos-support-status" class="sos-support-status" aria-live="polite"></div>
         </div>
     </div>
 
@@ -3636,6 +1714,7 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
             SERVER_URL: window.SERVER_URL,
             currentSelectedAddon: null,
             isDemoMode: false,
+            isStripeTestMode: false,
             clientSpace: null,
             currentContractUrl: null,
             pendingConnectionQty: 0,
@@ -3644,24 +1723,19 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
             init: async function() {
                 this.tenantID = window.tenantID;
                 this.masterPin =
+                    ichefRecoverPartnerHandoff(this.tenantID) ||
                     sessionStorage.getItem('ichef_partner_pin') ||
                     localStorage.getItem('ichef_master_pin') ||
                     localStorage.getItem('pin') ||
                     '';
                 this.isDemoMode = (this.tenantID === 'demo' || this.tenantID === 'demo_pizzeria');
+                // Stripe TEST est indépendant du mode lecture-seule : un tenant de test
+                // (ex. TESTENFC) peut rester pleinement utilisable tout en évitant les routes Stripe LIVE.
+                const stripeTenant = String(this.tenantID || '').trim().toLowerCase();
+                this.isStripeTestMode = this.isDemoMode || stripeTenant.startsWith('test') || stripeTenant.includes('_test') || stripeTenant.includes('demo');
 
-                if (!this.tenantID) {
+                if (!this.tenantID || !this.masterPin) {
                     window.location.replace(`${window.ICHEF_FRONTEND_URL}/connexionpartenaire.html`);
-                    return;
-                }
-
-                /* V10 : si la porte intégrée n'a pas encore validé le PIN,
-                   on reste simplement sur la porte au lieu de rediriger. */
-                if (
-                    !this.masterPin ||
-                    window.__ICHEF_ADMIN_AUTH_READY !== true ||
-                    sessionStorage.getItem('ichef_partner_authenticated') !== '1'
-                ) {
                     return;
                 }
 
@@ -3692,9 +1766,6 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
                 this.loadConnectedApps();
                 this.loadScreenStats();
                 this.loadClientSpace();
-                this.startClientMessagePolling();
-                setTimeout(() => this.reconcilePendingStripeScreenPurchase({ silent: false }), 900);
-                setTimeout(() => this.runStripeDiagnostic({ silent: true }), 1700);
             },
 
             loadConnectedApps: async function() {
@@ -3736,39 +1807,25 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
                     const commercialAccess = new Set([...planModules, ...userAddons]);
 
                     const allModules = [
-                        { id:'admin.html', title:'CENTRE DE CONTROL', subtitle:'réglages avancés / modules / accès', requestable:true },
-                        { id:'administration.html', title:'COMPTE CLIENT', subtitle:'facture/ service clientèle/ accès modules', requestable:false },
-                        { id:'rh.html', title:'RESSOURCES HUMAINES', subtitle:'équipe / rôles / temps de travail', requestable:true },
-                        { id:'portail-staff.html', title:'APP DES CONNEXION DU STAFF', subtitle:'accès équipe / pointage / informations', requestable:true },
-                        { id:'caissetactile.html', title:' FOND DE CAISSE ', subtitle:' ficaliter, encaissement / tickets / clôture', requestable:true },
-                        { id:'assistant-ia.html', title:'ASSISTANT ICHEF', subtitle:'analyse / recommandations / pilotage', requestable:true },
-                        
-                        { id:'anti-rush.html', title:' GESTION ANTI-RUSH', subtitle:'charge service / pace-maker / automatisation', requestable:true },
+                        { id:'admin.html', title:'ADMIN & CONFIGURATION', subtitle:'réglages avancés / modules / accès', requestable:true },
+                        { id:'administration.html', title:'PORTAIL ADMINISTRATION', subtitle:'cockpit du restaurant / accès modules', requestable:false },
+                        { id:'anti-rush.html', title:'ANTI-RUSH', subtitle:'charge service / pace-maker / automatisation', requestable:true },
+                        { id:'assistant-ia.html', title:'ASSISTANT IA', subtitle:'analyse / recommandations / pilotage', requestable:true },
                         { id:'bar.html', title:'PASS BAR', subtitle:'suivi et envoi bar', requestable:true },
-                        { id:'runner-pass1.html', title:'PASS SERVICE', subtitle:'suivi des envois / service salle', requestable:true },
-                        { id:'production.html', title:'PASS CUISINE', subtitle:'suivi des envois / service salle', requestable:true },
-                        { id:'pack-eco.html', title:'CONNEXION POUR LE SERVEUR', subtitle:'prise de commande / service', requestable:true },
-                        { id:'menu-qr.html', title:'PRISE DE COMMANDE INTERACTIF', subtitle:'prise commmande par vos client', requestable:true },
-                       
-                        
-                        { id:'chef-bar.html', title:'LABO BAR', subtitle:'boissons / recettes / stocks', requestable:true },
-                        { id:'chef-patissier.html', title:'LABO PÂTISSIER', subtitle:'pâtisserie / coûts / production', requestable:true },
-                        { id:'chef.html', title:'LABO CUISINE', subtitle:'carte / recettes / production', requestable:true },
-                        { id:'menu-bar.html', title:'CARTE DES BOISSONS', subtitle:'cartes des boissons', requestable:true },
-                        { id:'menu-pure.html', title:'CARTE ET MENU', subtitle:'cartes des plats / menus', requestable:true },
-                        
+                        { id:'caissetactile.html', title:'CAISSE TACTILE', subtitle:'encaissement / tickets / clôture', requestable:true },
+                        { id:'chef-bar.html', title:'CHEF BAR', subtitle:'boissons / recettes / stocks', requestable:true },
+                        { id:'chef-patissier.html', title:'CHEF PÂTISSIER', subtitle:'pâtisserie / coûts / production', requestable:true },
+                        { id:'chef.html', title:'CHEF CUISINE', subtitle:'carte / recettes / production', requestable:true },
                         { id:'economat.html', title:'ÉCONOMAT & STOCK', subtitle:'inventaire central / mouvements / écarts', requestable:true },
                         { id:'haccp.html', title:'HACCP & HYGIÈNE', subtitle:'contrôles / traçabilité / conformité', requestable:true },
-                        { id:'portail-client.html', title:'GESTION DES CLIENTS', subtitle:'fidélité / réservations / commande distance', requestable:true },
-                        { id:'reservation.html', title:'GESTION RÉSERVATIONS', subtitle:'planning / tables / dossiers clients', requestable:true },
-                        { id:'roadmap.html', title:'FEUILLE DE ROUTE', subtitle:'organisation / tâches / production', requestable:true },
-                        
+                        { id:'pack-eco.html', title:'PAD SERVICE', subtitle:'prise de commande / service', requestable:true },
+                        { id:'portail-client.html', title:'PORTAIL CLIENT', subtitle:'fidélité / réservations / commande distance', requestable:true },
+                        { id:'portail-staff.html', title:'PORTAIL STAFF', subtitle:'accès équipe / pointage / informations', requestable:true },
+                        { id:'reservation.html', title:'RÉSERVATIONS', subtitle:'planning / tables / dossiers clients', requestable:true },
+                        { id:'rh.html', title:'RESSOURCES HUMAINES', subtitle:'équipe / rôles / temps de travail', requestable:true },
+                        { id:'roadmap.html', title:'ROADMAP', subtitle:'organisation / tâches / production', requestable:true },
+                        { id:'runner-pass1.html', title:'RUNNER PASS', subtitle:'suivi des envois / service salle', requestable:true }
                     ];
-
-                    // PREMIUM = TOUT INCLUS : aucun module logiciel n'est une option.
-                    if (planStr === 'PREMIUM') {
-                        allModules.forEach(mod => commercialAccess.add(mod.id));
-                    }
 
                     this.renderContractModules(allModules, commercialAccess, blockedModules);
 
@@ -3789,9 +1846,9 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
 
                         const status = isBlocked
                             ? 'BLOQUÉ'
-                            : (planStr === 'PREMIUM' ? 'INCLUS' : (mod.requestable ? 'OPTION' : 'NON INCLUS'));
+                            : (mod.requestable ? 'OPTION' : 'NON INCLUS');
 
-                        const action = (planStr !== 'PREMIUM' && mod.requestable && !isBlocked)
+                        const action = (mod.requestable && !isBlocked)
                             ? `onclick="window.logicielManager.openAddonModal('${mod.id}', '${mod.title.replace(/'/g, "\'")}')"`
                             : '';
 
@@ -3825,13 +1882,13 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
                     ['portail-staff.html','PORTAIL STAFF'],['reservation.html','RÉSERVATIONS'],['rh.html','RESSOURCES HUMAINES'],['roadmap.html','ROADMAP'],['runner-pass1.html','RUNNER PASS']
                 ].map(([id,title]) => ({id,title}));
 
-                const modules = Array.isArray(allModules) && allModules.length ? allModules : fallbackModules;
+                const modules = Array.isArray(allModules) && allModules.length === 18 ? allModules : fallbackModules;
                 const access = commercialAccess instanceof Set ? commercialAccess : new Set(Array.isArray(commercialAccess) ? commercialAccess : []);
                 const blocked = new Set(Array.isArray(blockedModules) ? blockedModules : []);
                 const map = new Map(modules.map(m => [m.id, m]));
                 const groups = [
-                    {key:'service', label:'SERVICE & CLIENT', ids:['caissetactile.html','pack-eco.html','menu-qr.html','menu-bar.html','menu-pure.html','reservation.html','runner-pass1.html','portail-client.html']},
-                    {key:'production', label:'PRODUCTION', ids:['chef.html','chef-bar.html','chef-patissier.html','bar.html','production.html','anti-rush.html']},
+                    {key:'service', label:'SERVICE & CLIENT', ids:['caissetactile.html','pack-eco.html','reservation.html','runner-pass1.html','portail-client.html']},
+                    {key:'production', label:'PRODUCTION', ids:['chef.html','chef-bar.html','chef-patissier.html','bar.html','anti-rush.html']},
                     {key:'gestion', label:'GESTION', ids:['administration.html','admin.html','assistant-ia.html','economat.html','haccp.html','rh.html']},
                     {key:'equipe', label:'ÉQUIPE & PILOTAGE', ids:['portail-staff.html','roadmap.html']}
                 ];
@@ -3912,8 +1969,10 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
                 }
 
                 const billingBtn = document.getElementById('billing-portal-btn');
-                if (billingBtn && this.isDemoMode) {
-                    billingBtn.textContent = `📞 Contacter iCHEF — ${contact.display}`;
+                if (billingBtn && this.isStripeTestMode) {
+                    billingBtn.textContent = this.isDemoMode
+                        ? `📞 Contacter iCHEF — ${contact.display}`
+                        : '🧪 Facturation Stripe · mode test';
                 }
                 return contact;
             },
@@ -4055,7 +2114,7 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
                 const status = document.getElementById('stripe-confirm-status');
                 const next = document.getElementById('stripe-confirm-next');
                 if (status) { status.textContent = ''; status.classList.remove('bad'); }
-                if (next && this.pendingStripeAction?.type === 'screens') next.textContent = this.isDemoMode ? 'Stripe · démonstration' : 'Stripe sécurisé';
+                if (next && this.pendingStripeAction?.type === 'screens') next.textContent = this.isStripeTestMode ? 'Stripe Test · aucun débit réel' : 'Stripe sécurisé';
             },
 
             openStripeConfirm: function(type, payload = {}) {
@@ -4078,20 +2137,23 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
                     this.renderStripeConnectionSummary(qty);
                     if (text) text.textContent = 'Vous souhaitez ajouter des connexions à votre établissement. Vérifiez tranquillement le nombre et le tarif avant de continuer.';
                     const next = document.getElementById('stripe-confirm-next');
-                    if (next) next.textContent = this.isDemoMode ? 'Stripe Test · aucun débit réel' : 'Stripe sécurisé';
+                    if (next) next.textContent = this.isStripeTestMode ? 'Stripe Test · aucun débit réel' : 'Stripe sécurisé';
                     const note = document.getElementById('stripe-safety-note');
-                    if (note) note.innerHTML = this.isDemoMode
+                    if (note) note.innerHTML = this.isStripeTestMode
                         ? '✓ Vous êtes encore dans iCHEF. <strong>Rien n’est acheté à ce stade.</strong> Le lien Stripe Test s’ouvrira seulement si vous choisissez de continuer. Aucune carte réelle ne sera débitée et vous pourrez quitter Stripe à tout moment.'
                         : '✓ Rien n’est encore acheté. Vous pouvez modifier votre choix, contacter notre <strong>service commercial</strong> ou choisir <strong>Pas maintenant</strong>.';
-                    if (go) go.textContent = this.isDemoMode ? 'Ouvrir Stripe Test →' : 'Continuer avec Stripe →';
+                    if (go) go.textContent = this.isStripeTestMode ? 'Ouvrir Stripe Test →' : 'Continuer avec Stripe →';
                 } else if (type === 'billing') {
                     this.setStripeScreenRowsVisible(false);
                     if (action) action.textContent = 'Gérer mon moyen de paiement / abonnement';
                     if (text) text.textContent = 'Vous souhaitez gérer votre abonnement ou votre moyen de paiement. Vous pouvez continuer avec Stripe ou parler d’abord à notre service commercial.';
                     const next = document.getElementById('stripe-confirm-next');
-                    if (next) next.textContent = this.isDemoMode ? 'Stripe Test · aucun débit réel' : 'Stripe sécurisé';
+                    if (next) next.textContent = this.isStripeTestMode ? 'Mode test · aucun appel Stripe serveur' : 'Stripe sécurisé';
                     const note = document.getElementById('stripe-safety-note');
-                    if (note) note.innerHTML = '✓ Aucun changement n’est effectué à ce stade. Si vous avez un doute, notre <strong>service commercial</strong> peut vous accompagner avant de continuer.';
+                    if (note) note.innerHTML = this.isStripeTestMode
+                        ? '✓ <strong>Mode test iCHEF :</strong> le portail de facturation réel n’est pas appelé. Cela évite toute erreur de clé API pendant la démonstration. Vous pouvez contacter notre <strong>service commercial</strong> ou fermer cette fenêtre.'
+                        : '✓ Aucun changement n’est effectué à ce stade. Si vous avez un doute, notre <strong>service commercial</strong> peut vous accompagner avant de continuer.';
+                    if (go && this.isStripeTestMode) go.textContent = 'Fermer';
                 } else {
                     this.setStripeScreenRowsVisible(false);
                     if (action) action.textContent = 'Action Stripe';
@@ -4127,186 +2189,6 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
                 return true;
             },
 
-            rememberPendingStripeScreenPurchase: function({ quantity, currency, clientReferenceId }) {
-                try {
-                    localStorage.setItem('ichef_pending_stripe_screen_purchase', JSON.stringify({
-                        tenantID: String(this.tenantID || '').toLowerCase(),
-                        quantity: Math.max(1, parseInt(quantity || 1, 10) || 1),
-                        currency: String(currency || 'EUR').toUpperCase(),
-                        clientReferenceId: String(clientReferenceId || ''),
-                        baseScreensBeforePurchase: Number(this.currentMaxScreens || 0) || null,
-                        startedAt: Date.now()
-                    }));
-                } catch (_) {}
-            },
-
-            reconcilePendingStripeScreenPurchase: async function({ silent = false } = {}) {
-                let pending = null;
-                try {
-                    pending = JSON.parse(localStorage.getItem('ichef_pending_stripe_screen_purchase') || 'null');
-                } catch (_) {
-                    pending = null;
-                }
-                if (!pending || !pending.tenantID) return false;
-                if (String(pending.tenantID).toLowerCase() !== String(this.tenantID || '').toLowerCase()) return false;
-
-                // Ne garde pas indéfiniment une tentative abandonnée.
-                if (Date.now() - Number(pending.startedAt || 0) > 24 * 60 * 60 * 1000) {
-                    localStorage.removeItem('ichef_pending_stripe_screen_purchase');
-                    return false;
-                }
-
-                try {
-                    const res = await fetch(`${this.SERVER_URL}/api/stripe/reconcile-screen-upgrade`, {
-                        method: 'POST',
-                        cache: 'no-store',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            tenantID: this.tenantID,
-                            pin: this.masterPin,
-                            quantity: Math.max(1, parseInt(pending.quantity || 1, 10) || 1)
-                        })
-                    });
-                    const data = await res.json().catch(() => ({}));
-                    if (!res.ok || !data.success) return false;
-
-                    if (data.active && data.paid) {
-                        localStorage.removeItem('ichef_pending_stripe_screen_purchase');
-                        await this.loadScreenStats();
-                        await this.loadConnectedApps();
-                        if (!silent) {
-                            alert(`✅ Paiement Stripe confirmé. Connexion activée. Votre licence autorise maintenant ${data.maxScreens} écran${Number(data.maxScreens) > 1 ? 's' : ''}.`);
-                        }
-                        return true;
-                    }
-
-                    return false;
-                } catch (e) {
-                    console.warn('[iCHEF STRIPE] Vérification du paiement impossible pour le moment.', e);
-                    return false;
-                }
-            },
-
-            stripeDiagLine: function(label, value, state = 'neutral') {
-                const colors = {
-                    ok: '#4ade80', bad: '#f87171', warn: '#fbbf24', neutral: '#cbd5e1'
-                };
-                const color = colors[state] || colors.neutral;
-                return `<div style="display:flex;justify-content:space-between;gap:12px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.045);"><span style="color:#8295aa;">${label}</span><strong style="color:${color};text-align:right;overflow-wrap:anywhere;">${value}</strong></div>`;
-            },
-
-            runStripeDiagnostic: async function({ silent = false } = {}) {
-                const box = document.getElementById('stripe-diag-content');
-                if (box) box.innerHTML = '<span style="color:#7dd3fc;">Vérification Stripe en cours…</span>';
-                try {
-                    const res = await fetch(`${this.SERVER_URL}/api/stripe/screen-upgrade-diagnostic`, {
-                        method: 'POST',
-                        cache: 'no-store',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ tenantID: this.tenantID, pin: this.masterPin, quantity: 1 })
-                    });
-                    const data = await res.json().catch(() => ({}));
-                    if (!res.ok || !data.success) {
-                        if (res.status === 404) throw new Error('Serveur iCHEF ancien : la route Diagnostic n’est pas encore déployée sur Render.');
-                        throw new Error(data.error || `Diagnostic indisponible (${res.status}).`);
-                    }
-
-                    const s = data.stripe || {};
-                    const p = data.paymentLink || {};
-                    const c = data.checkout || {};
-                    const l = data.license || {};
-                    const refState = c.exactReferenceFound ? 'ok' : (c.paymentLinkSessionFound ? 'warn' : 'bad');
-                    const payState = ['paid','no_payment_required'].includes(String(c.paymentStatus || '').toLowerCase()) ? 'ok' : (c.sessionId ? 'warn' : 'bad');
-                    const licenseState = Number(l.stripeExtraScreens || 0) >= 1 ? 'ok' : 'warn';
-
-                    if (box) box.innerHTML = [
-                        this.stripeDiagLine('API Stripe', s.apiReachable ? `CONNECTÉE · ${s.keyMode || '—'}` : `NON CONNECTÉE · ${s.keyMode || '—'}`, s.apiReachable ? 'ok' : 'bad'),
-                        this.stripeDiagLine('Webhook', s.webhookConfigured ? 'CONFIGURÉ' : 'NON CONFIGURÉ', s.webhookConfigured ? 'ok' : 'warn'),
-                        this.stripeDiagLine('Payment Link A07', p.foundInStripe ? 'TROUVÉ' : 'INTROUVABLE', p.foundInStripe ? 'ok' : 'bad'),
-                        this.stripeDiagLine('Référence attendue', data.expectedReference || '—', 'neutral'),
-                        this.stripeDiagLine('Référence dans Stripe', c.clientReferenceId || 'ABSENTE', refState),
-                        this.stripeDiagLine('Paiement', c.paymentStatus ? c.paymentStatus.toUpperCase() : 'NON TROUVÉ', payState),
-                        this.stripeDiagLine('Abonnement Stripe', c.hasSubscription ? 'OUI' : 'NON / INCONNU', c.hasSubscription ? 'ok' : 'warn'),
-                        this.stripeDiagLine('Base contrat', `${Number(l.baseScreens || 0)} écran${Number(l.baseScreens || 0) > 1 ? 's' : ''}`, Number(l.baseScreens || 0) > 0 ? 'ok' : 'warn'),
-                        this.stripeDiagLine('Connexion iCHEF Stripe', `+${Number(l.stripeExtraScreens || 0)}`, licenseState),
-                        this.stripeDiagLine('Licence totale', `${Number(l.maxScreens || 0)} écran${Number(l.maxScreens || 0) > 1 ? 's' : ''}`, Number(l.maxScreens || 0) > 0 ? 'ok' : 'warn'),
-                        `<div style="margin-top:9px;padding:8px 9px;border-radius:8px;background:rgba(255,255,255,.035);color:#dbe7f3;"><strong>Conclusion :</strong> ${data.recommendation || '—'}</div>`
-                    ].join('');
-
-                    const baseInput = document.getElementById('stripe-base-screens-input');
-                    if (baseInput && Number(l.baseScreens || 0) > 0) baseInput.value = String(Number(l.baseScreens));
-
-                    if (!silent && c.exactReferenceFound && Number(l.stripeExtraScreens || 0) < 1) {
-                        alert('Stripe voit bien le paiement A07 pour ce restaurant, mais la licence +1 n’est pas encore enregistrée. Clique sur « Vérifier & activer +1 ».');
-                    }
-                    return data;
-                } catch (error) {
-                    if (box) box.innerHTML = `<span style="color:#f87171;">❌ ${error?.message || 'Diagnostic Stripe impossible.'}</span>`;
-                    if (!silent) alert(error?.message || 'Diagnostic Stripe impossible.');
-                    return null;
-                }
-            },
-
-            verifyAndActivateStripeConnection: async function() {
-                const box = document.getElementById('stripe-diag-content');
-                if (box) box.innerHTML = '<span style="color:#7dd3fc;">Recherche du paiement A07 et activation sécurisée…</span>';
-                try {
-                    const res = await fetch(`${this.SERVER_URL}/api/stripe/reconcile-screen-upgrade`, {
-                        method: 'POST',
-                        cache: 'no-store',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ tenantID: this.tenantID, pin: this.masterPin, quantity: 1 })
-                    });
-                    const data = await res.json().catch(() => ({}));
-                    if (!res.ok || !data.success) throw new Error(data.error || 'Vérification impossible.');
-
-                    await this.loadScreenStats();
-                    await this.runStripeDiagnostic({ silent: true });
-
-                    if (data.active && data.paid) {
-                        localStorage.removeItem('ichef_pending_stripe_screen_purchase');
-                        alert(`✅ Paiement Stripe confirmé. +1 connexion activée. Licence : ${data.maxScreens} écrans.`);
-                        return true;
-                    }
-
-                    alert('Le paiement A07 n’est pas encore rattaché à ce restaurant. Le diagnostic affiche maintenant la raison exacte.');
-                    return false;
-                } catch (error) {
-                    if (box) box.innerHTML = `<span style="color:#f87171;">❌ ${error?.message || 'Activation impossible.'}</span>`;
-                    alert(error?.message || 'Activation impossible.');
-                    return false;
-                }
-            },
-
-            setStripeScreenBase: async function() {
-                const input = document.getElementById('stripe-base-screens-input');
-                const baseScreens = Math.max(1, Math.min(100, parseInt(input?.value || 0, 10) || 0));
-                if (!baseScreens) return alert('Indique le nombre de connexions incluses au contrat.');
-                if (!confirm(`Confirmer une base de ${baseScreens} connexion${baseScreens > 1 ? 's' : ''} hors Stripe ? Les connexions Stripe payées resteront ajoutées automatiquement.`)) return false;
-
-                try {
-                    const res = await fetch(`${this.SERVER_URL}/api/stripe/set-screen-base`, {
-                        method: 'POST',
-                        cache: 'no-store',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ tenantID: this.tenantID, pin: this.masterPin, baseScreens })
-                    });
-                    const data = await res.json().catch(() => ({}));
-                    if (!res.ok || !data.success) {
-                        if (res.status === 404) throw new Error('Le serveur V2 n’est pas encore déployé sur Render.');
-                        throw new Error(data.error || 'Impossible de corriger la base.');
-                    }
-
-                    await this.loadScreenStats();
-                    await this.runStripeDiagnostic({ silent: true });
-                    alert(`✅ Base corrigée : ${data.baseScreens} + ${data.stripeExtraScreens} Stripe = ${data.maxScreens} connexions autorisées.`);
-                    return true;
-                } catch (error) {
-                    alert(error?.message || 'Impossible de corriger la base des connexions.');
-                    return false;
-                }
-            },
-
             confirmStripeAction: async function() {
                 const pending = this.pendingStripeAction;
                 if (!pending) return this.closeStripeConfirm();
@@ -4314,98 +2196,115 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
                 const go = document.getElementById('stripe-confirm-go');
                 const status = document.getElementById('stripe-confirm-status');
                 if (go) { go.disabled = true; go.textContent = 'Préparation…'; }
-                if (status) { status.textContent = 'Création de la session sécurisée…'; status.classList.remove('bad'); }
+                if (status) { status.textContent = 'Préparation de Stripe…'; status.classList.remove('bad'); }
 
                 try {
-                    if (this.isDemoMode) {
+                    // ======================================================
+                    // 💳 AJOUT DE CONNEXIONS
+                    // ======================================================
+                    if (pending.type === 'screens') {
+                        const quantity = Math.max(1, parseInt(pending.quantity || 1, 10) || 1);
+
+                        // 🧪 DÉMO / TESTENFC → bouton Stripe Test intégré 0,00 €
+                        if (this.isStripeTestMode) {
+                            if (status) {
+                                status.textContent = 'Stripe Test est prêt. Aucun débit réel ne sera effectué.';
+                                status.classList.remove('bad');
+                            }
+                            this.showEmbeddedStripeStep();
+                            if (go) {
+                                go.disabled = false;
+                                go.textContent = 'Continuer avec Stripe Test →';
+                            }
+                            return;
+                        }
+
+                        // 6 connexions ou plus → service commercial
+                        if (quantity >= 6) {
+                            if (status) {
+                                status.textContent = 'Pour 6 connexions ou plus, notre service commercial vous accompagne.';
+                                status.classList.remove('bad');
+                            }
+                            this.openCommercialFromStripeConfirm();
+                            return;
+                        }
+
+                        // 🌍 CLIENT RÉEL → Payment Link CHF/EUR selon quantité
+                        const pricing = this.getConnectionPricing(quantity);
+                        const currency = pricing.region === 'CH' ? 'CHF' : 'EUR';
+                        const stripeLink = window.ICHEF_STRIPE_CONNECTION_LINKS?.[currency]?.[quantity];
+
+                        if (!stripeLink || !/^https:\/\/buy\.stripe\.com\//i.test(String(stripeLink).trim())) {
+                            throw new Error(`Le lien Stripe +${quantity} ${currency} n’est pas encore configuré.`);
+                        }
+
                         if (status) {
-                            status.textContent = 'Stripe Test s’ouvre dans un nouvel onglet. Aucun débit réel ne sera effectué.';
+                            status.textContent = `Ouverture de Stripe · +${quantity} connexion${quantity > 1 ? 's' : ''} · ${pricing.amount} ${currency}/mois`;
                             status.classList.remove('bad');
                         }
-                        this.openStripeSafely(window.ICHEF_DEMO_STRIPE_PAYMENT_LINK);
+
+                        this.openStripeSafely(stripeLink);
                         setTimeout(() => this.closeStripeConfirm(), 450);
                         return;
                     }
 
-                    let endpoint = '';
-                    let body = { tenantID: this.tenantID, pin: this.masterPin };
-
-                    if (pending.type === 'screens') {
-                        body.quantity = Math.max(1, parseInt(pending.quantity || 1, 10) || 1);
-                        const pricing = this.getConnectionPricing(body.quantity);
-                        body.currency = pricing.region === 'CH' ? 'CHF' : 'EUR';
-                        body.displayAmount = pricing.amount;
-
-                        // PRIORITÉ AU PAYMENT LINK CONFIGURÉ DANS ADMINISTRATION.
-                        // Pour +1 connexion EUR, ceci force le bon lien A07 et empêche
-                        // une ancienne URL Stripe renvoyée par le serveur de prendre la main.
-                        // VERROU A07 : +1 connexion EUR ouvre TOUJOURS le Payment Link validé.
-                        if (body.currency === 'EUR' && body.quantity === 1) {
-                            const forcedLink = window.ICHEF_STRIPE_FORCE_EUR_1;
-                            const safeTenantRef = String(this.tenantID || '')
-                                .trim()
-                                .toLowerCase()
-                                .replace(/[^a-z0-9_-]/g, '-');
-                            const clientReferenceId = `ichef-screen-${body.quantity}-${safeTenantRef}`.slice(0, 200);
-                            const separator = forcedLink.includes('?') ? '&' : '?';
-                            const trackedLink = `${forcedLink}${separator}client_reference_id=${encodeURIComponent(clientReferenceId)}`;
-                            if (status) status.textContent = 'Ouverture du lien Stripe iCHEF validé…';
-                            this.rememberPendingStripeScreenPurchase({ quantity: body.quantity, currency: body.currency, clientReferenceId });
-                            this.openStripeSafely(trackedLink);
-                            setTimeout(() => this.closeStripeConfirm(), 450);
+                    // ======================================================
+                    // 💳 GESTION ABONNEMENT / MOYEN DE PAIEMENT
+                    // ======================================================
+                    if (pending.type === 'billing') {
+                        if (this.isStripeTestMode) {
+                            const contact = this.refreshIchefContactRouting();
+                            if (status) {
+                                status.textContent = `Mode démonstration : aucun abonnement réel à gérer. Service commercial iCHEF : ${contact.display}.`;
+                                status.classList.remove('bad');
+                            }
+                            if (go) {
+                                go.disabled = false;
+                                go.textContent = '📞 Service commercial';
+                            }
                             return;
                         }
 
-                        const directLink = window.ICHEF_STRIPE_CONNECTION_LINKS?.[body.currency]?.[body.quantity];
-                        if (directLink && /^https:\/\/buy\.stripe\.com\//i.test(directLink)) {
-                            const safeTenantRef = String(this.tenantID || '')
-                                .trim()
-                                .toLowerCase()
-                                .replace(/[^a-z0-9_-]/g, '-');
-                            const clientReferenceId = `ichef-screen-${body.quantity}-${safeTenantRef}`.slice(0, 200);
-                            const separator = directLink.includes('?') ? '&' : '?';
-                            const trackedLink = `${directLink}${separator}client_reference_id=${encodeURIComponent(clientReferenceId)}`;
-                            if (status) status.textContent = 'Stripe s’ouvre dans un nouvel onglet. iCHEF reste ouvert ici.';
-                            this.rememberPendingStripeScreenPurchase({ quantity: body.quantity, currency: body.currency, clientReferenceId });
-                            this.openStripeSafely(trackedLink);
-                            setTimeout(() => this.closeStripeConfirm(), 450);
-                            return;
+                        const res = await fetch(
+                            `${this.SERVER_URL}/api/stripe/create-customer-portal-session`,
+                            {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ tenantID: this.tenantID, pin: this.masterPin })
+                            }
+                        );
+
+                        const raw = await res.text();
+                        let data = {};
+                        try { data = raw ? JSON.parse(raw) : {}; }
+                        catch (_) { throw new Error(`Réponse serveur invalide (${res.status}).`); }
+
+                        if (!res.ok || !data.url) {
+                            throw new Error(data.error || 'Impossible d’ouvrir le portail Stripe.');
                         }
 
-                        // Repli serveur uniquement si aucun Payment Link direct n'est configuré
-                        // (ex. quantités 2 à 5 ou CHF tant que leurs liens ne sont pas renseignés).
-                        endpoint = '/api/stripe/create-screen-upgrade-session';
-                    } else if (pending.type === 'billing') {
-                        endpoint = '/api/stripe/create-customer-portal-session';
-                    } else {
-                        throw new Error('Action Stripe inconnue.');
+                        if (status) {
+                            status.textContent = 'Ouverture du portail sécurisé Stripe…';
+                            status.classList.remove('bad');
+                        }
+
+                        this.openStripeSafely(data.url);
+                        setTimeout(() => this.closeStripeConfirm(), 450);
+                        return;
                     }
 
-                    const res = await fetch(`${this.SERVER_URL}${endpoint}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(body)
-                    });
-
-                    const raw = await res.text();
-                    let data = {};
-                    try { data = raw ? JSON.parse(raw) : {}; } catch (_) {
-                        throw new Error(`Réponse serveur invalide (${res.status}).`);
-                    }
-                    if (!res.ok || !data.url) {
-                        throw new Error(data.error || 'La session Stripe n’a pas pu être créée. Contactez le service commercial iCHEF.');
-                    }
-
-                    if (status) status.textContent = 'Stripe s’ouvre dans un nouvel onglet. iCHEF reste ouvert ici.';
-                    this.openStripeSafely(data.url);
-                    setTimeout(() => this.closeStripeConfirm(), 450);
+                    throw new Error('Action Stripe inconnue.');
 
                 } catch (error) {
+                    console.error('[iCHEF STRIPE]', error);
                     if (status) {
                         status.textContent = error?.message || 'Impossible d’ouvrir Stripe.';
                         status.classList.add('bad');
                     }
-                    if (go) { go.disabled = false; go.textContent = 'Réessayer avec Stripe →'; }
+                    if (go) {
+                        go.disabled = false;
+                        go.textContent = 'Réessayer avec Stripe →';
+                    }
                 }
             },
 
@@ -4478,7 +2377,6 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
                     if (data.success && countData.success) {
                         const activeDevices = countData.activeDevices || 0;
                         const limit = countData.maxScreens || 5;
-                        this.currentMaxScreens = Number(limit) || 5;
                         
                         const color = activeDevices >= limit ? 'var(--danger)' : 'var(--text-main)';
                         document.getElementById('device-count').innerHTML = `Écrans utilisés : <b style="color:${color}; font-size:1.1rem;">${activeDevices} / ${limit}</b>`;
@@ -4642,27 +2540,10 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
                 box.innerHTML = '<div style="color:#334155;text-align:center;font-size:.75rem;line-height:1.4;">QR indisponible<br><small>Utilisez le lien ci-dessous.</small></div>';
             },
 
-            renderScreenInvoiceQr: function() {
-                const box = document.getElementById('screen-invoice-qr');
-                if (!box) return;
-                const url = `${window.ICHEF_FRONTEND_URL}/administration.html?tenantID=${encodeURIComponent(this.tenantID)}#screen-invoices-panel`;
-                box.innerHTML = '';
-                if (typeof window.QRCode === 'function') {
-                    try {
-                        new window.QRCode(box, { text: url, width: 130, height: 130, correctLevel: window.QRCode.CorrectLevel ? window.QRCode.CorrectLevel.M : undefined });
-                        return;
-                    } catch (e) { console.warn('QR factures écrans :', e); }
-                }
-                box.innerHTML = '<div style="color:#334155;text-align:center;font-size:.72rem;">QR indisponible</div>';
-            },
-
             renderClientSpace: function(data) {
                 this.clientSpace = data || {};
                 const contracts = Array.isArray(data?.contracts) ? data.contracts : [];
                 const invoices = Array.isArray(data?.invoices) ? data.invoices : [];
-                const screenInvoices = invoices.filter(inv => String(inv?.category || '').toUpperCase() === 'SCREEN_CONNECTION' || Number(inv?.extraScreens || 0) > 0);
-                const otherInvoices = invoices.filter(inv => !screenInvoices.includes(inv));
-                const screenSummary = data?.screenLicenseSummary || {};
                 const message = data?.message && data.message.active !== false ? data.message : null;
                 const current = contracts[0] || null;
                 this.currentContractUrl = current ? this.resolveClientDocumentUrl(current.openUrl || current.openPath) : null;
@@ -4708,184 +2589,34 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
                         : '';
                 }
 
-                // ===== Factures connexions / écrans : PDF officiel Stripe direct =====
-                const screenCount = document.getElementById('screen-invoice-count');
-                const screenTitle = document.getElementById('screen-invoice-title');
-                const screenMeta = document.getElementById('screen-invoice-meta');
-                const screenOpen = document.getElementById('screen-invoice-open');
-                const screenHistory = document.getElementById('screen-invoice-history');
-                const latestScreenInvoice = screenInvoices[0] || null;
-                if (screenCount) screenCount.textContent = `${screenInvoices.length} facture${screenInvoices.length > 1 ? 's' : ''}`;
-                if (latestScreenInvoice) {
-                    const url = this.resolveClientDocumentUrl(latestScreenInvoice.openUrl || latestScreenInvoice.openPath);
-                    const qty = Math.max(1, Number(latestScreenInvoice.extraScreens || 1));
-                    const amount = Number(latestScreenInvoice.amountPaid || 0);
-                    const currency = String(latestScreenInvoice.currency || 'EUR').toUpperCase();
-                    const amountText = amount > 0 ? ` · ${amount.toFixed(2).replace('.00','')} ${currency}` : '';
-                    if (screenTitle) screenTitle.innerHTML = `${this.escapeHtml(latestScreenInvoice.title || 'Facture connexions')} <span class="invoice-state">Payée</span><span class="screen-invoice-amount">+${qty} connexion${qty > 1 ? 's' : ''}${this.escapeHtml(amountText)}</span>`;
-                    if (screenMeta) screenMeta.textContent = `${this.formatClientDate(latestScreenInvoice.date || latestScreenInvoice.uploadedAt) || ''} · ${latestScreenInvoice.licenseActive === false ? 'Licence actuellement désactivée' : 'Licence Stripe active'}`;
-                    if (screenOpen) { screenOpen.disabled = !url; screenOpen.onclick = () => this.openClientDocument(url); }
-                } else {
-                    if (screenTitle) screenTitle.textContent = 'Aucune facture écran';
-                    if (screenMeta) screenMeta.textContent = 'Les achats de connexions payés apparaîtront ici.';
-                    if (screenOpen) { screenOpen.disabled = true; screenOpen.onclick = null; }
-                }
-                if (screenHistory) {
-                    screenHistory.innerHTML = screenInvoices.length ? `<div class="client-history-title">Historique des factures connexions</div>` + screenInvoices.map(inv => {
-                        const url = this.resolveClientDocumentUrl(inv.openUrl || inv.openPath);
-                        const qty = Math.max(1, Number(inv.extraScreens || 1));
-                        const amount = Number(inv.amountPaid || 0);
-                        const currency = String(inv.currency || 'EUR').toUpperCase();
-                        const price = amount > 0 ? ` · ${amount.toFixed(2).replace('.00','')} ${currency}` : '';
-                        const state = inv.licenseActive === false ? 'Désactivée' : 'Active';
-                        return `<div class="client-invoice-row"><div><strong>${this.escapeHtml(inv.title || 'Facture Stripe')}<span class="invoice-state">Payée</span><span class="client-invoice-source">+${qty} écran${qty > 1 ? 's' : ''}</span></strong><small>${this.escapeHtml((this.formatClientDate(inv.date || inv.uploadedAt) || '') + price + ' · Licence ' + state)}</small></div><button type="button" ${url ? '' : 'disabled'} onclick="window.logicielManager.openClientDocument('${this.escapeHtml(url)}')">PDF Stripe ↗</button></div>`;
-                    }).join('') : '';
-                }
-                const baseEl = document.getElementById('screen-license-base');
-                const extraEl = document.getElementById('screen-license-extra');
-                const totalEl = document.getElementById('screen-license-total');
-                const stateEl = document.getElementById('screen-license-state');
-                const baseScreens = Math.max(1, Number(screenSummary.baseScreens || 0) || Math.max(1, Number(this.maxScreens || 1) - Number(screenSummary.activeExtraScreens || 0)));
-                const activeExtra = Math.max(0, Number(screenSummary.activeExtraScreens || 0));
-                const totalScreens = Math.max(baseScreens, Number(screenSummary.totalScreens || (baseScreens + activeExtra)));
-                if (baseEl) baseEl.textContent = String(baseScreens);
-                if (extraEl) extraEl.textContent = `+${activeExtra}`;
-                if (totalEl) totalEl.textContent = String(totalScreens);
-                if (stateEl) {
-                    const active = activeExtra > 0;
-                    stateEl.textContent = active ? 'Stripe actif' : 'Aucun extra';
-                    stateEl.classList.toggle('off', !active);
-                }
-                this.renderScreenInvoiceQr();
-
-                // Autres factures : abonnement principal, factures manuelles, etc.
                 const invoiceList = document.getElementById('client-invoices-list');
                 const invoiceCount = document.getElementById('client-invoice-count');
-                if (invoiceCount) invoiceCount.textContent = `${otherInvoices.length} facture${otherInvoices.length > 1 ? 's' : ''}`;
+                if (invoiceCount) invoiceCount.textContent = `${invoices.length} facture${invoices.length > 1 ? 's' : ''}`;
                 if (invoiceList) {
-                    invoiceList.innerHTML = otherInvoices.length ? otherInvoices.map(inv => {
+                    invoiceList.innerHTML = invoices.length ? invoices.map(inv => {
                         const url = this.resolveClientDocumentUrl(inv.openUrl || inv.openPath);
                         const date = this.formatClientDate(inv.date || inv.uploadedAt);
                         const period = inv.period ? ` · ${inv.period}` : '';
                         const source = inv.source ? `<span class="client-invoice-source">${this.escapeHtml(inv.source)}</span>` : '';
                         return `<div class="client-invoice-row"><div><strong>${this.escapeHtml(inv.title || inv.number || inv.filename || 'Facture')}<span class="invoice-state">Payée</span>${source}</strong><small>${this.escapeHtml(date + period)}</small></div><button type="button" ${url ? '' : 'disabled'} onclick="window.logicielManager.openClientDocument('${this.escapeHtml(url)}')">PDF</button></div>`;
-                    }).join('') : '<div class="client-empty">Aucune autre facture payée disponible pour le moment.</div>';
+                    }).join('') : '<div class="client-empty">Aucune facture payée disponible pour le moment.</div>';
                 }
 
-                this.renderClientMessage(message);
-                this.renderClientQr();
-            },
-
-            renderClientMessage: function(message) {
                 const msgCard = document.getElementById('client-message-card');
                 const msgText = document.getElementById('client-message-text');
                 const msgDate = document.getElementById('client-message-date');
-                const msgState = document.getElementById('client-message-state');
-                if (!msgCard) return;
-
-                if (message && String(message.text || '').trim()) {
-                    msgCard.hidden = false;
-                    if (msgText) msgText.textContent = message.text;
-
-                    if (msgDate) {
-                        const when = message.sentAt || message.updatedAt;
-                        msgDate.textContent = when
-                            ? `Envoyé par iCHEF le ${this.formatClientDate(when)}`
-                            : 'Message iCHEF';
-                    }
-
-                    const alreadyRead = message.unread === false || Boolean(message.readAt);
-                    if (msgState) {
-                        msgState.className = 'client-message-state ' + (alreadyRead ? 'read' : 'new');
-                        msgState.textContent = alreadyRead ? 'Lu' : 'Nouveau';
-                    }
-
-                    if (!alreadyRead && message.messageId && this._clientLastReadMessageId !== message.messageId) {
-                        this._clientLastReadMessageId = message.messageId;
-                        window.setTimeout(() => this.markClientMessageRead(message.messageId), 700);
-                    }
-                } else {
-                    msgCard.hidden = true;
-                    if (msgText) msgText.textContent = '';
-                    if (msgDate) msgDate.textContent = '';
-                    if (msgState) {
-                        msgState.className = 'client-message-state';
-                        msgState.textContent = 'Reçu';
+                if (msgCard) {
+                    if (message && String(message.text || '').trim()) {
+                        msgCard.hidden = false;
+                        if (msgText) msgText.textContent = message.text;
+                        if (msgDate) msgDate.textContent = message.updatedAt ? `Mis à jour le ${this.formatClientDate(message.updatedAt)}` : '';
+                    } else {
+                        msgCard.hidden = true;
+                        if (msgText) msgText.textContent = '';
+                        if (msgDate) msgDate.textContent = '';
                     }
                 }
-            },
-
-            markClientMessageRead: async function(messageId) {
-                if (!messageId) return;
-                try {
-                    const res = await fetch(`${this.SERVER_URL}/api/client-space/message/read`, {
-                        method: 'POST',
-                        credentials: 'include',
-                        cache: 'no-store',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            tenantID: this.tenantID,
-                            pin: this.masterPin,
-                            messageId
-                        })
-                    });
-
-                    let data = {};
-                    try { data = await res.json(); } catch (_) {}
-                    if (!res.ok || data.success !== true) return;
-
-                    const state = document.getElementById('client-message-state');
-                    if (state) {
-                        state.className = 'client-message-state read';
-                        state.textContent = 'Lu';
-                    }
-                } catch (error) {
-                    console.warn('Accusé lecture message iCHEF :', error);
-                }
-            },
-
-            loadClientMessageOnly: async function() {
-                try {
-                    const res = await fetch(`${this.SERVER_URL}/api/client-space/message`, {
-                        method: 'POST',
-                        credentials: 'include',
-                        cache: 'no-store',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            tenantID: this.tenantID,
-                            pin: this.masterPin
-                        })
-                    });
-
-                    let data = {};
-                    try { data = await res.json(); } catch (_) {}
-                    if (!res.ok || data.success !== true) return;
-
-                    this.renderClientMessage(data.message || null);
-                } catch (error) {
-                    console.warn('Réception message iCHEF :', error);
-                }
-            },
-
-            startClientMessagePolling: function() {
-                if (this._clientMessagePollTimer) {
-                    window.clearInterval(this._clientMessagePollTimer);
-                }
-
-                this._clientMessagePollTimer = window.setInterval(() => {
-                    if (document.visibilityState === 'visible') {
-                        this.loadClientMessageOnly();
-                    }
-                }, 8000);
-
-                if (!this._clientMessageVisibilityBound) {
-                    this._clientMessageVisibilityBound = true;
-                    document.addEventListener('visibilitychange', () => {
-                        if (document.visibilityState === 'visible') {
-                            this.loadClientMessageOnly();
-                        }
-                    });
-                }
+                this.renderClientQr();
             },
 
             loadClientSpace: async function() {
@@ -4939,78 +2670,6 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
                 this.openStripeConfirm('billing');
             },
 
-            openSupportModal: function() {
-                const modal = document.getElementById('sos-modal');
-                if (modal) modal.style.display = 'flex';
-                this.loadSupportConversation();
-                if (this._supportConversationTimer) window.clearInterval(this._supportConversationTimer);
-                this._supportConversationTimer = window.setInterval(() => {
-                    if (modal && modal.style.display === 'flex' && document.visibilityState === 'visible') {
-                        this.loadSupportConversation({ silent:true });
-                    }
-                }, 6000);
-            },
-
-            closeSupportModal: function() {
-                const modal = document.getElementById('sos-modal');
-                if (modal) modal.style.display = 'none';
-                if (this._supportConversationTimer) {
-                    window.clearInterval(this._supportConversationTimer);
-                    this._supportConversationTimer = null;
-                }
-            },
-
-            renderSupportConversation: function(messages) {
-                const box = document.getElementById('sos-support-messages');
-                if (!box) return;
-                const list = Array.isArray(messages) ? messages : [];
-                if (!list.length) {
-                    box.innerHTML = '<div class="sos-support-empty">Aucune conversation pour le moment.</div>';
-                    return;
-                }
-                box.innerHTML = list.map(msg => {
-                    const fromClient = String(msg.direction || '') === 'CLIENT_TO_ICHEF';
-                    const cls = fromClient ? 'client' : 'ichef';
-                    const who = fromClient ? 'Vous' : 'iCHEF';
-                    const cat = String(msg.category || '').trim();
-                    const when = this.formatClientDate(msg.createdAt || msg.sentAt || msg.updatedAt) || '';
-                    const status = msg.readAt ? 'Lu' : (msg.deliveredAt ? 'Reçu' : 'Envoyé');
-                    return `<div class="sos-support-msg ${cls}"><strong>${this.escapeHtml(who)}${cat ? ' · ' + this.escapeHtml(cat) : ''}</strong><br>${this.escapeHtml(msg.text || '')}<span class="sos-support-meta">${this.escapeHtml(when)} · ${this.escapeHtml(status)}</span></div>`;
-                }).join('');
-                box.scrollTop = box.scrollHeight;
-            },
-
-            loadSupportConversation: async function(options = {}) {
-                const status = document.getElementById('sos-support-status');
-                if (status && !options.silent) {
-                    status.className = 'sos-support-status';
-                    status.textContent = 'Synchronisation avec la Tour de Contrôle…';
-                }
-                try {
-                    const res = await fetch(`${this.SERVER_URL}/api/support/client/list`, {
-                        method: 'POST',
-                        credentials: 'include',
-                        cache: 'no-store',
-                        headers: { 'Content-Type':'application/json' },
-                        body: JSON.stringify({ tenantID:this.tenantID, pin:this.masterPin })
-                    });
-                    let data = {};
-                    try { data = await res.json(); } catch (_) {}
-                    if (!res.ok || data.success !== true) throw new Error(data.error || 'Conversation support indisponible.');
-                    this.renderSupportConversation(data.messages || []);
-                    if (status && !options.silent) {
-                        status.className = 'sos-support-status ok';
-                        status.textContent = 'Conversation synchronisée.';
-                    }
-                } catch (error) {
-                    console.warn('Support iCHEF :', error);
-                    if (status && !options.silent) {
-                        status.className = 'sos-support-status bad';
-                        status.textContent = error.message || 'Impossible de charger la conversation.';
-                    }
-                }
-            },
-
             requestCallback: async function() {
                 if (this.isDemoMode) {
                     return alert("🔒 Mode Démo : la demande de rappel est désactivée.");
@@ -5056,17 +2715,6 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
                         throw new Error(data.error || "La demande n'a pas pu être envoyée.");
                     }
 
-                    try {
-                        const details = String(document.getElementById('sos-message')?.value || '').trim();
-                        await this.sendSupportToTour({
-                            category: 'DEMANDE RAPPEL',
-                            text: details || `Demande de rappel au ${phone}`,
-                            callbackPhone: phone,
-                            sourceAction: 'CALLBACK'
-                        });
-                    } catch (supportError) {
-                        console.warn('Rappel envoyé, mais journal Support non confirmé :', supportError);
-                    }
                     document.getElementById('sos-modal').style.display = 'none';
                     alert(data.message || "Votre demande a bien été envoyée. Nous vous rappellerons rapidement.");
                 } catch (error) {
@@ -5081,94 +2729,28 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
                 }
             },
 
-            sendSupportToTour: async function({ category = 'SUPPORT', text = '', callbackPhone = '', sourceAction = 'ADMINISTRATION' } = {}) {
-                const safeText = String(text || '').trim();
-                if (!safeText) throw new Error('Décrivez le problème avant de l’envoyer.');
-                const res = await fetch(`${this.SERVER_URL}/api/support/client/send`, {
-                    method: 'POST',
-                    credentials: 'include',
-                    cache: 'no-store',
-                    headers: { 'Content-Type':'application/json' },
-                    body: JSON.stringify({
-                        tenantID: this.tenantID,
-                        pin: this.masterPin,
-                        category: String(category || 'SUPPORT'),
-                        text: safeText,
-                        callbackPhone: String(callbackPhone || ''),
-                        sourceAction: String(sourceAction || 'ADMINISTRATION')
-                    })
-                });
-                let data = {};
-                try { data = await res.json(); } catch (_) {}
-                if (!res.ok || data.success !== true) {
-                    throw new Error(data.error || `Envoi support impossible (HTTP ${res.status}).`);
-                }
-                if (!data.message?.messageId) {
-                    throw new Error('Le serveur n’a pas confirmé l’enregistrement du message.');
-                }
-                return data;
-            },
-
-            sendSOS: async function(methode) {
+            sendSOS: function(methode) {
                 const sosType = document.getElementById('sos-type').value;
                 const sosMessage = document.getElementById('sos-message').value.trim();
-                const callbackPhone = String(document.getElementById('sos-callback-phone')?.value || '').trim();
-                const status = document.getElementById('sos-support-status');
-                const btn = document.getElementById('sos-btn-send');
-                const old = btn ? btn.textContent : '';
-
-                if (!sosMessage) {
-                    document.getElementById('sos-message').focus();
-                    return alert('Décrivez le problème avant de l’envoyer.');
+                
+                let texteAlerte = `🚨 SOS iCHEF OS 🚨\n\n🏢 Restaurant : ${this.tenantID ? this.tenantID.toUpperCase() : "Inconnu"}\n⚠️ Type : ${sosType}`;
+                if (sosMessage) {
+                    texteAlerte += `\n📝 Détails : ${sosMessage}`;
                 }
-
-                if (btn) { btn.disabled = true; btn.textContent = 'Envoi…'; }
-                if (status) {
-                    status.className = 'sos-support-status';
-                    status.textContent = 'Enregistrement du message dans iCHEF…';
+                
+                if (methode === 'whatsapp') {
+                    const contact = this.refreshIchefContactRouting();
+                    const urlWhatsApp = `https://wa.me/${contact.whatsapp}?text=${encodeURIComponent(texteAlerte)}`;
+                    window.open(urlWhatsApp, '_blank', 'noopener,noreferrer');
+                } 
+                else if (methode === 'email') {
+                    const emailSupport = "icheflavien@ichef.ch";
+                    const urlEmail = `mailto:${emailSupport}?subject=${encodeURIComponent("🚨 SOS iCHEF OS - " + sosType)}&body=${encodeURIComponent(texteAlerte)}`;
+                    window.location.href = urlEmail;
                 }
-
-                try {
-                    // Toujours enregistrer d'abord dans iCHEF : c'est la source de vérité.
-                    const data = await this.sendSupportToTour({
-                        category: sosType,
-                        text: sosMessage,
-                        callbackPhone,
-                        sourceAction: methode || 'ichef'
-                    });
-                    const messageId = String(data.message?.messageId || '');
-                    if (status) {
-                        status.className = 'sos-support-status ok';
-                        status.textContent = `✓ Reçu par iCHEF · ${messageId}`;
-                    }
-                    await this.loadSupportConversation({ silent:true });
-
-                    // Email/WhatsApp restent des canaux complémentaires, mais seulement
-                    // APRÈS la sauvegarde dans la Tour de Contrôle.
-                    let texteAlerte = `🚨 SOS iCHEF OS 🚨
-
-🏢 Restaurant : ${this.tenantID ? this.tenantID.toUpperCase() : "Inconnu"}
-⚠️ Type : ${sosType}
-📝 Détails : ${sosMessage}
-🔖 Référence : ${messageId}`;
-                    if (methode === 'email') {
-                        const emailSupport = 'icheflavien@ichef.ch';
-                        window.location.href = `mailto:${emailSupport}?subject=${encodeURIComponent('🚨 SOS iCHEF OS - ' + sosType)}&body=${encodeURIComponent(texteAlerte)}`;
-                    } else if (methode === 'whatsapp') {
-                        const contact = this.refreshIchefContactRouting();
-                        window.open(`https://wa.me/${contact.whatsapp}?text=${encodeURIComponent(texteAlerte)}`, '_blank', 'noopener,noreferrer');
-                    }
-
-                    document.getElementById('sos-message').value = '';
-                } catch (error) {
-                    console.error('Erreur support iCHEF :', error);
-                    if (status) {
-                        status.className = 'sos-support-status bad';
-                        status.textContent = error.message || 'Message non envoyé.';
-                    }
-                } finally {
-                    if (btn) { btn.disabled = false; btn.textContent = old || '✉ Envoyer à iCHEF'; }
-                }
+                
+                document.getElementById('sos-modal').style.display = 'none';
+                document.getElementById('sos-message').value = "";
             },
 
             logout: function() {
@@ -5176,16 +2758,12 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
                     localStorage.removeItem('ichef_tenant_id');
                     localStorage.removeItem('ichef_master_pin');
                     localStorage.removeItem('pin');
-                    sessionStorage.removeItem('ichef_login_context');
-                    sessionStorage.removeItem('ichef_csrf_token');
                     sessionStorage.removeItem('ichef_partner_pin');
                     sessionStorage.removeItem('ichef_partner_authenticated');
                     sessionStorage.removeItem('ichef_partner_tenant');
                     sessionStorage.removeItem('ichef_partner_role');
-                    sessionStorage.removeItem('ichef_partner_plan');
-                    sessionStorage.removeItem('ichef_partner_specialite');
-                    sessionStorage.removeItem('ichef_partner_handoff_at');
-                    sessionStorage.removeItem('ichef_partner_origin');
+                    sessionStorage.removeItem('ichef_login_context');
+                    sessionStorage.removeItem('ichef_csrf_token');
                     window.location.replace(`${window.ICHEF_FRONTEND_URL}/connexionpartenaire.html`);
                 }
             }
@@ -5198,11 +2776,11 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
         });
 
         // ====== SCRIPT PILOTE TÉLÉCHARGEMENT APP (PWA) ======
-        window.__ichefDeferredPrompt = window.__ichefDeferredPrompt || null;
+        let defferredPrompt;
 
         window.addEventListener('beforeinstallprompt', (e) => {
             e.preventDefault();
-            window.__ichefDeferredPrompt = e;
+            defferredPrompt = e;
             document.getElementById('pwa-instructions').innerText = "Cliquez ci-dessous pour lancer le téléchargement de l'application iCHEF OS directement sur votre terminal :";
             document.getElementById('ios-guide').style.display = 'none';
         });
@@ -5211,14 +2789,14 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
             const modal = document.getElementById('pwa-modal');
             modal.style.display = 'flex';
             
-            if (window.__ichefDeferredPrompt) {
+            if (defferredPrompt) {
                 modal.style.display = 'none';
-                window.__ichefDeferredPrompt.prompt();
-                window.__ichefDeferredPrompt.userChoice.then((choiceResult) => {
+                defferredPrompt.prompt();
+                defferredPrompt.userChoice.then((choiceResult) => {
                     if (choiceResult.outcome === 'accepted') {
                         console.log('iCHEF App Installée par le client.');
                     }
-                    window.__ichefDeferredPrompt = null;
+                    defferredPrompt = null;
                 });
             }
         }
@@ -5230,28 +2808,7 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
             } else {
                 document.getElementById('pwa-install-btn').style.display = 'block';
             }
-            /* V10 : l'Administration ne démarre qu'après validation
-               de la porte PIN intégrée. */
-            if (
-                window.__ICHEF_ADMIN_AUTH_READY === true &&
-                !window.__ICHEF_ADMIN_MANAGER_STARTED
-            ) {
-                window.__ICHEF_ADMIN_MANAGER_STARTED = true;
-                window.logicielManager.init();
-            }
-        });
-
-        // Au retour de Stripe (onglet/fenêtre), iCHEF vérifie directement chez Stripe
-        // que le paiement est réellement confirmé avant d'activer la connexion.
-        window.addEventListener('focus', () => {
-            if (window.logicielManager?.tenantID) {
-                setTimeout(() => window.logicielManager.reconcilePendingStripeScreenPurchase({ silent: false }), 500);
-            }
-        });
-        document.addEventListener('visibilitychange', () => {
-            if (document.visibilityState === 'visible' && window.logicielManager?.tenantID) {
-                setTimeout(() => window.logicielManager.reconcilePendingStripeScreenPurchase({ silent: false }), 500);
-            }
+            window.logicielManager.init();
         });
     </script>
 <script id="ichef-premium-nav-behavior">
@@ -5277,42 +2834,6 @@ html:not(.ichef-admin-authenticated) body > *:not(#ichef-admin-pin-gate){
                 }
             });
         })();
-</script>
-
-
-<script id="ichef-admin-v10-marker">
-window.__ICHEF_ADMIN_VERSION__="V10-PORTE-PIN-PREMIUM";
-console.info("[iCHEF ADMINISTRATION V10] porte PIN premium intégrée · validation serveur ADMIN");
-</script>
-
-
-<script id="ichef-admin-v11-marker">
-window.__ICHEF_ADMIN_VERSION__="V11-PORTE-ENTREE-LUXE";
-console.info("[iCHEF ADMINISTRATION V11] porte d'entrée noire & champagne · ouverture après PIN");
-</script>
-
-
-<script id="ichef-admin-v12-marker">
-window.__ICHEF_ADMIN_VERSION__="V12-PORTE-PARTENAIRE-CONNEXION-COMPLETE";
-console.info("[iCHEF ADMINISTRATION V12] ancienne connexion partenaire + porte premium");
-</script>
-
-
-<script id="ichef-admin-v13-marker">
-window.__ICHEF_ADMIN_VERSION__="V13-PORTE-SANS-JAUNE";
-console.info("[iCHEF ADMINISTRATION V13] porte neutre noir/blanc · aucun jaune dans textes/boutons");
-</script>
-
-
-<script id="ichef-admin-v14-marker">
-window.__ICHEF_ADMIN_VERSION__="V14-OUVERTURE-PORTE";
-console.info("[iCHEF ADMINISTRATION V14] ouverture réelle des deux vantaux après PIN · 640 ms non bloquantes");
-</script>
-
-
-<script id="ichef-admin-v15-marker">
-window.__ICHEF_ADMIN_VERSION__="V15-CONNEXION-STABLE";
-console.info("[iCHEF ADMINISTRATION V15] verify-pin direct · session partenaire · healthcheck informatif");
 </script>
 
 </body>
