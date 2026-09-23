@@ -817,7 +817,10 @@ const ICHEF_TENANT_MUTATION_PATHS = new Set([
 '/api/client-space/message',
 '/api/client-space/message/read',
 '/api/support/client/send',
-'/api/support/admin/send'
+'/api/support/admin/send',
+'/api/staff/requests',
+'/api/staff/clock-in',
+'/api/staff/clock-out'
 ]);
 const ichefTenantMutationQueues = new Map();
 function ichefRequestTenantID(req) {
@@ -872,6 +875,18 @@ socketEngine: true,
 timestamp: new Date().toISOString()
 });
 });
+
+app.get('/api/staff/build', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({
+        success: true,
+        build: 'V57.2-STAFF-SECURE',
+        staffPortal: true,
+        signedSession: true,
+        timestamp: new Date().toISOString()
+    });
+});
+
 app.get('/readyz', (req, res) => {
 const mongoReady = mongoose.connection.readyState === 1;
 return res.status(mongoReady ? 200 : 503).json({
@@ -5158,6 +5173,134 @@ requiresDuty: true,
 onDuty: true
 };
 }
+
+// ============================================================================
+// 🔐 iCHEF V57.1 — PROTECTION CONNEXION PIN
+// ============================================================================
+// Limiteur mémoire léger : protège la porte d'entrée sans modifier les PIN
+// existants ni la logique de licence / écrans.
+const ichefPinAttemptBuckets = new Map();
+
+function ichefPinAttemptKey(req, tenantID, deviceId) {
+    const forwarded =
+        String(req.headers?.['x-forwarded-for'] || '')
+            .split(',')[0]
+            .trim();
+
+    const ip =
+        forwarded ||
+        req.ip ||
+        req.socket?.remoteAddress ||
+        'unknown';
+
+    return [
+        cleanString(tenantID),
+        String(deviceId || '').trim().slice(0, 120),
+        String(ip).slice(0, 120)
+    ].join('|');
+}
+
+function ichefPinAttemptCheck(req, tenantID, deviceId) {
+    const key =
+        ichefPinAttemptKey(
+            req,
+            tenantID,
+            deviceId
+        );
+
+    const now = Date.now();
+    const windowMs = 5 * 60 * 1000;
+    const maxFailures = 12;
+
+    let bucket =
+        ichefPinAttemptBuckets.get(key);
+
+    if (
+        !bucket ||
+        now - Number(bucket.startedAt || 0) >
+            windowMs
+    ) {
+        bucket = {
+            startedAt: now,
+            failures: 0,
+            blockedUntil: 0
+        };
+
+        ichefPinAttemptBuckets.set(
+            key,
+            bucket
+        );
+    }
+
+    if (
+        Number(bucket.blockedUntil || 0) >
+        now
+    ) {
+        return {
+            ok: false,
+            retryAfterMs:
+                bucket.blockedUntil - now
+        };
+    }
+
+    return {
+        ok: true,
+        key,
+        bucket,
+        maxFailures,
+        windowMs
+    };
+}
+
+function ichefPinAttemptFailure(req, tenantID, deviceId) {
+    const check =
+        ichefPinAttemptCheck(
+            req,
+            tenantID,
+            deviceId
+        );
+
+    if (!check.key) return;
+
+    const bucket =
+        check.bucket || {
+            startedAt: Date.now(),
+            failures: 0,
+            blockedUntil: 0
+        };
+
+    bucket.failures =
+        Number(bucket.failures || 0) + 1;
+
+    if (
+        bucket.failures >=
+        check.maxFailures
+    ) {
+        bucket.blockedUntil =
+            Date.now() +
+            10 * 60 * 1000;
+    }
+
+    ichefPinAttemptBuckets.set(
+        check.key,
+        bucket
+    );
+}
+
+function ichefPinAttemptSuccess(req, tenantID, deviceId) {
+    const key =
+        ichefPinAttemptKey(
+            req,
+            tenantID,
+            deviceId
+        );
+
+    ichefPinAttemptBuckets.delete(
+        key
+    );
+}
+
+
 app.post('/api/verify-pin', async (req, res) => {
 const verifyStartedAt = Date.now();
 const {
@@ -5168,6 +5311,38 @@ terminal
 } = req.body || {};
 const safeID = cleanString(tenantID);
 const submittedPin = String(pin || '').trim();
+
+const pinAttempt =
+ichefPinAttemptCheck(
+req,
+safeID,
+deviceId
+);
+
+if (!pinAttempt.ok) {
+res.setHeader(
+'Retry-After',
+String(
+Math.max(
+1,
+Math.ceil(
+Number(pinAttempt.retryAfterMs || 0) /
+1000
+)
+)
+)
+);
+
+return res.status(429).json({
+success: false,
+code: 'PIN_RATE_LIMITED',
+error:
+'Trop de tentatives. Réessayez dans quelques minutes.',
+retryAfterMs:
+Number(pinAttempt.retryAfterMs || 0)
+});
+}
+
 if (!safeID || !/^\d{4,12}$/.test(submittedPin)) {
 return res.status(401).json({
 success: false,
@@ -5250,6 +5425,12 @@ String(s?.pin || '').trim() === submittedPin &&
 s?.active !== false
 ) || null;
 if (!staffMember) {
+ichefPinAttemptFailure(
+req,
+safeID,
+deviceId
+);
+
 return res.status(401).json({
 success: false,
 error: 'Code PIN incorrect.'
@@ -5336,6 +5517,44 @@ terminalAccess.staff ||
 staffMember ||
 null;
 
+/* V57.1 — session staff signée.
+   - le PIN n'est jamais mis dans le token
+   - le token est lié à l'établissement
+   - le token est lié au collaborateur
+   - le token est lié au deviceId quand il existe
+   - durée limitée */
+const staffPortalToken =
+(!isMaster && resolvedStaff?.id)
+? ichefSignSession(
+{
+tenantID:
+tenant.tenantID,
+scope:
+'STAFF',
+staffId:
+String(resolvedStaff.id),
+role:
+resolvedStaff.role ||
+resolvedStaff.dept ||
+'STAFF',
+name:
+resolvedStaff.name ||
+'Collaborateur',
+deviceId:
+String(deviceId || '')
+.trim()
+.slice(0, 180)
+},
+8 * 60 * 60
+)
+: null;
+
+ichefPinAttemptSuccess(
+req,
+safeID,
+deviceId
+);
+
 // V57.0 — compteur d'utilisation client.
 // Uniquement après un PIN accepté sur un vrai terminal de service.
 // Une reconnexion Socket.IO, un changement de réseau ou un déverrouillage
@@ -5369,6 +5588,45 @@ res.setHeader(
 );
 return res.json({
 success: true,
+accessToken:
+staffPortalToken,
+token:
+staffPortalToken,
+staff:
+resolvedStaff
+? {
+id:
+resolvedStaff.id ?? null,
+name:
+resolvedStaff.name || '',
+role:
+resolvedStaff.role || '',
+dept:
+resolvedStaff.dept || '',
+active:
+resolvedStaff.active !== false,
+onDuty:
+resolvedStaff.onDuty === true,
+lastPunchAt:
+resolvedStaff.lastPunchAt || null,
+lastPunchType:
+resolvedStaff.lastPunchType || '',
+workProfile:
+(
+resolvedStaff.workProfile &&
+typeof resolvedStaff.workProfile === 'object'
+)
+? resolvedStaff.workProfile
+: null,
+padAssignment:
+(
+resolvedStaff.padAssignment &&
+typeof resolvedStaff.padAssignment === 'object'
+)
+? resolvedStaff.padAssignment
+: null
+}
+: null,
 plan: tenant.plan,
 specialite: tenant.specialite,
 role:
@@ -14311,6 +14569,1237 @@ timestamp: new Date().toISOString(),
 ...extra
 });
 }
+
+// ============================================================================
+// 👥 iCHEF STAFF PORTAL V57.1 — API SÉCURISÉE
+// ============================================================================
+
+function ichefStaffPortalArray(node) {
+    if (Array.isArray(node?.data)) {
+        return node.data;
+    }
+
+    if (Array.isArray(node)) {
+        return node;
+    }
+
+    return [];
+}
+
+function ichefRequireStaffSession(req) {
+    const tenantID =
+        cleanString(
+            req.query?.tenantID ||
+            req.body?.tenantID ||
+            req.headers?.['x-ichef-tenant']
+        );
+
+    const claims =
+        ichefVerifySignedSession(
+            ichefBearerToken(req),
+            {
+                tenantID,
+                scope: 'STAFF'
+            }
+        );
+
+    if (
+        !tenantID ||
+        !claims?.staffId
+    ) {
+        return {
+            ok: false,
+            tenantID,
+            claims: null,
+            error:
+                'Session staff invalide ou expirée.'
+        };
+    }
+
+    const tokenDevice =
+        String(
+            claims.deviceId || ''
+        ).trim();
+
+    const requestDevice =
+        String(
+            req.headers?.['x-ichef-device'] ||
+            ''
+        ).trim();
+
+    // Si le token a été créé pour un appareil précis,
+    // il ne peut pas être rejoué depuis un autre appareil.
+    if (
+        tokenDevice &&
+        (
+            !requestDevice ||
+            tokenDevice !== requestDevice
+        )
+    ) {
+        return {
+            ok: false,
+            tenantID,
+            claims: null,
+            error:
+                'Session staff non reconnue sur cet appareil.'
+        };
+    }
+
+    return {
+        ok: true,
+        tenantID,
+        claims
+    };
+}
+
+async function ichefLoadActiveStaffSession(req) {
+    const auth =
+        ichefRequireStaffSession(req);
+
+    if (!auth.ok) {
+        return auth;
+    }
+
+    const tenant =
+        await Tenant
+            .findOne(
+                {
+                    tenantID:
+                        auth.tenantID
+                },
+                {
+                    tenantID: 1,
+                    status: 1,
+                    archivedAt: 1
+                }
+            )
+            .lean();
+
+    if (
+        !tenant ||
+        tenant.archivedAt ||
+        String(
+            tenant.status || ''
+        ).toUpperCase() !==
+            'ACTIF'
+    ) {
+        return {
+            ok: false,
+            tenantID:
+                auth.tenantID,
+            claims:
+                auth.claims,
+            error:
+                'Accès établissement suspendu.'
+        };
+    }
+
+    const state =
+        await AppState
+            .findOne({
+                tenantID:
+                    auth.tenantID
+            });
+
+    const staffAccess =
+        ichefStaffPortalArray(
+            state?.activeOrders
+                ?.STAFF_ACCESS
+        );
+
+    const staff =
+        staffAccess.find(item =>
+            item?.active !== false &&
+            String(item?.id || '') ===
+            String(auth.claims.staffId)
+        ) || null;
+
+    if (!staff) {
+        return {
+            ok: false,
+            tenantID:
+                auth.tenantID,
+            claims:
+                auth.claims,
+            error:
+                'Profil collaborateur introuvable ou désactivé.'
+        };
+    }
+
+    return {
+        ok: true,
+        tenantID:
+            auth.tenantID,
+        claims:
+            auth.claims,
+        tenant,
+        state,
+        staff,
+        staffAccess
+    };
+}
+
+function ichefStaffPortalHoursFromPunches(
+    punches,
+    staffId,
+    fromMs,
+    toMs
+) {
+    const id =
+        String(staffId || '');
+
+    const rows =
+        (Array.isArray(punches)
+            ? punches
+            : [])
+        .filter(item =>
+            String(
+                item?.staffId ||
+                ''
+            ) === id &&
+            Number(
+                item?.timestamp ||
+                0
+            ) >= Number(fromMs || 0) &&
+            Number(
+                item?.timestamp ||
+                0
+            ) <= Number(
+                toMs ||
+                Date.now()
+            )
+        )
+        .sort(
+            (a,b) =>
+                Number(a?.timestamp || 0) -
+                Number(b?.timestamp || 0)
+        );
+
+    let openedAt = null;
+    let totalMs = 0;
+
+    for (const item of rows) {
+        const type =
+            String(
+                item?.type || ''
+            )
+            .normalize('NFD')
+            .replace(
+                /[\u0300-\u036f]/g,
+                ''
+            )
+            .trim()
+            .toUpperCase();
+
+        const ts =
+            Number(
+                item?.timestamp ||
+                0
+            );
+
+        if (!Number.isFinite(ts)) {
+            continue;
+        }
+
+        if (
+            type === 'ENTREE' ||
+            type === 'IN'
+        ) {
+            openedAt = ts;
+            continue;
+        }
+
+        if (
+            (
+                type === 'SORTIE' ||
+                type === 'OUT'
+            ) &&
+            openedAt !== null
+        ) {
+            totalMs +=
+                Math.max(
+                    0,
+                    ts - openedAt
+                );
+
+            openedAt = null;
+        }
+    }
+
+    if (openedAt !== null) {
+        totalMs +=
+            Math.max(
+                0,
+                Number(
+                    toMs ||
+                    Date.now()
+                ) -
+                openedAt
+            );
+    }
+
+    return (
+        Math.round(
+            (
+                totalMs /
+                3600000
+            ) *
+            100
+        ) /
+        100
+    );
+}
+
+function ichefStaffPortalPlannedHours(
+    workProfile = {}
+) {
+    const start =
+        String(
+            workProfile.start ||
+            ''
+        );
+
+    const end =
+        String(
+            workProfile.end ||
+            ''
+        );
+
+    if (
+        !/^\d{2}:\d{2}$/.test(start) ||
+        !/^\d{2}:\d{2}$/.test(end)
+    ) {
+        return null;
+    }
+
+    const [sh,sm] =
+        start
+            .split(':')
+            .map(Number);
+
+    const [eh,em] =
+        end
+            .split(':')
+            .map(Number);
+
+    let minutes =
+        (eh * 60 + em) -
+        (sh * 60 + sm);
+
+    if (minutes < 0) {
+        minutes +=
+            24 * 60;
+    }
+
+    return (
+        Math.round(
+            (minutes / 60) *
+            100
+        ) /
+        100
+    );
+}
+
+function ichefStaffPortalOnlyMine(
+    list,
+    staffId
+) {
+    const id =
+        String(staffId || '');
+
+    return (
+        Array.isArray(list)
+            ? list
+            : []
+    ).filter(item => {
+        const candidate =
+            item?.staffId ??
+            item?.employeeId ??
+            item?.userId ??
+            item?.assignedTo ??
+            item?.recipientId ??
+            item?.staff?.id ??
+            '';
+
+        if (
+            Array.isArray(candidate)
+        ) {
+            return candidate
+                .map(String)
+                .includes(id);
+        }
+
+        return (
+            String(
+                candidate ||
+                ''
+            ) === id
+        );
+    });
+}
+
+app.get(
+    '/api/staff/dashboard',
+    async (req,res) => {
+        try {
+            const auth =
+                await ichefLoadActiveStaffSession(
+                    req
+                );
+
+            if (!auth.ok) {
+                return res
+                    .status(401)
+                    .json({
+                        success:false,
+                        error:
+                            auth.error
+                    });
+            }
+
+            const {
+                staff,
+                state
+            } = auth;
+
+            const activeOrders =
+                state?.activeOrders ||
+                {};
+
+            const punches =
+                ichefStaffPortalArray(
+                    activeOrders
+                        .PUNCHES_MASTER
+                );
+
+            const now =
+                new Date();
+
+            const nowMs =
+                now.getTime();
+
+            const todayStart =
+                new Date(
+                    now.getFullYear(),
+                    now.getMonth(),
+                    now.getDate()
+                ).getTime();
+
+            const day =
+                now.getDay() || 7;
+
+            const weekStart =
+                todayStart -
+                (day - 1) *
+                86400000;
+
+            const monthStart =
+                new Date(
+                    now.getFullYear(),
+                    now.getMonth(),
+                    1
+                ).getTime();
+
+            const workProfile =
+                (
+                    staff.workProfile &&
+                    typeof staff.workProfile ===
+                        'object'
+                )
+                ? staff.workProfile
+                : {};
+
+            const plannedToday =
+                ichefStaffPortalPlannedHours(
+                    workProfile
+                );
+
+            const weekWorked =
+                ichefStaffPortalHoursFromPunches(
+                    punches,
+                    staff.id,
+                    weekStart,
+                    nowMs
+                );
+
+            const monthWorked =
+                ichefStaffPortalHoursFromPunches(
+                    punches,
+                    staff.id,
+                    monthStart,
+                    nowMs
+                );
+
+            const todayWorked =
+                ichefStaffPortalHoursFromPunches(
+                    punches,
+                    staff.id,
+                    todayStart,
+                    nowMs
+                );
+
+            const weeklyTarget =
+                Number(
+                    workProfile.weeklyHours ??
+                    staff.weeklyHours ??
+                    staff.contractWeeklyHours ??
+                    NaN
+                );
+
+            const monthlyTarget =
+                Number(
+                    workProfile.monthlyHours ??
+                    staff.monthlyHours ??
+                    staff.contractMonthlyHours ??
+                    NaN
+                );
+
+            const requests =
+                ichefStaffPortalOnlyMine(
+                    ichefStaffPortalArray(
+                        activeOrders
+                            .STAFF_REQUESTS
+                    ),
+                    staff.id
+                )
+                .sort(
+                    (a,b) =>
+                        new Date(
+                            b?.createdAt ||
+                            0
+                        ) -
+                        new Date(
+                            a?.createdAt ||
+                            0
+                        )
+                );
+
+            const missions =
+                ichefStaffPortalOnlyMine(
+                    ichefStaffPortalArray(
+                        activeOrders
+                            .STAFF_MISSIONS ||
+                        activeOrders
+                            .MISSIONS_MASTER
+                    ),
+                    staff.id
+                );
+
+            const messages =
+                ichefStaffPortalOnlyMine(
+                    ichefStaffPortalArray(
+                        activeOrders
+                            .STAFF_MESSAGES ||
+                        activeOrders
+                            .MESSAGES_MASTER
+                    ),
+                    staff.id
+                );
+
+            const documents =
+                ichefStaffPortalOnlyMine(
+                    ichefStaffPortalArray(
+                        activeOrders
+                            .STAFF_DOCUMENTS ||
+                        activeOrders
+                            .RH_DOCUMENTS
+                    ),
+                    staff.id
+                );
+
+            const position =
+                String(
+                    workProfile.position ||
+                    staff.role ||
+                    staff.dept ||
+                    'Staff'
+                );
+
+            const location =
+                String(
+                    workProfile.zone ||
+                    workProfile.primaryZone ||
+                    staff
+                        ?.padAssignment
+                        ?.value ||
+                    ''
+                );
+
+            return res.json({
+                success:true,
+
+                staff:{
+                    id:
+                        staff.id,
+                    name:
+                        staff.name ||
+                        '',
+                    firstName:
+                        String(
+                            staff.name ||
+                            'Staff'
+                        )
+                        .trim()
+                        .split(/\s+/)[0],
+                    lastName:
+                        String(
+                            staff.name ||
+                            ''
+                        )
+                        .trim()
+                        .split(/\s+/)
+                        .slice(1)
+                        .join(' '),
+                    role:
+                        staff.role ||
+                        '',
+                    department:
+                        staff.dept ||
+                        '',
+                    position,
+                    location,
+                    onDuty:
+                        staff.onDuty ===
+                        true
+                },
+
+                today:{
+                    start:
+                        String(
+                            workProfile.start ||
+                            ''
+                        ),
+                    end:
+                        String(
+                            workProfile.end ||
+                            ''
+                        ),
+                    position,
+                    location,
+                    plannedHours:
+                        Number.isFinite(
+                            plannedToday
+                        )
+                        ? plannedToday
+                        : null,
+                    workedHours:
+                        todayWorked,
+                    canClock:true,
+                    clockedIn:
+                        staff.onDuty ===
+                        true
+                },
+
+                hours:{
+                    weekWorked,
+                    weekTarget:
+                        Number.isFinite(
+                            weeklyTarget
+                        )
+                        ? weeklyTarget
+                        : null,
+                    monthWorked,
+                    monthTarget:
+                        Number.isFinite(
+                            monthlyTarget
+                        )
+                        ? monthlyTarget
+                        : null,
+                    balance:
+                        Number.isFinite(
+                            weeklyTarget
+                        )
+                        ? Math.round(
+                            (
+                                weekWorked -
+                                weeklyTarget
+                            ) *
+                            100
+                          ) /
+                          100
+                        : null,
+                    overtime:
+                        Number.isFinite(
+                            weeklyTarget
+                        )
+                        ? Math.max(
+                            0,
+                            Math.round(
+                                (
+                                    weekWorked -
+                                    weeklyTarget
+                                ) *
+                                100
+                            ) /
+                            100
+                          )
+                        : null
+                },
+
+                requests,
+                tasks:
+                    missions,
+                missions,
+                messages,
+                documents,
+                schedule:[],
+                serverTime:
+                    new Date()
+                        .toISOString()
+            });
+
+        } catch(error) {
+            console.error(
+                '[iCHEF STAFF dashboard]',
+                error
+            );
+
+            return res
+                .status(500)
+                .json({
+                    success:false,
+                    error:
+                        'Espace staff momentanément indisponible.'
+                });
+        }
+    }
+);
+
+app.post(
+    '/api/staff/requests',
+    async (req,res) => {
+        try {
+            const auth =
+                await ichefLoadActiveStaffSession(
+                    req
+                );
+
+            if (!auth.ok) {
+                return res
+                    .status(401)
+                    .json({
+                        success:false,
+                        error:
+                            auth.error
+                    });
+            }
+
+            const type =
+                String(
+                    req.body?.type ||
+                    ''
+                )
+                .trim()
+                .toUpperCase();
+
+            const startDate =
+                String(
+                    req.body?.startDate ||
+                    ''
+                )
+                .trim();
+
+            const endDate =
+                String(
+                    req.body?.endDate ||
+                    startDate
+                )
+                .trim();
+
+            const note =
+                String(
+                    req.body?.note ||
+                    ''
+                )
+                .trim()
+                .slice(
+                    0,
+                    500
+                );
+
+            if (
+                ![
+                    'JOUR_OFF',
+                    'VACANCES'
+                ].includes(type) ||
+                !/^\d{4}-\d{2}-\d{2}$/.test(
+                    startDate
+                ) ||
+                !/^\d{4}-\d{2}-\d{2}$/.test(
+                    endDate
+                ) ||
+                endDate < startDate
+            ) {
+                return res
+                    .status(400)
+                    .json({
+                        success:false,
+                        error:
+                            'Demande staff invalide.'
+                    });
+            }
+
+            const {
+                state,
+                staff,
+                tenantID
+            } = auth;
+
+            if (!state.activeOrders) {
+                state.activeOrders = {};
+            }
+
+            const requests =
+                ichefStaffPortalArray(
+                    state.activeOrders
+                        .STAFF_REQUESTS
+                )
+                .slice(-500);
+
+            const now =
+                new Date()
+                    .toISOString();
+
+            const request =
+                {
+                    id:
+                        'STAFFREQ_' +
+                        Date.now() +
+                        '_' +
+                        crypto
+                            .randomBytes(4)
+                            .toString('hex'),
+                    tenantID,
+                    staffId:
+                        staff.id,
+                    staffName:
+                        staff.name ||
+                        'Collaborateur',
+                    role:
+                        staff.role ||
+                        '',
+                    dept:
+                        staff.dept ||
+                        '',
+                    type,
+                    startDate,
+                    endDate,
+                    note,
+                    status:
+                        'PENDING',
+                    createdAt:
+                        now,
+                    updatedAt:
+                        now,
+                    source:
+                        'STAFF_PORTAL'
+                };
+
+            requests.push(
+                request
+            );
+
+            state.activeOrders
+                .STAFF_REQUESTS = {
+                    data:
+                        requests,
+                    updatedAt:
+                        now
+                };
+
+            state.markModified(
+                'activeOrders'
+            );
+
+            await state.save();
+
+            io.to(
+                tenantID
+            ).emit(
+                'staff-request-created',
+                {
+                    tenantID,
+                    request,
+                    timestamp:
+                        now
+                }
+            );
+
+            ichefEmitFullState(
+                tenantID,
+                state,
+                {
+                    tableId:
+                        'STAFF_REQUESTS',
+                    source:
+                        'staff-portal'
+                }
+            );
+
+            return res.json({
+                success:true,
+                request
+            });
+
+        } catch(error) {
+            console.error(
+                '[iCHEF STAFF request]',
+                error
+            );
+
+            return res
+                .status(500)
+                .json({
+                    success:false,
+                    error:
+                        'La demande n’a pas pu être enregistrée.'
+                });
+        }
+    }
+);
+
+async function ichefStaffPortalClock(
+    req,
+    res,
+    desiredType
+) {
+    try {
+        const auth =
+            await ichefLoadActiveStaffSession(
+                req
+            );
+
+        if (!auth.ok) {
+            return res
+                .status(401)
+                .json({
+                    success:false,
+                    error:
+                        auth.error
+                });
+        }
+
+        const {
+            state,
+            staff,
+            staffAccess,
+            tenantID
+        } = auth;
+
+        const desiredOnDuty =
+            desiredType ===
+            'ENTRÉE';
+
+        if (
+            Boolean(
+                staff.onDuty
+            ) ===
+            desiredOnDuty
+        ) {
+            return res.json({
+                success:true,
+                unchanged:true,
+                onDuty:
+                    desiredOnDuty
+            });
+        }
+
+        const now =
+            Date.now();
+
+        const punch =
+            {
+                id:
+                    'staffportal_' +
+                    tenantID +
+                    '_' +
+                    now +
+                    '_' +
+                    crypto
+                        .randomBytes(4)
+                        .toString('hex'),
+                tenantID,
+                staffId:
+                    staff.id,
+                staffName:
+                    staff.name ||
+                    '',
+                dept:
+                    staff.dept ||
+                    '',
+                role:
+                    staff.role ||
+                    '',
+                type:
+                    desiredType,
+                timestamp:
+                    now,
+                serverRecordedAt:
+                    new Date(now)
+                        .toISOString(),
+                clientRecordedAt:
+                    null,
+                offlineSync:
+                    false,
+                timestampSource:
+                    'SERVER',
+                deviceId:
+                    String(
+                        req.headers
+                            ?.['x-ichef-device'] ||
+                        ''
+                    )
+                    .trim()
+                    .slice(
+                        0,
+                        200
+                    ),
+                terminal:
+                    'STAFF_PORTAL',
+                photo:''
+            };
+
+        const punches =
+            ichefStaffPortalArray(
+                state.activeOrders
+                    ?.PUNCHES_MASTER
+            )
+            .slice();
+
+        punches.push(
+            punch
+        );
+
+        const safePunches =
+            punches
+                .slice(-2500)
+                .map(
+                    (item,index,array) => {
+                        const keepPhoto =
+                            index >=
+                            array.length -
+                            12;
+
+                        if (
+                            keepPhoto ||
+                            !item?.photo
+                        ) {
+                            return item;
+                        }
+
+                        return {
+                            ...item,
+                            photo:'',
+                            photoArchived:true
+                        };
+                    }
+                );
+
+        if (!state.activeOrders) {
+            state.activeOrders = {};
+        }
+
+        state.activeOrders
+            .PUNCHES_MASTER = {
+                data:
+                    safePunches,
+                updatedAt:
+                    new Date(now)
+                        .toISOString()
+            };
+
+        const previousTimesheets =
+            state.activeOrders
+                ?.RH_TIMESHEET_REAL
+                ?.data || {
+                    months:{}
+                };
+
+        state.activeOrders
+            .RH_TIMESHEET_REAL = {
+                data:
+                    ichefRhBuildWorkedTimesheets(
+                        safePunches,
+                        previousTimesheets
+                    ),
+                updatedAt:
+                    new Date(now)
+                        .toISOString()
+            };
+
+        const staffIndex =
+            staffAccess
+                .findIndex(item =>
+                    String(
+                        item?.id ||
+                        ''
+                    ) ===
+                    String(
+                        staff.id
+                    )
+                );
+
+        if (staffIndex >= 0) {
+            staffAccess[
+                staffIndex
+            ] = {
+                ...staffAccess[
+                    staffIndex
+                ],
+                onDuty:
+                    desiredOnDuty,
+                lastPunchAt:
+                    new Date(now)
+                        .toISOString(),
+                lastPunchType:
+                    desiredType
+            };
+
+            state.activeOrders
+                .STAFF_ACCESS = {
+                    data:
+                        staffAccess,
+                    updatedAt:
+                        new Date(now)
+                            .toISOString()
+                };
+        }
+
+        state.markModified(
+            'activeOrders'
+        );
+
+        await state.save();
+
+        try {
+            const archiveDetails =
+                {
+                    ...punch
+                };
+
+            delete archiveDetails.photo;
+
+            await RhPunchRecord
+                .updateOne(
+                    {
+                        tenantID,
+                        punchId:
+                            punch.id
+                    },
+                    {
+                        $setOnInsert:{
+                            tenantID,
+                            punchId:
+                                punch.id,
+                            staffId:
+                                String(
+                                    punch.staffId
+                                ),
+                            timestamp:
+                                Number(
+                                    punch.timestamp
+                                ),
+                            type:
+                                punch.type,
+                            photo:'',
+                            details:
+                                archiveDetails,
+                            createdAt:
+                                new Date(now)
+                        }
+                    },
+                    {
+                        upsert:true
+                    }
+                );
+
+        } catch(archiveError) {
+            console.warn(
+                '[iCHEF STAFF] archive pointage non bloquante :',
+                archiveError?.message ||
+                archiveError
+            );
+        }
+
+        io.to(
+            tenantID
+        ).emit(
+            'staffDutyChanged',
+            {
+                staffId:
+                    staff.id,
+                staffName:
+                    staff.name ||
+                    '',
+                dept:
+                    staff.dept ||
+                    '',
+                onDuty:
+                    desiredOnDuty,
+                punchType:
+                    desiredType,
+                timestamp:
+                    now
+            }
+        );
+
+        ichefEmitFullState(
+            tenantID,
+            state,
+            {
+                tableId:
+                    'PUNCHES_MASTER',
+                source:
+                    'staff-portal'
+            }
+        );
+
+        return res.json({
+            success:true,
+            onDuty:
+                desiredOnDuty,
+            punchType:
+                desiredType,
+            punch
+        });
+
+    } catch(error) {
+        console.error(
+            '[iCHEF STAFF clock]',
+            error
+        );
+
+        return res
+            .status(500)
+            .json({
+                success:false,
+                error:
+                    'Pointage staff impossible.'
+            });
+    }
+}
+
+app.post(
+    '/api/staff/clock-in',
+    (req,res) =>
+        ichefStaffPortalClock(
+            req,
+            res,
+            'ENTRÉE'
+        )
+);
+
+app.post(
+    '/api/staff/clock-out',
+    (req,res) =>
+        ichefStaffPortalClock(
+            req,
+            res,
+            'SORTIE'
+        )
+);
+
+
 const ichefCashConfigWriteQueues = new Map();
 function ichefSerializeCashConfigWrite(tenantID, task) {
 const key = cleanString(tenantID);
