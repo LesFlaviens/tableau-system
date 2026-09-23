@@ -1,335 +1,246 @@
-const CACHE_NAME = 'ichef-cache-v24';
-const DYNAMIC_CACHE = 'ichef-dynamic-v24';
+let deferredPrompt = null;
 
-// ==========================================================
-// 📦 ASSETS iCHEF — PWA
-// connexionpartenaire.html n'est volontairement PAS précaché.
-// Le login doit toujours être récupéré depuis le réseau.
-// ==========================================================
-const ASSETS_TO_CACHE = [
-  '/',
-  '/index.html',
-  '/administration.html',
-  '/pack-eco.html',
-  '/chef-bar.html',
-  '/chef-patissier.html',
-  '/chef.html',
-  '/menu-qr.html',
-  '/manifest.json',
-  '/icon-192.png',
-  '/icon-512.png',
-  '/logo-ichef.png',
-  '/mockup-ichef.png',
-  '/Gemini_Generated_Image_q748ueq748ueq748-Photoroom (1) (1) (1).png'
-];
+function ichefIsStandalone() {
+    return (
+        window.matchMedia('(display-mode: standalone)').matches ||
+        window.navigator.standalone === true
+    );
+}
 
-// ==========================================================
-// INSTALL
-// ==========================================================
-self.addEventListener('install', (event) => {
-  self.skipWaiting();
+function ichefIsIOS() {
+    return /iphone|ipad|ipod/i.test(
+        navigator.userAgent || ''
+    );
+}
 
-  event.waitUntil(
-    (async () => {
-      const cache = await caches.open(CACHE_NAME);
+function refreshPwaInstallButton() {
+    const button =
+        document.getElementById('pwa-install-btn');
 
-      for (const url of ASSETS_TO_CACHE) {
+    if (!button) return;
+
+    // Déjà installé
+    if (ichefIsStandalone()) {
+        button.style.display = 'none';
+        return;
+    }
+
+    // iPhone/iPad : bouton visible pour afficher le guide
+    if (ichefIsIOS()) {
+        button.style.display = 'block';
+        button.disabled = false;
+        button.textContent =
+            '📲 Installer iCHEF sur iPhone / iPad';
+        return;
+    }
+
+    // Chrome / Edge :
+    // ne montrer le bouton QUE lorsque l'installation
+    // est réellement disponible.
+    if (deferredPrompt) {
+        button.style.display = 'block';
+        button.disabled = false;
+        button.textContent =
+            '📲 Installer l’App iCHEF OS';
+    } else {
+        button.style.display = 'none';
+    }
+}
+
+
+// ======================================================
+// LE NAVIGATEUR DIT : ICHEF PEUT ÊTRE INSTALLÉ
+// ======================================================
+
+window.addEventListener(
+    'beforeinstallprompt',
+    (event) => {
+
+        event.preventDefault();
+
+        deferredPrompt = event;
+
+        console.log(
+            '✅ iCHEF OS est prêt à être installé'
+        );
+
+        refreshPwaInstallButton();
+    }
+);
+
+
+// ======================================================
+// CLIC SUR INSTALLER
+// ======================================================
+
+async function ouvrirGuideInstallation() {
+
+    if (ichefIsStandalone()) {
+        return;
+    }
+
+    // ------------------------------------------
+    // Chrome / Edge / Android
+    // ------------------------------------------
+
+    if (deferredPrompt) {
+
         try {
-          const response = await fetch(
-            new Request(url, { cache: 'reload' })
-          );
 
-          if (response && response.ok) {
-            await cache.put(url, response.clone());
-          } else {
-            console.warn(
-              `[iCHEF SW V23] Ressource ignorée : ${url}`
+            await deferredPrompt.prompt();
+
+            const choice =
+                await deferredPrompt.userChoice;
+
+            console.log(
+                'Choix installation :',
+                choice.outcome
             );
-          }
+
+            if (choice.outcome === 'accepted') {
+
+                const button =
+                    document.getElementById(
+                        'pwa-install-btn'
+                    );
+
+                if (button) {
+                    button.textContent =
+                        '✅ Installation…';
+                }
+            }
 
         } catch (error) {
-          console.warn(
-            `[iCHEF SW V23] Ressource non précachée : ${url}`
-          );
-        }
-      }
-    })()
-  );
-});
 
-// ==========================================================
-// ACTIVATE
-// ==========================================================
-self.addEventListener('activate', (event) => {
-  event.waitUntil(
-    (async () => {
-      const cacheNames = await caches.keys();
-
-      await Promise.all(
-        cacheNames
-          .filter(
-            name =>
-              (
-                name.startsWith('ichef-cache-') ||
-                name.startsWith('ichef-dynamic-')
-              ) &&
-              name !== CACHE_NAME &&
-              name !== DYNAMIC_CACHE
-          )
-          .map(name => {
-            console.log(
-              `🧹 Nettoyage ancien cache : ${name}`
+            console.error(
+                'Erreur installation PWA :',
+                error
             );
-            return caches.delete(name);
-          })
-      );
 
-      await self.clients.claim();
-    })()
-  );
-});
+        } finally {
 
-// ==========================================================
-// FETCH
-// ==========================================================
-self.addEventListener('fetch', (event) => {
-  const request = event.request;
+            deferredPrompt = null;
 
-  if (!request) {
-    return;
-  }
-
-  // 1. Flux vidéo / audio / fichiers partiels :
-  // le navigateur les gère directement.
-  if (request.headers.get('range')) {
-    return;
-  }
-
-  let url;
-
-  try {
-    url = new URL(request.url);
-  } catch (_) {
-    return;
-  }
-
-  // 2. IMPORTANT :
-  // aucune interception des domaines externes.
-  // tableau-system.onrender.com passe directement au navigateur.
-  if (url.origin !== self.location.origin) {
-    return;
-  }
-
-  const pathname = String(url.pathname || '');
-
-  // 3. API / écritures iCHEF :
-  // réseau uniquement, avec une vraie Response 503 si coupure.
-  const isAPI =
-    request.method !== 'GET' ||
-    pathname.startsWith('/api/') ||
-    pathname.includes('/get-current-state') ||
-    pathname.includes('/update-order');
-
-  if (isAPI) {
-    event.respondWith(
-      (async () => {
-        try {
-          const response = await fetch(request);
-
-          if (response instanceof Response) {
-            return response;
-          }
-
-        } catch (_) {}
-
-        return new Response(
-          JSON.stringify({
-            success: false,
-            error: 'NETWORK_UNAVAILABLE',
-            offline: true
-          }),
-          {
-            status: 503,
-            headers: {
-              'Content-Type':
-                'application/json; charset=utf-8'
-            }
-          }
-        );
-      })()
-    );
-
-    return;
-  }
-
-  // 4. LOGIN :
-  // jamais depuis le cache.
-  if (
-    pathname === '/connexionpartenaire.html' ||
-    pathname.endsWith('/connexionpartenaire.html')
-  ) {
-    event.respondWith(
-      (async () => {
-        try {
-          const response = await fetch(
-            request,
-            { cache: 'reload' }
-          );
-
-          if (response instanceof Response) {
-            return response;
-          }
-
-        } catch (_) {}
-
-        return new Response(
-          '<!doctype html>' +
-          '<html lang="fr">' +
-          '<meta charset="utf-8">' +
-          '<meta name="viewport" content="width=device-width,initial-scale=1">' +
-          '<body style="margin:0;background:#050505;color:#fff;font-family:Arial;padding:40px">' +
-          '<h2>Connexion Internet requise</h2>' +
-          '<p>iCHEF doit joindre le serveur pour vérifier votre identifiant et votre PIN.</p>' +
-          '<button onclick="location.reload()" style="padding:12px 18px">Réessayer</button>' +
-          '</body></html>',
-          {
-            status: 503,
-            headers: {
-              'Content-Type':
-                'text/html; charset=utf-8'
-            }
-          }
-        );
-      })()
-    );
-
-    return;
-  }
-
-  // 5. Pages HTML :
-  // NETWORK FIRST, puis cache en secours.
-  const acceptsHTML =
-    request.mode === 'navigate' ||
-    (
-      request.headers.get('accept') ||
-      ''
-    ).includes('text/html');
-
-  if (acceptsHTML) {
-    event.respondWith(
-      (async () => {
-        try {
-          const networkResponse = await fetch(
-            request,
-            { cache: 'no-cache' }
-          );
-
-          if (
-            networkResponse instanceof Response
-          ) {
-            if (networkResponse.ok) {
-              try {
-                const cache =
-                  await caches.open(
-                    DYNAMIC_CACHE
-                  );
-
-                await cache.put(
-                  request,
-                  networkResponse.clone()
-                );
-              } catch (_) {}
-            }
-
-            return networkResponse;
-          }
-
-        } catch (_) {}
-
-        const cached =
-          await caches.match(request);
-
-        if (cached instanceof Response) {
-          return cached;
+            refreshPwaInstallButton();
         }
 
-        return new Response(
-          '<!doctype html>' +
-          '<html lang="fr">' +
-          '<meta charset="utf-8">' +
-          '<meta name="viewport" content="width=device-width,initial-scale=1">' +
-          '<body style="margin:0;background:#050505;color:#fff;font-family:Arial;padding:40px">' +
-          '<h2>iCHEF hors ligne</h2>' +
-          '<p>Cette page n’est pas encore disponible dans le cache local.</p>' +
-          '<button onclick="history.back()" style="padding:12px 18px">Retour</button>' +
-          '</body></html>',
-          {
-            status: 503,
-            headers: {
-              'Content-Type':
-                'text/html; charset=utf-8'
-            }
-          }
-        );
-      })()
+        return;
+    }
+
+
+    // ------------------------------------------
+    // iPhone / iPad
+    // ------------------------------------------
+
+    if (ichefIsIOS()) {
+
+        const modal =
+            document.getElementById('pwa-modal');
+
+        const guide =
+            document.getElementById('ios-guide');
+
+        const instructions =
+            document.getElementById(
+                'pwa-instructions'
+            );
+
+        if (instructions) {
+            instructions.textContent =
+                'Pour installer iCHEF OS sur votre iPhone ou iPad :';
+        }
+
+        if (guide) {
+            guide.style.display = 'block';
+        }
+
+        if (modal) {
+            modal.style.display = 'flex';
+        }
+
+        return;
+    }
+
+
+    alert(
+        "Installation pas encore disponible. Rechargez la page."
     );
+}
 
-    return;
-  }
 
-  // 6. Autres fichiers statiques :
-  // réseau d'abord, cache dynamique en secours.
-  event.respondWith(
-    (async () => {
-      try {
-        const networkResponse =
-          await fetch(
-            request,
-            { cache: 'no-cache' }
-          );
+// ======================================================
+// INSTALLATION TERMINÉE
+// ======================================================
 
-        if (
-          networkResponse instanceof Response
-        ) {
-          if (
-            networkResponse.ok &&
-            networkResponse.type === 'basic'
-          ) {
-            try {
-              const cache =
-                await caches.open(
-                  DYNAMIC_CACHE
-                );
+window.addEventListener(
+    'appinstalled',
+    () => {
 
-              await cache.put(
-                request,
-                networkResponse.clone()
-              );
-            } catch (_) {}
-          }
+        deferredPrompt = null;
 
-          return networkResponse;
+        const button =
+            document.getElementById(
+                'pwa-install-btn'
+            );
+
+        if (button) {
+            button.style.display = 'none';
         }
 
-      } catch (_) {}
+        console.log(
+            '✅ iCHEF OS installé avec succès'
+        );
+    }
+);
 
-      const cached =
-        await caches.match(request);
 
-      if (cached instanceof Response) {
-        return cached;
-      }
+// ======================================================
+// SERVICE WORKER V24
+// ======================================================
 
-      // IMPORTANT :
-      // respondWith() reçoit toujours une vraie Response.
-      return new Response(
-        '',
-        {
-          status: 504,
-          statusText:
-            'Resource unavailable'
-        }
-      );
-    })()
-  );
-});
+async function registerIchefPWA() {
+
+    if (!('serviceWorker' in navigator)) {
+        console.warn(
+            'Service Worker non supporté'
+        );
+        return;
+    }
+
+    try {
+
+        const registration =
+            await navigator.serviceWorker.register(
+                '/service-worker.js?v=24',
+                {
+                    scope: '/',
+                    updateViaCache: 'none'
+                }
+            );
+
+        await registration.update();
+
+        console.log(
+            '✅ iCHEF Service Worker V24 actif',
+            registration.scope
+        );
+
+    } catch (error) {
+
+        console.error(
+            '❌ Service Worker iCHEF :',
+            error
+        );
+    }
+}
+
+
+window.addEventListener(
+    'load',
+    async () => {
+
+        await registerIchefPWA();
+
+        refreshPwaInstallButton();
+    }
+);
