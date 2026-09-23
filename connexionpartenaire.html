@@ -407,95 +407,96 @@ window.addEventListener(
 );
 
 async function ouvrirGuideInstallation() {
-    const modal =
-        document.getElementById(
-            'pwa-modal'
-        );
+    const button = document.getElementById('pwa-install-btn');
+    const modal = document.getElementById('pwa-modal');
 
+    // Déjà installée : rien à faire.
     if (ichefIsStandalone()) {
-        if (modal) {
-            modal.style.display =
-                'none';
-        }
-
+        if (button) button.style.display = 'none';
+        if (modal) modal.style.display = 'none';
         return;
     }
 
-    // Chrome / Edge / Android :
-    // déclenche le vrai dialogue natif d'installation.
+    // Chrome / Edge / Android : on déclenche immédiatement
+    // le vrai dialogue natif d’installation au clic.
     if (deferredPrompt) {
         try {
-            deferredPrompt.prompt();
-
-            const choice =
-                await deferredPrompt.userChoice;
-
-            if (
-                choice?.outcome ===
-                'accepted'
-            ) {
-                const button =
-                    document.getElementById(
-                        'pwa-install-btn'
-                    );
-
-                if (button) {
-                    button.style.display =
-                        'none';
-                }
+            if (button) {
+                button.disabled = true;
+                button.textContent = '📲 Installation…';
             }
 
-        } catch (error) {
-            console.warn(
-                '[iCHEF PWA install]',
-                error
-            );
+            deferredPrompt.prompt();
+            const choice = await deferredPrompt.userChoice;
 
+            if (choice?.outcome === 'accepted') {
+                if (button) button.style.display = 'none';
+            } else if (button) {
+                button.disabled = false;
+                button.textContent = '📲 Installer l’App iCHEF OS';
+            }
+        } catch (error) {
+            console.warn('[iCHEF PWA install]', error);
+            if (button) {
+                button.disabled = false;
+                button.textContent = '📲 Installer l’App iCHEF OS';
+            }
         } finally {
             deferredPrompt = null;
         }
-
         return;
     }
 
-    // iPhone/iPad : Safari n'expose pas beforeinstallprompt.
-    // On affiche donc le guide "Partager > Sur l'écran d'accueil".
+    // iPhone / iPad : Safari ne permet pas une installation automatique.
+    if (ichefIsIOS()) {
+        if (modal) {
+            const guide = document.getElementById('ios-guide');
+            const instructions = document.getElementById('pwa-instructions');
+
+            if (instructions) {
+                instructions.textContent =
+                    'Sur iPhone/iPad, Safari exige une confirmation manuelle :';
+            }
+
+            if (guide) guide.style.display = 'block';
+            modal.style.display = 'flex';
+        }
+        return;
+    }
+
+    // Si le navigateur n’a pas encore fourni le prompt natif,
+    // on attend brièvement qu’il devienne disponible puis on réessaie.
+    if (button) {
+        button.disabled = true;
+        button.textContent = '📲 Préparation de l’installation…';
+    }
+
+    for (let i = 0; i < 10 && !deferredPrompt; i += 1) {
+        await new Promise(resolve => setTimeout(resolve, 150));
+    }
+
+    if (button) button.disabled = false;
+
+    if (deferredPrompt) {
+        return ouvrirGuideInstallation();
+    }
+
+    if (button) {
+        button.textContent = '📲 Installer l’App iCHEF OS';
+    }
+
+    // Fallback si le navigateur ne rend pas la PWA installable.
     if (modal) {
-        const guide =
-            document.getElementById(
-                'ios-guide'
-            );
+        const guide = document.getElementById('ios-guide');
+        const instructions = document.getElementById('pwa-instructions');
 
-        const instructions =
-            document.getElementById(
-                'pwa-instructions'
-            );
-
-        if (ichefIsIOS()) {
-            if (instructions) {
-                instructions.textContent =
-                    'Sur iPhone/iPad, installez iCHEF OS depuis Safari :';
-            }
-
-            if (guide) {
-                guide.style.display =
-                    'block';
-            }
-
-        } else {
-            if (instructions) {
-                instructions.textContent =
-                    'Si le bouton natif d’installation n’apparaît pas encore, ouvrez le menu du navigateur puis choisissez « Installer l’application » ou « Ajouter à l’écran d’accueil ».';
-            }
-
-            if (guide) {
-                guide.style.display =
-                    'none';
-            }
+        if (instructions) {
+            instructions.textContent =
+                'L’installation automatique n’est pas disponible dans ce navigateur. Ouvrez le menu du navigateur puis choisissez « Installer l’application » ou « Ajouter à l’écran d’accueil ».';
         }
 
-        modal.style.display =
-            'flex';
+        if (guide) guide.style.display = 'none';
+        modal.style.display = 'flex';
     }
 }
 
