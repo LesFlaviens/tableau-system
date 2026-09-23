@@ -2212,56 +2212,50 @@
         async function editStockQty() { if (confirm("Le comptage physique se fait dans HACCP. Ouvrir HACCP ?")) openHaccpFromPatissier(); }
         async function deleteStockItem() { if (confirm("La suppression d'un article se fait dans l'Économat. Ouvrir l'Économat ?")) openEconomatFromPatissier(); }
 
-        // === LIEN PERMANENT RECETTE PÂTISSERIE ↔ INVENTORY_MASTER ===\n        function normalizePatInventoryText(value) {\n            return String(value || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^\p{L}\p{N}]+/gu,' ').replace(/\s+/g,' ').trim();\n        }\n        function resolvePatInventoryItem(value) {\n            const wanted=normalizePatInventoryText(value); if (!wanted || !Array.isArray(stockGlobalData)) return null;\n            const exact=stockGlobalData.filter(x => normalizePatInventoryText(x?.name)===wanted); if (exact.length===1) return exact[0];\n            const words=wanted.split(' ').filter(w=>w.length>2); if (!words.length) return null;\n            const ranked=stockGlobalData.map(item=>{const text=normalizePatInventoryText(item?.name);const score=words.reduce((s,w)=>s+(text.includes(w)?1:0),0);return {item,score,text};})\n                .filter(x=>x.score>0).sort((a,b)=>b.score-a.score || a.text.length-b.text.length);\n            if (!ranked.length || (ranked.length>1 && ranked[0].score===ranked[1].score)) return null; return ranked[0].item;\n        }\n        function migratePatRecipeLinks() {\n            let changed=false; if (!Array.isArray(recipesData)) return false;\n            recipesData=recipesData.map(r=>{ if(!Array.isArray(r?.structuredIngs)) return r; const next=r.structuredIngs.map(ing=>{\n                let item=ing?.inventoryItemId!=null ? stockGlobalData.find(x=>String(x?.id??'')===String(ing.inventoryItemId))||null : null;\n                if(!item) item=resolvePatInventoryItem(ing?.name || ing?.inventoryItemName || '');\n                const linked={...ing,inventoryItemId:item?.id??null,inventoryItemName:item?.name||ing?.inventoryItemName||ing?.name||'',inventoryUnit:item?.unit||ing?.inventoryUnit||'',unitPriceSnapshot:item?Number(item.unitPrice||0):Number(ing?.unitPriceSnapshot||0),linkStatus:item?'linked':'unlinked'};\n                if(String(ing?.inventoryItemId??'')!==String(linked.inventoryItemId??'') || ing?.linkStatus!==linked.linkStatus) changed=true; return linked; }); return {...r,structuredIngs:next}; });\n            return changed;\n        }\n\n        // === IA PRÉDICTIVE : POTENTIEL DE PRODUCTION ===
-        function calculatePotential() {
-            const boxes = ['viande', 'legume', 'sauce', 'bof', 'sec', 'eco'];
-            let bottlenecks = [];
-            let minPlates = Infinity;
-            let foundAny = false;
+// === LIEN PERMANENT RECETTE PÂTISSERIE ↔ INVENTORY_MASTER ===
+function normalizePatInventoryText(value) {
+    return String(value || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^\p{L}\p{N}]+/gu,' ').replace(/\s+/g,' ').trim();
+}
 
-            boxes.forEach(box => {
-                let el = document.getElementById(`market-${box}-raw`);
-                if(!el) return;
-                let txt = el.value.toLowerCase();
-                if (!txt.trim()) return;
+function resolvePatInventoryItem(value) {
+    const wanted = normalizePatInventoryText(value);
+    if (!wanted || !Array.isArray(stockGlobalData)) return null;
+    const exact = stockGlobalData.filter(x => normalizePatInventoryText(x?.name) === wanted);
+    if (exact.length === 1) return exact[0];
+    const words = wanted.split(' ').filter(w => w.length > 2);
+    if (!words.length) return null;
+    const ranked = stockGlobalData.map(item => {
+        const text = normalizePatInventoryText(item?.name);
+        const score = words.reduce((s, w) => s + (text.includes(w) ? 1 : 0), 0);
+        return {item, score, text};
+    }).filter(x => x.score > 0).sort((a, b) => b.score - a.score || a.text.length - b.text.length);
+    if (!ranked.length || (ranked.length > 1 && ranked[0].score === ranked[1].score)) return null;
+    return ranked[0].item;
+}
 
-                let requiredGram = parseFloat(document.getElementById(`gram-${box}`).value) || 0;
-                if (requiredGram <= 0) return;
-                const matchedStock = resolvePatInventoryItem(txt);
-
-                if (matchedStock && box !== 'eco') {
-                    foundAny = true;
-                    let unit = (matchedStock.unit || 'u').toLowerCase();
-                    let stockInGrams = matchedStock.currentQty;
-                    if (unit === 'kg' || unit === 'l' || unit === 'litre') stockInGrams = matchedStock.currentQty * 1000;
-                    
-                    let possiblePlates = Math.floor(stockInGrams / requiredGram);
-                    bottlenecks.push({ name: matchedStock.name, plates: possiblePlates, avail: stockInGrams, unit: unit });
-                    if (possiblePlates < minPlates) minPlates = possiblePlates;
-                }
-            });
-
-            const resDiv = document.getElementById('ai-potential-result');
-            resDiv.style.display = 'block';
-
-            if (!foundAny) {
-                resDiv.innerHTML = " Impossible d'évaluer. Écrivez le nom exact d'un produit en stock dans les cases.";
-                resDiv.style.borderColor = "var(--alert)";
-                resDiv.style.color = "var(--alert)";
-                return;
-            }
-
-            if (minPlates === 0) {
-                resDiv.innerHTML = ` <b>Rupture critique.</b> Capacité : 0 portion/pièce.`;
-                resDiv.style.borderColor = "var(--alert)";
-                resDiv.style.color = "var(--alert)";
-            } else {
-                let limit = bottlenecks.find(b => b.plates === minPlates);
-                resDiv.innerHTML = ` <b>Capacité Max : ${minPlates} Portions/Assiettes.</b><br><span style="font-size:0.85rem; color:var(--text-muted);">La rupture arrivera en premier sur : ${limit.name} (reste ${limit.avail} ${limit.unit}).</span>`;
-                resDiv.style.borderColor = "var(--accent)";
-                resDiv.style.color = "var(--accent)";
-            }
-        }
+function migratePatRecipeLinks() {
+    let changed = false;
+    if (!Array.isArray(recipesData)) return false;
+    recipesData = recipesData.map(r => {
+        if(!Array.isArray(r?.structuredIngs)) return r;
+        const next = r.structuredIngs.map(ing => {
+            let item = ing?.inventoryItemId != null ? stockGlobalData.find(x => String(x?.id ?? '') === String(ing.inventoryItemId)) || null : null;
+            if(!item) item = resolvePatInventoryItem(ing?.name || ing?.inventoryItemName || '');
+            const linked = {
+                ...ing,
+                inventoryItemId: item?.id ?? null,
+                inventoryItemName: item?.name || ing?.inventoryItemName || ing?.name || '',
+                inventoryUnit: item?.unit || ing?.inventoryUnit || '',
+                unitPriceSnapshot: item ? Number(item.unitPrice || 0) : Number(ing?.unitPriceSnapshot || 0),
+                linkStatus: item ? 'linked' : 'unlinked'
+            };
+            if(String(ing?.inventoryItemId ?? '') !== String(linked.inventoryItemId ?? '') || ing?.linkStatus !== linked.linkStatus) changed = true;
+            return linked;
+        });
+        return {...r, structuredIngs: next};
+    });
+    return changed;
+}
 
         // === CALCUL LABORATOIRE PÂTISSERIE ===
         function calcSmartPlate() {
@@ -2716,70 +2710,6 @@
             });
         }
     </script>
-<!-- =========================================================
-     🔘 BOUTON ACCUEIL UNIVERSEL iCHEF (À coller juste après <body>)
-     ========================================================= -->
-<a href="https://ichef.ch/" id="ichef-universal-home-btn" aria-label="Retour à l'accueil">
-    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
-        <polyline points="9 22 9 12 15 12 15 22"></polyline>
-    </svg>
-    <span>ACCUEIL</span>
-</a>
 
-<style id="ichef-universal-btn-style">
-    #ichef-universal-home-btn {
-        position: fixed !important;
-        top: 20px !important;
-        left: 20px !important;
-        z-index: 999999 !important;
-        display: inline-flex !important;
-        align-items: center !important;
-        gap: 8px !important;
-        padding: 8px 16px !important;
-        background: rgba(7, 7, 7, 0.4) !important;
-        backdrop-filter: blur(10px) !important;
-        -webkit-backdrop-filter: blur(10px) !important;
-        color: #d6b267 !important;
-        border: 1px solid rgba(215, 173, 92, 0.4) !important;
-        border-radius: 999px !important;
-        font-family: 'Inter', Arial, sans-serif !important;
-        font-size: 10px !important;
-        font-weight: 800 !important;
-        letter-spacing: 1.5px !important;
-        text-transform: uppercase !important;
-        text-decoration: none !important;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.4) !important;
-        transition: all 0.15s ease-in-out !important;
-    }
-
-    #ichef-universal-home-btn:hover {
-        background: #e7c67e !important;
-        color: #080808 !important;
-        border-color: #f2d58f !important;
-        transform: translateY(-2px) !important;
-        box-shadow: 0 6px 20px rgba(215, 173, 92, 0.3) !important;
-    }
-
-    #ichef-universal-home-btn svg {
-        width: 14px !important;
-        height: 14px !important;
-    }
-
-    @media (max-width: 900px) {
-        #ichef-universal-home-btn {
-            top: 15px !important;
-            left: 15px !important;
-            padding: 6px 12px !important;
-            font-size: 9px !important;
-        }
-        
-        #ichef-universal-home-btn svg {
-            width: 12px !important;
-            height: 12px !important;
-        }
-    }
-</style>
-<!-- ========================================================= -->moji restaurés, suppression de catégorie confirmée. Connexion/PIN/Socket existants conservés. -->
 </body>
 </html>
