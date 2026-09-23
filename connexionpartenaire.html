@@ -1441,7 +1441,13 @@ body.partner-alt-screen {
 <!-- =========================================================
      🔘 BOUTON ACCUEIL UNIVERSEL iCHEF (À coller juste après <body>)
      ========================================================= -->
-
+<a href="https://ichef.ch/" id="ichef-universal-home-btn" aria-label="Retour à l'accueil">
+    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+        <polyline points="9 22 9 12 15 12 15 22"></polyline>
+    </svg>
+    <span>ACCUEIL</span>
+</a>
 
 <style id="ichef-universal-btn-style">
     #ichef-universal-home-btn {
@@ -2209,42 +2215,32 @@ async function ichefEnsureBackendReady() {
 }
 
 async function login() {
-    const tenantInput =
-        document.getElementById('tenantID');
+    const tenantInput = document.getElementById('tenantID');
+    const pinInput = document.getElementById('pinCode');
+    const btn = document.getElementById('login-btn');
 
-    const pinInput =
-        document.getElementById('pinCode');
-
-    const btn =
-        document.getElementById('login-btn');
-
-    const tenant =
-        normalizeRestaurantTenant(
-            tenantInput?.value
-        );
-
-    const pin =
-        String(
-            pinInput?.value || ''
-        )
-        .replace(/\D/g, '')
-        .slice(0, 12);
+    const tenant = normalizeRestaurantTenant(tenantInput?.value);
+    const pin = String(pinInput?.value || '').replace(/\D/g, '').slice(0, 12);
 
     showLoginServerError('');
 
     if (!tenant) {
-        showLoginServerError(
-            'Identifiant restaurant manquant.'
-        );
+        showLoginServerError('Identifiant restaurant manquant.');
         tenantInput?.focus();
         return;
     }
 
     if (!/^\d{4,12}$/.test(pin)) {
-        showLoginServerError(
-            'Le PIN restaurant doit contenir entre 4 et 12 chiffres. ' +
-            'La clé Master Empire2026 ne se saisit pas ici.'
-        );
+        showLoginServerError('Le PIN restaurant doit contenir entre 4 et 12 chiffres. La clé Master Empire2026 ne se saisit pas ici.');
+        pinInput?.focus();
+        return;
+    }
+
+    // 🛡️ Blocage des codes PIN interdits (trop simples)
+    const forbiddenPins = ['99999', '11111', '0000', '12345', '54321', '00000'];
+    if (forbiddenPins.includes(pin)) {
+        showLoginServerError('Ce code PIN est trop simple ou interdit pour des raisons de sécurité.');
+        if (pinInput) pinInput.value = '';
         pinInput?.focus();
         return;
     }
@@ -2254,71 +2250,50 @@ async function login() {
         return;
     }
 
-    btn.innerText =
-        'Vérification serveur…';
+    btn.innerText = 'Vérification serveur…';
     btn.disabled = true;
 
     try {
-        const backend =
-            await ichefEnsureBackendReady();
+        const backend = await ichefEnsureBackendReady();
 
         if (!backend.ok) {
-            showLoginServerError(
-                'Le backend iCHEF / Render reste indisponible. Le PIN n’a pas encore été vérifié.'
-            );
-            btn.innerText =
-                'Se Connecter';
+            showLoginServerError('Le backend iCHEF / Render reste indisponible. Le PIN n’a pas encore été vérifié.');
+            btn.innerText = 'Se Connecter';
             btn.disabled = false;
             return;
         }
 
-        btn.innerText =
-            'Authentification…';
+        btn.innerText = 'Authentification…';
 
-        const res =
-            await fetch(
-                `${SERVER_URL}/api/verify-pin`,
-                {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type':
-                            'application/json',
-                        'Accept':
-                            'application/json',
-                        'X-iCHEF-Device':
-                            getDeviceFingerprint(),
-                        'X-iCHEF-Tenant':
-                            tenant
-                    },
-                    credentials: 'include',
-                    cache: 'no-store',
-                    body: JSON.stringify({
-                        tenantID: tenant,
-                        pin,
-                        deviceId:
-                            getDeviceFingerprint(),
-                        terminal: 'ADMIN',
-                        module: 'ADMIN',
-                        source:
-                            'connexionpartenaire.html'
-                    })
-                }
-            );
+        const res = await fetch(`${SERVER_URL}/api/verify-pin`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-iCHEF-Device': getDeviceFingerprint(),
+                'X-iCHEF-Tenant': tenant
+            },
+            credentials: 'include',
+            cache: 'no-store',
+            body: JSON.stringify({
+                tenantID: tenant,
+                pin,
+                deviceId: getDeviceFingerprint(),
+                terminal: 'ADMIN',
+                module: 'ADMIN',
+                source: 'connexionpartenaire.html'
+            })
+        });
 
         let data = {};
-
         try {
             data = await res.json();
         } catch (_) {
             data = {};
         }
 
-        if (
-            res.ok &&
-            data.success === true
-        ) {
+        if (res.ok && data.success === true) {
             failedAttempts = 0;
-
             const safeTenant = String(data.safeTenantID || tenant).trim();
             
             // 1. Détection du rôle de l'utilisateur
@@ -2328,11 +2303,9 @@ async function login() {
 
             // 2. Aiguillage STAFF -> portail-staff.html
             if (!isManagement) {
-                // Création de la session sécurisée requise par le portail staff
                 sessionStorage.setItem('ichef_access_token', data.accessToken || 'token_staff_valide');
                 sessionStorage.setItem('ichef_user_role', data.role || 'staff');
                 
-                // Sécurité V57.1 : Création d'un profil valide avec ID pour éviter le blocage
                 const staffProfile = data.user || data.staff || data.employee || { id: 'staff_' + Date.now(), role: data.role };
                 sessionStorage.setItem('ichef_staff_profile', JSON.stringify(staffProfile));
                 
@@ -2347,7 +2320,6 @@ async function login() {
                 localStorage.removeItem('pin');
 
                 pinInput.value = '';
-                // Redirection vers le portail staff
                 window.location.replace(`portail-staff.html?tenantID=${encodeURIComponent(safeTenant)}`);
                 return;
             }
@@ -2408,81 +2380,41 @@ async function login() {
         failedAttempts += 1;
         pinInput.value = '';
 
-        const serverMessage =
-            String(
-                data.error ||
-                ''
-            ).trim();
-
-        let message =
-            serverMessage ||
-            `Connexion refusée (${res.status}).`;
+        const serverMessage = String(data.error || '').trim();
+        let message = serverMessage || `Connexion refusée (${res.status}).`;
 
         if (res.status === 401) {
-            message =
-                serverMessage ||
-                'Code PIN incorrect.';
+            message = serverMessage || 'Code PIN incorrect.';
         } else if (res.status === 404) {
-            message =
-                serverMessage ||
-                'Restaurant introuvable. Vérifiez le tenantID.';
+            message = serverMessage || 'Restaurant introuvable. Vérifiez le tenantID.';
         } else if (res.status === 403) {
-            message =
-                serverMessage ||
-                'Accès refusé : licence, écran ou permission.';
+            message = serverMessage || 'Accès refusé : licence, écran ou permission.';
         } else if (res.status >= 500) {
-            const code =
-                String(
-                    data.code ||
-                    data.error ||
-                    ''
-                );
-
-            if (
-                code === 'NETWORK_UNAVAILABLE'
-            ) {
-                message =
-                    'Le navigateur n’arrive pas à joindre le backend Render. Le PIN n’a pas été refusé : le serveur est inaccessible.';
-            } else if (
-                code === 'MONGO_NOT_READY' ||
-                code === 'DATABASE_UNAVAILABLE'
-            ) {
-                message =
-                    'Le serveur iCHEF répond, mais MongoDB n’est pas prêt. La reconnexion automatique est en cours.';
+            const code = String(data.code || data.error || '');
+            if (code === 'NETWORK_UNAVAILABLE') {
+                message = 'Le navigateur n’arrive pas à joindre le backend Render. Le PIN n’a pas été refusé : le serveur est inaccessible.';
+            } else if (code === 'MONGO_NOT_READY' || code === 'DATABASE_UNAVAILABLE') {
+                message = 'Le serveur iCHEF répond, mais MongoDB n’est pas prêt. La reconnexion automatique est en cours.';
             } else {
-                message =
-                    serverMessage ||
-                    `Erreur serveur iCHEF (${res.status}).`;
+                message = serverMessage || `Erreur serveur iCHEF (${res.status}).`;
             }
         }
 
         showLoginServerError(message);
 
         if (failedAttempts >= 3) {
-            showLoginServerError(
-                `${message} Trois essais ont échoué : nouvel essai possible dans 15 secondes.`,
-                true
-            );
+            showLoginServerError(`${message} Trois essais ont échoué : nouvel essai possible dans 15 secondes.`, true);
             startLoginCooldown(15);
         } else {
-            btn.innerText =
-                'Se Connecter';
+            btn.innerText = 'Se Connecter';
             btn.disabled = false;
             pinInput.focus();
         }
 
     } catch (error) {
-        console.error(
-            '[iCHEF connexion partenaire]',
-            error
-        );
-
-        showLoginServerError(
-            'Impossible de joindre le serveur iCHEF. Vérifiez la connexion réseau ou le déploiement du serveur.'
-        );
-
-        btn.innerText =
-            'Se Connecter';
+        console.error('[iCHEF connexion partenaire]', error);
+        showLoginServerError('Impossible de joindre le serveur iCHEF. Vérifiez la connexion réseau ou le déploiement du serveur.');
+        btn.innerText = 'Se Connecter';
         btn.disabled = false;
     }
 }
