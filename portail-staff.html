@@ -614,18 +614,25 @@ function authHeaders(){
   const token =
     sessionStorage.getItem('ichef_auth_token') ||
     sessionStorage.getItem('ichef_access_token');
+
   const headers = {
-    'Accept':'application/json'
+    'Accept':'application/json',
+    'X-iCHEF-Tenant':currentTenant()
   };
+
   if(token){
-    headers.Authorization = `Bearer ${token}`;
+    headers.Authorization =
+      `Bearer ${token}`;
   }
 
   const deviceId =
-    localStorage.getItem('ichef_device_id');
+    localStorage.getItem(
+      'ichef_device_id'
+    );
 
   if(deviceId){
-    headers['X-iCHEF-Device'] = deviceId;
+    headers['X-iCHEF-Device'] =
+      deviceId;
   }
 
   return headers;
@@ -635,15 +642,23 @@ function requireStaffSession(){
   const role = normalizeRole(
     sessionStorage.getItem('ichef_user_role')
   );
+
   const tenant = currentTenant();
-  const profile = readProfile();
+
   const token =
     sessionStorage.getItem('ichef_auth_token') ||
     sessionStorage.getItem('ichef_access_token');
 
+  const profile = readProfile();
+
   const management = new Set([
-    'master','admin','manager','direction',
-    'gerant','directeur','directrice'
+    'master',
+    'admin',
+    'manager',
+    'direction',
+    'gerant',
+    'directeur',
+    'directrice'
   ]);
 
   if(!tenant){
@@ -658,18 +673,24 @@ function requireStaffSession(){
     throw new Error('Compte Direction.');
   }
 
-  /* Le rôle staff peut être un intitulé libre.
-     On valide donc la session issue de la porte officielle,
-     pas une petite liste de métiers codés en dur. */
+  /* Sécurité V57.1 :
+     le portail staff ne s'ouvre plus sur la seule présence
+     d'un rôle ou d'un profil en sessionStorage.
+     Un jeton signé par le serveur est obligatoire. */
   if(
-    !role &&
-    !profile?.id &&
-    !token
+    !token ||
+    !profile?.id
   ){
+    sessionStorage.removeItem('ichef_auth_token');
+    sessionStorage.removeItem('ichef_access_token');
+    sessionStorage.removeItem('ichef_user_role');
+    sessionStorage.removeItem('ichef_staff_profile');
+
     location.replace(
-      `connexionpartenaire.html?tenantID=${encodeURIComponent(tenant)}`
+      `connexionpartenaire.html?tenantID=${encodeURIComponent(tenant)}&reason=STAFF_SESSION_REQUIRED`
     );
-    throw new Error('Session staff absente.');
+
+    throw new Error('Session staff sécurisée absente.');
   }
 }
 
@@ -1034,11 +1055,14 @@ async function loadStaffDashboard(){
 
     if(res.status === 401 || res.status === 403){
       sessionStorage.removeItem('ichef_auth_token');
+      sessionStorage.removeItem('ichef_access_token');
       sessionStorage.removeItem('ichef_user_role');
       sessionStorage.removeItem('ichef_staff_profile');
+
       location.replace(
         `connexionpartenaire.html?tenantID=${encodeURIComponent(tenantID)}&reason=SESSION_EXPIRED`
       );
+
       return;
     }
 
