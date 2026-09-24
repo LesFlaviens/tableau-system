@@ -503,6 +503,20 @@ body.staff-login-open .staff-login-gate{
     padding:18px;
   }
 }
+
+<style id="ichef-staff-nav-connected-style">
+html{scroll-behavior:smooth}
+.card.ichef-focus{
+  outline:2px solid rgba(215,173,92,.70);
+  box-shadow:0 0 0 5px rgba(215,173,92,.08),0 18px 44px rgba(0,0,0,.28);
+}
+.link{cursor:pointer}
+.link:disabled{opacity:.45;cursor:not-allowed}
+.tab{cursor:pointer}
+@media(max-width:900px){
+  section[id],article[id],main[id]{scroll-margin-top:16px}
+}
+</style>
 </style>
 </head>
 
@@ -740,7 +754,7 @@ body.staff-login-open .staff-login-gate{
         <div class="card-header">
           <h3>Mes heures (semaine)</h3>
           <span class="spacer"></span>
-          <button class="link" type="button">Voir le détail →</button>
+          <button class="link" id="hours-detail-btn" type="button">Voir le détail →</button>
         </div>
         <div class="card-body">
           <div style="display:flex;justify-content:space-between;align-items:end">
@@ -764,9 +778,9 @@ body.staff-login-open .staff-login-gate{
         <div class="card-body">
           <button class="req-btn" id="new-request-btn" type="button">+ Nouvelle demande</button>
           <div class="tabs" style="margin-top:12px">
-            <button class="tab active" type="button">Toutes</button>
-            <button class="tab" type="button">En attente</button>
-            <button class="tab" type="button">Validées</button>
+            <button class="tab active" type="button" data-request-filter="all">Toutes</button>
+            <button class="tab" type="button" data-request-filter="pending">En attente</button>
+            <button class="tab" type="button" data-request-filter="validated">Validées</button>
           </div>
           <div class="list" id="requests-list">
             <div class="empty">Aucune demande chargée.</div>
@@ -788,7 +802,7 @@ body.staff-login-open .staff-login-gate{
         <div class="card-header">
           <h3>Mon planning (prochains jours)</h3>
           <span class="spacer"></span>
-          <button class="link" type="button">Voir tout →</button>
+          <button class="link" id="planning-all-btn" type="button">Voir tout →</button>
         </div>
         <div class="card-body" id="schedule-list">
           <div class="empty">Planning en attente de synchronisation.</div>
@@ -799,7 +813,7 @@ body.staff-login-open .staff-login-gate{
         <div class="card-header">
           <h3>Mes documents</h3>
           <span class="spacer"></span>
-          <button class="link" type="button">Voir tous →</button>
+          <button class="link" id="documents-all-btn" type="button">Voir tous →</button>
         </div>
         <div class="card-body" id="documents-list">
           <div class="empty">Aucun document chargé.</div>
@@ -811,7 +825,7 @@ body.staff-login-open .staff-login-gate{
           <h3>Messages</h3>
           <span class="badge" id="header-messages-badge" style="display:none">0</span>
           <span class="spacer"></span>
-          <button class="link" type="button">Voir tous →</button>
+          <button class="link" id="messages-all-btn" type="button">Voir tous →</button>
         </div>
         <div class="card-body" id="messages-list">
           <div class="empty">Aucun message chargé.</div>
@@ -822,7 +836,7 @@ body.staff-login-open .staff-login-gate{
         <div class="card-header">
           <h3>Mes missions</h3>
           <span class="spacer"></span>
-          <button class="link" type="button">Voir toutes →</button>
+          <button class="link" id="missions-all-btn" type="button">Voir toutes →</button>
         </div>
         <div class="card-body list" id="missions-list">
           <div class="empty">Aucune mission chargée.</div>
@@ -1559,14 +1573,76 @@ function renderHours(hours){
   document.getElementById('hours-progress').style.width = `${p}%`;
 }
 
-function renderRequests(requests=[]){
+
+const STAFF_VIEW_STATE = {
+  requests: [],
+  tasks: [],
+  schedule: [],
+  messages: [],
+  documents: [],
+  requestFilter: 'all',
+  expanded: {
+    schedule: false,
+    messages: false,
+    documents: false,
+    missions: false
+  }
+};
+
+function staffRequestMatchesFilter(request, filter){
+  const status = String(request?.status || '').toLowerCase();
+  if(filter === 'pending'){
+    return !/accept|valid|approve|refus|reject|deny/.test(status);
+  }
+  if(filter === 'validated'){
+    return /accept|valid|approve/.test(status);
+  }
+  return true;
+}
+
+function focusStaffSection(id){
+  const el = document.getElementById(id);
+  if(!el) return;
+  el.scrollIntoView({behavior:'smooth',block:'start'});
+  el.classList.add('ichef-focus');
+  setTimeout(() => el.classList.remove('ichef-focus'), 900);
+
+  document.querySelectorAll('.side-nav .nav-item[href^="#"],.bottom-nav .bottom-item[href^="#"]')
+    .forEach(link => {
+      const active = link.getAttribute('href') === `#${id}` ||
+        (id === 'accueil' && link.getAttribute('href') === '#accueil');
+      link.classList.toggle('active', active);
+    });
+}
+
+function setRequestFilter(filter){
+  STAFF_VIEW_STATE.requestFilter = filter;
+  document.querySelectorAll('[data-request-filter]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.requestFilter === filter);
+  });
+  renderRequests(STAFF_VIEW_STATE.requests, false);
+}
+
+function renderRequests(requests=[], remember=true){
+  if(remember && Array.isArray(requests)){
+    STAFF_VIEW_STATE.requests = requests;
+  }
+
+  const source = Array.isArray(STAFF_VIEW_STATE.requests)
+    ? STAFF_VIEW_STATE.requests
+    : [];
+
+  const filtered = source.filter(r =>
+    staffRequestMatchesFilter(r, STAFF_VIEW_STATE.requestFilter)
+  );
+
   const el = document.getElementById('requests-list');
-  if(!Array.isArray(requests) || requests.length === 0){
-    el.innerHTML = '<div class="empty">Aucune demande pour le moment.</div>';
+  if(!filtered.length){
+    el.innerHTML = '<div class="empty">Aucune demande dans cette catégorie.</div>';
     return;
   }
 
-  el.innerHTML = requests.slice(0,6).map(r => `
+  el.innerHTML = filtered.map(r => `
     <div class="item">
       <div class="grow">
         <strong>${escapeHtml(safeText(r.type || r.title,'Demande'))}</strong>
@@ -1580,6 +1656,9 @@ function renderRequests(requests=[]){
 }
 
 function renderTasks(tasks=[]){
+  if(Array.isArray(tasks)) STAFF_VIEW_STATE.tasks = tasks;
+  const source = Array.isArray(STAFF_VIEW_STATE.tasks) ? STAFF_VIEW_STATE.tasks : [];
+  tasks = source;
   const list = document.getElementById('tasks-list');
   const missionList = document.getElementById('missions-list');
   const count = Array.isArray(tasks) ? tasks.filter(t => !t.done && t.status !== 'done').length : 0;
@@ -1597,7 +1676,8 @@ function renderTasks(tasks=[]){
     return;
   }
 
-  const html = tasks.slice(0,8).map(t => {
+  const missionLimit = STAFF_VIEW_STATE.expanded.missions ? tasks.length : 8;
+  const html = tasks.slice(0,missionLimit).map(t => {
     const done = t.done === true || String(t.status).toLowerCase() === 'done';
     const priority = String(t.priority || '').toLowerCase();
     const tagClass = /high|urgent|haute/.test(priority)
@@ -1628,13 +1708,17 @@ function renderTasks(tasks=[]){
 }
 
 function renderSchedule(schedule=[]){
+  if(Array.isArray(schedule)) STAFF_VIEW_STATE.schedule = schedule;
+  const source = Array.isArray(STAFF_VIEW_STATE.schedule) ? STAFF_VIEW_STATE.schedule : [];
+  schedule = source;
   const el = document.getElementById('schedule-list');
   if(!Array.isArray(schedule) || schedule.length === 0){
     el.innerHTML = '<div class="empty">Aucun horaire à afficher.</div>';
     return;
   }
 
-  el.innerHTML = schedule.slice(0,7).map((s,i) => `
+  const scheduleLimit = STAFF_VIEW_STATE.expanded.schedule ? schedule.length : 7;
+  el.innerHTML = schedule.slice(0,scheduleLimit).map((s,i) => `
     <div class="schedule-row ${s.today === true || i === 0 ? 'today' : ''}">
       <strong>${escapeHtml(safeText(s.day || s.date,'—'))}</strong>
       <span>${escapeHtml(safeText(s.time || s.hours || [s.start,s.end].filter(Boolean).join(' — '),'Repos'))}</span>
@@ -1645,6 +1729,9 @@ function renderSchedule(schedule=[]){
 }
 
 function renderMessages(messages=[]){
+  if(Array.isArray(messages)) STAFF_VIEW_STATE.messages = messages;
+  const source = Array.isArray(STAFF_VIEW_STATE.messages) ? STAFF_VIEW_STATE.messages : [];
+  messages = source;
   const el = document.getElementById('messages-list');
   const unread = Array.isArray(messages)
     ? messages.filter(m => m.unread === true || m.read === false).length
@@ -1661,7 +1748,8 @@ function renderMessages(messages=[]){
     return;
   }
 
-  el.innerHTML = messages.slice(0,5).map(m => {
+  const messageLimit = STAFF_VIEW_STATE.expanded.messages ? messages.length : 5;
+  el.innerHTML = messages.slice(0,messageLimit).map(m => {
     const sender = safeText(m.sender || m.from,'iCHEF');
     const initials = sender
       .split(/\s+/)
@@ -1684,6 +1772,9 @@ function renderMessages(messages=[]){
 }
 
 function renderDocuments(documents=[]){
+  if(Array.isArray(documents)) STAFF_VIEW_STATE.documents = documents;
+  const source = Array.isArray(STAFF_VIEW_STATE.documents) ? STAFF_VIEW_STATE.documents : [];
+  documents = source;
   const el = document.getElementById('documents-list');
 
   if(!Array.isArray(documents) || documents.length === 0){
@@ -1691,7 +1782,8 @@ function renderDocuments(documents=[]){
     return;
   }
 
-  el.innerHTML = documents.slice(0,6).map(d => `
+  const documentLimit = STAFF_VIEW_STATE.expanded.documents ? documents.length : 6;
+  el.innerHTML = documents.slice(0,documentLimit).map(d => `
     <div class="doc-row">
       <div class="doc-icon">${escapeHtml(safeText(d.type,'DOC').slice(0,4).toUpperCase())}</div>
       <div class="grow">
@@ -1738,7 +1830,7 @@ async function loadStaffDashboard(){
       {
         method:'GET',
         headers:authHeaders(),
-        credentials:'include',
+        credentials:'omit',
         cache:'no-store'
       }
     );
@@ -1799,7 +1891,7 @@ async function clockService(){
           ...authHeaders(),
           'Content-Type':'application/json'
         },
-        credentials:'include',
+        credentials:'omit',
         cache:'no-store',
         body:JSON.stringify({tenantID})
       }
@@ -1897,7 +1989,7 @@ async function submitStaffRequest(){
           ...authHeaders(),
           'Content-Type':'application/json'
         },
-        credentials:'include',
+        credentials:'omit',
         cache:'no-store',
         body:JSON.stringify({
           tenantID,
@@ -1956,11 +2048,13 @@ function logout(){
     'ichef_tenant_id'
   );
 
-  history.replaceState(
-    null,
-    '',
-    'portail-staff.html?reason=LOGOUT&v=59'
-  );
+  if(location.protocol !== 'file:'){
+    history.replaceState(
+      null,
+      '',
+      'portail-staff.html?reason=LOGOUT&v=66'
+    );
+  }
 
   showStaffLogin();
 }
@@ -1978,7 +2072,63 @@ document.getElementById('staffRequestModal')?.addEventListener('click',(event)=>
 });
 
 
+function connectStaffPortalButtons(){
+  document.querySelectorAll('.side-nav .nav-item[href^="#"],.bottom-nav .bottom-item[href^="#"]')
+    .forEach(link => {
+      link.addEventListener('click', event => {
+        const id = String(link.getAttribute('href') || '').replace(/^#/,'');
+        if(!id) return;
+        event.preventDefault();
+        focusStaffSection(id);
+      });
+    });
+
+  document.querySelectorAll('[data-request-filter]').forEach(btn => {
+    btn.addEventListener('click', () => setRequestFilter(btn.dataset.requestFilter || 'all'));
+  });
+
+  document.getElementById('hours-detail-btn')?.addEventListener('click', async () => {
+    await loadStaffDashboard();
+    focusStaffSection('heures');
+  });
+
+  document.getElementById('planning-all-btn')?.addEventListener('click', () => {
+    STAFF_VIEW_STATE.expanded.schedule = !STAFF_VIEW_STATE.expanded.schedule;
+    renderSchedule(STAFF_VIEW_STATE.schedule);
+    const btn = document.getElementById('planning-all-btn');
+    if(btn) btn.textContent = STAFF_VIEW_STATE.expanded.schedule ? 'Réduire ↑' : 'Voir tout →';
+    focusStaffSection('planning');
+  });
+
+  document.getElementById('documents-all-btn')?.addEventListener('click', () => {
+    STAFF_VIEW_STATE.expanded.documents = !STAFF_VIEW_STATE.expanded.documents;
+    renderDocuments(STAFF_VIEW_STATE.documents);
+    const btn = document.getElementById('documents-all-btn');
+    if(btn) btn.textContent = STAFF_VIEW_STATE.expanded.documents ? 'Réduire ↑' : 'Voir tous →';
+    focusStaffSection('documents');
+  });
+
+  document.getElementById('messages-all-btn')?.addEventListener('click', () => {
+    STAFF_VIEW_STATE.expanded.messages = !STAFF_VIEW_STATE.expanded.messages;
+    renderMessages(STAFF_VIEW_STATE.messages);
+    const btn = document.getElementById('messages-all-btn');
+    if(btn) btn.textContent = STAFF_VIEW_STATE.expanded.messages ? 'Réduire ↑' : 'Voir tous →';
+    focusStaffSection('messages');
+  });
+
+  document.getElementById('missions-all-btn')?.addEventListener('click', () => {
+    STAFF_VIEW_STATE.expanded.missions = !STAFF_VIEW_STATE.expanded.missions;
+    renderTasks(STAFF_VIEW_STATE.tasks);
+    const btn = document.getElementById('missions-all-btn');
+    if(btn) btn.textContent = STAFF_VIEW_STATE.expanded.missions ? 'Réduire ↑' : 'Voir toutes →';
+    focusStaffSection('missions');
+  });
+}
+
+
+
 async function bootstrapCollaboratorPortal(){
+  connectStaffPortalButtons();
   updateClock();
 
   setInterval(
