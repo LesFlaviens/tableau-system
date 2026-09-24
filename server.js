@@ -880,7 +880,7 @@ app.get('/api/staff/build', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.json({
         success: true,
-        build: 'V63-STAFF-PORTAL-OFF-DUTY',
+        build: 'V64-RH-ID-MATRICULE-PIN',
         staffPortal: true,
         signedSession: true,
         timestamp: new Date().toISOString()
@@ -15010,7 +15010,7 @@ function ichefStaffPortalOnlyMine(
 
 
 // ============================================================================
-// 👤 iCHEF V60 — CONNEXION COLLABORATEUR ID RH + PIN PERSONNEL
+// 👤 iCHEF V64 — CONNEXION COLLABORATEUR ID RH / MATRICULE + PIN
 // ============================================================================
 
 app.get(
@@ -15019,7 +15019,7 @@ app.get(
         res.setHeader('Cache-Control','no-store');
         return res.json({
             success:true,
-            build:'V63-STAFF-PORTAL-OFF-DUTY',
+            build:'V64-RH-ID-MATRICULE-PIN',
             staffLoginRoute:'/api/staff/login',
             authentication:'STAFF_ID_RH_PLUS_PIN',
             signedSession:true,
@@ -15180,7 +15180,8 @@ app.post(
                         },
                         {
                             tenantID:1,
-                            'activeOrders.STAFF_ACCESS.data':1
+                            'activeOrders.STAFF_ACCESS.data':1,
+                            'activeOrders.DIRECTORY_MASTER.data':1
                         }
                     )
                     .limit(120)
@@ -15206,13 +15207,88 @@ app.post(
                         .STAFF_ACCESS.data
                     : [];
 
+                const directory =
+                    Array.isArray(
+                        state?.activeOrders
+                            ?.DIRECTORY_MASTER
+                            ?.data
+                    )
+                    ? state.activeOrders
+                        .DIRECTORY_MASTER.data
+                    : [];
+
                 for (const member of members) {
+                    const memberPin =
+                        String(
+                            member?.pin ??
+                            ''
+                        )
+                        .trim();
+
+                    const samePin =
+                        memberPin === submittedPin ||
+                        (
+                            /^\d+$/.test(memberPin) &&
+                            /^\d+$/.test(submittedPin) &&
+                            Number(memberPin) === Number(submittedPin)
+                        );
+
+                    if (
+                        member?.active === false ||
+                        !samePin
+                    ) {
+                        continue;
+                    }
+
+                    /*
+                     * RH possède deux identifiants différents :
+                     *
+                     * 1) STAFF_ACCESS.id = identifiant technique permanent
+                     *    (staff_... ou ancien identifiant numérique)
+                     *
+                     * 2) DIRECTORY_MASTER.payrollEmployeeNo =
+                     *    "Matricule paie / Identifiant interne" visible dans RH.
+                     *
+                     * Le portail collaborateur accepte les DEUX.
+                     */
+                    const linkedDirectory =
+                        directory.find(item => {
+                            const sameInternalId =
+                                member?.id !== undefined &&
+                                member?.id !== null &&
+                                String(item?.id ?? '').trim() ===
+                                String(member.id).trim();
+
+                            const sameDirectoryPin =
+                                String(item?.pin ?? '').trim() ===
+                                memberPin ||
+                                (
+                                    /^\d+$/.test(String(item?.pin ?? '').trim()) &&
+                                    /^\d+$/.test(memberPin) &&
+                                    Number(String(item?.pin ?? '').trim()) ===
+                                    Number(memberPin)
+                                );
+
+                            return (
+                                sameInternalId ||
+                                sameDirectoryPin
+                            );
+                        }) || null;
+
                     const memberIds = [
                         member?.id,
                         member?.staffId,
                         member?.employeeId,
                         member?.rhId,
-                        member?.matricule
+                        member?.matricule,
+                        member?.payrollEmployeeNo,
+
+                        linkedDirectory?.id,
+                        linkedDirectory?.staffId,
+                        linkedDirectory?.employeeId,
+                        linkedDirectory?.rhId,
+                        linkedDirectory?.matricule,
+                        linkedDirectory?.payrollEmployeeNo
                     ]
                     .filter(
                         value =>
@@ -15227,17 +15303,8 @@ app.post(
                                 .toLowerCase()
                     );
 
-                    const memberPin =
-                        String(
-                            member?.pin ??
-                            ''
-                        )
-                        .trim();
-
                     if (
-                        member?.active === false ||
-                        !memberIds.includes(wantedId) ||
-                        memberPin !== submittedPin
+                        !memberIds.includes(wantedId)
                     ) {
                         continue;
                     }
@@ -15247,7 +15314,9 @@ app.post(
                             cleanString(
                                 state.tenantID
                             ),
-                        member
+                        member,
+                        directoryEntry:
+                            linkedDirectory
                     });
                 }
             }
@@ -20099,4 +20168,3 @@ console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
 console.log('==========================================');
 }
 );
-    
