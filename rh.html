@@ -1395,7 +1395,7 @@
                 <span class="rh-sync-v68">RH ↔ STAFF</span>
             </div>
             <div style="display:flex; gap:10px;">
-                <button class="btn-nav" style="border-color:var(--bar); color:var(--bar);" onclick="document.getElementById('landing-portal').style.display='flex'; document.getElementById('employee-portal').style.display='none';">📅 VOIR PLANNING ÉQUIPE</button>
+                <button class="btn-nav" style="border-color:var(--bar); color:var(--bar);" onclick="fullLogout()">ACCUEIL RH</button>
                 <button class="btn-nav" onclick="fullLogout()">DÉCONNEXION</button>
             </div>
         </header>
@@ -1447,7 +1447,12 @@
             <div style="display:flex; gap:25px; align-items:flex-start; flex-wrap:wrap;">
                 
                 <div style="flex:1.5; min-width:400px; background:var(--panel); border:1px solid var(--border); border-radius:12px; display:flex; flex-direction:column; box-shadow:0 10px 30px rgba(0,0,0,0.3); overflow:hidden;">
-                    <h3 style="color:var(--text-main); font-weight:300; letter-spacing:1px; margin:0; padding:20px; border-bottom:1px solid var(--border); background:rgba(0,0,0,0.5);">📅 MON PLANNING</h3>
+                    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; padding:16px 20px; border-bottom:1px solid var(--border); background:rgba(0,0,0,0.5); flex-wrap:wrap;">
+                        <h3 style="color:var(--text-main); font-weight:300; letter-spacing:1px; margin:0;">📅 MON PLANNING</h3>
+                        <input type="month" id="emp-month-selector"
+                               style="background:#090909; border:1px solid var(--border-strong); color:var(--gold); padding:8px 10px; border-radius:7px; font-weight:800;"
+                               onchange="renderEmployeePortal()">
+                    </div>
                     <div style="max-height:500px; overflow-y:auto;">
                         <table class="table-detail">
                             <thead>
@@ -3581,7 +3586,7 @@
                         d.getFullYear(),
                         d.getMonth()+1,
                         daysInMonth,
-                        monthNode
+                        plan
                     ) || {
                         expected:0,
                         totalDone:0
@@ -3688,8 +3693,22 @@
             const nameEl = document.getElementById('emp-name-display');
             if (nameEl) nameEl.innerText = staff.name || 'Employé';
 
-            const monthStr = document.getElementById('month-selector').value ||
+            const defaultMonth =
                 `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+
+            const employeeMonthSelector =
+                document.getElementById('emp-month-selector');
+
+            if (employeeMonthSelector && !employeeMonthSelector.value) {
+                employeeMonthSelector.value =
+                    document.getElementById('month-selector')?.value ||
+                    defaultMonth;
+            }
+
+            const monthStr =
+                employeeMonthSelector?.value ||
+                document.getElementById('month-selector')?.value ||
+                defaultMonth;
 
             const [year, month] = monthStr.split('-').map(Number);
             const daysInMonth = new Date(year, month, 0).getDate();
@@ -3700,7 +3719,7 @@
                 year,
                 month,
                 daysInMonth,
-                ts[monthStr] || {}
+                monthData
             ) || {
                 expected: 0,
                 totalDone: 0,
@@ -6437,12 +6456,17 @@
         }
 
         function renderIndividualView(staffId, year, month, daysInMonth, tsMonth) {
-            const staff = getDir().find(s => s.id === staffId);
+            const staff = getDir().find(s => String(s.id) === String(staffId));
             if(!staff) return;
+
+            const staffMonth =
+                tsMonth?.[staff.id] ||
+                tsMonth?.[String(staff.id)] ||
+                {};
             
             document.getElementById('individual-title').innerText = `${staff.name} - ${monthNames[month-1]} ${year}`;
             
-            let stats = getStaffMonthStats(staffId, year, month, daysInMonth, tsMonth) || { expected: 0, totalDone: 0, extraHours: 0, totalRecup: 0, countCP: 0, countM: 0, countF: 0, missedHours: 0, cpRestants: 0 };
+            let stats = getStaffMonthStats(staff.id, year, month, daysInMonth, staffMonth) || { expected: 0, totalDone: 0, extraHours: 0, totalRecup: 0, countCP: 0, countM: 0, countF: 0, missedHours: 0, cpRestants: 0 };
             document.getElementById('stat-expected').innerText = stats.expected.toFixed(1) + 'h';
             document.getElementById('stat-actual').innerText = stats.totalDone.toFixed(1) + 'h';
             document.getElementById('stat-sup').innerText = '+' + stats.extraHours.toFixed(1) + 'h';
@@ -6460,7 +6484,7 @@
             for(let d=1; d<=daysInMonth; d++) {
                 const dateObj = new Date(year, month-1, d);
                 const isWeekend = dateObj.getDay() === 0 || dateObj.getDay() === 6;
-                const p = (tsMonth[staffId] && tsMonth[staffId][d]) ? tsMonth[staffId][d] : {status:'off', poste: staff.dept, s1:'', s2:'', pause:0, obs:''};
+                const p = staffMonth[d] || {status:'off', poste: staff.dept, s1:'', s2:'', pause:0, obs:''};
                 const h = calculateNet(p);
                 let currentPoste = p.poste || staff.dept;
 
@@ -6501,7 +6525,7 @@
 
             const monthStr = document.getElementById('month-selector').value;
             const ts = getTs();
-            const staff = getDir().find(s => s.id === staffId);
+            const staff = getDir().find(s => String(s.id) === String(staffId));
             
             if(!ts[monthStr]) ts[monthStr] = {};
             if(!ts[monthStr][staffId]) ts[monthStr][staffId] = {};
