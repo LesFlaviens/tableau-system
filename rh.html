@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Direction & RH - iCHEF · V68 Staff Sync</title>
-    <meta name="ichef-build" content="RH-V68-STAFF-SYNC-PROOFS-6M">
+    <meta name="ichef-build" content="RH-V68-PLANNING-SYNC-RACE-FIX">
     
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800;900&display=swap" rel="stylesheet">
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
@@ -1945,14 +1945,23 @@
                 return await r.json();
             },
             update: async (key, data) => {
-                let payload = { data: data }; 
-                try { 
-                    await fetch(`${SERVER_URL_JS}/update-order?tenantID=${tenantID_JS}`, { 
-                        method: 'POST', 
-                        headers: {'Content-Type': 'application/json'}, 
-                        body: JSON.stringify({ tableId: key, order: data === null ? null : payload }) 
-                    }); 
-                } catch(e) { console.error("Erreur Sync:", e); }
+                const payload = { data: data };
+                try {
+                    const response = await fetch(`${SERVER_URL_JS}/update-order?tenantID=${tenantID_JS}`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ tableId: key, order: data === null ? null : payload })
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+
+                    return true;
+                } catch(e) {
+                    console.error("Erreur Sync:", e);
+                    return false;
+                }
             }
         };
 
@@ -2294,9 +2303,115 @@
         }
         
         function getTs() { return JSON.parse(localStorage.getItem('empire_hr_timesheets')) || {}; }
-        function saveTs(ts) { 
-            localStorage.setItem('empire_hr_timesheets', JSON.stringify(ts)); 
-            API.update('TIMESHEETS_MASTER', ts);
+
+        // ==========================================================
+        // PLANNING : PROTECTION CONTRE LES RETOURS SERVEUR OBSOLÈTES
+        // ==========================================================
+        // Plusieurs événements temps réel peuvent arriver pendant qu'une
+        // modification du planning est encore en cours d'enregistrement.
+        // Sans garde, un ancien TIMESHEETS_MASTER peut écraser la case qui
+        // vient juste d'être modifiée (symptôme : la couleur revient en arrière).
+        let rhPlanningSaveChain = Promise.resolve(true);
+        let rhPlanningPendingUntil = 0;
+        let rhPlanningLocalSignature = '';
+
+        function rhPlanningSignature(data) {
+            try {
+                return JSON.stringify(data && typeof data === 'object' ? data : {});
+            } catch (_) {
+                return '';
+            }
+        }
+
+        function refreshPlanningScreensAfterSync() {
+            try {
+                if (document.getElementById('hr-interface')?.style.display === 'flex') {
+                    loadMonthData();
+                }
+
+                if (
+                    document.getElementById('employee-portal')?.style.display === 'flex' &&
+                    loggedInStaffId !== null
+                ) {
+                    renderEmployeePortal();
+                }
+            } catch (error) {
+                console.warn('Rafraîchissement planning après synchronisation impossible', error);
+            }
+        }
+
+        function applyRemoteTimesheets(remoteData, source = 'server') {
+            const safe = remoteData && typeof remoteData === 'object'
+                ? remoteData
+                : {};
+
+            const remoteSignature = rhPlanningSignature(safe);
+
+            // L'écho serveur correspond à notre dernière sauvegarde : on peut
+            // lever immédiatement la protection locale.
+            if (
+                rhPlanningLocalSignature &&
+                remoteSignature === rhPlanningLocalSignature
+            ) {
+                rhPlanningPendingUntil = 0;
+                rhPlanningLocalSignature = '';
+            } else if (Date.now() < rhPlanningPendingUntil) {
+                // Une écriture locale plus récente est encore en transit.
+                // Ne jamais la remplacer par un état serveur potentiellement ancien.
+                console.debug(`[iCHEF RH] TIMESHEETS_MASTER ignoré (${source}) : sauvegarde locale en cours.`);
+                return false;
+            }
+
+            localStorage.setItem(
+                'empire_hr_timesheets',
+                JSON.stringify(safe)
+            );
+
+            refreshPlanningScreensAfterSync();
+            return true;
+        }
+
+        function saveTs(ts) {
+            // Snapshot immuable : si l'utilisateur enchaîne plusieurs changements,
+            // chaque requête conserve exactement l'état qu'elle doit enregistrer.
+            let snapshot;
+            try {
+                snapshot = JSON.parse(JSON.stringify(ts || {}));
+            } catch (_) {
+                snapshot = ts || {};
+            }
+
+            localStorage.setItem(
+                'empire_hr_timesheets',
+                JSON.stringify(snapshot)
+            );
+
+            rhPlanningLocalSignature = rhPlanningSignature(snapshot);
+            rhPlanningPendingUntil = Date.now() + 15000;
+
+            // Sérialise les sauvegardes pour empêcher deux clics rapides d'arriver
+            // au serveur dans l'ordre inverse.
+            rhPlanningSaveChain = rhPlanningSaveChain
+                .catch(() => true)
+                .then(async () => {
+                    const ok = await API.update(
+                        'TIMESHEETS_MASTER',
+                        snapshot
+                    );
+
+                    if (!ok) {
+                        // On conserve la version locale plus longtemps plutôt que
+                        // de laisser un rafraîchissement distant la faire disparaître.
+                        rhPlanningPendingUntil = Math.max(
+                            rhPlanningPendingUntil,
+                            Date.now() + 60000
+                        );
+                    }
+
+                    return ok;
+                });
+
+            return rhPlanningSaveChain;
         }
         
         function getPunches() { return JSON.parse(localStorage.getItem('empire_hr_punches')) || []; }
@@ -2368,11 +2483,9 @@
             }
 
             if (ao['TIMESHEETS_MASTER']) {
-                localStorage.setItem(
-                    'empire_hr_timesheets',
-                    JSON.stringify(
-                        ao['TIMESHEETS_MASTER'].data || {}
-                    )
+                applyRemoteTimesheets(
+                    ao['TIMESHEETS_MASTER'].data || {},
+                    'syncRhOperationalState'
                 );
             }
 
@@ -2934,15 +3047,6 @@
                     syncRhStaffFromState(state);
                     syncRhOperationalState(state);
 
-                    if (state.activeOrders['TIMESHEETS_MASTER']) {
-                        localStorage.setItem(
-                            'empire_hr_timesheets',
-                            JSON.stringify(
-                                state.activeOrders['TIMESHEETS_MASTER'].data || {}
-                            )
-                        );
-                    }
-
                     if (state.activeOrders['REQUESTS_MASTER']) {
                         localStorage.setItem(
                             'empire_hr_requests',
@@ -3020,17 +3124,6 @@
 
                         syncRhStaffFromState(state);
                         syncRhOperationalState(state);
-
-                        if (
-                            state.activeOrders['TIMESHEETS_MASTER']
-                        ) {
-                            localStorage.setItem(
-                                'empire_hr_timesheets',
-                                JSON.stringify(
-                                    state.activeOrders['TIMESHEETS_MASTER'].data || {}
-                                )
-                            );
-                        }
 
                         if (
                             state.activeOrders['REQUESTS_MASTER']
@@ -3154,7 +3247,7 @@
                 const state = await API.getState();
                 if (state && state.activeOrders) {
                     if (state.activeOrders['DIRECTORY_MASTER']) localStorage.setItem('empire_hr_directory', JSON.stringify(state.activeOrders['DIRECTORY_MASTER'].data || []));
-                    if (state.activeOrders['TIMESHEETS_MASTER']) localStorage.setItem('empire_hr_timesheets', JSON.stringify(state.activeOrders['TIMESHEETS_MASTER'].data || {}));
+                    if (state.activeOrders['TIMESHEETS_MASTER']) applyRemoteTimesheets(state.activeOrders['TIMESHEETS_MASTER'].data || {}, 'startup');
                     if (state.activeOrders['PUNCHES_MASTER']) localStorage.setItem('empire_hr_punches', JSON.stringify(state.activeOrders['PUNCHES_MASTER'].data || []));
                     if (state.activeOrders['REQUESTS_MASTER'] || state.activeOrders['STAFF_REQUESTS']) {
                         const rm = Array.isArray(state.activeOrders['REQUESTS_MASTER']?.data) ? state.activeOrders['REQUESTS_MASTER'].data : [];
