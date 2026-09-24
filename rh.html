@@ -25,12 +25,6 @@
         const urlParams = new URLSearchParams(window.location.search);
         let tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
         if(!tenantID) window.location.href = 'connexionpartenaire.html';
-
-        // Retour explicite au menu RH : empêche la borne de se réactiver au rechargement.
-        const forceRhHome = urlParams.get('home') === '1';
-        if (forceRhHome) {
-            localStorage.removeItem('ichef_rh_kiosk_mode');
-        }
         const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:") ? "http://localhost:10000" : "https://tableau-system.onrender.com";
     </script>
 
@@ -690,11 +684,11 @@
                 <button class="pin-btn" onclick="cancelPin()" style="color:var(--alert); border-color:var(--border);">X</button>
                 <button class="pin-btn" onclick="appendPin(0)">0</button>
                 <button class="pin-btn" onclick="submitPin()" style="color:var(--gold); border-color:var(--gold);">OK</button>
-<button id="pin-secondary-action" onclick="handlePinSecondaryAction()" 
+<button onclick="window.location.href='admin.html' + (typeof tenantID_JS !== 'undefined' && tenantID_JS ? '?tenantID=' + encodeURIComponent(tenantID_JS) : '')" 
                     style="width: 100%; margin-top: 25px; padding: 14px; background: rgba(212, 175, 55, 0.05); border: 1px solid var(--gold); color: var(--gold); border-radius: 12px; font-weight: 800; font-size: 0.9rem; cursor: pointer; text-transform: uppercase; letter-spacing: 1px; transition: 0.2s;"
                     onmouseover="this.style.background='rgba(212, 175, 55, 0.15)'"
                     onmouseout="this.style.background='rgba(212, 175, 55, 0.05)'">
-                 CENTRE DE CONTROLE
+                 Centre de controle
             </button>
                 
             </div>
@@ -2684,12 +2678,8 @@
             }
 
             // Une borne dédiée revient automatiquement en mode pointeuse après un rechargement.
-            if (!forceRhHome && localStorage.getItem('ichef_rh_kiosk_mode') === '1') {
+            if (localStorage.getItem('ichef_rh_kiosk_mode') === '1') {
                 setTimeout(() => activatePunchKioskMode(false), 250);
-            } else if (forceRhHome) {
-                const landing = document.getElementById('landing-portal');
-                if (landing) landing.style.display = 'flex';
-                document.querySelectorAll('.full-interface').forEach(el => el.style.display = 'none');
             }
         };
 
@@ -5733,112 +5723,17 @@ function requestExitPunchKiosk() {
 
     document.getElementById('pin-display').innerText = "";
     document.getElementById('pin-dept-title').innerText = "PIN DIRECTION — QUITTER POINTEUSE";
-
-    const secondaryAction = document.getElementById('pin-secondary-action');
-    if (secondaryAction) secondaryAction.innerText = 'ANNULER';
-
     document.getElementById('pin-modal').style.display = 'flex';
 }
 
-function handlePinSecondaryAction() {
-    // Dans le flux de sortie de la pointeuse, ce bouton ne doit JAMAIS ouvrir admin.html.
-    if (loginMode === 'exit-kiosk') {
-        currentPin = '';
-        const pinDisplay = document.getElementById('pin-display');
-        if (pinDisplay) pinDisplay.innerText = '';
-        const pinModal = document.getElementById('pin-modal');
-        if (pinModal) pinModal.style.display = 'none';
-        loginMode = '';
-        return;
-    }
-
-    const id = (typeof tenantID_JS !== 'undefined' && tenantID_JS) ? tenantID_JS : tenantID;
-    window.location.href = 'admin.html' + (id ? '?tenantID=' + encodeURIComponent(id) : '');
-}
-
 function deactivatePunchKioskMode() {
-    // Désactive réellement le mode borne
     punchKioskMode = false;
     localStorage.removeItem('ichef_rh_kiosk_mode');
+    cancelPunchClock(true);
 
-    // Réinitialise les états de connexion / PIN
-    loginMode = '';
-    currentPin = '';
-    punchPin = '';
-
-    const pinDisplay = document.getElementById('pin-display');
-    if (pinDisplay) pinDisplay.innerText = '';
-
-    const punchDisplay = document.getElementById('punch-display');
-    if (punchDisplay) punchDisplay.innerText = '';
-
-    // Coupe complètement la caméra
-    if (videoStream) {
-        videoStream.getTracks().forEach(track => track.stop());
-        videoStream = null;
-    }
-
-    // Arrête l'horloge de la pointeuse
-    stopPunchClockDisplay();
-
-    // Ferme la pointeuse et enlève le mode kiosk
-    const punchModal = document.getElementById('punch-modal');
-    if (punchModal) {
-        punchModal.style.display = 'none';
-        punchModal.classList.remove('punch-kiosk-active');
-    }
-
-    // Ferme aussi la fenêtre PIN Direction
-    const pinModal = document.getElementById('pin-modal');
-    if (pinModal) pinModal.style.display = 'none';
-
-    // Cache l'écran de confirmation éventuel
-    const overlay = document.getElementById('punch-success-overlay');
-    if (overlay) overlay.style.display = 'none';
-
-    // Cache toutes les interfaces secondaires et retourne GARANTI au menu principal RH.
-    document.querySelectorAll('.full-interface').forEach(el => el.style.display = 'none');
-    const deptModal = document.getElementById('dept-modal');
-    if (deptModal) deptModal.style.display = 'none';
-
-    const landing = document.getElementById('landing-portal');
-    if (landing) landing.style.display = 'flex';
-
-    document.body.style.overflow = '';
-    window.scrollTo(0, 0);
-
-    // Nettoie un éventuel paramètre home sans recharger la page.
-    try {
-        const cleanUrl = new URL(window.location.href);
-        cleanUrl.searchParams.delete('home');
-        if (tenantID) cleanUrl.searchParams.set('tenantID', tenantID);
-        history.replaceState(null, '', cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
-    } catch(e) {}
-
-    // Quitte le plein écran si nécessaire.
     if (document.fullscreenElement && document.exitFullscreen) {
         document.exitFullscreen().catch(() => {});
-    } else if (document.webkitFullscreenElement && document.webkitExitFullscreen) {
-        document.webkitExitFullscreen();
     }
-}
-
-function goToRhHomeFromUniversalButton(event) {
-    if (event) event.preventDefault();
-
-    // Si la borne est active, on conserve la protection par PIN Direction.
-    if (typeof punchKioskMode !== 'undefined' && punchKioskMode) {
-        requestExitPunchKiosk();
-        return false;
-    }
-
-    // Hors mode borne : retour direct au menu RH.
-    localStorage.removeItem('ichef_rh_kiosk_mode');
-    const landing = document.getElementById('landing-portal');
-    document.querySelectorAll('.full-interface').forEach(el => el.style.display = 'none');
-    if (landing) landing.style.display = 'flex';
-    window.scrollTo(0, 0);
-    return false;
 }
 
 function openPunchClock(asKiosk = false) {
@@ -9724,70 +9619,6 @@ function renderDirectorRequests() {
     }
 })();
 </script>
-<!-- =========================================================
-     🔘 BOUTON ACCUEIL UNIVERSEL iCHEF (À coller juste après <body>)
-     ========================================================= -->
-<a href="#" onclick="return goToRhHomeFromUniversalButton(event)" id="ichef-universal-home-btn" aria-label="Retour à l'accueil">
-    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
-        <polyline points="9 22 9 12 15 12 15 22"></polyline>
-    </svg>
-    <span>ACCUEIL</span>
-</a>
 
-<style id="ichef-universal-btn-style">
-    #ichef-universal-home-btn {
-        position: fixed !important;
-        top: 20px !important;
-        left: 20px !important;
-        z-index: 999999 !important;
-        display: inline-flex !important;
-        align-items: center !important;
-        gap: 8px !important;
-        padding: 8px 16px !important;
-        background: rgba(7, 7, 7, 0.4) !important;
-        backdrop-filter: blur(10px) !important;
-        -webkit-backdrop-filter: blur(10px) !important;
-        color: #d6b267 !important;
-        border: 1px solid rgba(215, 173, 92, 0.4) !important;
-        border-radius: 999px !important;
-        font-family: 'Inter', Arial, sans-serif !important;
-        font-size: 10px !important;
-        font-weight: 800 !important;
-        letter-spacing: 1.5px !important;
-        text-transform: uppercase !important;
-        text-decoration: none !important;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.4) !important;
-        transition: all 0.15s ease-in-out !important;
-    }
-
-    #ichef-universal-home-btn:hover {
-        background: #e7c67e !important;
-        color: #080808 !important;
-        border-color: #f2d58f !important;
-        transform: translateY(-2px) !important;
-        box-shadow: 0 6px 20px rgba(215, 173, 92, 0.3) !important;
-    }
-
-    #ichef-universal-home-btn svg {
-        width: 14px !important;
-        height: 14px !important;
-    }
-
-    @media (max-width: 900px) {
-        #ichef-universal-home-btn {
-            top: 15px !important;
-            left: 15px !important;
-            padding: 6px 12px !important;
-            font-size: 9px !important;
-        }
-        
-        #ichef-universal-home-btn svg {
-            width: 12px !important;
-            height: 12px !important;
-        }
-    }
-</style>
-<!-- ========================================================= -->
 </body>
 </html>
