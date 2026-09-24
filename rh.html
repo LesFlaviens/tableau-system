@@ -28,7 +28,7 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>iCHEF RH · Cockpit Direction V74</title>
-    <meta name="ichef-build" content="RH-V74-DIRECTION-COCKPIT">
+    <meta name="ichef-build" content="RH-V75-DIRECTION-ONLY">
     
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800;900&display=swap" rel="stylesheet">
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
@@ -1353,7 +1353,7 @@
 .gateway-keypad {
     width:100%;
     display:grid;
-    grid-template-columns:repeat(3,1fr);
+    grid-template-columns:repeat(2,1fr);
     gap:12px;
 }
 .gateway-key {
@@ -1996,7 +1996,7 @@
 
         <div id="official-gateway-status" class="gateway-status">
             <span class="gateway-status-dot"></span>
-            <span id="official-gateway-status-text">INTERNET DISPONIBLE · PIN SERVEUR REQUIS</span>
+            <span id="official-gateway-status-text">ACCÈS DIRECTION · PIN SERVEUR REQUIS</span>
         </div>
 
         <button class="gateway-control" type="button" onclick="openOfficialAccessCenter()">CENTRE DE CONTRÔLE</button>
@@ -2014,7 +2014,7 @@
         <div class="gateway-access-card">
             <div class="gateway-access-head">
                 <div>
-                    <div class="kicker">iCHEF OS · CONTRÔLE D'ACCÈS · V72</div>
+                    <div class="kicker">iCHEF OS · CONTRÔLE D'ACCÈS · V75</div>
                     <h2>Choisir un mode d'accès</h2>
                 </div>
                 <button class="gateway-access-close" type="button" onclick="closeOfficialAccessCenter()">FERMER</button>
@@ -2025,12 +2025,6 @@
                     <small>Borne dédiée</small>
                     <strong>Mode pointeuse</strong>
                     <p>Entrées, sorties, photo et PIN personnel.</p>
-                </button>
-
-                <button class="gateway-access-option" type="button" onclick="closeOfficialAccessCenter(); openStaffPortalLogin();">
-                    <small>Collaborateur</small>
-                    <strong>Espace staff</strong>
-                    <p>Planning, heures, congés, demandes et historique personnel.</p>
                 </button>
 
                 <button class="gateway-access-option" type="button" onclick="closeOfficialAccessCenter(); openDeptSelection();">
@@ -2167,10 +2161,6 @@
             </nav>
 
             <div class="rh-cockpit-side-spacer"></div>
-
-            <button class="rh-staff-portal-link" type="button" onclick="openStaffPortalLogin()">
-                <span>PORTAIL STAFF</span><span>↗</span>
-            </button>
 
             <div class="rh-cockpit-side-footer">
                 <strong>CUISINER<br>GÉRER<br>PERFORMER</strong>
@@ -12249,7 +12239,7 @@ function renderDirectorRequests() {
     setInterval(()=>{if(navigator.onLine)syncQueue()},30000);
 
     if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost'||location.hostname==='127.0.0.1')){
-        window.addEventListener('load',()=>navigator.serviceWorker.register('/sw-rh.js?v=74',{scope:'/'}).catch(e=>console.warn('[iCHEF RH OFFLINE] Service Worker non installé',e?.message||e)));
+        window.addEventListener('load',()=>navigator.serviceWorker.register('/sw-rh.js?v=75',{scope:'/'}).catch(e=>console.warn('[iCHEF RH OFFLINE] Service Worker non installé',e?.message||e)));
     }
 })();
 </script>
@@ -12321,10 +12311,10 @@ function renderDirectorRequests() {
 
 <script id="ichef-official-gateway-v70-js">
 /* =========================================================
-   iCHEF OS · PORTE D'ENTRÉE OFFICIELLE V70
-   - PIN collaborateur => portail staff direct
-   - PIN Direction serveur => hub Direction
-   - Centre de contrôle => pointeuse / staff / direction
+   iCHEF OS · PORTE D'ENTRÉE OFFICIELLE V75
+   - rh.html réservé à la Direction RH
+   - PIN Direction serveur => cockpit Direction
+   - Centre de contrôle => pointeuse / direction
    ========================================================= */
 let officialGatewayPin = "";
 let officialGatewayBusy = false;
@@ -12364,7 +12354,7 @@ function appendOfficialGatewayPin(value) {
     renderOfficialGatewayPin(false);
     setOfficialGatewayStatus(
         navigator.onLine
-            ? "INTERNET DISPONIBLE · PIN SERVEUR REQUIS"
+            ? "ACCÈS DIRECTION · PIN SERVEUR REQUIS"
             : "MODE HORS LIGNE · CONNEXION SERVEUR REQUISE",
         navigator.onLine ? "ok" : "offline"
     );
@@ -12392,7 +12382,7 @@ function resetOfficialGateway() {
 
     setOfficialGatewayStatus(
         navigator.onLine
-            ? "INTERNET DISPONIBLE · PIN SERVEUR REQUIS"
+            ? "ACCÈS DIRECTION · PIN SERVEUR REQUIS"
             : "MODE HORS LIGNE · CONNEXION SERVEUR REQUISE",
         navigator.onLine ? "ok" : "offline"
     );
@@ -12428,46 +12418,8 @@ async function submitOfficialGatewayPin() {
     setOfficialGatewayStatus("VÉRIFICATION SÉCURISÉE EN COURS…", "ok");
 
     try {
-        /* 1) Collaborateur : le portail staff reste autonome.
-              On vérifie le PIN dans STAFF_ACCESS sans exiger un PIN Direction. */
-        try {
-            await refreshStaffAccessFromServer();
-        } catch (_) {
-            // La vérification Direction ci-dessous donnera l'état réseau réel.
-        }
-
-        const matchingStaff = Array.isArray(staffAccess)
-            ? staffAccess.filter(s =>
-                s &&
-                s.active !== false &&
-                String(s.pin || "").trim() === pin
-              )
-            : [];
-
-        if (matchingStaff.length === 1) {
-            const selectedStaff = matchingStaff[0];
-
-            loggedInStaffId = selectedStaff.id;
-            loginMode = "staff";
-            currentDept = null;
-
-            document.querySelectorAll(".full-interface").forEach(el => el.style.display = "none");
-            document.getElementById("director-hub").style.display = "none";
-            document.getElementById("landing-portal").style.display = "none";
-            document.getElementById("employee-portal").style.display = "flex";
-
-            renderEmployeePortal();
-            resetOfficialGateway();
-            return;
-        }
-
-        if (matchingStaff.length > 1) {
-            renderOfficialGatewayPin(true);
-            setOfficialGatewayStatus("PIN PARTAGÉ · OUVRIR LE CENTRE DE CONTRÔLE", "error");
-            return;
-        }
-
-        /* 2) Direction : validation serveur et contrôle du rôle. */
+        /* rh.html est réservé à la Direction RH.
+           Le portail Staff est une interface séparée et n'est plus exposé ici. */
         const auth = await verifyPinWithServer(pin);
         if (!auth?.success) {
             renderOfficialGatewayPin(true);
@@ -12530,7 +12482,7 @@ function updateOfficialGatewayNetworkStatus() {
     if (officialGatewayBusy) return;
     setOfficialGatewayStatus(
         navigator.onLine
-            ? "INTERNET DISPONIBLE · PIN SERVEUR REQUIS"
+            ? "ACCÈS DIRECTION · PIN SERVEUR REQUIS"
             : "MODE HORS LIGNE · CONNEXION SERVEUR REQUISE",
         navigator.onLine ? "ok" : "offline"
     );
