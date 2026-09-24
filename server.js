@@ -14571,6 +14571,183 @@ timestamp: new Date().toISOString(),
 }
 
 // ============================================================================
+// 👥 iCHEF V59 — AUTHENTIFICATION COLLABORATEUR (NOM + PIN)
+// ============================================================================
+app.post('/api/staff/login', async (req, res) => {
+    try {
+        const tenantID = cleanString(req.body?.tenantID || req.headers['x-ichef-tenant']);
+        const displayName = String(req.body?.displayName || '').trim();
+        const pin = String(req.body?.pin || '').trim();
+        const deviceId = String(req.body?.deviceId || req.headers['x-ichef-device'] || '').trim();
+
+        if (!tenantID || !displayName || !/^\d{4,12}$/.test(pin)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Nom et PIN personnel valides requis.'
+            });
+        }
+
+        const tenant = await Tenant.findOne({ tenantID }).lean();
+        if (!tenant || tenant.status === 'SUSPENDU') {
+            return res.status(404).json({
+                success: false,
+                error: 'Établissement inconnu ou suspendu.'
+            });
+        }
+
+        const state = await AppState.findOne({ tenantID }).lean();
+        const staffAccess = Array.isArray(state?.activeOrders?.STAFF_ACCESS?.data)
+            ? state.activeOrders.STAFF_ACCESS.data
+            : [];
+
+        // Recherche du collaborateur par son PIN et correspondance approximative du nom
+        const member = staffAccess.find(item =>
+            item?.active !== false &&
+            String(item?.pin || '').trim() === pin
+        );
+
+        if (!member) {
+            return res.status(401).json({
+                success: false,
+                error: 'Code PIN collaborateur incorrect.'
+            });
+        }
+
+        const staffName = String(member.name || member.nom || '').trim().toLowerCase();
+        const inputName = displayName.toLowerCase();
+
+        // Vérification de sécurité optionnelle sur le nom pour éviter les confusions de PIN
+        if (staffName && !staffName.includes(inputName) && !inputName.includes(staffName)) {
+            return res.status(401).json({
+                success: false,
+                error: 'Le nom ne correspond pas au PIN de ce collaborateur.'
+            });
+        }
+
+        const accessToken = ichefSignSession({
+            tenantID,
+            scope: 'STAFF',
+            staffId: String(member.id || member._id || 'staff_1'),
+            role: member.role || member.dept || 'staff',
+            name: member.name || displayName,
+            deviceId
+        }, 8 * 60 * 60);
+
+        return res.json({
+            success: true,
+            accountType: 'COLLABORATOR',
+            safeTenantID: tenantID,
+            accessToken,
+            role: member.role || member.dept || 'staff',
+            staffId: member.id || member._id || null,
+            staff: {
+                id: member.id || member._id || null,
+                name: member.name || displayName,
+                role: member.role || '',
+                dept: member.dept || '',
+                onDuty: member.onDuty === true,
+                workProfile: member.workProfile || null,
+                padAssignment: member.padAssignment || null
+            }
+        });
+
+    } catch (error) {
+        console.error('[iCHEF staff login API]', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Connexion collaborateur momentanément indisponible.'
+        });
+    }
+});// ============================================================================
+// 👥 iCHEF V59 — AUTHENTIFICATION COLLABORATEUR (NOM + PIN)
+// ============================================================================
+app.post('/api/staff/login', async (req, res) => {
+    try {
+        const tenantID = cleanString(req.body?.tenantID || req.headers['x-ichef-tenant']);
+        const displayName = String(req.body?.displayName || '').trim();
+        const pin = String(req.body?.pin || '').trim();
+        const deviceId = String(req.body?.deviceId || req.headers['x-ichef-device'] || '').trim();
+
+        if (!tenantID || !displayName || !/^\d{4,12}$/.test(pin)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Nom et PIN personnel valides requis.'
+            });
+        }
+
+        const tenant = await Tenant.findOne({ tenantID }).lean();
+        if (!tenant || tenant.status === 'SUSPENDU') {
+            return res.status(404).json({
+                success: false,
+                error: 'Établissement inconnu ou suspendu.'
+            });
+        }
+
+        const state = await AppState.findOne({ tenantID }).lean();
+        const staffAccess = Array.isArray(state?.activeOrders?.STAFF_ACCESS?.data)
+            ? state.activeOrders.STAFF_ACCESS.data
+            : [];
+
+        // Recherche du collaborateur par son PIN et correspondance approximative du nom
+        const member = staffAccess.find(item =>
+            item?.active !== false &&
+            String(item?.pin || '').trim() === pin
+        );
+
+        if (!member) {
+            return res.status(401).json({
+                success: false,
+                error: 'Code PIN collaborateur incorrect.'
+            });
+        }
+
+        const staffName = String(member.name || member.nom || '').trim().toLowerCase();
+        const inputName = displayName.toLowerCase();
+
+        // Vérification de sécurité optionnelle sur le nom pour éviter les confusions de PIN
+        if (staffName && !staffName.includes(inputName) && !inputName.includes(staffName)) {
+            return res.status(401).json({
+                success: false,
+                error: 'Le nom ne correspond pas au PIN de ce collaborateur.'
+            });
+        }
+
+        const accessToken = ichefSignSession({
+            tenantID,
+            scope: 'STAFF',
+            staffId: String(member.id || member._id || 'staff_1'),
+            role: member.role || member.dept || 'staff',
+            name: member.name || displayName,
+            deviceId
+        }, 8 * 60 * 60);
+
+        return res.json({
+            success: true,
+            accountType: 'COLLABORATOR',
+            safeTenantID: tenantID,
+            accessToken,
+            role: member.role || member.dept || 'staff',
+            staffId: member.id || member._id || null,
+            staff: {
+                id: member.id || member._id || null,
+                name: member.name || displayName,
+                role: member.role || '',
+                dept: member.dept || '',
+                onDuty: member.onDuty === true,
+                workProfile: member.workProfile || null,
+                padAssignment: member.padAssignment || null
+            }
+        });
+
+    } catch (error) {
+        console.error('[iCHEF staff login API]', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Connexion collaborateur momentanément indisponible.'
+        });
+    }
+});
+// ============================================================================
 // 👥 iCHEF STAFF PORTAL V57.1 — API SÉCURISÉE
 // ============================================================================
 
