@@ -880,7 +880,7 @@ app.get('/api/staff/build', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.json({
         success: true,
-        build: 'V61-STAFF-ID-RH-PIN',
+        build: 'V63-STAFF-PORTAL-OFF-DUTY',
         staffPortal: true,
         signedSession: true,
         timestamp: new Date().toISOString()
@@ -5500,6 +5500,36 @@ error:
 
 const isStaffPortalLogin =
 portalTerminalKey === 'STAFF_PORTAL';
+
+/*
+ * V63 — RÈGLE D'ACCÈS HORS TRAVAIL
+ *
+ * - Le Portail Collaborateur reste accessible 24h/24, même hors service.
+ * - Tous les autres accès d'un collaborateur sont refusés lorsqu'il n'est
+ *   pas en service.
+ * - Le PIN principal du client / établissement n'est pas concerné.
+ *
+ * Le portail personnel permet donc toujours de consulter planning,
+ * heures, demandes, messages et documents sans donner accès aux outils
+ * opérationnels de l'établissement.
+ */
+if (
+!isMaster &&
+!isStaffPortalLogin &&
+staffMember &&
+staffMember.onDuty !== true
+) {
+return res.status(403).json({
+success: false,
+code: 'NOT_ON_DUTY',
+error:
+'Hors service : seul le Portail Collaborateur est accessible.',
+onDuty: false,
+requiresDuty: true,
+staffId:
+staffMember.id ?? null
+});
+}
 
 const screenLimit =
 await syncTenantScreenLimit(tenant, { deferSave: true });
@@ -14989,7 +15019,7 @@ app.get(
         res.setHeader('Cache-Control','no-store');
         return res.json({
             success:true,
-            build:'V61-STAFF-ID-RH-PIN',
+            build:'V63-STAFF-PORTAL-OFF-DUTY',
             staffLoginRoute:'/api/staff/login',
             authentication:'STAFF_ID_RH_PLUS_PIN',
             signedSession:true,
@@ -15119,23 +15149,49 @@ app.post(
                 }
             }
 
-            /* L'ID demandé ici est l'ID RH du collaborateur
-               stocké dans STAFF_ACCESS.data.id.
-               Ce n'est jamais le tenantID du client. */
+            /*
+             * V62 — COMPATIBILITÉ RH ANCIEN + NOUVEAU
+             *
+             * Certains anciens collaborateurs ont un ID numérique
+             * (Date.now() + Math.random()), alors que les fiches récentes
+             * utilisent un ID texte du type staff_....
+             *
+             * Une recherche Mongo stricte sur data.id avec une chaîne
+             * ne retrouve donc pas un ancien ID numérique.
+             *
+             * On recherche d'abord par PIN (string + number), puis on
+             * vérifie l'ID RH côté serveur après conversion en texte.
+             */
+            const numericPin =
+                Number(submittedPin);
+
+            const pinCandidates =
+                Number.isFinite(numericPin)
+                ? [submittedPin, numericPin]
+                : [submittedPin];
+
             const states =
                 await AppState
                     .find(
                         {
-                            'activeOrders.STAFF_ACCESS.data.id':
-                                submittedStaffId
+                            'activeOrders.STAFF_ACCESS.data.pin': {
+                                $in: pinCandidates
+                            }
                         },
                         {
                             tenantID:1,
                             'activeOrders.STAFF_ACCESS.data':1
                         }
                     )
-                    .limit(60)
+                    .limit(120)
                     .lean();
+
+            const wantedId =
+                String(
+                    submittedStaffId || ''
+                )
+                .trim()
+                .toLowerCase();
 
             const candidates = [];
 
@@ -15151,21 +15207,36 @@ app.post(
                     : [];
 
                 for (const member of members) {
-                    const memberId =
-                        String(
-                            member?.id ||
-                            ''
-                        ).trim();
+                    const memberIds = [
+                        member?.id,
+                        member?.staffId,
+                        member?.employeeId,
+                        member?.rhId,
+                        member?.matricule
+                    ]
+                    .filter(
+                        value =>
+                            value !== undefined &&
+                            value !== null &&
+                            String(value).trim() !== ''
+                    )
+                    .map(
+                        value =>
+                            String(value)
+                                .trim()
+                                .toLowerCase()
+                    );
 
                     const memberPin =
                         String(
-                            member?.pin ||
+                            member?.pin ??
                             ''
-                        ).trim();
+                        )
+                        .trim();
 
                     if (
                         member?.active === false ||
-                        memberId !== submittedStaffId ||
+                        !memberIds.includes(wantedId) ||
                         memberPin !== submittedPin
                     ) {
                         continue;
@@ -20028,3 +20099,4 @@ console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
 console.log('==========================================');
 }
 );
+    
