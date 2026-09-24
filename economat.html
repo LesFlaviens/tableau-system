@@ -6,8 +6,6 @@
 <meta name="theme-color" content="#071018">
 <title>iCHEF OS - Économat V3 · Stock maître & mouvements</title>
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs" type="module"></script>
 <style>
 :root{
   --bg:#071018;--panel:#0d1721;--panel2:#111f2b;--line:#233444;
@@ -565,6 +563,7 @@ async function verifyEconomatPin() {
   btn.textContent = "VÉRIFICATION…";
 
   try {
+    // 1) Le PIN est vérifié uniquement par le serveur iCHEF.
     const r = await fetch(`${SERVER_URL}/api/verify-pin?economatBuild=300`, {
       method: "POST",
       credentials: "include",
@@ -587,17 +586,27 @@ async function verifyEconomatPin() {
       throw new Error(data.error || "PIN_REFUSED");
     }
 
+    // 2) Dès que le serveur confirme le PIN, l'accès est validé.
+    // Une panne ultérieure du chargement du stock ne doit jamais être affichée
+    // comme un "mauvais PIN".
     authenticated = true;
     currentRole = String(data.role || "AUTORISÉ").toUpperCase();
     document.getElementById("role-badge").textContent = "ACCÈS · " + currentRole;
     document.getElementById("login-overlay").style.display = "none";
     input.value = "";
-    await loadState();
+
+    try {
+      await loadState();
+    } catch (stateError) {
+      console.warn("[iCHEF ECONOMAT] PIN accepté, mais état temporairement indisponible :", stateError);
+      setSync("warn", "SERVEUR · STOCK EN RECONNEXION…");
+    }
+
     startRealtime();
   } catch (e) {
     authenticated = false;
     input.value = "";
-    error.textContent = "Accès refusé ou serveur indisponible.";
+    error.textContent = "Code PIN refusé ou serveur d’authentification indisponible.";
     error.style.display = "block";
     setSync("warn", "SERVEUR · NON CONNECTÉ");
   } finally {
@@ -1021,9 +1030,27 @@ async function processInvoiceFile(file) {
   }
 }
 
+let tesseractLoadPromise = null;
+function loadTesseract() {
+  if (window.Tesseract) return Promise.resolve(window.Tesseract);
+  if (tesseractLoadPromise) return tesseractLoadPromise;
+
+  tesseractLoadPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+    script.async = true;
+    script.onload = () => window.Tesseract
+      ? resolve(window.Tesseract)
+      : reject(new Error("Moteur OCR indisponible."));
+    script.onerror = () => reject(new Error("Impossible de charger le moteur OCR."));
+    document.head.appendChild(script);
+  });
+  return tesseractLoadPromise;
+}
+
 async function ocrImageInvoice(file) {
-  if (!window.Tesseract) throw new Error("Moteur OCR indisponible.");
-  const result = await Tesseract.recognize(file, "fra+eng", {
+  const TesseractEngine = await loadTesseract();
+  const result = await TesseractEngine.recognize(file, "fra+eng", {
     logger: m => {
       if (m.status === "recognizing text") {
         setInvoiceProgress(8 + Math.round((m.progress || 0) * 82));
@@ -1042,7 +1069,7 @@ async function getPdfJs() {
 }
 
 async function ocrPdfInvoice(file) {
-  if (!window.Tesseract) throw new Error("Moteur OCR indisponible.");
+  const TesseractEngine = await loadTesseract();
   const pdfjs = await getPdfJs();
   const bytes = new Uint8Array(await file.arrayBuffer());
   const pdf = await pdfjs.getDocument({data:bytes}).promise;
@@ -1091,7 +1118,7 @@ async function ocrPdfInvoice(file) {
     canvas.height = Math.ceil(viewport.height);
     await page.render({canvasContext:ctx,viewport}).promise;
 
-    const result = await Tesseract.recognize(canvas, "fra+eng", {
+    const result = await TesseractEngine.recognize(canvas, "fra+eng", {
       logger: m => {
         if (m.status === "recognizing text") {
           const pageBase = ((p - 1) / maxPages) * 90;
@@ -1546,8 +1573,6 @@ window.addEventListener("load",()=>document.getElementById("pin-input").focus())
 <meta name="theme-color" content="#071018">
 <title>iCHEF OS - Économat V3 · Stock maître & mouvements</title>
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs" type="module"></script>
 <style>
 :root{
   --bg:#071018;--panel:#0d1721;--panel2:#111f2b;--line:#233444;
@@ -2105,6 +2130,7 @@ async function verifyEconomatPin() {
   btn.textContent = "VÉRIFICATION…";
 
   try {
+    // 1) Le PIN est vérifié uniquement par le serveur iCHEF.
     const r = await fetch(`${SERVER_URL}/api/verify-pin?economatBuild=300`, {
       method: "POST",
       credentials: "include",
@@ -2127,17 +2153,27 @@ async function verifyEconomatPin() {
       throw new Error(data.error || "PIN_REFUSED");
     }
 
+    // 2) Dès que le serveur confirme le PIN, l'accès est validé.
+    // Une panne ultérieure du chargement du stock ne doit jamais être affichée
+    // comme un "mauvais PIN".
     authenticated = true;
     currentRole = String(data.role || "AUTORISÉ").toUpperCase();
     document.getElementById("role-badge").textContent = "ACCÈS · " + currentRole;
     document.getElementById("login-overlay").style.display = "none";
     input.value = "";
-    await loadState();
+
+    try {
+      await loadState();
+    } catch (stateError) {
+      console.warn("[iCHEF ECONOMAT] PIN accepté, mais état temporairement indisponible :", stateError);
+      setSync("warn", "SERVEUR · STOCK EN RECONNEXION…");
+    }
+
     startRealtime();
   } catch (e) {
     authenticated = false;
     input.value = "";
-    error.textContent = "Accès refusé ou serveur indisponible.";
+    error.textContent = "Code PIN refusé ou serveur d’authentification indisponible.";
     error.style.display = "block";
     setSync("warn", "SERVEUR · NON CONNECTÉ");
   } finally {
@@ -2561,9 +2597,27 @@ async function processInvoiceFile(file) {
   }
 }
 
+let tesseractLoadPromise = null;
+function loadTesseract() {
+  if (window.Tesseract) return Promise.resolve(window.Tesseract);
+  if (tesseractLoadPromise) return tesseractLoadPromise;
+
+  tesseractLoadPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+    script.async = true;
+    script.onload = () => window.Tesseract
+      ? resolve(window.Tesseract)
+      : reject(new Error("Moteur OCR indisponible."));
+    script.onerror = () => reject(new Error("Impossible de charger le moteur OCR."));
+    document.head.appendChild(script);
+  });
+  return tesseractLoadPromise;
+}
+
 async function ocrImageInvoice(file) {
-  if (!window.Tesseract) throw new Error("Moteur OCR indisponible.");
-  const result = await Tesseract.recognize(file, "fra+eng", {
+  const TesseractEngine = await loadTesseract();
+  const result = await TesseractEngine.recognize(file, "fra+eng", {
     logger: m => {
       if (m.status === "recognizing text") {
         setInvoiceProgress(8 + Math.round((m.progress || 0) * 82));
@@ -2582,7 +2636,7 @@ async function getPdfJs() {
 }
 
 async function ocrPdfInvoice(file) {
-  if (!window.Tesseract) throw new Error("Moteur OCR indisponible.");
+  const TesseractEngine = await loadTesseract();
   const pdfjs = await getPdfJs();
   const bytes = new Uint8Array(await file.arrayBuffer());
   const pdf = await pdfjs.getDocument({data:bytes}).promise;
@@ -2631,7 +2685,7 @@ async function ocrPdfInvoice(file) {
     canvas.height = Math.ceil(viewport.height);
     await page.render({canvasContext:ctx,viewport}).promise;
 
-    const result = await Tesseract.recognize(canvas, "fra+eng", {
+    const result = await TesseractEngine.recognize(canvas, "fra+eng", {
       logger: m => {
         if (m.status === "recognizing text") {
           const pageBase = ((p - 1) / maxPages) * 90;
@@ -3023,59 +3077,6 @@ window.addEventListener("load",()=>document.getElementById("pin-input").focus())
     <span>ACCUEIL</span>
 </a>
 
-<style id="ichef-universal-btn-style">
-    #ichef-universal-home-btn {
-        position: fixed !important;
-        top: 20px !important;
-        left: 20px !important;
-        z-index: 999999 !important;
-        display: inline-flex !important;
-        align-items: center !important;
-        gap: 8px !important;
-        padding: 8px 16px !important;
-        background: rgba(7, 7, 7, 0.4) !important;
-        backdrop-filter: blur(10px) !important;
-        -webkit-backdrop-filter: blur(10px) !important;
-        color: #d6b267 !important;
-        border: 1px solid rgba(215, 173, 92, 0.4) !important;
-        border-radius: 999px !important;
-        font-family: 'Inter', Arial, sans-serif !important;
-        font-size: 10px !important;
-        font-weight: 800 !important;
-        letter-spacing: 1.5px !important;
-        text-transform: uppercase !important;
-        text-decoration: none !important;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.4) !important;
-        transition: all 0.15s ease-in-out !important;
-    }
 
-    #ichef-universal-home-btn:hover {
-        background: #e7c67e !important;
-        color: #080808 !important;
-        border-color: #f2d58f !important;
-        transform: translateY(-2px) !important;
-        box-shadow: 0 6px 20px rgba(215, 173, 92, 0.3) !important;
-    }
-
-    #ichef-universal-home-btn svg {
-        width: 14px !important;
-        height: 14px !important;
-    }
-
-    @media (max-width: 900px) {
-        #ichef-universal-home-btn {
-            top: 15px !important;
-            left: 15px !important;
-            padding: 6px 12px !important;
-            font-size: 9px !important;
-        }
-        
-        #ichef-universal-home-btn svg {
-            width: 12px !important;
-            height: 12px !important;
-        }
-    }
-</style>
-<!-- ========================================================= -->
 </body>
 </html>
