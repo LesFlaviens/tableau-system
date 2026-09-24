@@ -6,6 +6,7 @@
     <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, private">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
+    <meta name="ichef-build" content="ANTI-RUSH-V3-SECURE-FIX">
     
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="icon-192.png">
@@ -1169,10 +1170,10 @@ body:not(.anti-rush-locked) #anti-rush-auth-gate{
             </button>
             <button class="btn-pro btn-capture" onclick="takeScreenshot()"> <span>Capture</span></button>
             
-            <button class="btn-pro active-eco" onclick="window.location.href='pack-eco.html?tenantID=' + tenantID"> Éco Pack</button>
-            <button class="btn-pro" onclick="window.location.href='reservation.html?tenantID=' + tenantID + '&view=admin'"> Réservations CRM</button>
-            <button class="btn-pro" onclick="window.location.href='rh.html?tenantID=' + tenantID"> Gestion RH</button>
-            <button class="btn-pro" onclick="window.location.href='admin.html?tenantID=' + tenantID" style="border-color: var(--danger); color: var(--danger);"> Admin</button>
+            <button class="btn-pro active-eco" onclick="window.location.href='pack-eco.html?tenantID=' + encodeURIComponent(window.tenantID || '')"> Éco Pack</button>
+            <button class="btn-pro" onclick="window.location.href='reservation.html?tenantID=' + encodeURIComponent(window.tenantID || '') + '&view=admin'"> Réservations CRM</button>
+            <button class="btn-pro" onclick="window.location.href='rh.html?tenantID=' + encodeURIComponent(window.tenantID || '')"> Gestion RH</button>
+            <button class="btn-pro" onclick="window.location.href='admin.html?tenantID=' + encodeURIComponent(window.tenantID || '')" style="border-color: var(--danger); color: var(--danger);"> Admin</button>
         </div>
     </div>
 
@@ -2291,8 +2292,27 @@ body:not(.anti-rush-locked) #anti-rush-auth-gate{
         // ==========================================
         // INITIALISATION ET RECUPERATION DES DONNÉES
         // ==========================================
-        window.tenantID = new URLSearchParams(window.location.search).get('tenantID') || localStorage.getItem('ichef_tenant_id') || "";
-        window.SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") ? "http://localhost:10000" : "https://tableau-system.onrender.com";
+        const ichefAntiRushParams = new URLSearchParams(window.location.search);
+        const ichefAntiRushTenantFromUrl = String(
+            ichefAntiRushParams.get('tenantID') || ''
+        ).trim();
+
+        window.tenantID = String(
+            ichefAntiRushTenantFromUrl ||
+            localStorage.getItem('ichef_tenant_id') ||
+            ''
+        ).trim();
+
+        if (ichefAntiRushTenantFromUrl) {
+            localStorage.setItem(
+                'ichef_tenant_id',
+                ichefAntiRushTenantFromUrl
+            );
+        }
+
+        window.SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
+            ? "http://localhost:10000"
+            : "https://tableau-system.onrender.com";
 
         let systemSettings = { activeAlerts: [], rushThresholds: {}, rushRules: {}, showWaitTime: true }; 
         let staffAccess = [];
@@ -2575,10 +2595,28 @@ body:not(.anti-rush-locked) #anti-rush-auth-gate{
 
         function antiRushDeviceId() {
             let id = localStorage.getItem('ichef_anti_rush_device');
+
             if (!id) {
-                id = 'anti_rush_' + Math.random().toString(36).slice(2, 11) + '_' + Date.now();
-                localStorage.setItem('ichef_anti_rush_device', id);
+                if (
+                    globalThis.crypto &&
+                    typeof crypto.randomUUID === 'function'
+                ) {
+                    id = 'anti_rush_' + crypto.randomUUID();
+                } else {
+                    const bytes = new Uint8Array(24);
+                    crypto.getRandomValues(bytes);
+                    id = 'anti_rush_' + Array.from(
+                        bytes,
+                        b => b.toString(16).padStart(2, '0')
+                    ).join('');
+                }
+
+                localStorage.setItem(
+                    'ichef_anti_rush_device',
+                    id
+                );
             }
+
             return id;
         }
 
@@ -2689,10 +2727,10 @@ body:not(.anti-rush-locked) #anti-rush-auth-gate{
             ).trim();
 
             const target = currentTenantID
-                ? `https://os.ichef.ch/administration.html?tenantID=${encodeURIComponent(currentTenantID)}`
-                : 'https://os.ichef.ch/administration.html';
+                ? `admin.html?tenantID=${encodeURIComponent(currentTenantID)}`
+                : 'admin.html';
 
-            window.location.href = target;
+            window.location.assign(target);
         }
 
         async function submitAntiRushPin(event) {
@@ -2716,22 +2754,60 @@ body:not(.anti-rush-locked) #anti-rush-auth-gate{
             button.disabled = true;
             msg.textContent = 'Vérification sécurisée...';
             try {
-                const response = await fetch(window.SERVER_URL + '/api/anti-rush/login', {
-                    method: 'POST',
-                    cache: 'no-store',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        tenantID: window.tenantID,
-                        pin,
-                        deviceId: antiRushDeviceId()
-                    })
-                });
+                const deviceId = antiRushDeviceId();
+
+                const response = await fetch(
+                    window.SERVER_URL + '/api/anti-rush/login',
+                    {
+                        method: 'POST',
+                        cache: 'no-store',
+                        credentials: 'omit',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/json',
+                            'X-iCHEF-Tenant': String(window.tenantID || ''),
+                            'X-iCHEF-Device': deviceId
+                        },
+                        body: JSON.stringify({
+                            tenantID: window.tenantID,
+                            pin,
+                            deviceId
+                        })
+                    }
+                );
+
                 const data = await response.json().catch(() => ({}));
-                pinInput.value = ''; if(typeof window.renderAntiRushPinDots==='function')window.renderAntiRushPinDots();
+
+                pinInput.value = '';
+                if (
+                    typeof window.renderAntiRushPinDots === 'function'
+                ) {
+                    window.renderAntiRushPinDots();
+                }
+
                 if (!response.ok || !data.success || !data.token) {
-                    msg.textContent = data.error || 'Accès refusé.';
+                    msg.textContent =
+                        data.error ||
+                        `Accès refusé (${response.status}).`;
                     return;
                 }
+
+                const returnedTenant = String(
+                    data.tenantID || ''
+                ).trim();
+
+                if (
+                    returnedTenant &&
+                    returnedTenant.toLowerCase() !==
+                        String(window.tenantID || '')
+                            .trim()
+                            .toLowerCase()
+                ) {
+                    msg.textContent =
+                        'Établissement incohérent. Connexion refusée.';
+                    return;
+                }
+
                 msg.textContent = '';
                 await unlockAntiRushCockpit(data);
             } catch (error) {
@@ -2861,7 +2937,7 @@ body:not(.anti-rush-locked) #anti-rush-auth-gate{
   }
 })();
 </script>
-<a href="votre_lien_accueil.html" id="ichef-home-button" aria-label="Accueil">
+<a href="https://ichef.ch/" id="ichef-home-button" aria-label="Accueil">
     <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
         <polyline points="9 22 9 12 15 12 15 22"></polyline>
