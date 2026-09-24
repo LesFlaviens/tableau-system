@@ -6,7 +6,7 @@
     <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, private">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <meta name="ichef-build" content="ANTI-RUSH-V3-SECURE-FIX">
+    <meta name="ichef-build" content="ANTI-RUSH-V4-TICKETS-FIX">
     
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="icon-192.png">
@@ -1074,7 +1074,7 @@ body:not(.anti-rush-locked) #anti-rush-auth-gate{
         <div class="anti-rush-login-arc anti-rush-login-arc-right" aria-hidden="true"></div>
 
         <div class="anti-rush-auth-card anti-rush-premium-gate">
-            <img class="anti-rush-auth-logo" src="icheflogo1.png alt="iCHEF">
+            <img class="anti-rush-auth-logo" src="icheflogo1.png" alt="iCHEF">
 
             <div class="anti-rush-login-gold-line" aria-hidden="true"></div>
 
@@ -2026,14 +2026,83 @@ body:not(.anti-rush-locked) #anti-rush-auth-gate{
         }
 
         function ichefLiveOperationalOrderEntries(state) {
-            const activeOrders = state && state.activeOrders ? state.activeOrders : {};
-            const closedTokens = ['PAYE', 'PAYÉ', 'PAID', 'TERMINE', 'TERMINÉ', 'SERVED', 'SERVI', 'ANNULE', 'ANNULÉ', 'CANCEL', 'ARCHIVE', 'CLOTURE', 'CLÔTURÉ'];
+            const activeOrders =
+                state && state.activeOrders
+                    ? state.activeOrders
+                    : {};
+
+            const closedTokens = [
+                'PAYE','PAYÉ','PAID',
+                'TERMINE','TERMINÉ',
+                'SERVED','SERVI',
+                'ANNULE','ANNULÉ',
+                'CANCEL',
+                'ARCHIVE',
+                'CLOTURE','CLÔTURÉ',
+                'CLOSED'
+            ];
+
             return Object.entries(activeOrders).filter(([key, order]) => {
-                const upperKey = String(key || '').toUpperCase();
-                if (!order || typeof order !== 'object') return false;
-                if (upperKey.includes('MASTER') || upperKey.includes('ARCHIVE') || upperKey.includes('CATEGORIES') || upperKey.includes('ARCHITECTURE') || upperKey.startsWith('STAFF_') || upperKey.includes('SETTINGS')) return false;
-                const status = String(order.status || order.etat || '').toUpperCase();
-                return !closedTokens.some(token => status.includes(token));
+                const upperKey =
+                    String(key || '')
+                        .trim()
+                        .toUpperCase();
+
+                if (
+                    !order ||
+                    typeof order !== 'object' ||
+                    Array.isArray(order)
+                ) {
+                    return false;
+                }
+
+                /* V4 :
+                   activeOrders contient aussi beaucoup de données système.
+                   On ne considère une entrée comme une commande que si elle
+                   possède réellement des lignes/articles. */
+                if (
+                    upperKey.includes('MASTER') ||
+                    upperKey.includes('ARCHIVE') ||
+                    upperKey.includes('CATEGORIES') ||
+                    upperKey.includes('ARCHITECTURE') ||
+                    upperKey.includes('SETTINGS') ||
+                    upperKey.startsWith('STAFF_') ||
+                    upperKey.startsWith('ROADMAP_') ||
+                    upperKey.startsWith('AUDIT_') ||
+                    upperKey.startsWith('RH_') ||
+                    upperKey.startsWith('CONFIG_') ||
+                    upperKey.includes('QR_NFC') ||
+                    upperKey.includes('SUPPORT')
+                ) {
+                    return false;
+                }
+
+                const items = ichefLiveItems(order);
+
+                // Pas d'article = pas de bon cuisine.
+                if (!items.length) {
+                    return false;
+                }
+
+                const status =
+                    String(
+                        order.status ||
+                        order.etat ||
+                        ''
+                    )
+                    .trim()
+                    .toUpperCase();
+
+                if (
+                    closedTokens.some(
+                        token =>
+                            status.includes(token)
+                    )
+                ) {
+                    return false;
+                }
+
+                return true;
             });
         }
 
@@ -2106,11 +2175,81 @@ body:not(.anti-rush-locked) #anti-rush-auth-gate{
             // Bons / clients actifs
             let activeTickets = 0;
             let activeClients = 0;
+
             entries.forEach(([, order]) => {
-                const status = String(order.status || order.etat || '').toUpperCase();
-                if (!status || status.includes('PREP') || status.includes('PRÉP') || status.includes('NOUVELLE') || status.includes('ATTENTE') || status.includes('VALID')) {
+                const status =
+                    String(
+                        order.status ||
+                        order.etat ||
+                        ''
+                    )
+                    .trim()
+                    .toUpperCase();
+
+                const items =
+                    ichefLiveItems(order);
+
+                const hasActiveKitchenItem =
+                    items.some(item => {
+                        if (!item || typeof item !== 'object') return false;
+
+                        const itemStatus =
+                            String(
+                                item.status ||
+                                item.etat ||
+                                item.productionStatus ||
+                                item.sequenceStatus ||
+                                ''
+                            )
+                            .trim()
+                            .toUpperCase();
+
+                        const finished =
+                            item.cancelled === true ||
+                            item.annule === true ||
+                            item.served === true ||
+                            item.done === true ||
+                            item.ready === true ||
+                            item.isReady === true ||
+                            [
+                                'READY','PRÊT','PRET',
+                                'SERVED','SERVI',
+                                'TERMINE','TERMINÉ',
+                                'ANNULE','ANNULÉ',
+                                'CANCEL'
+                            ].some(
+                                token =>
+                                    itemStatus.includes(token)
+                            );
+
+                        return !finished;
+                    });
+
+                const orderLooksActive =
+                    !status ||
+                    status.includes('PREP') ||
+                    status.includes('PRÉP') ||
+                    status.includes('NOUVELLE') ||
+                    status.includes('ATTENTE') ||
+                    status.includes('VALID') ||
+                    status.includes('CUISSON') ||
+                    status.includes('EN_COURS') ||
+                    status.includes('EN COURS');
+
+                if (
+                    items.length &&
+                    hasActiveKitchenItem &&
+                    orderLooksActive
+                ) {
                     activeTickets += 1;
-                    activeClients += parseInt(order.couverts || order.pax || order.guests || 0, 10) || 0;
+                    activeClients +=
+                        parseInt(
+                            order.couverts ||
+                            order.pax ||
+                            order.guests ||
+                            0,
+                            10
+                        ) || 0;
                 }
             });
             ichefLiveSet('live-active-tickets', String(activeTickets), activeTickets ? 'good' : 'muted');
@@ -2133,14 +2272,75 @@ body:not(.anti-rush-locked) #anti-rush-auth-gate{
             }
 
             // Charge cuisine / salle, calculée même si le pilote automatique est désactivé.
-            const activeCooks = Math.max(1, staffAccess.filter(s => s.dept === 'cuisine' && s.onDuty).length);
-            const activeServers = Math.max(1, staffAccess.filter(s => (s.dept === 'salle' || s.dept === 'admin' || s.dept === 'bar') && s.onDuty).length);
-            const ratioCook = Number(systemSettings?.rushRules?.ratioCook || 10);
-            const ratioServer = Number(systemSettings?.rushRules?.ratioServer || 20);
-            const maxBons = Math.max(1, activeCooks * ratioCook);
-            const maxClients = Math.max(1, activeServers * ratioServer);
-            const kitchenPct = Math.min(999, Math.round((activeTickets / maxBons) * 100));
-            const roomPct = Math.min(999, Math.round(((activeClients + (incomingClients || 0)) / maxClients) * 100));
+            const activeCooks =
+                staffAccess.filter(
+                    s =>
+                        String(s?.dept || '').toLowerCase() === 'cuisine' &&
+                        s.onDuty === true
+                ).length;
+
+            const activeServers =
+                staffAccess.filter(
+                    s =>
+                        ['salle','admin','bar'].includes(
+                            String(s?.dept || '').toLowerCase()
+                        ) &&
+                        s.onDuty === true
+                ).length;
+
+            const ratioCook =
+                Number(
+                    systemSettings?.rushRules?.ratioCook ||
+                    10
+                );
+
+            const ratioServer =
+                Number(
+                    systemSettings?.rushRules?.ratioServer ||
+                    20
+                );
+
+            const maxBons =
+                activeCooks > 0
+                    ? activeCooks * ratioCook
+                    : 0;
+
+            const maxClients =
+                activeServers > 0
+                    ? activeServers * ratioServer
+                    : 0;
+
+            const kitchenPct =
+                activeTickets === 0
+                    ? 0
+                    : (
+                        maxBons > 0
+                            ? Math.min(
+                                999,
+                                Math.round(
+                                    (activeTickets / maxBons) * 100
+                                )
+                              )
+                            : 999
+                      );
+
+            const roomDemand =
+                activeClients +
+                (incomingClients || 0);
+
+            const roomPct =
+                roomDemand === 0
+                    ? 0
+                    : (
+                        maxClients > 0
+                            ? Math.min(
+                                999,
+                                Math.round(
+                                    (roomDemand / maxClients) * 100
+                                )
+                              )
+                            : 999
+                      );
             ichefLiveSet('live-kitchen-load', `${kitchenPct}%`, ichefLiveToneFromPercent(kitchenPct));
             ichefLiveSet('live-room-load', `${roomPct}%`, ichefLiveToneFromPercent(roomPct));
             const kitchenNote = document.getElementById('live-kitchen-note');
@@ -2937,12 +3137,6 @@ body:not(.anti-rush-locked) #anti-rush-auth-gate{
   }
 })();
 </script>
-<a href="https://ichef.ch/" id="ichef-home-button" aria-label="Accueil">
-    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
-        <polyline points="9 22 9 12 15 12 15 22"></polyline>
-    </svg>
-    ACCUEIL
-</a>
+
 </body>
 </html>
