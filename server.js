@@ -15010,7 +15010,7 @@ function ichefStaffPortalOnlyMine(
 
 
 // ============================================================================
-// 👤 iCHEF V65 — CONNEXION COLLABORATEUR RH / MATRICULE + PIN + TENANT
+// 👤 iCHEF V66 — CONNEXION COLLABORATEUR PSEUDO / ID RH + PIN + TENANT
 // ============================================================================
 
 app.get(
@@ -15019,7 +15019,7 @@ app.get(
         res.setHeader('Cache-Control','no-store');
         return res.json({
             success:true,
-            build:'V65-STAFF-RH-PIN-TENANT-COMPAT',
+            build:'V66-STAFF-PSEUDO-RH-PIN-TENANT-COMPAT',
             staffLoginRoute:'/api/staff/login',
             authentication:'STAFF_ID_RH_PLUS_PIN',
             signedSession:true,
@@ -15143,10 +15143,16 @@ app.post(
                 ? [submittedPin,numericPin]
                 : [submittedPin];
 
-            const wantedId =
-                String(submittedStaffId || '')
+            const normalizeStaffLoginIdentity = (value) =>
+                String(value ?? '')
                     .trim()
-                    .toLowerCase();
+                    .toLowerCase()
+                    .normalize('NFD')
+                    .replace(/[\u0300-\u036f]/g,'')
+                    .replace(/\s+/g,' ');
+
+            const wantedId =
+                normalizeStaffLoginIdentity(submittedStaffId);
 
             const samePin = (value) => {
                 const candidate =
@@ -15173,16 +15179,50 @@ app.post(
                 item?.employeeNumber,
                 item?.internalId,
                 item?.code,
-                item?.badgeId
+                item?.badgeId,
+                item?.loginId,
+                item?.username
             ]
             .filter(value =>
                 value !== undefined &&
                 value !== null &&
                 String(value).trim() !== ''
             )
-            .map(value =>
-                String(value).trim().toLowerCase()
-            );
+            .map(normalizeStaffLoginIdentity);
+
+            /*
+             * Compatibilité avec l'Admin iCHEF actuel :
+             * l'écran Employé enregistre "Prénom / Pseudo" + PIN mais ne demande
+             * pas encore d'ID RH visible. Quand le portail fournit un tenantID,
+             * le prénom/pseudo peut donc servir d'identifiant de connexion,
+             * toujours accompagné du PIN personnel.
+             *
+             * Sans tenantHint, on conserve uniquement les identifiants
+             * techniques/RH pour éviter une recherche globale par simple nom.
+             */
+            const portalIdentityValues = (item) => {
+                const values = identityValues(item);
+
+                if (!tenantHint || !item) {
+                    return values;
+                }
+
+                const humanAliases = [
+                    item?.name,
+                    item?.pseudo,
+                    item?.displayName,
+                    item?.prenom,
+                    item?.firstName
+                ]
+                .filter(value =>
+                    value !== undefined &&
+                    value !== null &&
+                    String(value).trim() !== ''
+                )
+                .map(normalizeStaffLoginIdentity);
+
+                return [...new Set([...values, ...humanAliases])];
+            };
 
             const stateQuery = {
                 $or:[
@@ -15271,8 +15311,8 @@ app.post(
                         }) || null;
 
                     const allIds = [
-                        ...memberIds,
-                        ...identityValues(linkedDirectory)
+                        ...portalIdentityValues(member),
+                        ...portalIdentityValues(linkedDirectory)
                     ];
 
                     if (!allIds.includes(wantedId)) {
