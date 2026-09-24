@@ -7,7 +7,6 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>iCHEF OS — Mon espace staff</title>
-<meta name="ichef-build" content="V57.5-STAFF-BUTTONS-FIX">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -707,6 +706,10 @@ function authHeaders(){
 }
 
 function requireStaffSession(){
+  const role = normalizeRole(
+    sessionStorage.getItem('ichef_user_role')
+  );
+
   const tenant = currentTenant();
 
   const token =
@@ -715,13 +718,32 @@ function requireStaffSession(){
 
   const profile = readProfile();
 
+  const management = new Set([
+    'master',
+    'admin',
+    'manager',
+    'direction',
+    'gerant',
+    'directeur',
+    'directrice'
+  ]);
+
   if(!tenant){
     location.replace('connexionpartenaire.html');
     throw new Error('Établissement absent.');
   }
 
-  /* V57.5 : aucune redirection vers Admin basée sur un simple rôle navigateur.
-     Une session STAFF signée par le serveur reste obligatoire. */
+  if(management.has(role)){
+    location.replace(
+      `admin.html?tenantID=${encodeURIComponent(tenant)}`
+    );
+    throw new Error('Compte Direction.');
+  }
+
+  /* Sécurité V57.1 :
+     le portail staff ne s'ouvre plus sur la seule présence
+     d'un rôle ou d'un profil en sessionStorage.
+     Un jeton signé par le serveur est obligatoire. */
   if(
     !token ||
     !profile?.id
@@ -1077,28 +1099,7 @@ function renderDashboard(data){
   renderDocuments(data.documents);
 }
 
-async function loadStaffDashboard(){
-  const tenantID = currentTenant();
-
-  try{
-    showSync('Synchronisation de votre espace personnel iCHEF…');
-
-    const res = await fetch(
-      `${SERVER_URL}/api/staff/dashboard?tenantID=${encodeURIComponent(tenantID)}`,
-      {
-        method:'GET',
-        headers:authHeaders(),
-        credentials:'include',
-        cache:'no-store'
-      }
-    );
-
-    let data = {};
-    try{
-      data = await res.json();
-    }catch(_){}
-
-    if(res.status === 401 || res.status === 403){
+if(res.status === 401 || res.status === 403){
       sessionStorage.removeItem('ichef_auth_token');
       sessionStorage.removeItem('ichef_access_token');
       sessionStorage.removeItem('ichef_user_role');
@@ -1296,24 +1297,13 @@ async function submitStaffRequest(){
 
 
 function logout(){
-  const tenantID = currentTenant();
-
   sessionStorage.removeItem('ichef_auth_token');
-  sessionStorage.removeItem('ichef_access_token');
   sessionStorage.removeItem('ichef_user_role');
   sessionStorage.removeItem('ichef_staff_profile');
   sessionStorage.removeItem('ichef_authenticated_at');
-  sessionStorage.removeItem('ichef_csrf_token');
-  sessionStorage.removeItem('ichef_session_hint');
-
-  localStorage.removeItem('ichef_master_pin');
-  localStorage.removeItem('pin');
-
-  const query = tenantID
-    ? `?tenantID=${encodeURIComponent(tenantID)}&reason=LOGOUT`
-    : '?reason=LOGOUT';
-
-  location.replace(`connexionpartenaire.html${query}`);
+location.replace(
+  `connexionpartenaire.html?tenantID=${encodeURIComponent(tenantID)}&reason=SESSION_EXPIRED`
+);;
 }
 
 document.getElementById('logout-btn').addEventListener('click',logout);
