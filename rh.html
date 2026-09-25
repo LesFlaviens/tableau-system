@@ -1,16 +1,16 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-<script id="ichef-rh-v94-cache-reset">
+<script id="ichef-rh-v99-cache-reset">
 (async()=>{
   try {
-    if (sessionStorage.getItem('ichef_rh_v94_cache_reset_done') !== '1') {
-      sessionStorage.setItem('ichef_rh_v92_cache_reset_done','1');
+    if (sessionStorage.getItem('ichef_rh_v99_cache_reset_done') !== '1') {
+      sessionStorage.setItem('ichef_rh_v99_cache_reset_done','1');
       if ('serviceWorker' in navigator) {
         const regs = await navigator.serviceWorker.getRegistrations();
         await Promise.all(regs.map(async r => {
           const u = String(r.active?.scriptURL || r.waiting?.scriptURL || r.installing?.scriptURL || '');
-          if (u.includes('sw-rh.js') && !u.includes('v=94')) await r.unregister();
+          if (u.includes('sw-rh.js') && !u.includes('v=99')) await r.unregister();
         }));
       }
       if ('caches' in window) {
@@ -18,7 +18,7 @@
         await Promise.all(keys.filter(k => /rh|ichef/i.test(k)).map(k => caches.delete(k)));
       }
     }
-  } catch (e) { console.warn('[iCHEF RH V94] nettoyage cache non bloquant', e); }
+  } catch (e) { console.warn('[iCHEF RH V99] nettoyage cache non bloquant', e); }
 })();
 </script>
 
@@ -27,8 +27,8 @@
     <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>iCHEF RH · Direction & Pilotage RH V98</title>
-    <meta name="ichef-build" content="RH-V98-TIMESHEET-CORRECTION-PHOTO-HISTORY-ZERO">
+    <title>iCHEF RH · Direction & Pilotage RH V99</title>
+    <meta name="ichef-build" content="RH-V99-HOURS-RESET-SYMBIOSE">
     
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800;900&display=swap" rel="stylesheet">
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
@@ -3043,6 +3043,7 @@
             <div style="display:flex;gap:10px;flex-wrap:wrap;">
                 <button class="btn-nav" onclick="refreshRhStaffFromServer().then(renderRealTimesheets)">ACTUALISER</button>
                 <button class="btn-nav" onclick="exportPayrollCsv()">EXPORT PAIE CSV</button>
+                <button class="btn-nav" style="border-color:#ef4444;color:#fca5a5;" onclick="resetAllRhHoursCountersV99()">REMETTRE LES COMPTEURS À 0</button>
                 <button class="btn-nav" style="border-color:var(--warning);color:var(--warning);" onclick="lockRealTimesheetMonth()">CLÔTURER LE MOIS</button>
                 <button class="btn-nav" onclick="backToHub()">RETOUR HUB</button>
             </div>
@@ -3050,6 +3051,7 @@
 
         <div style="padding:20px;display:flex;flex-direction:column;gap:16px;overflow:auto;flex:1;">
             <div id="real-timesheet-summary" class="rh-detail-grid"></div>
+            <div id="rh-hours-reset-banner-v99" style="display:none;border:1px solid rgba(239,68,68,.28);background:rgba(239,68,68,.05);border-radius:10px;padding:10px 12px;color:#fca5a5;font-size:.72rem;line-height:1.45;"></div>
 
             <div class="rh-section">
                 <div class="rh-section-title">POINTAGE RÉEL → FEUILLE D'HEURES</div>
@@ -4764,11 +4766,58 @@
             };
         }
 
+        function getRhHoursResetInfoV99() {
+            let raw = null;
+            try {
+                raw = JSON.parse(localStorage.getItem('ichef_rh_hours_reset') || 'null');
+            } catch (_) {}
+            if (!raw) {
+                try {
+                    const sync = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC') || '{"activeOrders":{}}');
+                    raw = sync?.activeOrders?.RH_HOURS_RESET_MASTER?.data || null;
+                } catch (_) {}
+            }
+            const resetAt = String(raw?.resetAt || '').trim();
+            const resetMs = Date.parse(resetAt);
+            return {
+                active:Number.isFinite(resetMs) && resetMs > 0,
+                resetAt,
+                resetMs:Number.isFinite(resetMs) ? resetMs : 0,
+                resetBy:String(raw?.resetBy || ''),
+                reason:String(raw?.reason || '')
+            };
+        }
+
+        function rhPlanCountsAfterResetV99(day) {
+            const reset = getRhHoursResetInfoV99();
+            if (!reset.active) return true;
+            const changed = Date.parse(String(
+                day?.lastChangeAt || day?.updatedAt || day?.createdAt || day?.timestamp || ''
+            ));
+            return Number.isFinite(changed) && changed >= reset.resetMs;
+        }
+
+        function renderRhHoursResetBannerV99() {
+            const el = document.getElementById('rh-hours-reset-banner-v99');
+            if (!el) return;
+            const reset = getRhHoursResetInfoV99();
+            if (!reset.active) {
+                el.style.display = 'none';
+                el.textContent = '';
+                return;
+            }
+            const when = new Date(reset.resetMs).toLocaleString('fr-FR');
+            el.style.display = 'block';
+            el.innerHTML = `<strong>COMPTEURS REMIS À ZÉRO</strong> · ${escapeRhHtml(when)}${reset.resetBy ? ` · ${escapeRhHtml(reset.resetBy)}` : ''}${reset.reason ? `<br>Motif : ${escapeRhHtml(reset.reason)}` : ''}<br><span style="color:var(--text-muted)">Les anciens plannings, pointages et preuves restent archivés. Seuls les compteurs repartent de zéro.</span>`;
+        }
+
         function getPunchPairsForStaff(staffId, monthStr) {
+            const resetInfo = getRhHoursResetInfoV99();
             const punches =
                 getPunches()
                     .filter(p =>
-                        String(p?.staffId) === String(staffId)
+                        String(p?.staffId) === String(staffId) &&
+                        (!resetInfo.active || Number(p?.timestamp || 0) >= resetInfo.resetMs)
                     )
                     .sort(
                         (a, b) =>
@@ -4865,6 +4914,39 @@
                     staffId,
                     monthStr
                 );
+            const resetInfo = getRhHoursResetInfoV99();
+
+            if (resetInfo.active) {
+                const pairs = getPunchPairsForStaff(staffId,monthStr);
+                const byDay = {};
+                let total = 0;
+                pairs.forEach(pair => {
+                    const day = Number(String(pair.date || '').slice(8,10));
+                    const h = Number(pair.hours || 0);
+                    byDay[day] = (byDay[day] || 0) + h;
+                    total += h;
+                });
+                if (serverSheet?.days) {
+                    Object.entries(serverSheet.days).forEach(([dayKey,day]) => {
+                        const correctedAt = Date.parse(String(day?.correction?.correctedAt || ''));
+                        if (!Number.isFinite(correctedAt) || correctedAt < resetInfo.resetMs) return;
+                        const dayNo = Number(dayKey);
+                        const previous = Number(byDay[dayNo] || 0);
+                        const corrected = Number(day?.workedHours ?? day?.manualWorkedHours ?? 0) || 0;
+                        total += corrected - previous;
+                        byDay[dayNo] = corrected;
+                    });
+                }
+                Object.keys(byDay).forEach(day => byDay[day] = Math.round(Number(byDay[day] || 0) * 100) / 100);
+                return {
+                    total:Math.round(Math.max(0,total)*100)/100,
+                    pairs,
+                    byDay,
+                    anomalies:0,
+                    sheetStatus:serverSheet?.status || 'RESET',
+                    source:'RH_RESET_BASELINE'
+                };
+            }
 
             if (serverSheet?.days) {
                 const byDay = {};
@@ -5115,6 +5197,14 @@
                             );
                         }
 
+                        if (state.activeOrders['RH_HOURS_RESET_MASTER']) {
+                            localStorage.setItem(
+                                'ichef_rh_hours_reset',
+                                JSON.stringify(state.activeOrders['RH_HOURS_RESET_MASTER'].data || {})
+                            );
+                            renderRhHoursResetBannerV99();
+                        }
+
                         if (
                             document.getElementById('timesheets-interface')?.style.display === 'flex'
                         ) {
@@ -5221,6 +5311,7 @@
                     }
                     if (state.activeOrders['RH_SETTINGS']) localStorage.setItem('ichef_rh_settings', JSON.stringify(state.activeOrders['RH_SETTINGS'].data || {}));
                     if (state.activeOrders['RH_CHANGE_HISTORY']) localStorage.setItem('ichef_rh_change_history', JSON.stringify(state.activeOrders['RH_CHANGE_HISTORY'].data || []));
+                    if (state.activeOrders['RH_HOURS_RESET_MASTER']) localStorage.setItem('ichef_rh_hours_reset', JSON.stringify(state.activeOrders['RH_HOURS_RESET_MASTER'].data || {}));
                     if (state.activeOrders['RH_TIMESHEET_REAL']) localStorage.setItem('ichef_rh_timesheet_real', JSON.stringify(state.activeOrders['RH_TIMESHEET_REAL'].data || { months: {} }));
                     
                     syncRhStaffFromState(
@@ -8239,7 +8330,8 @@
 
             // Objectif mensuel moyen : heures/semaine × 52 / 12.
             // Ex.: 35 h => 151,7 h ; 39 h => 169,0 h.
-            const expected = weeklyContract * 52 / 12;
+            let expected = weeklyContract * 52 / 12;
+            const resetInfo = getRhHoursResetInfoV99();
 
             let totalDone = 0;
             let countCP = 0;
@@ -8254,6 +8346,7 @@
             for (let d = 1; d <= daysInMonth; d++) {
                 const p = monthData?.[d];
                 if (!p) continue;
+                if (resetInfo.active && !rhPlanCountsAfterResetV99(p)) continue;
 
                 totalDone += calculateNet(p);
 
@@ -8268,6 +8361,12 @@
                 if (p.status === 'ferie') countF++;
                 if (p.status === 'recup') countRecup++;
                 if (p.status === 'absence_injustifiee') unjustifiedDays++;
+            }
+
+            if (resetInfo.active) {
+                // Après une remise à zéro, l'objectif compteur repart lui aussi de zéro.
+                // Les nouvelles modifications de planning constituent la nouvelle base.
+                expected = totalDone;
             }
 
             // Pour l'aide au planning, un jour d'absence validé rend le salarié
@@ -10556,6 +10655,7 @@ function countRealSheetAnomalies(sheet) {
 // ============================================================
 
 function renderRealTimesheets() {
+    try { renderRhHoursResetBannerV99(); } catch (_) {}
 
     const monthStr =
         document.getElementById(
@@ -11203,6 +11303,55 @@ async function saveTimesheetCorrectionV97() {
         hours.addEventListener('input', updateTimesheetCorrectionDiffV98);
     }
 })();
+
+async function resetAllRhHoursCountersV99() {
+    if (!String(currentPin || '').trim()) {
+        alert('Connexion Direction / Responsable RH requise.');
+        return;
+    }
+    const reason = String(prompt(
+        "Motif de la remise à zéro de TOUS les compteurs d'heures :",
+        'Remise à zéro des données de test'
+    ) || '').trim();
+    if (!reason) return;
+    if (reason.length < 3) {
+        alert('Le motif doit contenir au moins 3 caractères.');
+        return;
+    }
+    if (!confirm(
+        "Confirmer la remise à zéro de TOUS les compteurs d'heures ?\n\n" +
+        "Les pointages, photos/preuves, plannings et historiques NE SERONT PAS supprimés.\n" +
+        "RH et Portail Staff repartiront du même point zéro."
+    )) return;
+
+    try {
+        const response = await fetch(`${SERVER_URL_JS}/api/rh/hours/reset`, {
+            method:'POST',
+            headers:{'Content-Type':'application/json','Accept':'application/json'},
+            cache:'no-store',
+            body:JSON.stringify({
+                tenantID:tenantID_JS,
+                managerPin:String(currentPin || '').trim(),
+                reason
+            })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.success) throw new Error(data.error || 'Remise à zéro refusée.');
+        localStorage.setItem('ichef_rh_hours_reset',JSON.stringify(data.reset || {}));
+        if (Array.isArray(data.directory)) {
+            localStorage.setItem('empire_hr_directory',JSON.stringify(data.directory));
+        }
+        renderRhHoursResetBannerV99();
+        try { await refreshRhStaffFromServer(); } catch (_) {}
+        try { renderRealTimesheets(); } catch (_) {}
+        try { renderHubDashboard?.(); } catch (_) {}
+        if (typeof showToast === 'function') showToast('Tous les compteurs repartent de 0');
+        alert("Compteurs remis à zéro. Les preuves et l'historique ont été conservés.");
+    } catch (error) {
+        alert(error?.message || 'Impossible de remettre les compteurs à zéro.');
+    }
+}
+window.resetAllRhHoursCountersV99 = resetAllRhHoursCountersV99;
 
 // ============================================================
 // VALIDATION FEUILLE
@@ -14047,7 +14196,7 @@ html, body {
     setInterval(()=>{if(navigator.onLine)syncQueue()},30000);
 
     if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost'||location.hostname==='127.0.0.1')){
-        window.addEventListener('load',()=>navigator.serviceWorker.register('/sw-rh.js?v=97',{scope:'/'}).catch(e=>console.warn('[iCHEF RH OFFLINE] Service Worker non installé',e?.message||e)));
+        window.addEventListener('load',()=>navigator.serviceWorker.register('/sw-rh.js?v=99',{scope:'/'}).catch(e=>console.warn('[iCHEF RH OFFLINE] Service Worker non installé',e?.message||e)));
     }
 })();
 </script>
@@ -15338,3 +15487,5 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
 
 </body>
 </html>
+
+<script id="ichef-rh-v99-marker">window.__ICHEF_RH_BUILD__='RH-V99-HOURS-RESET-SYMBIOSE';</script>
