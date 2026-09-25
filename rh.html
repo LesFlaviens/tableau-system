@@ -3466,6 +3466,18 @@
                                 </select>
                             </div>
                             <div class="input-group" style="margin:0;">
+                                <label>Relève IA automatique</label>
+                                <select id="rh-setting-ai-takeover" class="input-full">
+                                    <option value="true">Activée · publication automatique</option>
+                                    <option value="false">Désactivée</option>
+                                </select>
+                            </div>
+                            <div class="input-group" style="margin:0;">
+                                <label>Délai butoir avant service (heures)</label>
+                                <input id="rh-setting-ai-takeover-hours" class="input-full" type="number" min="6" max="168" step="1" value="48">
+                                <small style="color:var(--text-muted);font-size:.62rem;line-height:1.35;margin-top:5px;">Si le planning n’est pas prêt à cette échéance, iCHEF IA prend la relève et publie sans validation.</small>
+                            </div>
+                            <div class="input-group" style="margin:0;">
                                 <label>Service midi début</label>
                                 <input id="rh-setting-lunch-start" class="input-full" type="time" value="10:00">
                             </div>
@@ -4583,7 +4595,10 @@
                 dinnerEnd: '22:45',
                 fullDayPause: 30,
                 preserveExistingPlanning: true,
-                preservePastDays: true
+                preservePastDays: true,
+                planningAutopilotEnabled: true,
+                planningTakeoverHours: 48,
+                planningTimezone: 'Europe/Paris'
             };
 
             const saved =
@@ -4625,6 +4640,9 @@
                 fullDayPause: Math.max(0, Math.min(240, Number(settings.fullDayPause) || 0)),
                 preserveExistingPlanning: settings.preserveExistingPlanning !== false,
                 preservePastDays: settings.preservePastDays !== false,
+                planningAutopilotEnabled: settings.planningAutopilotEnabled !== false && String(settings.planningAutopilotEnabled) !== 'false',
+                planningTakeoverHours: Math.max(6, Math.min(168, Number(settings.planningTakeoverHours) || 48)),
+                planningTimezone: String(settings.planningTimezone || 'Europe/Paris').slice(0,80),
                 updatedAt: new Date().toISOString()
             };
 
@@ -4657,7 +4675,9 @@
                 'rh-setting-lunch-end': s.lunchEnd,
                 'rh-setting-dinner-start': s.dinnerStart,
                 'rh-setting-dinner-end': s.dinnerEnd,
-                'rh-setting-full-pause': s.fullDayPause
+                'rh-setting-full-pause': s.fullDayPause,
+                'rh-setting-ai-takeover-hours': s.planningTakeoverHours,
+                'rh-setting-ai-takeover': s.planningAutopilotEnabled === false ? 'false' : 'true'
             };
 
             Object.entries(map).forEach(([id, value]) => {
@@ -4717,7 +4737,16 @@
                     document.getElementById('rh-setting-preserve-existing')?.checked !== false,
 
                 preservePastDays:
-                    document.getElementById('rh-setting-preserve-past')?.checked !== false
+                    document.getElementById('rh-setting-preserve-past')?.checked !== false,
+
+                planningAutopilotEnabled:
+                    document.getElementById('rh-setting-ai-takeover')?.value !== 'false',
+
+                planningTakeoverHours:
+                    document.getElementById('rh-setting-ai-takeover-hours')?.value || 48,
+
+                planningTimezone:
+                    'Europe/Paris'
             });
 
             if (!silent && typeof showToast === 'function') {
@@ -15712,12 +15741,197 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
     }
   }
   document.addEventListener('DOMContentLoaded',install); setTimeout(install,120);
-  window.__ICHEF_RH_BUILD__='RH-V101-CONNEXION-DIRECTION-SECURE';
+  window.__ICHEF_RH_BUILD__='RH-V102-PLANNING-5H-AI-TAKEOVER';
   console.info('[iCHEF RH V100] Documents collaborateurs : upload sécurisé + envoi Portail Staff + téléchargement + suppression auditée');
 })();
 </script>
 
+
+
+<style id="ichef-rh-v102-planning-policy-style">
+.rh-v102-window-note{margin:0 0 12px;padding:10px 12px;border-radius:9px;border:1px solid rgba(16,185,129,.2);background:rgba(16,185,129,.035);color:#9ed6bf;font-size:10px;line-height:1.45}
+.rh-v102-window-note.urgent{border-color:rgba(245,158,11,.35);background:rgba(245,158,11,.055);color:#e8c47e}
+.rh-v102-window-note.started{border-color:rgba(239,68,68,.3);background:rgba(239,68,68,.045);color:#e6a0a0}
+</style>
+<script id="ichef-rh-v102-planning-policy-script">
+(() => {
+  const RH_V102_URGENT_HOURS=5;
+  let planningToken='';
+  let planningTokenExpires=0;
+  let autoTakeoverRunning=false;
+
+  function currentDevice(){try{return String(window.RH_DEVICE_ID||RH_DEVICE_ID||localStorage.getItem('ichef_device_id')||'').trim();}catch(_){return String(localStorage.getItem('ichef_device_id')||'').trim();}}
+  function apiBase(){try{return String(window.SERVER_URL_JS||SERVER_URL_JS||'').replace(/\/$/,'');}catch(_){return '';}}
+  function managerPin(){try{return typeof getRhDirectionAuthPin==='function'?String(getRhDirectionAuthPin()||'').trim():'';}catch(_){return '';}}
+  function actor(){try{return typeof window.rhAuditActorV94==='function'?window.rhAuditActorV94():'Direction / RH';}catch(_){return 'Direction / RH';}}
+  function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+
+  async function ensurePlanningSession(force=false){
+    if(!force&&planningToken&&Date.now()<planningTokenExpires-60000)return planningToken;
+    const pin=managerPin();
+    if(!/^\d{4,12}$/.test(pin))throw new Error('Reconnectez-vous avec un PIN Direction / Manager pour enregistrer le planning.');
+    const r=await fetch(`${apiBase()}/api/rh/planning/session`,{method:'POST',credentials:'include',cache:'no-store',headers:{'Content-Type':'application/json','Accept':'application/json','X-iCHEF-Tenant':tenantID_JS,'X-iCHEF-Device':currentDevice()},body:JSON.stringify({tenantID:tenantID_JS,pin,deviceId:currentDevice()})});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok||!data.success||!data.accessToken)throw new Error(data.error||'Session Planning RH refusée.');
+    planningToken=String(data.accessToken);planningTokenExpires=Date.now()+Math.max(60000,Number(data.expiresInSeconds||7200)*1000);return planningToken;
+  }
+
+  async function securePlanningSave(snapshot,options={},retry=true){
+    const token=await ensurePlanningSession(false);
+    const r=await fetch(`${apiBase()}/api/rh/planning/save`,{method:'POST',credentials:'include',cache:'no-store',headers:{'Content-Type':'application/json','Accept':'application/json','X-iCHEF-Tenant':tenantID_JS,'X-iCHEF-Device':currentDevice(),'Authorization':`Bearer ${token}`},body:JSON.stringify({tenantID:tenantID_JS,timesheets:snapshot,source:String(options.source||'DIRECTION_PLANNING'),reason:String(options.reason||''),aiTakeover:options.aiTakeover===true,settings:typeof getRhSettings==='function'?getRhSettings():{}})});
+    const data=await r.json().catch(()=>({}));
+    if(r.status===401&&retry){planningToken='';planningTokenExpires=0;await ensurePlanningSession(true);return securePlanningSave(snapshot,options,false);}
+    if(!r.ok||data.success===false){const e=new Error(data.error||`Erreur planning (${r.status})`);e.code=data.code||'';e.payload=data;throw e;}
+    return data;
+  }
+
+  // Remplace la sauvegarde générique par la route Planning RH signée.
+  // Le snapshot local reste immédiat pour que l'interface ne bloque jamais.
+  try{
+    const legacySave=saveTs;
+    saveTs=function(ts,options={}){
+      let snapshot;try{snapshot=JSON.parse(JSON.stringify(ts||{}));}catch(_){snapshot=ts||{};}
+      localStorage.setItem('empire_hr_timesheets',JSON.stringify(snapshot));
+      try{rhPlanningLocalSignature=typeof rhPlanningSignature==='function'?rhPlanningSignature(snapshot):JSON.stringify(snapshot);rhPlanningPendingUntil=Date.now()+15000;}catch(_){ }
+      const run=async()=>{
+        try{
+          const data=await securePlanningSave(snapshot,options);
+          if(data?.timesheets&&typeof data.timesheets==='object'){
+            localStorage.setItem('empire_hr_timesheets',JSON.stringify(data.timesheets));
+            try{rhPlanningLocalSignature=typeof rhPlanningSignature==='function'?rhPlanningSignature(data.timesheets):JSON.stringify(data.timesheets);rhPlanningPendingUntil=0;}catch(_){ }
+          }
+          return true;
+        }catch(error){
+          try{rhPlanningPendingUntil=Math.max(rhPlanningPendingUntil||0,Date.now()+60000);}catch(_){ }
+          console.warn('[iCHEF RH V102] synchronisation planning sécurisée différée',error);
+          if(typeof showToast==='function')showToast(error?.code==='PLANNING_REASON_REQUIRED_5H'?'Motif obligatoire à moins de 5 h du service':'Planning conservé · synchronisation en attente');
+          return false;
+        }
+      };
+      try{rhPlanningSaveChain=rhPlanningSaveChain.catch(()=>true).then(run);return rhPlanningSaveChain;}catch(_){window.__rhV102SaveChain=(window.__rhV102SaveChain||Promise.resolve(true)).catch(()=>true).then(run);return window.__rhV102SaveChain;}
+    };
+    saveTs.__rhV102Secure=true;
+    window.__rhLegacySaveTsV101=legacySave;
+  }catch(error){console.error('[iCHEF RH V102] installation saveTs',error);}
+
+  function firstStart(plan){
+    const p=plan&&typeof plan==='object'?plan:{};
+    const starts=[p.s1,p.s2].map(v=>String(v||'').match(/^(\d{1,2}:\d{2})/i)?.[1]||'').filter(Boolean).sort();
+    if(starts.length)return starts[0];
+    const s=typeof getRhSettings==='function'?getRhSettings():{};
+    const st=String(p.status||'').toLowerCase();
+    if(st==='off_matin')return String(s.dinnerStart||'18:00');
+    if(['present','off_soir','ferie'].includes(st))return String(s.lunchStart||'10:00');
+    return '';
+  }
+  function changeWindow(dateStr,before,after){
+    const start=firstStart(after)||firstStart(before);
+    if(!start){const d=new Date(`${dateStr}T12:00:00`);return d.getTime()<=Date.now()?{needsReason:true,kind:'STARTED_OR_PAST',start:'',hours:null}:{needsReason:false,kind:'NORMAL',start:'',hours:null};}
+    const dt=new Date(`${dateStr}T${start}:00`);const h=(dt.getTime()-Date.now())/3600000;
+    if(h<=0)return{needsReason:true,kind:'STARTED_OR_PAST',start,hours:h};
+    if(h<=RH_V102_URGENT_HOURS)return{needsReason:true,kind:'URGENT_5H',start,hours:h};
+    return{needsReason:false,kind:'NORMAL',start,hours:h};
+  }
+  window.rhPlanningChangeWindowV102=changeWindow;
+
+  function editorPlanFromDom(base={}){
+    const status=String(document.getElementById('rh-cse-status')?.value||base.status||'off');
+    let s1=String(document.getElementById('rh-cse-s1')?.value||'').trim();
+    let s2=String(document.getElementById('rh-cse-s2')?.value||'').trim();
+    let pause=Math.max(0,Math.min(240,Number(document.getElementById('rh-cse-pause')?.value)||0));
+    const work=new Set(['present','off_matin','off_soir','ferie']);
+    if(!work.has(status)){s1='';s2='';pause=0;}if(status==='off_soir')s2='';if(status==='off_matin')s1='';
+    return{...base,status,poste:String(document.getElementById('rh-cse-poste')?.value||base.poste||'salle'),s1,s2,pause,obs:String(document.getElementById('rh-cse-obs')?.value||'').trim().slice(0,500),managerNote:String(document.getElementById('rh-cse-manager-note')?.value||'').trim().slice(0,40)};
+  }
+
+  function updateEditorReasonPolicy(){
+    const ctx=window.__rhV102Editor;if(!ctx)return;
+    const ts=typeof getTs==='function'?getTs():{};const [y,m,d]=ctx.dateStr.split('-').map(Number);const month=`${y}-${String(m).padStart(2,'0')}`;
+    const before=ts?.[month]?.[ctx.staffId]?.[d]||ts?.[month]?.[ctx.staffId]?.[String(d)]||{};
+    const after=editorPlanFromDom(before);const w=changeWindow(ctx.dateStr,before,after);
+    const field=document.querySelector('#rh-cockpit-shift-editor .rh-cse-reason-field');const input=document.getElementById('rh-cse-change-reason');
+    let note=document.getElementById('rh-v102-window-note');
+    if(!note){note=document.createElement('div');note.id='rh-v102-window-note';note.className='rh-v102-window-note';document.querySelector('#rh-cockpit-shift-editor .rh-cse-body')?.prepend(note);}
+    if(w.needsReason){if(field)field.style.display='flex';if(input)input.required=true;note.className='rh-v102-window-note '+(w.kind==='URGENT_5H'?'urgent':'started');note.innerHTML=w.kind==='URGENT_5H'?`<strong>MODIFICATION URGENTE</strong> · service dans moins de 5 h${w.start?` (${esc(w.start)})`:''}. Le motif est obligatoire et le collaborateur recevra la modification avec « Vu ».`:`<strong>SERVICE DÉJÀ COMMENCÉ / DATE PASSÉE</strong> · le motif est obligatoire. Les pointages réels ne seront jamais modifiés.`;}
+    else{if(field)field.style.display='none';if(input){input.required=false;input.value='';}note.className='rh-v102-window-note';note.innerHTML='<strong>MODIFICATION NORMALE</strong> · plus de 5 h avant le service : aucun motif n’est demandé. L’ancienne version reste archivée.';}
+  }
+
+  const previousOpen=window.openRhCockpitShiftEditor;
+  if(typeof previousOpen==='function')window.openRhCockpitShiftEditor=function(staffId,dateStr){window.__rhV102Editor={staffId:String(staffId),dateStr:String(dateStr)};const out=previousOpen.apply(this,arguments);setTimeout(()=>{updateEditorReasonPolicy();['rh-cse-status','rh-cse-s1','rh-cse-s2'].forEach(id=>document.getElementById(id)?.addEventListener('input',updateEditorReasonPolicy));},0);return out;};
+  const previousClose=window.closeRhCockpitShiftEditor;
+  if(typeof previousClose==='function')window.closeRhCockpitShiftEditor=function(){window.__rhV102Editor=null;return previousClose.apply(this,arguments);};
+
+  window.saveRhCockpitShiftEditor=async function(){
+    const ctx=window.__rhV102Editor;if(!ctx)return;
+    const [y,m,d]=ctx.dateStr.split('-').map(Number);const month=`${y}-${String(m).padStart(2,'0')}`;const sid=String(ctx.staffId);
+    const ts=typeof getTs==='function'?getTs():{};if(!ts[month])ts[month]={};if(!ts[month][sid])ts[month][sid]={};
+    const staff=typeof getDir==='function'?getDir().find(s=>String(s.id)===sid):null;
+    const previous=ts[month][sid][d]||ts[month][sid][String(d)]||{};const before=JSON.parse(JSON.stringify(previous||{}));const candidate=editorPlanFromDom(previous);
+    const comparable=n=>JSON.stringify({status:String(n?.status||'off'),poste:String(n?.poste||''),s1:String(n?.s1||''),s2:String(n?.s2||''),pause:Number(n?.pause||0),obs:String(n?.obs||''),managerNote:String(n?.managerNote||'')});
+    if(comparable(before)===comparable(candidate)){window.closeRhCockpitShiftEditor();if(typeof showToast==='function')showToast('Aucune modification');return;}
+    const shiftPattern=/^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/;if(candidate.s1&&!shiftPattern.test(candidate.s1)){alert('Horaire matin invalide. Exemple : 10:00-14:45');return;}if(candidate.s2&&!shiftPattern.test(candidate.s2)){alert('Horaire soir invalide. Exemple : 18:00-22:45');return;}
+    const w=changeWindow(ctx.dateStr,before,candidate);let reason=String(document.getElementById('rh-cse-change-reason')?.value||'').trim().slice(0,180);
+    if(w.needsReason&&!reason){alert('Motif obligatoire : la modification intervient à 5 h ou moins du service, ou après son démarrage.');document.getElementById('rh-cse-change-reason')?.focus();return;}
+    if(!w.needsReason)reason='';
+    const auditAt=new Date().toISOString(),auditBy=actor();
+    ts[month][sid][d]={...candidate,lastChangeReason:reason,lastChangeAt:auditAt,lastChangeBy:auditBy,planningChangeKind:w.kind,planningUrgent:w.kind==='URGENT_5H',updatedAt:auditAt};
+    if(typeof recordRhChange==='function')recordRhChange({type:'PLANNING_MANUAL_EDIT',source:'DIRECTION_PLANNING',staffId:sid,staffName:String(staff?.name||''),date:ctx.dateStr,month,day:d,reason,changeKind:w.kind,managerNote:String(candidate.managerNote||''),by:auditBy,before,after:JSON.parse(JSON.stringify(ts[month][sid][d])),message:reason?`Planning modifié · ${ctx.dateStr} · ${reason}`:`Planning modifié · ${ctx.dateStr} · version précédente archivée`});
+    const btn=document.querySelector('#rh-cockpit-shift-editor .rh-cse-save');if(btn){btn.disabled=true;btn.textContent='ENREGISTREMENT…';}
+    const ok=await saveTs(ts,{source:'DIRECTION_PLANNING',reason,staffId:sid,date:ctx.dateStr});
+    try{loadMonthData?.();loadPublicPlanning?.();broadcastStaffingLevels?.();renderRhCockpit?.();}catch(_){ }
+    if(ok){window.closeRhCockpitShiftEditor();if(typeof showToast==='function')showToast(w.needsReason?'Modification urgente envoyée au collaborateur':'Planning enregistré · ancienne version archivée');}
+    else if(btn){btn.disabled=false;btn.textContent='ENREGISTRER';}
+  };
+
+  // Vue individuelle : aucun prompt au-delà de 5 h, motif obligatoire dans la fenêtre sensible.
+  if(typeof updateData==='function'){
+    window.updateData=updateData=async function(staffId,day,key,val){
+      const settings=typeof getRhSettings==='function'?getRhSettings():{};if(String(settings.planningStatus||'draft')==='locked'){alert('Ce planning est clôturé / verrouillé. Passez-le en Brouillon pour le modifier.');loadMonthData?.();return;}
+      const month=document.getElementById('month-selector')?.value||'';const sid=String(staffId);const ts=getTs();const staff=getDir().find(s=>String(s.id)===sid);if(!ts[month])ts[month]={};if(!ts[month][sid])ts[month][sid]={};if(!ts[month][sid][day])ts[month][sid][day]={status:'off',poste:staff?.dept||'salle',s1:'',s2:'',pause:0,obs:'',managerNote:''};
+      const before=JSON.parse(JSON.stringify(ts[month][sid][day]||{}));if(String(before?.[key]??'')===String(val??'')){loadMonthData?.();return;}
+      const candidate={...before,[key]:val};if(key==='status'){const work=new Set(['present','off_matin','off_soir','ferie']);if(!work.has(val)){candidate.s1='';candidate.s2='';candidate.pause=0;}else if(val==='present'){candidate.s1=candidate.s1||'10:00-14:45';candidate.s2=candidate.s2||'18:00-22:45';candidate.pause=Number(candidate.pause)||30;}else if(val==='off_soir'){candidate.s1=candidate.s1||'10:00-14:45';candidate.s2='';candidate.pause=0;}else if(val==='off_matin'){candidate.s1='';candidate.s2=candidate.s2||'18:00-22:45';candidate.pause=0;}}
+      const dateStr=`${month}-${String(day).padStart(2,'0')}`;const w=changeWindow(dateStr,before,candidate);let reason='';if(w.needsReason){reason=String(prompt(`Modification à 5 h ou moins du service / service commencé.\nPourquoi modifiez-vous le planning de ${staff?.name||'ce collaborateur'} ?`)||'').trim().slice(0,180);if(!reason){loadMonthData?.();return;}}
+      const auditAt=new Date().toISOString(),auditBy=actor();ts[month][sid][day]={...candidate,lastChangeReason:reason,lastChangeAt:auditAt,lastChangeBy:auditBy,planningChangeKind:w.kind,planningUrgent:w.kind==='URGENT_5H',updatedAt:auditAt};
+      recordRhChange?.({type:'PLANNING_MANUAL_EDIT',source:'DIRECTION_INDIVIDUAL',staffId:sid,staffName:String(staff?.name||''),date:dateStr,month,day:Number(day),reason,changeKind:w.kind,by:auditBy,before,after:JSON.parse(JSON.stringify(ts[month][sid][day])),message:reason?`Planning modifié · ${dateStr} · ${reason}`:`Planning modifié · ${dateStr} · version précédente archivée`});
+      const ok=await saveTs(ts,{source:'DIRECTION_INDIVIDUAL',reason,staffId:sid,date:dateStr});loadMonthData?.();loadPublicPlanning?.();broadcastStaffingLevels?.();if(!ok)console.warn('[iCHEF RH V102] modification en attente de synchronisation');
+    };
+  }
+
+  // Application IA : motif non demandé en planification normale. En relève automatique,
+  // la cause système est enregistrée et la publication ne demande aucune validation.
+  window.applyAutomaticPlanning=async function(options={}){
+    const auto=options===true||options?.auto===true;
+    if(!planningAssistantDraft){if(auto){planningAssistantDraft=buildAutomaticPlanningDraft();renderAutomaticPlanningDraft(planningAssistantDraft);}else{alert('Générez d’abord une proposition de planning.');return false;}}
+    const settings=getRhSettings();if(settings.planningStatus==='locked'){if(!auto)alert('Le planning est clôturé / verrouillé.');return false;}
+    const month=getPlanningAssistantMonth();if(planningAssistantDraft.month!==month){if(auto){planningAssistantDraft=buildAutomaticPlanningDraft();}else{alert('Le mois affiché a changé. Régénérez la proposition.');return false;}}
+    if(!auto&&!confirm(`Appliquer la proposition iCHEF pour ${monthLabelFr(month)} ?\n\nLes anciennes versions resteront archivées.`))return false;
+    const ts=getTs();if(!ts[month])ts[month]={};const beforeByStaff={};let urgent=false;
+    for(const [staffId,days] of Object.entries(planningAssistantDraft.proposal||{})){if(!ts[month][staffId])ts[month][staffId]={};beforeByStaff[staffId]=JSON.parse(JSON.stringify(ts[month][staffId]||{}));for(const [day,plan] of Object.entries(days||{})){const previous=ts[month][staffId][day]||{};const candidate={status:plan.status||'off',poste:plan.poste||'salle',s1:plan.s1||'',s2:plan.s2||'',pause:Number(plan.pause||0),obs:String(plan.obs||''),managerNote:String(plan.managerNote||'').slice(0,40)};const w=changeWindow(`${month}-${String(day).padStart(2,'0')}`,previous,candidate);if(w.needsReason)urgent=true;ts[month][staffId][day]=candidate;}}
+    const reason=auto?'Relève automatique iCHEF IA — échéance de planification dépassée':(urgent?'Application iCHEF IA dans la fenêtre urgente de 5 h':'');const auditAt=new Date().toISOString(),auditBy=auto?'iCHEF IA Autopilot':actor();
+    for(const [staffId,days] of Object.entries(planningAssistantDraft.proposal||{})){for(const day of Object.keys(days||{})){const dateStr=`${month}-${String(day).padStart(2,'0')}`;const previous=beforeByStaff[staffId]?.[day]||{};const current=ts[month][staffId][day];const w=changeWindow(dateStr,previous,current);ts[month][staffId][day]={...current,lastChangeReason:w.needsReason||auto?reason:'',lastChangeAt:auditAt,lastChangeBy:auditBy,planningChangeKind:auto?'AI_TAKEOVER':w.kind,planningUrgent:w.kind==='URGENT_5H',updatedAt:auditAt};}}
+    const ok=await saveTs(ts,{source:auto?'AI_TAKEOVER':'ASSISTANCE_PLANNING',reason,aiTakeover:auto});
+    for(const staffId of Object.keys(planningAssistantDraft.proposal||{})){const s=getDir().find(x=>String(x.id)===String(staffId));recordRhChange?.({type:auto?'AI_PLANNING_TAKEOVER':'PLANNING_AI_APPLIED',month,source:auto?'AI_TAKEOVER':'ASSISTANCE_PLANNING',staffId:String(staffId),staffName:String(s?.name||''),reason,by:auditBy,before:beforeByStaff[staffId]||{},after:JSON.parse(JSON.stringify(ts[month][staffId]||{})),message:auto?`Relève IA automatique · planning publié · ${month}`:`Planning IA appliqué · ${month}`});}
+    if(auto&&ok){saveRhSettings({...getRhSettings(),planningStatus:'published'});localStorage.setItem(`ichef_ai_takeover_${tenantID_JS}_${month}`,new Date().toISOString());}
+    loadMonthData?.();refreshViews?.();loadPublicPlanning?.();broadcastStaffingLevels?.();renderPlanningAssistantLocal?.();if(typeof showToast==='function')showToast(ok?(auto?'iCHEF IA a pris la relève et publié le planning':'Planning IA appliqué'):'Planning conservé · synchronisation en attente');return ok;
+  };
+
+  function planExistsFor(staffId,date){const month=`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}`;const day=date.getDate();const p=getTs()?.[month]?.[String(staffId)]?.[day]||getTs()?.[month]?.[String(staffId)]?.[String(day)];return !!(p&&typeof p==='object'&&Object.keys(p).length);}
+  function serviceStartFor(date,settings){const time=String(settings.lunchStart||'10:00');return new Date(`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}T${time}:00`);}
+
+  async function checkAiTakeover(){
+    if(autoTakeoverRunning)return;const s=getRhSettings();if(s.planningAutopilotEnabled===false||String(s.planningStatus||'draft')==='locked')return;const staff=(getDir?.()||[]).filter(x=>x.active!==false);if(!staff.length)return;const now=new Date(),hours=Math.max(6,Math.min(168,Number(s.planningTakeoverHours)||48));let target=null;
+    for(let i=0;i<=7;i++){const d=new Date(now.getFullYear(),now.getMonth(),now.getDate()+i,12,0,0,0);const start=serviceStartFor(d,s);const delta=(start.getTime()-Date.now())/3600000;if(delta<0||delta>hours)continue;const ready=staff.every(emp=>planExistsFor(emp.id,d));if(!ready||String(s.planningStatus||'draft')!=='published'){target=d;break;}}
+    if(!target)return;const month=`${target.getFullYear()}-${String(target.getMonth()+1).padStart(2,'0')}`;const throttleKey=`ichef_ai_takeover_attempt_${tenantID_JS}_${month}`;const last=Date.parse(localStorage.getItem(throttleKey)||'');if(Number.isFinite(last)&&Date.now()-last<15*60*1000)return;localStorage.setItem(throttleKey,new Date().toISOString());autoTakeoverRunning=true;
+    try{const selector=document.getElementById('month-selector');if(selector){selector.value=month;try{enforceRhPlanningMonthHorizon?.(false);}catch(_){}}await generateAutomaticPlanning();await window.applyAutomaticPlanning({auto:true});}catch(error){console.error('[iCHEF RH V102] relève IA automatique',error);if(typeof showToast==='function')showToast('Relève IA à reprendre · données ou connexion insuffisantes');}finally{autoTakeoverRunning=false;}
+  }
+
+  document.addEventListener('DOMContentLoaded',()=>{setTimeout(checkAiTakeover,8000);setInterval(checkAiTakeover,5*60*1000);});
+  window.addEventListener('focus',()=>setTimeout(checkAiTakeover,1200));
+  window.__ICHEF_RH_BUILD__='RH-V102-PLANNING-5H-AI-TAKEOVER';
+  console.info('[iCHEF RH V102] >5h sans motif · <=5h motif obligatoire · versions originales · relève IA autonome');
+})();
+</script>
 </body>
 </html>
 
-<script id="ichef-rh-v101-marker">window.__ICHEF_RH_BUILD__='RH-V101-CONNEXION-DIRECTION-SECURE';</script>
+<script id="ichef-rh-v101-marker">window.__ICHEF_RH_BUILD__='RH-V102-PLANNING-5H-AI-TAKEOVER';</script>
