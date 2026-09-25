@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>iCHEF OS — Mon espace collaborateur</title>
-<meta name="ichef-build" content="V75-MOBILE-FIRST-SYNC-STABLE">
+<meta name="ichef-build" content="V76-MOBILE-FAST-LOGIN-SYNC-STABLE">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1012,8 +1012,8 @@ html{scroll-behavior:smooth}
 <script>
 // Serveur iCHEF : localhost uniquement si la page est réellement servie
 // depuis localhost. Un fichier HTML ouvert directement utilise iCHEF Cloud.
-// iCHEF Portail Staff V75 — mobile first + synchronisation stable + connexion résiliente
-const STAFF_PORTAL_BUILD = 'V75-MOBILE-SYNC-STABLE';
+// iCHEF Portail Staff V76 — mobile first + connexion rapide + synchronisation stable
+const STAFF_PORTAL_BUILD = 'V76-MOBILE-FAST-LOGIN-SYNC-STABLE';
 
 const SERVER_URL =
   location.hostname === 'localhost' ||
@@ -1178,6 +1178,12 @@ function showStaffLogin(message=''){
 
   if(tenantInput && !tenantInput.value){
     tenantInput.value = currentTenant();
+  }
+
+  if(idInput && !idInput.value){
+    idInput.value = String(
+      localStorage.getItem('ichef_staff_last_login_id') || ''
+    ).trim().slice(0,120);
   }
 
   const pinInput =
@@ -1424,6 +1430,10 @@ async function attemptStaffLogin(event){
       'ichef_tenant_id',
       tenantID
     );
+    localStorage.setItem(
+      'ichef_staff_last_login_id',
+      staffId
+    );
 
     sessionStorage.setItem(
       'ichef_auth_token',
@@ -1460,7 +1470,7 @@ async function attemptStaffLogin(event){
       history.replaceState(
         null,
         '',
-        'portail-staff.html?v=74'
+        'portail-staff.html?v=76'
       );
     }
 
@@ -1469,8 +1479,13 @@ async function attemptStaffLogin(event){
       profile
     );
 
-    await loadStaffDashboard({reason:'login'});
+    // V76 — la connexion visuelle est immédiate dès que le serveur a validé
+    // ID + PIN + appareil. Le dashboard se charge ensuite sans bloquer l'entrée.
     connectStaffRealtime();
+    loadStaffDashboard({reason:'login'})
+      .catch(error => {
+        console.warn('[iCHEF Staff V76] dashboard post-login', error);
+      });
 
   }catch(loginError){
     clearStaffAuth();
@@ -2469,10 +2484,17 @@ async function checkStaffServerHealth(){
   if(!label) return;
 
   try{
+    const healthController = new AbortController();
+    const healthTimer = setTimeout(() => healthController.abort(), 6000);
     const response = await fetch(
       `${SERVER_URL}/api/staff/health`,
-      {cache:'no-store',credentials:'omit'}
+      {
+        cache:'no-store',
+        credentials:'omit',
+        signal:healthController.signal
+      }
     );
+    clearTimeout(healthTimer);
 
     const data = await response.json().catch(() => ({}));
     const build = String(data.build || '').trim();
@@ -2605,8 +2627,13 @@ async function bootstrapCollaboratorPortal(){
       readProfile()
     );
 
-    await loadStaffDashboard({reason:'bootstrap'});
+    // V76 — réouverture instantanée : on affiche le profil immédiatement,
+    // puis la donnée RH se rafraîchit en arrière-plan.
     connectStaffRealtime();
+    loadStaffDashboard({reason:'bootstrap'})
+      .catch(error => {
+        console.warn('[iCHEF Staff V76] dashboard bootstrap', error);
+      });
   }else{
     showStaffLogin();
   }
@@ -2855,7 +2882,7 @@ if ('serviceWorker' in navigator) {
       }
 
       const registration = await navigator.serviceWorker.register(
-        '/sw-rh.js?v=20260925-7',
+        '/sw-rh.js?v=20260925-8',
         {
           scope: '/',
           updateViaCache: 'none'
@@ -2868,7 +2895,7 @@ if ('serviceWorker' in navigator) {
       } catch (_) {}
 
       console.info(
-        '[iCHEF Staff V75] sw-rh.js actif',
+        '[iCHEF Staff V76] sw-rh.js actif',
         registration.scope
       );
     } catch (error) {
@@ -3048,14 +3075,14 @@ if ('serviceWorker' in navigator) {
     return refresh({force,reason});
   };
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bind,{once:true});else bind();
-  window.__ICHEF_STAFF_BUILD__='V75-MOBILE-SYNC-STABLE-PLANNING';
-  console.info('[iCHEF Staff V75] Mobile · Planning stable · Jour / Semaine / Mois · +6 mois');
+  window.__ICHEF_STAFF_BUILD__='V76-MOBILE-FAST-LOGIN-SYNC-STABLE-PLANNING';
+  console.info('[iCHEF Staff V76] Mobile · Connexion rapide · Planning stable · Jour / Semaine / Mois · +6 mois');
 })();
 </script>
 
-<style id="ichef-staff-v75-mobile-style">
+<style id="ichef-staff-v76-mobile-style">
 /* =========================================================
-   iCHEF STAFF V75 — MOBILE FIRST
+   iCHEF STAFF V76 — MOBILE FIRST · FAST LOGIN
    Téléphone 320–720 px · zones tactiles · safe areas iOS
    ========================================================= */
 @media (max-width:720px){
