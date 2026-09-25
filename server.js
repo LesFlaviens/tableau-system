@@ -504,6 +504,7 @@ const ICHEF_OFFICIAL_MODULES = Object.freeze([
 "pack-eco.html",
 "portail-client.html",
 "portail-staff.html",
+"pointeuse.html",
 "reservation.html",
 "rh.html",
 "roadmap.html",
@@ -6444,7 +6445,7 @@ module:
 punchRoute:
 true,
 version:
-'RH-PUNCH-OFFLINE-2026.09.17',
+'RH-PUNCH-FAST-SECURE-2026.09.25',
 timestamp:
 new Date().toISOString()
 });
@@ -6453,6 +6454,7 @@ new Date().toISOString()
 app.post(
 '/api/rh/punch',
 async (req, res) => {
+const requestStartedAt = Date.now();
 const {
 tenantID,
 staffId,
@@ -6463,7 +6465,8 @@ offlineEventId,
 clientTimestamp,
 clientTimezoneOffset,
 offlineSync,
-queuedAt
+queuedAt,
+fastResponse
 } = req.body || {};
 const safeID =
 cleanString(
@@ -6481,10 +6484,22 @@ req.headers['idempotency-key'] ||
 ).trim().slice(0, 160);
 const isDeferredOfflineSync =
 offlineSync === true;
+const wantsFastResponse =
+fastResponse === true ||
+String(req.headers['x-ichef-fast-punch'] || '').trim() === '1';
 const rawClientTimestamp =
 Number(clientTimestamp || 0);
 const receivedAtMs =
 Date.now();
+
+// Ne jamais mettre en cache une réponse de pointage.
+res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+res.setHeader('Pragma', 'no-cache');
+res.setHeader('Expires', '0');
+
+// ============================================================
+// 1. VALIDATION / SÉCURITÉ — CONSERVÉE
+// ============================================================
 if (
 !safeID ||
 !staffId ||
@@ -6544,7 +6559,11 @@ error:
 "Ce code PIN de sécurité n'est pas autorisé."
 });
 }
+
 try {
+// ============================================================
+// 2. TENANT / LICENCE / COLLABORATEUR — CONSERVÉS
+// ============================================================
 const tenant =
 await Tenant.findOne({
 tenantID:
@@ -6630,7 +6649,9 @@ error:
 });
 }
 
-// Pointage hors ligne / retry réseau : idempotence forte par identifiant client.
+// ============================================================
+// 3. IDEMPOTENCE HORS LIGNE / RETRY — CONSERVÉE
+// ============================================================
 if (clientEventId) {
 const alreadyArchived = await RhPunchRecord.findOne({
 tenantID: safeID,
@@ -6654,18 +6675,26 @@ type: alreadyArchived.type,
 serverRecordedAt: alreadyArchived.createdAt || null,
 idempotentReplay: true
 };
-return res.json({
+const replayPayload = {
 success: true,
 idempotent: true,
 offlineAccepted: existingPunch?.offlineSync === true,
 punchType: existingPunch.type,
 punch: existingPunch,
-punches: currentPunches,
-timesheets: currentTimesheets,
-staffAccess
-});
+staffAccess,
+serverLatencyMs: Date.now() - requestStartedAt
+};
+if (!wantsFastResponse) {
+replayPayload.punches = currentPunches;
+replayPayload.timesheets = currentTimesheets;
+}
+return res.json(replayPayload);
 }
 }
+
+// ============================================================
+// 4. CHRONOLOGIE / TYPE DE POINTAGE — CONSERVÉS
+// ============================================================
 const punches =
 Array.isArray(
 state
@@ -6691,7 +6720,6 @@ String(p?.staffId || '') === String(staff.id) &&
 Number(p?.timestamp || 0) > punchTimestamp
 );
 
-// Ne jamais réécrire silencieusement une chronologie déjà suivie d'autres pointages.
 if (isDeferredOfflineSync && laterStaffPunch) {
 return res.status(409).json({
 success: false,
@@ -6729,6 +6757,10 @@ receivedAtMs +
 '_' +
 Math.random().toString(36).slice(2, 9)
 );
+
+// ============================================================
+// 5. CRÉER LE POINTAGE
+// ============================================================
 const punch = {
 id: punchId,
 tenantID:
@@ -6785,21 +6817,16 @@ Boolean(typeof photo === 'string' && photo.startsWith('data:image/') && photo.le
 punches.push(
 punch
 );
+
+// ============================================================
+// 6. HISTORIQUE + FEUILLES D'HEURES
+// ============================================================
 const punchWindow = punches.slice(-2500);
 const safePunches = punchWindow.map((item, index) => {
 const keepPhoto = index >= punchWindow.length - 12;
 if (keepPhoto || !item?.photo) return item;
 return { ...item, photo: '', photoArchived: true };
 });
-state
-.activeOrders
-.PUNCHES_MASTER = {
-data:
-safePunches,
-updatedAt:
-new Date()
-.toISOString()
-};
 const previousTimesheets =
 state
 .activeOrders
@@ -6812,15 +6839,10 @@ ichefRhBuildWorkedTimesheets(
 safePunches,
 previousTimesheets
 );
-state
-.activeOrders
-.RH_TIMESHEET_REAL = {
-data:
-timesheets,
-updatedAt:
-new Date()
-.toISOString()
-};
+
+// ============================================================
+// 7. METTRE À JOUR ONDUTY
+// ============================================================
 const staffIndex =
 staffAccess.findIndex(
 s =>
@@ -6851,26 +6873,54 @@ now
 lastPunchType:
 punchType
 };
-state
-.activeOrders
-.STAFF_ACCESS = {
-data:
-staffAccess,
-updatedAt:
-new Date()
-.toISOString()
-};
 }
-state.markModified(
-'activeOrders'
-);
-await state.save();
-try {
+
+const persistedAt = new Date().toISOString();
+const punchesNode = {
+data: safePunches,
+updatedAt: persistedAt
+};
+const timesheetNode = {
+data: timesheets,
+updatedAt: persistedAt
+};
+const staffNode = {
+data: staffAccess,
+updatedAt: persistedAt
+};
+
+// On garde l'objet en mémoire cohérent pour les anciens consommateurs.
+state.activeOrders.PUNCHES_MASTER = punchesNode;
+state.activeOrders.RH_TIMESHEET_REAL = timesheetNode;
+state.activeOrders.STAFF_ACCESS = staffNode;
+
+// ============================================================
+// 8. PERSISTANCE SÉCURISÉE ET PLUS RAPIDE
+//    - écrit seulement les 3 nœuds RH concernés
+//    - archive indépendante obligatoire
+// ============================================================
 const archiveDetails = { ...punch };
 delete archiveDetails.photo;
-await RhPunchRecord.updateOne(
+
+const appStateWrite = AppState.updateOne(
+{ tenantID: safeID },
+{
+$set: {
+'activeOrders.PUNCHES_MASTER': punchesNode,
+'activeOrders.RH_TIMESHEET_REAL': timesheetNode,
+'activeOrders.STAFF_ACCESS': staffNode
+},
+$setOnInsert: {
+tenantID: safeID
+}
+},
+{ upsert: true, setDefaultsOnInsert: true }
+);
+
+const archiveWrite = RhPunchRecord.updateOne(
 { tenantID: safeID, punchId: punch.id },
-{ $setOnInsert: {
+{
+$setOnInsert: {
 tenantID: safeID,
 punchId: punch.id,
 staffId: String(punch.staffId),
@@ -6879,33 +6929,20 @@ type: punch.type,
 photo: punch.photo || '',
 details: archiveDetails,
 createdAt: new Date(receivedAtMs)
-} },
+}
+},
 { upsert: true }
 );
-} catch (archiveError) {
-console.warn('[iCHEF RH] archive pointage non bloquante :', archiveError?.message || archiveError);
-}
-io
-.to(
-safeID
-)
-.emit(
-'staffDutyChanged',
-{
-staffId:
-staff.id,
-staffName:
-staff.name || '',
-dept:
-staff.dept || '',
-onDuty:
-punchType === 'ENTRÉE',
-punchType:
-punchType,
-timestamp:
-now
-}
-);
+
+// Les deux preuves de persistance sont attendues avant de confirmer à la borne.
+await Promise.all([
+appStateWrite,
+archiveWrite
+]);
+
+// ============================================================
+// 9. TRACE AUDIT CRYPTOGRAPHIQUE — CONSERVÉE AVANT SUCCÈS
+// ============================================================
 try {
 await scellerOperation(
 safeID,
@@ -6936,6 +6973,58 @@ console.warn(
 auditError?.message
 );
 }
+
+// ============================================================
+// 10. RÉPONSE — MODE RAPIDE OPTIONNEL ET RÉTROCOMPATIBLE
+// ============================================================
+const responsePayload = {
+success: true,
+idempotent: false,
+offlineAccepted: isDeferredOfflineSync,
+punchType,
+punch,
+staffAccess,
+serverLatencyMs: Date.now() - requestStartedAt
+};
+
+// Anciennes interfaces : même réponse complète qu'avant.
+// Nouvelle pointeuse : fastResponse=true ou X-iCHEF-Fast-Punch: 1
+// => pas de gros historique/timesheets dans la réponse HTTP.
+if (!wantsFastResponse) {
+responsePayload.punches = safePunches;
+responsePayload.timesheets = timesheets;
+}
+
+res.json(responsePayload);
+
+// ============================================================
+// 11. SYNCHRONISATION TEMPS RÉEL APRÈS RÉPONSE HTTP
+//     La donnée est déjà persistée + auditée : aucun risque de faux succès.
+// ============================================================
+setImmediate(async () => {
+try {
+io
+.to(
+safeID
+)
+.emit(
+'staffDutyChanged',
+{
+staffId:
+staff.id,
+staffName:
+staff.name || '',
+dept:
+staff.dept || '',
+onDuty:
+punchType === 'ENTRÉE',
+punchType:
+punchType,
+timestamp:
+now
+}
+);
+
 io
 .to(
 safeID
@@ -6944,6 +7033,7 @@ safeID
 'rhPunchSaved',
 punch
 );
+
 io
 .to(
 safeID
@@ -6952,6 +7042,7 @@ safeID
 'rhTimesheetUpdated',
 timesheets
 );
+
 io
 .to(
 safeID
@@ -6969,25 +7060,30 @@ timestamp:
 now
 }
 );
+
+// L'audit central a pu mettre à jour AUDIT_MASTER : on relit l'état frais
+// avant de pousser le gros updateState, sans ralentir la pointeuse.
+const freshState =
+await AppState.findOne({ tenantID: safeID }).lean();
+if (freshState) {
 io
 .to(
 safeID
 )
 .emit(
 'updateState',
-state
+freshState
 );
-return res.json({
-success: true,
-idempotent: false,
-offlineAccepted: isDeferredOfflineSync,
-punchType,
-punch,
-punches:
-safePunches,
-timesheets,
-staffAccess
+}
+} catch (syncError) {
+console.warn(
+'[iCHEF RH] synchronisation post-pointage non bloquante :',
+syncError?.message || syncError
+);
+}
 });
+
+return;
 } catch (
 error
 ) {
@@ -7005,6 +7101,7 @@ error:
 }
 }
 );
+
 console.log(
 "iCHEF RH : route POST /api/rh/punch chargée"
 );
