@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>iCHEF OS — Mon espace collaborateur</title>
-<meta name="ichef-build" content="V86-MON-METIER-CALCULS-FICHES-CHAT-MEDIA-DOCUMENTS-RH-SECURE">
+<meta name="ichef-build" content="V87-PLANNING-5H-VERSIONS-ACK-AI-SECURE">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1776,7 +1776,7 @@ async function attemptStaffLogin(event){
       history.replaceState(
         null,
         '',
-        'portail-staff.html?v=79'
+        'portail-staff.html?v=87'
       );
     }
 
@@ -2553,6 +2553,8 @@ function connectStaffRealtime(){
       'REQUESTS_MASTER',
       'STAFF_REQUESTS',
       'PLANNING_HISTORY_MASTER',
+      'PLANNING_NOTIFICATIONS_MASTER',
+      'PLANNING_VERSIONS_MASTER',
       'DIRECTORY_MASTER',
       'STAFF_ACCESS'
     ]);
@@ -4959,5 +4961,40 @@ function initStaffWorkspace(){
 document.addEventListener('DOMContentLoaded',()=>setTimeout(initStaffWorkspace,70));
 </script>
 
+
+
+<style id="ichef-staff-v87-planning-notice-style">
+#staff-planning-notices-v87{display:flex;flex-direction:column;gap:9px;margin:0 0 14px}
+.staff-plan-notice-v87{border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.022);border-radius:11px;padding:12px 13px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:start}
+.staff-plan-notice-v87.urgent{border-color:rgba(245,158,11,.32);background:rgba(245,158,11,.045)}
+.staff-plan-notice-v87.started{border-color:rgba(239,68,68,.28);background:rgba(239,68,68,.04)}
+.staff-plan-notice-v87.ai{border-color:rgba(212,175,55,.32);background:rgba(212,175,55,.045)}
+.staff-plan-notice-v87.seen{opacity:.58}
+.staff-plan-notice-v87 small{display:block;color:#8f8a82;font-size:8px;line-height:1.45;margin-top:4px}
+.staff-plan-notice-v87 strong{display:block;color:#f2efe9;font-size:10px;line-height:1.35}
+.staff-plan-notice-v87 .change{margin-top:7px;color:#d9d3ca;font-size:9px;line-height:1.45}
+.staff-plan-notice-v87 .reason{margin-top:6px;padding:7px 8px;border-left:2px solid rgba(215,173,92,.55);background:rgba(0,0,0,.25);color:#d8c491;font-size:8px;line-height:1.45}
+.staff-plan-notice-v87 button{border:1px solid rgba(46,215,161,.35);background:rgba(46,215,161,.07);color:#9ee6cc;border-radius:8px;min-height:34px;padding:0 12px;font-size:8px;font-weight:900;letter-spacing:.45px;cursor:pointer;white-space:nowrap}
+.staff-plan-notice-v87 .seen-badge{display:inline-flex;align-items:center;min-height:27px;padding:0 9px;border-radius:999px;border:1px solid rgba(255,255,255,.09);color:#8f8a82;font-size:7px;font-weight:850;white-space:nowrap}
+@media(max-width:640px){.staff-plan-notice-v87{grid-template-columns:1fr}.staff-plan-notice-v87 button{width:100%}.staff-plan-notice-v87 .seen-badge{justify-self:start}}
+</style>
+<script id="ichef-staff-v87-planning-notice-script">
+(() => {
+  let notices=[];
+  function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+  function planText(p){const x=p&&typeof p==='object'?p:{};const status=String(x.status||'').toLowerCase();if(!x.s1&&!x.s2&&['off','conge','recup','maladie','formation'].includes(status))return ({off:'Repos',conge:'Congé',recup:'Récupération',maladie:'Maladie',formation:'Formation'})[status]||status;const times=[x.s1,x.s2].filter(Boolean).join(' / ');return [times||status||'Planning',x.poste||''].filter(Boolean).join(' · ');}
+  function title(n){if(n.aiTakeover)return 'Planning publié automatiquement par iCHEF IA';if(n.changeKind==='STARTED_OR_PAST')return 'Ajustement de planning après début du service';if(n.urgent||n.changeKind==='URGENT_5H')return 'Modification urgente du planning';return 'Planning modifié';}
+  function ensure(){let root=document.getElementById('staff-planning-notices-v87');if(root)return root;const table=document.getElementById('schedule-list');if(!table)return null;root=document.createElement('div');root.id='staff-planning-notices-v87';table.insertAdjacentElement('beforebegin',root);return root;}
+  function dateLabel(v){if(!v)return'';const d=new Date(`${v}T12:00:00`);return Number.isFinite(d.getTime())?d.toLocaleDateString('fr-FR',{weekday:'long',day:'2-digit',month:'long'}):v;}
+  function render(){const root=ensure();if(!root)return;const rows=[...notices].sort((a,b)=>Date.parse(b.createdAt||0)-Date.parse(a.createdAt||0));const unread=rows.filter(n=>n.ackRequired!==false&&!n.seenAt);const recentSeen=rows.filter(n=>n.seenAt).slice(0,3);const shown=[...unread,...recentSeen];if(!shown.length){root.innerHTML='';return;}root.innerHTML=shown.map(n=>{const cls=n.aiTakeover?'ai':(n.changeKind==='STARTED_OR_PAST'?'started':(n.urgent?'urgent':''));const seen=!!n.seenAt;return `<div class="staff-plan-notice-v87 ${cls} ${seen?'seen':''}"><div><strong>${esc(title(n))} · ${esc(dateLabel(n.date))}</strong><small>${esc(n.createdAt?formatPortalDate(n.createdAt,true):'')} · ${esc(n.by||'Direction / RH')}</small><div class="change">${esc(planText(n.before))} → <b>${esc(planText(n.after))}</b></div>${n.reason?`<div class="reason"><b>Pourquoi :</b> ${esc(n.reason)}</div>`:''}</div><div>${seen?`<span class="seen-badge">VU ${esc(formatPortalDate(n.seenAt,true))}</span>`:`<button type="button" data-planning-ack-v87="${esc(n.id)}">J’AI VU</button>`}</div></div>`;}).join('');}
+  async function ack(id,button){if(!id||!requireStaffSession())return;if(button){button.disabled=true;button.textContent='ENVOI…';}try{const headers={...authHeaders(),'Content-Type':'application/json'};const r=await fetch(`${SERVER_URL}/api/staff/planning/ack`,{method:'POST',cache:'no-store',credentials:'omit',headers,body:JSON.stringify({tenantID:currentTenant(),noticeId:id})});const data=await r.json().catch(()=>({}));if(!r.ok||data.success===false)throw new Error(data.error||'Accusé de lecture impossible.');const row=notices.find(n=>String(n.id)===String(id));if(row){row.seenAt=data.seenAt||new Date().toISOString();row.seenByStaff=true;}render();if(typeof showSync==='function')showSync('Planning confirmé comme vu.','ok');setTimeout(()=>loadStaffDashboard({reason:'planning-ack'}).catch(()=>{}),150);}catch(e){if(button){button.disabled=false;button.textContent='J’AI VU';}if(typeof showSync==='function')showSync(e.message||'Accusé de lecture impossible.','error');}}
+  document.addEventListener('click',e=>{const b=e.target.closest?.('[data-planning-ack-v87]');if(b){e.preventDefault();ack(b.dataset.planningAckV87,b);}});
+  const previous=renderDashboard;
+  renderDashboard=function(data){const out=previous.apply(this,arguments);notices=Array.isArray(data?.planningNotices)?data.planningNotices:[];render();return out;};
+  window.renderStaffPlanningNoticesV87=render;
+  window.__ICHEF_STAFF_BUILD__='V87-PLANNING-5H-VERSIONS-ACK-AI-SECURE';
+  console.info('[iCHEF Staff V87] planning : modifications reçues + motif urgent + preuve « Vu »');
+})();
+</script>
 </body>
 </html>
