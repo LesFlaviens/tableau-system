@@ -373,6 +373,29 @@ staffChatMessageSchema.index({ tenantID: 1, messageId: 1 }, { unique: true });
 staffChatMessageSchema.index({ tenantID: 1, channelId: 1, createdAt: -1 });
 const StaffChatMessage = mongoose.models.StaffChatMessage || mongoose.model('StaffChatMessage', staffChatMessageSchema);
 
+// ============================================================================
+// 🧰 iCHEF STAFF WORKSPACE V107 — MÉMOS + FORMATIONS PERSONNELLES
+// ============================================================================
+const staffWorkspaceTrainingProgressSchema = new mongoose.Schema({
+  trainingId: { type: String, required: true, maxlength: 180 },
+  status: { type: String, enum: ['VIEWED','COMPLETED'], default: 'VIEWED' },
+  viewedAt: { type: Date, default: null },
+  completedAt: { type: Date, default: null },
+  score: { type: Number, default: null, min: 0, max: 100 }
+}, { _id: false, minimize: false });
+
+const staffWorkspaceSchema = new mongoose.Schema({
+  tenantID: { type: String, required: true, index: true },
+  staffId: { type: String, required: true, index: true },
+  memo: { type: String, default: '', maxlength: 6000 },
+  trainingProgress: { type: [staffWorkspaceTrainingProgressSchema], default: [] },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now, index: true }
+}, { minimize: false });
+
+staffWorkspaceSchema.index({ tenantID: 1, staffId: 1 }, { unique: true });
+const StaffWorkspace = mongoose.models.StaffWorkspace || mongoose.model('StaffWorkspace', staffWorkspaceSchema);
+
 function ichefFiscalId(prefix = 'FISCAL') {
 return (
 prefix +
@@ -874,7 +897,10 @@ const ICHEF_TENANT_MUTATION_PATHS = new Set([
 '/api/staff/clock-in',
 '/api/staff/clock-out',
 '/api/staff/chat/channels/direct',
-'/api/staff/chat/read'
+'/api/staff/chat/message',
+'/api/staff/chat/read',
+'/api/staff/workspace/memo',
+'/api/staff/workspace/training'
 ]);
 const ichefTenantMutationQueues = new Map();
 function ichefRequestTenantID(req) {
@@ -934,7 +960,7 @@ app.get('/api/staff/build', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.json({
         success: true,
-        build: 'V106-STAFF-DOCUMENTS-CHAT-MEDIA-SECURE',
+        build: 'V107-STAFF-MON-METIER-DOCUMENTS-CHAT-MEDIA-SECURE',
         staffPortal: true,
         signedSession: true,
         timestamp: new Date().toISOString()
@@ -15153,7 +15179,7 @@ ichefFullStateEmitTimers.set(safeID, timer);
 }
 
 // ============================================================================
-// 👥 iCHEF STAFF PORTAL V57.1 — API SÉCURISÉE
+// 👥 iCHEF STAFF PORTAL V107 — API SÉCURISÉE + MON MÉTIER
 // ============================================================================
 
 function ichefStaffPortalArray(node) {
@@ -15568,7 +15594,7 @@ app.get(
         res.setHeader('Cache-Control','no-store');
         return res.json({
             success:true,
-            build:'V106-STAFF-DOCUMENTS-CHAT-MEDIA-SECURE',
+            build:'V107-STAFF-MON-METIER-DOCUMENTS-CHAT-MEDIA-SECURE',
             staffLoginRoute:'/api/staff/login',
             authentication:'STAFF_ID_RH_PLUS_PIN',
             signedSession:true,
@@ -17227,6 +17253,356 @@ function ichefStaffRhBuildHistory({
 
 
 
+
+// ============================================================================
+// 🧰 iCHEF STAFF WORKSPACE V107 — CONTENU MÉTIER FILTRÉ PAR POSTE
+// ============================================================================
+function ichefStaffWorkspaceToken(value) {
+    return String(value || '')
+        .trim()
+        .toUpperCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g,'')
+        .replace(/[^A-Z0-9]+/g,'_')
+        .replace(/^_+|_+$/g,'');
+}
+
+function ichefStaffWorkspaceKind(staff = {}, rhStaff = null) {
+    const text = [
+        staff?.role,
+        staff?.dept,
+        staff?.position,
+        staff?.job,
+        rhStaff?.role,
+        rhStaff?.dept,
+        rhStaff?.position,
+        rhStaff?.job
+    ].filter(Boolean).join(' ');
+    const token = ichefStaffWorkspaceToken(text);
+
+    if (/BAR|BARMAN|BARTENDER|COCKTAIL/.test(token)) return 'BAR';
+    if (/PATISS|PASTRY|DESSERT/.test(token)) return 'PATISSERIE';
+    if (/CUISIN|CHEF|COOK|KITCHEN|PLONGE/.test(token)) return 'CUISINE';
+    if (/SALLE|SERVEUR|SERVEUSE|SERVICE|RUNNER|MAITRE|HOST|ACCUEIL_RESTAURANT/.test(token)) return 'SERVICE';
+    if (/HOUSEKEEP|LINGERIE|MENAGE|ENTRETIEN|NETTOYAGE|CLEAN/.test(token)) return 'HOUSEKEEPING';
+    if (/RECEPTION|FRONT_DESK|CONCIERGE/.test(token)) return 'RECEPTION';
+    return 'GENERAL';
+}
+
+function ichefStaffWorkspaceRoleLabel(kind, staff = {}, rhStaff = null) {
+    const role = String(
+        staff?.role ||
+        rhStaff?.role ||
+        staff?.dept ||
+        rhStaff?.dept ||
+        ''
+    ).trim();
+    const fallback = ({
+        CUISINE:'Cuisine',
+        BAR:'Bar',
+        PATISSERIE:'Pâtisserie',
+        SERVICE:'Salle / Service',
+        HOUSEKEEPING:'Entretien',
+        RECEPTION:'Réception',
+        GENERAL:'Mon métier'
+    })[kind] || 'Mon métier';
+    return role ? `Contenu métier · ${role}` : `Contenu métier · ${fallback}`;
+}
+
+function ichefStaffWorkspaceRows(node) {
+    if (Array.isArray(node)) return node;
+    const source =
+        node?.data && typeof node.data === 'object'
+        ? node.data
+        : node;
+    if (!source || typeof source !== 'object' || Array.isArray(source)) return [];
+
+    const flattened = [];
+    for (const value of Object.values(source)) {
+        if (Array.isArray(value)) {
+            flattened.push(...value);
+        } else if (
+            value &&
+            typeof value === 'object' &&
+            !Array.isArray(value)
+        ) {
+            // Certaines pages enregistrent les fiches par ID au lieu d'un tableau.
+            flattened.push(value);
+        }
+    }
+
+    // Si le noeud lui-même ressemble déjà à une fiche unique.
+    if (
+        !flattened.length &&
+        (
+            source.id ||
+            source.title ||
+            source.name ||
+            source.label ||
+            source.recipeId ||
+            source.trainingId
+        )
+    ) {
+        flattened.push(source);
+    }
+
+    return flattened;
+}
+
+function ichefStaffWorkspaceArray(value) {
+    if (Array.isArray(value)) return value;
+    if (value === undefined || value === null || value === '') return [];
+    return [value];
+}
+
+function ichefStaffWorkspaceStringList(value) {
+    return ichefStaffWorkspaceArray(value)
+        .flatMap(item => {
+            if (item && typeof item === 'object') {
+                return [
+                    item.name,item.label,item.title,item.role,item.dept,
+                    item.department,item.id,item.staffId
+                ].filter(Boolean);
+            }
+            return String(item || '').split(/[,;|]/g);
+        })
+        .map(item => String(item || '').trim())
+        .filter(Boolean);
+}
+
+function ichefStaffWorkspaceKindFromText(value) {
+    const token = ichefStaffWorkspaceToken(value);
+    if (/TOUS|ALL|GENERAL|EQUIPE|STAFF/.test(token)) return 'ALL';
+    if (/BAR|BARMAN|BARTENDER|COCKTAIL/.test(token)) return 'BAR';
+    if (/PATISS|PASTRY|DESSERT/.test(token)) return 'PATISSERIE';
+    if (/CUISIN|CHEF|COOK|KITCHEN|PLONGE/.test(token)) return 'CUISINE';
+    if (/SALLE|SERVEUR|SERVEUSE|SERVICE|RUNNER|MAITRE|HOST/.test(token)) return 'SERVICE';
+    if (/HOUSEKEEP|LINGERIE|MENAGE|ENTRETIEN|NETTOYAGE|CLEAN/.test(token)) return 'HOUSEKEEPING';
+    if (/RECEPTION|FRONT_DESK|CONCIERGE/.test(token)) return 'RECEPTION';
+    return '';
+}
+
+function ichefStaffWorkspaceAssignedTo(row = {}, staffId = '') {
+    const explicit = [
+        row?.staffIds,row?.employeeIds,row?.participantIds,row?.assignedTo,row?.recipients
+    ].flatMap(ichefStaffWorkspaceStringList);
+    if (!explicit.length) return true;
+    return explicit.some(value => String(value) === String(staffId));
+}
+
+function ichefStaffWorkspaceMatchesAudience(row = {}, kind = 'GENERAL', sourceKind = 'INFER', staffId = '') {
+    if (!ichefStaffWorkspaceAssignedTo(row,staffId)) return false;
+
+    const rawTargets = [
+        row?.audience,row?.audiences,row?.department,row?.departments,row?.dept,row?.role,
+        row?.roles,row?.station,row?.zone,row?.universe,row?.module,row?.job,row?.jobType,
+        row?.visibleFor,row?.allowedRoles,row?.allowedDepartments
+    ].flatMap(ichefStaffWorkspaceStringList);
+
+    const targetKinds = rawTargets.map(ichefStaffWorkspaceKindFromText).filter(Boolean);
+    if (targetKinds.includes('ALL')) return true;
+    if (targetKinds.length) return targetKinds.includes(kind);
+    if (sourceKind === 'ALL') return true;
+    if (sourceKind !== 'INFER') return sourceKind === kind;
+
+    const inferred = ichefStaffWorkspaceKindFromText([
+        row?.type,row?.category,row?.station,row?.title,row?.name
+    ].filter(Boolean).join(' '));
+    return inferred ? inferred === kind : false;
+}
+
+function ichefStaffWorkspaceIngredient(item) {
+    if (typeof item === 'string') {
+        const text = item.trim();
+        return text ? text : null;
+    }
+    if (!item || typeof item !== 'object') return null;
+    const name = String(
+        item.name || item.label || item.ingredient || item.productName || item.n || ''
+    ).trim();
+    if (!name) return null;
+    const qtyRaw = item.qty ?? item.quantity ?? item.amount ?? item.value ?? item.qte ?? item.weight ?? '';
+    const unit = String(item.unit || item.uom || item.measure || item.unite || '').trim();
+    return {
+        name,
+        qty:Number.isFinite(Number(qtyRaw)) ? Number(qtyRaw) : String(qtyRaw || '').trim(),
+        unit
+    };
+}
+
+function ichefStaffWorkspaceStep(item) {
+    if (typeof item === 'string') {
+        const text = item.trim();
+        return text ? text.slice(0,1200) : null;
+    }
+    if (!item || typeof item !== 'object') return null;
+    const text = String(
+        item.text || item.description || item.label || item.instruction || item.step || ''
+    ).trim();
+    return text ? text.slice(0,1200) : null;
+}
+
+function ichefStaffWorkspaceSheetPublic(row = {}, sourceKind = 'INFER', index = 0) {
+    const title = String(
+        row.title || row.name || row.label || row.recipeName || row.n || `Fiche ${index + 1}`
+    ).trim().slice(0,180);
+
+    const ingredientsRaw = row.structuredIngs || row.ingredients || row.ings || row.components || row.composition || [];
+    const stepsRaw = row.steps || row.instructions || row.method || row.procedure || row.preparation || [];
+    const allergensRaw = row.allergens || row.allergenes || row.allergy || [];
+
+    const ingredients = ichefStaffWorkspaceArray(ingredientsRaw)
+        .map(ichefStaffWorkspaceIngredient).filter(Boolean).slice(0,120);
+    const steps = ichefStaffWorkspaceArray(stepsRaw)
+        .map(ichefStaffWorkspaceStep).filter(Boolean).slice(0,60);
+    const allergens = ichefStaffWorkspaceStringList(allergensRaw).slice(0,40);
+
+    return {
+        id:String(
+            row.id || row.recipeId || row.sheetId || row.productId ||
+            crypto.createHash('sha1').update(`${sourceKind}|${title}|${index}`).digest('hex').slice(0,20)
+        ).slice(0,180),
+        kind:sourceKind,
+        kindLabel:({
+            CUISINE:'FICHE CUISINE',
+            BAR:'FICHE BAR / COCKTAIL',
+            PATISSERIE:'FICHE PÂTISSERIE',
+            SERVICE:'PROCÉDURE SERVICE',
+            HOUSEKEEPING:'PROCÉDURE ENTRETIEN',
+            RECEPTION:'PROCÉDURE RÉCEPTION',
+            ALL:'FICHE ÉQUIPE',
+            INFER:'FICHE TECHNIQUE'
+        })[sourceKind] || 'FICHE TECHNIQUE',
+        title,
+        category:String(row.category || row.cat || row.family || row.type || '').trim().slice(0,100),
+        summary:String(row.summary || row.description || row.subtitle || '').trim().slice(0,1200),
+        portions:String(row.portions || row.servings || row.yield || row.nbPortions || '').trim().slice(0,60),
+        prepTime:String(row.prepTime || row.preparationTime || row.duration || row.tempsPreparation || '').trim().slice(0,60),
+        temperature:String(row.temperature || row.temp || row.cookingTemperature || '').trim().slice(0,80),
+        ingredients,
+        steps,
+        allergens,
+        notes:String(
+            row.staffNotes || row.chefNotes || row.notesForStaff ||
+            row.instructionsStaff || row.notes || ''
+        ).trim().slice(0,2500)
+    };
+}
+
+function ichefStaffWorkspaceCollectSheets(activeOrders = {}, staff = {}, rhStaff = null) {
+    const kind = ichefStaffWorkspaceKind(staff,rhStaff);
+    const staffId = String(staff?.id || '').trim();
+    const sources = [
+        ['RECIPES_MASTER','CUISINE'],
+        ['RECIPES_MASTER_BAR','BAR'],
+        ['COCKTAILS_MASTER','BAR'],
+        ['RECIPES_MASTER_PATISSERIE','PATISSERIE'],
+        ['TECHNICAL_SHEETS_MASTER','INFER'],
+        ['FICHES_TECHNIQUES_MASTER','INFER'],
+        ['PROCEDURES_MASTER','INFER'],
+        ['STAFF_PROCEDURES','INFER']
+    ];
+    const seen = new Set();
+    const result = [];
+
+    for (const [key,sourceKind] of sources) {
+        const rows = ichefStaffWorkspaceRows(activeOrders?.[key]);
+        for (let index=0; index<rows.length; index += 1) {
+            const row = rows[index];
+            if (!row || typeof row !== 'object') continue;
+            if (
+                row.active === false || row.deleted === true || row.archived === true ||
+                row.draft === true || row.published === false
+            ) continue;
+            if (!ichefStaffWorkspaceMatchesAudience(row,kind,sourceKind,staffId)) continue;
+            const publicRow = ichefStaffWorkspaceSheetPublic(row,sourceKind,index);
+            const dedupe = `${sourceKind}|${publicRow.id}|${ichefStaffWorkspaceToken(publicRow.title)}`;
+            if (seen.has(dedupe)) continue;
+            seen.add(dedupe);
+            result.push(publicRow);
+            if (result.length >= 300) break;
+        }
+        if (result.length >= 300) break;
+    }
+    return result.sort((a,b) => String(a.title).localeCompare(String(b.title),'fr'));
+}
+
+function ichefStaffWorkspaceTrainingRows(activeOrders = {}) {
+    return [
+        ...ichefStaffWorkspaceRows(activeOrders.STAFF_TRAINING),
+        ...ichefStaffWorkspaceRows(activeOrders.TRAINING_MASTER),
+        ...ichefStaffWorkspaceRows(activeOrders.QUICK_TRAINING_MASTER),
+        ...ichefStaffWorkspaceRows(activeOrders.FORMATIONS_MASTER)
+    ];
+}
+
+function ichefStaffWorkspaceTrainingPublic(row = {}, index = 0) {
+    const title = String(
+        row.title || row.name || row.label || `Formation ${index + 1}`
+    ).trim().slice(0,180);
+    return {
+        id:String(
+            row.id || row.trainingId || row.formationId ||
+            crypto.createHash('sha1').update(`${title}|${index}`).digest('hex').slice(0,20)
+        ).slice(0,180),
+        title,
+        summary:String(row.summary || row.description || row.subtitle || '').trim().slice(0,1200),
+        content:String(row.content || row.text || row.instructions || '').trim().slice(0,3000),
+        durationMinutes:Math.max(0,Math.min(120,Number(row.durationMinutes || row.duration || row.minutes || 0) || 0)),
+        mandatory:row.mandatory === true || row.required === true,
+        updatedAt:row.updatedAt || row.createdAt || null
+    };
+}
+
+function ichefStaffWorkspaceCollectTraining(activeOrders = {}, staff = {}, rhStaff = null) {
+    const kind = ichefStaffWorkspaceKind(staff,rhStaff);
+    const staffId = String(staff?.id || '').trim();
+    const rows = ichefStaffWorkspaceTrainingRows(activeOrders);
+    const seen = new Set();
+    const result = [];
+
+    for (let index=0; index<rows.length; index += 1) {
+        const row = rows[index];
+        if (!row || typeof row !== 'object') continue;
+        if (
+            row.active === false || row.deleted === true || row.archived === true ||
+            row.draft === true || row.published === false
+        ) continue;
+
+        const hasAudience = [
+            row?.audience,row?.audiences,row?.department,row?.departments,row?.dept,row?.role,
+            row?.roles,row?.visibleFor,row?.allowedRoles,row?.allowedDepartments,
+            row?.staffIds,row?.participantIds,row?.assignedTo
+        ].some(value => ichefStaffWorkspaceStringList(value).length > 0);
+
+        if (hasAudience && !ichefStaffWorkspaceMatchesAudience(row,kind,'ALL',staffId)) continue;
+
+        const publicRow = ichefStaffWorkspaceTrainingPublic(row,index);
+        if (seen.has(publicRow.id)) continue;
+        seen.add(publicRow.id);
+        result.push(publicRow);
+        if (result.length >= 120) break;
+    }
+    return result;
+}
+
+function ichefStaffWorkspaceProgressMap(workspace = null) {
+    const map = new Map();
+    const rows = Array.isArray(workspace?.trainingProgress) ? workspace.trainingProgress : [];
+    for (const row of rows) {
+        const id = String(row?.trainingId || '').trim();
+        if (!id) continue;
+        map.set(id,{
+            status:String(row?.status || 'VIEWED').toUpperCase(),
+            viewedAt:row?.viewedAt || null,
+            completedAt:row?.completedAt || null,
+            score:Number.isFinite(Number(row?.score)) ? Number(row.score) : null
+        });
+    }
+    return map;
+}
+
+
 // ============================================================================
 // 💬 iCHEF STAFF CHAT V106 — API INTERNE SÉCURISÉE + MÉDIAS
 // ============================================================================
@@ -17757,6 +18133,140 @@ app.post('/api/staff/chat/read', async (req,res) => {
         return res.status(500).json({ success:false, error:'Lecture du chat non enregistrée.' });
     }
 });
+
+
+// ============================================================================
+// 🧰 iCHEF STAFF WORKSPACE V107 — API SÉCURISÉE PAR SESSION + APPAREIL
+// ============================================================================
+app.get('/api/staff/workspace', async (req,res) => {
+    try {
+        res.setHeader('Cache-Control','no-store');
+        const auth = await ichefLoadActiveStaffSession(req);
+        if (!auth.ok) return res.status(401).json({ success:false, error:auth.error });
+
+        const {staff,state} = auth;
+        const activeOrders = state?.activeOrders || {};
+        const rhStaff = ichefStaffRhFindDirectoryMember(activeOrders,staff);
+        const kind = ichefStaffWorkspaceKind(staff,rhStaff);
+        const roleLabel = ichefStaffWorkspaceRoleLabel(kind,staff,rhStaff);
+        const sheets = ichefStaffWorkspaceCollectSheets(activeOrders,staff,rhStaff);
+        const trainingBase = ichefStaffWorkspaceCollectTraining(activeOrders,staff,rhStaff);
+
+        const workspace = await StaffWorkspace.findOne({
+            tenantID:auth.tenantID,
+            staffId:String(auth.claims.staffId)
+        }).lean();
+
+        const progress = ichefStaffWorkspaceProgressMap(workspace);
+        const training = trainingBase.map(item => ({
+            ...item,
+            ...(progress.get(item.id) || {status:'VIEWED',viewedAt:null,completedAt:null,score:null})
+        }));
+
+        return res.json({
+            success:true,
+            private:true,
+            kind,
+            roleLabel,
+            sheets,
+            training,
+            memo:String(workspace?.memo || ''),
+            updatedAt:workspace?.updatedAt || null,
+            serverTime:new Date().toISOString()
+        });
+    } catch (error) {
+        console.error('[iCHEF STAFF workspace V107]',error?.message || error);
+        return res.status(500).json({success:false,error:'Espace métier momentanément indisponible.'});
+    }
+});
+
+app.post('/api/staff/workspace/memo', async (req,res) => {
+    try {
+        res.setHeader('Cache-Control','no-store');
+        const auth = await ichefLoadActiveStaffSession(req);
+        if (!auth.ok) return res.status(401).json({ success:false, error:auth.error });
+
+        const memo = String(req.body?.memo || '').replace(/\r\n?/g,'\n').slice(0,6000);
+        const now = new Date();
+
+        await StaffWorkspace.findOneAndUpdate(
+            {tenantID:auth.tenantID,staffId:String(auth.claims.staffId)},
+            {$set:{memo,updatedAt:now},$setOnInsert:{createdAt:now}},
+            {upsert:true,new:true,setDefaultsOnInsert:true}
+        );
+
+        return res.json({success:true,private:true,updatedAt:now.toISOString()});
+    } catch (error) {
+        console.error('[iCHEF STAFF workspace memo V107]',error?.message || error);
+        return res.status(500).json({success:false,error:'Mémo momentanément indisponible.'});
+    }
+});
+
+app.post('/api/staff/workspace/training', async (req,res) => {
+    try {
+        res.setHeader('Cache-Control','no-store');
+        const auth = await ichefLoadActiveStaffSession(req);
+        if (!auth.ok) return res.status(401).json({ success:false, error:auth.error });
+
+        const trainingId = String(req.body?.trainingId || '').trim().slice(0,180);
+        const status = String(req.body?.status || 'COMPLETED').trim().toUpperCase();
+        if (!trainingId || !['VIEWED','COMPLETED'].includes(status)) {
+            return res.status(400).json({success:false,error:'Progression de formation invalide.'});
+        }
+
+        const activeOrders = auth.state?.activeOrders || {};
+        const rhStaff = ichefStaffRhFindDirectoryMember(activeOrders,auth.staff);
+        const allowedTraining = ichefStaffWorkspaceCollectTraining(activeOrders,auth.staff,rhStaff);
+        const training = allowedTraining.find(item => String(item.id) === trainingId);
+        if (!training) {
+            return res.status(403).json({success:false,error:'Formation inaccessible pour ce collaborateur.'});
+        }
+
+        const now = new Date();
+        let workspace = await StaffWorkspace.findOne({
+            tenantID:auth.tenantID,
+            staffId:String(auth.claims.staffId)
+        });
+
+        if (!workspace) {
+            workspace = new StaffWorkspace({
+                tenantID:auth.tenantID,
+                staffId:String(auth.claims.staffId),
+                memo:'',
+                trainingProgress:[],
+                createdAt:now,
+                updatedAt:now
+            });
+        }
+        if (!Array.isArray(workspace.trainingProgress)) workspace.trainingProgress = [];
+
+        let progress = workspace.trainingProgress.find(
+            row => String(row?.trainingId || '') === trainingId
+        );
+        if (!progress) {
+            workspace.trainingProgress.push({
+                trainingId,
+                status,
+                viewedAt:now,
+                completedAt:status === 'COMPLETED' ? now : null,
+                score:null
+            });
+        } else {
+            progress.status = status;
+            progress.viewedAt = progress.viewedAt || now;
+            if (status === 'COMPLETED') progress.completedAt = progress.completedAt || now;
+        }
+
+        workspace.updatedAt = now;
+        await workspace.save();
+
+        return res.json({success:true,trainingId,status,updatedAt:now.toISOString()});
+    } catch (error) {
+        console.error('[iCHEF STAFF workspace training V107]',error?.message || error);
+        return res.status(500).json({success:false,error:'Progression de formation momentanément indisponible.'});
+    }
+});
+
 
 app.get(
     '/api/staff/dashboard',
