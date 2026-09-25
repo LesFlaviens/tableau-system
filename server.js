@@ -324,7 +324,7 @@ rhPunchRecordSchema.index({ tenantID: 1, staffId: 1, timestamp: -1 });
 const RhPunchRecord = mongoose.models.RhPunchRecord || mongoose.model('RhPunchRecord', rhPunchRecordSchema);
 
 // ============================================================================
-// 💬 iCHEF STAFF CHAT V104 — MESSAGERIE INTERNE ENTREPRISE
+// 💬 iCHEF STAFF CHAT V106 — MESSAGERIE INTERNE + PIÈCES JOINTES
 // ============================================================================
 const staffChatChannelSchema = new mongoose.Schema({
   tenantID: { type: String, required: true, index: true },
@@ -344,6 +344,14 @@ staffChatChannelSchema.index({ tenantID: 1, type: 1, deptKey: 1 });
 staffChatChannelSchema.index({ tenantID: 1, participantIds: 1 });
 const StaffChatChannel = mongoose.models.StaffChatChannel || mongoose.model('StaffChatChannel', staffChatChannelSchema);
 
+const staffChatAttachmentSchema = new mongoose.Schema({
+  attachmentId: { type: String, required: true },
+  name: { type: String, default: 'fichier' },
+  mime: { type: String, default: 'application/octet-stream' },
+  size: { type: Number, default: 0 },
+  kind: { type: String, enum: ['IMAGE','VIDEO','DOCUMENT'], default: 'DOCUMENT' }
+}, { _id: false, minimize: false });
+
 const staffChatMessageSchema = new mongoose.Schema({
   tenantID: { type: String, required: true, index: true },
   channelId: { type: String, required: true, index: true },
@@ -352,7 +360,8 @@ const staffChatMessageSchema = new mongoose.Schema({
   senderName: { type: String, default: '' },
   senderRole: { type: String, default: '' },
   senderDept: { type: String, default: '' },
-  text: { type: String, required: true },
+  text: { type: String, default: '' },
+  attachments: { type: [staffChatAttachmentSchema], default: [] },
   replyToMessageId: { type: String, default: '' },
   pinned: { type: Boolean, default: false },
   readBy: { type: [String], default: [] },
@@ -865,7 +874,6 @@ const ICHEF_TENANT_MUTATION_PATHS = new Set([
 '/api/staff/clock-in',
 '/api/staff/clock-out',
 '/api/staff/chat/channels/direct',
-'/api/staff/chat/message',
 '/api/staff/chat/read'
 ]);
 const ichefTenantMutationQueues = new Map();
@@ -926,7 +934,7 @@ app.get('/api/staff/build', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.json({
         success: true,
-        build: 'V104-STAFF-CHAT-SECURE',
+        build: 'V106-STAFF-DOCUMENTS-CHAT-MEDIA-SECURE',
         staffPortal: true,
         signedSession: true,
         timestamp: new Date().toISOString()
@@ -15560,7 +15568,7 @@ app.get(
         res.setHeader('Cache-Control','no-store');
         return res.json({
             success:true,
-            build:'V104-STAFF-CHAT-SECURE',
+            build:'V106-STAFF-DOCUMENTS-CHAT-MEDIA-SECURE',
             staffLoginRoute:'/api/staff/login',
             authentication:'STAFF_ID_RH_PLUS_PIN',
             signedSession:true,
@@ -16464,6 +16472,185 @@ function ichefStaffRhCandidateIds(staff = {}, rhStaff = null) {
     .map(v => String(v).trim()))];
 }
 
+
+// ============================================================================
+// 📁 iCHEF STAFF DOCUMENTS V105 — COFFRE-FORT RH PERSONNEL
+// ============================================================================
+function ichefStaffDocumentCategory(document = {}) {
+    const explicit = String(
+        document?.category ||
+        document?.type ||
+        document?.documentType ||
+        ''
+    ).trim().toUpperCase();
+
+    const text = [
+        explicit,
+        document?.title,
+        document?.name,
+        document?.fileName,
+        document?.meta
+    ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+    if (/payslip|payroll|bulletin|salaire|fiche de paie|feuille de salaire/.test(text)) {
+        return 'PAYSLIP';
+    }
+    if (/contract|contrat|avenant|engagement|embauche/.test(text)) {
+        return 'CONTRACT';
+    }
+    if (/attestation|certificat de travail|employment certificate|attestation employeur/.test(text)) {
+        return 'ATTESTATION';
+    }
+    if (/certificat|certificate|formation|habilitation|dipl[oô]me|m[eé]decine/.test(text)) {
+        return 'CERTIFICATE';
+    }
+
+    return ['PAYSLIP','CONTRACT','ATTESTATION','CERTIFICATE'].includes(explicit)
+        ? explicit
+        : 'OTHER';
+}
+
+function ichefStaffDocumentSafeUrl(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+
+    // Les documents staff ne doivent jamais pouvoir injecter javascript:, data:, file:, etc.
+    if (raw.startsWith('/')) return raw;
+
+    try {
+        const parsed = new URL(raw);
+        if (parsed.protocol === 'https:') return parsed.href;
+        if (
+            parsed.protocol === 'http:' &&
+            /^(localhost|127\.0\.0\.1)$/i.test(parsed.hostname)
+        ) {
+            return parsed.href;
+        }
+    } catch (_) {}
+
+    return '';
+}
+
+function ichefStaffDocumentBelongsTo(document = {}, candidateIds = []) {
+    const ids = new Set(
+        (Array.isArray(candidateIds) ? candidateIds : [])
+            .filter(v => v !== undefined && v !== null && String(v).trim() !== '')
+            .map(v => String(v).trim())
+    );
+
+    if (!ids.size) return false;
+
+    const possibleOwners = [
+        document?.staffId,
+        document?.employeeId,
+        document?.userId,
+        document?.recipientId,
+        document?.assignedTo,
+        document?.rhId,
+        document?.matricule,
+        document?.staff?.id,
+        document?.employee?.id
+    ];
+
+    for (const owner of possibleOwners) {
+        if (Array.isArray(owner)) {
+            if (owner.some(v => ids.has(String(v).trim()))) return true;
+            continue;
+        }
+        if (owner !== undefined && owner !== null && ids.has(String(owner).trim())) {
+            return true;
+        }
+    }
+
+    const many = [
+        document?.staffIds,
+        document?.employeeIds,
+        document?.recipientIds,
+        document?.recipients
+    ];
+
+    return many.some(list =>
+        Array.isArray(list) &&
+        list.some(v => {
+            const value = typeof v === 'object' && v !== null
+                ? (v.id || v.staffId || v.employeeId || '')
+                : v;
+            return ids.has(String(value || '').trim());
+        })
+    );
+}
+
+function ichefStaffRhDocumentsForStaff(activeOrders = {}, staff = {}, rhStaff = null) {
+    const candidateIds = ichefStaffRhCandidateIds(staff, rhStaff);
+    const rows = [
+        ...ichefStaffPortalArray(activeOrders.STAFF_DOCUMENTS),
+        ...ichefStaffPortalArray(activeOrders.RH_DOCUMENTS)
+    ];
+
+    const seen = new Set();
+    const result = [];
+
+    for (const document of rows) {
+        if (!document || typeof document !== 'object') continue;
+        if (document.active === false || document.deleted === true) continue;
+        if (!ichefStaffDocumentBelongsTo(document, candidateIds)) continue;
+
+        const id = String(
+            document.id ||
+            document.documentId ||
+            document.fileId ||
+            document.fileName ||
+            `${document.title || document.name || 'DOC'}-${document.date || document.createdAt || ''}`
+        ).trim();
+
+        const dedupeKey = id || JSON.stringify([
+            document.title || document.name || '',
+            document.date || document.createdAt || '',
+            document.url || document.downloadUrl || ''
+        ]);
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
+
+        const category = ichefStaffDocumentCategory(document);
+        const safeUrl = ichefStaffDocumentSafeUrl(
+            document.downloadUrl ||
+            document.url ||
+            document.href ||
+            ''
+        );
+
+        result.push({
+            id,
+            documentId:id,
+            category,
+            type:category,
+            title:String(document.title || document.name || document.fileName || 'Document RH'),
+            fileName:String(document.fileName || document.filename || ''),
+            period:String(document.period || document.payPeriod || document.month || ''),
+            date:document.date || document.issuedAt || document.createdAt || null,
+            issuedAt:document.issuedAt || document.date || document.createdAt || null,
+            issuedBy:String(document.issuedBy || document.employer || document.createdBy || ''),
+            expiresAt:document.expiresAt || document.expirationDate || null,
+            mimeType:String(document.mimeType || document.contentType || ''),
+            size:String(document.size || document.fileSize || ''),
+            meta:String(document.meta || document.description || ''),
+            url:safeUrl,
+            downloadUrl:safeUrl,
+            private:true,
+            readOnly:true
+        });
+    }
+
+    return result.sort((a,b) => {
+        const ta = new Date(a.issuedAt || a.date || 0).getTime() || 0;
+        const tb = new Date(b.issuedAt || b.date || 0).getTime() || 0;
+        return tb - ta;
+    });
+}
+
 function ichefStaffRhPlanningForMonth(activeOrders, monthKey, candidateIds) {
     const timesheets =
         activeOrders?.TIMESHEETS_MASTER?.data &&
@@ -17041,7 +17228,7 @@ function ichefStaffRhBuildHistory({
 
 
 // ============================================================================
-// 💬 iCHEF STAFF CHAT V104 — API INTERNE SÉCURISÉE
+// 💬 iCHEF STAFF CHAT V106 — API INTERNE SÉCURISÉE + MÉDIAS
 // ============================================================================
 function ichefStaffChatDeptKey(value) {
     return String(value || '')
@@ -17167,7 +17354,117 @@ async function ichefStaffChatLoadChannel(auth, channelId) {
     return { ok:true, channel, self };
 }
 
+const ICHEF_STAFF_CHAT_MIME_RULES = Object.freeze({
+    'image/jpeg': { kind:'IMAGE', max:6 * 1024 * 1024 },
+    'image/png': { kind:'IMAGE', max:6 * 1024 * 1024 },
+    'image/webp': { kind:'IMAGE', max:6 * 1024 * 1024 },
+    'image/gif': { kind:'IMAGE', max:6 * 1024 * 1024 },
+    'video/mp4': { kind:'VIDEO', max:12 * 1024 * 1024 },
+    'video/webm': { kind:'VIDEO', max:12 * 1024 * 1024 },
+    'video/quicktime': { kind:'VIDEO', max:12 * 1024 * 1024 },
+    'application/pdf': { kind:'DOCUMENT', max:8 * 1024 * 1024 },
+    'text/plain': { kind:'DOCUMENT', max:3 * 1024 * 1024 },
+    'application/msword': { kind:'DOCUMENT', max:8 * 1024 * 1024 },
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': { kind:'DOCUMENT', max:8 * 1024 * 1024 },
+    'application/vnd.ms-excel': { kind:'DOCUMENT', max:8 * 1024 * 1024 },
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': { kind:'DOCUMENT', max:8 * 1024 * 1024 }
+});
+
+function ichefStaffChatSafeFilename(value) {
+    const name = String(value || 'fichier')
+        .replace(/[\/\0<>:"|?*]+/g,'_')
+        .replace(/[\r\n\t]+/g,' ')
+        .trim()
+        .slice(0,140);
+    return name || 'fichier';
+}
+
+function ichefStaffChatDecodeAttachment(raw = null) {
+    if (!raw || typeof raw !== 'object') return null;
+    const safeName = ichefStaffChatSafeFilename(raw.name);
+    const ext = safeName.toLowerCase().split('.').pop();
+    const inferredMime = ({
+        pdf:'application/pdf', txt:'text/plain', doc:'application/msword',
+        docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        xls:'application/vnd.ms-excel',
+        xlsx:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', webp:'image/webp', gif:'image/gif',
+        mp4:'video/mp4', webm:'video/webm', mov:'video/quicktime'
+    })[ext] || '';
+    let mime = String(raw.mime || '').trim().toLowerCase();
+    if (!mime || mime === 'application/octet-stream') mime = inferredMime;
+    const rule = ICHEF_STAFF_CHAT_MIME_RULES[mime];
+    if (!rule) throw new Error('Type de fichier non autorisé dans le chat.');
+    const base64 = String(raw.dataBase64 || '').replace(/^data:[^;]+;base64,/i,'').replace(/\s+/g,'');
+    if (!base64 || base64.length > Math.ceil(rule.max * 4 / 3) + 16) throw new Error('Fichier trop volumineux.');
+    let buffer;
+    try { buffer = Buffer.from(base64,'base64'); }
+    catch (_) { throw new Error('Fichier illisible.'); }
+    if (!buffer.length || buffer.length > rule.max) throw new Error(`Fichier trop volumineux (${Math.round(rule.max / 1024 / 1024)} Mo max).`);
+    const claimedSize = Number(raw.size || 0);
+    if (claimedSize && Math.abs(claimedSize - buffer.length) > 4) throw new Error('Taille du fichier incohérente.');
+    return {
+        buffer,
+        name: safeName,
+        mime,
+        kind: rule.kind,
+        size: buffer.length
+    };
+}
+
+function ichefStaffChatGridFsBucket() {
+    if (!mongoose.connection?.db) throw new Error('Stockage média indisponible.');
+    return new mongoose.mongo.GridFSBucket(mongoose.connection.db,{ bucketName:'staff_chat_files' });
+}
+
+async function ichefStaffChatStoreAttachment({ tenantID, channelId, messageId, uploaderStaffId, attachment }) {
+    const bucket = ichefStaffChatGridFsBucket();
+    return await new Promise((resolve,reject) => {
+        const upload = bucket.openUploadStream(attachment.name,{
+            contentType: attachment.mime,
+            metadata: {
+                tenantID: String(tenantID || ''),
+                channelId: String(channelId || ''),
+                messageId: String(messageId || ''),
+                uploaderStaffId: String(uploaderStaffId || ''),
+                kind: attachment.kind,
+                originalName: attachment.name,
+                createdAt: new Date()
+            }
+        });
+        upload.once('error',reject);
+        upload.once('finish',() => resolve({
+            attachmentId: String(upload.id),
+            name: attachment.name,
+            mime: attachment.mime,
+            size: attachment.size,
+            kind: attachment.kind
+        }));
+        upload.end(attachment.buffer);
+    });
+}
+
+async function ichefStaffChatDeleteAttachment(attachmentId) {
+    try {
+        if (!mongoose.Types.ObjectId.isValid(String(attachmentId || ''))) return;
+        await ichefStaffChatGridFsBucket().delete(new mongoose.Types.ObjectId(String(attachmentId)));
+    } catch (_) {}
+}
+
+function ichefStaffChatPublicAttachment(row = {}) {
+    const attachmentId = String(row.attachmentId || '');
+    return {
+        id: attachmentId,
+        name: ichefStaffChatSafeFilename(row.name),
+        mime: String(row.mime || 'application/octet-stream'),
+        size: Math.max(0,Number(row.size || 0)),
+        kind: ['IMAGE','VIDEO','DOCUMENT'].includes(String(row.kind || '').toUpperCase()) ? String(row.kind).toUpperCase() : 'DOCUMENT',
+        url: attachmentId ? `/api/staff/chat/attachment/${encodeURIComponent(attachmentId)}` : ''
+    };
+}
+
 function ichefStaffChatPublicMessage(row = {}) {
+    const deleted = Boolean(row.deletedAt);
     return {
         id: String(row.messageId || row._id || ''),
         channelId: String(row.channelId || ''),
@@ -17175,12 +17472,13 @@ function ichefStaffChatPublicMessage(row = {}) {
         senderName: String(row.senderName || 'Collaborateur'),
         senderRole: String(row.senderRole || ''),
         senderDept: String(row.senderDept || ''),
-        text: row.deletedAt ? 'Message supprimé' : String(row.text || ''),
+        text: deleted ? 'Message supprimé' : String(row.text || ''),
+        attachments: deleted ? [] : (Array.isArray(row.attachments) ? row.attachments.map(ichefStaffChatPublicAttachment).filter(a => a.id) : []),
         replyToMessageId: String(row.replyToMessageId || ''),
         pinned: row.pinned === true,
         createdAt: row.createdAt ? new Date(row.createdAt).toISOString() : new Date().toISOString(),
         editedAt: row.editedAt ? new Date(row.editedAt).toISOString() : '',
-        deleted: Boolean(row.deletedAt)
+        deleted
     };
 }
 
@@ -17272,7 +17570,7 @@ app.get('/api/staff/chat/channels', async (req,res) => {
                 type:String(row.type),
                 name:displayName,
                 unread:Number(unread || 0),
-                lastMessage:last ? String(last.text || '') : '',
+                lastMessage:last ? (String(last.text || '') || (Array.isArray(last.attachments) && last.attachments.length ? `📎 ${String(last.attachments[0]?.name || 'Pièce jointe')}` : '')) : '',
                 lastSender:last ? String(last.senderName || '') : '',
                 lastAt:last?.createdAt ? new Date(last.createdAt).toISOString() : '',
                 participants:Array.isArray(row.participantIds) ? row.participantIds.map(String) : []
@@ -17332,17 +17630,28 @@ app.get('/api/staff/chat/messages', async (req,res) => {
 });
 
 app.post('/api/staff/chat/message', async (req,res) => {
+    let storedAttachment = null;
     try {
         const auth = await ichefLoadActiveStaffSession(req);
         if (!auth.ok) return res.status(401).json({ success:false, error:auth.error });
         const channelId = String(req.body?.channelId || '').trim().slice(0,160);
         const text = String(req.body?.text || '').trim().slice(0,3000);
-        if (!channelId || !text) return res.status(400).json({ success:false, error:'Message vide.' });
+        const incomingAttachment = req.body?.attachment ? ichefStaffChatDecodeAttachment(req.body.attachment) : null;
+        if (!channelId || (!text && !incomingAttachment)) return res.status(400).json({ success:false, error:'Message vide.' });
         const access = await ichefStaffChatLoadChannel(auth,channelId);
         if (!access.ok) return res.status(access.status || 403).json({ success:false, error:access.error });
         const self = access.self;
         const now = new Date();
         const messageId = `MSG_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+        if (incomingAttachment) {
+            storedAttachment = await ichefStaffChatStoreAttachment({
+                tenantID:auth.tenantID,
+                channelId,
+                messageId,
+                uploaderStaffId:self.id,
+                attachment:incomingAttachment
+            });
+        }
         const row = await StaffChatMessage.create({
             tenantID:auth.tenantID,
             channelId,
@@ -17352,6 +17661,7 @@ app.post('/api/staff/chat/message', async (req,res) => {
             senderRole:self.role,
             senderDept:self.dept,
             text,
+            attachments:storedAttachment ? [storedAttachment] : [],
             replyToMessageId:String(req.body?.replyToMessageId || '').trim().slice(0,160),
             readBy:[self.id],
             createdAt:now
@@ -17360,8 +17670,73 @@ app.post('/api/staff/chat/message', async (req,res) => {
         await ichefStaffChatEmit(auth,access.channel,row.toObject());
         return res.json({ success:true, message:ichefStaffChatPublicMessage(row.toObject()) });
     } catch (error) {
+        if (storedAttachment?.attachmentId) await ichefStaffChatDeleteAttachment(storedAttachment.attachmentId);
         console.error('[iCHEF STAFF CHAT send]',error?.message || error);
-        return res.status(500).json({ success:false, error:'Envoi du message impossible.' });
+        const clientFileError = /fichier|type de fichier|volumineux|taille/i.test(String(error?.message || ''));
+        const message = clientFileError ? String(error.message) : 'Envoi du message impossible.';
+        return res.status(clientFileError ? 400 : 500).json({ success:false, error:message });
+    }
+});
+
+app.get('/api/staff/chat/attachment/:attachmentId', async (req,res) => {
+    try {
+        const auth = await ichefLoadActiveStaffSession(req);
+        if (!auth.ok) return res.status(401).json({ success:false, error:auth.error });
+        const attachmentId = String(req.params?.attachmentId || '').trim();
+        if (!mongoose.Types.ObjectId.isValid(attachmentId)) return res.status(404).end();
+        const objectId = new mongoose.Types.ObjectId(attachmentId);
+        const bucket = ichefStaffChatGridFsBucket();
+        const file = await bucket.find({ _id:objectId }).next();
+        if (!file || String(file?.metadata?.tenantID || '') !== String(auth.tenantID || '')) return res.status(404).end();
+        const channelId = String(file?.metadata?.channelId || '');
+        const access = await ichefStaffChatLoadChannel(auth,channelId);
+        if (!access.ok) return res.status(access.status || 403).end();
+        const linkedMessage = await StaffChatMessage.exists({
+            tenantID:auth.tenantID,
+            channelId,
+            'attachments.attachmentId':attachmentId,
+            deletedAt:null
+        });
+        if (!linkedMessage) return res.status(404).end();
+
+        const mime = String(file.contentType || 'application/octet-stream');
+        const name = ichefStaffChatSafeFilename(file?.metadata?.originalName || file.filename || 'fichier');
+        const length = Number(file.length || 0);
+        const inline = /^(image|video)\//i.test(mime) || mime === 'application/pdf';
+        res.setHeader('Content-Type',mime);
+        res.setHeader('Cache-Control','private, no-store, max-age=0');
+        res.setHeader('X-Content-Type-Options','nosniff');
+        res.setHeader('Accept-Ranges','bytes');
+        res.setHeader('Content-Disposition',`${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(name)}`);
+
+        let start = 0;
+        let end = Math.max(0,length - 1);
+        const range = String(req.headers.range || '');
+        if (range && length > 0) {
+            const match = range.match(/^bytes=(\d*)-(\d*)$/i);
+            if (match) {
+                if (match[1]) start = Math.max(0,Math.min(length - 1,Number(match[1])));
+                if (match[2]) end = Math.max(start,Math.min(length - 1,Number(match[2])));
+                if (!match[1] && match[2]) {
+                    const suffix = Math.max(1,Math.min(length,Number(match[2])));
+                    start = Math.max(0,length - suffix);
+                    end = length - 1;
+                }
+                res.status(206);
+                res.setHeader('Content-Range',`bytes ${start}-${end}/${length}`);
+                res.setHeader('Content-Length',String(end - start + 1));
+            }
+        }
+        if (!res.getHeader('Content-Length')) res.setHeader('Content-Length',String(length));
+        const stream = bucket.openDownloadStream(objectId,{ start, end:end + 1 });
+        stream.on('error',error => {
+            console.error('[iCHEF STAFF CHAT attachment stream]',error?.message || error);
+            if (!res.headersSent) res.status(500).end(); else res.destroy(error);
+        });
+        return stream.pipe(res);
+    } catch (error) {
+        console.error('[iCHEF STAFF CHAT attachment]',error?.message || error);
+        if (!res.headersSent) return res.status(500).end();
     }
 });
 
@@ -17626,12 +18001,10 @@ app.get(
                 );
 
             const documents =
-                ichefStaffPortalOnlyMine(
-                    ichefStaffPortalArray(
-                        activeOrders.STAFF_DOCUMENTS ||
-                        activeOrders.RH_DOCUMENTS
-                    ),
-                    staff.id
+                ichefStaffRhDocumentsForStaff(
+                    activeOrders,
+                    staff,
+                    rhStaff
                 );
 
             const position =
@@ -17823,6 +18196,55 @@ app.get(
                     error:
                         'Espace staff momentanément indisponible.'
                 });
+        }
+    }
+);
+
+
+// Coffre-fort RH personnel : lecture seule, session Staff obligatoire.
+app.get(
+    '/api/staff/documents',
+    async (req,res) => {
+        try {
+            res.setHeader('Cache-Control','no-store');
+            const auth = await ichefLoadActiveStaffSession(req);
+            if (!auth.ok) {
+                return res.status(401).json({success:false,error:auth.error});
+            }
+
+            const {staff,state} = auth;
+            const activeOrders = state?.activeOrders || {};
+            const rhStaff = ichefStaffRhFindDirectoryMember(activeOrders,staff);
+            const documents = ichefStaffRhDocumentsForStaff(activeOrders,staff,rhStaff);
+
+            const counts = documents.reduce((acc,document) => {
+                const key = String(document.category || 'OTHER').toUpperCase();
+                acc.total += 1;
+                acc[key] = (acc[key] || 0) + 1;
+                return acc;
+            },{
+                total:0,
+                PAYSLIP:0,
+                CONTRACT:0,
+                ATTESTATION:0,
+                CERTIFICATE:0,
+                OTHER:0
+            });
+
+            return res.json({
+                success:true,
+                private:true,
+                readOnly:true,
+                documents,
+                counts,
+                serverTime:new Date().toISOString()
+            });
+        } catch(error) {
+            console.error('[iCHEF STAFF documents V105]',error);
+            return res.status(500).json({
+                success:false,
+                error:'Documents RH momentanément indisponibles.'
+            });
         }
     }
 );
