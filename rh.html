@@ -1,16 +1,16 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-<script id="ichef-rh-v74-cache-reset">
+<script id="ichef-rh-v88-cache-reset">
 (async()=>{
   try {
-    if (sessionStorage.getItem('ichef_rh_v74_cache_reset_done') !== '1') {
-      sessionStorage.setItem('ichef_rh_v74_cache_reset_done','1');
+    if (sessionStorage.getItem('ichef_rh_v88_cache_reset_done') !== '1') {
+      sessionStorage.setItem('ichef_rh_v88_cache_reset_done','1');
       if ('serviceWorker' in navigator) {
         const regs = await navigator.serviceWorker.getRegistrations();
         await Promise.all(regs.map(async r => {
           const u = String(r.active?.scriptURL || r.waiting?.scriptURL || r.installing?.scriptURL || '');
-          if (u.includes('sw-rh.js') && !u.includes('v=86')) await r.unregister();
+          if (u.includes('sw-rh.js') && !u.includes('v=88')) await r.unregister();
         }));
       }
       if ('caches' in window) {
@@ -18,7 +18,7 @@
         await Promise.all(keys.filter(k => /rh|ichef/i.test(k)).map(k => caches.delete(k)));
       }
     }
-  } catch (e) { console.warn('[iCHEF RH V77] nettoyage cache non bloquant', e); }
+  } catch (e) { console.warn('[iCHEF RH V88] nettoyage cache non bloquant', e); }
 })();
 </script>
 
@@ -27,8 +27,8 @@
     <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>iCHEF RH · Direction & Pilotage RH V86</title>
-    <meta name="ichef-build" content="RH-V86-DIRECTION-SYNC">
+    <title>iCHEF RH · Direction & Pilotage RH V88</title>
+    <meta name="ichef-build" content="RH-V88-COCKPIT-EDIT">
     
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800;900&display=swap" rel="stylesheet">
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
@@ -12954,7 +12954,11 @@ html, body {
         const body=document.getElementById('rh-cockpit-plan-body');
         if(body){
             const rows=visible.slice(0,8).map(s=>{
-                const cells=dates.map(d=>{const p=planFor(s,d);return `<td class="${sameDay(d,today)?'rh-today-col':''}"><div class="rh-shift-chip ${chipClass(p)}">${esc(shiftText(p))}</div></td>`}).join('');
+                const cells=dates.map(d=>{
+                    const p=planFor(s,d);
+                    const dateKey=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+                    return `<td class="${sameDay(d,today)?'rh-today-col':''}"><button type="button" class="rh-shift-chip rh-cockpit-edit-chip ${chipClass(p)}" data-rh-edit-staff="${esc(String(s.id))}" data-rh-edit-date="${dateKey}" title="Modifier cette journée">${esc(shiftText(p))}<span class="rh-edit-mark">✎</span></button></td>`
+                }).join('');
                 return `<tr><td><div class="rh-plan-person"><span class="rh-plan-avatar">${esc(initials(s.name))}</span><div><strong>${esc(s.name||'Collaborateur')}</strong><small>${esc(s.role||s.dept||'Équipe')} · ${Number(s.contract||0).toFixed(0)} h</small></div></div></td>${cells}</tr>`;
             }).join('');
             body.innerHTML=rows || '<tr><td colspan="8"><div class="rh-empty-line">Aucun collaborateur à afficher.</div></td></tr>';
@@ -13274,7 +13278,7 @@ html, body {
     setInterval(()=>{if(navigator.onLine)syncQueue()},30000);
 
     if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost'||location.hostname==='127.0.0.1')){
-        window.addEventListener('load',()=>navigator.serviceWorker.register('/sw-rh.js?v=86',{scope:'/'}).catch(e=>console.warn('[iCHEF RH OFFLINE] Service Worker non installé',e?.message||e)));
+        window.addEventListener('load',()=>navigator.serviceWorker.register('/sw-rh.js?v=88',{scope:'/'}).catch(e=>console.warn('[iCHEF RH OFFLINE] Service Worker non installé',e?.message||e)));
     }
 })();
 </script>
@@ -13770,9 +13774,300 @@ console.info('[iCHEF RH V84] Planning manuel + sauvegarde cloud + IA planning s�
 </script>
 
 
-<script id="ichef-rh-v87-marker">
-window.__ICHEF_RH_BUILD__ = 'RH-V87-PLANNING-MANUAL-FIX';
-console.info('[iCHEF RH V87] Planning manuel rétabli : matrice globale, IDs texte, résumé et édition individuelle');
+
+<style id="ichef-rh-v88-cockpit-edit-style">
+/* V88 — le planning hebdomadaire du cockpit devient réellement éditable */
+.rh-planning-table .rh-cockpit-edit-chip{
+    position:relative;
+    width:100%;
+    min-width:0;
+    padding:0 22px 0 7px;
+    font-family:inherit;
+    cursor:pointer;
+    appearance:none;
+    -webkit-appearance:none;
+    transition:filter .15s ease,border-color .15s ease,transform .08s ease;
+}
+.rh-planning-table .rh-cockpit-edit-chip:hover{
+    filter:brightness(1.18);
+    border-color:rgba(214,183,90,.55)!important;
+}
+.rh-planning-table .rh-cockpit-edit-chip:active{transform:scale(.985)}
+.rh-planning-table .rh-edit-mark{
+    position:absolute;
+    right:6px;
+    top:50%;
+    transform:translateY(-50%);
+    font-size:10px;
+    opacity:.48;
+    color:#f0cf74;
+}
+.rh-planning-table .rh-cockpit-edit-chip:hover .rh-edit-mark{opacity:1}
+#rh-cockpit-shift-editor{
+    position:fixed;
+    inset:0;
+    z-index:30000;
+    display:none;
+    align-items:center;
+    justify-content:center;
+    padding:18px;
+    background:rgba(0,0,0,.82);
+    backdrop-filter:blur(12px);
+}
+#rh-cockpit-shift-editor.show{display:flex}
+.rh-cse-card{
+    width:min(620px,100%);
+    max-height:calc(100dvh - 28px);
+    overflow:auto;
+    background:#111315;
+    border:1px solid #353a3f;
+    border-radius:15px;
+    box-shadow:0 24px 70px rgba(0,0,0,.62);
+    color:#f4f4f2;
+}
+.rh-cse-head{
+    position:sticky;
+    top:0;
+    z-index:2;
+    display:flex;
+    align-items:flex-start;
+    justify-content:space-between;
+    gap:16px;
+    padding:18px 20px 15px;
+    background:rgba(17,19,21,.98);
+    border-bottom:1px solid #2d3236;
+}
+.rh-cse-head small{display:block;color:#858c93;font-size:10px;text-transform:uppercase;letter-spacing:.8px;margin-bottom:5px}
+.rh-cse-head strong{font-size:17px;letter-spacing:.2px}
+.rh-cse-close{border:0;background:transparent;color:#8f969d;font-size:22px;cursor:pointer;padding:2px 6px;border-radius:6px}
+.rh-cse-close:hover{background:#202428;color:#fff}
+.rh-cse-body{padding:18px 20px 4px}
+.rh-cse-grid{display:grid;grid-template-columns:1fr 1fr;gap:13px}
+.rh-cse-field{display:flex;flex-direction:column;gap:7px;min-width:0}
+.rh-cse-field.full{grid-column:1/-1}
+.rh-cse-field label{font-size:10px;font-weight:800;letter-spacing:.65px;text-transform:uppercase;color:#858c93}
+.rh-cse-field input,.rh-cse-field select,.rh-cse-field textarea{
+    width:100%;
+    min-height:43px;
+    box-sizing:border-box;
+    border:1px solid #34393e;
+    border-radius:8px;
+    background:#0b0d0e;
+    color:#f4f4f2;
+    padding:10px 11px;
+    font:600 13px/1.25 Inter,Arial,sans-serif;
+    outline:none;
+}
+.rh-cse-field textarea{min-height:72px;resize:vertical}
+.rh-cse-field input:focus,.rh-cse-field select:focus,.rh-cse-field textarea:focus{border-color:#b99b55}
+.rh-cse-note{margin-top:13px;padding:10px 12px;border:1px solid rgba(214,183,90,.2);border-radius:8px;background:rgba(214,183,90,.04);color:#aaa38f;font-size:10px;line-height:1.45}
+.rh-cse-actions{
+    position:sticky;
+    bottom:0;
+    display:flex;
+    justify-content:flex-end;
+    gap:9px;
+    padding:14px 20px 18px;
+    background:rgba(17,19,21,.98);
+    border-top:1px solid #2d3236;
+}
+.rh-cse-actions button{min-height:40px;border-radius:8px;padding:0 15px;font:850 10px/1 Inter,Arial,sans-serif;letter-spacing:.55px;cursor:pointer}
+.rh-cse-cancel{border:1px solid #3b4045;background:transparent;color:#b9bec3}
+.rh-cse-save{border:1px solid #e3bd5d;background:linear-gradient(180deg,#edca72,#d8aa41);color:#121212}
+@media(max-width:640px){.rh-cse-grid{grid-template-columns:1fr}.rh-cse-field.full{grid-column:auto}.rh-cse-actions{flex-direction:column-reverse}.rh-cse-actions button{width:100%}}
+</style>
+<script id="ichef-rh-v88-cockpit-edit-script">
+(() => {
+    let editorCtx = null;
+
+    const workStatuses = new Set(['present','off_matin','off_soir','ferie']);
+    const statusRows = [
+        ['present','Travail'],['off','Repos'],['off_soir','Matin seul'],['off_matin','Soir seul'],
+        ['conge','Congé'],['recup','Récupération'],['maladie','Maladie'],['ferie','Férié'],
+        ['formation','Formation'],['accident_travail','Accident du travail'],['maternite','Maternité'],
+        ['paternite','Paternité'],['parental','Congé parental'],['enfant_malade','Enfant / proche malade'],
+        ['evenement_familial','Événement familial'],['deces','Décès / deuil'],['sans_solde','Sans solde'],
+        ['absence_autorisee','Absence autorisée'],['absence_injustifiee','Absence injustifiée']
+    ];
+    const posteRows = [
+        ['salle','Salle'],['cuisine','Cuisine'],['patisserie','Pâtisserie'],['bar','Bar'],['admin','Admin']
+    ];
+
+    const esc = v => String(v ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+    function ensureEditor(){
+        let modal=document.getElementById('rh-cockpit-shift-editor');
+        if(modal) return modal;
+        modal=document.createElement('div');
+        modal.id='rh-cockpit-shift-editor';
+        modal.setAttribute('role','dialog');
+        modal.setAttribute('aria-modal','true');
+        modal.innerHTML='<div class="rh-cse-card"></div>';
+        document.body.appendChild(modal);
+        modal.addEventListener('click',e=>{if(e.target===modal) window.closeRhCockpitShiftEditor();});
+        return modal;
+    }
+
+    function dayData(staffId,dateStr){
+        const [y,m,d]=String(dateStr).split('-').map(Number);
+        const month=`${y}-${String(m).padStart(2,'0')}`;
+        const ts=typeof getTs==='function'?getTs():{};
+        const sm=ts?.[month]?.[staffId] || ts?.[month]?.[String(staffId)] || {};
+        const staff=typeof getDir==='function'?getDir().find(s=>String(s.id)===String(staffId)):null;
+        const raw=sm?.[d] || sm?.[String(d)] || {};
+        return {y,m,d,month,staff,p:{status:'off',poste:staff?.dept||'salle',s1:'',s2:'',pause:0,obs:'',...raw}};
+    }
+
+    function toggleShiftFields(){
+        const st=document.getElementById('rh-cse-status')?.value||'off';
+        const s1=document.getElementById('rh-cse-s1');
+        const s2=document.getElementById('rh-cse-s2');
+        const pause=document.getElementById('rh-cse-pause');
+        const poste=document.getElementById('rh-cse-poste');
+        const enabled=workStatuses.has(st);
+        if(poste) poste.disabled=!enabled;
+        if(s1) s1.disabled=!['present','off_soir','ferie'].includes(st);
+        if(s2) s2.disabled=!['present','off_matin','ferie'].includes(st);
+        if(pause) pause.disabled=!enabled;
+    }
+
+    window.openRhCockpitShiftEditor = function(staffId,dateStr){
+        const settings=typeof getRhSettings==='function'?getRhSettings():{};
+        if(String(settings.planningStatus||'draft')==='locked'){
+            const unlock=confirm('Ce planning est verrouillé. Voulez-vous le repasser en BROUILLON pour pouvoir le modifier ?');
+            if(!unlock) return;
+            if(typeof saveRhSettings==='function') saveRhSettings({...settings,planningStatus:'draft'});
+        }
+
+        const data=dayData(staffId,dateStr);
+        if(!data.staff){
+            alert('Collaborateur introuvable.');
+            return;
+        }
+        editorCtx={staffId:String(staffId),dateStr:String(dateStr),...data};
+        const modal=ensureEditor();
+        const card=modal.querySelector('.rh-cse-card');
+        const dateObj=new Date(data.y,data.m-1,data.d,12,0,0,0);
+        const label=dateObj.toLocaleDateString('fr-FR',{weekday:'long',day:'2-digit',month:'long',year:'numeric'});
+        card.innerHTML=`
+            <div class="rh-cse-head">
+                <div><small>Modifier le planning</small><strong>${esc(data.staff.name||'Collaborateur')}</strong><div style="color:#8f969d;font-size:11px;margin-top:4px">${esc(label)}</div></div>
+                <button type="button" class="rh-cse-close" onclick="closeRhCockpitShiftEditor()">×</button>
+            </div>
+            <div class="rh-cse-body">
+                <div class="rh-cse-grid">
+                    <div class="rh-cse-field"><label>Statut</label><select id="rh-cse-status">${statusRows.map(([v,l])=>`<option value="${v}" ${String(data.p.status)===v?'selected':''}>${esc(l)}</option>`).join('')}</select></div>
+                    <div class="rh-cse-field"><label>Poste</label><select id="rh-cse-poste">${posteRows.map(([v,l])=>`<option value="${v}" ${String(data.p.poste||data.staff.dept||'salle')===v?'selected':''}>${esc(l)}</option>`).join('')}</select></div>
+                    <div class="rh-cse-field"><label>Matin (S1)</label><input id="rh-cse-s1" type="text" placeholder="10:00-14:45" value="${esc(data.p.s1||'')}"></div>
+                    <div class="rh-cse-field"><label>Soir (S2)</label><input id="rh-cse-s2" type="text" placeholder="18:00-22:45" value="${esc(data.p.s2||'')}"></div>
+                    <div class="rh-cse-field"><label>Pause (minutes)</label><input id="rh-cse-pause" type="number" min="0" max="240" step="5" value="${Number(data.p.pause)||0}"></div>
+                    <div class="rh-cse-field full"><label>Observation</label><textarea id="rh-cse-obs" placeholder="Observation...">${esc(data.p.obs||'')}</textarea></div>
+                </div>
+                <div class="rh-cse-note">La modification est enregistrée dans le planning RH central. Le portail Staff utilisera la même donnée après publication/synchronisation.</div>
+            </div>
+            <div class="rh-cse-actions">
+                <button type="button" class="rh-cse-cancel" onclick="closeRhCockpitShiftEditor()">ANNULER</button>
+                <button type="button" class="rh-cse-save" onclick="saveRhCockpitShiftEditor()">ENREGISTRER</button>
+            </div>`;
+        document.getElementById('rh-cse-status')?.addEventListener('change',()=>{
+            const st=document.getElementById('rh-cse-status')?.value||'off';
+            if(st==='present'){
+                if(!document.getElementById('rh-cse-s1').value) document.getElementById('rh-cse-s1').value='10:00-14:45';
+                if(!document.getElementById('rh-cse-s2').value) document.getElementById('rh-cse-s2').value='18:00-22:45';
+                if(!Number(document.getElementById('rh-cse-pause').value)) document.getElementById('rh-cse-pause').value='30';
+            } else if(st==='off_soir'){
+                if(!document.getElementById('rh-cse-s1').value) document.getElementById('rh-cse-s1').value='10:00-14:45';
+                document.getElementById('rh-cse-s2').value='';
+                document.getElementById('rh-cse-pause').value='0';
+            } else if(st==='off_matin'){
+                document.getElementById('rh-cse-s1').value='';
+                if(!document.getElementById('rh-cse-s2').value) document.getElementById('rh-cse-s2').value='18:00-22:45';
+                document.getElementById('rh-cse-pause').value='0';
+            } else if(!workStatuses.has(st)){
+                document.getElementById('rh-cse-s1').value='';
+                document.getElementById('rh-cse-s2').value='';
+                document.getElementById('rh-cse-pause').value='0';
+            }
+            toggleShiftFields();
+        });
+        toggleShiftFields();
+        modal.classList.add('show');
+        setTimeout(()=>document.getElementById('rh-cse-status')?.focus(),30);
+    };
+
+    window.closeRhCockpitShiftEditor = function(){
+        document.getElementById('rh-cockpit-shift-editor')?.classList.remove('show');
+        editorCtx=null;
+    };
+
+    window.saveRhCockpitShiftEditor = async function(){
+        if(!editorCtx) return;
+        const status=String(document.getElementById('rh-cse-status')?.value||'off');
+        const poste=String(document.getElementById('rh-cse-poste')?.value||editorCtx.staff?.dept||'salle');
+        let s1=String(document.getElementById('rh-cse-s1')?.value||'').trim();
+        let s2=String(document.getElementById('rh-cse-s2')?.value||'').trim();
+        let pause=Math.max(0,Math.min(240,Number(document.getElementById('rh-cse-pause')?.value)||0));
+        const obs=String(document.getElementById('rh-cse-obs')?.value||'').trim().slice(0,500);
+
+        if(!workStatuses.has(status)){s1='';s2='';pause=0;}
+        if(status==='off_soir'){s2='';}
+        if(status==='off_matin'){s1='';}
+
+        const shiftPattern=/^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/;
+        if(s1 && !shiftPattern.test(s1)){alert('Horaire matin invalide. Exemple : 10:00-14:45');return;}
+        if(s2 && !shiftPattern.test(s2)){alert('Horaire soir invalide. Exemple : 18:00-22:45');return;}
+
+        const ts=typeof getTs==='function'?getTs():{};
+        const month=editorCtx.month;
+        const sid=String(editorCtx.staffId);
+        const day=Number(editorCtx.d);
+        if(!ts[month]) ts[month]={};
+        if(!ts[month][sid]) ts[month][sid]={};
+        const previous=ts[month][sid][day] || ts[month][sid][String(day)] || {};
+        ts[month][sid][day]={...previous,status,poste,s1,s2,pause,obs,updatedAt:new Date().toISOString()};
+
+        const saveBtn=document.querySelector('#rh-cockpit-shift-editor .rh-cse-save');
+        if(saveBtn){saveBtn.disabled=true;saveBtn.textContent='ENREGISTREMENT...';}
+        let cloudSaved=true;
+        try{
+            if(typeof saveTs==='function') cloudSaved=await saveTs(ts);
+            else localStorage.setItem('empire_hr_timesheets',JSON.stringify(ts));
+            if(typeof recordRhChange==='function') recordRhChange({type:'PLANNING_MANUAL_EDIT',source:'DIRECTION_COCKPIT',staffId:sid,date:editorCtx.dateStr,status,poste,s1,s2,pause});
+            if(typeof loadMonthData==='function') loadMonthData();
+            if(typeof loadPublicPlanning==='function') loadPublicPlanning();
+            if(typeof broadcastStaffingLevels==='function') broadcastStaffingLevels();
+            if(typeof renderRhCockpit==='function') renderRhCockpit();
+            window.closeRhCockpitShiftEditor();
+            if(typeof showToast==='function') showToast(cloudSaved===false?'Planning modifié · synchronisation en attente':'Planning modifié');
+        } catch(error){
+            console.error('[iCHEF RH V88] sauvegarde planning cockpit',error);
+            alert('La modification n’a pas pu être enregistrée.');
+            if(saveBtn){saveBtn.disabled=false;saveBtn.textContent='ENREGISTRER';}
+        }
+    };
+
+    document.addEventListener('click',event=>{
+        const chip=event.target?.closest?.('.rh-cockpit-edit-chip');
+        if(!chip) return;
+        event.preventDefault();
+        event.stopPropagation();
+        window.openRhCockpitShiftEditor(chip.dataset.rhEditStaff,chip.dataset.rhEditDate);
+    });
+
+    document.addEventListener('keydown',event=>{
+        if(event.key==='Escape' && document.getElementById('rh-cockpit-shift-editor')?.classList.contains('show')){
+            window.closeRhCockpitShiftEditor();
+        }
+    });
+})();
+</script>
+<script id="ichef-rh-v88-marker">
+window.__ICHEF_RH_BUILD__ = 'RH-V88-COCKPIT-DIRECT-EDIT';
+console.info('[iCHEF RH V88] Planning cockpit éditable directement : statut, poste, horaires, pause, observation');
+</script>
+
+<script id="ichef-rh-v87-legacy-marker">
+console.info('[iCHEF RH V87 legacy] Correctifs planning manuel conservés sous V88');
 </script>
 
 </body>
