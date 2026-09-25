@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>iCHEF OS — Mon espace collaborateur</title>
-<meta name="ichef-build" content="V73-PLANNING-PERSONNEL-JOUR-SEMAINE-MOIS">
+<meta name="ichef-build" content="V75-MOBILE-FIRST-SYNC-STABLE">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1008,11 +1008,12 @@ html{scroll-behavior:smooth}
   </a>
 </nav>
 
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 <script>
 // Serveur iCHEF : localhost uniquement si la page est réellement servie
 // depuis localhost. Un fichier HTML ouvert directement utilise iCHEF Cloud.
-// iCHEF Portail Staff V72 — connexion résiliente ID RH + PIN
-const STAFF_PORTAL_BUILD = 'V72-LOGIN-RESILIENT';
+// iCHEF Portail Staff V75 — mobile first + synchronisation stable + connexion résiliente
+const STAFF_PORTAL_BUILD = 'V75-MOBILE-SYNC-STABLE';
 
 const SERVER_URL =
   location.hostname === 'localhost' ||
@@ -1092,6 +1093,7 @@ function staffDeviceId(){
 }
 
 function clearStaffAuth(){
+  try{ disconnectStaffRealtime(); }catch(_){}
   sessionStorage.removeItem(
     'ichef_auth_token'
   );
@@ -1458,7 +1460,7 @@ async function attemptStaffLogin(event){
       history.replaceState(
         null,
         '',
-        'portail-staff.html?v=72'
+        'portail-staff.html?v=74'
       );
     }
 
@@ -1467,7 +1469,8 @@ async function attemptStaffLogin(event){
       profile
     );
 
-    await loadStaffDashboard();
+    await loadStaffDashboard({reason:'login'});
+    connectStaffRealtime();
 
   }catch(loginError){
     clearStaffAuth();
@@ -1964,60 +1967,249 @@ function renderDashboard(data){
   renderDocuments(data.documents);
 }
 
-async function loadStaffDashboard(){
-  const tenantID = currentTenant();
+// =========================================================
+// iCHEF V74 — CONTRÔLEUR DE SYNCHRONISATION STAFF STABLE
+// Une seule requête dashboard à la fois. Les demandes concurrentes sont
+// fusionnées et relancées une seule fois après la requête en cours.
+// =========================================================
+const STAFF_SYNC = {
+  inFlight: null,
+  pending: false,
+  timer: null,
+  sequence: 0,
+  appliedSequence: 0,
+  lastSuccessAt: 0,
+  lastReason: '',
+  socket: null,
+  socketJoined: false,
+  socketRetryTimer: null
+};
+
+function staffSyncStatusText(text){
+  const sync=document.getElementById('rh-sync-status');
+  if(sync)sync.textContent=text;
+}
+
+function staffAuthToken(){
+  return (
+    sessionStorage.getItem('ichef_auth_token') ||
+    sessionStorage.getItem('ichef_access_token') ||
+    ''
+  );
+}
+
+function scheduleStaffDashboardSync(reason='event', delay=140){
+  if(!requireStaffSession())return Promise.resolve(null);
+  STAFF_SYNC.pending=true;
+  STAFF_SYNC.lastReason=reason;
+  clearTimeout(STAFF_SYNC.timer);
+  STAFF_SYNC.timer=setTimeout(()=>{
+    loadStaffDashboard({reason,silent:true}).catch(()=>null);
+  },Math.max(0,Number(delay)||0));
+  return Promise.resolve(null);
+}
+
+async function loadStaffDashboard(options={}){
+  const reason=String(options.reason||'manual');
+  const silent=options.silent===true;
+
+  if(!requireStaffSession()){
+    return null;
+  }
+
+  STAFF_SYNC.pending=true;
+  STAFF_SYNC.lastReason=reason;
+
+  if(STAFF_SYNC.inFlight){
+    return STAFF_SYNC.inFlight;
+  }
+
+  STAFF_SYNC.inFlight=(async()=>{
+    let lastData=null;
+
+    do{
+      STAFF_SYNC.pending=false;
+      const tenantID=currentTenant();
+      const seq=++STAFF_SYNC.sequence;
+
+      try{
+        if(!silent && !STAFF_SYNC.lastSuccessAt){
+          showSync('Synchronisation de votre espace personnel iCHEF…');
+        }
+
+        const res=await fetch(
+          `${SERVER_URL}/api/staff/dashboard?tenantID=${encodeURIComponent(tenantID)}`,
+          {
+            method:'GET',
+            headers:authHeaders(),
+            credentials:'omit',
+            cache:'no-store'
+          }
+        );
+
+        let data={};
+        try{data=await res.json();}catch(_){}
+
+        if(res.status===401||res.status===403){
+          clearStaffAuth();
+          showStaffLogin(
+            data.error ||
+            'Votre session collaborateur a expiré. Reconnectez-vous.'
+          );
+          return null;
+        }
+
+        if(!res.ok){
+          throw new Error(
+            data.error ||
+            data.message ||
+            `API staff indisponible (${res.status})`
+          );
+        }
+
+        if(seq>=STAFF_SYNC.appliedSequence){
+          STAFF_SYNC.appliedSequence=seq;
+          STAFF_SYNC.lastSuccessAt=Date.now();
+          renderDashboard(data);
+          lastData=data;
+          hideSync();
+          if(STAFF_SYNC.socketJoined){
+            staffSyncStatusText('Synchronisé en temps réel');
+          }else{
+            staffSyncStatusText('Synchronisé RH');
+          }
+        }
+
+      }catch(error){
+        console.warn('[iCHEF Staff Dashboard V74]',error);
+        if(!STAFF_SYNC.lastSuccessAt || !silent){
+          showSync(
+            safeText(
+              error?.message,
+              "Impossible de synchroniser votre espace staff. Vérifiez la connexion serveur."
+            ),
+            'error'
+          );
+        }
+        staffSyncStatusText('Synchronisation à vérifier');
+      }
+    }while(STAFF_SYNC.pending && requireStaffSession());
+
+    return lastData;
+  })();
 
   try{
-    showSync('Synchronisation de votre espace personnel iCHEF…');
+    return await STAFF_SYNC.inFlight;
+  }finally{
+    STAFF_SYNC.inFlight=null;
+  }
+}
 
-    const res = await fetch(
-      `${SERVER_URL}/api/staff/dashboard?tenantID=${encodeURIComponent(tenantID)}`,
+function disconnectStaffRealtime(){
+  clearTimeout(STAFF_SYNC.socketRetryTimer);
+  STAFF_SYNC.socketRetryTimer=null;
+  STAFF_SYNC.socketJoined=false;
+  if(STAFF_SYNC.socket){
+    try{STAFF_SYNC.socket.removeAllListeners();}catch(_){}
+    try{STAFF_SYNC.socket.disconnect();}catch(_){}
+  }
+  STAFF_SYNC.socket=null;
+}
+
+function connectStaffRealtime(){
+  if(!requireStaffSession())return;
+  if(typeof io!=='function'){
+    staffSyncStatusText('Synchronisé RH · temps réel indisponible');
+    return;
+  }
+  if(STAFF_SYNC.socket)return;
+
+  const tenantID=currentTenant();
+  const token=staffAuthToken();
+  const deviceId=staffDeviceId();
+
+  const socket=io(
+    SERVER_URL,
+    {
+      transports:['websocket','polling'],
+      reconnection:true,
+      reconnectionAttempts:Infinity,
+      reconnectionDelay:800,
+      reconnectionDelayMax:5000,
+      timeout:20000,
+      auth:{
+        tenantID,
+        token,
+        deviceId,
+        page:'PORTAIL_STAFF'
+      }
+    }
+  );
+
+  STAFF_SYNC.socket=socket;
+
+  socket.on('connect',()=>{
+    socket.emit(
+      'joinStaffPortalRealtime',
       {
-        method:'GET',
-        headers:authHeaders(),
-        credentials:'omit',
-        cache:'no-store'
+        tenantID,
+        token,
+        deviceId,
+        page:'PORTAIL_STAFF'
       }
     );
+  });
 
-    let data = {};
-    try{
-      data = await res.json();
-    }catch(_){}
+  socket.on('staff-realtime-joined',packet=>{
+    if(String(packet?.tenantID||'').toLowerCase()!==String(tenantID).toLowerCase())return;
+    STAFF_SYNC.socketJoined=true;
+    staffSyncStatusText('Synchronisé en temps réel');
+    scheduleStaffDashboardSync('socket-joined',30);
+    try{window.__ichefStaffPlanningRefresh?.({force:true,reason:'socket-joined'});}catch(_){}
+  });
 
-    if(res.status === 401 || res.status === 403){
-      clearStaffAuth();
-
-      showStaffLogin(
-        data.error ||
-        'Votre session collaborateur a expiré. Reconnectez-vous.'
-      );
-
-      return;
+  socket.on('staff-sync-required',packet=>{
+    if(String(packet?.tenantID||'').toLowerCase()!==String(tenantID).toLowerCase())return;
+    scheduleStaffDashboardSync(`realtime:${packet?.tableId||'state'}`,120);
+    const planningKeys=new Set([
+      'TIMESHEETS_MASTER',
+      'RH_TIMESHEET_REAL',
+      'RH_HOURS_RESET_MASTER',
+      'PUNCHES_MASTER',
+      'REQUESTS_MASTER',
+      'STAFF_REQUESTS',
+      'PLANNING_HISTORY_MASTER',
+      'DIRECTORY_MASTER',
+      'STAFF_ACCESS'
+    ]);
+    if(planningKeys.has(String(packet?.tableId||'').toUpperCase())){
+      try{window.__ichefStaffPlanningRefresh?.({force:true,reason:'realtime'});}catch(_){}
     }
+  });
 
-    if(!res.ok){
-      throw new Error(
-        data.error ||
-        data.message ||
-        `API staff indisponible (${res.status})`
-      );
+  socket.on('ichef-auth-error',()=>{
+    STAFF_SYNC.socketJoined=false;
+    staffSyncStatusText('Session temps réel refusée');
+  });
+
+  socket.on('staff-realtime-error',packet=>{
+    STAFF_SYNC.socketJoined=false;
+    staffSyncStatusText('Temps réel à vérifier');
+    console.warn('[iCHEF Staff Realtime]',packet?.error||packet);
+  });
+
+  socket.on('disconnect',()=>{
+    STAFF_SYNC.socketJoined=false;
+    if(requireStaffSession()){
+      staffSyncStatusText('Reconnexion temps réel…');
     }
+  });
 
-    renderDashboard(data);
-    hideSync();
-
-  }catch(error){
-    console.warn('[iCHEF Staff Dashboard]',error);
-
-    showSync(
-      safeText(
-        error?.message,
-        "Impossible de synchroniser votre espace staff. Vérifiez la connexion serveur."
-      ),
-      'error'
-    );
-  }
+  socket.on('connect_error',error=>{
+    STAFF_SYNC.socketJoined=false;
+    staffSyncStatusText('Synchronisé RH · reconnexion…');
+    console.warn('[iCHEF Staff Realtime connect]',error?.message||error);
+  });
 }
 
 async function clockService(){
@@ -2413,7 +2605,8 @@ async function bootstrapCollaboratorPortal(){
       readProfile()
     );
 
-    await loadStaffDashboard();
+    await loadStaffDashboard({reason:'bootstrap'});
+    connectStaffRealtime();
   }else{
     showStaffLogin();
   }
@@ -2574,10 +2767,31 @@ submitStaffRequest=async function(){
   finally{button.disabled=false;button.textContent='Envoyer la demande';}
 };
 
-// Refresh RH : au retour sur l'application et toutes les 60 secondes.
-setInterval(()=>{if(requireStaffSession()&&!document.hidden)loadStaffDashboard();},60000);
-window.addEventListener('focus',()=>{if(requireStaffSession())loadStaffDashboard();});
-document.addEventListener('visibilitychange',()=>{if(!document.hidden&&requireStaffSession())loadStaffDashboard();});
+// V74 — secours réseau : le temps réel déclenche les mises à jour.
+// Le polling reste uniquement un filet de sécurité et ne lance jamais
+// plusieurs requêtes dashboard en parallèle.
+setInterval(()=>{
+  if(requireStaffSession()&&!document.hidden){
+    scheduleStaffDashboardSync('fallback-poll',0);
+    try{window.__ichefStaffPlanningRefresh?.({force:true,reason:'fallback-poll'});}catch(_){}
+  }
+},60000);
+
+window.addEventListener('focus',()=>{
+  if(requireStaffSession()){
+    scheduleStaffDashboardSync('window-focus',80);
+    try{window.__ichefStaffPlanningRefresh?.({force:true,reason:'window-focus'});}catch(_){}
+    connectStaffRealtime();
+  }
+});
+
+document.addEventListener('visibilitychange',()=>{
+  if(!document.hidden&&requireStaffSession()){
+    scheduleStaffDashboardSync('visible',80);
+    try{window.__ichefStaffPlanningRefresh?.({force:true,reason:'visible'});}catch(_){}
+    connectStaffRealtime();
+  }
+});
 // =========================================================
 
 bootstrapCollaboratorPortal();
@@ -2603,19 +2817,17 @@ if ('serviceWorker' in navigator) {
         return;
       }
 
-      // Nettoie uniquement les anciens caches iCHEF devenus incompatibles.
-      // Aucun cache contenant des données RH personnelles n'est créé ici.
+      // Nettoie uniquement les anciens caches génériques iCHEF.
+      // Les caches "ichef-rh-shell-*" sont gérés exclusivement par sw-rh.js
+      // pendant son événement activate. Le portail ne les supprime plus :
+      // cela évite une course entre la page et le Service Worker.
       if ('caches' in window) {
         const keys = await caches.keys();
         await Promise.all(
           keys
             .filter(name =>
-              (
-                name.startsWith('ichef-cache-') ||
-                name.startsWith('ichef-dynamic-') ||
-                name.startsWith('ichef-rh-shell-')
-              ) &&
-              name !== 'ichef-rh-shell-2026-09-25-v4'
+              name.startsWith('ichef-cache-') ||
+              name.startsWith('ichef-dynamic-')
             )
             .map(name => caches.delete(name))
         );
@@ -2643,7 +2855,7 @@ if ('serviceWorker' in navigator) {
       }
 
       const registration = await navigator.serviceWorker.register(
-        '/sw-rh.js?v=20260925-5',
+        '/sw-rh.js?v=20260925-7',
         {
           scope: '/',
           updateViaCache: 'none'
@@ -2656,7 +2868,7 @@ if ('serviceWorker' in navigator) {
       } catch (_) {}
 
       console.info(
-        '[iCHEF Staff V71] sw-rh.js actif',
+        '[iCHEF Staff V75] sw-rh.js actif',
         registration.scope
       );
     } catch (error) {
@@ -2733,7 +2945,7 @@ if ('serviceWorker' in navigator) {
 </style>
 <script id="ichef-staff-v73-personal-planning-script">
 (() => {
-  const state={view:'week',cursor:null,cache:new Map(),lastRows:[],lastTitle:'Mon planning personnel'};
+  const state={view:'week',cursor:null,cache:new Map(),monthSeq:new Map(),lastRows:[],lastTitle:'Mon planning personnel',refreshSeq:0,lastRenderedSeq:0};
   const pad=n=>String(n).padStart(2,'0');
   const startOfDay=d=>new Date(d.getFullYear(),d.getMonth(),d.getDate());
   const addDays=(d,n)=>{const x=new Date(d);x.setDate(x.getDate()+n);return x;};
@@ -2764,21 +2976,311 @@ if ('serviceWorker' in navigator) {
   function rowWorked(row){if(!row)return false;return Number(row.plannedHours||0)>0||statusClass(row)==='work';}
   function dateRange(){const c=state.cursor||today();if(state.view==='day')return[c];if(state.view==='week'){const s=monday(c);return Array.from({length:7},(_,i)=>addDays(s,i));}const first=new Date(c.getFullYear(),c.getMonth(),1),last=new Date(c.getFullYear(),c.getMonth()+1,0);return Array.from({length:last.getDate()},(_,i)=>addDays(first,i));}
   function periodTitle(dates){if(state.view==='day')return formatDate(dates[0],{weekday:'long',day:'2-digit',month:'long',year:'numeric'});if(state.view==='week')return `Semaine du ${formatDate(dates[0],{day:'2-digit',month:'short'})} au ${formatDate(dates[dates.length-1],{day:'2-digit',month:'short',year:'numeric'})}`;return formatDate(state.cursor,{month:'long',year:'numeric'});}
-  async function fetchMonth(m){if(state.cache.has(m))return state.cache.get(m);const promise=(async()=>{const res=await fetch(`${SERVER_URL}/api/staff/planning-archive?month=${encodeURIComponent(m)}`,{method:'GET',headers:authHeaders(),credentials:'omit',cache:'no-store'});const data=await res.json().catch(()=>({}));if(!res.ok||data.success!==true)throw new Error(data.error||'Planning personnel indisponible.');return data;})();state.cache.set(m,promise);try{return await promise;}catch(e){state.cache.delete(m);throw e;}}
+  async function fetchMonth(m,{force=false}={}){
+    const cached=state.cache.get(m);
+    const now=Date.now();
+    if(!force&&cached&&cached.data&&(now-cached.at)<15000)return cached.data;
+    if(!force&&cached?.promise)return cached.promise;
+    const requestSeq=(state.monthSeq.get(m)||0)+1;
+    state.monthSeq.set(m,requestSeq);
+    const promise=(async()=>{
+      const res=await fetch(
+        `${SERVER_URL}/api/staff/planning-archive?month=${encodeURIComponent(m)}`,
+        {method:'GET',headers:authHeaders(),credentials:'omit',cache:'no-store'}
+      );
+      const data=await res.json().catch(()=>({}));
+      if(res.status===401||res.status===403){
+        throw new Error(data.error||'Session collaborateur expirée.');
+      }
+      if(!res.ok||data.success!==true)throw new Error(data.error||'Planning personnel indisponible.');
+      if(state.monthSeq.get(m)===requestSeq){
+        state.cache.set(m,{data,at:Date.now(),promise:null});
+      }
+      return data;
+    })();
+    state.cache.set(m,{data:cached?.data||null,at:cached?.at||0,promise});
+    try{return await promise;}
+    catch(e){
+      if(state.monthSeq.get(m)===requestSeq)state.cache.delete(m);
+      throw e;
+    }
+  }
   function rowMap(monthData,m){const map=new Map();for(const row of(Array.isArray(monthData?.days)?monthData.days:[])){const k=parseRowDate(row,m);if(k)map.set(k,row);}return map;}
-  async function collectRows(dates){const months=[...new Set(dates.map(monthKey))];const packs=await Promise.all(months.map(async m=>[m,await fetchMonth(m)]));const maps=new Map(packs.map(([m,d])=>[m,rowMap(d,m)]));return dates.map(d=>({date:d,row:maps.get(monthKey(d))?.get(key(d))||null,inRange:d>=minDate()&&d<=maxDate()}));}
+  async function collectRows(dates,{force=false}={}){const months=[...new Set(dates.map(monthKey))];const packs=await Promise.all(months.map(async m=>[m,await fetchMonth(m,{force})]));const maps=new Map(packs.map(([m,d])=>[m,rowMap(d,m)]));return dates.map(d=>({date:d,row:maps.get(monthKey(d))?.get(key(d))||null,inRange:d>=minDate()&&d<=maxDate()}));}
   function renderTable(items){const wrap=document.getElementById('schedule-list');if(!wrap)return;const nowKey=key(today());const body=items.map(({date,row,inRange})=>{const k=key(date),isToday=k===nowKey;if(!inRange)return `<tr class="staff-plan-out-range"><td class="staff-plan-date-cell"><strong>${esc(formatDate(date,{weekday:'short',day:'2-digit',month:'2-digit'}))}</strong><small>${esc(k)}</small></td><td colspan="6"><span class="staff-plan-status-pill off">Hors période +6 mois</span></td></tr>`;if(!row)return `<tr class="${isToday?'staff-plan-today-row ':''}staff-plan-empty-row"><td class="staff-plan-date-cell"><strong>${esc(formatDate(date,{weekday:'short',day:'2-digit',month:'2-digit'}))}</strong><small>${esc(k)}</small></td><td colspan="6">Aucun planning publié pour cette journée.</td></tr>`;const status=row.statusLabel||row.status||'—';const time=row.time||row.hours||[row.start,row.end].filter(Boolean).join(' — ')||'Repos';const position=row.position||row.poste||row.location||'—';const duration=formatHours(row.plannedHours);const note=row.note||'—';const change=[row.lastChangeReason?`Motif : ${row.lastChangeReason}`:'',row.lastChangeAt?formatPortalDate(row.lastChangeAt,true):'',row.lastChangeBy?`· ${row.lastChangeBy}`:''].filter(Boolean).join(' ');return `<tr class="${isToday?'staff-plan-today-row':''}"><td class="staff-plan-date-cell"><strong>${esc(formatDate(date,{weekday:'short',day:'2-digit',month:'2-digit'}))}</strong><small>${esc(k)}${isToday?' · Aujourd’hui':''}</small></td><td><span class="staff-plan-status-pill ${statusClass(row)}">${esc(status)}</span></td><td><span class="staff-plan-time">${esc(time)}</span></td><td>${esc(position)}</td><td><strong>${esc(duration)}</strong></td><td class="staff-plan-note-cell">${esc(note)}</td><td class="staff-plan-change-cell">${change?esc(change):'—'}</td></tr>`;}).join('');wrap.innerHTML=`<table class="staff-personal-plan-table"><thead><tr><th>Date</th><th>Statut</th><th>Horaires</th><th>Poste</th><th>Durée</th><th>Note du gérant</th><th>Dernière modification</th></tr></thead><tbody>${body}</tbody></table>`;}
   function renderSummary(items){const valid=items.filter(x=>x.inRange&&x.row);const hours=valid.reduce((sum,x)=>sum+(Number(x.row?.plannedHours)||0),0);const worked=valid.filter(x=>rowWorked(x.row)).length;const rest=valid.filter(x=>!rowWorked(x.row)).length;const h=document.getElementById('staff-plan-summary-hours');if(h)h.textContent=formatHours(hours);const w=document.getElementById('staff-plan-summary-work');if(w)w.textContent=String(worked);const r=document.getElementById('staff-plan-summary-rest');if(r)r.textContent=String(rest);}
   function updateControls(dates){document.querySelectorAll('[data-staff-plan-view]').forEach(b=>b.classList.toggle('active',b.dataset.staffPlanView===state.view));const label=document.getElementById('staff-plan-period-label');if(label)label.textContent=periodTitle(dates);const limit=document.getElementById('staff-plan-limit-label');if(limit)limit.textContent=formatDate(maxDate(),{day:'2-digit',month:'long',year:'numeric'});const input=document.getElementById('staff-plan-month-input');if(input){input.min=minMonthKey();input.max=maxMonthKey();input.value=monthKey(state.cursor);}const prev=document.getElementById('staff-plan-prev'),next=document.getElementById('staff-plan-next');if(prev){const test=state.view==='month'?new Date(state.cursor.getFullYear(),state.cursor.getMonth()-1,1):addDays(state.cursor,state.view==='week'?-7:-1);prev.disabled=test<minDate();}if(next){const test=state.view==='month'?new Date(state.cursor.getFullYear(),state.cursor.getMonth()+1,1):addDays(state.cursor,state.view==='week'?7:1);next.disabled=test>maxDate();}}
-  async function refresh(){if(!state.cursor)state.cursor=today();state.cursor=clampDate(state.cursor);const wrap=document.getElementById('schedule-list');if(wrap)wrap.innerHTML='<div class="staff-plan-loading-v73">Synchronisation du planning personnel…</div>';const dates=dateRange();updateControls(dates);try{const items=await collectRows(dates);state.lastRows=items;state.lastTitle=periodTitle(dates);renderTable(items);renderSummary(items);}catch(error){if(wrap)wrap.innerHTML=`<div class="staff-plan-error-v73">${esc(error?.message||'Planning personnel indisponible.')}</div>`;}}
+  async function refresh(options={}){
+    const force=options.force===true;
+    const seq=++state.refreshSeq;
+    if(!state.cursor)state.cursor=today();
+    state.cursor=clampDate(state.cursor);
+    const wrap=document.getElementById('schedule-list');
+    if(wrap&&(!state.lastRows.length||force)){
+      wrap.innerHTML='<div class="staff-plan-loading-v73">Synchronisation du planning personnel…</div>';
+    }
+    const dates=dateRange();
+    updateControls(dates);
+    try{
+      const items=await collectRows(dates,{force});
+      if(seq<state.refreshSeq)return;
+      state.lastRenderedSeq=seq;
+      state.lastRows=items;
+      state.lastTitle=periodTitle(dates);
+      renderTable(items);
+      renderSummary(items);
+    }catch(error){
+      if(seq<state.refreshSeq)return;
+      if(wrap)wrap.innerHTML=`<div class="staff-plan-error-v73">${esc(error?.message||'Planning personnel indisponible.')}</div>`;
+    }
+  }
   function move(direction){if(state.view==='month'){const d=new Date(state.cursor);d.setDate(1);d.setMonth(d.getMonth()+direction);state.cursor=clampDate(d);}else state.cursor=clampDate(addDays(state.cursor,direction*(state.view==='week'?7:1)));refresh();}
   function printCurrent(){const rows=state.lastRows||[];if(!rows.length){showSync('Aucun planning à imprimer.','error');return;}const table=document.querySelector('#schedule-list .staff-personal-plan-table');if(!table){showSync('Aucun planning à imprimer.','error');return;}const w=window.open('','_blank','noopener,noreferrer');if(!w){showSync('Autorisez les fenêtres pop-up pour imprimer.','error');return;}w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(state.lastTitle)}</title><style>@page{size:A4 landscape;margin:10mm}body{font-family:Arial,sans-serif;color:#111}h1{font-size:18px;margin:0 0 4px}p{font-size:10px;color:#666;margin:0 0 12px}table{width:100%;border-collapse:collapse;font-size:9px}th,td{border:1px solid #bbb;padding:5px;text-align:left;vertical-align:top}th{background:#eee}</style></head><body><h1>iCHEF · ${esc(state.lastTitle)}</h1><p>Planning personnel · imprimé le ${esc(new Date().toLocaleString('fr-FR'))}</p>${table.outerHTML}</body></html>`);w.document.close();setTimeout(()=>w.print(),180);}
   function bind(){state.cursor=today();document.querySelectorAll('[data-staff-plan-view]').forEach(btn=>btn.addEventListener('click',()=>{state.view=btn.dataset.staffPlanView||'week';refresh();}));document.getElementById('staff-plan-prev')?.addEventListener('click',()=>move(-1));document.getElementById('staff-plan-next')?.addEventListener('click',()=>move(1));document.getElementById('staff-plan-today')?.addEventListener('click',()=>{state.cursor=today();refresh();});document.getElementById('staff-plan-month-input')?.addEventListener('change',e=>{const m=String(e.target.value||'');if(!/^\d{4}-\d{2}$/.test(m))return;const [y,mo]=m.split('-').map(Number);const d=new Date(y,mo-1,1);state.cursor=(m===monthKey(today())?today():d);state.cursor=clampDate(state.cursor);refresh();});const print=document.getElementById('planning-print-btn');if(print){const fresh=print.cloneNode(true);print.replaceWith(fresh);fresh.addEventListener('click',printCurrent);}if(readProfile()?.id)refresh();}
-  renderSchedule=function(schedule=[]){if(Array.isArray(schedule))STAFF_VIEW_STATE.schedule=schedule;state.cache.clear();refresh();};
+  renderSchedule=function(schedule=[]){
+    if(Array.isArray(schedule))STAFF_VIEW_STATE.schedule=schedule;
+    // Le dashboard ne déclenche plus un second fetch planning à chaque rendu.
+    // Le planning est rafraîchi par le canal temps réel ou par le polling de secours.
+    if(!state.lastRows.length)refresh();
+  };
+  window.__ichefStaffPlanningRefresh=({force=false,reason='manual'}={})=>{
+    if(force)state.cache.clear();
+    return refresh({force,reason});
+  };
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bind,{once:true});else bind();
-  window.__ICHEF_STAFF_BUILD__='V73-PLANNING-PERSONNEL-JOUR-SEMAINE-MOIS';
-  console.info('[iCHEF Staff V73] Planning personnel Jour / Semaine / Mois · +6 mois');
+  window.__ICHEF_STAFF_BUILD__='V75-MOBILE-SYNC-STABLE-PLANNING';
+  console.info('[iCHEF Staff V75] Mobile · Planning stable · Jour / Semaine / Mois · +6 mois');
 })();
 </script>
+
+<style id="ichef-staff-v75-mobile-style">
+/* =========================================================
+   iCHEF STAFF V75 — MOBILE FIRST
+   Téléphone 320–720 px · zones tactiles · safe areas iOS
+   ========================================================= */
+@media (max-width:720px){
+  html{scroll-padding-bottom:92px}
+  body{
+    width:100%;
+    overflow-x:hidden;
+    background-attachment:scroll!important;
+    background-size:auto 32vh!important;
+    background-position:center top!important;
+  }
+  button,input,select,textarea{font-size:16px}
+  button,.link,.tab,.bottom-item,.staff-plan-view-btn,.staff-plan-nav-btn,.staff-plan-today-btn{
+    touch-action:manipulation;
+  }
+  .main{
+    width:100%;
+    max-width:100%;
+    padding:calc(10px + env(safe-area-inset-top)) 8px calc(92px + env(safe-area-inset-bottom));
+    overflow-x:hidden;
+  }
+  .topbar{height:auto;min-height:42px;margin-top:0}
+  .top-pill{padding:7px 9px;gap:8px;border-radius:10px;min-width:0}
+  .top-pill>span{min-width:0}
+  .time{font-size:20px;white-space:nowrap}
+  .hero{margin:18px 2px 12px}
+  .hero h1{font-size:25px;line-height:1.08;overflow-wrap:anywhere}
+  .hero p{font-size:9px;line-height:1.4;letter-spacing:.6px}
+  .sync-banner{font-size:10px;margin:0 0 10px;padding:9px 10px}
+  .grid{display:grid;grid-template-columns:minmax(0,1fr);gap:10px;width:100%;min-width:0}
+  .card{width:100%;min-width:0;border-radius:12px;overflow:hidden}
+  .card-header{
+    min-height:50px;height:auto;padding:8px 10px;gap:7px;flex-wrap:wrap;
+  }
+  .card-header h3{font-size:11px;line-height:1.25;letter-spacing:.7px;min-width:0}
+  .card-header .spacer{display:none}
+  .card-header .link{
+    min-height:34px;padding:0 9px;border:1px solid rgba(215,173,92,.22);
+    border-radius:8px;background:rgba(215,173,92,.04);font-size:8px;
+  }
+  .card-body{padding:10px}
+  .rh-sync-chip{font-size:7px;padding:4px 7px;order:3}
+
+  /* Accueil / service */
+  .shift{grid-template-columns:1fr;gap:10px}
+  .shift-time{font-size:27px}
+  .shift-side{min-width:0;border-left:0;border-top:1px solid var(--border);padding:10px 0 0}
+  .primary,.req-btn{min-height:50px;height:auto}
+  .stats-row{grid-template-columns:repeat(3,minmax(0,1fr));gap:4px}
+  .stat{padding:8px 5px}
+  .stat small{font-size:8px;line-height:1.25}
+  .stat strong{font-size:15px}
+  .item{padding:10px 8px;align-items:flex-start}
+  .item strong{font-size:11px}
+  .item small{font-size:9px;line-height:1.4}
+  .status,.tag{font-size:8px}
+  .schedule-row{
+    grid-template-columns:1fr auto;gap:5px 8px;padding:10px 4px;
+  }
+  .schedule-row>span:nth-child(2){grid-column:1/2}
+  .schedule-row>span:nth-child(3){grid-column:2/3;grid-row:1/3;align-self:center;text-align:right}
+  .schedule-row>span:nth-child(4){display:none}
+
+  /* Heures RH */
+  .rh-hour-grid{grid-template-columns:1fr 1fr;gap:6px}
+  .rh-hour-box{padding:9px 8px}
+  .rh-hour-box small{font-size:8px}
+  .rh-hour-box strong{font-size:14px}
+  .rh-table-wrap{
+    width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;overscroll-behavior-inline:contain;
+    scrollbar-width:thin;
+  }
+  .rh-table{min-width:680px}
+
+  /* Planning personnel : contrôles */
+  .staff-personal-planning-shell{padding:10px!important}
+  .staff-plan-commandbar{display:grid!important;grid-template-columns:1fr;gap:8px!important;margin-bottom:10px!important}
+  .staff-plan-view-tabs{display:grid!important;grid-template-columns:repeat(3,1fr);width:100%;padding:3px!important}
+  .staff-plan-view-btn{min-height:44px!important;padding:0 5px!important;font-size:8px!important}
+  .staff-plan-nav-group{display:grid!important;grid-template-columns:44px 1fr 44px;width:100%;gap:6px!important}
+  .staff-plan-nav-btn,.staff-plan-today-btn{height:44px!important;min-height:44px!important}
+  .staff-plan-nav-btn{width:44px!important;font-size:24px!important}
+  .staff-plan-today-btn{width:100%;font-size:8px!important}
+  .staff-plan-month-jump{width:100%!important;margin:0!important;gap:4px!important}
+  .staff-plan-month-jump span{font-size:7px!important}
+  .staff-plan-month-jump input{width:100%!important;min-width:0!important;height:46px!important;font-size:16px!important}
+  .staff-plan-period-head{padding:10px 0!important;gap:5px!important}
+  .staff-plan-period-head strong{font-size:14px!important;line-height:1.25}
+  .staff-plan-period-limit{font-size:7px!important}
+
+  /* Résumé compact mais lisible */
+  .staff-plan-summary-grid{grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:5px!important;margin-bottom:10px!important}
+  .staff-plan-summary-box{padding:8px 6px!important;min-width:0}
+  .staff-plan-summary-box small{font-size:7px!important;line-height:1.2;min-height:17px}
+  .staff-plan-summary-box strong{font-size:13px!important}
+
+  /* Planning : le tableau devient une liste de cartes sur téléphone */
+  .staff-plan-table-wrap{
+    border:0!important;background:transparent!important;overflow:visible!important;margin:0!important;
+  }
+  .staff-personal-plan-table{
+    display:block;width:100%!important;min-width:0!important;border-collapse:separate!important;
+  }
+  .staff-personal-plan-table thead{display:none!important}
+  .staff-personal-plan-table tbody{display:flex;flex-direction:column;gap:8px;width:100%}
+  .staff-personal-plan-table tr{
+    display:block;width:100%;overflow:hidden;border:1px solid rgba(255,255,255,.08);
+    border-radius:12px;background:linear-gradient(180deg,rgba(13,13,13,.96),rgba(7,7,7,.96));
+  }
+  .staff-personal-plan-table tr.staff-plan-today-row{
+    border-color:rgba(215,173,92,.58);box-shadow:0 0 0 1px rgba(215,173,92,.08) inset;
+  }
+  .staff-personal-plan-table td{
+    display:grid!important;grid-template-columns:92px minmax(0,1fr);gap:8px;align-items:start;
+    width:100%;max-width:none!important;padding:8px 10px!important;border-bottom:1px solid rgba(255,255,255,.055)!important;
+    font-size:10px;line-height:1.4;overflow-wrap:anywhere;
+  }
+  .staff-personal-plan-table td:last-child{border-bottom:0!important}
+  .staff-personal-plan-table td::before{
+    color:#77736d;font-size:7px;font-weight:850;letter-spacing:.55px;text-transform:uppercase;
+  }
+  .staff-personal-plan-table td:nth-child(1){display:block!important;padding:10px!important;background:rgba(255,255,255,.018)}
+  .staff-personal-plan-table td:nth-child(1)::before{content:none}
+  .staff-personal-plan-table td:nth-child(2)::before{content:"Statut"}
+  .staff-personal-plan-table td:nth-child(3)::before{content:"Horaires"}
+  .staff-personal-plan-table td:nth-child(4)::before{content:"Poste"}
+  .staff-personal-plan-table td:nth-child(5)::before{content:"Durée"}
+  .staff-personal-plan-table td:nth-child(6)::before{content:"Note du gérant"}
+  .staff-personal-plan-table td:nth-child(7)::before{content:"Modification"}
+  .staff-personal-plan-table td[colspan]{display:block!important;padding:10px!important;text-align:left!important}
+  .staff-personal-plan-table td[colspan]::before{content:none!important}
+  .staff-plan-date-cell strong{font-size:12px!important}
+  .staff-plan-date-cell small{font-size:8px!important}
+  .staff-plan-status-pill{min-height:25px;font-size:7px!important;justify-self:start}
+  .staff-plan-time{font-size:11px!important}
+  .staff-plan-note-cell,.staff-plan-change-cell{font-size:9px!important;line-height:1.4!important}
+
+  /* Archives planning : même lecture mobile, sans défilement horizontal */
+  .staff-plan-archive{overflow:visible!important}
+  .staff-plan-archive-head{padding:10px!important;gap:7px!important}
+  .staff-plan-archive-head label,.staff-plan-archive-head button{width:100%!important}
+  .staff-plan-archive-head input,.staff-plan-archive-head button{height:46px!important;font-size:14px!important}
+  .staff-archive-table{display:block!important;width:100%!important;min-width:0!important}
+  .staff-archive-table thead{display:none!important}
+  .staff-archive-table tbody{display:flex;flex-direction:column;gap:8px;padding:8px}
+  .staff-archive-table tr{display:block;border:1px solid rgba(255,255,255,.08);border-radius:10px;overflow:hidden;background:#080808}
+  .staff-archive-table td{
+    display:grid!important;grid-template-columns:92px minmax(0,1fr);gap:8px;width:100%;padding:8px 9px!important;
+    border-bottom:1px solid rgba(255,255,255,.055)!important;overflow-wrap:anywhere;
+  }
+  .staff-archive-table td:last-child{border-bottom:0!important}
+  .staff-archive-table td::before{color:#77736d;font-size:7px;font-weight:850;text-transform:uppercase;letter-spacing:.5px}
+  .staff-archive-table td:nth-child(1)::before{content:"Date"}.staff-archive-table td:nth-child(2)::before{content:"Statut"}
+  .staff-archive-table td:nth-child(3)::before{content:"Horaires"}.staff-archive-table td:nth-child(4)::before{content:"Poste"}
+  .staff-archive-table td:nth-child(5)::before{content:"Heures"}.staff-archive-table td:nth-child(6)::before{content:"Note"}
+  .staff-archive-table td:nth-child(7)::before{content:"Modification"}
+
+  /* Demandes : modal type bottom sheet */
+  .request-modal{align-items:flex-end;padding:0}
+  .request-modal-card{
+    width:100%;max-width:none;max-height:92dvh;border-radius:18px 18px 0 0;
+    overflow:auto;padding-bottom:env(safe-area-inset-bottom);
+  }
+  .request-modal-head{position:sticky;top:0;z-index:2;background:#0b0b0b;padding:13px 14px}
+  .request-modal-body{padding:13px 14px 16px}
+  .request-input{height:50px;font-size:16px}
+  textarea.request-input{height:88px}
+  .request-modal-actions{grid-template-columns:1fr;gap:8px}
+  .request-secondary,.request-submit{min-height:50px}
+
+  /* Connexion : totalement utilisable d'une main */
+  .staff-login-gate{
+    padding:calc(12px + env(safe-area-inset-top)) 10px calc(20px + env(safe-area-inset-bottom));
+    background-size:auto 31vh!important;
+  }
+  .staff-login-brand{top:calc(10px + env(safe-area-inset-top));width:calc(100vw - 20px)}
+  .staff-login-brand img{width:min(220px,62vw);max-height:72px}
+  .staff-login-line{width:min(270px,72vw);margin-bottom:10px}
+  .staff-login-brand h1{font-size:14px;letter-spacing:3.5px}
+  .staff-login-brand p{font-size:7px;letter-spacing:1.8px;line-height:1.4}
+  .staff-login-card{
+    width:100%;margin-top:132px;padding:14px;border-radius:16px;
+  }
+  .staff-login-card input{height:52px;font-size:16px}
+  .staff-login-submit{min-height:54px;font-size:11px;letter-spacing:2px}
+  #staffLoginPinToggle{height:36px;top:8px}
+
+  /* Navigation basse : 6 fonctions accessibles sur téléphone */
+  .bottom-nav{
+    left:0!important;right:0;bottom:0;min-height:0;height:auto;
+    display:flex!important;gap:6px!important;overflow-x:auto;overflow-y:hidden;
+    padding:7px 7px calc(7px + env(safe-area-inset-bottom));
+    scroll-snap-type:x proximity;-webkit-overflow-scrolling:touch;
+  }
+  .bottom-item:nth-child(n){display:flex!important}
+  .bottom-item{
+    flex:0 0 82px;min-height:58px;padding:6px 5px;gap:4px;flex-direction:column;
+    border-radius:10px;scroll-snap-align:start;text-align:center;
+  }
+  .bottom-item .ic{width:18px;height:18px}
+  .bottom-item .ic svg{width:18px;height:18px}
+  .bottom-item strong{font-size:7px;letter-spacing:.45px;white-space:nowrap}
+  .bottom-item small{display:none}
+
+  #ichef-universal-home-btn{
+    top:calc(8px + env(safe-area-inset-top))!important;left:8px!important;
+    padding:5px 8px!important;font-size:7px!important;gap:5px!important;
+  }
+}
+
+@media (max-width:390px){
+  .main{padding-left:6px;padding-right:6px}
+  .hero h1{font-size:23px}
+  .staff-plan-summary-grid{grid-template-columns:1fr 1fr!important}
+  .staff-plan-summary-box:first-child{grid-column:1/-1}
+  .staff-personal-plan-table td,.staff-archive-table td{grid-template-columns:82px minmax(0,1fr)}
+  .rh-hour-grid{grid-template-columns:1fr 1fr}
+}
+
+@media (max-width:340px){
+  .staff-plan-summary-grid,.rh-hour-grid,.stats-row{grid-template-columns:1fr!important}
+  .staff-personal-plan-table td,.staff-archive-table td{grid-template-columns:1fr}
+  .staff-personal-plan-table td::before,.staff-archive-table td::before{margin-bottom:2px}
+  .bottom-item{flex-basis:76px}
+}
+</style>
 </body>
 </html>
