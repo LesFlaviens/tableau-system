@@ -1,16 +1,16 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-<script id="ichef-rh-v92-cache-reset">
+<script id="ichef-rh-v94-cache-reset">
 (async()=>{
   try {
-    if (sessionStorage.getItem('ichef_rh_v92_cache_reset_done') !== '1') {
+    if (sessionStorage.getItem('ichef_rh_v94_cache_reset_done') !== '1') {
       sessionStorage.setItem('ichef_rh_v92_cache_reset_done','1');
       if ('serviceWorker' in navigator) {
         const regs = await navigator.serviceWorker.getRegistrations();
         await Promise.all(regs.map(async r => {
           const u = String(r.active?.scriptURL || r.waiting?.scriptURL || r.installing?.scriptURL || '');
-          if (u.includes('sw-rh.js') && !u.includes('v=93')) await r.unregister();
+          if (u.includes('sw-rh.js') && !u.includes('v=94')) await r.unregister();
         }));
       }
       if ('caches' in window) {
@@ -18,7 +18,7 @@
         await Promise.all(keys.filter(k => /rh|ichef/i.test(k)).map(k => caches.delete(k)));
       }
     }
-  } catch (e) { console.warn('[iCHEF RH V92] nettoyage cache non bloquant', e); }
+  } catch (e) { console.warn('[iCHEF RH V94] nettoyage cache non bloquant', e); }
 })();
 </script>
 
@@ -27,8 +27,8 @@
     <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>iCHEF RH · Direction & Pilotage RH V93</title>
-    <meta name="ichef-build" content="RH-V93-PLANNING-MASTER-EDITABLE">
+    <title>iCHEF RH · Direction & Pilotage RH V94</title>
+    <meta name="ichef-build" content="RH-V94-PLANNING-AUDIT-5Y-PRINT">
     
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800;900&display=swap" rel="stylesheet">
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
@@ -2762,7 +2762,7 @@
             </div>
 
             <footer class="rh-cockpit-footer">
-                <div><strong>iCHEF OS · RH</strong><span>V92 · Cockpit opérationnel</span></div>
+                <div><strong>iCHEF OS · RH</strong><span>V94 · Planning traçable 5 ans</span></div>
                 <div><i></i> Serveur en ligne <span id="rh-cockpit-sync-time">Dernière synchronisation : —</span></div>
                 <button type="button" onclick="return iChefRhHardHome(event)">⚙ Centre de contrôle</button>
             </footer>
@@ -2781,6 +2781,8 @@
             </div>
             <div style="display:flex; gap:10px;">
                 <button class="btn-nav" style="border-color:var(--accent); color:var(--accent);" onclick="openPlanningAssistant()">ASSISTANCE PLANNING</button>
+                <button class="btn-nav" style="border-color:rgba(212,175,55,.45);color:var(--gold);" onclick="openPlanningHistoryV94()">HISTORIQUE 5 ANS</button>
+                <button class="btn-nav" onclick="printCurrentPlanningV94()">IMPRIMER</button>
                 <button class="btn-nav" id="btn-toggle-view" onclick="toggleViewMode()">VUE GLOBALE</button>
                 <button class="btn-nav" onclick="backToHub()">RETOUR HUB</button>
             </div>
@@ -4506,19 +4508,46 @@
         }
 
         function saveRhChangeHistory(rows) {
-            const limited = Array.isArray(rows)
-                ? rows.slice(-3000)
-                : [];
+            const cutoff = new Date();
+            cutoff.setFullYear(cutoff.getFullYear() - 5);
+            const cutoffMs = cutoff.getTime();
+
+            const retained = (Array.isArray(rows) ? rows : [])
+                .filter(row => {
+                    const raw = row?.timestamp || row?.at || row?.updatedAt || row?.createdAt || '';
+                    const parsed = Date.parse(String(raw || ''));
+                    // Les anciennes lignes sans date lisible sont conservées pour éviter toute perte silencieuse.
+                    return !Number.isFinite(parsed) || parsed >= cutoffMs;
+                })
+                .sort((a,b) => {
+                    const ta = Date.parse(String(a?.timestamp || a?.at || 0)) || 0;
+                    const tb = Date.parse(String(b?.timestamp || b?.at || 0)) || 0;
+                    return ta - tb;
+                });
 
             localStorage.setItem(
                 'ichef_rh_change_history',
-                JSON.stringify(limited)
+                JSON.stringify(retained)
             );
 
-            API.update(
-                'RH_CHANGE_HISTORY',
-                limited
+            const planningHistory = retained.filter(row =>
+                (
+                    /^PLANNING_/i.test(String(row?.type || '')) ||
+                    /^AI_PLANNING/i.test(String(row?.type || ''))
+                ) && String(row?.staffId || '').trim() !== ''
             );
+            localStorage.setItem('ichef_planning_history_5y', JSON.stringify(planningHistory));
+
+            try {
+                Promise.resolve(API.update('RH_CHANGE_HISTORY', retained)).catch(error =>
+                    console.warn('[iCHEF RH V94] synchro historique RH différée', error)
+                );
+                Promise.resolve(API.update('PLANNING_HISTORY_MASTER', planningHistory)).catch(error =>
+                    console.warn('[iCHEF RH V94] synchro historique planning différée', error)
+                );
+            } catch (error) {
+                console.warn('[iCHEF RH V94] historique conservé localement', error);
+            }
         }
 
         function recordRhChange(entry) {
@@ -7705,12 +7734,21 @@
             if (!confirm(`Appliquer la proposition iCHEF pour ${monthLabelFr(monthStr)} ?\n\nLe planning officiel sera remplacé par cette proposition pour les cases générées, tout en conservant les éléments protégés.`)) {
                 return;
             }
+            const applyReason = String(prompt(`Pourquoi appliquez-vous cette modification de planning ?\n\nLe motif sera conservé 5 ans.`) || '').trim().slice(0,180);
+            if (!applyReason) {
+                alert('Application annulée : le motif de modification est obligatoire.');
+                return;
+            }
 
             const ts = getTs();
+            const aiBeforeByStaff = {};
             if (!ts[monthStr]) ts[monthStr] = {};
 
             Object.entries(planningAssistantDraft.proposal).forEach(([staffId, days]) => {
                 if (!ts[monthStr][staffId]) ts[monthStr][staffId] = {};
+                aiBeforeByStaff[staffId] = JSON.parse(JSON.stringify(ts[monthStr][staffId] || {}));
+                const auditAt = new Date().toISOString();
+                const auditBy = typeof window.rhAuditActorV94==='function' ? window.rhAuditActorV94() : 'Direction / RH';
 
                 Object.entries(days).forEach(([day, plan]) => {
                     const clean = {
@@ -7719,7 +7757,12 @@
                         s1: plan.s1 || '',
                         s2: plan.s2 || '',
                         pause: Number(plan.pause || 0),
-                        obs: String(plan.obs || '')
+                        obs: String(plan.obs || ''),
+                        managerNote: String(plan.managerNote || '').slice(0,40),
+                        lastChangeReason: applyReason,
+                        lastChangeAt: auditAt,
+                        lastChangeBy: auditBy,
+                        updatedAt: auditAt
                     };
 
                     ts[monthStr][staffId][day] = clean;
@@ -7728,12 +7771,16 @@
 
             const cloudSaved = await saveTs(ts);
 
-            recordRhChange({
-                type: 'AI_PLANNING_APPLIED',
-                month: monthStr,
-                source: 'ASSISTANCE_PLANNING',
-                coveragePct: planningAssistantDraft.metrics.coveragePct,
-                warnings: planningAssistantDraft.warnings.slice(0, 30)
+            Object.keys(planningAssistantDraft.proposal || {}).forEach(staffId => {
+                const staffRow = getDir().find(s => String(s.id) === String(staffId));
+                recordRhChange({
+                    type:'PLANNING_AI_APPLIED',month:monthStr,source:'ASSISTANCE_PLANNING',
+                    staffId:String(staffId),staffName:String(staffRow?.name||''),reason:applyReason,
+                    by:typeof window.rhAuditActorV94==='function'?window.rhAuditActorV94():'Direction / RH',
+                    before:aiBeforeByStaff[staffId] || {},after:JSON.parse(JSON.stringify(ts[monthStr][staffId] || {})),
+                    coveragePct:planningAssistantDraft.metrics.coveragePct,
+                    message:`Planning IA appliqué · ${monthStr} · ${applyReason}`
+                });
             });
 
             loadMonthData();
@@ -8810,38 +8857,60 @@
             const staff = getDir().find(s => String(s.id) === String(staffId));
             
             if(!ts[monthStr]) ts[monthStr] = {};
-            if(!ts[monthStr][staffId]) ts[monthStr][staffId] = {};
-            if(!ts[monthStr][staffId][day]) ts[monthStr][staffId][day] = {status:'off', poste: staff ? staff.dept : 'salle', s1:'', s2:'', pause:0, obs:''};
-            
-            ts[monthStr][staffId][day][key] = val;
+            const sid = String(staffId);
+            if(!ts[monthStr][sid]) ts[monthStr][sid] = {};
+            if(!ts[monthStr][sid][day]) ts[monthStr][sid][day] = {status:'off', poste: staff ? staff.dept : 'salle', s1:'', s2:'', pause:0, obs:'', managerNote:''};
+            const previousSnapshot = JSON.parse(JSON.stringify(ts[monthStr][sid][day] || {}));
+            const oldValue = String(previousSnapshot?.[key] ?? '');
+            if(oldValue === String(val ?? '')) { loadMonthData(); return; }
+            const reason = String(prompt(`Pourquoi modifiez-vous le planning de ${staff?.name || 'ce collaborateur'} ?\n\nCe motif sera conservé 5 ans dans l'historique.`) || '').trim().slice(0,180);
+            if(!reason){
+                alert('Modification annulée : un motif est obligatoire.');
+                loadMonthData();
+                return;
+            }
+            ts[monthStr][sid][day][key] = val;
             
             if (key === 'status') {
                 if (!isRhWorkStatus(val)) {
-                    ts[monthStr][staffId][day].s1 = '';
-                    ts[monthStr][staffId][day].s2 = '';
-                    ts[monthStr][staffId][day].pause = 0;
+                    ts[monthStr][sid][day].s1 = '';
+                    ts[monthStr][sid][day].s2 = '';
+                    ts[monthStr][sid][day].pause = 0;
                 } else if (val === 'present') {
-                    if (!ts[monthStr][staffId][day].s1) {
-                        ts[monthStr][staffId][day].s1 = '10:00-14:45';
+                    if (!ts[monthStr][sid][day].s1) {
+                        ts[monthStr][sid][day].s1 = '10:00-14:45';
                     }
-                    if (!ts[monthStr][staffId][day].s2) {
-                        ts[monthStr][staffId][day].s2 = '18:00-22:45';
+                    if (!ts[monthStr][sid][day].s2) {
+                        ts[monthStr][sid][day].s2 = '18:00-22:45';
                     }
-                    ts[monthStr][staffId][day].pause = 30;
+                    ts[monthStr][sid][day].pause = 30;
                 } else if (val === 'off_soir') {
-                    if (!ts[monthStr][staffId][day].s1) {
-                        ts[monthStr][staffId][day].s1 = '10:00-14:45';
+                    if (!ts[monthStr][sid][day].s1) {
+                        ts[monthStr][sid][day].s1 = '10:00-14:45';
                     }
-                    ts[monthStr][staffId][day].s2 = '';
-                    ts[monthStr][staffId][day].pause = 0;
+                    ts[monthStr][sid][day].s2 = '';
+                    ts[monthStr][sid][day].pause = 0;
                 } else if (val === 'off_matin') {
-                    ts[monthStr][staffId][day].s1 = '';
-                    if (!ts[monthStr][staffId][day].s2) {
-                        ts[monthStr][staffId][day].s2 = '18:00-22:45';
+                    ts[monthStr][sid][day].s1 = '';
+                    if (!ts[monthStr][sid][day].s2) {
+                        ts[monthStr][sid][day].s2 = '18:00-22:45';
                     }
-                    ts[monthStr][staffId][day].pause = 0;
+                    ts[monthStr][sid][day].pause = 0;
                 }
             }
+            const auditAt = new Date().toISOString();
+            const auditBy = typeof window.rhAuditActorV94==='function' ? window.rhAuditActorV94() : 'Direction / RH';
+            ts[monthStr][sid][day].lastChangeReason = reason;
+            ts[monthStr][sid][day].lastChangeAt = auditAt;
+            ts[monthStr][sid][day].lastChangeBy = auditBy;
+            ts[monthStr][sid][day].updatedAt = auditAt;
+            const afterSnapshot = JSON.parse(JSON.stringify(ts[monthStr][sid][day]));
+            if(typeof recordRhChange==='function') recordRhChange({
+                type:'PLANNING_MANUAL_EDIT',source:'DIRECTION_INDIVIDUAL',staffId:sid,
+                staffName:String(staff?.name||''),date:`${monthStr}-${String(day).padStart(2,'0')}`,month:monthStr,day:Number(day),
+                reason,managerNote:String(afterSnapshot.managerNote||''),by:auditBy,before:previousSnapshot,after:afterSnapshot,
+                message:`Planning modifié · ${monthStr}-${String(day).padStart(2,'0')} · ${reason}`
+            });
             const savePromise = saveTs(ts);
 
             // L'affichage reste immédiat grâce au snapshot local de saveTs().
@@ -9016,18 +9085,20 @@
                     totalH += net;
 
                     const schedule = [p.s1, p.s2].filter(Boolean).join(' / ');
-                    const title = `${meta.label}${schedule ? ' · ' + schedule : ''}${net > 0 ? ' · ' + net.toFixed(1) + ' h' : ''}`;
+                    const managerNote = String(p.managerNote || p.manager_note || '').trim().slice(0, 40);
+                    const title = `${meta.label}${schedule ? ' · ' + schedule : ''}${net > 0 ? ' · ' + net.toFixed(1) + ' h' : ''}${managerNote ? ' · Note: ' + managerNote : ''}`;
 
                     rowHtml += `
                         <td class="${isWeekend ? 'weekend-cell' : ''} ${isToday ? 'today-cell' : ''}" title="${escapeRhHtml(title)}">
                             <button
                                 type="button"
                                 class="status-select-cell rh-status-quick-btn status-${escapeRhHtml(status)}"
-                                aria-label="${escapeRhHtml(staff.name || 'Collaborateur')} - ${d}/${month} - ${escapeRhHtml(meta.label)}"
+                                aria-label="${escapeRhHtml(staff.name || 'Collaborateur')} - ${d}/${month} - ${escapeRhHtml(meta.label)}${managerNote ? ' - ' + escapeRhHtml(managerNote) : ''}"
                                 data-rh-staff="${escapeRhHtml(String(staff.id))}"
                                 data-rh-day="${d}"
                                 onclick='openRhQuickStatus(event, ${sid}, ${d})'>
-                                ${escapeRhHtml(meta.short)}
+                                <span class="rh-cell-status">${escapeRhHtml(meta.short)}</span>
+                                ${managerNote ? `<span class="rh-cell-note">${escapeRhHtml(managerNote)}</span>` : ''}
                             </button>
                         </td>`;
                 }
@@ -12731,7 +12802,10 @@ html, body {
 }
 </style>
 
-</head><body>${lastPayrollPreviewHtml}</body></html>`);
+</head><body>${lastPayrollPreviewHtml}
+
+
+</body></html>`);
         w.document.close();
         w.focus();
         setTimeout(()=>w.print(),250);
@@ -13582,7 +13656,7 @@ html, body {
     setInterval(()=>{if(navigator.onLine)syncQueue()},30000);
 
     if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost'||location.hostname==='127.0.0.1')){
-        window.addEventListener('load',()=>navigator.serviceWorker.register('/sw-rh.js?v=93',{scope:'/'}).catch(e=>console.warn('[iCHEF RH OFFLINE] Service Worker non installé',e?.message||e)));
+        window.addEventListener('load',()=>navigator.serviceWorker.register('/sw-rh.js?v=94',{scope:'/'}).catch(e=>console.warn('[iCHEF RH OFFLINE] Service Worker non installé',e?.message||e)));
     }
 })();
 </script>
@@ -14271,9 +14345,19 @@ console.info('[iCHEF RH V84] Planning manuel + sauvegarde cloud + IA planning s�
                     <div class="rh-cse-field"><label>Matin (S1)</label><input id="rh-cse-s1" type="text" placeholder="10:00-14:45" value="${esc(data.p.s1||'')}"></div>
                     <div class="rh-cse-field"><label>Soir (S2)</label><input id="rh-cse-s2" type="text" placeholder="18:00-22:45" value="${esc(data.p.s2||'')}"></div>
                     <div class="rh-cse-field"><label>Pause (minutes)</label><input id="rh-cse-pause" type="number" min="0" max="240" step="5" value="${Number(data.p.pause)||0}"></div>
-                    <div class="rh-cse-field full"><label>Observation</label><textarea id="rh-cse-obs" placeholder="Observation...">${esc(data.p.obs||'')}</textarea></div>
+                    <div class="rh-cse-field full"><label>Observation interne</label><textarea id="rh-cse-obs" placeholder="Observation interne...">${esc(data.p.obs||'')}</textarea></div>
+                    <div class="rh-cse-field full">
+                        <label>Note du gérant affichée dans la case · 40 caractères max</label>
+                        <input id="rh-cse-manager-note" type="text" maxlength="40" placeholder="Ex. Remplace Paul à 18h" value="${esc(data.p.managerNote||'')}">
+                        <small class="rh-cse-count" id="rh-cse-manager-count">${String(data.p.managerNote||'').length}/40</small>
+                    </div>
+                    <div class="rh-cse-field full rh-cse-reason-field">
+                        <label>Pourquoi ce planning est-il modifié ? · obligatoire</label>
+                        <textarea id="rh-cse-change-reason" maxlength="180" placeholder="Motif obligatoire : remplacement, changement d'activité, demande du collaborateur, erreur de saisie…"></textarea>
+                        <small class="rh-cse-count" id="rh-cse-reason-count">0/180</small>
+                    </div>
                 </div>
-                <div class="rh-cse-note">La modification est enregistrée dans le planning RH central. Le portail Staff utilisera la même donnée après publication/synchronisation.</div>
+                <div class="rh-cse-note">Chaque changement est horodaté avec le motif, l'avant/après et l'auteur. L'historique du planning est conservé 5 ans et synchronisé pour le Portail Staff.</div>
             </div>
             <div class="rh-cse-actions">
                 <button type="button" class="rh-cse-cancel" onclick="closeRhCockpitShiftEditor()">ANNULER</button>
@@ -14301,6 +14385,16 @@ console.info('[iCHEF RH V84] Planning manuel + sauvegarde cloud + IA planning s�
             toggleShiftFields();
         });
         toggleShiftFields();
+        const noteInput = document.getElementById('rh-cse-manager-note');
+        const reasonInput = document.getElementById('rh-cse-change-reason');
+        noteInput?.addEventListener('input', () => {
+            const count = document.getElementById('rh-cse-manager-count');
+            if (count) count.textContent = `${noteInput.value.length}/40`;
+        });
+        reasonInput?.addEventListener('input', () => {
+            const count = document.getElementById('rh-cse-reason-count');
+            if (count) count.textContent = `${reasonInput.value.length}/180`;
+        });
         modal.classList.add('show');
         setTimeout(()=>document.getElementById('rh-cse-status')?.focus(),30);
     };
@@ -14318,6 +14412,8 @@ console.info('[iCHEF RH V84] Planning manuel + sauvegarde cloud + IA planning s�
         let s2=String(document.getElementById('rh-cse-s2')?.value||'').trim();
         let pause=Math.max(0,Math.min(240,Number(document.getElementById('rh-cse-pause')?.value)||0));
         const obs=String(document.getElementById('rh-cse-obs')?.value||'').trim().slice(0,500);
+        const managerNote=String(document.getElementById('rh-cse-manager-note')?.value||'').trim().slice(0,40);
+        const changeReason=String(document.getElementById('rh-cse-change-reason')?.value||'').trim().slice(0,180);
 
         if(!workStatuses.has(status)){s1='';s2='';pause=0;}
         if(status==='off_soir'){s2='';}
@@ -14334,7 +14430,25 @@ console.info('[iCHEF RH V84] Planning manuel + sauvegarde cloud + IA planning s�
         if(!ts[month]) ts[month]={};
         if(!ts[month][sid]) ts[month][sid]={};
         const previous=ts[month][sid][day] || ts[month][sid][String(day)] || {};
-        ts[month][sid][day]={...previous,status,poste,s1,s2,pause,obs,updatedAt:new Date().toISOString()};
+        const previousSnapshot=JSON.parse(JSON.stringify(previous || {}));
+        const candidate={...previous,status,poste,s1,s2,pause,obs,managerNote};
+        const comparable = node => JSON.stringify({
+            status:String(node?.status||'off'),poste:String(node?.poste||''),s1:String(node?.s1||''),s2:String(node?.s2||''),
+            pause:Number(node?.pause||0),obs:String(node?.obs||''),managerNote:String(node?.managerNote||'')
+        });
+        if(comparable(previousSnapshot)===comparable(candidate)){
+            window.closeRhCockpitShiftEditor();
+            if(typeof showToast==='function') showToast('Aucune modification');
+            return;
+        }
+        if(!changeReason){
+            alert('Le motif de modification est obligatoire pour garantir la traçabilité du planning.');
+            document.getElementById('rh-cse-change-reason')?.focus();
+            return;
+        }
+        const auditAt=new Date().toISOString();
+        const auditBy=typeof window.rhAuditActorV94==='function'?window.rhAuditActorV94():'Direction / RH';
+        ts[month][sid][day]={...candidate,lastChangeReason:changeReason,lastChangeAt:auditAt,lastChangeBy:auditBy,updatedAt:auditAt};
 
         const saveBtn=document.querySelector('#rh-cockpit-shift-editor .rh-cse-save');
         if(saveBtn){saveBtn.disabled=true;saveBtn.textContent='ENREGISTRÉ';}
@@ -14346,7 +14460,13 @@ console.info('[iCHEF RH V84] Planning manuel + sauvegarde cloud + IA planning s�
             if(typeof saveTs==='function') cloudPromise = saveTs(ts);
             else localStorage.setItem('empire_hr_timesheets',JSON.stringify(ts));
 
-            if(typeof recordRhChange==='function') recordRhChange({type:'PLANNING_MANUAL_EDIT',source:'DIRECTION_COCKPIT',staffId:sid,date:editorCtx.dateStr,status,poste,s1,s2,pause});
+            if(typeof recordRhChange==='function') recordRhChange({
+                type:'PLANNING_MANUAL_EDIT',source:'DIRECTION_PLANNING',staffId:sid,
+                staffName:String(editorCtx.staff?.name||''),date:editorCtx.dateStr,month,day,
+                reason:changeReason,managerNote,by:auditBy,before:previousSnapshot,
+                after:{...ts[month][sid][day]},
+                message:`Planning modifié · ${editorCtx.dateStr} · ${changeReason}`
+            });
             if(typeof loadMonthData==='function') loadMonthData();
             if(typeof loadPublicPlanning==='function') loadPublicPlanning();
             if(typeof broadcastStaffingLevels==='function') Promise.resolve(broadcastStaffingLevels()).catch(()=>{});
@@ -14497,8 +14617,13 @@ console.info('[iCHEF RH V87 legacy] Correctifs planning manuel conservés sous V
     if(!ts[month]) ts[month]={};
     if(!ts[month][sid]) ts[month][sid]={};
     const d=Number(day);
-    const prev=ts[month][sid][d]||ts[month][sid][String(d)]||{poste:staff?.dept||'salle',s1:'',s2:'',pause:0,obs:''};
-    const next={...prev,status:String(status),updatedAt:new Date().toISOString()};
+    const prev=ts[month][sid][d]||ts[month][sid][String(d)]||{poste:staff?.dept||'salle',s1:'',s2:'',pause:0,obs:'',managerNote:''};
+    if(String(prev?.status||'off')===String(status||'off')) return true;
+    const reason=String(prompt(`Pourquoi modifiez-vous le planning de ${staff?.name||'ce collaborateur'} ?\n\nCe motif sera conservé 5 ans.`)||'').trim().slice(0,180);
+    if(!reason){if(typeof showToast==='function')showToast('Modification annulée · motif obligatoire');return false;}
+    const auditAt=new Date().toISOString();
+    const auditBy=typeof window.rhAuditActorV94==='function'?window.rhAuditActorV94():'Direction / RH';
+    const next={...prev,status:String(status),lastChangeReason:reason,lastChangeAt:auditAt,lastChangeBy:auditBy,updatedAt:auditAt};
     if(status==='present'){
       next.s1=next.s1||'10:00-14:45'; next.s2=next.s2||'18:00-22:45'; next.pause=Number(next.pause)||30;
     }else if(status==='off_soir'){
@@ -14512,7 +14637,12 @@ console.info('[iCHEF RH V87 legacy] Correctifs planning manuel conservés sous V
     let cloud=null;
     if(typeof saveTs==='function') cloud=saveTs(ts);
     else localStorage.setItem('empire_hr_timesheets',JSON.stringify(ts));
-    try{ if(typeof recordRhChange==='function') recordRhChange({type:'PLANNING_STATUS_EDIT',source:'DIRECTION',staffId:sid,month,day:d,status}); }catch(_){ }
+    try{ if(typeof recordRhChange==='function') recordRhChange({
+      type:'PLANNING_STATUS_EDIT',source:'DIRECTION_LEGACY',staffId:sid,staffName:String(staff?.name||''),month,day:d,
+      date:`${month}-${String(d).padStart(2,'0')}`,status,reason,managerNote:String(next.managerNote||''),by:auditBy,
+      before:JSON.parse(JSON.stringify(prev||{})),after:JSON.parse(JSON.stringify(next)),
+      message:`Planning modifié · ${month}-${String(d).padStart(2,'0')} · ${reason}`
+    }); }catch(_){ }
     try{ if(typeof loadMonthData==='function') loadMonthData(); }catch(_){ }
     try{ if(typeof renderRhCockpit==='function') renderRhCockpit(); }catch(_){ }
     try{ if(typeof loadPublicPlanning==='function') loadPublicPlanning(); }catch(_){ }
@@ -14708,6 +14838,110 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
 
     window.__ICHEF_RH_BUILD__ = 'RH-V93-PLANNING-MASTER-EDITABLE';
     console.info('[iCHEF RH V93] PLANNINGS : grille maître directement éditable');
+})();
+</script>
+
+<style id="ichef-rh-v94-planning-audit-style">
+/* V94 · Notes de case, motif obligatoire, historique 5 ans et impression */
+#global-view-container .status-select-cell{height:42px!important;min-height:42px!important;width:78px!important;min-width:78px!important;display:flex!important;flex-direction:column;align-items:center;justify-content:center;gap:2px;padding:3px 12px 3px 4px!important;line-height:1.05}
+#global-view-container .rh-cell-status{display:block;font-size:8px;font-weight:900;max-width:65px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#global-view-container .rh-cell-note{display:block;max-width:68px;color:#d8c98f;font-size:6px;font-weight:700;letter-spacing:.15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rh-cse-count{align-self:flex-end;color:#737a80;font-size:9px}.rh-cse-reason-field textarea{border-color:rgba(239,68,68,.32)!important}.rh-cse-reason-field label{color:#d9a0a4!important}
+#rh-planning-history-v94{position:fixed;inset:0;z-index:32000;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(0,0,0,.86);backdrop-filter:blur(12px)}
+#rh-planning-history-v94.show{display:flex}.rh-ph94-card{width:min(1180px,100%);max-height:calc(100dvh - 32px);display:flex;flex-direction:column;background:#101214;border:1px solid #343a3f;border-radius:15px;overflow:hidden}.rh-ph94-head{padding:16px 18px;border-bottom:1px solid #2b3034;display:flex;align-items:center;gap:12px;flex-wrap:wrap}.rh-ph94-head h3{margin:0;font-size:15px}.rh-ph94-head small{color:#8c949a}.rh-ph94-head .spacer{flex:1}.rh-ph94-head button,.rh-ph94-filters button{border:1px solid #3a4045;background:#171a1d;color:#dfe3e6;border-radius:8px;min-height:38px;padding:0 12px;font-size:9px;font-weight:850;cursor:pointer}.rh-ph94-head .print{border-color:rgba(212,175,55,.5);color:#e2c873}.rh-ph94-filters{padding:12px 18px;display:grid;grid-template-columns:1.1fr .8fr .8fr auto;gap:10px;border-bottom:1px solid #262b2f}.rh-ph94-filters label{display:flex;flex-direction:column;gap:5px;color:#80878d;font-size:8px;font-weight:800;text-transform:uppercase}.rh-ph94-filters select,.rh-ph94-filters input{height:36px;border:1px solid #343a3f;border-radius:7px;background:#090b0c;color:#fff;padding:0 9px}.rh-ph94-table-wrap{overflow:auto;flex:1}.rh-ph94-table{width:100%;border-collapse:collapse;min-width:1050px}.rh-ph94-table th{position:sticky;top:0;background:#141719;color:#858d94;text-align:left;font-size:8px;text-transform:uppercase;padding:10px;border-bottom:1px solid #32383d}.rh-ph94-table td{padding:10px;border-bottom:1px solid #24292d;font-size:9px;vertical-align:top;color:#d9dde0}.rh-ph94-table small{display:block;color:#899096;margin-top:3px;line-height:1.35}.rh-ph94-empty{padding:40px;text-align:center;color:#7f878d}.rh-ph94-reason{max-width:260px;white-space:normal;line-height:1.4}.rh-ph94-note{color:#dcc77e!important}
+@media(max-width:780px){.rh-ph94-filters{grid-template-columns:1fr 1fr}.rh-ph94-filters label:first-child{grid-column:1/-1}}
+</style>
+<script id="ichef-rh-v94-planning-audit-script">
+(() => {
+  const FIVE_YEARS_MS = 5 * 365.2425 * 86400000;
+  const esc = v => String(v ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  window.rhAuditActorV94 = function(){
+    try{
+      const profile = JSON.parse(sessionStorage.getItem('ichef_staff_profile') || '{}');
+      return String(profile?.name || sessionStorage.getItem('ichef_user_name') || sessionStorage.getItem('ichef_user_role') || window.currentDept || 'Direction / RH');
+    }catch(_){ return String(sessionStorage.getItem('ichef_user_role') || window.currentDept || 'Direction / RH'); }
+  };
+  function planningRows(){
+    let rows=[];
+    try{ rows = typeof getRhChangeHistory==='function' ? getRhChangeHistory() : JSON.parse(localStorage.getItem('ichef_rh_change_history')||'[]'); }catch(_){ rows=[]; }
+    const cutoff = Date.now() - FIVE_YEARS_MS;
+    return (Array.isArray(rows)?rows:[]).filter(r=>{
+      const type=String(r?.type||'');
+      const t=Date.parse(String(r?.timestamp||r?.at||''));
+      return (/^PLANNING_/i.test(type)||/^AI_PLANNING/i.test(type)) && String(r?.staffId||'').trim()!=='' && (!Number.isFinite(t)||t>=cutoff);
+    }).sort((a,b)=>(Date.parse(String(b?.timestamp||b?.at||0))||0)-(Date.parse(String(a?.timestamp||a?.at||0))||0));
+  }
+  function statusLabel(node){
+    try{ return rhStatusMeta(String(node?.status||'off')).label; }catch(_){ return String(node?.status||'—'); }
+  }
+  function summary(node){
+    if(!node||typeof node!=='object') return '—';
+    const sessions=[node.s1,node.s2].filter(Boolean).join(' / ');
+    return [statusLabel(node),sessions,node.managerNote?`Note: ${node.managerNote}`:''].filter(Boolean).join(' · ');
+  }
+  function ensureModal(){
+    let modal=document.getElementById('rh-planning-history-v94');
+    if(modal) return modal;
+    modal=document.createElement('div'); modal.id='rh-planning-history-v94'; modal.setAttribute('role','dialog'); modal.setAttribute('aria-modal','true');
+    modal.innerHTML=`<div class="rh-ph94-card"><div class="rh-ph94-head"><div><h3>Historique du planning · 5 ans</h3><small>Avant / après · motif obligatoire · note gérant · auteur · horodatage</small></div><span class="spacer"></span><button class="print" type="button" onclick="printPlanningHistoryV94()">IMPRIMER</button><button type="button" onclick="closePlanningHistoryV94()">FERMER</button></div><div class="rh-ph94-filters"><label>Collaborateur<select id="rh-ph94-staff"></select></label><label>Du<input id="rh-ph94-from" type="date"></label><label>Au<input id="rh-ph94-to" type="date"></label><button type="button" onclick="renderPlanningHistoryV94()">ACTUALISER</button></div><div class="rh-ph94-table-wrap"><table class="rh-ph94-table"><thead><tr><th>Date / heure</th><th>Collaborateur</th><th>Journée planning</th><th>Avant</th><th>Après</th><th>Pourquoi</th><th>Note case</th><th>Auteur</th></tr></thead><tbody id="rh-ph94-body"></tbody></table></div></div>`;
+    document.body.appendChild(modal);
+    modal.addEventListener('click',e=>{if(e.target===modal)window.closePlanningHistoryV94();});
+    return modal;
+  }
+  window.openPlanningHistoryV94=function(){
+    const modal=ensureModal();
+    const sel=document.getElementById('rh-ph94-staff');
+    const current=sel?.value||'';
+    if(sel){
+      const dir=typeof getDir==='function'?getDir():[];
+      sel.innerHTML='<option value="">Toute l’équipe</option>'+dir.map(s=>`<option value="${esc(String(s.id))}">${esc(s.name||String(s.id))}</option>`).join('');
+      if([...sel.options].some(o=>o.value===current)) sel.value=current;
+    }
+    const to=document.getElementById('rh-ph94-to'),from=document.getElementById('rh-ph94-from');
+    const today=new Date(); const cutoff=new Date(); cutoff.setFullYear(cutoff.getFullYear()-5);
+    if(to&&!to.value)to.value=today.toISOString().slice(0,10); if(from&&!from.value)from.value=cutoff.toISOString().slice(0,10);
+    window.renderPlanningHistoryV94(); modal.classList.add('show');
+  };
+  window.closePlanningHistoryV94=()=>document.getElementById('rh-planning-history-v94')?.classList.remove('show');
+  window.renderPlanningHistoryV94=function(){
+    const sid=String(document.getElementById('rh-ph94-staff')?.value||'');
+    const from=Date.parse(String(document.getElementById('rh-ph94-from')?.value||'')+'T00:00:00');
+    const to=Date.parse(String(document.getElementById('rh-ph94-to')?.value||'')+'T23:59:59');
+    const rows=planningRows().filter(r=>{
+      const t=Date.parse(String(r.timestamp||r.at||''));
+      return (!sid||String(r.staffId||'')===sid)&&(!Number.isFinite(from)||!Number.isFinite(t)||t>=from)&&(!Number.isFinite(to)||!Number.isFinite(t)||t<=to);
+    });
+    window.__rhPh94Rows=rows;
+    const body=document.getElementById('rh-ph94-body'); if(!body)return;
+    body.innerHTML=rows.length?rows.map(r=>{
+      const at=new Date(r.timestamp||r.at||Date.now());
+      const name=r.staffName||((typeof getDir==='function'?getDir():[]).find(s=>String(s.id)===String(r.staffId))?.name)||r.staffId||'—';
+      const before=r.before&&typeof r.before==='object'&&!Array.isArray(r.before)?summary(r.before):'Modification groupée';
+      const after=r.after&&typeof r.after==='object'&&!Array.isArray(r.after)&&('status' in r.after||'s1' in r.after||'s2' in r.after)?summary(r.after):'Planning mis à jour';
+      return `<tr><td><strong>${esc(at.toLocaleDateString('fr-FR'))}</strong><small>${esc(at.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit',second:'2-digit'}))}</small></td><td>${esc(name)}</td><td>${esc(r.date||r.month||'—')}</td><td>${esc(before)}</td><td>${esc(after)}</td><td class="rh-ph94-reason">${esc(r.reason||'—')}</td><td class="rh-ph94-note">${esc(r.managerNote||r.after?.managerNote||'—')}</td><td>${esc(r.by||'Direction / RH')}</td></tr>`;
+    }).join(''):`<tr><td colspan="8"><div class="rh-ph94-empty">Aucune modification de planning sur cette période.</div></td></tr>`;
+  };
+  function printDoc(title,body){
+    const w=window.open('','_blank','noopener,noreferrer'); if(!w){alert('Autorisez les fenêtres pop-up pour imprimer.');return;}
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>@page{size:A4 landscape;margin:10mm}body{font-family:Arial,sans-serif;color:#111}h1{font-size:18px}small{color:#666}table{width:100%;border-collapse:collapse;font-size:9px}th,td{border:1px solid #bbb;padding:5px;text-align:left;vertical-align:top}th{background:#eee}.note{font-size:8px;color:#654}</style></head><body><h1>${esc(title)}</h1><small>Imprimé le ${esc(new Date().toLocaleString('fr-FR'))}</small>${body}</body></html>`);w.document.close();setTimeout(()=>w.print(),200);
+  }
+  window.printPlanningHistoryV94=function(){
+    if(!window.__rhPh94Rows) window.renderPlanningHistoryV94(); const rows=window.__rhPh94Rows||[];
+    const dir=typeof getDir==='function'?getDir():[];
+    const html=`<table><thead><tr><th>Date/heure</th><th>Collaborateur</th><th>Journée</th><th>Avant</th><th>Après</th><th>Motif</th><th>Note</th><th>Auteur</th></tr></thead><tbody>${rows.map(r=>{const at=new Date(r.timestamp||r.at||Date.now());const name=r.staffName||dir.find(s=>String(s.id)===String(r.staffId))?.name||r.staffId||'—';const before=r.before&&typeof r.before==='object'?summary(r.before):'—';const after=r.after&&typeof r.after==='object'&&('status'in r.after||'s1'in r.after)?summary(r.after):'Mise à jour groupée';return `<tr><td>${esc(at.toLocaleString('fr-FR'))}</td><td>${esc(name)}</td><td>${esc(r.date||r.month||'—')}</td><td>${esc(before)}</td><td>${esc(after)}</td><td>${esc(r.reason||'—')}</td><td>${esc(r.managerNote||r.after?.managerNote||'—')}</td><td>${esc(r.by||'Direction / RH')}</td></tr>`;}).join('')}</tbody></table>`;
+    printDoc('iCHEF RH · Historique planning 5 ans',html);
+  };
+  window.printCurrentPlanningV94=function(){
+    const month=document.getElementById('month-selector')?.value||''; if(!/^\d{4}-\d{2}$/.test(month)){alert('Sélectionnez un mois.');return;}
+    const ts=typeof getTs==='function'?getTs():{}; const dir=typeof getDir==='function'?getDir().filter(s=>s.active!==false):[]; const [y,m]=month.split('-').map(Number); const days=new Date(y,m,0).getDate();
+    let head='<tr><th>Collaborateur</th>'+Array.from({length:days},(_,i)=>`<th>${i+1}</th>`).join('')+'</tr>';
+    let body=dir.map(st=>{const sm=ts?.[month]?.[st.id]||ts?.[month]?.[String(st.id)]||{};return `<tr><th>${esc(st.name||st.id)}</th>`+Array.from({length:days},(_,i)=>{const p=sm[i+1]||sm[String(i+1)]||{status:'off'};const sessions=[p.s1,p.s2].filter(Boolean).join(' / ');return `<td><strong>${esc(statusLabel(p))}</strong>${sessions?`<br>${esc(sessions)}`:''}${p.managerNote?`<br><span class="note">${esc(p.managerNote)}</span>`:''}</td>`;}).join('')+'</tr>';}).join('');
+    printDoc(`iCHEF RH · Planning ${month}`,`<table><thead>${head}</thead><tbody>${body}</tbody></table>`);
+  };
+  // Nettoyage local à l'ouverture : jamais plus de 5 ans, jamais moins.
+  try{ if(typeof saveRhChangeHistory==='function') saveRhChangeHistory(typeof getRhChangeHistory==='function'?getRhChangeHistory():[]); }catch(_){ }
+  window.__ICHEF_RH_BUILD__='RH-V94-PLANNING-AUDIT-5Y-PRINT';
+  console.info('[iCHEF RH V94] Note case 40 caractères · motif obligatoire · historique planning 5 ans · impression');
 })();
 </script>
 
