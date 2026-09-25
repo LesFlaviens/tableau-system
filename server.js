@@ -807,8 +807,8 @@ return '/controle-fiscal.html' +
 }
 const ICHEF_TENANT_MUTATION_PATHS = new Set([
 '/update-order', '/api/voice-webhook', '/api/config/qr-nfc',
-'/api/config/cash-register', '/api/rh/punch', '/api/rh/timesheet/correct',
-'/api/rh/timesheet/status', '/api/anti-rush/update', '/api/fiscal/cash-in',
+'/api/config/cash-register', '/api/rh/punch', '/api/rh/punch/photo-redact', '/api/rh/timesheet/correct',
+'/api/rh/timesheet/status', '/api/rh/hours/reset', '/api/anti-rush/update', '/api/fiscal/cash-in',
 '/api/save-transaction', '/api/fiscal/correction', '/api/orders/close-paid',
 '/api/admin-action',
 '/api/client-portal/reservations/create',
@@ -881,7 +881,7 @@ app.get('/api/staff/build', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.json({
         success: true,
-        build: 'V65-STAFF-RH-PIN-TENANT-COMPAT',
+        build: 'V100-STAFF-RH-SYNC-SECURE',
         staffPortal: true,
         signedSession: true,
         timestamp: new Date().toISOString()
@@ -6264,6 +6264,68 @@ label:
 'Entrée sans sortie'
 });
 }
+/* V98 — conserver les journées corrigées manuellement même lorsqu'aucun
+   pointage brut n'existe (ex. oubli total d'entrée/sortie). Les preuves
+   originales restent dans PUNCHES_MASTER ; seule la valeur RH corrigée
+   est portée dans RH_TIMESHEET_REAL avec sa justification. */
+for (const [monthKey, previousMonth] of Object.entries(previousMonths || {})) {
+const previousStaffMap = previousMonth?.staff && typeof previousMonth.staff === 'object'
+? previousMonth.staff
+: {};
+for (const [staffKey, previousStaff] of Object.entries(previousStaffMap)) {
+const previousDays = previousStaff?.days && typeof previousStaff.days === 'object'
+? previousStaff.days
+: {};
+const manualDays = Object.entries(previousDays).filter(([, previousDay]) =>
+previousDay && (
+previousDay.manualWorkedHours !== undefined && previousDay.manualWorkedHours !== null
+|| previousDay.correction
+)
+);
+if (!manualDays.length) continue;
+if (!result.months[monthKey]) {
+result.months[monthKey] = {
+month: monthKey,
+status: previousMonth.status || 'TO_VERIFY',
+lockedAt: previousMonth.lockedAt || null,
+lockedBy: previousMonth.lockedBy || null,
+staff: {}
+};
+}
+const monthNode = result.months[monthKey];
+if (!monthNode.staff[staffKey]) {
+monthNode.staff[staffKey] = {
+staffId: previousStaff.staffId || staffKey,
+staffName: previousStaff.staffName || '',
+dept: previousStaff.dept || '',
+status: previousStaff.status || (monthNode.status === 'LOCKED' ? 'LOCKED' : 'TO_VERIFY'),
+validatedAt: previousStaff.validatedAt || null,
+validatedBy: previousStaff.validatedBy || null,
+lockedAt: previousStaff.lockedAt || null,
+lockedBy: previousStaff.lockedBy || null,
+days: {},
+totals: { rawWorkedHours: 0, workedHours: 0, anomalyCount: 0, validatedDays: 0, daysWithPunches: 0 }
+};
+}
+const staffSheet = monthNode.staff[staffKey];
+for (const [dayKey, previousDay] of manualDays) {
+if (staffSheet.days[dayKey]) continue;
+const date = previousDay.date || `${monthKey}-${String(dayKey).padStart(2,'0')}`;
+staffSheet.days[dayKey] = {
+date,
+sessions: Array.isArray(previousDay.sessions) ? previousDay.sessions : [],
+punches: Array.isArray(previousDay.punches) ? previousDay.punches : [],
+rawWorkedHours: ichefRhSafeNumber(previousDay.rawWorkedHours, 0),
+manualWorkedHours: ichefRhSafeNumber(previousDay.manualWorkedHours, 0),
+workedHours: ichefRhSafeNumber(previousDay.manualWorkedHours ?? previousDay.workedHours, 0),
+anomalies: Array.isArray(previousDay.anomalies) ? previousDay.anomalies : [],
+status: previousDay.status || 'TO_VERIFY',
+correction: previousDay.correction || null
+};
+}
+}
+}
+
 for (
 const [
 monthKey,
@@ -6392,11 +6454,15 @@ day.workedHours;
 staffSheet
 .totals
 .anomalyCount +=
+day.correction
+? 0
+: (
 Array.isArray(
 day.anomalies
 )
 ? day.anomalies.length
-: 0;
+: 0
+);
 staffSheet
 .totals
 .daysWithPunches++;
@@ -7021,6 +7087,144 @@ console.log(
 console.log(
 "iCHEF RH : diagnostic GET /api/rh/health chargé"
 );
+
+
+/* =========================================================
+   iCHEF RH — EFFACEMENT PHOTO DE PREUVE UNIQUEMENT
+   Le pointage reste intact : date, heure, type, collaborateur,
+   audit et feuille d'heures sont conservés.
+   ========================================================= */
+app.post('/api/rh/punch/photo-redact', async (req, res) => {
+res.setHeader('Cache-Control','no-store');
+try {
+const tenantID = cleanString(
+req.body?.tenantID || req.headers['x-ichef-tenant'] || ''
+);
+const punchId = String(
+req.body?.punchId || ''
+).trim().slice(0, 180);
+const pin = String(
+req.body?.pin || req.headers['x-ichef-pin'] || ''
+).trim();
+
+if (!tenantID || !punchId) {
+return res.status(400).json({
+success:false,
+error:'Établissement ou pointage manquant.'
+});
+}
+
+const auth = await ichefAuthorizePin(
+tenantID,
+pin,
+{ managerOnly:true }
+);
+if (!auth.ok) {
+return res.status(auth.status || 403).json({
+success:false,
+error:auth.error || 'Action réservée à la Direction / au Responsable RH.'
+});
+}
+
+const state = await AppState.findOne({ tenantID });
+if (!state) {
+return res.status(404).json({ success:false, error:'État RH introuvable.' });
+}
+
+const punches = Array.isArray(state?.activeOrders?.PUNCHES_MASTER?.data)
+? state.activeOrders.PUNCHES_MASTER.data.slice()
+: [];
+const index = punches.findIndex(p =>
+String(p?.id || p?.punchId || p?.offlineEventId || '') === punchId
+);
+const now = new Date().toISOString();
+let target = index >= 0 ? punches[index] : null;
+
+if (index >= 0) {
+punches[index] = {
+...punches[index],
+photo:'',
+photoRedacted:true,
+photoRedactedAt:now,
+photoRedactedBy:auth.name || auth.role || 'Direction'
+};
+target = punches[index];
+state.activeOrders = state.activeOrders || {};
+state.activeOrders.PUNCHES_MASTER = {
+...(state.activeOrders.PUNCHES_MASTER || {}),
+data:punches,
+updatedAt:now
+};
+state.markModified('activeOrders');
+await state.save();
+}
+
+const archive = await RhPunchRecord.findOne({
+tenantID,
+punchId
+});
+if (archive) {
+archive.photo = '';
+archive.details = {
+...(archive.details || {}),
+photo:'',
+photoRedacted:true,
+photoRedactedAt:now,
+photoRedactedBy:auth.name || auth.role || 'Direction'
+};
+archive.markModified('details');
+await archive.save();
+}
+
+if (index < 0 && !archive) {
+return res.status(404).json({
+success:false,
+error:'Pointage introuvable.'
+});
+}
+
+try {
+await scellerOperation(
+tenantID,
+'UPDATE',
+'RH_PUNCH_PHOTO_REDACT',
+punchId,
+String(auth.name || auth.role || 'Direction'),
+{
+punchId,
+staffId:String(target?.staffId || archive?.staffId || ''),
+timestamp:Number(target?.timestamp || archive?.timestamp || 0),
+photoRedacted:true,
+redactedAt:now
+}
+);
+} catch (auditError) {
+console.warn('[iCHEF RH] audit effacement photo non bloquant :', auditError?.message || auditError);
+}
+
+io.to(tenantID).emit('rhPunchPhotoRedacted', {
+punchId,
+staffId:String(target?.staffId || archive?.staffId || ''),
+photoRedactedAt:now
+});
+if (index >= 0) io.to(tenantID).emit('updateState', state);
+
+return res.json({
+success:true,
+punchId,
+photoRedacted:true,
+photoRedactedAt:now,
+punches:index >= 0 ? punches : undefined
+});
+} catch (error) {
+console.error('[iCHEF RH] /api/rh/punch/photo-redact', error);
+return res.status(500).json({
+success:false,
+error:'Impossible d’effacer la photo de preuve.'
+});
+}
+});
+
 const ICHEF_PAYMENT_OWNERSHIPS = new Set(['CLIENT', 'ICHEF', 'PARTNER']);
 const ICHEF_PAYMENT_MODES = new Set(['API_CLOUD', 'SMARTPOS_APP', 'EXTERNAL_MANUAL']);
 const ICHEF_PAYMENT_STATUSES = new Set(['CONFIGURED', 'CONNECTED', 'DISCONNECTED', 'TEST', 'DISABLED']);
@@ -15042,7 +15246,7 @@ app.get(
         res.setHeader('Cache-Control','no-store');
         return res.json({
             success:true,
-            build:'V66-STAFF-PSEUDO-RH-PIN-TENANT-COMPAT',
+            build:'V100-STAFF-RH-SYNC-SECURE',
             staffLoginRoute:'/api/staff/login',
             authentication:'STAFF_ID_RH_PLUS_PIN',
             signedSession:true,
@@ -15587,6 +15791,825 @@ app.post(
 );
 
 
+
+// ============================================================================
+// iCHEF V99 — REMISE À ZÉRO GLOBALE DES COMPTEURS D'HEURES
+// Les preuves (PUNCHES_MASTER), plannings et historiques restent intacts.
+// RH_HOURS_RESET_MASTER définit le point de départ commun RH / Staff / Pointeuse.
+// ============================================================================
+function ichefRhHoursResetInfo(activeOrders = {}) {
+    const raw = (
+        activeOrders?.RH_HOURS_RESET_MASTER?.data &&
+        typeof activeOrders.RH_HOURS_RESET_MASTER.data === 'object'
+    ) ? activeOrders.RH_HOURS_RESET_MASTER.data : (
+        activeOrders?.RH_HOURS_RESET_MASTER &&
+        typeof activeOrders.RH_HOURS_RESET_MASTER === 'object'
+        ? activeOrders.RH_HOURS_RESET_MASTER
+        : {}
+    );
+    const resetAt = String(raw?.resetAt || '').trim();
+    const resetMs = Date.parse(resetAt);
+    return {
+        active: Number.isFinite(resetMs) && resetMs > 0,
+        resetAt,
+        resetMs: Number.isFinite(resetMs) ? resetMs : 0,
+        resetBy: String(raw?.resetBy || ''),
+        reason: String(raw?.reason || ''),
+        resetId: String(raw?.resetId || '')
+    };
+}
+
+function ichefRhPlanCountsAfterReset(activeOrders = {}, day = {}) {
+    const reset = ichefRhHoursResetInfo(activeOrders);
+    if (!reset.active) return true;
+    const changedMs = Date.parse(String(
+        day?.lastChangeAt ||
+        day?.updatedAt ||
+        day?.createdAt ||
+        day?.timestamp ||
+        ''
+    ));
+    return Number.isFinite(changedMs) && changedMs >= reset.resetMs;
+}
+
+function ichefStaffRhPunchHoursForIds(punches, candidateIds, fromMs, toMs) {
+    const ids = new Set((candidateIds || []).map(v => String(v)));
+    const grouped = new Map();
+    for (const row of Array.isArray(punches) ? punches : []) {
+        const sid = String(row?.staffId || '');
+        if (!ids.has(sid)) continue;
+        const ts = Number(row?.timestamp || 0);
+        if (!Number.isFinite(ts) || ts < Number(fromMs || 0) || ts > Number(toMs || Date.now())) continue;
+        if (!grouped.has(sid)) grouped.set(sid, []);
+        grouped.get(sid).push(row);
+    }
+    let total = 0;
+    for (const [sid, rows] of grouped.entries()) {
+        total += Number(ichefStaffPortalHoursFromPunches(rows, sid, fromMs, toMs) || 0);
+    }
+    return Math.round(total * 100) / 100;
+}
+
+function ichefStaffRhWorkedWindow({activeOrders,punches,staff,rhStaff,fromMs,toMs}) {
+    const ids = ichefStaffRhCandidateIds(staff,rhStaff);
+    const reset = ichefRhHoursResetInfo(activeOrders);
+    const start = reset.active ? Math.max(Number(fromMs || 0), reset.resetMs) : Number(fromMs || 0);
+    const end = Number(toMs || Date.now());
+    const pointed = ichefStaffRhPunchHoursForIds(punches,ids,start,end);
+    if (!reset.active) return {pointed,rh:pointed};
+
+    let rh = pointed;
+    const real = activeOrders?.RH_TIMESHEET_REAL?.data && typeof activeOrders.RH_TIMESHEET_REAL.data === 'object'
+        ? activeOrders.RH_TIMESHEET_REAL.data
+        : {};
+    const startDate = new Date(start);
+    const endDate = new Date(end);
+    const cursor = new Date(startDate.getFullYear(),startDate.getMonth(),startDate.getDate(),12,0,0,0);
+    const last = new Date(endDate.getFullYear(),endDate.getMonth(),endDate.getDate(),12,0,0,0);
+    while (cursor <= last) {
+        const mk = ichefStaffRhMonthKey(cursor);
+        const dk = String(cursor.getDate()).padStart(2,'0');
+        let staffNode = null;
+        const monthNode = real?.months?.[mk];
+        if (monthNode?.staff) {
+            for (const id of ids) {
+                if (monthNode.staff[id] || monthNode.staff[String(id)]) {
+                    staffNode = monthNode.staff[id] || monthNode.staff[String(id)];
+                    break;
+                }
+            }
+        }
+        const dayNode = staffNode?.days?.[dk] || staffNode?.days?.[String(Number(dk))];
+        const correctedAt = Date.parse(String(dayNode?.correction?.correctedAt || ''));
+        if (dayNode?.correction && Number.isFinite(correctedAt) && correctedAt >= reset.resetMs) {
+            const dayStart = new Date(cursor.getFullYear(),cursor.getMonth(),cursor.getDate()).getTime();
+            const dayEnd = dayStart + 86400000 - 1;
+            const windowStart = Math.max(dayStart,start);
+            const windowEnd = Math.min(dayEnd,end);
+            if (windowEnd >= windowStart) {
+                const rawDay = ichefStaffRhPunchHoursForIds(punches,ids,windowStart,windowEnd);
+                rh -= rawDay;
+                rh += Number(dayNode?.workedHours ?? dayNode?.manualWorkedHours ?? 0) || 0;
+            }
+        }
+        cursor.setDate(cursor.getDate()+1);
+    }
+    return {
+        pointed: Math.round(pointed*100)/100,
+        rh: Math.round(Math.max(0,rh)*100)/100
+    };
+}
+
+// ============================================================================
+// iCHEF V67 — SYNCHRONISATION PORTAIL STAFF <-> RH
+// Planning RH (TIMESHEETS_MASTER), pointages/RH réel (RH_TIMESHEET_REAL),
+// demandes miroir RH, preuves et historique personnel.
+// ============================================================================
+
+function ichefStaffRhNormalizeIdentity(value) {
+    return String(value ?? '')
+        .trim()
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g,'')
+        .replace(/\s+/g,' ');
+}
+
+function ichefStaffRhMonthKey(date) {
+    const d = date instanceof Date ? date : new Date(date);
+    if (Number.isNaN(d.getTime())) return '';
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+}
+
+function ichefStaffRhIsoDate(date) {
+    const d = date instanceof Date ? date : new Date(date);
+    if (Number.isNaN(d.getTime())) return '';
+    return [
+        d.getFullYear(),
+        String(d.getMonth()+1).padStart(2,'0'),
+        String(d.getDate()).padStart(2,'0')
+    ].join('-');
+}
+
+function ichefStaffRhParseTime(value) {
+    const match = /^(\d{1,2}):(\d{2})$/.exec(String(value || '').trim());
+    if (!match) return null;
+    const h = Number(match[1]);
+    const m = Number(match[2]);
+    if (h > 23 || m > 59) return null;
+    return h + (m / 60);
+}
+
+function ichefStaffRhPlanningHours(day = {}) {
+    const status = String(day?.status || 'off').toLowerCase();
+    if (!['present','off_matin','off_soir','ferie'].includes(status)) return 0;
+
+    let total = 0;
+    for (const session of [day?.s1,day?.s2]) {
+        if (!session || !String(session).includes('-')) continue;
+        let [start,end] = String(session).split('-');
+        start = ichefStaffRhParseTime(start);
+        end = ichefStaffRhParseTime(end);
+        if (start === null || end === null) continue;
+        if (end < start) end += 24;
+        total += Math.max(0,end-start);
+    }
+
+    total -= (Number.parseInt(day?.pause,10) || 0) / 60;
+    return Math.round(Math.max(0,total) * 100) / 100;
+}
+
+function ichefStaffRhStatusLabel(value) {
+    const status = String(value || 'off').toLowerCase();
+    return ({
+        present:'TRAVAIL',
+        off_soir:'MATIN SEUL',
+        off_matin:'SOIR SEUL',
+        off:'REPOS',
+        conge:'CONGÉS',
+        vacances:'CONGÉS',
+        maladie:'MALADIE',
+        ferie:'FÉRIÉ',
+        recup:'RÉCUPÉRATION'
+    })[status] || status.toUpperCase();
+}
+
+function ichefStaffRhFindDirectoryMember(activeOrders = {}, staff = {}) {
+    const directory = ichefStaffPortalArray(activeOrders.DIRECTORY_MASTER);
+    if (!directory.length) return null;
+
+    const ids = [
+        staff?.id,
+        staff?.staffId,
+        staff?.employeeId,
+        staff?.rhId,
+        staff?.matricule
+    ]
+    .filter(v => v !== undefined && v !== null && String(v).trim() !== '')
+    .map(ichefStaffRhNormalizeIdentity);
+
+    const pin = String(staff?.pin || '').trim();
+
+    return directory.find(member => {
+        if (!member || member.active === false) return false;
+
+        const memberIds = [
+            member?.id,
+            member?.staffId,
+            member?.employeeId,
+            member?.rhId,
+            member?.matricule,
+            member?.payrollEmployeeNo,
+            member?.employeeNo,
+            member?.employeeNumber,
+            member?.internalId,
+            member?.code,
+            member?.badgeId
+        ]
+        .filter(v => v !== undefined && v !== null && String(v).trim() !== '')
+        .map(ichefStaffRhNormalizeIdentity);
+
+        if (ids.some(id => memberIds.includes(id))) return true;
+
+        return Boolean(
+            pin &&
+            String(member?.pin || '').trim() === pin
+        );
+    }) || null;
+}
+
+function ichefStaffRhCandidateIds(staff = {}, rhStaff = null) {
+    return [...new Set([
+        staff?.id,
+        staff?.staffId,
+        staff?.employeeId,
+        staff?.rhId,
+        staff?.matricule,
+        rhStaff?.id,
+        rhStaff?.staffId,
+        rhStaff?.employeeId,
+        rhStaff?.rhId,
+        rhStaff?.matricule
+    ]
+    .filter(v => v !== undefined && v !== null && String(v).trim() !== '')
+    .map(v => String(v).trim()))];
+}
+
+function ichefStaffRhPlanningForMonth(activeOrders, monthKey, candidateIds) {
+    const timesheets =
+        activeOrders?.TIMESHEETS_MASTER?.data &&
+        typeof activeOrders.TIMESHEETS_MASTER.data === 'object'
+        ? activeOrders.TIMESHEETS_MASTER.data
+        : (
+            activeOrders?.TIMESHEETS_MASTER &&
+            typeof activeOrders.TIMESHEETS_MASTER === 'object'
+            ? activeOrders.TIMESHEETS_MASTER
+            : {}
+        );
+
+    const month = timesheets?.[monthKey];
+    if (!month || typeof month !== 'object') return {};
+
+    for (const id of candidateIds) {
+        if (month?.[id] && typeof month[id] === 'object') return month[id];
+        if (month?.[String(id)] && typeof month[String(id)] === 'object') return month[String(id)];
+    }
+
+    return {};
+}
+
+function ichefStaffRhRealStaffForMonth(activeOrders, monthKey, candidateIds) {
+    const real =
+        activeOrders?.RH_TIMESHEET_REAL?.data &&
+        typeof activeOrders.RH_TIMESHEET_REAL.data === 'object'
+        ? activeOrders.RH_TIMESHEET_REAL.data
+        : {};
+
+    const month = real?.months?.[monthKey];
+    if (!month || typeof month !== 'object') return null;
+
+    for (const id of candidateIds) {
+        if (month?.staff?.[id]) {
+            return {
+                month,
+                staff:month.staff[id]
+            };
+        }
+        if (month?.staff?.[String(id)]) {
+            return {
+                month,
+                staff:month.staff[String(id)]
+            };
+        }
+    }
+
+    return {
+        month,
+        staff:null
+    };
+}
+
+function ichefStaffRhMonthMetrics({
+    activeOrders,
+    punches,
+    staff,
+    rhStaff,
+    monthDate
+}) {
+    const monthKey = ichefStaffRhMonthKey(monthDate);
+    const ids = ichefStaffRhCandidateIds(staff,rhStaff);
+    const resetInfo = ichefRhHoursResetInfo(activeOrders);
+    const planning = ichefStaffRhPlanningForMonth(activeOrders,monthKey,ids);
+    const real = ichefStaffRhRealStaffForMonth(activeOrders,monthKey,ids);
+
+    const year = monthDate.getFullYear();
+    const monthIndex = monthDate.getMonth();
+    const daysInMonth = new Date(year,monthIndex+1,0).getDate();
+
+    const contractWeekly = Number(
+        rhStaff?.contract ??
+        rhStaff?.weeklyHours ??
+        staff?.workProfile?.weeklyHours ??
+        staff?.weeklyHours ??
+        staff?.contractWeeklyHours ??
+        NaN
+    );
+
+    let contractTarget = Number.isFinite(contractWeekly)
+        ? Math.round(((contractWeekly / 7) * daysInMonth) * 100) / 100
+        : null;
+
+    let plannedHours = 0;
+    let cpDays = 0;
+    let recoveryDays = 0;
+    let holidayDays = 0;
+
+    for (let day=1; day<=daysInMonth; day++) {
+        const row = planning?.[day] || planning?.[String(day)];
+        if (!row) continue;
+        const counterEligible = ichefRhPlanCountsAfterReset(activeOrders,row);
+        if (!counterEligible) continue;
+        plannedHours += ichefStaffRhPlanningHours(row);
+        const status = String(row?.status || '').toLowerCase();
+        if (['conge','vacances'].includes(status)) cpDays++;
+        if (status === 'recup') recoveryDays++;
+        if (status === 'ferie') holidayDays++;
+    }
+
+    plannedHours = Math.round(plannedHours * 100) / 100;
+
+    const realStaff = real?.staff || null;
+    const monthStart = new Date(year,monthIndex,1,0,0,0,0).getTime();
+    const monthEnd = new Date(year,monthIndex+1,1,0,0,0,0).getTime() - 1;
+    let pointedHours = 0;
+    let rhHours = 0;
+
+    if (resetInfo.active) {
+        const workedWindow = ichefStaffRhWorkedWindow({
+            activeOrders,punches,staff,rhStaff,fromMs:monthStart,toMs:monthEnd
+        });
+        pointedHours = workedWindow.pointed;
+        rhHours = workedWindow.rh;
+        contractTarget = plannedHours;
+    } else {
+        pointedHours = Number(realStaff?.totals?.rawWorkedHours);
+        rhHours = Number(realStaff?.totals?.workedHours);
+        if (!Number.isFinite(pointedHours) || !Number.isFinite(rhHours)) {
+            const fallback = ichefStaffRhPunchHoursForIds(punches,ids,monthStart,monthEnd);
+            if (!Number.isFinite(pointedHours)) pointedHours = fallback;
+            if (!Number.isFinite(rhHours)) rhHours = fallback;
+        }
+    }
+
+    pointedHours = Math.round((Number(pointedHours) || 0) * 100) / 100;
+    rhHours = Math.round((Number(rhHours) || 0) * 100) / 100;
+
+    let correctionCount = 0;
+    let validatedDays = 0;
+
+    if (realStaff?.days && typeof realStaff.days === 'object') {
+        for (const day of Object.values(realStaff.days)) {
+            if (day?.correction) correctionCount++;
+            if (['VALIDATED','LOCKED'].includes(String(day?.status || '').toUpperCase())) {
+                validatedDays++;
+            }
+        }
+    }
+
+    const targetForBalance =
+        Number.isFinite(contractTarget)
+        ? contractTarget
+        : (plannedHours > 0 ? plannedHours : null);
+
+    const balance =
+        Number.isFinite(targetForBalance)
+        ? Math.round((rhHours - targetForBalance) * 100) / 100
+        : null;
+
+    const overtime =
+        Number.isFinite(balance)
+        ? Math.max(0,balance)
+        : 0;
+
+    const due =
+        Number.isFinite(balance)
+        ? Math.max(0,-balance)
+        : 0;
+
+    return {
+        month:monthKey,
+        contractWeekly:Number.isFinite(contractWeekly) ? contractWeekly : null,
+        contractTarget,
+        plannedHours,
+        pointedHours,
+        rhHours,
+        balance,
+        overtime:Math.round(overtime * 100) / 100,
+        recoveryDue:Math.round(due * 100) / 100,
+        cpDays,
+        recoveryDays,
+        holidayDays,
+        correctionCount,
+        validatedDays,
+        status:
+            String(
+                realStaff?.status ||
+                real?.month?.status ||
+                'TO_VERIFY'
+            ).toUpperCase()
+    };
+}
+
+function ichefStaffRhBuildSchedule(activeOrders, staff, rhStaff, daysAhead = 45) {
+    const ids = ichefStaffRhCandidateIds(staff,rhStaff);
+    const now = new Date();
+    const result = [];
+
+    for (let offset=0; offset<daysAhead; offset++) {
+        const date = new Date(
+            now.getFullYear(),
+            now.getMonth(),
+            now.getDate()+offset,
+            12,0,0,0
+        );
+
+        const monthKey = ichefStaffRhMonthKey(date);
+        const planning = ichefStaffRhPlanningForMonth(activeOrders,monthKey,ids);
+        const day = planning?.[date.getDate()] || planning?.[String(date.getDate())];
+
+        if (!day) continue;
+
+        const sessions = [day?.s1,day?.s2].filter(Boolean);
+        result.push({
+            date:ichefStaffRhIsoDate(date),
+            day:date.toLocaleDateString('fr-FR',{
+                weekday:'short',
+                day:'2-digit',
+                month:'2-digit'
+            }),
+            today:offset === 0,
+            status:String(day?.status || 'off'),
+            statusLabel:ichefStaffRhStatusLabel(day?.status),
+            start:sessions[0] ? String(sessions[0]).split('-')[0] : '',
+            end:sessions.length
+                ? String(sessions[sessions.length-1]).split('-')[1] || ''
+                : '',
+            time:sessions.join(' / ') || 'Repos',
+            hours:sessions.join(' / ') || 'Repos',
+            plannedHours:ichefStaffRhPlanningHours(day),
+            counterPlannedHours:ichefRhPlanCountsAfterReset(activeOrders,day) ? ichefStaffRhPlanningHours(day) : 0,
+            lastChangeAt:String(day?.lastChangeAt || day?.updatedAt || ''),
+            position:String(day?.poste || day?.position || staff?.workProfile?.position || staff?.role || ''),
+            location:String(day?.zone || day?.location || staff?.workProfile?.zone || staff?.padAssignment?.value || ''),
+            pause:Number(day?.pause || 0),
+            note:String(day?.managerNote || day?.manager_note || day?.obs || day?.note || '')
+        });
+    }
+
+    return result;
+}
+
+function ichefStaffRhCanonicalRequestType(value) {
+    const raw = String(value || '').trim().toUpperCase();
+    if (/VAC|CONG/.test(raw)) return 'VACANCES';
+    if (/RECUP|RCR/.test(raw)) return 'RECUPERATION';
+    if (/OFF|REPOS|FAMIL/.test(raw)) return 'JOUR_OFF';
+    return raw || 'DEMANDE';
+}
+
+function ichefStaffRhLegacyRequestType(value) {
+    const canonical = ichefStaffRhCanonicalRequestType(value);
+    if (canonical === 'VACANCES') return 'conge';
+    if (canonical === 'RECUPERATION') return 'recup';
+    if (canonical === 'JOUR_OFF') return 'off';
+    return String(value || '').trim().toLowerCase() || 'off';
+}
+
+function ichefStaffRhCanonicalRequestStatus(value) {
+    const raw = String(value || 'PENDING').trim().toUpperCase();
+    if (/ACCEPT|APPROV|VALID/.test(raw)) return 'ACCEPTED';
+    if (/REFUS|REJECT|DEN/.test(raw)) return 'REFUSED';
+    return 'PENDING';
+}
+
+function ichefStaffRhRequestTime(value) {
+    if (value === undefined || value === null || value === '') return 0;
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 1000000000) return n;
+    const parsed = Date.parse(String(value));
+    return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function ichefStaffRhNormalizeRequest(raw = {}) {
+    const createdAtRaw =
+        raw.createdAt ??
+        raw.timestamp ??
+        raw.id ??
+        Date.now();
+
+    const decisionAtRaw =
+        raw.decidedAt ??
+        raw.processedAt ??
+        raw.decisionAt ??
+        null;
+
+    const createdMs = ichefStaffRhRequestTime(createdAtRaw);
+    const decisionMs = ichefStaffRhRequestTime(decisionAtRaw);
+
+    const createdAt = createdMs
+        ? new Date(createdMs).toISOString()
+        : new Date().toISOString();
+
+    const decidedAt = decisionMs
+        ? new Date(decisionMs).toISOString()
+        : null;
+
+    const status = ichefStaffRhCanonicalRequestStatus(raw.status);
+    const id = String(raw.id || raw._id || `REQ-${createdMs || Date.now()}`);
+
+    const history = Array.isArray(raw.history)
+        ? raw.history.map(event => ({...event}))
+        : [];
+
+    if (!history.some(event => String(event?.action || '').toUpperCase() === 'CREATED')) {
+        history.unshift({
+            action:'CREATED',
+            at:createdAt,
+            by:String(raw.staffName || 'Collaborateur'),
+            status:'PENDING'
+        });
+    }
+
+    if (
+        decidedAt &&
+        status !== 'PENDING' &&
+        !history.some(event =>
+            ['ACCEPTED','REFUSED','DECISION'].includes(
+                String(event?.action || '').toUpperCase()
+            )
+        )
+    ) {
+        history.push({
+            action:status,
+            at:decidedAt,
+            by:String(raw.decidedBy || raw.processedBy || raw.managerName || 'Direction / RH'),
+            status
+        });
+    }
+
+    return {
+        ...raw,
+        id,
+        requestNumber:String(raw.requestNumber || raw.proofId || id),
+        proofId:String(raw.proofId || raw.requestNumber || id),
+        type:ichefStaffRhCanonicalRequestType(raw.requestType || raw.type),
+        legacyType:ichefStaffRhLegacyRequestType(raw.requestType || raw.type),
+        status,
+        startDate:String(raw.startDate || raw.start || ''),
+        endDate:String(raw.endDate || raw.end || raw.startDate || raw.start || ''),
+        note:String(raw.note || raw.comment || raw.reason || ''),
+        comment:String(raw.comment || raw.note || raw.reason || ''),
+        createdAt,
+        decidedAt,
+        decidedBy:String(raw.decidedBy || raw.processedBy || raw.managerName || ''),
+        updatedAt:String(raw.updatedAt || decidedAt || createdAt),
+        history
+    };
+}
+
+function ichefStaffRhRequestBelongsTo(request, staff, rhStaff) {
+    const ids = new Set(
+        ichefStaffRhCandidateIds(staff,rhStaff)
+            .map(v => String(v))
+    );
+
+    if (ids.has(String(request?.staffId || ''))) return true;
+    if (ids.has(String(request?.employeeId || ''))) return true;
+
+    const pin = String(staff?.pin || rhStaff?.pin || '').trim();
+    return Boolean(
+        pin &&
+        String(request?.staffPin || request?.pin || '').trim() === pin
+    );
+}
+
+function ichefStaffRhMergeRequests(activeOrders, staff, rhStaff) {
+    const sources = [
+        ...ichefStaffPortalArray(activeOrders.STAFF_REQUESTS),
+        ...ichefStaffPortalArray(activeOrders.REQUESTS_MASTER)
+    ];
+
+    const merged = new Map();
+
+    for (const raw of sources) {
+        if (!ichefStaffRhRequestBelongsTo(raw,staff,rhStaff)) continue;
+        const item = ichefStaffRhNormalizeRequest(raw);
+        const key = String(item.id || item.proofId);
+        const current = merged.get(key);
+
+        if (!current) {
+            merged.set(key,item);
+            continue;
+        }
+
+        const itemTime = Math.max(
+            ichefStaffRhRequestTime(item.updatedAt),
+            ichefStaffRhRequestTime(item.decidedAt),
+            ichefStaffRhRequestTime(item.createdAt)
+        );
+
+        const currentTime = Math.max(
+            ichefStaffRhRequestTime(current.updatedAt),
+            ichefStaffRhRequestTime(current.decidedAt),
+            ichefStaffRhRequestTime(current.createdAt)
+        );
+
+        const newest = itemTime >= currentTime ? item : current;
+        const oldest = itemTime >= currentTime ? current : item;
+
+        const history = [
+            ...(Array.isArray(oldest.history) ? oldest.history : []),
+            ...(Array.isArray(newest.history) ? newest.history : [])
+        ];
+
+        const seen = new Set();
+        newest.history = history.filter(event => {
+            const sig = [
+                event?.action,
+                event?.at,
+                event?.status,
+                event?.by
+            ].map(v => String(v || '')).join('|');
+            if (seen.has(sig)) return false;
+            seen.add(sig);
+            return true;
+        });
+
+        merged.set(key,newest);
+    }
+
+    return [...merged.values()]
+        .sort((a,b) =>
+            ichefStaffRhRequestTime(b.createdAt) -
+            ichefStaffRhRequestTime(a.createdAt)
+        );
+}
+
+function ichefStaffRhPlanningAuditRows(activeOrders, staff, rhStaff) {
+    const ids = new Set(ichefStaffRhCandidateIds(staff,rhStaff).map(String));
+    const source =
+        Array.isArray(activeOrders?.PLANNING_HISTORY_MASTER?.data)
+            ? activeOrders.PLANNING_HISTORY_MASTER.data
+            : (
+                Array.isArray(activeOrders?.RH_CHANGE_HISTORY?.data)
+                    ? activeOrders.RH_CHANGE_HISTORY.data
+                    : []
+              );
+
+    const cutoffDate = new Date();
+    cutoffDate.setFullYear(cutoffDate.getFullYear() - 5);
+    const cutoff = cutoffDate.getTime();
+
+    return source
+        .filter(row => {
+            const type = String(row?.type || '');
+            if (!(/^PLANNING_/i.test(type) || /^AI_PLANNING/i.test(type))) return false;
+            if (!ids.has(String(row?.staffId || ''))) return false;
+            const at = ichefStaffRhRequestTime(row?.timestamp || row?.at || row?.updatedAt);
+            return !at || at >= cutoff;
+        })
+        .sort((a,b) =>
+            ichefStaffRhRequestTime(b?.timestamp || b?.at) -
+            ichefStaffRhRequestTime(a?.timestamp || a?.at)
+        );
+}
+
+function ichefStaffRhBuildHistory({
+    activeOrders,
+    punches,
+    staff,
+    rhStaff,
+    requests,
+    sixMonths
+}) {
+    const ids = new Set(
+        ichefStaffRhCandidateIds(staff,rhStaff).map(String)
+    );
+
+    const cutoffDate = new Date();
+    cutoffDate.setFullYear(cutoffDate.getFullYear() - 5);
+    const cutoff = cutoffDate.getTime();
+    const events = [];
+
+    for (const punch of Array.isArray(punches) ? punches : []) {
+        if (!ids.has(String(punch?.staffId || ''))) continue;
+        const at = Number(punch?.timestamp || 0);
+        if (!Number.isFinite(at) || at < cutoff) continue;
+
+        events.push({
+            id:String(punch?.id || `PUNCH-${at}`),
+            type:'PUNCH',
+            action:String(punch?.type || 'POINTAGE').toUpperCase(),
+            at:new Date(at).toISOString(),
+            label:String(punch?.type || '').toUpperCase() === 'ENTRÉE'
+                ? 'Prise de service'
+                : 'Fin de service',
+            detail:String(punch?.source || 'Pointage iCHEF'),
+            by:String(punch?.staffName || staff?.name || 'Collaborateur')
+        });
+    }
+
+    const real =
+        activeOrders?.RH_TIMESHEET_REAL?.data &&
+        typeof activeOrders.RH_TIMESHEET_REAL.data === 'object'
+        ? activeOrders.RH_TIMESHEET_REAL.data
+        : {};
+
+    for (const summary of Array.isArray(sixMonths) ? sixMonths : []) {
+        const month = real?.months?.[summary.month];
+        if (!month?.staff) continue;
+
+        let staffNode = null;
+        for (const id of ids) {
+            if (month.staff[id]) {
+                staffNode = month.staff[id];
+                break;
+            }
+        }
+        if (!staffNode?.days) continue;
+
+        for (const day of Object.values(staffNode.days)) {
+            if (!day?.correction) continue;
+            const correction = day.correction;
+            const at = ichefStaffRhRequestTime(correction.correctedAt);
+            if (at && at < cutoff) continue;
+
+            events.push({
+                id:`CORR-${day.date}-${at || Date.now()}`,
+                type:'RH_CORRECTION',
+                action:'CORRECTION RH',
+                at:correction.correctedAt || `${day.date}T12:00:00.000Z`,
+                label:`Heures corrigées · ${day.date}`,
+                detail:[
+                    Number.isFinite(Number(correction.previousWorkedHours))
+                        ? `Avant ${Number(correction.previousWorkedHours).toFixed(2)} h`
+                        : '',
+                    Number.isFinite(Number(correction.correctedWorkedHours))
+                        ? `Après ${Number(correction.correctedWorkedHours).toFixed(2)} h`
+                        : '',
+                    correction.reason || ''
+                ].filter(Boolean).join(' · '),
+                by:String(correction.correctedBy || 'Direction / RH')
+            });
+        }
+    }
+
+    for (const request of Array.isArray(requests) ? requests : []) {
+        for (const event of Array.isArray(request.history) ? request.history : []) {
+            events.push({
+                id:`REQ-${request.id}-${event.action}-${event.at}`,
+                type:'REQUEST',
+                action:String(event.action || 'DEMANDE').toUpperCase(),
+                at:event.at || request.createdAt,
+                label:`${request.type} · ${request.requestNumber}`,
+                detail:`${request.startDate} → ${request.endDate}`,
+                by:String(event.by || request.staffName || '')
+            });
+        }
+    }
+
+    for (const row of ichefStaffRhPlanningAuditRows(activeOrders,staff,rhStaff)) {
+        const before = row?.before && typeof row.before === 'object' ? row.before : {};
+        const after = row?.after && typeof row.after === 'object' ? row.after : {};
+        const beforeShift = [before?.s1,before?.s2].filter(Boolean).join(' / ');
+        const afterShift = [after?.s1,after?.s2].filter(Boolean).join(' / ');
+        events.push({
+            id:String(row?.id || `PLAN-${row?.timestamp || Date.now()}`),
+            type:'PLANNING',
+            action:'MODIFICATION PLANNING',
+            at:row?.timestamp || row?.at || row?.updatedAt || new Date().toISOString(),
+            label:`Planning ${row?.date || row?.month || ''}`.trim(),
+            detail:[
+                row?.reason ? `Motif: ${row.reason}` : '',
+                beforeShift || before?.status ? `Avant: ${before?.status || ''}${beforeShift ? ' · ' + beforeShift : ''}` : '',
+                afterShift || after?.status ? `Après: ${after?.status || ''}${afterShift ? ' · ' + afterShift : ''}` : '',
+                row?.managerNote || after?.managerNote ? `Note: ${row?.managerNote || after?.managerNote}` : ''
+            ].filter(Boolean).join(' · '),
+            by:String(row?.by || row?.lastChangeBy || 'Direction / RH')
+        });
+    }
+
+    return events
+        .filter(event => ichefStaffRhRequestTime(event.at) >= cutoff)
+        .sort((a,b) =>
+            ichefStaffRhRequestTime(b.at) -
+            ichefStaffRhRequestTime(a.at)
+        )
+        .slice(0,2000);
+}
+
+
 app.get(
     '/api/staff/dashboard',
     async (req,res) => {
@@ -15601,32 +16624,35 @@ app.get(
                     .status(401)
                     .json({
                         success:false,
-                        error:
-                            auth.error
+                        error:auth.error
                     });
             }
 
             const {
                 staff,
-                state
+                state,
+                tenantID
             } = auth;
 
             const activeOrders =
                 state?.activeOrders ||
                 {};
 
+            const hoursReset = ichefRhHoursResetInfo(activeOrders);
+
             const punches =
                 ichefStaffPortalArray(
-                    activeOrders
-                        .PUNCHES_MASTER
+                    activeOrders.PUNCHES_MASTER
                 );
 
-            const now =
-                new Date();
+            const rhStaff =
+                ichefStaffRhFindDirectoryMember(
+                    activeOrders,
+                    staff
+                );
 
-            const nowMs =
-                now.getTime();
-
+            const now = new Date();
+            const nowMs = now.getTime();
             const todayStart =
                 new Date(
                     now.getFullYear(),
@@ -15634,102 +16660,185 @@ app.get(
                     now.getDate()
                 ).getTime();
 
-            const day =
-                now.getDay() || 7;
-
+            const day = now.getDay() || 7;
             const weekStart =
                 todayStart -
-                (day - 1) *
-                86400000;
-
-            const monthStart =
-                new Date(
-                    now.getFullYear(),
-                    now.getMonth(),
-                    1
-                ).getTime();
+                (day - 1) * 86400000;
 
             const workProfile =
                 (
                     staff.workProfile &&
-                    typeof staff.workProfile ===
-                        'object'
+                    typeof staff.workProfile === 'object'
                 )
                 ? staff.workProfile
                 : {};
 
-            const plannedToday =
-                ichefStaffPortalPlannedHours(
-                    workProfile
-                );
+            const sixMonths = [];
+            for (let offset=0; offset<6; offset++) {
+                const monthDate =
+                    new Date(
+                        now.getFullYear(),
+                        now.getMonth()-offset,
+                        1,
+                        12,0,0,0
+                    );
 
-            const weekWorked =
-                ichefStaffPortalHoursFromPunches(
-                    punches,
-                    staff.id,
-                    weekStart,
-                    nowMs
+                sixMonths.push(
+                    ichefStaffRhMonthMetrics({
+                        activeOrders,
+                        punches,
+                        staff,
+                        rhStaff,
+                        monthDate
+                    })
                 );
+            }
 
-            const monthWorked =
-                ichefStaffPortalHoursFromPunches(
-                    punches,
-                    staff.id,
-                    monthStart,
-                    nowMs
-                );
+            const currentMonth =
+                sixMonths[0] || {};
 
-            const todayWorked =
-                ichefStaffPortalHoursFromPunches(
-                    punches,
-                    staff.id,
-                    todayStart,
-                    nowMs
-                );
-
-            const weeklyTarget =
+            const contractWeekly =
                 Number(
+                    rhStaff?.contract ??
+                    rhStaff?.weeklyHours ??
                     workProfile.weeklyHours ??
                     staff.weeklyHours ??
                     staff.contractWeeklyHours ??
                     NaN
                 );
 
-            const monthlyTarget =
-                Number(
-                    workProfile.monthlyHours ??
-                    staff.monthlyHours ??
-                    staff.contractMonthlyHours ??
-                    NaN
+            const schedule =
+                ichefStaffRhBuildSchedule(
+                    activeOrders,
+                    staff,
+                    rhStaff,
+                    45
                 );
 
+            const todayIso =
+                ichefStaffRhIsoDate(now);
+
+            const todayPlanning =
+                schedule.find(
+                    row => row.date === todayIso
+                );
+
+            const plannedToday =
+                todayPlanning
+                ? Number(todayPlanning.plannedHours || 0)
+                : ichefStaffPortalPlannedHours(
+                    workProfile
+                );
+
+            const todayWindow = ichefStaffRhWorkedWindow({
+                activeOrders,punches,staff,rhStaff,
+                fromMs:todayStart,toMs:nowMs
+            });
+            const todayWorked = todayWindow.rh;
+
+            const weekWindow = ichefStaffRhWorkedWindow({
+                activeOrders,punches,staff,rhStaff,
+                fromMs:weekStart,toMs:nowMs
+            });
+            const weekWorkedRaw = weekWindow.pointed;
+
+            const weekSchedule =
+                schedule.filter(row => {
+                    const ts =
+                        Date.parse(
+                            `${row.date}T12:00:00`
+                        );
+                    return (
+                        Number.isFinite(ts) &&
+                        ts >= weekStart &&
+                        ts < weekStart + 7 * 86400000
+                    );
+                });
+
+            const weekPlanned =
+                Math.round(
+                    weekSchedule.reduce(
+                        (sum,row) =>
+                            sum +
+                            Number(row.counterPlannedHours ?? row.plannedHours ?? 0),
+                        0
+                    ) * 100
+                ) / 100;
+
+            const weekTarget =
+                hoursReset.active
+                ? weekPlanned
+                : (
+                    weekPlanned > 0
+                    ? weekPlanned
+                    : (
+                        Number.isFinite(contractWeekly)
+                        ? contractWeekly
+                        : null
+                    )
+                );
+
+            let weekRhHours = hoursReset.active ? weekWindow.rh : weekWorkedRaw;
+
+            const currentMonthReal =
+                ichefStaffRhRealStaffForMonth(
+                    activeOrders,
+                    ichefStaffRhMonthKey(now),
+                    ichefStaffRhCandidateIds(
+                        staff,
+                        rhStaff
+                    )
+                );
+
+            if (
+                !hoursReset.active &&
+                currentMonthReal?.staff?.days &&
+                typeof currentMonthReal.staff.days === 'object'
+            ) {
+                let retained = 0;
+                for (const dayNode of Object.values(currentMonthReal.staff.days)) {
+                    const dateMs =
+                        Date.parse(
+                            `${dayNode?.date || ''}T12:00:00`
+                        );
+                    if (
+                        Number.isFinite(dateMs) &&
+                        dateMs >= weekStart &&
+                        dateMs < weekStart + 7 * 86400000
+                    ) {
+                        retained += Number(
+                            dayNode?.workedHours ??
+                            dayNode?.rawWorkedHours ??
+                            0
+                        ) || 0;
+                    }
+                }
+                weekRhHours =
+                    Math.round(retained * 100) / 100;
+            }
+
+            const weekBalance =
+                Number.isFinite(weekTarget)
+                ? Math.round(
+                    (
+                        weekRhHours -
+                        weekTarget
+                    ) * 100
+                  ) / 100
+                : null;
+
             const requests =
-                ichefStaffPortalOnlyMine(
-                    ichefStaffPortalArray(
-                        activeOrders
-                            .STAFF_REQUESTS
-                    ),
-                    staff.id
-                )
-                .sort(
-                    (a,b) =>
-                        new Date(
-                            b?.createdAt ||
-                            0
-                        ) -
-                        new Date(
-                            a?.createdAt ||
-                            0
-                        )
+                ichefStaffRhMergeRequests(
+                    activeOrders,
+                    staff,
+                    rhStaff
                 );
 
             const missions =
                 ichefStaffPortalOnlyMine(
                     ichefStaffPortalArray(
-                        activeOrders
-                            .STAFF_MISSIONS ||
-                        activeOrders
-                            .MISSIONS_MASTER
+                        activeOrders.STAFF_MISSIONS ||
+                        activeOrders.MISSIONS_MASTER
                     ),
                     staff.id
                 );
@@ -15737,10 +16846,8 @@ app.get(
             const messages =
                 ichefStaffPortalOnlyMine(
                     ichefStaffPortalArray(
-                        activeOrders
-                            .STAFF_MESSAGES ||
-                        activeOrders
-                            .MESSAGES_MASTER
+                        activeOrders.STAFF_MESSAGES ||
+                        activeOrders.MESSAGES_MASTER
                     ),
                     staff.id
                 );
@@ -15748,10 +16855,8 @@ app.get(
             const documents =
                 ichefStaffPortalOnlyMine(
                     ichefStaffPortalArray(
-                        activeOrders
-                            .STAFF_DOCUMENTS ||
-                        activeOrders
-                            .RH_DOCUMENTS
+                        activeOrders.STAFF_DOCUMENTS ||
+                        activeOrders.RH_DOCUMENTS
                     ),
                     staff.id
                 );
@@ -15759,6 +16864,7 @@ app.get(
             const position =
                 String(
                     workProfile.position ||
+                    rhStaff?.role ||
                     staff.role ||
                     staff.dept ||
                     'Staff'
@@ -15768,24 +16874,36 @@ app.get(
                 String(
                     workProfile.zone ||
                     workProfile.primaryZone ||
-                    staff
-                        ?.padAssignment
-                        ?.value ||
+                    staff?.padAssignment?.value ||
                     ''
                 );
 
+            const history =
+                ichefStaffRhBuildHistory({
+                    activeOrders,
+                    punches,
+                    staff,
+                    rhStaff,
+                    requests,
+                    sixMonths
+                });
+
             return res.json({
                 success:true,
+                rhSynchronized:true,
+                tenantID,
 
                 staff:{
-                    id:
-                        staff.id,
+                    id:staff.id,
+                    rhId:rhStaff?.id || null,
                     name:
                         staff.name ||
+                        rhStaff?.name ||
                         '',
                     firstName:
                         String(
                             staff.name ||
+                            rhStaff?.name ||
                             'Staff'
                         )
                         .trim()
@@ -15793,6 +16911,7 @@ app.get(
                     lastName:
                         String(
                             staff.name ||
+                            rhStaff?.name ||
                             ''
                         )
                         .trim()
@@ -15801,97 +16920,118 @@ app.get(
                         .join(' '),
                     role:
                         staff.role ||
+                        rhStaff?.role ||
                         '',
                     department:
                         staff.dept ||
+                        rhStaff?.dept ||
                         '',
                     position,
                     location,
                     onDuty:
-                        staff.onDuty ===
-                        true
+                        staff.onDuty === true,
+                    contractWeekly:
+                        Number.isFinite(contractWeekly)
+                        ? contractWeekly
+                        : null
                 },
 
                 today:{
                     start:
                         String(
+                            todayPlanning?.start ||
                             workProfile.start ||
                             ''
                         ),
                     end:
                         String(
+                            todayPlanning?.end ||
                             workProfile.end ||
                             ''
                         ),
-                    position,
-                    location,
+                    position:
+                        todayPlanning?.position ||
+                        position,
+                    location:
+                        todayPlanning?.location ||
+                        location,
+                    status:
+                        todayPlanning?.statusLabel ||
+                        '',
                     plannedHours:
-                        Number.isFinite(
-                            plannedToday
-                        )
+                        Number.isFinite(plannedToday)
                         ? plannedToday
                         : null,
                     workedHours:
                         todayWorked,
                     canClock:true,
                     clockedIn:
-                        staff.onDuty ===
-                        true
+                        staff.onDuty === true
+                },
+
+                hoursReset:{
+                    active:hoursReset.active,
+                    resetAt:hoursReset.resetAt || null,
+                    resetBy:hoursReset.resetBy || '',
+                    reason:hoursReset.reason || ''
                 },
 
                 hours:{
-                    weekWorked,
-                    weekTarget:
-                        Number.isFinite(
-                            weeklyTarget
-                        )
-                        ? weeklyTarget
+                    weekWorked:
+                        Math.round(weekRhHours * 100) / 100,
+                    weekPointed:
+                        Math.round(weekWorkedRaw * 100) / 100,
+                    weekTarget,
+                    weekPlanned,
+                    weekBalance,
+                    weekOvertime:
+                        Number.isFinite(weekBalance)
+                        ? Math.max(0,weekBalance)
                         : null,
-                    monthWorked,
+                    weekRecoveryDue:
+                        Number.isFinite(weekBalance)
+                        ? Math.max(0,-weekBalance)
+                        : null,
+
+                    monthWorked:
+                        Number(currentMonth.rhHours || 0),
+                    monthPointed:
+                        Number(currentMonth.pointedHours || 0),
+                    monthPlanned:
+                        Number(currentMonth.plannedHours || 0),
                     monthTarget:
-                        Number.isFinite(
-                            monthlyTarget
-                        )
-                        ? monthlyTarget
-                        : null,
+                        currentMonth.contractTarget,
+                    monthStatus:
+                        currentMonth.status || 'TO_VERIFY',
                     balance:
-                        Number.isFinite(
-                            weeklyTarget
-                        )
-                        ? Math.round(
-                            (
-                                weekWorked -
-                                weeklyTarget
-                            ) *
-                            100
-                          ) /
-                          100
-                        : null,
+                        currentMonth.balance,
                     overtime:
-                        Number.isFinite(
-                            weeklyTarget
-                        )
-                        ? Math.max(
-                            0,
-                            Math.round(
-                                (
-                                    weekWorked -
-                                    weeklyTarget
-                                ) *
-                                100
-                            ) /
-                            100
-                          )
-                        : null
+                        currentMonth.overtime,
+                    recoveryDue:
+                        currentMonth.recoveryDue,
+                    corrections:
+                        currentMonth.correctionCount || 0,
+                    validatedDays:
+                        currentMonth.validatedDays || 0,
+                    cpDays:
+                        currentMonth.cpDays || 0,
+                    recoveryDays:
+                        currentMonth.recoveryDays || 0,
+                    holidayDays:
+                        currentMonth.holidayDays || 0,
+                    sixMonths
                 },
 
                 requests,
-                tasks:
-                    missions,
+                requestProofAvailable:true,
+                history,
+                historyPeriodMonths:60,
+
+                tasks:missions,
                 missions,
                 messages,
                 documents,
-                schedule:[],
+                schedule,
                 serverTime:
                     new Date()
                         .toISOString()
@@ -15899,7 +17039,7 @@ app.get(
 
         } catch(error) {
             console.error(
-                '[iCHEF STAFF dashboard]',
+                '[iCHEF STAFF dashboard V67]',
                 error
             );
 
@@ -15910,6 +17050,135 @@ app.get(
                     error:
                         'Espace staff momentanément indisponible.'
                 });
+        }
+    }
+);
+
+
+app.get(
+    '/api/staff/planning-archive',
+    async (req,res) => {
+        try {
+            res.setHeader('Cache-Control','no-store');
+            const auth = await ichefLoadActiveStaffSession(req);
+            if (!auth.ok) {
+                return res.status(401).json({success:false,error:auth.error});
+            }
+
+            const {staff,state} = auth;
+            const activeOrders = state?.activeOrders || {};
+            const rhStaff = ichefStaffRhFindDirectoryMember(activeOrders,staff);
+            const ids = ichefStaffRhCandidateIds(staff,rhStaff);
+            const month = String(req.query?.month || '').trim();
+
+            if (!/^\d{4}-\d{2}$/.test(month)) {
+                return res.status(400).json({success:false,error:'Mois invalide. Format attendu : YYYY-MM.'});
+            }
+
+            const [year,monthNo] = month.split('-').map(Number);
+            const requested = new Date(year,monthNo-1,1,12,0,0,0);
+            if (!Number.isFinite(requested.getTime()) || requested.getFullYear() !== year || requested.getMonth() !== monthNo-1) {
+                return res.status(400).json({success:false,error:'Mois invalide.'});
+            }
+
+            const minDate = new Date();
+            minDate.setHours(12,0,0,0);
+            minDate.setDate(1);
+            minDate.setFullYear(minDate.getFullYear()-5);
+
+            const maxDate = new Date();
+            maxDate.setHours(12,0,0,0);
+            maxDate.setDate(1);
+            maxDate.setMonth(maxDate.getMonth()+6);
+
+            if (requested < minDate || requested > maxDate) {
+                return res.status(400).json({
+                    success:false,
+                    error:'Le planning est consultable sur 5 ans d’archives et jusqu’à 6 mois dans le futur.'
+                });
+            }
+
+            const planning = ichefStaffRhPlanningForMonth(activeOrders,month,ids);
+            const daysInMonth = new Date(year,monthNo,0).getDate();
+            const days = [];
+
+            for (let dayNo=1; dayNo<=daysInMonth; dayNo++) {
+                const node = planning?.[dayNo] || planning?.[String(dayNo)] || null;
+                const date = new Date(year,monthNo-1,dayNo,12,0,0,0);
+                if (!node) {
+                    days.push({
+                        date:ichefStaffRhIsoDate(date),
+                        day:date.toLocaleDateString('fr-FR',{weekday:'short',day:'2-digit',month:'2-digit'}),
+                        status:'off',statusLabel:'Repos',time:'Repos',plannedHours:0,position:'',pause:0,note:'',lastChangeReason:'',lastChangeAt:'',lastChangeBy:''
+                    });
+                    continue;
+                }
+                const sessions = [node?.s1,node?.s2].filter(Boolean);
+                days.push({
+                    date:ichefStaffRhIsoDate(date),
+                    day:date.toLocaleDateString('fr-FR',{weekday:'short',day:'2-digit',month:'2-digit'}),
+                    status:String(node?.status || 'off'),
+                    statusLabel:ichefStaffRhStatusLabel(node?.status),
+                    time:sessions.join(' / ') || 'Repos',
+                    plannedHours:ichefStaffRhPlanningHours(node),
+                    position:String(node?.poste || node?.position || rhStaff?.role || staff?.role || ''),
+                    pause:Number(node?.pause || 0),
+                    note:String(node?.managerNote || node?.manager_note || node?.obs || node?.note || ''),
+                    lastChangeReason:String(node?.lastChangeReason || ''),
+                    lastChangeAt:String(node?.lastChangeAt || node?.updatedAt || ''),
+                    lastChangeBy:String(node?.lastChangeBy || '')
+                });
+            }
+
+            return res.json({
+                success:true,
+                month,
+                staffId:String(staff.id),
+                staffName:String(staff.name || rhStaff?.name || ''),
+                days,
+                retentionYears:5,
+                futureMonths:6,
+                serverTime:new Date().toISOString()
+            });
+        } catch (error) {
+            console.error('[iCHEF STAFF planning archive V94]',error);
+            return res.status(500).json({success:false,error:'Archive planning momentanément indisponible.'});
+        }
+    }
+);
+
+app.get(
+    '/api/staff/planning-history',
+    async (req,res) => {
+        try {
+            res.setHeader('Cache-Control','no-store');
+            const auth = await ichefLoadActiveStaffSession(req);
+            if (!auth.ok) return res.status(401).json({success:false,error:auth.error});
+            const {staff,state} = auth;
+            const activeOrders = state?.activeOrders || {};
+            const rhStaff = ichefStaffRhFindDirectoryMember(activeOrders,staff);
+            const rows = ichefStaffRhPlanningAuditRows(activeOrders,staff,rhStaff);
+
+            return res.json({
+                success:true,
+                retentionYears:5,
+                history:rows.map(row => ({
+                    id:String(row?.id || ''),
+                    type:String(row?.type || 'PLANNING'),
+                    at:row?.timestamp || row?.at || row?.updatedAt || '',
+                    date:String(row?.date || ''),
+                    month:String(row?.month || ''),
+                    reason:String(row?.reason || ''),
+                    note:String(row?.managerNote || row?.after?.managerNote || ''),
+                    by:String(row?.by || row?.lastChangeBy || 'Direction / RH'),
+                    before:row?.before && typeof row.before === 'object' ? row.before : null,
+                    after:row?.after && typeof row.after === 'object' ? row.after : null,
+                    label:String(row?.message || `Modification planning ${row?.date || row?.month || ''}`)
+                }))
+            });
+        } catch (error) {
+            console.error('[iCHEF STAFF planning history V94]',error);
+            return res.status(500).json({success:false,error:'Historique planning momentanément indisponible.'});
         }
     }
 );
@@ -15928,18 +17197,14 @@ app.post(
                     .status(401)
                     .json({
                         success:false,
-                        error:
-                            auth.error
+                        error:auth.error
                     });
             }
 
-            const type =
-                String(
-                    req.body?.type ||
-                    ''
-                )
-                .trim()
-                .toUpperCase();
+            const canonicalType =
+                ichefStaffRhCanonicalRequestType(
+                    req.body?.type
+                );
 
             const startDate =
                 String(
@@ -15961,22 +17226,16 @@ app.post(
                     ''
                 )
                 .trim()
-                .slice(
-                    0,
-                    500
-                );
+                .slice(0,500);
 
             if (
                 ![
                     'JOUR_OFF',
-                    'VACANCES'
-                ].includes(type) ||
-                !/^\d{4}-\d{2}-\d{2}$/.test(
-                    startDate
-                ) ||
-                !/^\d{4}-\d{2}-\d{2}$/.test(
-                    endDate
-                ) ||
+                    'VACANCES',
+                    'RECUPERATION'
+                ].includes(canonicalType) ||
+                !/^\d{4}-\d{2}-\d{2}$/.test(startDate) ||
+                !/^\d{4}-\d{2}-\d{2}$/.test(endDate) ||
                 endDate < startDate
             ) {
                 return res
@@ -15998,79 +17257,119 @@ app.post(
                 state.activeOrders = {};
             }
 
-            const requests =
-                ichefStaffPortalArray(
-                    state.activeOrders
-                        .STAFF_REQUESTS
-                )
-                .slice(-500);
+            const rhStaff =
+                ichefStaffRhFindDirectoryMember(
+                    state.activeOrders,
+                    staff
+                );
 
             const now =
                 new Date()
                     .toISOString();
 
-            const request =
-                {
-                    id:
-                        'STAFFREQ_' +
-                        Date.now() +
-                        '_' +
-                        crypto
-                            .randomBytes(4)
-                            .toString('hex'),
-                    tenantID,
-                    staffId:
-                        staff.id,
-                    staffName:
-                        staff.name ||
-                        'Collaborateur',
-                    role:
-                        staff.role ||
-                        '',
-                    dept:
-                        staff.dept ||
-                        '',
-                    type,
-                    startDate,
-                    endDate,
-                    note,
-                    status:
-                        'PENDING',
-                    createdAt:
-                        now,
-                    updatedAt:
-                        now,
-                    source:
-                        'STAFF_PORTAL'
-                };
+            const random =
+                crypto
+                    .randomBytes(3)
+                    .toString('hex')
+                    .toUpperCase();
 
-            requests.push(
-                request
+            const requestNumber =
+                `REQ-${new Date().getFullYear()}-${String(Date.now()).slice(-6)}-${random}`;
+
+            const request = {
+                id:requestNumber,
+                requestNumber,
+                proofId:requestNumber,
+                tenantID,
+                staffId:
+                    rhStaff?.id ||
+                    staff.id,
+                technicalStaffId:
+                    staff.id,
+                staffPin:
+                    String(
+                        staff.pin ||
+                        rhStaff?.pin ||
+                        ''
+                    ),
+                staffName:
+                    staff.name ||
+                    rhStaff?.name ||
+                    'Collaborateur',
+                role:
+                    staff.role ||
+                    rhStaff?.role ||
+                    '',
+                dept:
+                    staff.dept ||
+                    rhStaff?.dept ||
+                    '',
+                type:
+                    ichefStaffRhLegacyRequestType(
+                        canonicalType
+                    ),
+                requestType:
+                    canonicalType,
+                startDate,
+                endDate,
+                start:startDate,
+                end:endDate,
+                note,
+                comment:note,
+                status:'pending',
+                createdAt:now,
+                updatedAt:now,
+                source:'STAFF_PORTAL',
+                history:[
+                    {
+                        action:'CREATED',
+                        at:now,
+                        by:
+                            staff.name ||
+                            rhStaff?.name ||
+                            'Collaborateur',
+                        status:'PENDING'
+                    }
+                ]
+            };
+
+            const staffRequests =
+                ichefStaffPortalArray(
+                    state.activeOrders.STAFF_REQUESTS
+                )
+                .slice(-999);
+
+            const rhRequests =
+                ichefStaffPortalArray(
+                    state.activeOrders.REQUESTS_MASTER
+                )
+                .slice(-999);
+
+            staffRequests.push({...request});
+            rhRequests.push({...request});
+
+            state.activeOrders.STAFF_REQUESTS = {
+                data:staffRequests,
+                updatedAt:now
+            };
+
+            state.activeOrders.REQUESTS_MASTER = {
+                data:rhRequests,
+                updatedAt:now
+            };
+
+            state.markModified(
+                'activeOrders'
             );
 
-            state.activeOrders
-                .STAFF_REQUESTS = {
-                    data:
-                        requests,
-                    updatedAt:
-                        now
-                };
+            await state.save();
 
-            await AppState.updateOne(
-                { tenantID },
-                { $set: { 'activeOrders.STAFF_REQUESTS': state.activeOrders.STAFF_REQUESTS } },
-                { upsert: true }
-            );
-
-            io.to(
-                tenantID
-            ).emit(
+            io.to(tenantID).emit(
                 'staff-request-created',
                 {
                     tenantID,
                     request,
-                    timestamp:
-                        now
+                    timestamp:now
                 }
             );
 
@@ -16078,21 +17377,31 @@ app.post(
                 tenantID,
                 state,
                 {
-                    tableId:
-                        'STAFF_REQUESTS',
-                    source:
-                        'staff-portal'
+                    tableId:'STAFF_REQUESTS',
+                    source:'staff-portal-v67'
                 }
             );
 
             return res.json({
                 success:true,
-                request
+                request:
+                    ichefStaffRhNormalizeRequest(
+                        request
+                    ),
+                proof:{
+                    id:requestNumber,
+                    createdAt:now,
+                    staffName:request.staffName,
+                    type:canonicalType,
+                    startDate,
+                    endDate,
+                    status:'PENDING'
+                }
             });
 
         } catch(error) {
             console.error(
-                '[iCHEF STAFF request]',
+                '[iCHEF STAFF request V67]',
                 error
             );
 
@@ -16314,17 +17623,11 @@ async function ichefStaffPortalClock(
                 };
         }
 
-        await AppState.updateOne(
-            { tenantID },
-            {
-                $set: {
-                    'activeOrders.PUNCHES_MASTER': state.activeOrders.PUNCHES_MASTER,
-                    'activeOrders.RH_TIMESHEET_REAL': state.activeOrders.RH_TIMESHEET_REAL,
-                    'activeOrders.STAFF_ACCESS': state.activeOrders.STAFF_ACCESS
-                }
-            },
-            { upsert: true }
+        state.markModified(
+            'activeOrders'
         );
+
+        await state.save();
 
         try {
             const archiveDetails =
@@ -17120,6 +18423,91 @@ now,
 );
 return state;
 }
+app.post('/api/rh/hours/reset', async (req,res) => {
+    res.setHeader('Cache-Control','no-store');
+    const tenantID = cleanString(req.body?.tenantID);
+    const managerPin = String(req.body?.managerPin || '').trim();
+    const reason = String(req.body?.reason || '').trim().slice(0,250);
+    const auth = await ichefAuthorizePin(tenantID,managerPin,{managerOnly:true});
+    if (!auth.ok) {
+        return res.status(auth.status || 403).json({success:false,error:auth.error || 'Remise à zéro RH refusée.'});
+    }
+    if (reason.length < 3) {
+        return res.status(400).json({success:false,error:'Indiquez le motif de la remise à zéro (minimum 3 caractères).'});
+    }
+    try {
+        const state = await AppState.findOne({tenantID}).lean();
+        if (!state) return res.status(404).json({success:false,error:'Établissement introuvable.'});
+        const now = new Date().toISOString();
+        const resetId = `rhreset_${Date.now()}_${crypto.randomBytes(5).toString('hex')}`;
+        const actor = auth.name || auth.role || 'DIRECTION / RH';
+        const resetNode = {
+            version:1,
+            resetId,
+            resetAt:now,
+            resetBy:actor,
+            reason,
+            preservePunches:true,
+            preservePlanning:true,
+            preserveHistory:true
+        };
+
+        const directory = Array.isArray(state?.activeOrders?.DIRECTORY_MASTER?.data)
+            ? JSON.parse(JSON.stringify(state.activeOrders.DIRECTORY_MASTER.data))
+            : [];
+        const zeroFields = [
+            'recoveryBalance','overtimeBalance','hoursBalance','extraHoursBalance',
+            'dueHours','hoursDue','compTimeBalance','recoveryHours','overtimeHours'
+        ];
+        for (const member of directory) {
+            if (!member || typeof member !== 'object') continue;
+            for (const key of zeroFields) {
+                if (Object.prototype.hasOwnProperty.call(member,key)) member[key] = 0;
+            }
+            member.hoursResetAt = now;
+        }
+
+        const cutoffMs = Date.now() - (5 * 365.25 * 24 * 60 * 60 * 1000);
+        const previousHistory = Array.isArray(state?.activeOrders?.RH_CHANGE_HISTORY?.data)
+            ? state.activeOrders.RH_CHANGE_HISTORY.data
+            : [];
+        const history = previousHistory.filter(row => {
+            const t = Date.parse(String(row?.timestamp || row?.at || row?.createdAt || ''));
+            return !Number.isFinite(t) || t >= cutoffMs;
+        });
+        const historyEntry = {
+            id:resetId,
+            timestamp:now,
+            type:'HOURS_COUNTER_RESET',
+            actor,
+            reason,
+            message:`Tous les compteurs d'heures RH ont été remis à zéro · ${reason}`,
+            preservePunches:true,
+            preservePlanning:true,
+            preserveHistory:true
+        };
+        history.push(historyEntry);
+        if (history.length > 15000) history.splice(0,history.length-15000);
+
+        const update = {
+            'activeOrders.RH_HOURS_RESET_MASTER':{data:resetNode,updatedAt:now},
+            'activeOrders.RH_CHANGE_HISTORY':{data:history,updatedAt:now}
+        };
+        if (directory.length) update['activeOrders.DIRECTORY_MASTER'] = {data:directory,updatedAt:now};
+
+        const newState = await AppState.findOneAndUpdate(
+            {tenantID},{$set:update},{new:true,upsert:true,setDefaultsOnInsert:true}
+        ).lean();
+        ichefEmitFullState(tenantID,newState,{tableId:'RH_HOURS_RESET_MASTER',source:'rh-hours-reset'});
+        io.to(tenantID).emit('rhHoursReset',{tenantID,reset:resetNode,updatedAt:now});
+        io.to(tenantID).emit('rhHistoryUpdated',{tenantID,entry:historyEntry,updatedAt:now});
+        return res.json({success:true,reset:resetNode,historyEntry,directory});
+    } catch (error) {
+        console.error('[iCHEF RH] remise à zéro compteurs :',error);
+        return res.status(500).json({success:false,error:'Remise à zéro des compteurs impossible.'});
+    }
+});
+
 app.post('/api/rh/timesheet/correct', async (req, res) => {
 const tenantID =
 cleanString(req.body?.tenantID);
@@ -17158,6 +18546,10 @@ req.body?.date ||
 ).trim();
 const workedHours =
 Number(req.body?.workedHours);
+const plannedHoursRaw = Number(req.body?.plannedHours);
+const plannedHours = Number.isFinite(plannedHoursRaw) ? plannedHoursRaw : null;
+const staffNameFromClient = String(req.body?.staffName || '').trim().slice(0, 180);
+const alignToPlanning = req.body?.alignToPlanning === true;
 const reason =
 String(
 req.body?.reason ||
@@ -17214,29 +18606,51 @@ const month =
 date.slice(0, 7);
 const dayKey =
 date.slice(8, 10);
-const monthNode =
-previous?.months?.[month];
-const staffNode =
-monthNode?.staff?.[staffId];
-const dayNode =
-staffNode?.days?.[dayKey];
-if (!monthNode || !staffNode || !dayNode) {
-return res.status(404).json({
-success: false,
-error:
-'Journée RH introuvable.'
-});
+if (!previous.months || typeof previous.months !== 'object') previous.months = {};
+let monthNode = previous.months[month];
+if (!monthNode) {
+monthNode = previous.months[month] = {
+month, status:'TO_VERIFY', lockedAt:null, lockedBy:null, staff:{}
+};
 }
-if (
-monthNode.status === 'LOCKED' ||
-staffNode.status === 'LOCKED' ||
-dayNode.status === 'LOCKED'
-) {
-return res.status(409).json({
-success: false,
-error:
-'Cette feuille d’heures est clôturée.'
-});
+if (!monthNode.staff || typeof monthNode.staff !== 'object') monthNode.staff = {};
+let staffNode = monthNode.staff[staffId];
+if (!staffNode) {
+staffNode = monthNode.staff[staffId] = {
+staffId,
+staffName: staffNameFromClient || staffId,
+dept:'',
+status:'TO_VERIFY',
+validatedAt:null, validatedBy:null, lockedAt:null, lockedBy:null,
+days:{},
+totals:{rawWorkedHours:0,workedHours:0,anomalyCount:0,validatedDays:0,daysWithPunches:0}
+};
+}
+if (!staffNode.days || typeof staffNode.days !== 'object') staffNode.days = {};
+let dayNode = staffNode.days[dayKey];
+if (!dayNode) {
+dayNode = staffNode.days[dayKey] = {
+date,
+sessions:[],
+punches:[],
+rawWorkedHours:0,
+manualWorkedHours:null,
+workedHours:0,
+anomalies:[{code:'MISSING_PUNCHES',label:'Aucun pointage initial — correction manuelle'}],
+status:'TO_VERIFY',
+correction:null
+};
+}
+const wasLocked = (
+String(monthNode.status || '').toUpperCase() === 'LOCKED' ||
+String(staffNode.status || '').toUpperCase() === 'LOCKED' ||
+String(dayNode.status || '').toUpperCase() === 'LOCKED'
+);
+if (wasLocked) {
+// Une correction Direction est autorisée mais rouvre la feuille à vérifier.
+monthNode.status = 'TO_VERIFY';
+staffNode.status = 'TO_VERIFY';
+dayNode.status = 'TO_VERIFY';
 }
 const previousWorkedHours = Number(
 dayNode.workedHours ??
@@ -17247,13 +18661,20 @@ dayNode.rawWorkedHours ??
 dayNode.manualWorkedHours = Math.round(workedHours * 100) / 100;
 dayNode.workedHours = dayNode.manualWorkedHours;
 dayNode.status = 'TO_VERIFY';
+const correctionAt = new Date().toISOString();
+const anomalyCountBefore = Array.isArray(dayNode.anomalies) ? dayNode.anomalies.length : 0;
 dayNode.correction = {
 reason,
 previousWorkedHours,
 correctedWorkedHours:
 dayNode.manualWorkedHours,
-correctedAt:
-new Date().toISOString(),
+plannedHours,
+differenceBefore: plannedHours === null ? null : Math.round((previousWorkedHours - plannedHours) * 100) / 100,
+differenceAfter: plannedHours === null ? null : Math.round((dayNode.manualWorkedHours - plannedHours) * 100) / 100,
+alignToPlanning,
+wasLocked,
+resolvedAnomalyCount: anomalyCountBefore,
+correctedAt: correctionAt,
 correctedBy:
 auth.name ||
 auth.role ||
@@ -17281,6 +18702,47 @@ staffId,
 date
 }
 );
+
+// V98 — historique RH partagé, conservé 5 ans.
+const cutoffMs = Date.now() - (5 * 365.25 * 24 * 60 * 60 * 1000);
+const previousHistory = Array.isArray(state?.activeOrders?.RH_CHANGE_HISTORY?.data)
+? state.activeOrders.RH_CHANGE_HISTORY.data
+: [];
+const history = previousHistory.filter(row => {
+const t = Date.parse(String(row?.timestamp || row?.at || row?.createdAt || ''));
+return !Number.isFinite(t) || t >= cutoffMs;
+});
+const actorName = auth.name || auth.role || 'MANAGER';
+const differenceBefore = plannedHours === null ? null : Math.round((previousWorkedHours - plannedHours) * 100) / 100;
+const differenceAfter = plannedHours === null ? null : Math.round((dayNode.manualWorkedHours - plannedHours) * 100) / 100;
+const historyEntry = {
+id: `rhcorr_${Date.now()}_${crypto.randomBytes(5).toString('hex')}`,
+timestamp: correctionAt,
+type: 'TIMESHEET_CORRECTION',
+staffId,
+staffName: staffNode.staffName || staffNameFromClient || staffId,
+date,
+previousWorkedHours,
+correctedWorkedHours: dayNode.manualWorkedHours,
+plannedHours,
+differenceBefore,
+differenceAfter,
+reason,
+actor: actorName,
+wasLocked,
+alignToPlanning,
+resolvedAnomalyCount: anomalyCountBefore,
+message: `Pointage corrigé ${date} · ${previousWorkedHours.toFixed(2)} h → ${dayNode.manualWorkedHours.toFixed(2)} h${differenceAfter === null ? '' : ` · écart ${differenceAfter > 0 ? '+' : ''}${differenceAfter.toFixed(2)} h`} · ${reason}`
+};
+history.push(historyEntry);
+if (history.length > 15000) history.splice(0, history.length - 15000);
+await AppState.findOneAndUpdate(
+{ tenantID },
+{ $set: { 'activeOrders.RH_CHANGE_HISTORY': { data: history, updatedAt: correctionAt } } },
+{ upsert:true, new:true, setDefaultsOnInsert:true }
+).lean();
+io.to(tenantID).emit('rhHistoryUpdated', { tenantID, entry:historyEntry, updatedAt:correctionAt });
+
 await scellerOperation(
 tenantID,
 'CORRECT',
@@ -17298,7 +18760,10 @@ reason
 return res.json({
 success: true,
 persisted: true,
-timesheets
+timesheets,
+history,
+historyEntry,
+reopenedFromLocked: wasLocked
 });
 } catch (error) {
 console.error(
