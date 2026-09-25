@@ -27,8 +27,8 @@
     <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>iCHEF RH · Gestion des collaborateurs V83</title>
-    <meta name="ichef-build" content="RH-V83-QUICK-PLANNING-ENTRY">
+    <title>iCHEF RH · Gestion des collaborateurs V84</title>
+    <meta name="ichef-build" content="RH-V84-PLANNING-AI-AUTH-FIX">
     
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800;900&display=swap" rel="stylesheet">
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
@@ -3508,28 +3508,85 @@
     ? "http://localhost:10000"
     : "https://tableau-system.onrender.com";
         
+        function getRhDirectionAuthPin() {
+            try {
+                const pin = String(rhDirectionAuthPin || '').trim();
+                return /^\d{4,12}$/.test(pin) ? pin : '';
+            } catch (_) {
+                return '';
+            }
+        }
+
         const API = {
             getState: async () => {
-                let r = await fetch(`${SERVER_URL_JS}/get-current-state?tenantID=${tenantID_JS}`);
-                if (!r.ok) throw new Error("Serveur injoignable");
+                const authPin = getRhDirectionAuthPin();
+                const params = new URLSearchParams({ tenantID: tenantID_JS });
+
+                if (authPin) params.set('masterPin', authPin);
+
+                const r = await fetch(
+                    `${SERVER_URL_JS}/get-current-state?${params.toString()}`,
+                    {
+                        method: 'GET',
+                        credentials: 'include',
+                        cache: 'no-store',
+                        headers: {
+                            'Accept': 'application/json',
+                            'X-iCHEF-Tenant': tenantID_JS
+                        }
+                    }
+                );
+
+                if (!r.ok) {
+                    const err = await r.json().catch(() => ({}));
+                    throw new Error(
+                        err.error ||
+                        err.message ||
+                        `Serveur RH indisponible (HTTP ${r.status})`
+                    );
+                }
+
                 return await r.json();
             },
+
             update: async (key, data) => {
                 const payload = { data: data };
+                const authPin = getRhDirectionAuthPin();
+
                 try {
-                    const response = await fetch(`${SERVER_URL_JS}/update-order?tenantID=${tenantID_JS}`, {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ tableId: key, order: data === null ? null : payload })
-                    });
+                    const response = await fetch(
+                        `${SERVER_URL_JS}/update-order?tenantID=${encodeURIComponent(tenantID_JS)}`,
+                        {
+                            method: 'POST',
+                            credentials: 'include',
+                            cache: 'no-store',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Accept': 'application/json',
+                                'X-iCHEF-Tenant': tenantID_JS
+                            },
+                            body: JSON.stringify({
+                                tenantID: tenantID_JS,
+                                masterPin: authPin || undefined,
+                                tableId: key,
+                                order: data === null ? null : payload
+                            })
+                        }
+                    );
 
                     if (!response.ok) {
-                        throw new Error(`HTTP ${response.status}`);
+                        const err = await response.json().catch(() => ({}));
+                        throw new Error(
+                            err.error ||
+                            err.message ||
+                            `HTTP ${response.status}`
+                        );
                     }
 
                     return true;
+
                 } catch(e) {
-                    console.error("Erreur Sync:", e);
+                    console.error("Erreur Sync RH:", e);
                     return false;
                 }
             }
@@ -3539,6 +3596,7 @@
         let currentStaffId = null;
         let currentDept = null;
         let currentPin = "";
+        let rhDirectionAuthPin = ""; // PIN Direction : mémoire vive uniquement
         let punchPin = "";
         let loginMode = ""; 
         let loggedInStaffId = null; 
@@ -3601,13 +3659,18 @@
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'Accept': 'application/json'
+                        'Accept': 'application/json',
+                        'X-iCHEF-Tenant': tenantID_JS,
+                        'X-iCHEF-Device': RH_DEVICE_ID
                     },
+                    credentials: 'include',
                     cache: 'no-store',
                     body: JSON.stringify({
                         tenantID: tenantID_JS,
                         pin: safePin,
-                        deviceId: RH_DEVICE_ID
+                        deviceId: RH_DEVICE_ID,
+                        terminal: 'RH',
+                        module: 'RH'
                     })
                 }
             );
@@ -5687,9 +5750,14 @@
                     if (!directionRoles.has(serverRole)) {
                         alert("Ce code PIN n'a pas les droits Direction.");
                         currentPin = "";
+                        rhDirectionAuthPin = "";
                         document.getElementById('pin-display').innerText = "";
                         return;
                     }
+
+                    // Nécessaire aux écritures planning et à l'IA sécurisées.
+                    // Le PIN reste uniquement en mémoire vive de cette page.
+                    rhDirectionAuthPin = enteredPin;
 
                     document.getElementById('pin-modal').style.display = 'none';
                     document.getElementById('landing-portal').style.display = 'none';
@@ -5804,6 +5872,7 @@
         function fullLogout() {
             loggedInStaffId = null;
             currentPin = "";
+            rhDirectionAuthPin = "";
             loginMode = "";
             document.querySelectorAll('.full-interface').forEach(el => el.style.display = 'none');
             document.getElementById('employee-portal').style.display = 'none';
@@ -5838,10 +5907,35 @@
                         onDuty: s.onDuty || false
                     }));
                 
-                await fetch(`${SERVER_URL_JS}/update-order?tenantID=${tenantID_JS}`, {
-                    method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ tableId: 'STAFF_ACCESS', order: { data: staffAccessPayload } })
-                });
+                const authPin = getRhDirectionAuthPin();
+
+                const staffSyncResponse = await fetch(
+                    `${SERVER_URL_JS}/update-order?tenantID=${encodeURIComponent(tenantID_JS)}`,
+                    {
+                        method: 'POST',
+                        credentials: 'include',
+                        cache: 'no-store',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/json',
+                            'X-iCHEF-Tenant': tenantID_JS
+                        },
+                        body: JSON.stringify({
+                            tenantID: tenantID_JS,
+                            masterPin: authPin || undefined,
+                            tableId: 'STAFF_ACCESS',
+                            order: { data: staffAccessPayload }
+                        })
+                    }
+                );
+
+                if (!staffSyncResponse.ok) {
+                    const err = await staffSyncResponse.json().catch(() => ({}));
+                    throw new Error(
+                        err.error ||
+                        `Sync STAFF_ACCESS HTTP ${staffSyncResponse.status}`
+                    );
+                }
                 staffAccess = staffAccessPayload;
 
                 await refreshRhStaffFromServer();
@@ -6028,6 +6122,7 @@
 
         let planningAssistantAutoTimer = null;
         let planningAssistantPrediction = null;
+        let planningAssistantPredictionMonth = null;
         let planningAssistantDraft = null;
         let assistantDayOffSuggestions = [];
 
@@ -6227,16 +6322,47 @@
                 return item >= 1 && item <= 31 ? item : null;
             }
 
-            if (typeof item === 'string') {
-                const iso = item.match(/(20\d{2})-(\d{2})-(\d{2})/);
-                if (iso && `${iso[1]}-${iso[2]}` === monthStr) return Number(iso[3]);
-
-                const simple = item.match(/\b([0-3]?\d)\b/);
-                return simple ? Number(simple[1]) : null;
+            if (typeof item === 'object') {
+                const raw = item.date ?? item.day ?? item.label ?? '';
+                return assistantResolveDayNumber(raw, monthStr);
             }
 
-            const raw = item.date || item.day || item.label || '';
-            return assistantResolveDayNumber(raw, monthStr);
+            const raw = String(item || '').trim();
+            if (!raw) return null;
+
+            const iso = raw.match(/(20\d{2})-(\d{2})-(\d{2})/);
+            if (iso) {
+                if (`${iso[1]}-${iso[2]}` !== monthStr) return null;
+                const day = Number(iso[3]);
+                return day >= 1 && day <= 31 ? day : null;
+            }
+
+            const fr = raw.match(/\b([0-3]?\d)[\/.-]([01]?\d)(?:[\/.-](20\d{2}))?\b/);
+            if (fr) {
+                const [year, month] = monthStr.split('-').map(Number);
+                const day = Number(fr[1]);
+                const itemMonth = Number(fr[2]);
+                const itemYear = fr[3] ? Number(fr[3]) : year;
+
+                if (
+                    itemMonth === month &&
+                    itemYear === year &&
+                    day >= 1 &&
+                    day <= 31
+                ) {
+                    return day;
+                }
+                return null;
+            }
+
+            // Ne jamais confondre une heure (ex. 19:00) avec le jour 19.
+            const explicit = raw.match(/\b(?:jour|le)\s+([0-3]?\d)\b/i);
+            if (explicit) {
+                const day = Number(explicit[1]);
+                return day >= 1 && day <= 31 ? day : null;
+            }
+
+            return null;
         }
 
         function buildAssistantDemand(monthStr, prediction, settings) {
@@ -6479,7 +6605,11 @@
             const modal = document.getElementById('ia-predictions-modal');
             if (!modal) return;
 
+            // Toujours repartir du mois réellement affiché.
+            planningAssistantPrediction = null;
+            planningAssistantPredictionMonth = null;
             planningAssistantDraft = null;
+
             const applyBtn = document.getElementById('assistant-apply-btn');
             if (applyBtn) applyBtn.disabled = true;
 
@@ -6578,11 +6708,14 @@
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
-                            'Accept': 'application/json'
+                            'Accept': 'application/json',
+                            'X-iCHEF-Tenant': tenantID_JS
                         },
+                        credentials: 'include',
                         cache: 'no-store',
                         body: JSON.stringify({
                             tenantID: tenantID_JS,
+                            masterPin: getRhDirectionAuthPin() || undefined,
                             month,
                             staffList: safeStaff,
                             staffAnalysis,
@@ -6600,6 +6733,7 @@
 
                 const p = data.prediction;
                 planningAssistantPrediction = p;
+                planningAssistantPredictionMonth = month;
 
                 const influence = document.getElementById('assistant-restaurant-influence');
                 if (influence) {
@@ -6649,6 +6783,7 @@
             } catch (error) {
                 console.error('Erreur Assistance Planning :', error);
                 planningAssistantPrediction = null;
+                planningAssistantPredictionMonth = null;
 
                 const influence = document.getElementById('assistant-restaurant-influence');
                 if (influence) {
@@ -7416,10 +7551,17 @@
             try {
                 saveRhPlanningSettings(true);
 
-                if (!planningAssistantPrediction) {
+                const currentMonth = getPlanningAssistantMonth();
+
+                if (
+                    !planningAssistantPrediction ||
+                    planningAssistantPredictionMonth !== currentMonth
+                ) {
                     await generateIAPrediction(true);
                 }
 
+                // Le moteur local peut toujours proposer un planning si l'IA distante
+                // est momentanément indisponible.
                 planningAssistantDraft = buildAutomaticPlanningDraft();
                 renderAutomaticPlanningDraft(planningAssistantDraft);
 
@@ -7440,7 +7582,7 @@
             }
         }
 
-        function applyAutomaticPlanning() {
+        async function applyAutomaticPlanning() {
             if (!planningAssistantDraft) {
                 alert('Générez d’abord une proposition de planning.');
                 return;
@@ -7482,7 +7624,7 @@
                 });
             });
 
-            saveTs(ts);
+            const cloudSaved = await saveTs(ts);
 
             recordRhChange({
                 type: 'AI_PLANNING_APPLIED',
@@ -7503,7 +7645,17 @@
             renderPlanningAssistantLocal();
 
             if (typeof showToast === 'function') {
-                showToast('Planning IA appliqué');
+                showToast(
+                    cloudSaved
+                        ? 'Planning IA appliqué et synchronisé'
+                        : 'Planning appliqué localement · synchronisation serveur à reprendre'
+                );
+            }
+
+            if (!cloudSaved) {
+                console.warn(
+                    '[iCHEF RH V84] planning appliqué localement mais sauvegarde serveur refusée/indisponible'
+                );
             }
         }
 
@@ -7880,7 +8032,20 @@
         }
 
         function handleMonthChange() {
-            loadMonthData(); loadPublicPlanning();
+            planningAssistantPrediction = null;
+            planningAssistantPredictionMonth = null;
+            planningAssistantDraft = null;
+
+            const applyBtn = document.getElementById('assistant-apply-btn');
+            if (applyBtn) applyBtn.disabled = true;
+
+            loadMonthData();
+            loadPublicPlanning();
+
+            if (document.getElementById('ia-predictions-modal')?.classList.contains('show')) {
+                renderPlanningAssistantLocal();
+                generateIAPrediction(true);
+            }
         }
 
         function renderStaffList() {
@@ -8485,7 +8650,7 @@
             document.getElementById('timesheet-body').innerHTML = html;
         }
 
-        function updateData(staffId, day, key, val) {
+        async function updateData(staffId, day, key, val) {
             const settings = getRhSettings();
 
             if (settings.planningStatus === 'locked') {
@@ -8531,7 +8696,20 @@
                     ts[monthStr][staffId][day].pause = 0;
                 }
             }
-            saveTs(ts); loadMonthData(); loadPublicPlanning(); broadcastStaffingLevels();
+            const savePromise = saveTs(ts);
+
+            // L'affichage reste immédiat grâce au snapshot local de saveTs().
+            loadMonthData();
+            loadPublicPlanning();
+            broadcastStaffingLevels();
+
+            const cloudSaved = await savePromise;
+            if (!cloudSaved) {
+                console.warn(
+                    '[iCHEF RH V84] modification planning locale en attente de synchronisation serveur',
+                    { staffId, day, key }
+                );
+            }
         }
 
         function renderPlanningProSummary(year, month, daysInMonth, tsMonth) {
@@ -13275,6 +13453,11 @@ async function submitOfficialGatewayPin() {
             return;
         }
 
+        // Le portail vérifie le PIN puis le conserve uniquement en mémoire
+        // pour les appels RH protégés (planning, IA, synchronisation).
+        currentPin = pin;
+        rhDirectionAuthPin = pin;
+
         loginMode = "director";
         currentDept = "admin";
 
@@ -13287,8 +13470,60 @@ async function submitOfficialGatewayPin() {
         if (hubDept) hubDept.innerText = "DIRECTION";
 
         try {
+            // Une fois le PIN Direction validé, on recharge l'état RH protégé.
+            const state = await API.getState();
+
+            if (state?.activeOrders) {
+                if (state.activeOrders['DIRECTORY_MASTER']) {
+                    localStorage.setItem(
+                        'empire_hr_directory',
+                        JSON.stringify(state.activeOrders['DIRECTORY_MASTER'].data || [])
+                    );
+                }
+
+                if (state.activeOrders['TIMESHEETS_MASTER']) {
+                    applyRemoteTimesheets(
+                        state.activeOrders['TIMESHEETS_MASTER'].data || {},
+                        'direction-auth'
+                    );
+                }
+
+                if (state.activeOrders['REQUESTS_MASTER'] || state.activeOrders['STAFF_REQUESTS']) {
+                    const reqRows =
+                        state.activeOrders['REQUESTS_MASTER']?.data ||
+                        state.activeOrders['STAFF_REQUESTS']?.data ||
+                        [];
+
+                    if (Array.isArray(reqRows)) {
+                        localStorage.setItem(
+                            'empire_hr_requests',
+                            JSON.stringify(reqRows)
+                        );
+                    }
+                }
+
+                if (state.activeOrders['RH_SETTINGS']) {
+                    localStorage.setItem(
+                        'ichef_rh_settings',
+                        JSON.stringify(state.activeOrders['RH_SETTINGS'].data || {})
+                    );
+                }
+
+                if (state.activeOrders['RH_TIMESHEET_REAL']) {
+                    localStorage.setItem(
+                        'ichef_rh_timesheet_real',
+                        JSON.stringify(state.activeOrders['RH_TIMESHEET_REAL'].data || { months:{} })
+                    );
+                }
+
+                syncRhStaffFromState(state, { render:false });
+            }
+
             await refreshStaffAccessFromServer();
-        } catch (_) {}
+
+        } catch (syncError) {
+            console.warn('[iCHEF RH V84] resynchronisation après PIN', syncError);
+        }
 
         updateDashboardStats();
         updateReqBadge();
@@ -13410,6 +13645,12 @@ try {
     window.addEventListener('resize',()=>{if(ctx)positionMenu()});
     window.addEventListener('scroll',()=>{if(ctx)closeRhQuickStatus()},true);
 })();
+</script>
+
+
+<script id="ichef-rh-v84-planning-fix-marker">
+window.__ICHEF_RH_BUILD__ = 'RH-V84-PLANNING-AI-AUTH-FIX';
+console.info('[iCHEF RH V84] Planning manuel + sauvegarde cloud + IA planning sécurisés');
 </script>
 
 </body>
