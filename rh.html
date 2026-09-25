@@ -1,16 +1,16 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-<script id="ichef-rh-v89-cache-reset">
+<script id="ichef-rh-v90-cache-reset">
 (async()=>{
   try {
-    if (sessionStorage.getItem('ichef_rh_v89_cache_reset_done') !== '1') {
-      sessionStorage.setItem('ichef_rh_v89_cache_reset_done','1');
+    if (sessionStorage.getItem('ichef_rh_v90_cache_reset_done') !== '1') {
+      sessionStorage.setItem('ichef_rh_v90_cache_reset_done','1');
       if ('serviceWorker' in navigator) {
         const regs = await navigator.serviceWorker.getRegistrations();
         await Promise.all(regs.map(async r => {
           const u = String(r.active?.scriptURL || r.waiting?.scriptURL || r.installing?.scriptURL || '');
-          if (u.includes('sw-rh.js') && !u.includes('v=89')) await r.unregister();
+          if (u.includes('sw-rh.js') && !u.includes('v=90')) await r.unregister();
         }));
       }
       if ('caches' in window) {
@@ -18,7 +18,7 @@
         await Promise.all(keys.filter(k => /rh|ichef/i.test(k)).map(k => caches.delete(k)));
       }
     }
-  } catch (e) { console.warn('[iCHEF RH V89] nettoyage cache non bloquant', e); }
+  } catch (e) { console.warn('[iCHEF RH V90] nettoyage cache non bloquant', e); }
 })();
 </script>
 
@@ -27,8 +27,8 @@
     <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>iCHEF RH · Direction & Pilotage RH V89</title>
-    <meta name="ichef-build" content="RH-V89-SAFE-SAVE-PUNCH-GUARD">
+    <title>iCHEF RH · Direction & Pilotage RH V90</title>
+    <meta name="ichef-build" content="RH-V90-PLANNING-6-MONTH-HORIZON">
     
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800;900&display=swap" rel="stylesheet">
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
@@ -2655,10 +2655,11 @@
                         <h1>Ressources Humaines</h1>
                         <p>Pilotage de l’équipe en temps réel</p>
                     </div>
-                    <div class="rh-week-controls">
-                        <button type="button" onclick="rhCockpitMoveWeek(-1)">‹</button>
+                    <div class="rh-week-controls" title="Planning modifiable jusqu’à 6 mois dans le futur">
+                        <button id="rh-cockpit-prev-week" type="button" onclick="rhCockpitMoveWeek(-1)" aria-label="Semaine précédente">‹</button>
                         <strong id="rh-cockpit-week-label">—</strong>
-                        <button type="button" onclick="rhCockpitMoveWeek(1)">›</button>
+                        <button id="rh-cockpit-next-week" type="button" onclick="rhCockpitMoveWeek(1)" aria-label="Semaine suivante">›</button>
+                        <button id="rh-cockpit-horizon-btn" type="button" onclick="rhCockpitGoToHorizon()" title="Aller à la dernière semaine planifiable">+6 MOIS</button>
                     </div>
                 </section>
 
@@ -2748,7 +2749,7 @@
                 <h2 style="color:var(--gold); margin:0; text-transform:uppercase; letter-spacing:1px; font-weight:300;">PLANNINGS</h2>
                 <div style="display:flex; align-items:center; background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:5px;">
                     <button class="month-nav-btn" onclick="changeMonth(-1)">◀</button>
-                    <input type="month" id="month-selector" style="background:transparent; border:none; color:var(--gold); font-size:1.1rem; font-weight:bold; outline:none; text-transform:uppercase; text-align:center;" onchange="handleMonthChange()">
+                    <input type="month" id="month-selector" title="Planning disponible jusqu’à 6 mois dans le futur" style="background:transparent; border:none; color:var(--gold); font-size:1.1rem; font-weight:bold; outline:none; text-transform:uppercase; text-align:center;" onchange="handleMonthChange()">
                     <button class="month-nav-btn" onclick="changeMonth(1)">▶</button>
                 </div>
             </div>
@@ -4122,7 +4123,7 @@
             localStorage.setItem('empire_hr_punches', JSON.stringify(merged));
 
             if (Array.isArray(incoming) && incoming.length < current.length) {
-                console.warn(`[iCHEF RH V89] ${source}: réponse pointages plus courte (${incoming.length}/${current.length}) — preuves locales conservées.`);
+                console.warn(`[iCHEF RH V90] ${source}: réponse pointages plus courte (${incoming.length}/${current.length}) — preuves locales conservées.`);
             }
 
             return merged;
@@ -4949,6 +4950,7 @@
         window.onload = async function() {
             const today = new Date();
             document.getElementById('month-selector').value = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2, '0')}`;
+            if (typeof enforceRhPlanningMonthHorizon === 'function') enforceRhPlanningMonthHorizon(false);
             
             try {
                 const state = await API.getState();
@@ -8075,11 +8077,46 @@
         // ==========================================
         // VUES PLANNING (MENSUEL, ANNUEL, GLOBAL)
         // ==========================================
+        function getRhPlanningMaxMonth() {
+            const now = new Date();
+            const d = new Date(now.getFullYear(), now.getMonth() + 6, 1, 12, 0, 0, 0);
+            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        }
+
+        function enforceRhPlanningMonthHorizon(showNotice = false) {
+            const selector = document.getElementById('month-selector');
+            if (!selector) return true;
+            const maxMonth = getRhPlanningMaxMonth();
+            selector.max = maxMonth;
+            selector.title = `Planning modifiable jusqu’à ${maxMonth}`;
+            if (selector.value && selector.value > maxMonth) {
+                selector.value = maxMonth;
+                if (showNotice && typeof showToast === 'function') {
+                    showToast('Horizon planning : 6 mois maximum');
+                }
+                return false;
+            }
+            return true;
+        }
+
         function changeMonth(offset) {
             const selector = document.getElementById('month-selector');
+            if (!selector) return;
             let [y, m] = selector.value.split('-').map(Number);
-            m += offset; if(m > 12) { m = 1; y++; } if(m < 1) { m = 12; y--; }
-            selector.value = `${y}-${String(m).padStart(2, '0')}`;
+            if (!y || !m) {
+                const now = new Date();
+                y = now.getFullYear();
+                m = now.getMonth() + 1;
+            }
+            m += offset;
+            if(m > 12) { m = 1; y++; }
+            if(m < 1) { m = 12; y--; }
+            const requested = `${y}-${String(m).padStart(2, '0')}`;
+            const maxMonth = getRhPlanningMaxMonth();
+            selector.value = requested > maxMonth ? maxMonth : requested;
+            if (requested > maxMonth && typeof showToast === 'function') {
+                showToast('Planning disponible jusqu’à 6 mois dans le futur');
+            }
             handleMonthChange();
         }
 
@@ -8106,6 +8143,7 @@
         }
 
         function handleMonthChange() {
+            enforceRhPlanningMonthHorizon(true);
             planningAssistantPrediction = null;
             planningAssistantPredictionMonth = null;
             planningAssistantDraft = null;
@@ -12900,6 +12938,12 @@ html, body {
 (() => {
     let rhCockpitWeekOffset = 0;
 
+    const planningHorizonEnd = () => {
+        const now = new Date();
+        // Fin du mois situé six mois après le mois courant.
+        return new Date(now.getFullYear(), now.getMonth() + 7, 0, 12, 0, 0, 0);
+    };
+
     const esc = value => {
         const div = document.createElement('div');
         div.textContent = value == null ? '' : String(value);
@@ -12916,6 +12960,20 @@ html, body {
         d.setDate(d.getDate()-day);
         return d;
     };
+
+    const maxCockpitWeekOffset = () => {
+        const start = mondayOf(new Date());
+        const endWeek = mondayOf(planningHorizonEnd());
+        return Math.max(0, Math.round((endWeek.getTime() - start.getTime()) / (7 * 86400000)));
+    };
+
+    const isAfterPlanningHorizon = date => {
+        const d = new Date(date);
+        d.setHours(12,0,0,0);
+        return d.getTime() > planningHorizonEnd().getTime();
+    };
+
+    window.getRhPlanningHorizonEnd = planningHorizonEnd;
 
     const weekDates = () => {
         const monday = mondayOf(new Date());
@@ -12960,8 +13018,31 @@ html, body {
 
     const initials = name => String(name||'E').split(/\s+/).filter(Boolean).slice(0,2).map(x=>x[0]).join('').toUpperCase();
 
-    window.rhCockpitMoveWeek = offset => { rhCockpitWeekOffset += Number(offset)||0; renderRhCockpit(); };
-    window.rhCockpitToday = () => { rhCockpitWeekOffset = 0; renderRhCockpit(); };
+    const syncFullPlanningMonthToWeek = () => {
+        const dates = weekDates();
+        const focus = dates[3] || dates[0];
+        const selector = document.getElementById('month-selector');
+        if (selector && focus) {
+            const value = monthKey(focus);
+            const max = typeof getRhPlanningMaxMonth === 'function' ? getRhPlanningMaxMonth() : value;
+            selector.value = value > max ? max : value;
+            if (typeof enforceRhPlanningMonthHorizon === 'function') enforceRhPlanningMonthHorizon(false);
+        }
+    };
+
+    window.rhCockpitMoveWeek = offset => {
+        const delta = Number(offset) || 0;
+        const max = maxCockpitWeekOffset();
+        const requested = rhCockpitWeekOffset + delta;
+        rhCockpitWeekOffset = Math.min(max, requested);
+        if (requested > max && typeof showToast === 'function') {
+            showToast('Horizon planning atteint : 6 mois');
+        }
+        syncFullPlanningMonthToWeek();
+        renderRhCockpit();
+    };
+    window.rhCockpitToday = () => { rhCockpitWeekOffset = 0; syncFullPlanningMonthToWeek(); renderRhCockpit(); };
+    window.rhCockpitGoToHorizon = () => { rhCockpitWeekOffset = maxCockpitWeekOffset(); syncFullPlanningMonthToWeek(); renderRhCockpit(); };
 
     window.publishRhPlanningToStaff = () => {
         try {
@@ -12987,6 +13068,16 @@ html, body {
         if(label){
             const f=d=>d.toLocaleDateString('fr-FR',{day:'2-digit',month:'short'}).replace('.','');
             label.textContent=`${f(dates[0])} – ${f(dates[6])} ${dates[6].getFullYear()}`;
+        }
+        const horizonEnd = planningHorizonEnd();
+        const nextWeekBtn = document.getElementById('rh-cockpit-next-week');
+        if (nextWeekBtn) {
+            nextWeekBtn.disabled = rhCockpitWeekOffset >= maxCockpitWeekOffset();
+            nextWeekBtn.title = nextWeekBtn.disabled ? 'Horizon de 6 mois atteint' : 'Semaine suivante';
+        }
+        const horizonBtn = document.getElementById('rh-cockpit-horizon-btn');
+        if (horizonBtn) {
+            horizonBtn.title = `Planifier jusqu’au ${horizonEnd.toLocaleDateString('fr-FR')}`;
         }
 
         let planned=0,target=0,underCount=0,pointed=0;
@@ -13024,6 +13115,9 @@ html, body {
         if(body){
             const rows=visible.slice(0,8).map(s=>{
                 const cells=dates.map(d=>{
+                    if (isAfterPlanningHorizon(d)) {
+                        return `<td class="rh-horizon-cell"><div class="rh-shift-chip off rh-horizon-locked" title="Au-delà de l’horizon de planification de 6 mois">HORS PÉRIODE</div></td>`;
+                    }
                     const p=planFor(s,d);
                     const dateKey=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
                     return `<td class="${sameDay(d,today)?'rh-today-col':''}"><button type="button" class="rh-shift-chip rh-cockpit-edit-chip ${chipClass(p)}" data-rh-edit-staff="${esc(String(s.id))}" data-rh-edit-date="${dateKey}" title="Modifier cette journée">${esc(shiftText(p))}<span class="rh-edit-mark">✎</span></button></td>`
@@ -13347,7 +13441,7 @@ html, body {
     setInterval(()=>{if(navigator.onLine)syncQueue()},30000);
 
     if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost'||location.hostname==='127.0.0.1')){
-        window.addEventListener('load',()=>navigator.serviceWorker.register('/sw-rh.js?v=89',{scope:'/'}).catch(e=>console.warn('[iCHEF RH OFFLINE] Service Worker non installé',e?.message||e)));
+        window.addEventListener('load',()=>navigator.serviceWorker.register('/sw-rh.js?v=90',{scope:'/'}).catch(e=>console.warn('[iCHEF RH OFFLINE] Service Worker non installé',e?.message||e)));
     }
 })();
 </script>
@@ -14001,6 +14095,12 @@ console.info('[iCHEF RH V84] Planning manuel + sauvegarde cloud + IA planning s�
     }
 
     window.openRhCockpitShiftEditor = function(staffId,dateStr){
+        const requestedDate = new Date(`${String(dateStr)}T12:00:00`);
+        const horizon = typeof window.getRhPlanningHorizonEnd === 'function' ? window.getRhPlanningHorizonEnd() : null;
+        if (horizon && !Number.isNaN(requestedDate.getTime()) && requestedDate.getTime() > horizon.getTime()) {
+            alert(`Le planning peut être préparé jusqu’au ${horizon.toLocaleDateString('fr-FR')} (6 mois dans le futur).`);
+            return;
+        }
         const settings=typeof getRhSettings==='function'?getRhSettings():{};
         if(String(settings.planningStatus||'draft')==='locked'){
             const unlock=confirm('Ce planning est verrouillé. Voulez-vous le repasser en BROUILLON pour pouvoir le modifier ?');
@@ -14120,12 +14220,12 @@ console.info('[iCHEF RH V84] Planning manuel + sauvegarde cloud + IA planning s�
                         showToast('Planning conservé · synchronisation en attente');
                     }
                 }).catch(error=>{
-                    console.warn('[iCHEF RH V89] synchronisation planning différée',error);
+                    console.warn('[iCHEF RH V90] synchronisation planning différée',error);
                     if(typeof showToast==='function') showToast('Planning conservé · synchronisation en attente');
                 });
             }
         } catch(error){
-            console.error('[iCHEF RH V89] sauvegarde planning cockpit',error);
+            console.error('[iCHEF RH V90] sauvegarde planning cockpit',error);
             alert('La modification n’a pas pu être enregistrée localement.');
             if(saveBtn){saveBtn.disabled=false;saveBtn.textContent='ENREGISTRER';}
         }
@@ -14146,9 +14246,16 @@ console.info('[iCHEF RH V84] Planning manuel + sauvegarde cloud + IA planning s�
     });
 })();
 </script>
-<script id="ichef-rh-v89-marker">
-window.__ICHEF_RH_BUILD__ = 'RH-V89-SAFE-SAVE-PUNCH-GUARD';
-console.info('[iCHEF RH V89] Sauvegarde planning non bloquante + protection append-only des preuves de pointage');
+<style id="ichef-rh-v90-horizon-style">
+.rh-week-controls #rh-cockpit-horizon-btn{width:auto;min-width:72px;padding:0 10px;border-left:1px solid #2b3034;color:var(--rh-gold);font-size:8px;font-weight:900;letter-spacing:.45px;white-space:nowrap}
+.rh-week-controls #rh-cockpit-next-week:disabled{opacity:.28;cursor:not-allowed}
+.rh-horizon-cell{background:#0a0c0d!important}
+.rh-horizon-locked{opacity:.34!important;cursor:not-allowed!important;font-size:7px!important;letter-spacing:.35px}
+@media(max-width:560px){.rh-week-controls #rh-cockpit-horizon-btn{min-width:62px;padding:0 7px;font-size:7px}.rh-week-controls strong{font-size:9px}}
+</style>
+<script id="ichef-rh-v90-marker">
+window.__ICHEF_RH_BUILD__ = 'RH-V90-PLANNING-6-MONTH-HORIZON';
+console.info('[iCHEF RH V90] Planning éditable semaine par semaine jusqu’à 6 mois dans le futur');
 </script>
 
 <script id="ichef-rh-v87-legacy-marker">
