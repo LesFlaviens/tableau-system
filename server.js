@@ -15507,7 +15507,7 @@ app.get(
         res.setHeader('Cache-Control','no-store');
         return res.json({
             success:true,
-            build:'V101-STAFF-LOGIN-RESILIENT-SECURE',
+            build:'V103-STAFF-FAST-LOGIN-SECURE',
             staffLoginRoute:'/api/staff/login',
             authentication:'STAFF_ID_RH_PLUS_PIN',
             signedSession:true,
@@ -15727,193 +15727,228 @@ app.post(
                 ]
             };
 
-            /*
-             * V101 — ne jamais laisser un ancien tenantID mémorisé bloquer un
-             * vrai identifiant RH + PIN. La recherche reste limitée par le PIN,
-             * puis l'identité technique exacte est vérifiée en mémoire.
-             * Les alias humains (prénom/pseudo) ne sont autorisés que dans le
-             * tenant explicitement fourni par le portail.
-             */
-            const states =
-                await AppState
-                    .find(
-                        stateQuery,
-                        {
-                            tenantID:1,
-                            'activeOrders.STAFF_ACCESS.data':1,
-                            'activeOrders.DIRECTORY_MASTER.data':1
-                        }
-                    )
-                    .limit(120)
-                    .lean();
+            const stateProjection = {
+                tenantID:1,
+                'activeOrders.STAFF_ACCESS.data':1,
+                'activeOrders.DIRECTORY_MASTER.data':1
+            };
 
             const candidates = [];
             const candidateKeys = new Set();
 
-            for (const state of states) {
-                const stateTenantID = cleanString(state?.tenantID || '');
-                const allowHumanAliases = Boolean(
-                    tenantHint &&
-                    stateTenantID === tenantHint
-                );
+            /*
+             * V103 — FAST LOGIN :
+             * 1) si le portail connaît l'établissement, on lit d'abord UN SEUL
+             *    AppState via l'index unique tenantID ;
+             * 2) seulement si aucun couple ID/PIN ne correspond, on lance le
+             *    secours global V101. Ainsi un login normal évite le scan de
+             *    plusieurs établissements sans réduire la sécurité.
+             */
+            const collectCandidatesFromStates = (stateList = []) => {
+                for (const state of stateList) {
+                    if (!state) continue;
 
-                const members =
-                    Array.isArray(
-                        state?.activeOrders?.STAFF_ACCESS?.data
-                    )
-                    ? state.activeOrders.STAFF_ACCESS.data
-                    : [];
-
-                const directory =
-                    Array.isArray(
-                        state?.activeOrders?.DIRECTORY_MASTER?.data
-                    )
-                    ? state.activeOrders.DIRECTORY_MASTER.data
-                    : [];
-
-                for (const member of members) {
-                    if (member?.active === false) {
-                        continue;
-                    }
-
-                    const memberIds =
-                        identityValues(member);
-
-                    /*
-                     * On rattache la fiche RH au membre STAFF_ACCESS par ID
-                     * d'abord, puis par PIN en secours. Le nom n'est jamais
-                     * utilisé comme preuve d'identité.
-                     */
-                    const linkedDirectory =
-                        directory.find(item => {
-                            if (item?.active === false) {
-                                return false;
-                            }
-
-                            const dirIds =
-                                identityValues(item);
-
-                            const sharesId =
-                                memberIds.some(id =>
-                                    dirIds.includes(id)
-                                );
-
-                            return (
-                                sharesId ||
-                                (
-                                    samePin(member?.pin) &&
-                                    samePin(item?.pin)
-                                )
-                            );
-                        }) || null;
-
-                    const allIds = [
-                        ...portalIdentityValues(member, allowHumanAliases),
-                        ...portalIdentityValues(linkedDirectory, allowHumanAliases)
-                    ];
-
-                    if (!allIds.includes(wantedId)) {
-                        continue;
-                    }
-
-                    /*
-                     * Le PIN peut venir de STAFF_ACCESS ou de la fiche RH liée.
-                     * Dans tous les cas, la session finale reste attachée au
-                     * membre STAFF_ACCESS afin que dashboard / pointage / demandes
-                     * utilisent le même staffId technique que le reste d'iCHEF.
-                     */
-                    if (
-                        !samePin(member?.pin) &&
-                        !samePin(linkedDirectory?.pin)
-                    ) {
-                        continue;
-                    }
-
-                    const tenantID =
-                        cleanString(state.tenantID);
-
-                    const memberTechnicalId =
-                        String(member?.id ?? '').trim();
-
-                    if (!tenantID || !memberTechnicalId) {
-                        continue;
-                    }
-
-                    const key =
-                        tenantID + '::' +
-                        memberTechnicalId;
-
-                    if (candidateKeys.has(key)) {
-                        continue;
-                    }
-
-                    candidateKeys.add(key);
-                    candidates.push({
-                        tenantID,
-                        member,
-                        directoryEntry:linkedDirectory
-                    });
-                }
-
-                /*
-                 * V101 — secours de symbiose : si DIRECTORY_MASTER contient
-                 * déjà la fiche RH mais STAFF_ACCESS n'a pas encore été
-                 * synchronisé, un ID technique exact + PIN exact peut quand
-                 * même ouvrir le Portail Staff. Le dashboard saura également
-                 * relire cette fiche. Aucun alias humain n'est utilisé hors du
-                 * tenant explicitement indiqué.
-                 */
-                for (const dirItem of directory) {
-                    if (dirItem?.active === false) continue;
-
-                    const dirAllIds = portalIdentityValues(
-                        dirItem,
-                        allowHumanAliases
+                    const stateTenantID = cleanString(state?.tenantID || '');
+                    const allowHumanAliases = Boolean(
+                        tenantHint &&
+                        stateTenantID === tenantHint
                     );
 
-                    if (!dirAllIds.includes(wantedId)) continue;
-                    if (!samePin(dirItem?.pin)) continue;
+                    const members =
+                        Array.isArray(
+                            state?.activeOrders?.STAFF_ACCESS?.data
+                        )
+                        ? state.activeOrders.STAFF_ACCESS.data
+                        : [];
 
-                    const directoryTechnicalId = String(
-                        dirItem?.id ??
-                        dirItem?.staffId ??
-                        dirItem?.employeeId ??
-                        dirItem?.rhId ??
-                        dirItem?.matricule ??
-                        ''
-                    ).trim();
+                    const directory =
+                        Array.isArray(
+                            state?.activeOrders?.DIRECTORY_MASTER?.data
+                        )
+                        ? state.activeOrders.DIRECTORY_MASTER.data
+                        : [];
 
-                    if (!stateTenantID || !directoryTechnicalId) continue;
+                    for (const member of members) {
+                        if (member?.active === false) {
+                            continue;
+                        }
 
-                    const alreadyLinked = members.some(member => {
-                        const memberIds = identityValues(member);
-                        const dirIds = identityValues(dirItem);
-                        return memberIds.some(id => dirIds.includes(id));
-                    });
+                        const memberIds =
+                            identityValues(member);
 
-                    if (alreadyLinked) continue;
+                        /*
+                         * On rattache la fiche RH au membre STAFF_ACCESS par ID
+                         * d'abord, puis par PIN en secours. Le nom n'est jamais
+                         * utilisé comme preuve d'identité.
+                         */
+                        const linkedDirectory =
+                            directory.find(item => {
+                                if (item?.active === false) {
+                                    return false;
+                                }
 
-                    const key = stateTenantID + '::' + directoryTechnicalId;
-                    if (candidateKeys.has(key)) continue;
+                                const dirIds =
+                                    identityValues(item);
 
-                    const syntheticMember = {
-                        ...dirItem,
-                        id: directoryTechnicalId,
-                        name: dirItem?.name ||
-                              [dirItem?.firstName, dirItem?.lastName].filter(Boolean).join(' ') ||
-                              [dirItem?.prenom, dirItem?.nom].filter(Boolean).join(' ') ||
-                              'Collaborateur',
-                        active: dirItem?.active !== false
-                    };
+                                const sharesId =
+                                    memberIds.some(id =>
+                                        dirIds.includes(id)
+                                    );
 
-                    candidateKeys.add(key);
-                    candidates.push({
-                        tenantID: stateTenantID,
-                        member: syntheticMember,
-                        directoryEntry: dirItem,
-                        directoryOnly: true
-                    });
+                                return (
+                                    sharesId ||
+                                    (
+                                        samePin(member?.pin) &&
+                                        samePin(item?.pin)
+                                    )
+                                );
+                            }) || null;
+
+                        const allIds = [
+                            ...portalIdentityValues(member, allowHumanAliases),
+                            ...portalIdentityValues(linkedDirectory, allowHumanAliases)
+                        ];
+
+                        if (!allIds.includes(wantedId)) {
+                            continue;
+                        }
+
+                        /*
+                         * Le PIN peut venir de STAFF_ACCESS ou de la fiche RH liée.
+                         * Dans tous les cas, la session finale reste attachée au
+                         * membre STAFF_ACCESS afin que dashboard / demandes
+                         * utilisent le même staffId technique que le reste d'iCHEF.
+                         */
+                        if (
+                            !samePin(member?.pin) &&
+                            !samePin(linkedDirectory?.pin)
+                        ) {
+                            continue;
+                        }
+
+                        const tenantID =
+                            cleanString(state.tenantID);
+
+                        const memberTechnicalId =
+                            String(member?.id ?? '').trim();
+
+                        if (!tenantID || !memberTechnicalId) {
+                            continue;
+                        }
+
+                        const key =
+                            tenantID + '::' +
+                            memberTechnicalId;
+
+                        if (candidateKeys.has(key)) {
+                            continue;
+                        }
+
+                        candidateKeys.add(key);
+                        candidates.push({
+                            tenantID,
+                            member,
+                            directoryEntry:linkedDirectory
+                        });
+                    }
+
+                    /*
+                     * Secours de symbiose : DIRECTORY_MASTER peut être utilisable
+                     * avant STAFF_ACCESS. Hors du tenant fourni, aucun alias humain
+                     * n'est accepté : il faut un identifiant technique exact + PIN.
+                     */
+                    for (const dirItem of directory) {
+                        if (dirItem?.active === false) continue;
+
+                        const dirAllIds = portalIdentityValues(
+                            dirItem,
+                            allowHumanAliases
+                        );
+
+                        if (!dirAllIds.includes(wantedId)) continue;
+                        if (!samePin(dirItem?.pin)) continue;
+
+                        const directoryTechnicalId = String(
+                            dirItem?.id ??
+                            dirItem?.staffId ??
+                            dirItem?.employeeId ??
+                            dirItem?.rhId ??
+                            dirItem?.matricule ??
+                            ''
+                        ).trim();
+
+                        if (!stateTenantID || !directoryTechnicalId) continue;
+
+                        const alreadyLinked = members.some(member => {
+                            const memberIds = identityValues(member);
+                            const dirIds = identityValues(dirItem);
+                            return memberIds.some(id => dirIds.includes(id));
+                        });
+
+                        if (alreadyLinked) continue;
+
+                        const key = stateTenantID + '::' + directoryTechnicalId;
+                        if (candidateKeys.has(key)) continue;
+
+                        const syntheticMember = {
+                            ...dirItem,
+                            id: directoryTechnicalId,
+                            name: dirItem?.name ||
+                                  [dirItem?.firstName, dirItem?.lastName].filter(Boolean).join(' ') ||
+                                  [dirItem?.prenom, dirItem?.nom].filter(Boolean).join(' ') ||
+                                  'Collaborateur',
+                            active: dirItem?.active !== false
+                        };
+
+                        candidateKeys.add(key);
+                        candidates.push({
+                            tenantID: stateTenantID,
+                            member: syntheticMember,
+                            directoryEntry: dirItem,
+                            directoryOnly: true
+                        });
+                    }
                 }
+            };
+
+            if (tenantHint) {
+                const hintedState =
+                    await AppState
+                        .findOne(
+                            { tenantID: tenantHint },
+                            stateProjection
+                        )
+                        .lean();
+
+                collectCandidatesFromStates(
+                    hintedState
+                    ? [hintedState]
+                    : []
+                );
+            }
+
+            /*
+             * Le fallback V101 est conservé pour un ancien/mauvais tenantID
+             * mémorisé dans le téléphone. Il ne s'exécute plus à chaque login.
+             */
+            if (!candidates.length) {
+                const fallbackQuery = {
+                    ...stateQuery,
+                    ...(tenantHint
+                        ? { tenantID: { $ne: tenantHint } }
+                        : {})
+                };
+
+                const fallbackStates =
+                    await AppState
+                        .find(
+                            fallbackQuery,
+                            stateProjection
+                        )
+                        .limit(120)
+                        .lean();
+
+                collectCandidatesFromStates(fallbackStates);
             }
 
             if (!candidates.length) {
@@ -15940,18 +15975,29 @@ app.post(
                 )
             ];
 
+            const tenantProjection = {
+                tenantID:1,
+                status:1,
+                archivedAt:1,
+                demoExpiration:1
+            };
+
             const tenants =
-                await Tenant
+                tenantIDs.length === 1
+                ? [
+                    await Tenant
+                        .findOne(
+                            { tenantID: tenantIDs[0] },
+                            tenantProjection
+                        )
+                        .lean()
+                  ].filter(Boolean)
+                : await Tenant
                     .find(
                         {
                             tenantID:{ $in:tenantIDs }
                         },
-                        {
-                            tenantID:1,
-                            status:1,
-                            archivedAt:1,
-                            demoExpiration:1
-                        }
+                        tenantProjection
                     )
                     .lean();
 
@@ -16106,7 +16152,7 @@ app.post(
 
         } catch (error) {
             console.error(
-                '[iCHEF STAFF LOGIN V65]',
+                '[iCHEF STAFF LOGIN V103]',
                 error
             );
 
