@@ -10,7 +10,7 @@
         const regs = await navigator.serviceWorker.getRegistrations();
         await Promise.all(regs.map(async r => {
           const u = String(r.active?.scriptURL || r.waiting?.scriptURL || r.installing?.scriptURL || '');
-          if (u.includes('sw-rh.js') && !u.includes('v=92')) await r.unregister();
+          if (u.includes('sw-rh.js') && !u.includes('v=93')) await r.unregister();
         }));
       }
       if ('caches' in window) {
@@ -27,8 +27,8 @@
     <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>iCHEF RH · Direction & Pilotage RH V92</title>
-    <meta name="ichef-build" content="RH-V92-DASHBOARD-OPERATIONNEL">
+    <title>iCHEF RH · Direction & Pilotage RH V93</title>
+    <meta name="ichef-build" content="RH-V93-PLANNING-MASTER-EDITABLE">
     
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800;900&display=swap" rel="stylesheet">
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
@@ -13582,7 +13582,7 @@ html, body {
     setInterval(()=>{if(navigator.onLine)syncQueue()},30000);
 
     if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost'||location.hostname==='127.0.0.1')){
-        window.addEventListener('load',()=>navigator.serviceWorker.register('/sw-rh.js?v=92',{scope:'/'}).catch(e=>console.warn('[iCHEF RH OFFLINE] Service Worker non installé',e?.message||e)));
+        window.addEventListener('load',()=>navigator.serviceWorker.register('/sw-rh.js?v=93',{scope:'/'}).catch(e=>console.warn('[iCHEF RH OFFLINE] Service Worker non installé',e?.message||e)));
     }
 })();
 </script>
@@ -14567,6 +14567,148 @@ console.info('[iCHEF RH V87 legacy] Correctifs planning manuel conservés sous V
 <script id="ichef-rh-v92-marker">
 window.__ICHEF_RH_BUILD__='RH-V92-DASHBOARD-OPERATIONNEL';
 console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilibre heures, planning jour/semaine/mois');
+</script>
+
+
+<style id="ichef-rh-v93-planning-master-edit-style">
+/* V93 · La grille PLANNINGS est l'éditeur maître */
+#global-view-container .global-table td:not(.sticky-col){
+    cursor:pointer;
+}
+#global-view-container .rh-status-quick-btn{
+    pointer-events:auto !important;
+    cursor:pointer !important;
+    opacity:1 !important;
+    position:relative;
+    transition:background .15s ease,border-color .15s ease,color .15s ease,transform .08s ease;
+}
+#global-view-container .rh-status-quick-btn:hover{
+    border-color:rgba(214,183,90,.48) !important;
+    background:rgba(214,183,90,.08) !important;
+    color:#f2dc9a !important;
+}
+#global-view-container .rh-status-quick-btn:active{transform:scale(.96)}
+#global-view-container .rh-status-quick-btn::before{
+    content:"✎";
+    position:absolute;
+    right:4px;
+    top:3px;
+    font-size:7px;
+    line-height:1;
+    color:rgba(214,183,90,.72);
+    pointer-events:none;
+}
+#global-view-container .global-table td:not(.sticky-col):hover{
+    background:rgba(255,255,255,.018);
+}
+.rh-v93-edit-hint{
+    display:inline-flex;align-items:center;gap:6px;margin-left:10px;
+    padding:5px 8px;border-radius:999px;border:1px solid rgba(214,183,90,.25);
+    color:#cdb56f;background:rgba(214,183,90,.035);
+    font-size:8px;font-weight:850;letter-spacing:.45px;white-space:nowrap;
+}
+.rh-v93-edit-hint::before{content:"✎";font-size:9px}
+</style>
+<script id="ichef-rh-v93-planning-master-edit-script">
+(() => {
+    function planningSettings(){
+        try { return typeof getRhSettings === 'function' ? (getRhSettings() || {}) : {}; }
+        catch (_) { return {}; }
+    }
+
+    function activatePlanningDraft(showNotice = true){
+        const settings = planningSettings();
+        const current = String(settings.planningStatus || 'draft').toLowerCase();
+        if (current === 'draft') return true;
+        try {
+            if (typeof saveRhSettings === 'function') {
+                saveRhSettings({...settings, planningStatus:'draft'});
+            }
+            if (typeof recordRhChange === 'function') {
+                recordRhChange({
+                    type:'PLANNING_EDIT_MODE',
+                    source:'DIRECTION_PLANNING',
+                    previousStatus:current,
+                    newStatus:'draft',
+                    month:document.getElementById('month-selector')?.value || ''
+                });
+            }
+            if (showNotice && typeof showToast === 'function') {
+                showToast('Mode édition activé · planning en brouillon');
+            }
+            return true;
+        } catch (error) {
+            console.warn('[iCHEF RH V93] activation brouillon', error);
+            return current !== 'locked';
+        }
+    }
+
+    function dateForPlanningDay(day){
+        const month = document.getElementById('month-selector')?.value || '';
+        const n = Number(day);
+        if (!/^\d{4}-\d{2}$/.test(month) || !Number.isInteger(n) || n < 1 || n > 31) return '';
+        return `${month}-${String(n).padStart(2,'0')}`;
+    }
+
+    const previousQuick = window.openRhQuickStatus;
+    window.openRhQuickStatus = function(event, staffId, day){
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        activatePlanningDraft(true);
+
+        try { window.closeRhQuickStatus?.(); } catch (_) {}
+        const dateStr = dateForPlanningDay(day);
+        if (dateStr && typeof window.openRhCockpitShiftEditor === 'function') {
+            window.openRhCockpitShiftEditor(String(staffId), dateStr);
+            return;
+        }
+        if (typeof previousQuick === 'function') {
+            return previousQuick.call(this, event, staffId, day);
+        }
+    };
+
+    /* Toute modification dans la vue individuelle doit aussi être possible,
+       même si la période avait été publiée/verrouillée auparavant. */
+    document.addEventListener('change', event => {
+        const target = event.target;
+        if (!target?.closest?.('#hr-interface')) return;
+        if (!target.matches('.status-sel,.shift-inp,.pause-inp,.obs-inp')) return;
+        activatePlanningDraft(false);
+    }, true);
+
+    /* Si une période a été clôturée, entrer dans PLANNINGS ne doit plus donner
+       l'impression que l'écran entier est cassé. On la remet en brouillon pour
+       le travail de planification Direction/RH. */
+    const previousOpenInterface = window.openInterface;
+    if (typeof previousOpenInterface === 'function') {
+        window.openInterface = function(type, ...rest){
+            if (type === 'hr') {
+                const settings = planningSettings();
+                if (String(settings.planningStatus || 'draft').toLowerCase() === 'locked') {
+                    activatePlanningDraft(false);
+                }
+            }
+            const result = previousOpenInterface.call(this, type, ...rest);
+            if (type === 'hr') setTimeout(installHint, 0);
+            return result;
+        };
+    }
+
+    function installHint(){
+        const title = document.querySelector('#hr-interface h2');
+        if (!title || title.parentElement?.querySelector('.rh-v93-edit-hint')) return;
+        const hint = document.createElement('span');
+        hint.className = 'rh-v93-edit-hint';
+        hint.textContent = 'CLIQUEZ UNE CASE POUR MODIFIER';
+        title.insertAdjacentElement('afterend', hint);
+    }
+
+    document.addEventListener('DOMContentLoaded', installHint);
+    setTimeout(installHint, 50);
+
+    window.__ICHEF_RH_BUILD__ = 'RH-V93-PLANNING-MASTER-EDITABLE';
+    console.info('[iCHEF RH V93] PLANNINGS : grille maître directement éditable');
+})();
 </script>
 
 </body>
