@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>iCHEF OS — Mon espace collaborateur</title>
-<meta name="ichef-build" content="V68-STAFF-RH-LOGIN-ROBUSTE">
+<meta name="ichef-build" content="V69-STAFF-RH-SW-V3-SECURE">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -2512,11 +2512,45 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden&&requireSt
 bootstrapCollaboratorPortal();
 </script>
   <script>
-// iCHEF V65 — le portail collaborateur doit toujours utiliser le réseau.
-// On retire les anciens Service Workers/caches qui peuvent intercepter le login.
+// =========================================================
+// iCHEF V69 — SERVICE WORKER RH / POINTEUSE / COLLABORATEUR
+// Interface disponible rapidement, données sensibles toujours réseau.
+// Le sw-rh.js laisse /api/, /api/staff/, /api/rh/, Socket.IO,
+// /get-current-state et /update-order hors cache.
+// =========================================================
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', async () => {
     try {
+      // Un Service Worker exige HTTPS (ou localhost).
+      const swAllowed =
+        location.protocol === 'https:' ||
+        location.hostname === 'localhost' ||
+        location.hostname === '127.0.0.1';
+
+      if (!swAllowed) {
+        console.info('[iCHEF Staff V69] Service Worker non activé sur ce protocole.');
+        return;
+      }
+
+      // Nettoie uniquement les anciens caches iCHEF devenus incompatibles.
+      // Aucun cache contenant des données RH personnelles n'est créé ici.
+      if ('caches' in window) {
+        const keys = await caches.keys();
+        await Promise.all(
+          keys
+            .filter(name =>
+              (
+                name.startsWith('ichef-cache-') ||
+                name.startsWith('ichef-dynamic-') ||
+                name.startsWith('ichef-rh-shell-')
+              ) &&
+              name !== 'ichef-rh-shell-2026-09-25-v3'
+            )
+            .map(name => caches.delete(name))
+        );
+      }
+
+      // Supprime seulement d'anciens workers iCHEF utilisant un autre script.
       const regs = await navigator.serviceWorker.getRegistrations();
       for (const reg of regs) {
         const scriptURL =
@@ -2524,34 +2558,42 @@ if ('serviceWorker' in navigator) {
           reg.waiting?.scriptURL ||
           reg.installing?.scriptURL ||
           '';
-        if (scriptURL.includes('service-worker.js')) {
+
+        if (
+          scriptURL &&
+          (
+            scriptURL.includes('/service-worker.js') ||
+            scriptURL.includes('/sw.js')
+          ) &&
+          !scriptURL.includes('/sw-rh.js')
+        ) {
           await reg.unregister();
         }
       }
 
-      if ('caches' in window) {
-        const keys = await caches.keys();
-        await Promise.all(
-          keys
-            .filter(name =>
-              name.startsWith('ichef-cache-') ||
-              name.startsWith('ichef-dynamic-')
-            )
-            .map(name => caches.delete(name))
-        );
-      }
+      const registration = await navigator.serviceWorker.register(
+        '/sw-rh.js?v=20260925-3',
+        {
+          scope: '/',
+          updateViaCache: 'none'
+        }
+      );
 
-      if (
-        navigator.serviceWorker.controller &&
-        sessionStorage.getItem('ichef_staff_sw_clean_v61') !== '1'
-      ) {
-        sessionStorage.setItem('ichef_staff_sw_clean_v61','1');
-        const url = new URL(location.href);
-        url.searchParams.set('_swclean','61');
-        location.replace(url.toString());
-      }
+      // Vérifie immédiatement s'il existe une version plus récente.
+      try {
+        await registration.update();
+      } catch (_) {}
+
+      console.info(
+        '[iCHEF Staff V69] sw-rh.js actif',
+        registration.scope
+      );
     } catch (error) {
-      console.warn('[iCHEF Staff V61] nettoyage Service Worker', error);
+      // Le portail reste entièrement utilisable en ligne même si le SW échoue.
+      console.warn(
+        '[iCHEF Staff V69] Service Worker indisponible :',
+        error
+      );
     }
   });
 }
