@@ -10,7 +10,7 @@
         const regs = await navigator.serviceWorker.getRegistrations();
         await Promise.all(regs.map(async r => {
           const u = String(r.active?.scriptURL || r.waiting?.scriptURL || r.installing?.scriptURL || '');
-          if (u.includes('sw-rh.js') && !u.includes('v=76')) await r.unregister();
+          if (u.includes('sw-rh.js') && !u.includes('v=86')) await r.unregister();
         }));
       }
       if ('caches' in window) {
@@ -27,8 +27,8 @@
     <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>iCHEF RH · Gestion des collaborateurs V85</title>
-    <meta name="ichef-build" content="RH-V85-PLANNING-CELL-CLICK-FIX">
+    <title>iCHEF RH · Direction & Pilotage RH V86</title>
+    <meta name="ichef-build" content="RH-V86-DIRECTION-SYNC">
     
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800;900&display=swap" rel="stylesheet">
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
@@ -2427,8 +2427,8 @@
 
         <div class="gateway-separator"></div>
 
-        <div class="gateway-title">GESTION DES COLLABORATEURS</div>
-        <div class="gateway-subtitle">ACCÈS DIRECTION · CONNEXION SÉCURISÉE</div>
+        <div class="gateway-title">DIRECTION & PILOTAGE RH</div>
+        <div class="gateway-subtitle">CHEFS · RESPONSABLES · DIRECTION · RH</div>
 
         <div id="official-pin-display" class="gateway-pin-dots" aria-label="Code PIN saisi">
             <span class="gateway-pin-dot"></span>
@@ -2462,7 +2462,7 @@
 
         <div id="official-gateway-status" class="gateway-status">
             <span class="gateway-status-dot"></span>
-            <span id="official-gateway-status-text">ACCÈS DIRECTION · PIN SERVEUR REQUIS</span>
+            <span id="official-gateway-status-text">ACCÈS RH AUTORISÉ · PIN SERVEUR REQUIS</span>
         </div>
 
         <button class="gateway-control" type="button" onclick="openOfficialAccessCenter()">CENTRE DE CONTRÔLE</button>
@@ -2481,27 +2481,27 @@
             <div class="gateway-access-head">
                 <div>
                     <div class="kicker">iCHEF OS · CONTRÔLE D'ACCÈS · V77</div>
-                    <h2>Choisir un mode d'accès</h2>
+                    <h2>Modules RH synchronisés</h2>
                 </div>
                 <button class="gateway-access-close" type="button" onclick="closeOfficialAccessCenter()">FERMER</button>
             </div>
 
             <div class="gateway-access-grid">
-                <button class="gateway-access-option" type="button" onclick="closeOfficialAccessCenter(); activatePunchKioskMode();">
-                    <small>Borne dédiée</small>
-                    <strong>Mode pointeuse</strong>
-                    <p>Entrées, sorties, photo et PIN personnel.</p>
+                <button class="gateway-access-option" type="button" onclick="openRhLinkedModule('portail-staff.html')">
+                    <small>Espace collaborateur</small>
+                    <strong>Portail Staff</strong>
+                    <p>Planning personnel, heures, demandes, vacances et historique.</p>
                 </button>
 
-                <button class="gateway-access-option" type="button" onclick="closeOfficialAccessCenter(); openDeptSelection();">
-                    <small>Accès protégé</small>
-                    <strong>Direction RH</strong>
-                    <p>Pilotage équipe, planning, contrôles, demandes et feuilles d'heures.</p>
+                <button class="gateway-access-option" type="button" onclick="openRhLinkedModule('pointeuse.html')">
+                    <small>Temps de travail</small>
+                    <strong>Pointeuse</strong>
+                    <p>Entrées, sorties, pauses et pointages synchronisés avec le RH.</p>
                 </button>
             </div>
 
             <div class="gateway-access-admin">
-                <button type="button" onclick="window.location.href='admin.html' + (tenantID ? '?tenantID=' + encodeURIComponent(tenantID) : '')">Administration système</button>
+                <button type="button" onclick="openRhLinkedModule('admin.html')">Administration système</button>
             </div>
         </div>
     </div>
@@ -2516,10 +2516,10 @@
                 <button class="btn-outline" style="border:none;" onclick="closeDeptSelection()">FERMER</button>
             </div>
             <div style="display:flex; flex-direction:column; gap:10px;">
-                <button class="pay-btn" onclick="showPinPad('cuisine')">CUISINE / PRODUCTION</button>
-                <button class="pay-btn" onclick="showPinPad('salle')">SALLE / CAISSE</button>
-                <button class="pay-btn" onclick="showPinPad('bar')">BAR / COMPTOIR</button>
-                <button class="pay-btn" onclick="showPinPad('admin')">DIRECTION / MANAGER</button>
+                <button class="pay-btn" onclick="showPinPad('admin')">DIRECTION / RESPONSABLE RH</button>
+                <div style="color:var(--text-muted);font-size:.72rem;line-height:1.5;text-align:center;padding:8px 6px;">
+                    Les collaborateurs utilisent exclusivement portail-staff.html et pointeuse.html.
+                </div>
             </div>
         </div>
     </div>
@@ -3930,9 +3930,12 @@
             return local;
         }
 
-        function saveDir(dir) { 
-            localStorage.setItem('empire_hr_directory', JSON.stringify(dir)); 
-            API.update('DIRECTORY_MASTER', dir);
+        function saveDir(dir) {
+            localStorage.setItem('empire_hr_directory', JSON.stringify(Array.isArray(dir) ? dir : []));
+        }
+
+        async function syncDirectoryMasterToCloud(dir) {
+            return await API.update('DIRECTORY_MASTER', Array.isArray(dir) ? dir : []);
         }
         
         function getTs() { return JSON.parse(localStorage.getItem('empire_hr_timesheets')) || {}; }
@@ -5041,43 +5044,17 @@
             document.getElementById('landing-portal').style.display = 'flex';
         }
 
+        function openRhLinkedModule(fileName) {
+            const clean = String(fileName || '').replace(/[^a-zA-Z0-9._-]/g, '');
+            if (!clean) return;
+            const suffix = tenantID_JS ? `?tenantID=${encodeURIComponent(tenantID_JS)}` : '';
+            window.location.href = clean + suffix;
+        }
+
         async function openStaffPortalLogin() {
-            loginMode = 'staff';
-            currentDept = null;
-            currentPin = "";
-
-            const select = document.getElementById('staff-login-select');
-            const container = document.getElementById('staff-select-container');
-            const pinModal = document.getElementById('pin-modal');
-            const title = document.getElementById('pin-dept-title');
-            const display = document.getElementById('pin-display');
-
-            try {
-                await refreshStaffAccessFromServer();
-            } catch (error) {
-                console.error("Impossible de synchroniser les accès employés :", error);
-                alert("Connexion serveur impossible. Les codes RH ne peuvent pas être vérifiés.");
-                return;
-            }
-
-            const staff = staffAccess
-                .filter(s => s.active !== false && /^\d{4,12}$/.test(String(s.pin || '').trim()))
-                .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'fr'));
-
-            if (!staff.length) {
-                alert("Aucun employé actif avec un code PIN synchronisé.");
-                return;
-            }
-
-            select.innerHTML = staff
-                .map(s => `<option value="${String(s.id)}">${escapeRhHtml(s.name)} — ${escapeRhHtml(s.role || s.dept || 'Employé')}</option>`)
-                .join('');
-
-            container.style.display = 'block';
-            title.innerText = "ACCÈS EMPLOYÉ";
-            display.innerText = "";
-            document.getElementById('dept-modal').style.display = 'none';
-            pinModal.style.display = 'flex';
+            // V86 : rh.html est strictement réservé à la hiérarchie/RH.
+            // Toute connexion collaborateur est déléguée au portail Staff dédié.
+            openRhLinkedModule('portail-staff.html');
         }
 
         function escapeRhHtml(value) {
@@ -5719,7 +5696,14 @@
                         'direction',
                         'directeur',
                         'gerant',
-                        'gérant'
+                        'gérant',
+                        'chef',
+                        'chef de service',
+                        'responsable',
+                        'responsable rh',
+                        'rh',
+                        'superviseur',
+                        'supervisor'
                     ]);
 
                     if (!directionRoles.has(serverRole)) {
@@ -5744,7 +5728,14 @@
                         'direction',
                         'directeur',
                         'gerant',
-                        'gérant'
+                        'gérant',
+                        'chef',
+                        'chef de service',
+                        'responsable',
+                        'responsable rh',
+                        'rh',
+                        'superviseur',
+                        'supervisor'
                     ]);
 
                     if (!directionRoles.has(serverRole)) {
@@ -5776,44 +5767,11 @@
                 }
 
                 if (loginMode === 'staff') {
-                    try {
-                        await refreshStaffAccessFromServer();
-                    } catch (error) {
-                        alert("Impossible de synchroniser le compte employé.");
-                        return;
-                    }
-
-                    const selectId = String(
-                        document.getElementById('staff-login-select').value || ''
-                    );
-
-                    const selectedStaff = staffAccess.find(
-                        s =>
-                            String(s.id) === selectId &&
-                            s.active !== false
-                    );
-
-                    if (!selectedStaff) {
-                        alert("Compte employé introuvable ou désactivé.");
-                        currentPin = "";
-                        document.getElementById('pin-display').innerText = "";
-                        return;
-                    }
-
-                    if (String(selectedStaff.pin || '').trim() !== enteredPin) {
-                        alert("Ce code PIN ne correspond pas à l'employé sélectionné.");
-                        currentPin = "";
-                        document.getElementById('pin-display').innerText = "";
-                        return;
-                    }
-
-                    loggedInStaffId = selectedStaff.id;
-
+                    currentPin = "";
+                    document.getElementById('pin-display').innerText = "";
                     document.getElementById('pin-modal').style.display = 'none';
-                    document.getElementById('landing-portal').style.display = 'none';
-                    document.getElementById('employee-portal').style.display = 'flex';
-
-                    renderEmployeePortal();
+                    openRhLinkedModule('portail-staff.html');
+                    return;
                 }
 
             } catch (error) {
@@ -5938,13 +5896,20 @@
                 }
                 staffAccess = staffAccessPayload;
 
+                const syncCache = JSON.parse(localStorage.getItem('EMPIRE_GLOBAL_SYNC') || '{"activeOrders":{}}');
+                if (!syncCache.activeOrders) syncCache.activeOrders = {};
+                syncCache.activeOrders.STAFF_ACCESS = { data: staffAccessPayload };
+                localStorage.setItem('EMPIRE_GLOBAL_SYNC', JSON.stringify(syncCache));
+
                 await refreshRhStaffFromServer();
+                return true;
 
             } catch (e) {
                 console.error(
                     "Erreur de sync STAFF_ACCESS",
                     e
                 );
+                return false;
             }
         }
 
@@ -5971,7 +5936,7 @@
                 document.getElementById('staff-name').value = ""; 
                 document.getElementById('staff-title').value = ""; 
                 document.getElementById('staff-pin').value = ""; 
-                document.getElementById('staff-role').value = currentDept || "salle";
+                document.getElementById('staff-role').value = "salle";
                 document.getElementById('staff-contract').value = 39;
                 document.getElementById('staff-leave-days').value = 25;
                 document.getElementById('staff-hourly-cost').value = 0;
@@ -5984,20 +5949,44 @@
                 document.getElementById('staff-max-consecutive').value = 6;
                 document.getElementById('staff-active').checked = true; 
             }
-            let modal = document.getElementById('staff-modal'); 
-            modal.style.display = 'flex'; setTimeout(() => modal.classList.add('show'), 10);
+            let modal = document.getElementById('staff-modal');
+            modal.style.opacity = '1';
+            modal.style.display = 'flex';
+            setTimeout(() => modal.classList.add('show'), 10);
         }
 
-        function closeModals() { 
+        function closeModals() {
             document.querySelectorAll('.modal').forEach(m => {
-                m.style.opacity = '0';
-                setTimeout(() => { m.classList.remove('show'); m.style.display = 'none'; }, 300);
+                m.classList.remove('show');
+                m.style.opacity = '1';
+                m.style.display = 'none';
             });
         }
 
-        function saveStaff() {
-            let name = document.getElementById('staff-name').value.trim(); 
-            let title = document.getElementById('staff-title').value.trim(); 
+        async function persistRhStaffDirectory(dir, successMessage) {
+            saveDir(dir);
+
+            const [directoryOk, accessOk] = await Promise.all([
+                syncDirectoryMasterToCloud(dir),
+                syncStaffAccessToCloud(dir)
+            ]);
+
+            refreshViews();
+
+            if (directoryOk && accessOk) {
+                if (successMessage) showToast(successMessage);
+                return true;
+            }
+
+            alert(
+                "La modification est enregistrée localement, mais la synchronisation complète avec le portail Staff / la pointeuse / l’administration n’a pas abouti. Vérifiez la connexion puis réessayez."
+            );
+            return false;
+        }
+
+        async function saveStaff() {
+            let name = document.getElementById('staff-name').value.trim();
+            let title = document.getElementById('staff-title').value.trim();
             let pin = document.getElementById('staff-pin').value.trim();
             let contract = Number(document.getElementById('staff-contract').value);
             let annualLeaveDays = Number(document.getElementById('staff-leave-days').value);
@@ -6013,67 +6002,65 @@
             let minRestHours = Number(document.getElementById('staff-min-rest').value);
             let maxConsecutiveDays = Number(document.getElementById('staff-max-consecutive').value);
             let origPin = document.getElementById('staff-edit-original-pin').value;
-            
+
             if (
                 !name ||
                 !title ||
                 !/^\d{4,12}$/.test(pin) ||
-                !Number.isFinite(contract) ||
-                contract <= 0 ||
-                contract > 80 ||
-                !Number.isFinite(annualLeaveDays) ||
-                annualLeaveDays < 0 ||
-                annualLeaveDays > 90 ||
-                !Number.isFinite(hourlyCost) ||
-                hourlyCost < 0 ||
-                !Number.isFinite(leaveCarryover) ||
-                leaveCarryover < 0 ||
-                !Number.isFinite(recoveryBalance) ||
-                recoveryBalance < 0 ||
-                !Number.isFinite(minRestHours) ||
-                minRestHours < 0 ||
-                !Number.isFinite(maxConsecutiveDays) ||
-                maxConsecutiveDays < 1
+                !Number.isFinite(contract) || contract <= 0 || contract > 80 ||
+                !Number.isFinite(annualLeaveDays) || annualLeaveDays < 0 || annualLeaveDays > 90 ||
+                !Number.isFinite(hourlyCost) || hourlyCost < 0 ||
+                !Number.isFinite(leaveCarryover) || leaveCarryover < 0 ||
+                !Number.isFinite(recoveryBalance) || recoveryBalance < 0 ||
+                !Number.isFinite(minRestHours) || minRestHours < 0 ||
+                !Number.isFinite(maxConsecutiveDays) || maxConsecutiveDays < 1
             ) {
                 return alert("Vérifiez le nom, la fonction, le PIN, les heures de contrat et les droits congés.");
-            } 
-            
+            }
+
             let dir = getDir();
-            let newStaff = { 
-                id: origPin ? dir.find(s=>s.pin===origPin).id : Date.now() + Math.random(),
-                name: name,
-                pin: pin,
+            const existing = origPin ? dir.find(s => String(s.pin || '') === String(origPin)) : null;
+            const duplicatePin = dir.find(s =>
+                String(s.pin || '').trim() === pin &&
+                (!existing || String(s.id) !== String(existing.id))
+            );
+
+            if (duplicatePin) {
+                return alert(`Ce PIN est déjà attribué à ${duplicatePin.name || 'un autre collaborateur'}.`);
+            }
+
+            let newStaff = {
+                id: existing?.id || `staff_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                name,
+                pin,
                 role: title,
                 dept: document.getElementById('staff-role').value,
-                contract: contract,
-                annualLeaveDays: annualLeaveDays,
-                leaveCarryover: leaveCarryover,
-                recoveryBalance: recoveryBalance,
-                hourlyCost: hourlyCost,
-                skillLevel: skillLevel,
-                skills: skills,
-                availability: availability,
-                minRestHours: minRestHours,
-                maxConsecutiveDays: maxConsecutiveDays,
+                contract,
+                annualLeaveDays,
+                leaveCarryover,
+                recoveryBalance,
+                hourlyCost,
+                skillLevel,
+                skills,
+                availability,
+                minRestHours,
+                maxConsecutiveDays,
                 active: document.getElementById('staff-active').checked,
-                onDuty: false 
+                onDuty: existing?.onDuty || false
             };
-            
-            if (origPin) {
-                let idx = dir.findIndex(s => s.pin === origPin);
-                newStaff.onDuty = dir[idx].onDuty || false;
-                dir[idx] = newStaff;
 
+            if (existing) {
+                const idx = dir.findIndex(s => String(s.id) === String(existing.id));
+                if (idx < 0) return alert("Collaborateur introuvable. Rechargez la page puis réessayez.");
+                dir[idx] = newStaff;
                 recordRhChange({
                     staffId: newStaff.id,
                     staffName: newStaff.name,
                     type: 'STAFF_UPDATED',
                     message: 'Fiche collaborateur mise à jour'
                 });
-
             } else {
                 dir.push(newStaff);
-
                 recordRhChange({
                     staffId: newStaff.id,
                     staffName: newStaff.name,
@@ -6082,38 +6069,54 @@
                 });
             }
 
-            saveDir(dir);
-            syncStaffAccessToCloud(dir); 
-            closeModals(); 
-            refreshViews();
+            document.getElementById('staff-edit-original-pin').value = pin;
+            const ok = await persistRhStaffDirectory(dir, existing ? 'Collaborateur synchronisé' : 'Collaborateur créé et synchronisé');
+            closeModals();
+            return ok;
         }
 
-        function deleteStaff() {
-            let origPin = document.getElementById('staff-edit-original-pin').value;
-            if(!origPin) return closeModals();
-            if(confirm("SUPPRESSION DÉFINITIVE : Supprimer cet employé ?")) {
-                let dir = getDir().filter(s => s.pin !== origPin);
-                saveDir(dir);
-                syncStaffAccessToCloud(dir);
-                if(currentStaffId && currentStaffId === getDir().find(s=>s.pin===origPin)?.id) {
-                    currentStaffId = null; isGlobalView = true; toggleViewDisplay();
-                }
-                closeModals(); refreshViews();
+        async function deleteStaff() {
+            const origPin = document.getElementById('staff-edit-original-pin').value;
+            if (!origPin) return closeModals();
+            if (!confirm("SUPPRESSION DÉFINITIVE : Supprimer cet employé ?")) return;
+
+            const before = getDir();
+            const removed = before.find(s => String(s.pin || '') === String(origPin));
+            const dir = before.filter(s => String(s.pin || '') !== String(origPin));
+
+            if (!removed) {
+                closeModals();
+                return alert("Collaborateur introuvable.");
             }
+
+            if (currentStaffId && String(currentStaffId) === String(removed.id)) {
+                currentStaffId = null;
+                isGlobalView = true;
+            }
+
+            await persistRhStaffDirectory(dir, 'Collaborateur supprimé et synchronisé');
+            closeModals();
+            toggleViewDisplay();
         }
 
-        function toggleStaffStatus(id) {
+        async function toggleStaffStatus(id) {
             let dir = getDir();
-            let idx = dir.findIndex(s => s.id === id);
-            if (idx > -1) {
-                dir[idx].active = !dir[idx].active;
-                if(dir[idx].active === false) dir[idx].onDuty = false;
-                saveDir(dir);
-                syncStaffAccessToCloud(dir);
-                if (currentStaffId === id && dir[idx].active === false) {
-                    currentStaffId = null; isGlobalView = true; toggleViewDisplay();
-                } else refreshViews();
+            let idx = dir.findIndex(s => String(s.id) === String(id));
+            if (idx < 0) return;
+
+            dir[idx].active = !dir[idx].active;
+            if (dir[idx].active === false) dir[idx].onDuty = false;
+
+            if (currentStaffId !== null && String(currentStaffId) === String(id) && dir[idx].active === false) {
+                currentStaffId = null;
+                isGlobalView = true;
             }
+
+            await persistRhStaffDirectory(
+                dir,
+                dir[idx].active ? 'Collaborateur réactivé' : 'Collaborateur désactivé'
+            );
+            toggleViewDisplay();
         }
 
         // ==========================================
@@ -8066,7 +8069,7 @@
                     <div class="staff-role">${escapeRhHtml(s.role)} - ${Number(s.contract || 0)}h/sem · ${String(s.dept || '').toUpperCase()}</div>
                     <div class="staff-hint">1 clic : dossier complet · appui 0,9 s : solde heures</div>
                     <div style="margin-top:10px; display:flex; gap:5px;">
-                        <button onclick="event.stopPropagation(); toggleStaffStatus(${s.id})" style="background:#222; border:none; color:#fff; padding:4px 8px; font-size:0.6rem; border-radius:4px; cursor:pointer;">${s.active === false ? 'RÉACTIVER' : 'DÉSACTIVER'}</button>
+                        <button onclick="event.stopPropagation(); toggleStaffStatus(${sid})" style="background:#222; border:none; color:#fff; padding:4px 8px; font-size:0.6rem; border-radius:4px; cursor:pointer;">${s.active === false ? 'RÉACTIVER' : 'DÉSACTIVER'}</button>
                         <button onclick="event.stopPropagation(); openStaffModal('${s.pin}')" style="background:#222; border:none; color:#fff; padding:4px 8px; font-size:0.6rem; border-radius:4px; cursor:pointer;">ÉDITER</button>
                     </div>
                 </div>`;
@@ -12935,155 +12938,149 @@ html, body {
             hours.innerHTML=`<div class="rh-hours-line"><span>Heures planifiées</span><strong>${planned.toFixed(1)} h</strong></div><div class="rh-hours-line"><span>Heures pointées</span><strong>${pointed.toFixed(1)} h</strong></div><div class="rh-hours-line emph"><span>Écart pointé / planning</span><strong>${diff>=0?'+':''}${diff.toFixed(1)} h</strong></div><div class="rh-hours-line"><span>Objectif contrats</span><strong>${target.toFixed(1)} h</strong></div><div class="rh-hours-progress"><i style="width:${Math.min(100,pct)}%"></i></div><div class="rh-hours-percent"><strong>${pct}%</strong> · ${planned.toFixed(1)} h / ${target.toFixed(1)} h</div>`;
         }
 
-const alerts = [];
-
-            if (underCount > 0) {
-                alerts.push({
-                    tone:'attn',
-                    text:`${underCount} planning${underCount > 1 ? 's' : ''} sous l’objectif`
-                });
-            }
-
-            if (overCount > 0) {
-                alerts.push({
-                    tone:'attn',
-                    text:`${overCount} dépassement${overCount > 1 ? 's' : ''} à contrôler`
-                });
-            }
-
-            if (pendingRequests > 0) {
-                alerts.push({
-                    tone:'attn',
-                    text:`${pendingRequests} demande${pendingRequests > 1 ? 's' : ''} en attente`
-                });
-            }
-
-            if (!alerts.length) {
-                alerts.push({
-                    tone:'good',
-                    text:'Aucun point prioritaire détecté sur le mois'
-                });
-            }
-
-            const alertBox = document.getElementById('planning-pro-alerts');
-            if (alertBox) {
-                alertBox.innerHTML =
-                    `<span class="planning-pro-label">À traiter</span>` +
-                    alerts.slice(0, 4).map(item =>
-                        `<span class="planning-pro-chip ${item.tone}">${escapeRhHtml(item.text)}</span>`
-                    ).join('');
-            }
+        const alerts=document.getElementById('rh-cockpit-alerts');
+        if(alerts){
+            const rows=[];
+            if(missing>0.05) rows.push(`<div class="rh-list-item rh-alert-red"><div class="rh-list-ico">!</div><div><strong>Sous-planification</strong><small>${missing.toFixed(1)} h restent à planifier sur la semaine.</small></div><span></span></div>`);
+            const over=staff.map(s=>{let h=0;dates.forEach(d=>{const p=planFor(s,d);h+=typeof calculateNet==='function'?Number(calculateNet(p)||0):0});return {s,h,c:Number(s.contract)||0}}).filter(x=>x.h>x.c+0.05);
+            if(over.length) rows.push(`<div class="rh-list-item rh-alert-gold"><div class="rh-list-ico">△</div><div><strong>Dépassement d’heures</strong><small>${over.length} collaborateur${over.length>1?'s':''} au-dessus du contrat hebdomadaire.</small></div><span></span></div>`);
+            const settings=typeof getRhSettings==='function'?getRhSettings():{};
+            if(String(settings.planningStatus||'draft')!=='published') rows.push(`<div class="rh-list-item rh-alert-blue"><div class="rh-list-ico">i</div><div><strong>Planning non publié</strong><small>Le planning est actuellement ${esc(String(settings.planningStatus||'brouillon').replaceAll('_',' '))}.</small></div><span></span></div>`);
+            if(!rows.length) rows.push(`<div class="rh-list-item rh-alert-green"><div class="rh-list-ico">✓</div><div><strong>Planning équilibré</strong><small>Aucune alerte prioritaire détectée sur cette semaine.</small></div><span></span></div>`);
+            alerts.innerHTML=rows.slice(0,3).join('');
         }
+        set('rh-cockpit-sync-time',`Dernière synchronisation : ${new Date().toLocaleString('fr-FR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}`);
+    };
 
-        function renderStaffList() {
-            const dir = getDir();
-            const container = document.getElementById('staff-list-render');
-            let html = '';
-            dir.forEach(s => {
-                let statusBadge = s.active === false ? '<span style="color:#ef4444; font-size:0.6rem; float:right;">DÉSACTIVÉ</span>' : '<span style="color:#10b981; font-size:0.6rem; float:right;">ACTIF</span>';
-                const sid = JSON.stringify(s.id);
-                html += `<div class="staff-card ${String(currentStaffId) === String(s.id) ? 'active' : ''}"
-                              onpointerdown='staffPointerDown(event, ${sid})'
-                              onpointerup='staffPointerUp(event)'
-                              onpointercancel='staffPointerUp(event)'
-                              onpointerleave='staffPointerUp(event)'
-                              onclick='staffCardClick(event, ${sid})'
-                              style="${s.active === false ? 'opacity:0.5;' : ''}">
-                    <div class="staff-name">${escapeRhHtml(s.name)} ${statusBadge}</div>
-                    <div class="staff-role">${escapeRhHtml(s.role)} - ${Number(s.contract || 0)}h/sem · ${String(s.dept || '').toUpperCase()}</div>
-                    <div class="staff-hint">1 clic : dossier complet · appui 0,9 s : solde heures</div>
-                    <div style="margin-top:10px; display:flex; gap:5px;">
-                        <button onclick="event.stopPropagation(); toggleStaffStatus('${s.id}')" style="background:#222; border:none; color:#fff; padding:4px 8px; font-size:0.6rem; border-radius:4px; cursor:pointer;">${s.active === false ? 'RÉACTIVER' : 'DÉSACTIVER'}</button>
-                        <button onclick="event.stopPropagation(); openStaffModal('${s.pin}')" style="background:#222; border:none; color:#fff; padding:4px 8px; font-size:0.6rem; border-radius:4px; cursor:pointer;">ÉDITER</button>
-                    </div>
-                </div>`;
-            });
-            container.innerHTML = html || '<div style="color:var(--sub); text-align:center; padding:20px;">Aucun collaborateur dans ce département.</div>';
-            updateDashboardStats();
-        }
+    const originalBack=window.backToHub;
+    if(typeof originalBack==='function'){
+        window.backToHub=function(){originalBack.apply(this,arguments);setTimeout(()=>renderRhCockpit(),0)};
+    }
 
-        function renderGlobalView(year, month, daysInMonth, tsMonth) {
-            const dir = getDir().filter(s => s.active !== false);
-            const today = new Date();
-            const sameMonth = today.getFullYear() === year && (today.getMonth() + 1) === month;
+    const originalDash=window.updateDashboardStats;
+    if(typeof originalDash==='function'){
+        window.updateDashboardStats=function(){const r=originalDash.apply(this,arguments);setTimeout(()=>renderRhCockpit(),0);return r};
+    }
 
-            let headHtml = `<tr><th class="sticky-col">COLLABORATEUR</th>`;
+    document.addEventListener('DOMContentLoaded',()=>setTimeout(()=>renderRhCockpit(),350));
+    setInterval(()=>{if(document.getElementById('director-hub')?.style.display==='flex')renderRhCockpit()},15000);
+})();
+</script>
 
-            for (let d = 1; d <= daysInMonth; d++) {
-                const dateObj = new Date(year, month - 1, d);
-                const isWeekend = dateObj.getDay() === 0 || dateObj.getDay() === 6;
-                const isToday = sameMonth && today.getDate() === d;
 
-                headHtml += `
-                    <th class="${isWeekend ? 'weekend-head' : ''} ${isToday ? 'today-head' : ''}">
-                        <div class="day-label">${daysOfWeek[dateObj.getDay()]}</div>
-                        <div class="date-label">${String(d).padStart(2, '0')}</div>
-                    </th>`;
+
+<style id="ichef-rh-auto-style">
+    .rh-auto-bar{margin:0 20px 14px;padding:14px 16px;border:1px solid rgba(212,175,55,.38);border-radius:12px;background:linear-gradient(90deg,rgba(212,175,55,.07),rgba(255,255,255,.015));display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}
+    .rh-auto-copy strong{display:block;color:var(--gold);font-size:.72rem;letter-spacing:1.2px;text-transform:uppercase}.rh-auto-copy span{display:block;color:#888;font-size:.7rem;margin-top:5px;line-height:1.45}
+    .rh-auto-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.rh-auto-btn{border:1px solid var(--gold);background:var(--gold);color:#050505;border-radius:8px;padding:10px 13px;font-weight:900;font-size:.68rem;letter-spacing:.5px;cursor:pointer}.rh-auto-toggle{border:1px solid #333;background:#0b0b0b;color:#aaa;border-radius:999px;padding:9px 12px;font-weight:800;font-size:.64rem;cursor:pointer}.rh-auto-toggle.on{border-color:#10b981;color:#10b981;background:rgba(16,185,129,.06)}
+    .rh-auto-status{font-size:.64rem;color:#777;margin-left:4px}.rh-auto-status strong{color:#fff}
+</style>
+<script id="ichef-rh-auto-engine">
+(function(){
+    const AUTO_KEY='ichef_rh_auto_engine_v1';
+    function autoGet(){try{return {...{enabled:true,autoTimesheets:true,autoPayroll:true,lastRun:{}},...(JSON.parse(localStorage.getItem(AUTO_KEY)||'{}')||{})}}catch(e){return {enabled:true,autoTimesheets:true,autoPayroll:true,lastRun:{}}}}
+    function autoSet(v){localStorage.setItem(AUTO_KEY,JSON.stringify(v));return v}
+    function monthKeyFromTs(ts){const d=new Date(Number(ts||0));if(Number.isNaN(d.getTime()))return '';return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`}
+    function dateKeyFromTs(ts){const d=new Date(Number(ts||0));if(Number.isNaN(d.getTime()))return '';return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
+    function dayKeyFromDateKey(k){return String(Number(String(k||'').slice(8,10))).padStart(2,'0')}
+    function round2(v){return Math.round(Number(v||0)*100)/100}
+    function isManualDay(day){if(!day||typeof day!=='object')return false;return Boolean(day.correctedAt||day.correctionReason||day.manualCorrection||day.manuallyCorrected||day.adjustedBy||day.override===true||String(day.source||'').toUpperCase().includes('MANUAL'))}
+    function ensureDay(days,date){const dk=dayKeyFromDateKey(date);if(!days[dk])days[dk]={date,workedHours:0,sessions:[],anomalies:[],source:'AUTO_POINTAGE'};return days[dk]}
+    function pushAnomaly(days,date,message,punch){if(!date)return;const d=ensureDay(days,date);d.anomalies.push({type:'AUTO_CONTROL',message,punchId:punch?.id||null,timestamp:Number(punch?.timestamp||0)||null});}
+
+    function buildAutomaticDays(staffId,month){
+        const raw=(typeof getPunches==='function'?getPunches():[]).filter(p=>String(p?.staffId)===String(staffId)).slice().sort((a,b)=>Number(a?.timestamp||0)-Number(b?.timestamp||0));
+        const days={}; let open=null;
+        raw.forEach(p=>{
+            const type=String(p?.type||'').toUpperCase(); const pMonth=monthKeyFromTs(p?.timestamp); const pDate=dateKeyFromTs(p?.timestamp);
+            if(type==='ENTRÉE'||type==='ENTREE'){
+                if(open){const od=dateKeyFromTs(open.timestamp);if(monthKeyFromTs(open.timestamp)===month)pushAnomaly(days,od,'Entrée sans sortie avant le pointage suivant',open)}
+                open=p; return;
             }
-
-            headHtml += `<th>TOTAL</th></tr>`;
-            document.getElementById('global-thead').innerHTML = headHtml;
-
-            let bodyHtml = '';
-
-            dir.forEach(staff => {
-                let totalH = 0;
-                const sid = JSON.stringify(staff.id);
-                const staffMonth =
-                    tsMonth?.[staff.id] ||
-                    tsMonth?.[String(staff.id)] ||
-                    {};
-
-                let rowHtml = `
-                    <tr>
-                        <td class="sticky-col"
-                            style="cursor:pointer;user-select:none;"
-                            onpointerdown='staffPointerDown(event, ${sid})'
-                            onpointerup='staffPointerUp(event)'
-                            onpointercancel='staffPointerUp(event)'
-                            onpointerleave='staffPointerUp(event)'
-                            onclick='staffCardClick(event, ${sid})'>
-                            <div class="rh-matrix-person">
-                                <strong>${escapeRhHtml(staff.name || 'Collaborateur')}</strong>
-                                <small>${escapeRhHtml(staff.role || staff.dept || '')} · ${Number(staff.contract || 0).toFixed(0)} h/sem</small>
-                            </div>
-                        </td>`;
-
-                for (let d = 1; d <= daysInMonth; d++) {
-                    const dateObj = new Date(year, month - 1, d);
-                    const isWeekend = dateObj.getDay() === 0 || dateObj.getDay() === 6;
-                    const isToday = sameMonth && today.getDate() === d;
-                    const p = staffMonth?.[d] || staffMonth?.[String(d)] || { status:'off' };
-                    const status = String(p.status || 'off');
-                    const meta = rhStatusMeta(status);
-                    const net = calculateNet(p);
-                    totalH += net;
-
-                    const schedule = [p.s1, p.s2].filter(Boolean).join(' / ');
-                    const title = `${meta.label}${schedule ? ' · ' + schedule : ''}${net > 0 ? ' · ' + net.toFixed(1) + ' h' : ''}`;
-
-                    rowHtml += `
-                        <td class="${isWeekend ? 'weekend-cell' : ''} ${isToday ? 'today-cell' : ''}" title="${escapeRhHtml(title)}">
-                            <button
-                                type="button"
-                                class="status-select-cell rh-status-quick-btn status-${escapeRhHtml(status)}"
-                                aria-label="${escapeRhHtml(staff.name || 'Collaborateur')} - ${d}/${month} - ${escapeRhHtml(meta.label)}"
-                                data-rh-staff="${escapeRhHtml(String(staff.id))}"
-                                data-rh-day="${d}"
-                                onclick='openRhQuickStatus(event, ${sid}, ${d})'>
-                                ${escapeRhHtml(meta.short)}
-                            </button>
-                        </td>`;
+            if(type==='SORTIE'){
+                if(!open){if(pMonth===month)pushAnomaly(days,pDate,'Sortie sans entrée correspondante',p);return}
+                const inTs=Number(open.timestamp||0),outTs=Number(p.timestamp||0),inMonth=monthKeyFromTs(inTs),inDate=dateKeyFromTs(inTs);
+                let hours=(outTs-inTs)/3600000;
+                if(inMonth===month){
+                    const d=ensureDay(days,inDate);
+                    const anomalies=[];
+                    if(!Number.isFinite(hours)||hours<0){hours=0;anomalies.push('Durée de pointage invalide')}
+                    if(hours>18)anomalies.push('Amplitude supérieure à 18 h à contrôler');
+                    const session={entry:open,exit:p,hours:round2(Math.max(0,hours)),source:'AUTO_POINTAGE'};
+                    d.sessions.push(session); d.workedHours=round2(d.workedHours+session.hours);
+                    anomalies.forEach(msg=>d.anomalies.push({type:'AUTO_CONTROL',message:msg,entryTimestamp:inTs,exitTimestamp:outTs}));
                 }
+                open=null;
+            }
+        });
+        if(open&&monthKeyFromTs(open.timestamp)===month)pushAnomaly(days,dateKeyFromTs(open.timestamp),'Entrée sans sortie',open);
+        return days;
+    }
 
-                rowHtml += `<td class="rh-matrix-total">${totalH.toFixed(1)} h</td></tr>`;
-                bodyHtml += rowHtml;
-            });
+    async function buildAutomaticTimesheets(month){
+        if(typeof getRealTimesheets!=='function'||typeof saveRealTimesheetsLocal!=='function')return {employees:0,updated:0,skipped:0,anomalies:0};
+        const store=getRealTimesheets()||{months:{}};store.months=store.months||{};const monthNode=store.months[month]||{};monthNode.staff=monthNode.staff||{};store.months[month]=monthNode;
+        const staff=(typeof getDir==='function'?getDir():[]).filter(s=>s.active!==false);let updated=0,skipped=0,anomalies=0;
+        staff.forEach(st=>{
+            const id=String(st.id);const existing=monthNode.staff[id]||{};const status=String(existing.status||'').toUpperCase();
+            if(status==='LOCKED'||status==='VALIDATED'){skipped++;return}
+            const autoDays=buildAutomaticDays(st.id,month);const merged={};
+            const keys=new Set([...Object.keys(autoDays),...Object.keys(existing.days||{})]);
+            keys.forEach(k=>{const old=(existing.days||{})[k],fresh=autoDays[k];merged[k]=isManualDay(old)?old:(fresh||old);if(Array.isArray(merged[k]?.anomalies))anomalies+=merged[k].anomalies.length});
+            monthNode.staff[id]={...existing,staffId:st.id,staffName:st.name,month,status:'TO_VERIFY',days:merged,generatedAt:new Date().toISOString(),source:'AUTO_POINTAGE'};updated++;
+        });
+        saveRealTimesheetsLocal(store);
+        try{if(typeof API!=='undefined'&&API?.update)await API.update('RH_TIMESHEET_REAL',store)}catch(e){console.warn('[iCHEF RH] Sync feuilles automatiques:',e)}
+        try{if(typeof recordRhChange==='function')recordRhChange({type:'AUTO_TIMESHEETS',message:`Feuilles d'heures générées automatiquement pour ${month}`,month,updated,skipped,anomalies})}catch(e){}
+        return {employees:staff.length,updated,skipped,anomalies};
+    }
 
-            document.getElementById('global-tbody').innerHTML =
-                bodyHtml ||
-                '<tr><td colspan="35" style="text-align:center;padding:28px;color:#7b818a;">Aucun collaborateur actif.</td></tr>';
-        }
+    window.iChefRunAutomaticMonth=async function(month,opts={}){
+        month=month||document.getElementById('real-timesheet-month')?.value||document.getElementById('payroll-month')?.value||new Date().toISOString().slice(0,7);
+        const cfg=autoGet();if(!cfg.enabled&&!opts.force)return null;
+        let timeResult=null,payResult=null;
+        if(cfg.autoTimesheets!==false)timeResult=await buildAutomaticTimesheets(month);
+        if(cfg.autoPayroll!==false&&typeof window.iChefPayrollGenerateAutomaticRun==='function')payResult=window.iChefPayrollGenerateAutomaticRun(month,{silent:true});
+        cfg.lastRun=cfg.lastRun||{};cfg.lastRun[month]={at:new Date().toISOString(),timesheets:timeResult,payroll:payResult?.totals||null};autoSet(cfg);
+        try{if(typeof renderRealTimesheets==='function')renderRealTimesheets()}catch(e){}
+        try{if(typeof window.renderPayrollCenter==='function'&&document.getElementById('payroll-interface')?.style.display==='flex')window.renderPayrollCenter()}catch(e){}
+        updateAutoUi();
+        if(!opts.silent&&typeof showToast==='function')showToast('Heures et salaires préparés automatiquement');
+        return {timesheets:timeResult,payroll:payResult};
+    };
+
+    window.iChefToggleAutoRh=function(){const cfg=autoGet();cfg.enabled=!cfg.enabled;autoSet(cfg);updateAutoUi();if(cfg.enabled)window.iChefRunAutomaticMonth(null,{silent:true});};
+
+    function updateAutoUi(){
+        const cfg=autoGet();document.querySelectorAll('.rh-auto-toggle').forEach(b=>{b.classList.toggle('on',cfg.enabled);b.textContent=cfg.enabled?'AUTOMATIQUE : ACTIVÉ':'AUTOMATIQUE : ARRÊTÉ'});
+        const month=document.getElementById('real-timesheet-month')?.value||document.getElementById('payroll-month')?.value||new Date().toISOString().slice(0,7);const last=cfg.lastRun?.[month];
+        document.querySelectorAll('.rh-auto-status').forEach(el=>{el.innerHTML=last?`Dernière génération : <strong>${new Date(last.at).toLocaleString('fr-FR')}</strong>`:'Aucune génération pour ce mois';});
+    }
+
+    function installTimesheetAutoBar(){
+        const target=document.getElementById('real-timesheet-summary');if(!target||document.getElementById('rh-auto-timesheet-bar'))return;
+        const bar=document.createElement('div');bar.id='rh-auto-timesheet-bar';bar.className='rh-auto-bar';bar.innerHTML=`<div class="rh-auto-copy"><strong>Feuilles d'heures + salaires automatiques</strong><span>Pointages → heures réelles → préparation du salaire du mois. Les corrections manuelles et les mois validés/clôturés sont préservés.</span><div class="rh-auto-status"></div></div><div class="rh-auto-actions"><button class="rh-auto-toggle" onclick="iChefToggleAutoRh()"></button><button class="rh-auto-btn" onclick="iChefRunAutomaticMonth(document.getElementById('real-timesheet-month')?.value,{force:true})">GÉNÉRER LE MOIS</button></div>`;
+        target.parentNode.insertBefore(bar,target);updateAutoUi();
+    }
+    function installPayrollAutoControls(){
+        const top=document.querySelector('#payroll-interface .payroll-topbar');if(!top||document.getElementById('rh-auto-payroll-btn'))return;
+        const toggle=document.createElement('button');toggle.id='rh-auto-payroll-toggle';toggle.className='rh-auto-toggle';toggle.onclick=window.iChefToggleAutoRh;top.appendChild(toggle);
+        const btn=document.createElement('button');btn.id='rh-auto-payroll-btn';btn.className='rh-auto-btn';btn.textContent='RECALCULER HEURES + SALAIRES';btn.onclick=()=>window.iChefRunAutomaticMonth(document.getElementById('payroll-month')?.value,{force:true});top.appendChild(btn);updateAutoUi();
+    }
+    function installHubAutoButton(){
+        const grid=document.querySelector('#director-hub .grid-2');if(!grid||document.getElementById('rh-auto-hub-btn'))return;
+        const b=document.createElement('button');b.id='rh-auto-hub-btn';b.className='pay-btn';b.style.cssText='border-color:var(--success);color:var(--success);background:rgba(16,185,129,.04);padding:22px;grid-column:span 2;';b.textContent='AUTOMATISATION RH · HEURES + SALAIRES';b.onclick=()=>window.iChefRunAutomaticMonth(new Date().toISOString().slice(0,7),{force:true});grid.insertBefore(b,grid.firstChild);
+    }
+    function installHooks(){
+        installTimesheetAutoBar();installPayrollAutoControls();installHubAutoButton();updateAutoUi();
+        const tm=document.getElementById('real-timesheet-month');if(tm&&!tm.dataset.autoHook){tm.dataset.autoHook='1';tm.addEventListener('change',()=>{if(autoGet().enabled)window.iChefRunAutomaticMonth(tm.value,{silent:true})})}
+        const pm=document.getElementById('payroll-month');if(pm&&!pm.dataset.autoHook){pm.dataset.autoHook='1';pm.addEventListener('change',()=>{if(autoGet().enabled)window.iChefRunAutomaticMonth(pm.value,{silent:true})})}
+        if(typeof window.openPayrollCenter==='function'&&!window.openPayrollCenter.__autoWrapped){const orig=window.openPayrollCenter;const wrapped=function(){const r=orig.apply(this,arguments);const month=document.getElementById('payroll-month')?.value;if(autoGet().enabled)setTimeout(()=>window.iChefRunAutomaticMonth(month,{silent:true}),0);return r};wrapped.__autoWrapped=true;window.openPayrollCenter=wrapped;}
+        if(typeof window.submitPunch==='function'&&!window.submitPunch.__autoWrapped){const origPunch=window.submitPunch;const wrappedPunch=async function(){const r=await origPunch.apply(this,arguments);if(autoGet().enabled)setTimeout(()=>window.iChefRunAutomaticMonth(new Date().toISOString().slice(0,7),{silent:true}),250);return r};wrappedPunch.__autoWrapped=true;window.submitPunch=wrappedPunch;}
+    }
+    document.addEventListener('DOMContentLoaded',()=>{installHooks();setTimeout(installHooks,700);setTimeout(()=>{if(autoGet().enabled)window.iChefRunAutomaticMonth(new Date().toISOString().slice(0,7),{silent:true})},1200)});
+})();
+</script>
 
 
 <!-- =========================================================
@@ -13239,7 +13236,7 @@ const alerts = [];
     setInterval(()=>{if(navigator.onLine)syncQueue()},30000);
 
     if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost'||location.hostname==='127.0.0.1')){
-        window.addEventListener('load',()=>navigator.serviceWorker.register('/sw-rh.js?v=83',{scope:'/'}).catch(e=>console.warn('[iCHEF RH OFFLINE] Service Worker non installé',e?.message||e)));
+        window.addEventListener('load',()=>navigator.serviceWorker.register('/sw-rh.js?v=86',{scope:'/'}).catch(e=>console.warn('[iCHEF RH OFFLINE] Service Worker non installé',e?.message||e)));
     }
 })();
 </script>
@@ -13354,7 +13351,7 @@ function appendOfficialGatewayPin(value) {
     renderOfficialGatewayPin(false);
     setOfficialGatewayStatus(
         navigator.onLine
-            ? "ACCÈS DIRECTION · PIN SERVEUR REQUIS"
+            ? "ACCÈS RH AUTORISÉ · PIN SERVEUR REQUIS"
             : "MODE HORS LIGNE · CONNEXION SERVEUR REQUISE",
         navigator.onLine ? "ok" : "offline"
     );
@@ -13382,7 +13379,7 @@ function resetOfficialGateway() {
 
     setOfficialGatewayStatus(
         navigator.onLine
-            ? "ACCÈS DIRECTION · PIN SERVEUR REQUIS"
+            ? "ACCÈS RH AUTORISÉ · PIN SERVEUR REQUIS"
             : "MODE HORS LIGNE · CONNEXION SERVEUR REQUISE",
         navigator.onLine ? "ok" : "offline"
     );
@@ -13435,7 +13432,14 @@ async function submitOfficialGatewayPin() {
             "direction",
             "directeur",
             "gerant",
-            "gérant"
+            "gérant",
+            "chef",
+            "chef de service",
+            "responsable",
+            "responsable rh",
+            "rh",
+            "superviseur",
+            "supervisor"
         ]);
 
         if (!directionRoles.has(serverRole)) {
@@ -13539,7 +13543,7 @@ function updateOfficialGatewayNetworkStatus() {
     if (officialGatewayBusy) return;
     setOfficialGatewayStatus(
         navigator.onLine
-            ? "ACCÈS DIRECTION · PIN SERVEUR REQUIS"
+            ? "ACCÈS RH AUTORISÉ · PIN SERVEUR REQUIS"
             : "MODE HORS LIGNE · CONNEXION SERVEUR REQUISE",
         navigator.onLine ? "ok" : "offline"
     );
@@ -13728,9 +13732,9 @@ console.info('[iCHEF RH V84] Planning manuel + sauvegarde cloud + IA planning s�
 </script>
 
 
-<script id="ichef-rh-v85-marker">
-window.__ICHEF_RH_BUILD__ = 'RH-V85-PLANNING-CELL-CLICK-FIX';
-console.info('[iCHEF RH V85] clic cellule planning + menu statut rapide corrigés');
+<script id="ichef-rh-v86-marker">
+window.__ICHEF_RH_BUILD__ = 'RH-V86-DIRECTION-SYNC';
+console.info('[iCHEF RH V86] RH réservé Direction/Responsables + synchronisation STAFF_ACCESS/DIRECTORY_MASTER renforcée');
 </script>
 
 </body>
