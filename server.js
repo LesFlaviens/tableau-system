@@ -15004,12 +15004,49 @@ async function ichefLoadActiveStaffSession(req) {
                 ?.STAFF_ACCESS
         );
 
-    const staff =
+    let staff =
         staffAccess.find(item =>
             item?.active !== false &&
             String(item?.id || '') ===
             String(auth.claims.staffId)
         ) || null;
+
+    /*
+     * V101 — tolérance de synchronisation RH : une fiche présente dans
+     * DIRECTORY_MASTER reste utilisable si STAFF_ACCESS n'est pas encore
+     * arrivé. L'identifiant signé dans le token doit correspondre exactement.
+     */
+    if (!staff) {
+        const directory =
+            ichefStaffPortalArray(
+                state?.activeOrders?.DIRECTORY_MASTER
+            );
+
+        const directoryStaff = directory.find(item =>
+            item?.active !== false &&
+            String(
+                item?.id ??
+                item?.staffId ??
+                item?.employeeId ??
+                item?.rhId ??
+                item?.matricule ??
+                ''
+            ) === String(auth.claims.staffId)
+        ) || null;
+
+        if (directoryStaff) {
+            staff = {
+                ...directoryStaff,
+                id: String(auth.claims.staffId),
+                name: directoryStaff?.name ||
+                      [directoryStaff?.firstName,directoryStaff?.lastName].filter(Boolean).join(' ') ||
+                      [directoryStaff?.prenom,directoryStaff?.nom].filter(Boolean).join(' ') ||
+                      auth.claims?.name ||
+                      'Collaborateur',
+                active: directoryStaff?.active !== false
+            };
+        }
+    }
 
     if (!staff) {
         return {
@@ -15246,7 +15283,7 @@ app.get(
         res.setHeader('Cache-Control','no-store');
         return res.json({
             success:true,
-            build:'V100-STAFF-RH-SYNC-SECURE',
+            build:'V101-STAFF-LOGIN-RESILIENT-SECURE',
             staffLoginRoute:'/api/staff/login',
             authentication:'STAFF_ID_RH_PLUS_PIN',
             signedSession:true,
@@ -15427,10 +15464,10 @@ app.post(
              * Sans tenantHint, on conserve uniquement les identifiants
              * techniques/RH pour éviter une recherche globale par simple nom.
              */
-            const portalIdentityValues = (item) => {
+            const portalIdentityValues = (item, allowHumanAliases = false) => {
                 const values = identityValues(item);
 
-                if (!tenantHint || !item) {
+                if (!allowHumanAliases || !item) {
                     return values;
                 }
 
@@ -15466,10 +15503,13 @@ app.post(
                 ]
             };
 
-            if (tenantHint) {
-                stateQuery.tenantID = tenantHint;
-            }
-
+            /*
+             * V101 — ne jamais laisser un ancien tenantID mémorisé bloquer un
+             * vrai identifiant RH + PIN. La recherche reste limitée par le PIN,
+             * puis l'identité technique exacte est vérifiée en mémoire.
+             * Les alias humains (prénom/pseudo) ne sont autorisés que dans le
+             * tenant explicitement fourni par le portail.
+             */
             const states =
                 await AppState
                     .find(
@@ -15480,13 +15520,19 @@ app.post(
                             'activeOrders.DIRECTORY_MASTER.data':1
                         }
                     )
-                    .limit(tenantHint ? 5 : 120)
+                    .limit(120)
                     .lean();
 
             const candidates = [];
             const candidateKeys = new Set();
 
             for (const state of states) {
+                const stateTenantID = cleanString(state?.tenantID || '');
+                const allowHumanAliases = Boolean(
+                    tenantHint &&
+                    stateTenantID === tenantHint
+                );
+
                 const members =
                     Array.isArray(
                         state?.activeOrders?.STAFF_ACCESS?.data
@@ -15538,8 +15584,8 @@ app.post(
                         }) || null;
 
                     const allIds = [
-                        ...portalIdentityValues(member),
-                        ...portalIdentityValues(linkedDirectory)
+                        ...portalIdentityValues(member, allowHumanAliases),
+                        ...portalIdentityValues(linkedDirectory, allowHumanAliases)
                     ];
 
                     if (!allIds.includes(wantedId)) {
@@ -15582,6 +15628,66 @@ app.post(
                         tenantID,
                         member,
                         directoryEntry:linkedDirectory
+                    });
+                }
+
+                /*
+                 * V101 — secours de symbiose : si DIRECTORY_MASTER contient
+                 * déjà la fiche RH mais STAFF_ACCESS n'a pas encore été
+                 * synchronisé, un ID technique exact + PIN exact peut quand
+                 * même ouvrir le Portail Staff. Le dashboard saura également
+                 * relire cette fiche. Aucun alias humain n'est utilisé hors du
+                 * tenant explicitement indiqué.
+                 */
+                for (const dirItem of directory) {
+                    if (dirItem?.active === false) continue;
+
+                    const dirAllIds = portalIdentityValues(
+                        dirItem,
+                        allowHumanAliases
+                    );
+
+                    if (!dirAllIds.includes(wantedId)) continue;
+                    if (!samePin(dirItem?.pin)) continue;
+
+                    const directoryTechnicalId = String(
+                        dirItem?.id ??
+                        dirItem?.staffId ??
+                        dirItem?.employeeId ??
+                        dirItem?.rhId ??
+                        dirItem?.matricule ??
+                        ''
+                    ).trim();
+
+                    if (!stateTenantID || !directoryTechnicalId) continue;
+
+                    const alreadyLinked = members.some(member => {
+                        const memberIds = identityValues(member);
+                        const dirIds = identityValues(dirItem);
+                        return memberIds.some(id => dirIds.includes(id));
+                    });
+
+                    if (alreadyLinked) continue;
+
+                    const key = stateTenantID + '::' + directoryTechnicalId;
+                    if (candidateKeys.has(key)) continue;
+
+                    const syntheticMember = {
+                        ...dirItem,
+                        id: directoryTechnicalId,
+                        name: dirItem?.name ||
+                              [dirItem?.firstName, dirItem?.lastName].filter(Boolean).join(' ') ||
+                              [dirItem?.prenom, dirItem?.nom].filter(Boolean).join(' ') ||
+                              'Collaborateur',
+                        active: dirItem?.active !== false
+                    };
+
+                    candidateKeys.add(key);
+                    candidates.push({
+                        tenantID: stateTenantID,
+                        member: syntheticMember,
+                        directoryEntry: dirItem,
+                        directoryOnly: true
                     });
                 }
             }
@@ -17597,7 +17703,21 @@ async function ichefStaffPortalClock(
                     )
                 );
 
-        if (staffIndex >= 0) {
+        if (staffIndex < 0) {
+            staffAccess.push({
+                ...staff,
+                id:String(staff.id),
+                active:staff.active !== false,
+                onDuty:desiredOnDuty,
+                lastPunchAt:new Date(now).toISOString(),
+                lastPunchType:desiredType
+            });
+
+            state.activeOrders.STAFF_ACCESS = {
+                data:staffAccess,
+                updatedAt:new Date(now).toISOString()
+            };
+        } else {
             staffAccess[
                 staffIndex
             ] = {
