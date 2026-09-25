@@ -322,6 +322,48 @@ createdAt: { type: Date, default: Date.now, index: true }
 rhPunchRecordSchema.index({ tenantID: 1, punchId: 1 }, { unique: true });
 rhPunchRecordSchema.index({ tenantID: 1, staffId: 1, timestamp: -1 });
 const RhPunchRecord = mongoose.models.RhPunchRecord || mongoose.model('RhPunchRecord', rhPunchRecordSchema);
+
+// ============================================================================
+// 💬 iCHEF STAFF CHAT V104 — MESSAGERIE INTERNE ENTREPRISE
+// ============================================================================
+const staffChatChannelSchema = new mongoose.Schema({
+  tenantID: { type: String, required: true, index: true },
+  channelId: { type: String, required: true, index: true },
+  type: { type: String, required: true, enum: ['ALL','DEPARTMENT','DIRECT','CUSTOM'], index: true },
+  name: { type: String, default: '' },
+  deptKey: { type: String, default: '', index: true },
+  participantIds: { type: [String], default: [] },
+  createdBy: { type: String, default: '' },
+  archived: { type: Boolean, default: false, index: true },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now },
+  lastMessageAt: { type: Date, default: null, index: true }
+}, { minimize: false });
+staffChatChannelSchema.index({ tenantID: 1, channelId: 1 }, { unique: true });
+staffChatChannelSchema.index({ tenantID: 1, type: 1, deptKey: 1 });
+staffChatChannelSchema.index({ tenantID: 1, participantIds: 1 });
+const StaffChatChannel = mongoose.models.StaffChatChannel || mongoose.model('StaffChatChannel', staffChatChannelSchema);
+
+const staffChatMessageSchema = new mongoose.Schema({
+  tenantID: { type: String, required: true, index: true },
+  channelId: { type: String, required: true, index: true },
+  messageId: { type: String, required: true, index: true },
+  senderStaffId: { type: String, required: true, index: true },
+  senderName: { type: String, default: '' },
+  senderRole: { type: String, default: '' },
+  senderDept: { type: String, default: '' },
+  text: { type: String, required: true },
+  replyToMessageId: { type: String, default: '' },
+  pinned: { type: Boolean, default: false },
+  readBy: { type: [String], default: [] },
+  createdAt: { type: Date, default: Date.now, index: true },
+  editedAt: { type: Date, default: null },
+  deletedAt: { type: Date, default: null }
+}, { minimize: false });
+staffChatMessageSchema.index({ tenantID: 1, messageId: 1 }, { unique: true });
+staffChatMessageSchema.index({ tenantID: 1, channelId: 1, createdAt: -1 });
+const StaffChatMessage = mongoose.models.StaffChatMessage || mongoose.model('StaffChatMessage', staffChatMessageSchema);
+
 function ichefFiscalId(prefix = 'FISCAL') {
 return (
 prefix +
@@ -821,7 +863,10 @@ const ICHEF_TENANT_MUTATION_PATHS = new Set([
 '/api/support/admin/send',
 '/api/staff/requests',
 '/api/staff/clock-in',
-'/api/staff/clock-out'
+'/api/staff/clock-out',
+'/api/staff/chat/channels/direct',
+'/api/staff/chat/message',
+'/api/staff/chat/read'
 ]);
 const ichefTenantMutationQueues = new Map();
 function ichefRequestTenantID(req) {
@@ -881,7 +926,7 @@ app.get('/api/staff/build', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.json({
         success: true,
-        build: 'V100-STAFF-RH-SYNC-SECURE',
+        build: 'V104-STAFF-CHAT-SECURE',
         staffPortal: true,
         signedSession: true,
         timestamp: new Date().toISOString()
@@ -8727,6 +8772,12 @@ const safeID = cleanString(tenantID);
 return safeID ? `ichef:staff-sync:${safeID}` : '';
 }
 
+function ichefStaffUserRoom(tenantID, staffId) {
+const safeID = cleanString(tenantID);
+const safeStaff = String(staffId || '').trim().replace(/[^a-zA-Z0-9_.:@-]+/g,'_').slice(0,120);
+return safeID && safeStaff ? `ichef:staff-user:${safeID}:${safeStaff}` : '';
+}
+
 function ichefEmitStaffSyncRequired(
 tenantID,
 {
@@ -9046,6 +9097,8 @@ return;
 const room = ichefStaffRealtimeRoom(validated.tenantID);
 if (!room) return;
 await socket.join(room);
+const staffUserRoom = ichefStaffUserRoom(validated.tenantID, validated.claims.staffId);
+if (staffUserRoom) await socket.join(staffUserRoom);
 socket.data.staffRealtimeTenantID = validated.tenantID;
 socket.data.staffRealtimeStaffId = String(validated.claims.staffId);
 socket.data.staffRealtimeDeviceId = validated.deviceId;
@@ -15507,7 +15560,7 @@ app.get(
         res.setHeader('Cache-Control','no-store');
         return res.json({
             success:true,
-            build:'V103-STAFF-FAST-LOGIN-SECURE',
+            build:'V104-STAFF-CHAT-SECURE',
             staffLoginRoute:'/api/staff/login',
             authentication:'STAFF_ID_RH_PLUS_PIN',
             signedSession:true,
@@ -16985,6 +17038,350 @@ function ichefStaffRhBuildHistory({
         .slice(0,2000);
 }
 
+
+
+// ============================================================================
+// 💬 iCHEF STAFF CHAT V104 — API INTERNE SÉCURISÉE
+// ============================================================================
+function ichefStaffChatDeptKey(value) {
+    return String(value || '')
+        .trim()
+        .toUpperCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g,'')
+        .replace(/[^A-Z0-9]+/g,'_')
+        .replace(/^_+|_+$/g,'')
+        .slice(0,80);
+}
+
+function ichefStaffChatMemberId(item = {}) {
+    return String(
+        item?.id ?? item?.staffId ?? item?.employeeId ?? item?.rhId ??
+        item?.matricule ?? item?.internalId ?? ''
+    ).trim();
+}
+
+function ichefStaffChatMemberName(item = {}) {
+    return String(
+        item?.name || item?.displayName || item?.pseudo ||
+        [item?.firstName,item?.lastName].filter(Boolean).join(' ') ||
+        [item?.prenom,item?.nom].filter(Boolean).join(' ') ||
+        'Collaborateur'
+    ).trim();
+}
+
+function ichefStaffChatMemberDept(item = {}) {
+    return String(
+        item?.dept || item?.department || item?.service || item?.pole ||
+        item?.workProfile?.department || item?.workProfile?.service || ''
+    ).trim();
+}
+
+function ichefStaffChatMemberRole(item = {}) {
+    return String(item?.role || item?.position || item?.poste || '').trim();
+}
+
+function ichefStaffChatDirectory(activeOrders = {}) {
+    const source = [
+        ...ichefStaffPortalArray(activeOrders?.STAFF_ACCESS),
+        ...ichefStaffPortalArray(activeOrders?.DIRECTORY_MASTER)
+    ];
+    const map = new Map();
+    for (const item of source) {
+        if (!item || item?.active === false) continue;
+        const id = ichefStaffChatMemberId(item);
+        if (!id) continue;
+        const previous = map.get(id) || {};
+        map.set(id, { ...previous, ...item, id });
+    }
+    return [...map.values()];
+}
+
+function ichefStaffChatSelf(auth = {}) {
+    const staff = auth?.staff || {};
+    return {
+        id: String(auth?.claims?.staffId || ichefStaffChatMemberId(staff) || '').trim(),
+        name: ichefStaffChatMemberName(staff),
+        role: ichefStaffChatMemberRole(staff),
+        dept: ichefStaffChatMemberDept(staff),
+        deptKey: ichefStaffChatDeptKey(ichefStaffChatMemberDept(staff))
+    };
+}
+
+async function ichefStaffChatEnsureDefaults(auth) {
+    const self = ichefStaffChatSelf(auth);
+    const now = new Date();
+    const allChannel = {
+        tenantID: auth.tenantID,
+        channelId: 'all',
+        type: 'ALL',
+        name: 'Toute l’équipe',
+        deptKey: '',
+        participantIds: [],
+        createdBy: 'SYSTEM',
+        updatedAt: now
+    };
+    await StaffChatChannel.findOneAndUpdate(
+        { tenantID: auth.tenantID, channelId: 'all' },
+        { $setOnInsert: { ...allChannel, createdAt: now }, $set: { name: allChannel.name, archived: false, updatedAt: now } },
+        { upsert: true, new: true }
+    );
+    if (self.deptKey) {
+        const channelId = `dept:${self.deptKey.toLowerCase()}`;
+        await StaffChatChannel.findOneAndUpdate(
+            { tenantID: auth.tenantID, channelId },
+            {
+                $setOnInsert: {
+                    tenantID: auth.tenantID,
+                    channelId,
+                    type: 'DEPARTMENT',
+                    name: self.dept || 'Mon service',
+                    deptKey: self.deptKey,
+                    participantIds: [],
+                    createdBy: 'SYSTEM',
+                    createdAt: now
+                },
+                $set: { archived: false, updatedAt: now, name: self.dept || 'Mon service', deptKey: self.deptKey }
+            },
+            { upsert: true, new: true }
+        );
+    }
+    return self;
+}
+
+function ichefStaffChatCanAccess(channel, self) {
+    if (!channel || channel.archived === true || !self?.id) return false;
+    if (channel.type === 'ALL') return true;
+    if (channel.type === 'DEPARTMENT') return Boolean(self.deptKey && String(channel.deptKey || '') === self.deptKey);
+    return Array.isArray(channel.participantIds) && channel.participantIds.map(String).includes(String(self.id));
+}
+
+async function ichefStaffChatLoadChannel(auth, channelId) {
+    const self = ichefStaffChatSelf(auth);
+    const channel = await StaffChatChannel.findOne({
+        tenantID: auth.tenantID,
+        channelId: String(channelId || '').trim(),
+        archived: { $ne: true }
+    }).lean();
+    if (!channel || !ichefStaffChatCanAccess(channel,self)) return { ok:false, status:403, error:'Conversation inaccessible.' };
+    return { ok:true, channel, self };
+}
+
+function ichefStaffChatPublicMessage(row = {}) {
+    return {
+        id: String(row.messageId || row._id || ''),
+        channelId: String(row.channelId || ''),
+        senderStaffId: String(row.senderStaffId || ''),
+        senderName: String(row.senderName || 'Collaborateur'),
+        senderRole: String(row.senderRole || ''),
+        senderDept: String(row.senderDept || ''),
+        text: row.deletedAt ? 'Message supprimé' : String(row.text || ''),
+        replyToMessageId: String(row.replyToMessageId || ''),
+        pinned: row.pinned === true,
+        createdAt: row.createdAt ? new Date(row.createdAt).toISOString() : new Date().toISOString(),
+        editedAt: row.editedAt ? new Date(row.editedAt).toISOString() : '',
+        deleted: Boolean(row.deletedAt)
+    };
+}
+
+async function ichefStaffChatEmit(auth, channel, message) {
+    const packet = {
+        success:true,
+        tenantID: auth.tenantID,
+        channelId: channel.channelId,
+        message: ichefStaffChatPublicMessage(message),
+        timestamp: new Date().toISOString()
+    };
+    if (channel.type === 'ALL') {
+        const room = ichefStaffRealtimeRoom(auth.tenantID);
+        if (room) io.to(room).emit('staff-chat-message', packet);
+        return;
+    }
+    let recipients = [];
+    if (channel.type === 'DIRECT' || channel.type === 'CUSTOM') {
+        recipients = Array.isArray(channel.participantIds) ? channel.participantIds : [];
+    } else if (channel.type === 'DEPARTMENT') {
+        const directory = ichefStaffChatDirectory(auth?.state?.activeOrders || {});
+        recipients = directory
+            .filter(member => ichefStaffChatDeptKey(ichefStaffChatMemberDept(member)) === String(channel.deptKey || ''))
+            .map(ichefStaffChatMemberId)
+            .filter(Boolean);
+    }
+    for (const staffId of new Set(recipients.map(String))) {
+        const room = ichefStaffUserRoom(auth.tenantID, staffId);
+        if (room) io.to(room).emit('staff-chat-message', packet);
+    }
+}
+
+app.get('/api/staff/chat/people', async (req,res) => {
+    try {
+        const auth = await ichefLoadActiveStaffSession(req);
+        if (!auth.ok) return res.status(401).json({ success:false, error:auth.error });
+        const self = ichefStaffChatSelf(auth);
+        const people = ichefStaffChatDirectory(auth?.state?.activeOrders || {})
+            .map(member => ({
+                id: ichefStaffChatMemberId(member),
+                name: ichefStaffChatMemberName(member),
+                role: ichefStaffChatMemberRole(member),
+                dept: ichefStaffChatMemberDept(member)
+            }))
+            .filter(person => person.id && person.id !== self.id)
+            .sort((a,b) => a.name.localeCompare(b.name,'fr',{sensitivity:'base'}));
+        return res.json({ success:true, people });
+    } catch (error) {
+        console.error('[iCHEF STAFF CHAT people]',error?.message || error);
+        return res.status(500).json({ success:false, error:'Liste des collaborateurs indisponible.' });
+    }
+});
+
+app.get('/api/staff/chat/channels', async (req,res) => {
+    try {
+        const auth = await ichefLoadActiveStaffSession(req);
+        if (!auth.ok) return res.status(401).json({ success:false, error:auth.error });
+        const self = await ichefStaffChatEnsureDefaults(auth);
+        const query = {
+            tenantID: auth.tenantID,
+            archived: { $ne: true },
+            $or: [
+                { type:'ALL' },
+                ...(self.deptKey ? [{ type:'DEPARTMENT', deptKey:self.deptKey }] : []),
+                { type:{ $in:['DIRECT','CUSTOM'] }, participantIds:self.id }
+            ]
+        };
+        const rows = await StaffChatChannel.find(query).sort({ lastMessageAt:-1, updatedAt:-1 }).lean();
+        const directory = ichefStaffChatDirectory(auth?.state?.activeOrders || {});
+        const nameById = new Map(directory.map(member => [ichefStaffChatMemberId(member), ichefStaffChatMemberName(member)]));
+        const channels = [];
+        for (const row of rows) {
+            const last = await StaffChatMessage.findOne({ tenantID:auth.tenantID, channelId:row.channelId, deletedAt:null })
+                .sort({ createdAt:-1 }).lean();
+            const unread = await StaffChatMessage.countDocuments({
+                tenantID:auth.tenantID,
+                channelId:row.channelId,
+                senderStaffId:{ $ne:self.id },
+                readBy:{ $ne:self.id },
+                deletedAt:null
+            });
+            let displayName = String(row.name || 'Conversation');
+            if (row.type === 'DIRECT') {
+                const otherId = (row.participantIds || []).map(String).find(id => id !== self.id) || '';
+                displayName = nameById.get(otherId) || 'Conversation privée';
+            }
+            channels.push({
+                id:String(row.channelId),
+                type:String(row.type),
+                name:displayName,
+                unread:Number(unread || 0),
+                lastMessage:last ? String(last.text || '') : '',
+                lastSender:last ? String(last.senderName || '') : '',
+                lastAt:last?.createdAt ? new Date(last.createdAt).toISOString() : '',
+                participants:Array.isArray(row.participantIds) ? row.participantIds.map(String) : []
+            });
+        }
+        return res.json({ success:true, channels, totalUnread:channels.reduce((sum,row)=>sum+Number(row.unread||0),0) });
+    } catch (error) {
+        console.error('[iCHEF STAFF CHAT channels]',error?.message || error);
+        return res.status(500).json({ success:false, error:'Conversations indisponibles.' });
+    }
+});
+
+app.post('/api/staff/chat/channels/direct', async (req,res) => {
+    try {
+        const auth = await ichefLoadActiveStaffSession(req);
+        if (!auth.ok) return res.status(401).json({ success:false, error:auth.error });
+        const self = ichefStaffChatSelf(auth);
+        const targetId = String(req.body?.staffId || '').trim().slice(0,120);
+        if (!targetId || targetId === self.id) return res.status(400).json({ success:false, error:'Collaborateur invalide.' });
+        const directory = ichefStaffChatDirectory(auth?.state?.activeOrders || {});
+        const target = directory.find(member => ichefStaffChatMemberId(member) === targetId);
+        if (!target) return res.status(404).json({ success:false, error:'Collaborateur introuvable.' });
+        const participants = [self.id,targetId].sort();
+        const hash = crypto.createHash('sha256').update(`${auth.tenantID}|${participants.join('|')}`).digest('hex').slice(0,24);
+        const channelId = `direct:${hash}`;
+        const now = new Date();
+        const channel = await StaffChatChannel.findOneAndUpdate(
+            { tenantID:auth.tenantID, channelId },
+            {
+                $setOnInsert:{ tenantID:auth.tenantID, channelId, type:'DIRECT', name:'Conversation privée', participantIds:participants, createdBy:self.id, createdAt:now },
+                $set:{ participantIds:participants, archived:false, updatedAt:now }
+            },
+            { upsert:true, new:true }
+        ).lean();
+        return res.json({ success:true, channel:{ id:channel.channelId, type:'DIRECT', name:ichefStaffChatMemberName(target), participants } });
+    } catch (error) {
+        console.error('[iCHEF STAFF CHAT direct]',error?.message || error);
+        return res.status(500).json({ success:false, error:'Conversation privée impossible.' });
+    }
+});
+
+app.get('/api/staff/chat/messages', async (req,res) => {
+    try {
+        const auth = await ichefLoadActiveStaffSession(req);
+        if (!auth.ok) return res.status(401).json({ success:false, error:auth.error });
+        const channelId = String(req.query?.channelId || '').trim().slice(0,160);
+        const access = await ichefStaffChatLoadChannel(auth,channelId);
+        if (!access.ok) return res.status(access.status || 403).json({ success:false, error:access.error });
+        const limit = Math.max(20,Math.min(100,Number(req.query?.limit || 60)));
+        const rows = await StaffChatMessage.find({ tenantID:auth.tenantID, channelId })
+            .sort({ createdAt:-1 }).limit(limit).lean();
+        return res.json({ success:true, channel:{ id:access.channel.channelId, type:access.channel.type, name:access.channel.name }, messages:rows.reverse().map(ichefStaffChatPublicMessage) });
+    } catch (error) {
+        console.error('[iCHEF STAFF CHAT messages]',error?.message || error);
+        return res.status(500).json({ success:false, error:'Messages indisponibles.' });
+    }
+});
+
+app.post('/api/staff/chat/message', async (req,res) => {
+    try {
+        const auth = await ichefLoadActiveStaffSession(req);
+        if (!auth.ok) return res.status(401).json({ success:false, error:auth.error });
+        const channelId = String(req.body?.channelId || '').trim().slice(0,160);
+        const text = String(req.body?.text || '').trim().slice(0,3000);
+        if (!channelId || !text) return res.status(400).json({ success:false, error:'Message vide.' });
+        const access = await ichefStaffChatLoadChannel(auth,channelId);
+        if (!access.ok) return res.status(access.status || 403).json({ success:false, error:access.error });
+        const self = access.self;
+        const now = new Date();
+        const messageId = `MSG_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+        const row = await StaffChatMessage.create({
+            tenantID:auth.tenantID,
+            channelId,
+            messageId,
+            senderStaffId:self.id,
+            senderName:self.name,
+            senderRole:self.role,
+            senderDept:self.dept,
+            text,
+            replyToMessageId:String(req.body?.replyToMessageId || '').trim().slice(0,160),
+            readBy:[self.id],
+            createdAt:now
+        });
+        await StaffChatChannel.updateOne({ tenantID:auth.tenantID, channelId },{ $set:{ lastMessageAt:now, updatedAt:now } });
+        await ichefStaffChatEmit(auth,access.channel,row.toObject());
+        return res.json({ success:true, message:ichefStaffChatPublicMessage(row.toObject()) });
+    } catch (error) {
+        console.error('[iCHEF STAFF CHAT send]',error?.message || error);
+        return res.status(500).json({ success:false, error:'Envoi du message impossible.' });
+    }
+});
+
+app.post('/api/staff/chat/read', async (req,res) => {
+    try {
+        const auth = await ichefLoadActiveStaffSession(req);
+        if (!auth.ok) return res.status(401).json({ success:false, error:auth.error });
+        const channelId = String(req.body?.channelId || '').trim().slice(0,160);
+        const access = await ichefStaffChatLoadChannel(auth,channelId);
+        if (!access.ok) return res.status(access.status || 403).json({ success:false, error:access.error });
+        await StaffChatMessage.updateMany(
+            { tenantID:auth.tenantID, channelId, senderStaffId:{ $ne:access.self.id }, readBy:{ $ne:access.self.id } },
+            { $addToSet:{ readBy:access.self.id } }
+        );
+        return res.json({ success:true });
+    } catch (error) {
+        console.error('[iCHEF STAFF CHAT read]',error?.message || error);
+        return res.status(500).json({ success:false, error:'Lecture du chat non enregistrée.' });
+    }
+});
 
 app.get(
     '/api/staff/dashboard',
