@@ -1,16 +1,16 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-<script id="ichef-rh-v88-cache-reset">
+<script id="ichef-rh-v89-cache-reset">
 (async()=>{
   try {
-    if (sessionStorage.getItem('ichef_rh_v88_cache_reset_done') !== '1') {
-      sessionStorage.setItem('ichef_rh_v88_cache_reset_done','1');
+    if (sessionStorage.getItem('ichef_rh_v89_cache_reset_done') !== '1') {
+      sessionStorage.setItem('ichef_rh_v89_cache_reset_done','1');
       if ('serviceWorker' in navigator) {
         const regs = await navigator.serviceWorker.getRegistrations();
         await Promise.all(regs.map(async r => {
           const u = String(r.active?.scriptURL || r.waiting?.scriptURL || r.installing?.scriptURL || '');
-          if (u.includes('sw-rh.js') && !u.includes('v=88')) await r.unregister();
+          if (u.includes('sw-rh.js') && !u.includes('v=89')) await r.unregister();
         }));
       }
       if ('caches' in window) {
@@ -18,7 +18,7 @@
         await Promise.all(keys.filter(k => /rh|ichef/i.test(k)).map(k => caches.delete(k)));
       }
     }
-  } catch (e) { console.warn('[iCHEF RH V88] nettoyage cache non bloquant', e); }
+  } catch (e) { console.warn('[iCHEF RH V89] nettoyage cache non bloquant', e); }
 })();
 </script>
 
@@ -27,8 +27,8 @@
     <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>iCHEF RH · Direction & Pilotage RH V88</title>
-    <meta name="ichef-build" content="RH-V88-COCKPIT-EDIT">
+    <title>iCHEF RH · Direction & Pilotage RH V89</title>
+    <meta name="ichef-build" content="RH-V89-SAFE-SAVE-PUNCH-GUARD">
     
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800;900&display=swap" rel="stylesheet">
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
@@ -3552,6 +3552,8 @@
             update: async (key, data) => {
                 const payload = { data: data };
                 const authPin = getRhDirectionAuthPin();
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 10000);
 
                 try {
                     const response = await fetch(
@@ -3560,6 +3562,7 @@
                             method: 'POST',
                             credentials: 'include',
                             cache: 'no-store',
+                            signal: controller.signal,
                             headers: {
                                 'Content-Type': 'application/json',
                                 'Accept': 'application/json',
@@ -3586,8 +3589,14 @@
                     return true;
 
                 } catch(e) {
-                    console.error("Erreur Sync RH:", e);
+                    if (e?.name === 'AbortError') {
+                        console.warn(`[iCHEF RH] Synchronisation ${key} trop lente : conservation locale.`);
+                    } else {
+                        console.error("Erreur Sync RH:", e);
+                    }
                     return false;
+                } finally {
+                    clearTimeout(timeout);
                 }
             }
         };
@@ -4050,10 +4059,78 @@
             return rhPlanningSaveChain;
         }
         
-        function getPunches() { return JSON.parse(localStorage.getItem('empire_hr_punches')) || []; }
-        function savePunches(p) { 
-            localStorage.setItem('empire_hr_punches', JSON.stringify(p)); 
-            API.update('PUNCHES_MASTER', p);
+        function getPunches() {
+            try {
+                const value = JSON.parse(localStorage.getItem('empire_hr_punches') || '[]');
+                return Array.isArray(value) ? value : [];
+            } catch (_) {
+                return [];
+            }
+        }
+
+        // Les pointages bruts sont des preuves : synchronisation append-only côté RH.
+        // Une réponse serveur vide, ancienne ou partielle ne doit jamais effacer une preuve locale.
+        function rhPunchStableKey(p) {
+            if (!p) return '';
+            const id = String(p.id || p._id || p.punchId || p.offlineEventId || '').trim();
+            if (id) return `id:${id}`;
+            return [
+                'evt',
+                String(p.staffId ?? ''),
+                String(p.timestamp ?? p.clientTimestamp ?? p.createdAt ?? ''),
+                String(p.type ?? p.punchType ?? '').toUpperCase(),
+                String(p.deviceId ?? '')
+            ].join('|');
+        }
+
+        function mergePunchCollections(localList, incomingList) {
+            const local = Array.isArray(localList) ? localList : [];
+            const incoming = Array.isArray(incomingList) ? incomingList : [];
+            const byKey = new Map();
+
+            local.forEach((item, index) => {
+                if (!item) return;
+                const key = rhPunchStableKey(item) || `local:${index}:${JSON.stringify(item)}`;
+                byKey.set(key, { ...item });
+            });
+
+            incoming.forEach((item, index) => {
+                if (!item) return;
+                const key = rhPunchStableKey(item) || `remote:${index}:${JSON.stringify(item)}`;
+                const previous = byKey.get(key) || {};
+                // La version serveur complète les données, sans supprimer les champs de preuve locaux.
+                byKey.set(key, { ...previous, ...item });
+            });
+
+            return [...byKey.values()].sort((a, b) =>
+                Number(a?.timestamp ?? a?.clientTimestamp ?? 0) -
+                Number(b?.timestamp ?? b?.clientTimestamp ?? 0)
+            );
+        }
+
+        function storePunchesNoLoss(incoming, source = 'sync') {
+            const current = getPunches();
+            const merged = mergePunchCollections(current, incoming);
+
+            // Backup de sécurité avant toute évolution de la collection locale.
+            try {
+                if (current.length) {
+                    localStorage.setItem('empire_hr_punches_backup', JSON.stringify(current));
+                }
+            } catch (_) {}
+
+            localStorage.setItem('empire_hr_punches', JSON.stringify(merged));
+
+            if (Array.isArray(incoming) && incoming.length < current.length) {
+                console.warn(`[iCHEF RH V89] ${source}: réponse pointages plus courte (${incoming.length}/${current.length}) — preuves locales conservées.`);
+            }
+
+            return merged;
+        }
+
+        async function savePunches(p) {
+            const merged = storePunchesNoLoss(p, 'savePunches');
+            return await API.update('PUNCHES_MASTER', merged);
         }
 
 
@@ -4102,11 +4179,9 @@
                 state.activeOrders;
 
             if (ao['PUNCHES_MASTER']) {
-                localStorage.setItem(
-                    'empire_hr_punches',
-                    JSON.stringify(
-                        ao['PUNCHES_MASTER'].data || []
-                    )
+                storePunchesNoLoss(
+                    ao['PUNCHES_MASTER'].data || [],
+                    'syncRhOperationalState'
                 );
             }
 
@@ -4694,11 +4769,9 @@
                     }
 
                     if (state.activeOrders['PUNCHES_MASTER']) {
-                        localStorage.setItem(
-                            'empire_hr_punches',
-                            JSON.stringify(
-                                state.activeOrders['PUNCHES_MASTER'].data || []
-                            )
+                        storePunchesNoLoss(
+                            state.activeOrders['PUNCHES_MASTER'].data || [],
+                            'refreshRhStaffFromServer'
                         );
                     }
                 }
@@ -4776,11 +4849,9 @@
                         if (
                             state.activeOrders['PUNCHES_MASTER']
                         ) {
-                            localStorage.setItem(
-                                'empire_hr_punches',
-                                JSON.stringify(
-                                    state.activeOrders['PUNCHES_MASTER'].data || []
-                                )
+                            storePunchesNoLoss(
+                                state.activeOrders['PUNCHES_MASTER'].data || [],
+                                'socket-updateState'
                             );
                         }
 
@@ -4884,7 +4955,7 @@
                 if (state && state.activeOrders) {
                     if (state.activeOrders['DIRECTORY_MASTER']) localStorage.setItem('empire_hr_directory', JSON.stringify(state.activeOrders['DIRECTORY_MASTER'].data || []));
                     if (state.activeOrders['TIMESHEETS_MASTER']) applyRemoteTimesheets(state.activeOrders['TIMESHEETS_MASTER'].data || {}, 'startup');
-                    if (state.activeOrders['PUNCHES_MASTER']) localStorage.setItem('empire_hr_punches', JSON.stringify(state.activeOrders['PUNCHES_MASTER'].data || []));
+                    if (state.activeOrders['PUNCHES_MASTER']) storePunchesNoLoss(state.activeOrders['PUNCHES_MASTER'].data || [], 'startup');
                     if (state.activeOrders['REQUESTS_MASTER'] || state.activeOrders['STAFF_REQUESTS']) {
                         const rm = Array.isArray(state.activeOrders['REQUESTS_MASTER']?.data) ? state.activeOrders['REQUESTS_MASTER'].data : [];
                         const rs = Array.isArray(state.activeOrders['STAFF_REQUESTS']?.data) ? state.activeOrders['STAFF_REQUESTS'].data : [];
@@ -9515,11 +9586,9 @@ async function submitPunch() {
                         )
                     ) {
 
-                        localStorage.setItem(
-                            'empire_hr_punches',
-                            JSON.stringify(
-                                data.punches
-                            )
+                        storePunchesNoLoss(
+                            data.punches,
+                            'submitPunch-server-response'
                         );
                     }
 
@@ -13178,12 +13247,12 @@ html, body {
             const punches=(typeof getPunches==='function'?getPunches():[]).filter(p=>String(p?.id||'')!==String(item.id));
             punches.push({id:item.id,tenantID:item.tenantID,staffId:staff.id,staffName:staff.name||'',dept:staff.dept||'',role:staff.role||'',type,timestamp:item.clientTimestamp,clientRecordedAt:new Date(item.clientTimestamp).toISOString(),serverRecordedAt:null,deviceId:item.deviceId||'',terminal:'RH_POINTEUSE',photo:'',offlinePending:true,offlineEventId:item.id,timestampSource:'CLIENT_DEVICE'});
             punches.sort((a,b)=>Number(a.timestamp||0)-Number(b.timestamp||0));
-            localStorage.setItem('empire_hr_punches',JSON.stringify(punches));
+            storePunchesNoLoss(punches,'offline-provisional');
         }catch(e){console.warn('[iCHEF RH OFFLINE] pointage provisoire local',e)}
     }
     function applyServerData(data){
         try{
-            if(Array.isArray(data?.punches)) localStorage.setItem('empire_hr_punches',JSON.stringify(data.punches));
+            if(Array.isArray(data?.punches)) storePunchesNoLoss(data.punches,'offline-server-response');
             if(data?.timesheets&&typeof saveRealTimesheetsLocal==='function') saveRealTimesheetsLocal(data.timesheets);
             if(Array.isArray(data?.staffAccess)){
                 staffAccess=data.staffAccess;
@@ -13278,7 +13347,7 @@ html, body {
     setInterval(()=>{if(navigator.onLine)syncQueue()},30000);
 
     if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost'||location.hostname==='127.0.0.1')){
-        window.addEventListener('load',()=>navigator.serviceWorker.register('/sw-rh.js?v=88',{scope:'/'}).catch(e=>console.warn('[iCHEF RH OFFLINE] Service Worker non installé',e?.message||e)));
+        window.addEventListener('load',()=>navigator.serviceWorker.register('/sw-rh.js?v=89',{scope:'/'}).catch(e=>console.warn('[iCHEF RH OFFLINE] Service Worker non installé',e?.message||e)));
     }
 })();
 </script>
@@ -14027,21 +14096,37 @@ console.info('[iCHEF RH V84] Planning manuel + sauvegarde cloud + IA planning s�
         ts[month][sid][day]={...previous,status,poste,s1,s2,pause,obs,updatedAt:new Date().toISOString()};
 
         const saveBtn=document.querySelector('#rh-cockpit-shift-editor .rh-cse-save');
-        if(saveBtn){saveBtn.disabled=true;saveBtn.textContent='ENREGISTREMENT...';}
-        let cloudSaved=true;
+        if(saveBtn){saveBtn.disabled=true;saveBtn.textContent='ENREGISTRÉ';}
+
         try{
-            if(typeof saveTs==='function') cloudSaved=await saveTs(ts);
+            // saveTs écrit d'abord localement de façon synchrone, puis synchronise le cloud.
+            // L'interface ne reste donc jamais bloquée en attendant le réseau.
+            let cloudPromise = null;
+            if(typeof saveTs==='function') cloudPromise = saveTs(ts);
             else localStorage.setItem('empire_hr_timesheets',JSON.stringify(ts));
+
             if(typeof recordRhChange==='function') recordRhChange({type:'PLANNING_MANUAL_EDIT',source:'DIRECTION_COCKPIT',staffId:sid,date:editorCtx.dateStr,status,poste,s1,s2,pause});
             if(typeof loadMonthData==='function') loadMonthData();
             if(typeof loadPublicPlanning==='function') loadPublicPlanning();
-            if(typeof broadcastStaffingLevels==='function') broadcastStaffingLevels();
+            if(typeof broadcastStaffingLevels==='function') Promise.resolve(broadcastStaffingLevels()).catch(()=>{});
             if(typeof renderRhCockpit==='function') renderRhCockpit();
+
             window.closeRhCockpitShiftEditor();
-            if(typeof showToast==='function') showToast(cloudSaved===false?'Planning modifié · synchronisation en attente':'Planning modifié');
+            if(typeof showToast==='function') showToast('Planning enregistré');
+
+            if(cloudPromise && typeof cloudPromise.then==='function'){
+                cloudPromise.then(ok=>{
+                    if(ok===false && typeof showToast==='function'){
+                        showToast('Planning conservé · synchronisation en attente');
+                    }
+                }).catch(error=>{
+                    console.warn('[iCHEF RH V89] synchronisation planning différée',error);
+                    if(typeof showToast==='function') showToast('Planning conservé · synchronisation en attente');
+                });
+            }
         } catch(error){
-            console.error('[iCHEF RH V88] sauvegarde planning cockpit',error);
-            alert('La modification n’a pas pu être enregistrée.');
+            console.error('[iCHEF RH V89] sauvegarde planning cockpit',error);
+            alert('La modification n’a pas pu être enregistrée localement.');
             if(saveBtn){saveBtn.disabled=false;saveBtn.textContent='ENREGISTRER';}
         }
     };
@@ -14061,9 +14146,9 @@ console.info('[iCHEF RH V84] Planning manuel + sauvegarde cloud + IA planning s�
     });
 })();
 </script>
-<script id="ichef-rh-v88-marker">
-window.__ICHEF_RH_BUILD__ = 'RH-V88-COCKPIT-DIRECT-EDIT';
-console.info('[iCHEF RH V88] Planning cockpit éditable directement : statut, poste, horaires, pause, observation');
+<script id="ichef-rh-v89-marker">
+window.__ICHEF_RH_BUILD__ = 'RH-V89-SAFE-SAVE-PUNCH-GUARD';
+console.info('[iCHEF RH V89] Sauvegarde planning non bloquante + protection append-only des preuves de pointage');
 </script>
 
 <script id="ichef-rh-v87-legacy-marker">
