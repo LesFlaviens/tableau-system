@@ -28,7 +28,7 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>iCHEF RH · Direction & Pilotage RH V103</title>
-    <meta name="ichef-build" content="RH-V105-DOCUMENTS-UPLOAD-BINARY-SECURE">
+    <meta name="ichef-build" content="RH-V106-DOCUMENTS-FAST-PROOF-SECURE">
     
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800;900&display=swap" rel="stylesheet">
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
@@ -15877,12 +15877,20 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
     const token=await ensureSession(false);
     const headers={...(options.headers||{}),'Accept':'application/json','X-iCHEF-Tenant':tenantID_JS,'X-iCHEF-Device':currentDevice(),'Authorization':`Bearer ${token}`};
     let r;
+    const controller=new AbortController();
+    const timeoutMs=String(path||'').includes('/documents/upload')?45000:18000;
+    const timer=setTimeout(()=>controller.abort(),timeoutMs);
     try{
-      r=await fetch(`${apiBase()}${path}`,{...options,headers,credentials:'include',cache:'no-store'});
+      r=await fetch(`${apiBase()}${path}`,{...options,headers,credentials:'include',cache:'no-store',signal:controller.signal});
     }catch(networkError){
+      if(networkError?.name==='AbortError'){
+        const e=new Error('Le serveur Documents RH met trop de temps à répondre. L’envoi a été interrompu pour éviter de rester bloqué.');
+        e.cause=networkError;e.status=408;throw e;
+      }
       const e=new Error('Connexion serveur Documents RH impossible. Vérifiez le déploiement et réessayez.');
       e.cause=networkError; e.status=0; throw e;
     }
+    clearTimeout(timer);
     if(r.status===401 && retry){rhDocsSessionToken='';rhDocsSessionExpiresAt=0;await ensureSession(true);return docsFetch(path,options,false);}
     if(r.status===503 && retry){await new Promise(resolve=>setTimeout(resolve,850));return docsFetch(path,options,false);}
     const data=await r.json().catch(()=>({}));
@@ -15904,7 +15912,8 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
     if(!rhDocsRows.length){list.innerHTML='<div class="rh-doc-v100-empty">Aucun document professionnel envoyé à ce collaborateur.</div>';return;}
     list.innerHTML=rhDocsRows.map(d=>{
       const meta=[label(d.category),d.period||'',formatDate(d.issuedAt||d.uploadedAt),d.sizeLabel||''].filter(Boolean).join(' · ');
-      return `<div class="rh-doc-v100-row"><div class="rh-doc-v100-icon">${esc(icon(d.category))}</div><div><strong>${esc(d.title||d.fileName||'Document')}</strong><small>${esc(meta)}</small><small>${esc(d.fileName||'')}</small></div><div class="rh-doc-v100-row-actions"><button class="download" type="button" onclick="downloadRhStaffDocumentV100('${attr(d.documentId||d.id)}')">TÉLÉCHARGER</button><button class="delete" type="button" onclick="deleteRhStaffDocumentV100('${attr(d.documentId||d.id)}')">SUPPRIMER</button></div></div>`;
+      const proof=d.proofId?`<small style="color:#8bd8b5;font-weight:800">Preuve d’envoi : ${esc(d.proofId)}</small>`:'';
+      return `<div class="rh-doc-v100-row"><div class="rh-doc-v100-icon">${esc(icon(d.category))}</div><div><strong>${esc(d.title||d.fileName||'Document')}</strong><small>${esc(meta)}</small><small>${esc(d.fileName||'')}</small>${proof}</div><div class="rh-doc-v100-row-actions"><button class="download" type="button" onclick="downloadRhStaffDocumentV100('${attr(d.documentId||d.id)}')">TÉLÉCHARGER</button><button class="delete" type="button" onclick="deleteRhStaffDocumentV100('${attr(d.documentId||d.id)}')">SUPPRIMER</button></div></div>`;
     }).join('');
   }
 
@@ -15949,11 +15958,16 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
         const base64=await fileBase64(file);
         data=await docsFetch('/api/rh/documents/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenantID_JS,staffId:String(staff.id),staffName:String(staff.name||''),category,title:title||file.name,period,issuedAt,filename:file.name,mimeType:file.type||'application/octet-stream',base64})});
       }
-      if(data.document) rhDocsRows=[data.document,...rhDocsRows.filter(d=>String(d.documentId||d.id)!==String(data.document.documentId||data.document.id))];
+      if(data.document){
+        if(data.proof?.proofId&&!data.document.proofId)data.document.proofId=data.proof.proofId;
+        rhDocsRows=[data.document,...rhDocsRows.filter(d=>String(d.documentId||d.id)!==String(data.document.documentId||data.document.id))];
+      }
       renderRows();
       document.getElementById('rh-doc-v100-title').value=''; document.getElementById('rh-doc-v100-period').value=''; document.getElementById('rh-doc-v100-file').value='';
-      setStatus(`Document envoyé à ${staff.name||'ce collaborateur'} et disponible dans son Portail Staff.`,'ok');
-      try{showToast('Document envoyé au collaborateur');}catch(_){ }
+      const proofId=String(data?.proof?.proofId||data?.document?.proofId||'').trim();
+      const proofText=proofId?` · PREUVE ${proofId}`:'';
+      setStatus(`✓ Document enregistré pour ${staff.name||'ce collaborateur'}${proofText}. Disponible dans son Portail Staff.`,'ok');
+      try{showToast(proofId?`Document envoyé · ${proofId}`:'Document envoyé au collaborateur');}catch(_){ }
     }catch(e){
       console.error('[iCHEF RH Documents upload]',e);
       const detail=e?.status?` (HTTP ${e.status}${e.code?` · ${e.code}`:''})`:'';
@@ -15986,8 +16000,8 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
     }
   }
   document.addEventListener('DOMContentLoaded',install); setTimeout(install,120);
-  window.__ICHEF_RH_BUILD__='RH-V105-DOCUMENTS-UPLOAD-BINARY-SECURE';
-  console.info('[iCHEF RH V105] Documents collaborateurs : upload binaire sécurisé + repli JSON + diagnostics + téléchargement + suppression auditée');
+  window.__ICHEF_RH_BUILD__='RH-V106-DOCUMENTS-FAST-PROOF-SECURE';
+  console.info('[iCHEF RH V106] Documents collaborateurs : envoi rapide hors file planning + preuve immédiate + timeout + sécurité conservée');
 })();
 </script>
 
@@ -16172,7 +16186,7 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
 
   document.addEventListener('DOMContentLoaded',()=>{setTimeout(checkAiTakeover,8000);setInterval(checkAiTakeover,5*60*1000);});
   window.addEventListener('focus',()=>setTimeout(checkAiTakeover,1200));
-  window.__ICHEF_RH_BUILD__='RH-V105-DOCUMENTS-UPLOAD-BINARY-SECURE';
+  window.__ICHEF_RH_BUILD__='RH-V106-DOCUMENTS-FAST-PROOF-SECURE';
   console.info('[iCHEF RH V102] >5h sans motif · <=5h motif obligatoire · versions originales · relève IA autonome');
 })();
 </script>
@@ -16182,7 +16196,7 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
 </style>
 <script id="ichef-rh-v103-ai-settings-docs-script">
 (() => {
-  const BUILD='RH-V105-DOCUMENTS-UPLOAD-BINARY-SECURE';
+  const BUILD='RH-V106-DOCUMENTS-FAST-PROOF-SECURE';
   let monthlyPlannerRunning=false;
   function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
   function ensureModals(){
@@ -16232,4 +16246,4 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
 </body>
 </html>
 
-<script id="ichef-rh-v101-marker">window.__ICHEF_RH_BUILD__='RH-V105-DOCUMENTS-UPLOAD-BINARY-SECURE';</script>
+<script id="ichef-rh-v101-marker">window.__ICHEF_RH_BUILD__='RH-V106-DOCUMENTS-FAST-PROOF-SECURE';</script>
