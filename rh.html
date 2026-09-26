@@ -16243,6 +16243,117 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
   window.__ICHEF_RH_BUILD__=BUILD;console.info('[iCHEF RH V104] OFF par 0,5 · jours protégés · pics d’affluence protégés · congés validés conservés');
 })();
 </script>
+
+<script id="ichef-rh-v107-fast-planning">
+(() => {
+  'use strict';
+
+  // iCHEF RH V107
+  // IMPORTANT : ce patch ne modifie aucune fonction de connexion, PIN,
+  // tenantID, session ou redirection vers portail-staff.html.
+  const BUILD = 'RH-V107-AI-PLANNING-FAST-SAFE-CONNECTION';
+
+  let planningGenerationPromise = null;
+  let offSuggestionPromise = null;
+  let lastOffRefreshAt = 0;
+
+  const originalGeneratePlanning = window.generateAutomaticPlanning;
+  if (typeof originalGeneratePlanning === 'function') {
+    window.generateAutomaticPlanning = async function(...args) {
+      // Empêche les doubles clics / doubles calculs lourds.
+      if (planningGenerationPromise) return planningGenerationPromise;
+
+      const btn = document.getElementById('assistant-generate-btn');
+      const previousText = btn?.innerText || '2. GÉNÉRER LE PLANNING';
+
+      planningGenerationPromise = (async () => {
+        try {
+          if (btn) {
+            btn.disabled = true;
+            btn.innerText = 'GÉNÉRATION...';
+            btn.style.opacity = '.72';
+          }
+
+          const result = await originalGeneratePlanning.apply(this, args);
+
+          // Les OFF sont recalculés juste après la proposition,
+          // sans second clic et sans bloquer l'affichage du planning.
+          const refreshOff = () => {
+            try {
+              if (typeof window.generateAssistantDayOffSuggestions === 'function') {
+                window.generateAssistantDayOffSuggestions(true);
+              }
+            } catch (_) {}
+          };
+
+          if ('requestIdleCallback' in window) {
+            requestIdleCallback(refreshOff, { timeout: 700 });
+          } else {
+            setTimeout(refreshOff, 60);
+          }
+
+          return result;
+        } finally {
+          if (btn) {
+            btn.disabled = false;
+            btn.innerText = previousText;
+            btn.style.opacity = '1';
+          }
+          planningGenerationPromise = null;
+        }
+      })();
+
+      return planningGenerationPromise;
+    };
+  }
+
+  const originalOffSuggestions = window.generateAssistantDayOffSuggestions;
+  if (typeof originalOffSuggestions === 'function') {
+    window.generateAssistantDayOffSuggestions = async function(silent = false) {
+      // Évite plusieurs analyses OFF simultanées.
+      if (offSuggestionPromise) return offSuggestionPromise;
+
+      // En actualisation silencieuse, évite de recalculer plusieurs fois
+      // dans un intervalle très court.
+      if (silent && Date.now() - lastOffRefreshAt < 500) {
+        return window.assistantDayOffSuggestions || [];
+      }
+
+      offSuggestionPromise = (async () => {
+        try {
+          const result = await originalOffSuggestions.call(this, silent);
+          lastOffRefreshAt = Date.now();
+          return result;
+        } finally {
+          offSuggestionPromise = null;
+        }
+      })();
+
+      return offSuggestionPromise;
+    };
+  }
+
+  // Rafraîchissement visuel léger après retour sur l'onglet :
+  // aucune reconnexion et aucune réinitialisation de session.
+  let focusTimer = null;
+  window.addEventListener('focus', () => {
+    clearTimeout(focusTimer);
+    focusTimer = setTimeout(() => {
+      try {
+        const modal = document.getElementById('ia-predictions-modal');
+        if (modal?.classList.contains('show') &&
+            typeof window.renderPlanningAssistantLocal === 'function') {
+          window.renderPlanningAssistantLocal();
+        }
+      } catch (_) {}
+    }, 180);
+  }, { passive: true });
+
+  window.__ICHEF_RH_BUILD__ = BUILD;
+  console.info('[iCHEF RH V107] Planning IA rapide + OFF automatiques · connexion/PIN inchangés');
+})();
+</script>
+
 </body>
 </html>
 
