@@ -7922,12 +7922,12 @@
                     if (settings.preservePastDays && isPast) {
                         proposal[staff.id][day] = {
                             ...(existing ? assistantClone(existing) : {
-                                status: 'off',
+                                status: 'history',
                                 poste: staff.dept || 'salle',
                                 s1: '',
                                 s2: '',
                                 pause: 0,
-                                obs: ''
+                                obs: 'Jour passé · non recalculé'
                             }),
                             __protected: true
                         };
@@ -8177,11 +8177,24 @@
 
         function assistantPreviewCode(p) {
             if (!p) return 'OFF';
+            if (p.status === 'history') return '—';
             if (isRhLeaveStatus(p.status) || p.status === 'ferie') return rhStatusMeta(p.status).label.slice(0, 5);
             if (p.s1 && p.s2) return 'M+S';
             if (p.s1) return 'M';
             if (p.s2) return 'S';
             return 'OFF';
+        }
+
+        function assistantPreviewClass(p) {
+            if (!p) return 'v117-off';
+            if (p.status === 'history') return 'v117-history';
+            if (p.status === 'off' || p.status === 'recup') return 'v117-off';
+            if (p.status === 'absence' || p.status === 'absent' || p.status === 'maladie') return 'v117-abs';
+            if (isRhLeaveStatus(p.status)) return 'v117-cp';
+            if (p.s1 && p.s2) return 'v117-ms';
+            if (p.s1) return 'v117-m';
+            if (p.s2) return 'v117-s';
+            return 'v117-off';
         }
 
         function renderAutomaticPlanningDraft(draft) {
@@ -8238,7 +8251,7 @@
                             ? `${p.s1 || ''}${p.s1 && p.s2 ? ' / ' : ''}${p.s2 || ''}${p.obs ? ' · ' + p.obs : ''}`
                             : '';
 
-                        body += `<td title="${escapeRhHtml(title)}" style="text-align:center;font-size:.66rem;font-weight:800;">${escapeRhHtml(code)}</td>`;
+                        body += `<td class="${assistantPreviewClass(p)}" title="${escapeRhHtml(title)}" style="text-align:center;font-size:.66rem;font-weight:900;">${escapeRhHtml(code)}</td>`;
                     }
 
                     body += `<td style="font-weight:900;color:var(--hr);">${Number(state?.hours || 0).toFixed(1)}</td></tr>`;
@@ -8264,38 +8277,43 @@
 
         async function generateAutomaticPlanning() {
             const btn = document.getElementById('assistant-generate-btn');
-
             if (btn) {
                 btn.disabled = true;
                 btn.innerText = 'GÉNÉRATION...';
-                btn.style.opacity = '0.65';
+                btn.style.opacity = '0.72';
             }
 
             try {
                 saveRhPlanningSettings(true);
-
                 const currentMonth = getPlanningAssistantMonth();
 
-                if (
-                    !planningAssistantPrediction ||
-                    planningAssistantPredictionMonth !== currentMonth
-                ) {
-                    await generateIAPrediction(true);
-                }
-
-                // Le moteur local peut toujours proposer un planning si l'IA distante
-                // est momentanément indisponible.
+                // V117 : le planning local est construit immédiatement.
+                // On n'attend plus la prédiction distante avant d'afficher un résultat.
                 planningAssistantDraft = buildAutomaticPlanningDraft();
                 renderAutomaticPlanningDraft(planningAssistantDraft);
 
                 if (typeof showToast === 'function') {
-                    showToast('Proposition de planning générée');
+                    showToast('Planning généré · analyse IA complémentaire en cours');
                 }
 
+                // La prédiction distante enrichit ensuite la demande sans bloquer l'écran.
+                if (!planningAssistantPrediction || planningAssistantPredictionMonth !== currentMonth) {
+                    Promise.resolve(generateIAPrediction(true))
+                        .then(() => {
+                            // Ne remplace pas silencieusement un planning déjà appliqué :
+                            // on régénère seulement la proposition visible.
+                            if (getPlanningAssistantMonth() !== currentMonth) return;
+                            planningAssistantDraft = buildAutomaticPlanningDraft();
+                            renderAutomaticPlanningDraft(planningAssistantDraft);
+                            if (typeof showToast === 'function') showToast('Planning affiné avec l’analyse IA');
+                        })
+                        .catch(error => {
+                            console.warn('Analyse IA distante indisponible, planning local conservé :', error);
+                        });
+                }
             } catch (error) {
                 console.error('Erreur génération planning IA :', error);
                 alert(error?.message || 'Impossible de générer le planning.');
-
             } finally {
                 if (btn) {
                     btn.disabled = false;
@@ -16918,6 +16936,18 @@ else {installLegend();applyReadableContrast();}
 window.__ICHEF_RH_SERVICES_BUILD__='V116';
 })();
 </script>
+
+
+<style id="ichef-rh-v117-real-colors">
+#ia-planning-preview td.v117-m{background:#2f8ee5!important;color:#fff!important}
+#ia-planning-preview td.v117-s{background:#42b879!important;color:#07140d!important}
+#ia-planning-preview td.v117-ms{background:#18a8a3!important;color:#061716!important}
+#ia-planning-preview td.v117-off{background:#303943!important;color:#fff!important}
+#ia-planning-preview td.v117-abs{background:#b95761!important;color:#fff!important}
+#ia-planning-preview td.v117-cp{background:#7450a8!important;color:#fff!important}
+#ia-planning-preview td.v117-history{background:#f2f4f7!important;color:#111!important}
+#ia-planning-preview td{transition:background .12s ease,color .12s ease}
+</style>
 
 </body>
 </html>
