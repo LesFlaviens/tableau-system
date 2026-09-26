@@ -7945,8 +7945,19 @@
                     };
                 }
 
-                const target = Math.max(0, expected - absenceDays * dailyReference);
                 const fixedHours = Object.values(proposal[staff.id]).reduce((sum, p) => sum + calculateNet(p), 0);
+
+                // V115 : si le mois courant est déjà commencé et que les jours passés
+                // sont protégés, on ne réclame plus artificiellement tout le contrat mensuel
+                // sur les quelques jours restants. On conserve les heures déjà réalisées
+                // et on ajoute seulement l'objectif contractuel de la période restante.
+                let target = Math.max(0, expected - absenceDays * dailyReference);
+                if (isCurrentMonth && settings.preservePastDays) {
+                    const firstPlannableDay = Math.max(1, now.getDate());
+                    const remainingCalendarDays = Math.max(0, daysInMonth - firstPlannableDay + 1);
+                    const remainingContractHours = weekly > 0 ? weekly * (remainingCalendarDays / 7) : 0;
+                    target = Math.max(fixedHours, fixedHours + remainingContractHours);
+                }
 
                 states[staff.id] = {
                     year,
@@ -8006,6 +8017,8 @@
             const departments = ['cuisine', 'salle', 'bar', 'patisserie'];
 
             for (let day = 1; day <= daysInMonth; day++) {
+                // V115 : le moteur ne tente pas de reconstruire les jours déjà passés.
+                if (isCurrentMonth && settings.preservePastDays && day < now.getDate()) continue;
                 for (const service of ['lunch', 'dinner']) {
                     for (const dept of departments) {
                         const eligible = staffList.filter(staff => assistantStaffCanCoverDept(staff, dept));
@@ -8075,6 +8088,7 @@
 
                     for (const demandDay of demandDays) {
                         const day = demandDay.day;
+                        if (isCurrentMonth && settings.preservePastDays && day < now.getDate()) continue;
                         const p = proposal[staff.id][day];
                         if (!p || p.__protected || isRhLeaveStatus(p.status)) continue;
 
@@ -8134,7 +8148,10 @@
                 warnings.push(`${uncovered.length} service(s) restent sous le niveau de couverture calculé.`);
             }
 
-            const totalRequiredChecks = daysInMonth * 2 * departments.filter(dept => staffList.some(s => assistantStaffCanCoverDept(s, dept))).length;
+            const plannableDaysCount = (isCurrentMonth && settings.preservePastDays)
+                ? Math.max(0, daysInMonth - Math.max(1, now.getDate()) + 1)
+                : daysInMonth;
+            const totalRequiredChecks = plannableDaysCount * 2 * departments.filter(dept => staffList.some(s => assistantStaffCanCoverDept(s, dept))).length;
             const coveragePct = totalRequiredChecks > 0
                 ? Math.max(0, Math.round((1 - uncovered.length / totalRequiredChecks) * 100))
                 : 100;
@@ -8235,7 +8252,14 @@
                 `;
             }
 
-            if (applyBtn) applyBtn.disabled = false;
+            if (applyBtn) {
+                const coverageOk = Number(draft.metrics?.coveragePct || 0) >= 85;
+                const balanceOk = Number(draft.metrics?.staffBalanced || 0) >= Math.max(1, Math.ceil(Number(draft.metrics?.staffCount || 0) * 0.6));
+                applyBtn.disabled = !(coverageOk && balanceOk);
+                applyBtn.title = applyBtn.disabled
+                    ? 'La proposition doit encore être équilibrée ou mieux couvrir les besoins avant application.'
+                    : 'Valider et appliquer la proposition au planning officiel.';
+            }
         }
 
         async function generateAutomaticPlanning() {
@@ -16745,6 +16769,153 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
 
  window.__ICHEF_RH_FLOW_BUILD__='V113-REAL-PLANNING-DRAFT';
  console.info('[iCHEF RH V113] affichage connecté à planningAssistantDraft réel · PIN/auth inchangés');
+})();
+</script>
+
+
+<style id="ichef-rh-v114-speed-style">
+#assistant-generate-btn.v114-working{pointer-events:none;opacity:.7}
+#v114-speed-note{display:none;margin-top:7px;color:#8f9aa6;font-size:.66rem}
+#v114-speed-note.show{display:block}
+</style>
+<script id="ichef-rh-v114-speed">
+(() => {
+'use strict';
+// Performance only: authentication/PIN/session/tenantID are untouched.
+let inFlight=null;
+function setBusy(on){
+ const b=document.getElementById('assistant-generate-btn');
+ if(!b)return;
+ b.classList.toggle('v114-working',on); b.disabled=!!on;
+ let n=document.getElementById('v114-speed-note');
+ if(!n){n=document.createElement('div');n.id='v114-speed-note';n.textContent='Calcul du planning en cours…';b.insertAdjacentElement('afterend',n);}
+ n.classList.toggle('show',on);
+}
+const original=window.generateAutomaticPlanning;
+if(typeof original==='function' && !original.__v114){
+ const fast=async function(...args){
+   // Prevent accidental duplicate calculations.
+   if(inFlight) return inFlight;
+   setBusy(true);
+   inFlight=(async()=>{
+     try{
+       // Let browser paint loading state before CPU-heavy work.
+       await new Promise(r=>requestAnimationFrame(r));
+       return await original.apply(this,args);
+     }finally{
+       inFlight=null; setBusy(false);
+       requestAnimationFrame(()=>{
+         try{
+           if(typeof window.renderAutomaticPlanningDraft==='function' && window.planningAssistantDraft)
+             window.renderAutomaticPlanningDraft(window.planningAssistantDraft);
+         }catch(_){}
+       });
+     }
+   })();
+   return inFlight;
+ };
+ fast.__v114=true; fast.__original=original;
+ window.generateAutomaticPlanning=fast;
+}
+window.__ICHEF_RH_PERF_BUILD__='V114';
+console.info('[iCHEF RH V114] génération allégée : observer global supprimé + double calcul bloqué');
+})();
+</script>
+
+
+<style id="ichef-rh-v116-services-style">
+/* V116 — légende compacte + contraste automatique clair/sombre */
+#ia-predictions-modal .v116-legend-btn{
+ display:inline-flex;align-items:center;gap:7px;padding:7px 11px;border-radius:9px;
+ border:1px solid #455463;background:#111820;color:#f7f9fb;font-weight:800;
+ font-size:.68rem;cursor:pointer
+}
+#ia-predictions-modal .v116-legend-btn:hover{border-color:#d1aa3b;color:#f0c957}
+#v116-legend-modal{position:fixed;inset:0;z-index:100005;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(0,0,0,.58)}
+#v116-legend-modal.show{display:flex}
+#v116-legend-panel{width:min(720px,96vw);max-height:86vh;overflow:auto;border-radius:16px;border:1px solid #334250;background:#0e141a;color:#f7f9fb;box-shadow:0 24px 70px rgba(0,0,0,.42)}
+#v116-legend-panel .v116-head{position:sticky;top:0;z-index:2;display:flex;justify-content:space-between;align-items:center;padding:17px 19px;border-bottom:1px solid #27333d;background:#0e141a}
+#v116-legend-panel h3{margin:0;color:#fff;font-size:1rem}
+#v116-legend-panel .v116-close{border:1px solid #455463;background:#151d25;color:#fff;width:34px;height:34px;border-radius:8px;cursor:pointer;font-size:18px}
+#v116-legend-panel .v116-body{padding:17px 19px}
+#v116-legend-panel .v116-note{padding:12px 13px;border:1px solid #344554;border-radius:10px;background:#121b23;color:#c7d0d9;font-size:.72rem;line-height:1.5;margin-bottom:14px}
+#v116-legend-panel .v116-list{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+#v116-legend-panel .v116-item{display:flex;align-items:center;gap:11px;border:1px solid #273640;border-radius:10px;padding:10px;background:#111820}
+#v116-legend-panel .v116-code{min-width:58px;text-align:center;padding:8px 7px;border-radius:7px;font-weight:900;font-size:.68rem}
+#v116-legend-panel .v116-txt b{display:block;color:#fff;font-size:.75rem}
+#v116-legend-panel .v116-txt small{color:#91a0ae;font-size:.64rem;line-height:1.35}
+.v116-c-pdj{background:#ffd166!important;color:#111!important}.v116-c-m{background:#2f8ee5!important;color:#fff!important}
+.v116-c-s{background:#42b879!important;color:#08140e!important}.v116-c-bar{background:#8b5cf6!important;color:#fff!important}
+.v116-c-rs{background:#21b8b2!important;color:#061716!important}.v116-c-n{background:#f29a38!important;color:#17100a!important}
+.v116-c-off{background:#313943!important;color:#fff!important}.v116-c-abs{background:#b95761!important;color:#fff!important}
+.v116-c-cp{background:#6f4ca5!important;color:#fff!important}.v116-c-ind{background:#e9edf2!important;color:#111!important;border:1px solid #9ba8b5!important}
+/* Règle demandée : tout élément à fond blanc/clair reçoit une police noire. */
+#ia-predictions-modal .v116-light,
+#v116-legend-panel .v116-light{color:#111!important}
+@media(max-width:680px){#v116-legend-panel .v116-list{grid-template-columns:1fr}}
+</style>
+
+<div id="v116-legend-modal" aria-hidden="true">
+ <div id="v116-legend-panel" role="dialog" aria-modal="true" aria-labelledby="v116-title">
+  <div class="v116-head"><h3 id="v116-title">Légende du planning</h3><button class="v116-close" type="button" onclick="closePlanningLegendV116()">×</button></div>
+  <div class="v116-body">
+   <div class="v116-note"><b>Horaires configurables par établissement.</b><br>Les sigles restent visibles en plus des couleurs. iCHEF tient compte des services très tôt, tardifs et des horaires qui traversent minuit.</div>
+   <div class="v116-list">
+    <div class="v116-item"><span class="v116-code v116-c-pdj">PDJ</span><span class="v116-txt"><b>Petit-déjeuner</b><small>Ex. 05:30–13:30</small></span></div>
+    <div class="v116-item"><span class="v116-code v116-c-m">M</span><span class="v116-txt"><b>Matin</b><small>Service du matin</small></span></div>
+    <div class="v116-item"><span class="v116-code v116-c-s">S</span><span class="v116-txt"><b>Soir</b><small>Service du soir</small></span></div>
+    <div class="v116-item"><span class="v116-code v116-c-bar">BAR</span><span class="v116-txt"><b>Bar de nuit</b><small>Peut se terminer après minuit</small></span></div>
+    <div class="v116-item"><span class="v116-code v116-c-rs">RS</span><span class="v116-txt"><b>Room service</b><small>Jour ou nuit selon configuration</small></span></div>
+    <div class="v116-item"><span class="v116-code v116-c-n">N</span><span class="v116-txt"><b>Nuit</b><small>Service nocturne</small></span></div>
+    <div class="v116-item"><span class="v116-code v116-c-off">OFF</span><span class="v116-txt"><b>Repos</b><small>Jour OFF validé ou proposé</small></span></div>
+    <div class="v116-item"><span class="v116-code v116-c-abs">ABS</span><span class="v116-txt"><b>Absence</b><small>Absence enregistrée</small></span></div>
+    <div class="v116-item"><span class="v116-code v116-c-cp">CP</span><span class="v116-txt"><b>Congé</b><small>Congé validé</small></span></div>
+    <div class="v116-item"><span class="v116-code v116-c-ind">IND</span><span class="v116-txt"><b>Indisponible</b><small>Créneau non disponible</small></span></div>
+   </div>
+   <div class="v116-note" style="margin-top:14px;margin-bottom:0"><b>Repos entre services :</b> lorsqu’un service se termine après minuit, iCHEF rattache correctement la fin du service au jour suivant et doit respecter les règles de repos configurées avant une nouvelle prise de poste.</div>
+  </div>
+ </div>
+</div>
+
+<script id="ichef-rh-v116-services">
+(() => {
+'use strict';
+// UI only. No PIN/auth/session/tenantID changes.
+function installLegend(){
+ const modal=document.getElementById('ia-predictions-modal');
+ if(!modal || modal.querySelector('.v116-legend-btn')) return;
+ const head=modal.querySelector('.v113-plan-head');
+ if(!head) return;
+ const btn=document.createElement('button');
+ btn.type='button'; btn.className='v116-legend-btn';
+ btn.innerHTML='<span aria-hidden="true">ⓘ</span> LÉGENDE';
+ btn.onclick=()=>window.openPlanningLegendV116();
+ head.appendChild(btn);
+}
+window.openPlanningLegendV116=()=>{const m=document.getElementById('v116-legend-modal');if(m){m.classList.add('show');m.setAttribute('aria-hidden','false')}};
+window.closePlanningLegendV116=()=>{const m=document.getElementById('v116-legend-modal');if(m){m.classList.remove('show');m.setAttribute('aria-hidden','true')}};
+document.addEventListener('click',e=>{const m=document.getElementById('v116-legend-modal');if(e.target===m) closePlanningLegendV116()});
+document.addEventListener('keydown',e=>{if(e.key==='Escape') closePlanningLegendV116()});
+
+/* Automatic contrast helper: if a planning cell is truly white/very light,
+   force dark text. It never changes the cell background. */
+function applyReadableContrast(root=document){
+ root.querySelectorAll('#ia-predictions-modal td, #ia-predictions-modal .planning-cell, #ia-predictions-modal .shift-cell').forEach(el=>{
+  const rgb=getComputedStyle(el).backgroundColor.match(/\d+/g);
+  if(!rgb||rgb.length<3)return;
+  const [r,g,b]=rgb.map(Number);
+  const lum=(0.299*r+0.587*g+0.114*b);
+  el.classList.toggle('v116-light',lum>205);
+ });
+}
+const oldRender=window.renderAutomaticPlanningDraft;
+if(typeof oldRender==='function'&&!oldRender.__v116){
+ const wrapped=function(...args){const r=oldRender.apply(this,args);requestAnimationFrame(()=>{installLegend();applyReadableContrast()});return r};
+ wrapped.__v116=true; window.renderAutomaticPlanningDraft=wrapped;
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{installLegend();applyReadableContrast()},{once:true});
+else {installLegend();applyReadableContrast();}
+window.__ICHEF_RH_SERVICES_BUILD__='V116';
 })();
 </script>
 
