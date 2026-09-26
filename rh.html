@@ -28,7 +28,7 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>iCHEF RH · Direction & Pilotage RH V103</title>
-    <meta name="ichef-build" content="RH-V104-IA-REPOS-05-JOURS-PROTEGES-PICS-SECURE">
+    <meta name="ichef-build" content="RH-V105-DOCUMENTS-UPLOAD-BINARY-SECURE">
     
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800;900&display=swap" rel="stylesheet">
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
@@ -15828,7 +15828,7 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
     }catch(_){return null;}
   }
   function managerPin(){try{return typeof getRhDirectionAuthPin==='function'?String(getRhDirectionAuthPin()||'').trim():'';}catch(_){return '';}}
-  function currentDevice(){try{return String(window.RH_DEVICE_ID||RH_DEVICE_ID||'').trim();}catch(_){return '';}}
+  function currentDevice(){try{return String(window.RH_DEVICE_ID||RH_DEVICE_ID||localStorage.getItem('ichef_device_id')||'').trim();}catch(_){return String(localStorage.getItem('ichef_device_id')||'').trim();}}
   function apiBase(){try{return String(window.SERVER_URL_JS||SERVER_URL_JS||'').replace(/\/$/,'');}catch(_){return '';}}
 
   function ensurePanel(){
@@ -15876,10 +15876,20 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
   async function docsFetch(path,options={},retry=true){
     const token=await ensureSession(false);
     const headers={...(options.headers||{}),'Accept':'application/json','X-iCHEF-Tenant':tenantID_JS,'X-iCHEF-Device':currentDevice(),'Authorization':`Bearer ${token}`};
-    const r=await fetch(`${apiBase()}${path}`,{...options,headers,credentials:'include',cache:'no-store'});
+    let r;
+    try{
+      r=await fetch(`${apiBase()}${path}`,{...options,headers,credentials:'include',cache:'no-store'});
+    }catch(networkError){
+      const e=new Error('Connexion serveur Documents RH impossible. Vérifiez le déploiement et réessayez.');
+      e.cause=networkError; e.status=0; throw e;
+    }
     if(r.status===401 && retry){rhDocsSessionToken='';rhDocsSessionExpiresAt=0;await ensureSession(true);return docsFetch(path,options,false);}
+    if(r.status===503 && retry){await new Promise(resolve=>setTimeout(resolve,850));return docsFetch(path,options,false);}
     const data=await r.json().catch(()=>({}));
-    if(!r.ok||data.success===false) throw new Error(data.error||`Erreur serveur (${r.status})`);
+    if(!r.ok||data.success===false){
+      const e=new Error(data.error||`Erreur serveur Documents RH (${r.status})`);
+      e.status=r.status; e.code=data.code||''; e.payload=data; throw e;
+    }
     return data;
   }
 
@@ -15924,16 +15934,32 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
     if(file.size>MAX_FILE_BYTES)return alert('Le fichier dépasse 12 Mo.');
     const btn=document.getElementById('rh-doc-v100-send'); if(btn)btn.disabled=true;
     try{
-      setStatus('Chiffrement de la session et envoi du document…');
-      const base64=await fileBase64(file);
-      const data=await docsFetch('/api/rh/documents/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenantID_JS,staffId:String(staff.id),staffName:String(staff.name||''),category,title:title||file.name,period,issuedAt,filename:file.name,mimeType:file.type||'application/octet-stream',base64})});
+      setStatus(`Envoi sécurisé de ${file.name} (${(file.size/1024/1024).toFixed(2)} Mo)…`);
+      const params=new URLSearchParams({
+        tenantID:String(tenantID_JS||''),staffId:String(staff.id),staffName:String(staff.name||''),
+        category,title:title||file.name,period,issuedAt,filename:file.name,
+        mimeType:file.type||'application/octet-stream'
+      });
+      let data;
+      try{
+        data=await docsFetch(`/api/rh/documents/upload-binary?${params.toString()}`,{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:file});
+      }catch(binaryError){
+        if(![404,405].includes(Number(binaryError?.status||0))) throw binaryError;
+        setStatus('Compatibilité serveur : envoi sécurisé classique…');
+        const base64=await fileBase64(file);
+        data=await docsFetch('/api/rh/documents/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenantID_JS,staffId:String(staff.id),staffName:String(staff.name||''),category,title:title||file.name,period,issuedAt,filename:file.name,mimeType:file.type||'application/octet-stream',base64})});
+      }
       if(data.document) rhDocsRows=[data.document,...rhDocsRows.filter(d=>String(d.documentId||d.id)!==String(data.document.documentId||data.document.id))];
       renderRows();
       document.getElementById('rh-doc-v100-title').value=''; document.getElementById('rh-doc-v100-period').value=''; document.getElementById('rh-doc-v100-file').value='';
       setStatus(`Document envoyé à ${staff.name||'ce collaborateur'} et disponible dans son Portail Staff.`,'ok');
       try{showToast('Document envoyé au collaborateur');}catch(_){ }
-    }catch(e){setStatus(e.message||'Envoi impossible.','error');alert(e.message||'Envoi impossible.');}
-    finally{if(btn)btn.disabled=false;}
+    }catch(e){
+      console.error('[iCHEF RH Documents upload]',e);
+      const detail=e?.status?` (HTTP ${e.status}${e.code?` · ${e.code}`:''})`:'';
+      const msg=(e?.message||'Envoi impossible.')+detail;
+      setStatus(msg,'error');alert(msg);
+    }finally{if(btn)btn.disabled=false;}
   };
 
   window.downloadRhStaffDocumentV100=function(id){
@@ -15960,8 +15986,8 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
     }
   }
   document.addEventListener('DOMContentLoaded',install); setTimeout(install,120);
-  window.__ICHEF_RH_BUILD__='RH-V104-IA-REPOS-05-JOURS-PROTEGES-PICS';
-  console.info('[iCHEF RH V100] Documents collaborateurs : upload sécurisé + envoi Portail Staff + téléchargement + suppression auditée');
+  window.__ICHEF_RH_BUILD__='RH-V105-DOCUMENTS-UPLOAD-BINARY-SECURE';
+  console.info('[iCHEF RH V105] Documents collaborateurs : upload binaire sécurisé + repli JSON + diagnostics + téléchargement + suppression auditée');
 })();
 </script>
 
@@ -16146,7 +16172,7 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
 
   document.addEventListener('DOMContentLoaded',()=>{setTimeout(checkAiTakeover,8000);setInterval(checkAiTakeover,5*60*1000);});
   window.addEventListener('focus',()=>setTimeout(checkAiTakeover,1200));
-  window.__ICHEF_RH_BUILD__='RH-V104-IA-REPOS-05-JOURS-PROTEGES-PICS';
+  window.__ICHEF_RH_BUILD__='RH-V105-DOCUMENTS-UPLOAD-BINARY-SECURE';
   console.info('[iCHEF RH V102] >5h sans motif · <=5h motif obligatoire · versions originales · relève IA autonome');
 })();
 </script>
@@ -16156,7 +16182,7 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
 </style>
 <script id="ichef-rh-v103-ai-settings-docs-script">
 (() => {
-  const BUILD='RH-V104-IA-REPOS-05-JOURS-PROTEGES-PICS';
+  const BUILD='RH-V105-DOCUMENTS-UPLOAD-BINARY-SECURE';
   let monthlyPlannerRunning=false;
   function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
   function ensureModals(){
@@ -16206,4 +16232,4 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
 </body>
 </html>
 
-<script id="ichef-rh-v101-marker">window.__ICHEF_RH_BUILD__='RH-V104-IA-REPOS-05-JOURS-PROTEGES-PICS';</script>
+<script id="ichef-rh-v101-marker">window.__ICHEF_RH_BUILD__='RH-V105-DOCUMENTS-UPLOAD-BINARY-SECURE';</script>
