@@ -28,7 +28,7 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>iCHEF RH · Direction & Pilotage RH V103</title>
-    <meta name="ichef-build" content="RH-V103-IA-MENSUELLE-REGLAGES-DOCUMENTS-OFF-SECURE">
+    <meta name="ichef-build" content="RH-V104-IA-REPOS-05-JOURS-PROTEGES-PICS-SECURE">
     
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800;900&display=swap" rel="stylesheet">
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
@@ -4610,6 +4610,12 @@
                 planningAutoRecovery: true,
                 planningMaxRecoveryDaysPerMonth: 2,
                 planningApprovedLeaveOnly: true,
+                planningProtectedWeekdays: [],
+                planningBlockPlannableLeaveOnProtectedDays: true,
+                planningProtectPeakLeave: true,
+                planningPeakProtectionCount: 6,
+                planningPeakMinCovers: 40,
+                planningPeakProtectionMinScore: 1.5,
                 planningRebalanceOnReservations: true,
                 planningRebalanceOnAntiRush: true,
                 planningRebalanceOnAbsence: true
@@ -4671,11 +4677,17 @@
                     ? String(source.planningMode).toLowerCase()
                     : 'autonomous',
                 planningMonthlyLeadDays: Math.max(1, Math.min(31, Number(source.planningMonthlyLeadDays) || 14)),
-                planningDaysOffPerWeek: Math.max(0, Math.min(4, Number(source.planningDaysOffPerWeek) || 2)),
+                planningDaysOffPerWeek: Math.max(0.5, Math.min(7, Math.round((Number(source.planningDaysOffPerWeek) || 2) * 2) / 2)),
                 planningPreferConsecutiveOff: source.planningPreferConsecutiveOff !== false,
                 planningAutoRecovery: source.planningAutoRecovery !== false,
                 planningMaxRecoveryDaysPerMonth: Math.max(0, Math.min(6, Number(source.planningMaxRecoveryDaysPerMonth) || 2)),
                 planningApprovedLeaveOnly: true,
+                planningProtectedWeekdays: Array.from(new Set((Array.isArray(source.planningProtectedWeekdays) ? source.planningProtectedWeekdays : []).map(Number).filter(v => Number.isInteger(v) && v >= 0 && v <= 6))),
+                planningBlockPlannableLeaveOnProtectedDays: source.planningBlockPlannableLeaveOnProtectedDays !== false,
+                planningProtectPeakLeave: source.planningProtectPeakLeave !== false,
+                planningPeakProtectionCount: Math.max(1, Math.min(31, Number(source.planningPeakProtectionCount) || 6)),
+                planningPeakMinCovers: Math.max(0, Math.min(1000, Number(source.planningPeakMinCovers) || 40)),
+                planningPeakProtectionMinScore: Math.max(1, Math.min(3, Number(source.planningPeakProtectionMinScore) || 1.5)),
                 planningRebalanceOnReservations: source.planningRebalanceOnReservations !== false,
                 planningRebalanceOnAntiRush: source.planningRebalanceOnAntiRush !== false,
                 planningRebalanceOnAbsence: source.planningRebalanceOnAbsence !== false,
@@ -6912,7 +6924,8 @@
                     day,
                     score: weekend ? 1.22 : 1,
                     covers: 0,
-                    reason: weekend ? 'Fin de semaine' : 'Activité standard'
+                    reason: weekend ? 'Fin de semaine' : 'Activité standard',
+                    isPeak: false
                 };
             }
 
@@ -6935,6 +6948,7 @@
                             covers > 0 ? Math.min(2.7, 1 + covers / 100) : 1.65
                         );
                         rows[day].reason = 'Affluence forte / Anti-Rush';
+                        rows[day].isPeak = true;
                     } else {
                         rows[day].score = Math.min(rows[day].score, 0.68);
                         rows[day].reason = 'Affluence plus faible';
@@ -6943,6 +6957,7 @@
             };
 
             applyRows(prediction?.highDemandDays || prediction?.rushPeriods, 'high');
+            applyRows(prediction?.protectedPeakDays, 'high');
             applyRows(prediction?.lowDemandDays || prediction?.deadPeriods, 'low');
 
             const notes = normalizeAssistantText(settings.eventNotes || '');
@@ -6951,10 +6966,56 @@
                 if (notes && dayPattern.test(notes)) {
                     rows[day].score = Math.max(rows[day].score, 1.55);
                     rows[day].reason = 'Événement / contexte Direction';
+                    rows[day].isPeak = true;
                 }
             }
 
             return rows;
+        }
+
+        function assistantProtectedWeekday(dateObj, settings) {
+            const protectedDays = Array.isArray(settings?.planningProtectedWeekdays)
+                ? settings.planningProtectedWeekdays.map(Number)
+                : [];
+            return protectedDays.includes(dateObj.getDay());
+        }
+
+        function assistantPeakDaySet(demand, settings) {
+            if (settings?.planningProtectPeakLeave === false) return new Set();
+            const count = Math.max(1, Math.min(31, Number(settings?.planningPeakProtectionCount) || 6));
+            const minCovers = Math.max(0, Number(settings?.planningPeakMinCovers) || 40);
+            const minScore = Math.max(1, Number(settings?.planningPeakProtectionMinScore) || 1.5);
+            const ranked = Object.values(demand || {})
+                .filter(row => row && (row.isPeak === true || Number(row.covers || 0) >= minCovers || Number(row.score || 0) >= minScore))
+                .sort((a,b) => {
+                    const ap = a.isPeak === true ? 10000 : 0;
+                    const bp = b.isPeak === true ? 10000 : 0;
+                    return (bp + Number(b.covers || 0) * 10 + Number(b.score || 0) * 100) -
+                           (ap + Number(a.covers || 0) * 10 + Number(a.score || 0) * 100);
+                })
+                .slice(0,count)
+                .map(row => Number(row.day));
+            return new Set(ranked);
+        }
+
+        function assistantDateBlocksPlannableLeave(dateObj, demandRow, settings, peakDays = null) {
+            if (settings?.planningBlockPlannableLeaveOnProtectedDays !== false && assistantProtectedWeekday(dateObj, settings)) return true;
+            if (settings?.planningProtectPeakLeave !== false) {
+                const set = peakDays instanceof Set ? peakDays : new Set();
+                if (set.has(dateObj.getDate())) return true;
+                if (demandRow?.isPeak === true) return true;
+            }
+            return false;
+        }
+
+        function assistantOffUnit(plan) {
+            if (!plan) return 1;
+            if (isRhLeaveStatus(plan.status) || plan.status === 'ferie') return 0;
+            if (!isRhWorkStatus(plan.status)) return 1;
+            const services = (plan.s1 ? 1 : 0) + (plan.s2 ? 1 : 0);
+            if (services <= 0) return 1;
+            if (services === 1) return 0.5;
+            return 0;
         }
 
         function assistantRequiredCount(dept, demand, settings, activeCount) {
@@ -7268,6 +7329,15 @@
                 const p = data.prediction;
                 planningAssistantPrediction = p;
                 planningAssistantPredictionMonth = month;
+                try {
+                    API.update('RH_AI_DEMAND', {
+                        month,
+                        highDemandDays: Array.isArray(p.highDemandDays) ? p.highDemandDays.slice(0,31) : [],
+                        protectedPeakDays: Array.isArray(p.protectedPeakDays) ? p.protectedPeakDays.slice(0,31) : [],
+                        lowDemandDays: Array.isArray(p.lowDemandDays) ? p.lowDemandDays.slice(0,31) : [],
+                        generatedAt: new Date().toISOString()
+                    });
+                } catch (_) { }
 
                 const influence = document.getElementById('assistant-restaurant-influence');
                 if (influence) {
@@ -7395,9 +7465,8 @@
             return count;
         }
 
-        function assistantWeekQuotaAllows(proposal, staffId, day, settings, year, month) {
-            const daysOffPerWeek = Math.max(0, Math.min(4, Number(settings?.planningDaysOffPerWeek) || 0));
-            if (!daysOffPerWeek) return true;
+        function assistantWeekQuotaAllows(proposal, staffId, day, settings, year, month, service = '') {
+            const daysOffPerWeek = Math.max(0.5, Math.min(7, Math.round((Number(settings?.planningDaysOffPerWeek) || 2) * 2) / 2));
             const dateObj = new Date(year, month - 1, day);
             const mondayOffset = (dateObj.getDay() + 6) % 7;
             const rawStart = day - mondayOffset;
@@ -7405,15 +7474,21 @@
             const startDay = Math.max(1, rawStart);
             const endDay = Math.min(daysInMonth, rawStart + 6);
             const span = Math.max(1, endDay - startDay + 1);
-            const requiredOff = Math.min(daysOffPerWeek, Math.floor((span * daysOffPerWeek) / 7));
-            if (requiredOff <= 0) return true;
-            const maxWorkDays = Math.max(0, span - requiredOff);
-            let workDays = 0;
+            const requiredOff = Math.min(span, Math.round(((span * daysOffPerWeek) / 7) * 2) / 2);
+
+            let currentOffUnits = 0;
             for (let d = startDay; d <= endDay; d++) {
-                if (isRhWorkStatus(proposal?.[staffId]?.[d]?.status)) workDays++;
+                currentOffUnits += assistantOffUnit(proposal?.[staffId]?.[d]);
             }
-            if (isRhWorkStatus(proposal?.[staffId]?.[day]?.status)) return true;
-            return workDays < maxWorkDays;
+
+            if (!service) return currentOffUnits + 0.001 >= requiredOff;
+
+            const currentPlan = proposal?.[staffId]?.[day];
+            if (!currentPlan) return false;
+            const simulated = assistantClone(currentPlan);
+            assistantSetService(simulated, service, simulated.poste || 'salle', settings, simulated.obs || '');
+            const futureOffUnits = currentOffUnits - assistantOffUnit(currentPlan) + assistantOffUnit(simulated);
+            return futureOffUnits + 0.001 >= requiredOff;
         }
 
         function assistantWeeklyOffCount(proposal, staffId, day, year, month) {
@@ -7425,10 +7500,9 @@
             const endDay = Math.min(daysInMonth, rawStart + 6);
             let off = 0;
             for (let d = startDay; d <= endDay; d++) {
-                const p = proposal?.[staffId]?.[d];
-                if (!p || (!isRhWorkStatus(p.status) && !isRhLeaveStatus(p.status))) off++;
+                off += assistantOffUnit(proposal?.[staffId]?.[d]);
             }
-            return off;
+            return Math.round(off * 2) / 2;
         }
 
         function assistantRestAllows(proposal, staff, day, service, settings) {
@@ -7455,13 +7529,15 @@
 
             const consecutive = assistantCountConsecutiveDays(proposal, staff.id, day);
             if (consecutive >= Number(staff.maxConsecutiveDays ?? 6)) return -99999;
-            if (!assistantWeekQuotaAllows(proposal, staff.id, day, settings, state.year, state.month)) return -99999;
+            if (!assistantWeekQuotaAllows(proposal, staff.id, day, settings, state.year, state.month, service)) return -99999;
 
             let score = (deficit / target) * 100;
             score += String(staff.dept || '') === dept ? 32 : 9;
 
             const rush = Number(demand?.score || 1);
             score += assistantSkillScore(staff) * (rush >= 1.5 ? 9 : 4);
+            if (assistantProtectedWeekday(dateObj, settings)) score += 28;
+            if (demand?.isPeak === true || rush >= Number(settings?.planningPeakProtectionMinScore || 1.5)) score += 36;
 
             if (service === 'dinner') score -= Number(state.evenings || 0) * 2.5;
             if (dateObj.getDay() === 5 || dateObj.getDay() === 6) score -= Number(state.weekends || 0) * 3;
@@ -7537,6 +7613,7 @@
             const settings = saveRhPlanningSettings(true);
             const tsMonth = assistantCurrentMonthData(monthStr);
             const demand = buildAssistantDemand(monthStr, planningAssistantPrediction, settings);
+            const peakDays = assistantPeakDaySet(demand, settings);
             const now = new Date();
             const isCurrentMonth = now.getFullYear() === year && now.getMonth() + 1 === month;
             const suggestions = [];
@@ -7553,9 +7630,11 @@
                 for (let day = 1; day <= daysInMonth; day++) {
                     if (isCurrentMonth && day <= now.getDate()) continue;
 
+                    const dateObj = new Date(year, month - 1, day);
                     const plan = assistantStaffDayPlan(tsMonth, staff.id, day);
                     if (!assistantDayIsWorked(plan)) continue;
-                    if (assistantRequestForDate(staff, new Date(year, month - 1, day))) continue;
+                    if (assistantRequestForDate(staff, dateObj)) continue;
+                    if (assistantDateBlocksPlannableLeave(dateObj, demand?.[day], settings, peakDays)) continue;
                     if (!assistantDayOffCoverageSafe(staff, day, monthStr, demand, settings, tsMonth)) continue;
 
                     const dayHours = Number(calculateNet(plan) || 0);
@@ -7790,6 +7869,7 @@
             const existingMonth = currentTs[monthStr] || {};
             const staffList = getDir().filter(s => s.active !== false);
             const demand = buildAssistantDemand(monthStr, planningAssistantPrediction, settings);
+            const peakDays = assistantPeakDaySet(demand, settings);
             const proposal = {};
             const states = {};
             const warnings = [];
@@ -7824,6 +7904,9 @@
                             __protected: true
                         };
                         if (isRhLeaveStatus(status)) absenceDays++;
+                        if (assistantDateBlocksPlannableLeave(dateObj, demand?.[day], settings, peakDays)) {
+                            warnings.push(`${staff.name} · ${String(day).padStart(2,'0')}/${String(month).padStart(2,'0')} : congé/absence déjà validé sur une période protégée ou de forte affluence — conservé, prévoir le remplacement.`);
+                        }
                         continue;
                     }
 
@@ -7899,6 +7982,7 @@
                         if (!p || p.__protected || isRhWorkStatus(p.status) || isRhLeaveStatus(p.status)) continue;
                         const dateObj = new Date(year, month - 1, day);
                         if (isCurrentMonth && day < now.getDate()) continue;
+                        if (assistantDateBlocksPlannableLeave(dateObj, demand?.[day], settings, peakDays)) continue;
                         p.status = 'recup';
                         p.s1 = ''; p.s2 = ''; p.pause = 0;
                         p.obs = `iCHEF IA · récupération planifiée · ${dailyRef.toFixed(1)} h`;
@@ -8003,7 +8087,7 @@
                             if (!assistantAvailabilityAllows(staff, dateObj, service)) continue;
                             if (!assistantRestAllows(proposal, staff, day, service, settings)) continue;
                             if (assistantCountConsecutiveDays(proposal, staff.id, day) >= Number(staff.maxConsecutiveDays ?? 6)) continue;
-                            if (!assistantWeekQuotaAllows(proposal, staff.id, day, settings, year, month)) continue;
+                            if (!assistantWeekQuotaAllows(proposal, staff.id, day, settings, year, month, service)) continue;
 
                             const delta = assistantSetService(
                                 p,
@@ -15876,7 +15960,7 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
     }
   }
   document.addEventListener('DOMContentLoaded',install); setTimeout(install,120);
-  window.__ICHEF_RH_BUILD__='RH-V103-IA-MENSUELLE-REGLAGES-DOCUMENTS-OFF';
+  window.__ICHEF_RH_BUILD__='RH-V104-IA-REPOS-05-JOURS-PROTEGES-PICS';
   console.info('[iCHEF RH V100] Documents collaborateurs : upload sécurisé + envoi Portail Staff + téléchargement + suppression auditée');
 })();
 </script>
@@ -16062,22 +16146,22 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
 
   document.addEventListener('DOMContentLoaded',()=>{setTimeout(checkAiTakeover,8000);setInterval(checkAiTakeover,5*60*1000);});
   window.addEventListener('focus',()=>setTimeout(checkAiTakeover,1200));
-  window.__ICHEF_RH_BUILD__='RH-V103-IA-MENSUELLE-REGLAGES-DOCUMENTS-OFF';
+  window.__ICHEF_RH_BUILD__='RH-V104-IA-REPOS-05-JOURS-PROTEGES-PICS';
   console.info('[iCHEF RH V102] >5h sans motif · <=5h motif obligatoire · versions originales · relève IA autonome');
 })();
 </script>
 <style id="ichef-rh-v103-ai-settings-docs-style">
-.rh-v103-config-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px}.rh-v103-config-section{border:1px solid var(--border);border-radius:12px;background:rgba(255,255,255,.015);padding:14px}.rh-v103-config-section h4{margin:0 0 11px;color:var(--gold);font-size:.72rem;letter-spacing:.9px;text-transform:uppercase}.rh-v103-config-note{margin-top:10px;color:var(--text-muted);font-size:.66rem;line-height:1.5}.rh-v103-toggle{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid rgba(255,255,255,.05)}.rh-v103-toggle:last-child{border-bottom:0}.rh-v103-toggle input{margin-top:3px}.rh-v103-toggle strong{display:block;font-size:.72rem}.rh-v103-toggle small{display:block;color:var(--text-muted);font-size:.62rem;margin-top:3px;line-height:1.4}.rh-v103-doc-picker{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:end}.rh-v103-emphasis{border:1px solid rgba(212,175,55,.26);background:rgba(212,175,55,.05);border-radius:10px;padding:11px;color:#dec98d;font-size:.68rem;line-height:1.5;margin-bottom:12px}
-@media(max-width:760px){.rh-v103-config-grid{grid-template-columns:1fr}.rh-v103-doc-picker{grid-template-columns:1fr}}
+.rh-v103-config-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px}.rh-v103-config-section{border:1px solid var(--border);border-radius:12px;background:rgba(255,255,255,.015);padding:14px}.rh-v103-config-section h4{margin:0 0 11px;color:var(--gold);font-size:.72rem;letter-spacing:.9px;text-transform:uppercase}.rh-v103-config-note{margin-top:10px;color:var(--text-muted);font-size:.66rem;line-height:1.5}.rh-v103-toggle{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid rgba(255,255,255,.05)}.rh-v103-toggle:last-child{border-bottom:0}.rh-v103-toggle input{margin-top:3px}.rh-v103-toggle strong{display:block;font-size:.72rem}.rh-v103-toggle small{display:block;color:var(--text-muted);font-size:.62rem;margin-top:3px;line-height:1.4}.rh-v103-doc-picker{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:end}.rh-v104-weekdays{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px}.rh-v104-weekdays label{display:flex;align-items:center;justify-content:center;gap:5px;min-height:36px;border:1px solid var(--border);border-radius:9px;background:rgba(255,255,255,.02);font-size:.64rem;color:var(--text-main);cursor:pointer}.rh-v104-weekdays input{margin:0}.rh-v103-emphasis{border:1px solid rgba(212,175,55,.26);background:rgba(212,175,55,.05);border-radius:10px;padding:11px;color:#dec98d;font-size:.68rem;line-height:1.5;margin-bottom:12px}
+@media(max-width:760px){.rh-v103-config-grid{grid-template-columns:1fr}.rh-v103-doc-picker{grid-template-columns:1fr}.rh-v104-weekdays{grid-template-columns:repeat(4,minmax(0,1fr))}}
 </style>
 <script id="ichef-rh-v103-ai-settings-docs-script">
 (() => {
-  const BUILD='RH-V103-IA-MENSUELLE-REGLAGES-DOCUMENTS-OFF';
+  const BUILD='RH-V104-IA-REPOS-05-JOURS-PROTEGES-PICS';
   let monthlyPlannerRunning=false;
   function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
   function ensureModals(){
     if(!document.getElementById('rh-ai-settings-v103')){
-      document.body.insertAdjacentHTML('beforeend',`<div class="modal" id="rh-ai-settings-v103"><div class="modal-content" style="width:min(920px,96vw);max-height:92vh;overflow:auto"><div class="modal-header"><div><h3>RÉGLAGES IA RH</h3><div style="color:var(--text-muted);font-size:.68rem;margin-top:4px">Paramètres propres à l’établissement · utilisés avant la mise en route et pour chaque mise à jour du planning.</div></div><button class="btn-outline" style="border:none" onclick="closeRhPlanningSettingsV103()">FERMER</button></div><div class="rh-v103-emphasis"><strong>PLANNING MENSUEL.</strong> iCHEF prépare un mois complet, conserve les congés validés, garantit les jours OFF configurés et ne réorganise ensuite que ce qui devient nécessaire.</div><div class="rh-v103-config-grid"><section class="rh-v103-config-section"><h4>Autonomie & échéances</h4><div class="input-group"><label>Mode IA</label><select class="input-full" id="v103-mode"><option value="autonomous">Autonome · publie selon les règles</option><option value="semi">Semi-automatique · prépare, responsable publie</option><option value="assisted">Assisté · analyse uniquement</option></select></div><div class="grid-2"><div class="input-group"><label>Préparer le mois suivant · J-</label><input class="input-full" id="v103-month-lead" type="number" min="1" max="31"></div><div class="input-group"><label>Relève si planning incomplet · heures</label><input class="input-full" id="v103-takeover-hours" type="number" min="6" max="168"></div></div><label class="rh-v103-toggle"><input id="v103-autopilot" type="checkbox"><span><strong>Relève IA automatique</strong><small>Si l’échéance client est dépassée, l’IA publie sans attendre une validation.</small></span></label></section><section class="rh-v103-config-section"><h4>Repos, OFF, congés & récupération</h4><div class="grid-2"><div class="input-group"><label>Jours OFF / 7 jours</label><input class="input-full" id="v103-off-days" type="number" min="0" max="4" step="1"></div><div class="input-group"><label>Récup. auto · max jours/mois</label><input class="input-full" id="v103-recovery-max" type="number" min="0" max="6" step="1"></div></div><label class="rh-v103-toggle"><input id="v103-consecutive-off" type="checkbox"><span><strong>Privilégier les OFF consécutifs</strong><small>Évite de disperser inutilement les jours de repos.</small></span></label><label class="rh-v103-toggle"><input id="v103-auto-recovery" type="checkbox"><span><strong>Placer la récupération disponible</strong><small>Uniquement quand la banque permet un jour complet et de préférence sur les jours calmes.</small></span></label><label class="rh-v103-toggle"><input type="checkbox" checked disabled><span><strong>Congés payés : demandes validées uniquement</strong><small>L’IA ne crée jamais seule des vacances payées. Une demande acceptée devient une contrainte protégée.</small></span></label></section><section class="rh-v103-config-section"><h4>Activité & coûts</h4><div class="grid-2"><div class="input-group"><label>Priorité</label><select class="input-full" id="v103-priority"><option value="balanced">Équilibre</option><option value="coverage">Couverture</option><option value="cost">Coût</option></select></div><div class="input-group"><label>Budget main-d’œuvre (% CA)</label><input class="input-full" id="v103-budget" type="number" min="0" max="100" step=".5"></div></div><div class="grid-2"><div class="input-group"><label>1 serveur / X couverts</label><input class="input-full" id="v103-server-ratio" type="number" min="1"></div><div class="input-group"><label>1 cuisine / X couverts</label><input class="input-full" id="v103-kitchen-ratio" type="number" min="1"></div></div><label class="rh-v103-toggle"><input id="v103-reservations" type="checkbox"><span><strong>Réagir aux réservations</strong><small>Réévalue la couverture quand l’affluence prévue change.</small></span></label><label class="rh-v103-toggle"><input id="v103-antirush" type="checkbox"><span><strong>Intégrer Anti-Rush</strong><small>Utilise la pression opérationnelle détectée pour renforcer les services utiles.</small></span></label><label class="rh-v103-toggle"><input id="v103-absence" type="checkbox"><span><strong>Réagir aux absences</strong><small>Recherche un remplacement sans refaire inutilement tout le mois.</small></span></label></section><section class="rh-v103-config-section"><h4>Horaires de service</h4><div class="grid-2"><div class="input-group"><label>Midi début</label><input class="input-full" id="v103-lunch-start" type="time"></div><div class="input-group"><label>Midi fin</label><input class="input-full" id="v103-lunch-end" type="time"></div></div><div class="grid-2"><div class="input-group"><label>Soir début</label><input class="input-full" id="v103-dinner-start" type="time"></div><div class="input-group"><label>Soir fin</label><input class="input-full" id="v103-dinner-end" type="time"></div></div><div class="rh-v103-config-note">Les contraintes individuelles de contrat, compétences, disponibilités, repos minimum et jours consécutifs restent prioritaires sur l’optimisation du coût.</div></section></div><div style="display:flex;justify-content:flex-end;gap:9px;margin-top:16px"><button class="btn-outline" onclick="closeRhPlanningSettingsV103()">ANNULER</button><button class="btn-save-green" onclick="saveRhPlanningSettingsV103()">ENREGISTRER LES RÉGLAGES</button></div></div></div>`);
+      document.body.insertAdjacentHTML('beforeend',`<div class="modal" id="rh-ai-settings-v103"><div class="modal-content" style="width:min(920px,96vw);max-height:92vh;overflow:auto"><div class="modal-header"><div><h3>RÉGLAGES IA RH</h3><div style="color:var(--text-muted);font-size:.68rem;margin-top:4px">Paramètres propres à l’établissement · utilisés avant la mise en route et pour chaque mise à jour du planning.</div></div><button class="btn-outline" style="border:none" onclick="closeRhPlanningSettingsV103()">FERMER</button></div><div class="rh-v103-emphasis"><strong>PLANNING MENSUEL.</strong> iCHEF prépare un mois complet, conserve les congés validés, garantit les jours OFF configurés et ne réorganise ensuite que ce qui devient nécessaire.</div><div class="rh-v103-config-grid"><section class="rh-v103-config-section"><h4>Autonomie & échéances</h4><div class="input-group"><label>Mode IA</label><select class="input-full" id="v103-mode"><option value="autonomous">Autonome · publie selon les règles</option><option value="semi">Semi-automatique · prépare, responsable publie</option><option value="assisted">Assisté · analyse uniquement</option></select></div><div class="grid-2"><div class="input-group"><label>Préparer le mois suivant · J-</label><input class="input-full" id="v103-month-lead" type="number" min="1" max="31"></div><div class="input-group"><label>Relève si planning incomplet · heures</label><input class="input-full" id="v103-takeover-hours" type="number" min="6" max="168"></div></div><label class="rh-v103-toggle"><input id="v103-autopilot" type="checkbox"><span><strong>Relève IA automatique</strong><small>Si l’échéance client est dépassée, l’IA publie sans attendre une validation.</small></span></label></section><section class="rh-v103-config-section"><h4>Repos, OFF, congés & récupération</h4><div class="grid-2"><div class="input-group"><label>Jours OFF / 7 jours</label><select class="input-full" id="v103-off-days"><option value="0.5">0.5</option><option value="1">1</option><option value="1.5">1.5</option><option value="2">2</option><option value="2.5">2.5</option><option value="3">3</option><option value="3.5">3.5</option><option value="4">4</option><option value="4.5">4.5</option><option value="5">5</option><option value="5.5">5.5</option><option value="6">6</option><option value="6.5">6.5</option><option value="7">7</option></select></div><div class="input-group"><label>Récup. auto · max jours/mois</label><input class="input-full" id="v103-recovery-max" type="number" min="0" max="6" step="1"></div></div><div class="input-group"><label>Jours protégés · pas de nouvelle demande OFF / vacances / récupération</label><div class="rh-v104-weekdays"><label><input type="checkbox" data-v104-protected-day="1">Lun</label><label><input type="checkbox" data-v104-protected-day="2">Mar</label><label><input type="checkbox" data-v104-protected-day="3">Mer</label><label><input type="checkbox" data-v104-protected-day="4">Jeu</label><label><input type="checkbox" data-v104-protected-day="5">Ven</label><label><input type="checkbox" data-v104-protected-day="6">Sam</label><label><input type="checkbox" data-v104-protected-day="0">Dim</label></div><div class="rh-v103-config-note">Ces jours bloquent les nouvelles demandes planifiables. Maladie, accident et absences obligatoires restent possibles. Un congé déjà validé n’est jamais annulé.</div></div><label class="rh-v103-toggle"><input id="v104-block-protected" type="checkbox"><span><strong>Bloquer les nouvelles demandes sur ces jours</strong><small>OFF, vacances et récupération sont refusés depuis le Portail Staff sur les jours sélectionnés.</small></span></label><label class="rh-v103-toggle"><input id="v103-consecutive-off" type="checkbox"><span><strong>Privilégier les OFF consécutifs</strong><small>Évite de disperser inutilement les jours de repos.</small></span></label><label class="rh-v103-toggle"><input id="v103-auto-recovery" type="checkbox"><span><strong>Placer la récupération disponible</strong><small>Uniquement quand la banque permet un jour complet et de préférence sur les jours calmes.</small></span></label><label class="rh-v103-toggle"><input id="v104-protect-peaks" type="checkbox"><span><strong>Protéger automatiquement les gros pics d’affluence</strong><small>L’IA évite OFF, récupération et nouvelles vacances sur les journées les plus chargées, selon réservations, historique, événements et Anti-Rush.</small></span></label><div class="grid-2"><div class="input-group"><label>Jours de pic protégés / mois</label><select class="input-full" id="v104-peak-count"><option value="4">4</option><option value="6">6</option><option value="8">8</option><option value="10">10</option><option value="12">12</option></select></div><div class="input-group"><label>Seuil réservations · couverts</label><input class="input-full" id="v104-peak-covers" type="number" min="0" max="1000" step="1"></div></div><label class="rh-v103-toggle"><input type="checkbox" checked disabled><span><strong>Congés payés : demandes validées uniquement</strong><small>L’IA ne crée jamais seule des vacances payées. Une demande acceptée devient une contrainte protégée.</small></span></label></section><section class="rh-v103-config-section"><h4>Activité & coûts</h4><div class="grid-2"><div class="input-group"><label>Priorité</label><select class="input-full" id="v103-priority"><option value="balanced">Équilibre</option><option value="coverage">Couverture</option><option value="cost">Coût</option></select></div><div class="input-group"><label>Budget main-d’œuvre (% CA)</label><input class="input-full" id="v103-budget" type="number" min="0" max="100" step=".5"></div></div><div class="grid-2"><div class="input-group"><label>1 serveur / X couverts</label><input class="input-full" id="v103-server-ratio" type="number" min="1"></div><div class="input-group"><label>1 cuisine / X couverts</label><input class="input-full" id="v103-kitchen-ratio" type="number" min="1"></div></div><label class="rh-v103-toggle"><input id="v103-reservations" type="checkbox"><span><strong>Réagir aux réservations</strong><small>Réévalue la couverture quand l’affluence prévue change.</small></span></label><label class="rh-v103-toggle"><input id="v103-antirush" type="checkbox"><span><strong>Intégrer Anti-Rush</strong><small>Utilise la pression opérationnelle détectée pour renforcer les services utiles.</small></span></label><label class="rh-v103-toggle"><input id="v103-absence" type="checkbox"><span><strong>Réagir aux absences</strong><small>Recherche un remplacement sans refaire inutilement tout le mois.</small></span></label></section><section class="rh-v103-config-section"><h4>Horaires de service</h4><div class="grid-2"><div class="input-group"><label>Midi début</label><input class="input-full" id="v103-lunch-start" type="time"></div><div class="input-group"><label>Midi fin</label><input class="input-full" id="v103-lunch-end" type="time"></div></div><div class="grid-2"><div class="input-group"><label>Soir début</label><input class="input-full" id="v103-dinner-start" type="time"></div><div class="input-group"><label>Soir fin</label><input class="input-full" id="v103-dinner-end" type="time"></div></div><div class="rh-v103-config-note">Les contraintes individuelles de contrat, compétences, disponibilités, repos minimum et jours consécutifs restent prioritaires sur l’optimisation du coût.</div></section></div><div style="display:flex;justify-content:flex-end;gap:9px;margin-top:16px"><button class="btn-outline" onclick="closeRhPlanningSettingsV103()">ANNULER</button><button class="btn-save-green" onclick="saveRhPlanningSettingsV103()">ENREGISTRER LES RÉGLAGES</button></div></div></div>`);
     }
     if(!document.getElementById('rh-doc-center-v103')){
       document.body.insertAdjacentHTML('beforeend',`<div class="modal" id="rh-doc-center-v103"><div class="modal-content" style="width:min(680px,95vw)"><div class="modal-header"><div><h3>DOCUMENTS DES COLLABORATEURS</h3><div style="color:var(--text-muted);font-size:.68rem;margin-top:4px">Envoyer bulletin de salaire, contrat, avenant, attestation ou certificat vers le Portail Staff personnel.</div></div><button class="btn-outline" style="border:none" onclick="closeRhDocumentsCenterV103()">FERMER</button></div><div class="rh-v103-emphasis">Sélectionnez le collaborateur. Son dossier sécurisé s’ouvrira directement sur la zone <strong>Documents professionnels</strong>.</div><div class="rh-v103-doc-picker"><div class="input-group" style="margin:0"><label>Collaborateur</label><select id="v103-doc-staff" class="input-full"></select></div><button class="btn-save-green" style="min-height:44px" onclick="openSelectedStaffDocumentsV103()">OUVRIR LES DOCUMENTS</button></div></div></div>`);
@@ -16087,8 +16171,26 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
   function hideModal(id){const m=document.getElementById(id);if(!m)return;m.classList.remove('show');m.style.display='none';}
   window.closeRhPlanningSettingsV103=()=>hideModal('rh-ai-settings-v103');
   window.closeRhDocumentsCenterV103=()=>hideModal('rh-doc-center-v103');
-  window.openRhPlanningSettingsV103=function(){ensureModals();const s=typeof getRhSettings==='function'?getRhSettings():{};const set=(id,v)=>{const e=document.getElementById(id);if(e)e.value=v??''};const chk=(id,v)=>{const e=document.getElementById(id);if(e)e.checked=v!==false};set('v103-mode',s.planningMode||'autonomous');set('v103-month-lead',s.planningMonthlyLeadDays||14);set('v103-takeover-hours',s.planningTakeoverHours||48);set('v103-off-days',s.planningDaysOffPerWeek??2);set('v103-recovery-max',s.planningMaxRecoveryDaysPerMonth??2);set('v103-priority',s.planningPriority||'balanced');set('v103-budget',s.laborBudgetPct??25);set('v103-server-ratio',s.serverCoversRatio??25);set('v103-kitchen-ratio',s.kitchenCoversRatio??35);set('v103-lunch-start',s.lunchStart||'10:00');set('v103-lunch-end',s.lunchEnd||'14:45');set('v103-dinner-start',s.dinnerStart||'18:00');set('v103-dinner-end',s.dinnerEnd||'22:45');chk('v103-autopilot',s.planningAutopilotEnabled);chk('v103-consecutive-off',s.planningPreferConsecutiveOff);chk('v103-auto-recovery',s.planningAutoRecovery);chk('v103-reservations',s.planningRebalanceOnReservations);chk('v103-antirush',s.planningRebalanceOnAntiRush);chk('v103-absence',s.planningRebalanceOnAbsence);showModal('rh-ai-settings-v103');};
-  window.saveRhPlanningSettingsV103=function(){const current=typeof getRhSettings==='function'?getRhSettings():{};const val=id=>document.getElementById(id)?.value;const checked=id=>document.getElementById(id)?.checked!==false;const saved=saveRhSettings({...current,planningMode:val('v103-mode'),planningMonthlyLeadDays:val('v103-month-lead'),planningTakeoverHours:val('v103-takeover-hours'),planningDaysOffPerWeek:val('v103-off-days'),planningMaxRecoveryDaysPerMonth:val('v103-recovery-max'),planningPriority:val('v103-priority'),laborBudgetPct:val('v103-budget'),serverCoversRatio:val('v103-server-ratio'),kitchenCoversRatio:val('v103-kitchen-ratio'),lunchStart:val('v103-lunch-start'),lunchEnd:val('v103-lunch-end'),dinnerStart:val('v103-dinner-start'),dinnerEnd:val('v103-dinner-end'),planningAutopilotEnabled:checked('v103-autopilot'),planningPreferConsecutiveOff:checked('v103-consecutive-off'),planningAutoRecovery:checked('v103-auto-recovery'),planningApprovedLeaveOnly:true,planningRebalanceOnReservations:checked('v103-reservations'),planningRebalanceOnAntiRush:checked('v103-antirush'),planningRebalanceOnAbsence:checked('v103-absence')});hideModal('rh-ai-settings-v103');try{hydrateRhSettingsForm?.();renderPlanningAssistantLocal?.();showToast?.(`Réglages IA enregistrés · ${saved.planningDaysOffPerWeek} OFF / 7 jours`);}catch(_){ }return saved;};
+  window.openRhPlanningSettingsV103=function(){ensureModals();const s=typeof getRhSettings==='function'?getRhSettings():{};const set=(id,v)=>{const e=document.getElementById(id);if(e)e.value=v??''};const chk=(id,v)=>{const e=document.getElementById(id);if(e)e.checked=v!==false};set('v103-mode',s.planningMode||'autonomous');set('v103-month-lead',s.planningMonthlyLeadDays||14);set('v103-takeover-hours',s.planningTakeoverHours||48);set('v103-off-days',s.planningDaysOffPerWeek??2);set('v103-recovery-max',s.planningMaxRecoveryDaysPerMonth??2);set('v104-peak-count',s.planningPeakProtectionCount??6);set('v104-peak-covers',s.planningPeakMinCovers??40);set('v103-priority',s.planningPriority||'balanced');set('v103-budget',s.laborBudgetPct??25);set('v103-server-ratio',s.serverCoversRatio??25);set('v103-kitchen-ratio',s.kitchenCoversRatio??35);set('v103-lunch-start',s.lunchStart||'10:00');set('v103-lunch-end',s.lunchEnd||'14:45');set('v103-dinner-start',s.dinnerStart||'18:00');set('v103-dinner-end',s.dinnerEnd||'22:45');chk('v103-autopilot',s.planningAutopilotEnabled);chk('v103-consecutive-off',s.planningPreferConsecutiveOff);chk('v103-auto-recovery',s.planningAutoRecovery);chk('v104-block-protected',s.planningBlockPlannableLeaveOnProtectedDays);chk('v104-protect-peaks',s.planningProtectPeakLeave);document.querySelectorAll('[data-v104-protected-day]').forEach(el=>{el.checked=(Array.isArray(s.planningProtectedWeekdays)?s.planningProtectedWeekdays.map(Number):[]).includes(Number(el.dataset.v104ProtectedDay));});chk('v103-reservations',s.planningRebalanceOnReservations);chk('v103-antirush',s.planningRebalanceOnAntiRush);chk('v103-absence',s.planningRebalanceOnAbsence);showModal('rh-ai-settings-v103');};
+  window.saveRhPlanningSettingsV103=function(){
+    const current=typeof getRhSettings==='function'?getRhSettings():{};
+    const val=id=>document.getElementById(id)?.value;
+    const checked=id=>document.getElementById(id)?.checked!==false;
+    const protectedWeekdays=Array.from(document.querySelectorAll('[data-v104-protected-day]:checked')).map(el=>Number(el.dataset.v104ProtectedDay));
+    const saved=saveRhSettings({...current,
+      planningMode:val('v103-mode'),planningMonthlyLeadDays:val('v103-month-lead'),planningTakeoverHours:val('v103-takeover-hours'),
+      planningDaysOffPerWeek:val('v103-off-days'),planningMaxRecoveryDaysPerMonth:val('v103-recovery-max'),
+      planningProtectedWeekdays:protectedWeekdays,planningBlockPlannableLeaveOnProtectedDays:checked('v104-block-protected'),
+      planningProtectPeakLeave:checked('v104-protect-peaks'),planningPeakProtectionCount:val('v104-peak-count'),planningPeakMinCovers:val('v104-peak-covers'),
+      planningPriority:val('v103-priority'),laborBudgetPct:val('v103-budget'),serverCoversRatio:val('v103-server-ratio'),kitchenCoversRatio:val('v103-kitchen-ratio'),
+      lunchStart:val('v103-lunch-start'),lunchEnd:val('v103-lunch-end'),dinnerStart:val('v103-dinner-start'),dinnerEnd:val('v103-dinner-end'),
+      planningAutopilotEnabled:checked('v103-autopilot'),planningPreferConsecutiveOff:checked('v103-consecutive-off'),planningAutoRecovery:checked('v103-auto-recovery'),
+      planningApprovedLeaveOnly:true,planningRebalanceOnReservations:checked('v103-reservations'),planningRebalanceOnAntiRush:checked('v103-antirush'),planningRebalanceOnAbsence:checked('v103-absence')
+    });
+    hideModal('rh-ai-settings-v103');
+    try{hydrateRhSettingsForm?.();renderPlanningAssistantLocal?.();showToast?.(`Réglages IA enregistrés · ${saved.planningDaysOffPerWeek} OFF / 7 jours · pics protégés ${saved.planningProtectPeakLeave?'OUI':'NON'}`);}catch(_){ }
+    return saved;
+  };
   function refreshDocStaff(){ensureModals();const sel=document.getElementById('v103-doc-staff');if(!sel)return;const rows=(typeof getDir==='function'?getDir():[]).filter(s=>s&&s.id!=null);sel.innerHTML=rows.map(s=>`<option value="${esc(s.id)}">${esc(s.name||'Collaborateur')} · ${esc(String(s.dept||s.role||''))}</option>`).join('');if(typeof currentStaffId!=='undefined'&&currentStaffId!=null)sel.value=String(currentStaffId);}
   window.openRhDocumentsCenterV103=function(){refreshDocStaff();showModal('rh-doc-center-v103');};
   window.openSelectedStaffDocumentsV103=function(){const id=document.getElementById('v103-doc-staff')?.value;if(!id)return alert('Sélectionnez un collaborateur.');hideModal('rh-doc-center-v103');window.openStaffDocumentsV103(id);};
@@ -16098,10 +16200,10 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
   window.checkMonthlyPlanningV103=checkMonthlyPlanning;
   document.addEventListener('DOMContentLoaded',()=>{ensureModals();setTimeout(()=>checkMonthlyPlanning(false),12000);setInterval(()=>checkMonthlyPlanning(false),30*60*1000);});
   window.addEventListener('focus',()=>setTimeout(()=>checkMonthlyPlanning(false),1800));
-  window.__ICHEF_RH_BUILD__=BUILD;console.info('[iCHEF RH V103] Réglages visibles · documents salariés · planning mensuel · OFF hebdomadaires · congés validés protégés');
+  window.__ICHEF_RH_BUILD__=BUILD;console.info('[iCHEF RH V104] OFF par 0,5 · jours protégés · pics d’affluence protégés · congés validés conservés');
 })();
 </script>
 </body>
 </html>
 
-<script id="ichef-rh-v101-marker">window.__ICHEF_RH_BUILD__='RH-V103-IA-MENSUELLE-REGLAGES-DOCUMENTS-OFF';</script>
+<script id="ichef-rh-v101-marker">window.__ICHEF_RH_BUILD__='RH-V104-IA-REPOS-05-JOURS-PROTEGES-PICS';</script>
