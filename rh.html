@@ -8405,6 +8405,180 @@
             return 'v117-off';
         }
 
+
+        function assistantStaffWarningsV149(draft, staffList) {
+            const byStaff = {};
+            const global = [];
+
+            (staffList || []).forEach(staff => {
+                byStaff[String(staff.id)] = [];
+            });
+
+            const rows =
+                Array.isArray(draft?.warnings)
+                    ? draft.warnings
+                    : [];
+
+            const normalizedStaff =
+                (staffList || [])
+                    .map(staff => ({
+                        id: String(staff.id),
+                        name: String(staff.name || '').trim(),
+                        low: String(staff.name || '').trim().toLowerCase()
+                    }))
+                    .filter(x => x.low);
+
+            rows.forEach(raw => {
+                const line = String(raw || '').trim();
+                if (!line) return;
+
+                const low = line.toLowerCase();
+                const matched = normalizedStaff.filter(staff =>
+                    low.includes(staff.low)
+                );
+
+                if (matched.length) {
+                    matched.forEach(staff => {
+                        if (!byStaff[staff.id].includes(line)) {
+                            byStaff[staff.id].push(line);
+                        }
+                    });
+                } else {
+                    global.push(line);
+                }
+            });
+
+            return {
+                byStaff,
+                global:
+                    Array.from(new Set(global))
+            };
+        }
+
+        function assistantCompactStaffWarningV149(line, staffName) {
+            let text = String(line || '').trim();
+
+            if (!text) return '';
+
+            text = text
+                .replace(/^JURIDIQUE BLOQUANT\s*·\s*/i, 'JURIDIQUE · ')
+                .replace(/^BLOQUANT\s*·\s*/i, '')
+                .replace(
+                    new RegExp(
+                        '^OFF AUTOMATIQUE\\s*·\\s*' +
+                        String(staffName || '')
+                            .replace(/[.*+?^${}()|[\]\\]/g, '\\$&') +
+                        '\\s*·\\s*',
+                        'i'
+                    ),
+                    'OFF AUTO · '
+                )
+                .replace(
+                    new RegExp(
+                        '^' +
+                        String(staffName || '')
+                            .replace(/[.*+?^${}()|[\]\\]/g, '\\$&') +
+                        '\\s*:\\s*',
+                        'i'
+                    ),
+                    ''
+                )
+                .replace(
+                    /Planifier cette personne, prévoir un remplaçant qualifié ou fermer ce service\.?/i,
+                    ''
+                )
+                .replace(/\s+/g, ' ')
+                .trim();
+
+            return text;
+        }
+
+        function assistantStaffAlertTitleV149(lines) {
+            return (lines || [])
+                .map(line => String(line || '').trim())
+                .filter(Boolean)
+                .join('\n');
+        }
+
+        function renderStaffDetailWarningsV149(staffId) {
+            const host =
+                document.getElementById('staff-detail-stats');
+
+            if (!host) return;
+
+            let box =
+                document.getElementById(
+                    'v149-staff-detail-warnings'
+                );
+
+            if (!box) {
+                box =
+                    document.createElement('div');
+
+                box.id =
+                    'v149-staff-detail-warnings';
+
+                box.className =
+                    'v149-staff-detail-warnings';
+
+                host.insertAdjacentElement(
+                    'afterend',
+                    box
+                );
+            }
+
+            const draft =
+                typeof planningAssistantDraft !== 'undefined'
+                    ? planningAssistantDraft
+                    : null;
+
+            if (!draft) {
+                box.style.display = 'none';
+                box.innerHTML = '';
+                return;
+            }
+
+            const staffList =
+                getDir().filter(s =>
+                    s.active !== false
+                );
+
+            const bundle =
+                assistantStaffWarningsV149(
+                    draft,
+                    staffList
+                );
+
+            const lines =
+                bundle.byStaff?.[
+                    String(staffId)
+                ] || [];
+
+            if (!lines.length) {
+                box.style.display = 'none';
+                box.innerHTML = '';
+                return;
+            }
+
+            box.style.display = '';
+
+            box.innerHTML = `
+                <div class="v149-staff-detail-head">
+                    ALERTES DU PLANNING IA · ${escapeRhHtml(String(lines.length))}
+                </div>
+                ${lines.map(line => `
+                    <div class="${
+                        /BLOQUANT|JURIDIQUE/i.test(line)
+                            ? 'v149-detail-alert is-blocking'
+                            : 'v149-detail-alert'
+                    }">
+                        ${escapeRhHtml(line)}
+                    </div>
+                `).join('')}
+            `;
+        }
+
+
         function renderAutomaticPlanningDraft(draft) {
             const summary = document.getElementById('ia-planning-draft-summary');
             const warnings = document.getElementById('ia-planning-draft-warnings');
@@ -8415,6 +8589,17 @@
                 if (applyBtn) applyBtn.disabled = true;
                 return;
             }
+
+            const activeStaffListV149 =
+                getDir().filter(s =>
+                    s.active !== false
+                );
+
+            const staffWarningsV149 =
+                assistantStaffWarningsV149(
+                    draft,
+                    activeStaffListV149
+                );
 
             if (summary) {
                 summary.innerHTML = [
@@ -8433,21 +8618,35 @@
             }
 
             if (warnings) {
-                const visibleWarnings = (draft.warnings || []).filter(line =>
-                    !/\brest(?:e|ent)\s+à\s+planifier\b/i.test(String(line || ''))
-                );
+                // V149 :
+                // Les alertes liées à une personne sont affichées directement
+                // dans son bouton/cellule STAFF. La grande zone grise ne garde
+                // que les blocages globaux impossibles à attribuer à une personne.
+                const globalBlockingWarnings =
+                    (staffWarningsV149.global || [])
+                        .filter(line =>
+                            /^(?:JURIDIQUE\s+)?BLOQUANT\b/i.test(
+                                String(line || '').trim()
+                            )
+                        );
 
-                warnings.innerText = visibleWarnings.length
-                    ? visibleWarnings.slice(0, 18).join('\n')
-                    : '';
+                warnings.innerText =
+                    globalBlockingWarnings.length
+                        ? globalBlockingWarnings
+                            .slice(0, 6)
+                            .join('\n')
+                        : '';
 
-                warnings.style.display = visibleWarnings.length ? '' : 'none';
+                warnings.style.display =
+                    globalBlockingWarnings.length
+                        ? ''
+                        : 'none';
             }
 
             if (preview) {
                 const [year, month] = draft.month.split('-').map(Number);
                 const daysInMonth = new Date(year, month, 0).getDate();
-                const staffList = getDir().filter(s => s.active !== false);
+                const staffList = activeStaffListV149;
 
                 let head = '<tr><th class="sticky-col" style="min-width:150px;">COLLABORATEUR</th>';
                 for (let day = 1; day <= daysInMonth; day++) head += `<th style="min-width:48px;">${day}</th>`;
@@ -8462,18 +8661,50 @@
                     const remainingHours = Math.max(0, targetHours - plannedHours);
                     const remainingLabel = `${remainingHours.toFixed(1)} h`;
 
+                    const staffLines =
+                        staffWarningsV149.byStaff?.[
+                            String(staff.id)
+                        ] || [];
+
+                    const compactWarning =
+                        staffLines.length
+                            ? assistantCompactStaffWarningV149(
+                                staffLines[0],
+                                staff.name
+                              )
+                            : '';
+
+                    const moreLabel =
+                        staffLines.length > 1
+                            ? ` · +${staffLines.length - 1}`
+                            : '';
+
+                    const staffTitle =
+                        staffLines.length
+                            ? `${staff.name} · ${remainingLabel}\n${assistantStaffAlertTitleV149(staffLines)}\nCliquer pour le détail`
+                            : `${staff.name} · ${remainingLabel} restent à planifier · Cliquer pour plus de détails`;
+
                     body += `
                         <tr>
                             <td
-                                class="sticky-col v130-staff-cell"
+                                class="sticky-col v130-staff-cell${staffLines.length ? ' v149-has-alerts' : ''}"
                                 data-staff-id="${escapeRhHtml(String(staff.id))}"
-                                title="${escapeRhHtml(`${staff.name} · ${remainingLabel} restent à planifier · Cliquer pour plus de détails`)}"
+                                data-alert-count="${escapeRhHtml(String(staffLines.length))}"
+                                title="${escapeRhHtml(staffTitle)}"
                                 onclick='openStaffDetail(${JSON.stringify(staff.id)})'
                             >
                                 <span class="v130-staff-name">${escapeRhHtml(staff.name)}</span>
                                 <span class="v130-staff-hours${remainingHours <= 0.05 ? ' is-ok' : ''}">
                                     ${escapeRhHtml(remainingLabel)}
                                 </span>
+
+                                ${
+                                    staffLines.length
+                                        ? `<span class="v149-staff-alert-preview">${
+                                            escapeRhHtml(compactWarning + moreLabel)
+                                          }</span>`
+                                        : ''
+                                }
                             </td>
                     `;
 
@@ -9506,6 +9737,10 @@
                     <div class="val ${cls || ''}">${escapeRhHtml(value)}</div>
                 </div>
             `).join('');
+
+            renderStaffDetailWarningsV149(
+                staffId
+            );
 
             document.getElementById('staff-detail-planning-body').innerHTML =
                 rows.map(row => {
@@ -15730,6 +15965,109 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
 
 <style id="ichef-rh-v146-off-vacation-style">#ia-predictions-modal .v146-status-rules{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;padding:0 12px 9px;} #ia-predictions-modal .v146-rule-card{min-width:0;padding:8px 9px;border:1px solid #29353d;border-radius:8px;background:#0b1114;} #ia-predictions-modal .v146-rule-card b{display:block;color:#e8c75e;font-size:.5rem;letter-spacing:.55px;} #ia-predictions-modal .v146-rule-card span{display:block;margin-top:4px;color:#77838b;font-size:.48rem;line-height:1.32;} #ia-predictions-modal #ia-planning-preview td.v146-forced-off{background:#303943 !important;color:#fff !important;} @media(max-width:850px){#ia-predictions-modal .v146-status-rules{grid-template-columns:1fr;}}</style>
 
+
+<style id="ichef-rh-v149-alerts-in-staff">
+/* =========================================================
+   V149 — alertes directement dans la cellule du collaborateur
+   Aucun changement de largeur/hauteur du tableau.
+   ========================================================= */
+
+#ia-predictions-modal #ia-planning-preview td.v130-staff-cell{
+  position:sticky !important;
+}
+
+#ia-predictions-modal #ia-planning-preview td.v130-staff-cell.v149-has-alerts{
+  background:#0f1418 !important;
+}
+
+#ia-predictions-modal #ia-planning-preview td.v130-staff-cell.v149-has-alerts::after{
+  content:attr(data-alert-count);
+  position:absolute;
+  top:2px;
+  right:2px;
+  min-width:12px;
+  height:12px;
+  padding:0 3px;
+  display:grid;
+  place-items:center;
+  border:1px solid rgba(245,158,11,.30);
+  border-radius:999px;
+  background:rgba(245,158,11,.08);
+  color:#e8bd70;
+  font-size:.38rem;
+  line-height:1;
+  font-weight:950;
+  pointer-events:none;
+}
+
+#ia-predictions-modal #ia-planning-preview td.v130-staff-cell.v149-has-alerts .v130-staff-name{
+  transform:translateY(-5px);
+  max-width:61px;
+}
+
+#ia-predictions-modal #ia-planning-preview td.v130-staff-cell.v149-has-alerts .v130-staff-hours{
+  margin-top:2px !important;
+  transform:translateY(-3px);
+}
+
+#ia-predictions-modal #ia-planning-preview .v149-staff-alert-preview{
+  position:absolute;
+  left:7px;
+  right:5px;
+  bottom:2px;
+  display:block;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  color:#7f8992;
+  font-size:.39rem;
+  line-height:1;
+  font-weight:750;
+  letter-spacing:.02px;
+  pointer-events:none;
+}
+
+/* La grande liste grise disparaît lorsqu'il n'existe aucun blocage global. */
+#ia-predictions-modal .v113-native-warnings:has(#ia-planning-draft-warnings:empty){
+  display:none !important;
+}
+
+/* Détail au clic sur le collaborateur */
+#staff-detail-modal .v149-staff-detail-warnings{
+  margin-top:10px;
+  padding:9px 10px;
+  border:1px solid rgba(245,158,11,.22);
+  border-radius:9px;
+  background:rgba(245,158,11,.025);
+}
+
+#staff-detail-modal .v149-staff-detail-head{
+  margin-bottom:6px;
+  color:#d8b34a;
+  font-size:.58rem;
+  font-weight:950;
+  letter-spacing:.55px;
+}
+
+#staff-detail-modal .v149-detail-alert{
+  padding:5px 0;
+  border-top:1px solid rgba(255,255,255,.055);
+  color:#8b949c;
+  font-size:.61rem;
+  line-height:1.35;
+}
+
+#staff-detail-modal .v149-detail-alert:first-of-type{
+  border-top:0;
+}
+
+#staff-detail-modal .v149-detail-alert.is-blocking{
+  color:#e1a0a0;
+}
+
+/* Aucun changement de dimensions de la matrice. */
+</style>
+
 </head><body><h1>${esc(title)}</h1><small>Imprimé le ${esc(new Date().toLocaleString('fr-FR'))}</small>${body}</body></html>`);w.document.close();setTimeout(()=>w.print(),200);
   }
   window.printPlanningHistoryV94=function(){
@@ -21157,6 +21495,12 @@ console.info('[iCHEF RH V146] 6 jours travaillés max · 7e non travaillé · OF
 window.__ICHEF_RH_OPTIMIZED_BUILD__='RH-V148-SAFE-OPTIMIZED';
 console.info('[iCHEF RH V148] optimisation sûre · connexions, sécurité et fonctions conservées');
 </script>
+
+<script id="ichef-rh-v149-marker">
+window.__ICHEF_RH_BUILD__='RH-V149-STAFF-ALERTS-IN-BUTTON';
+console.info('[iCHEF RH V149] alertes staff déplacées dans les cellules collaborateurs');
+</script>
+
 </body>
 </html>
 
