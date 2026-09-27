@@ -8291,9 +8291,15 @@
             }
 
             if (warnings) {
-                warnings.innerText = draft.warnings.length
-                    ? draft.warnings.slice(0, 18).join('\n')
-                    : 'Aucune anomalie majeure détectée dans la proposition.';
+                const visibleWarnings = (draft.warnings || []).filter(line =>
+                    !/\brest(?:e|ent)\s+à\s+planifier\b/i.test(String(line || ''))
+                );
+
+                warnings.innerText = visibleWarnings.length
+                    ? visibleWarnings.slice(0, 18).join('\n')
+                    : '';
+
+                warnings.style.display = visibleWarnings.length ? '' : 'none';
             }
 
             if (preview) {
@@ -8308,7 +8314,26 @@
                 let body = '';
                 staffList.forEach(staff => {
                     const state = draft.states[staff.id];
-                    body += `<tr><td class="sticky-col" style="font-weight:800;">${escapeRhHtml(staff.name)}</td>`;
+
+                    const plannedHours = Number(state?.hours || 0);
+                    const targetHours = Number(state?.target || 0);
+                    const remainingHours = Math.max(0, targetHours - plannedHours);
+                    const remainingLabel = `${remainingHours.toFixed(1)} h`;
+
+                    body += `
+                        <tr>
+                            <td
+                                class="sticky-col v130-staff-cell"
+                                data-staff-id="${escapeRhHtml(String(staff.id))}"
+                                title="${escapeRhHtml(`${staff.name} · ${remainingLabel} restent à planifier · Cliquer pour plus de détails`)}"
+                                onclick='openStaffDetail(${JSON.stringify(staff.id)})'
+                            >
+                                <span class="v130-staff-name">${escapeRhHtml(staff.name)}</span>
+                                <span class="v130-staff-hours${remainingHours <= 0.05 ? ' is-ok' : ''}">
+                                    ${escapeRhHtml(remainingLabel)}
+                                </span>
+                            </td>
+                    `;
 
                     for (let day = 1; day <= daysInMonth; day++) {
                         const p = draft.proposal?.[staff.id]?.[day];
@@ -17604,6 +17629,344 @@ console.info('[iCHEF RH V127] proposition IA compactée');
 <script id="ichef-rh-v128-marker">
 window.__ICHEF_RH_BUILD__='RH-V128-PERIOD-ACTIONS-TOGETHER';
 console.info('[iCHEF RH V128] période + générer + appliquer sur la même ligne');
+</script>
+
+
+<style id="ichef-rh-v129-flow-info">
+#ia-predictions-modal .v113-flow{
+  display:none !important;
+}
+
+#ia-predictions-modal #v129-planning-info-btn{
+  width:34px !important;
+  height:34px !important;
+  min-width:34px !important;
+  min-height:34px !important;
+  padding:0 !important;
+  margin:0 !important;
+  border:1px solid #40515f !important;
+  border-radius:50% !important;
+  background:#111820 !important;
+  color:#e7c65c !important;
+  box-shadow:none !important;
+  font-size:.9rem !important;
+  font-weight:900 !important;
+  line-height:1 !important;
+  display:inline-grid !important;
+  place-items:center !important;
+  cursor:pointer !important;
+  flex:0 0 34px !important;
+}
+
+#ia-predictions-modal #v129-planning-info-btn:hover{
+  border-color:#d4af37 !important;
+  background:#19170f !important;
+  color:#f0ce63 !important;
+}
+
+#ia-predictions-modal .v129-info-anchor{
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  margin:4px 0 6px;
+  min-height:34px;
+}
+
+#v129-planning-info-pop{
+  position:fixed;
+  z-index:30000;
+  width:min(420px,calc(100vw - 24px));
+  padding:12px;
+  box-sizing:border-box;
+  border:1px solid #3a4650;
+  border-radius:12px;
+  background:#0d1217;
+  box-shadow:0 18px 50px rgba(0,0,0,.58);
+  display:none;
+  color:#fff;
+}
+
+#v129-planning-info-pop.show{
+  display:block;
+}
+
+#v129-planning-info-pop .v129-info-title{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  margin-bottom:9px;
+}
+
+#v129-planning-info-pop .v129-info-title strong{
+  color:#e6c55a;
+  font-size:.73rem;
+  letter-spacing:.7px;
+}
+
+#v129-planning-info-pop .v129-info-close{
+  width:28px;
+  height:28px;
+  border:1px solid #333d46;
+  border-radius:50%;
+  background:#12181e;
+  color:#cbd2d8;
+  cursor:pointer;
+}
+
+#v129-planning-info-pop .v129-info-grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:7px;
+}
+
+#v129-planning-info-pop .v129-info-step{
+  min-width:0;
+  padding:9px 10px;
+  border:1px solid #29343d;
+  border-radius:9px;
+  background:#11171c;
+}
+
+#v129-planning-info-pop .v129-info-step b{
+  display:block;
+  color:#f0f2f4;
+  font-size:.68rem;
+  line-height:1.15;
+}
+
+#v129-planning-info-pop .v129-info-step small{
+  display:block;
+  margin-top:4px;
+  color:#89949e;
+  font-size:.58rem;
+  line-height:1.25;
+}
+
+#v129-planning-info-pop .v129-info-step.is-gold{
+  border-color:#8d7426;
+  background:#19170f;
+}
+
+#v129-planning-info-pop .v129-info-step.is-gold b{
+  color:#e4c24f;
+}
+
+@media(max-width:560px){
+  #v129-planning-info-pop .v129-info-grid{
+    grid-template-columns:1fr;
+  }
+}
+</style>
+
+
+<script id="ichef-rh-v129-flow-info-js">
+(() => {
+  'use strict';
+
+  function installV129(){
+    const modal=document.getElementById('ia-predictions-modal');
+    const flow=modal?.querySelector('.v113-flow');
+    if(!modal || !flow) return false;
+    if(document.getElementById('v129-planning-info-btn')) return true;
+
+    const anchor=document.createElement('div');
+    anchor.className='v129-info-anchor';
+
+    const btn=document.createElement('button');
+    btn.id='v129-planning-info-btn';
+    btn.type='button';
+    btn.setAttribute('aria-label','Informations sur les étapes du planning IA');
+    btn.setAttribute('aria-expanded','false');
+    btn.textContent='i';
+
+    const pop=document.createElement('div');
+    pop.id='v129-planning-info-pop';
+    pop.setAttribute('role','dialog');
+    pop.setAttribute('aria-label','Étapes du planning IA');
+    pop.innerHTML=`
+      <div class="v129-info-title">
+        <strong>PARCOURS DU PLANNING IA</strong>
+        <button class="v129-info-close" type="button" aria-label="Fermer">×</button>
+      </div>
+      <div class="v129-info-grid">
+        <div class="v129-info-step is-gold">
+          <b>1 · ANALYSER</b>
+          <small>Activité et contraintes</small>
+        </div>
+        <div class="v129-info-step">
+          <b>2 · PLANNING IA</b>
+          <small>Horaires + OFF proposés</small>
+        </div>
+        <div class="v129-info-step">
+          <b>3 · VÉRIFIER</b>
+          <small>Alertes et couverture</small>
+        </div>
+        <div class="v129-info-step">
+          <b>4 · VALIDER</b>
+          <small>Appliquer au planning officiel</small>
+        </div>
+      </div>`;
+
+    anchor.appendChild(btn);
+    flow.insertAdjacentElement('beforebegin',anchor);
+    document.body.appendChild(pop);
+
+    function positionPop(){
+      if(!pop.classList.contains('show')) return;
+      const r=btn.getBoundingClientRect();
+      const w=pop.offsetWidth || 420;
+      const h=pop.offsetHeight || 210;
+      const gap=8;
+      let left=r.right-w;
+      let top=r.bottom+gap;
+      left=Math.max(8,Math.min(left,window.innerWidth-w-8));
+      if(top+h>window.innerHeight-8){
+        top=Math.max(8,r.top-h-gap);
+      }
+      pop.style.left=`${left}px`;
+      pop.style.top=`${top}px`;
+    }
+
+    function open(){
+      pop.classList.add('show');
+      btn.setAttribute('aria-expanded','true');
+      requestAnimationFrame(positionPop);
+    }
+
+    function close(){
+      pop.classList.remove('show');
+      btn.setAttribute('aria-expanded','false');
+    }
+
+    btn.addEventListener('click',event=>{
+      event.preventDefault();
+      event.stopPropagation();
+      pop.classList.contains('show') ? close() : open();
+    });
+
+    pop.querySelector('.v129-info-close')?.addEventListener('click',close);
+
+    document.addEventListener('click',event=>{
+      if(!pop.classList.contains('show')) return;
+      if(pop.contains(event.target) || btn.contains(event.target)) return;
+      close();
+    });
+
+    document.addEventListener('keydown',event=>{
+      if(event.key==='Escape') close();
+    });
+
+    window.addEventListener('resize',positionPop);
+    window.addEventListener('scroll',positionPop,true);
+
+    modal.dataset.v129='1';
+    return true;
+  }
+
+  function bootV129(){
+    if(installV129()) return;
+    const modal=document.getElementById('ia-predictions-modal');
+    if(!modal) return;
+
+    const observer=new MutationObserver(()=>{
+      if(installV129()) observer.disconnect();
+    });
+    observer.observe(modal,{childList:true,subtree:true});
+  }
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',bootV129,{once:true});
+  }else{
+    bootV129();
+  }
+
+  window.__ICHEF_RH_FLOW_INFO_BUILD__='V129';
+})();
+</script>
+
+
+<script id="ichef-rh-v129-marker">
+window.__ICHEF_RH_BUILD__='RH-V129-FLOW-IN-INFO';
+console.info('[iCHEF RH V129] étapes IA déplacées dans le bouton info');
+</script>
+
+
+<style id="ichef-rh-v130-hours-on-staff">
+/* =========================================================
+   iCHEF RH V130 — HEURES RESTANTES DIRECTEMENT SUR LE COLLABORATEUR
+   IMPORTANT : aucune largeur / hauteur du tableau n'est modifiée.
+   ========================================================= */
+
+#ia-predictions-modal #ia-planning-preview td.v130-staff-cell{
+  /* conserve strictement les dimensions héritées du tableau actuel */
+  cursor:pointer !important;
+  position:sticky !important;
+  display:table-cell !important;
+  vertical-align:middle !important;
+  padding:0 7px !important;
+  white-space:nowrap !important;
+  overflow:hidden !important;
+}
+
+#ia-predictions-modal #ia-planning-preview td.v130-staff-cell .v130-staff-name{
+  display:inline-block;
+  max-width:67px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  vertical-align:middle;
+  color:#fff;
+  font-weight:900;
+  font-size:.62rem;
+  line-height:1;
+}
+
+#ia-predictions-modal #ia-planning-preview td.v130-staff-cell .v130-staff-hours{
+  float:right;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-width:38px;
+  max-width:43px;
+  height:18px;
+  margin-top:6px;
+  padding:0 4px;
+  box-sizing:border-box;
+  border:1px solid rgba(224,185,79,.36);
+  border-radius:999px;
+  background:rgba(224,185,79,.08);
+  color:#e5c35d;
+  font-size:.49rem;
+  line-height:1;
+  font-weight:900;
+  letter-spacing:.1px;
+}
+
+#ia-predictions-modal #ia-planning-preview td.v130-staff-cell .v130-staff-hours.is-ok{
+  border-color:rgba(31,201,147,.42);
+  background:rgba(31,201,147,.08);
+  color:#42d4a2;
+}
+
+#ia-predictions-modal #ia-planning-preview td.v130-staff-cell:hover{
+  background:#111a20 !important;
+}
+
+#ia-predictions-modal #ia-planning-preview td.v130-staff-cell:hover .v130-staff-name{
+  color:#e7c75e;
+}
+
+/* Supprime juste l'espace vertical des anciennes lignes "restent à planifier"
+   quand il n'y a aucune autre alerte. */
+#ia-predictions-modal .v113-native-warnings:has(#ia-planning-draft-warnings:empty){
+  display:none !important;
+}
+</style>
+
+
+<script id="ichef-rh-v130-marker">
+window.__ICHEF_RH_BUILD__='RH-V130-HOURS-ON-STAFF';
+console.info('[iCHEF RH V130] heures restantes affichées sur chaque collaborateur · clic = détail');
 </script>
 
 </body>
