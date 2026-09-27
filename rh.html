@@ -3576,6 +3576,55 @@
                             </div>
                         </div>
 
+                        <div class="v142-legal-box">
+                            <div class="v142-legal-head">
+                                <div>
+                                    <strong>DROIT DU TRAVAIL APPLICABLE AU CLIENT</strong>
+                                    <small>
+                                        Le moteur de planning applique les contraintes légales avant
+                                        l'optimisation des coûts et de l'affluence. Les dérogations
+                                        exceptionnelles ne sont jamais utilisées automatiquement.
+                                    </small>
+                                </div>
+                                <span id="v142-legal-status" class="v142-legal-badge">CONTRÔLE JURIDIQUE ON</span>
+                            </div>
+
+                            <div class="v142-legal-grid">
+                                <div class="input-group" style="margin:0;">
+                                    <label>Pays / droit applicable</label>
+                                    <select id="rh-setting-legal-country" class="input-full">
+                                        <option value="CH">Suisse · CCNT hôtellerie-restauration + LTr</option>
+                                        <option value="FR">France · HCR + Code du travail</option>
+                                    </select>
+                                </div>
+
+                                <div class="input-group" style="margin:0;">
+                                    <label>Type d'établissement</label>
+                                    <select id="rh-setting-legal-establishment" class="input-full"></select>
+                                </div>
+
+                                <label class="v142-legal-toggle">
+                                    <span>
+                                        <strong>Blocage juridique du planning</strong>
+                                        <small>
+                                            Empêche la validation si repos, maximum journalier /
+                                            hebdomadaire ou jours de repos ne sont pas respectés.
+                                        </small>
+                                    </span>
+                                    <input id="rh-setting-legal-enforcement" type="checkbox" checked>
+                                </label>
+                            </div>
+
+                            <div id="v142-legal-rules" class="v142-legal-rules"></div>
+
+                            <div class="v142-legal-source">
+                                Référentiel intégré au 27/09/2026 · Suisse : CCNT art. 15, 16 et 21
+                                + Loi sur le travail · France : convention HCR + Code du travail.
+                                Les accords d'entreprise, contrats individuels et dérogations
+                                particulières peuvent imposer des règles plus favorables ou spécifiques.
+                            </div>
+                        </div>
+
                         <div class="v132-service-mode-box">
                             <div class="v132-service-mode-head">
                                 <div>
@@ -4825,16 +4874,46 @@
 
                 // V135 · jours de fermeture établissement
                 planningClosedWeekdays: [],
-                planningExceptionalClosedDates: []
+                planningExceptionalClosedDates: [],
+
+                // V142 · droit du travail applicable au client
+                planningLegalCountry: 'CH',
+                planningLegalFramework: 'CH_CCNT',
+                planningLegalEstablishmentType: 'standard',
+                planningLegalEnforcement: true,
+                planningLegalReferenceDate: '2026-09-27',
+
+                // Une fermeture n'est prise en compte qu'après confirmation
+                // explicite dans la V142. Cela évite la contamination des
+                // anciennes versions qui avaient pu enregistrer 7/7 fermé.
+                planningClosureConfirmedV142: false
             };
 
             const saved =
                 JSON.parse(localStorage.getItem('ichef_rh_settings') || 'null') ||
                 {};
 
+            let tenantLegal = {};
+            try {
+                const tenantKey =
+                    `ichef_rh_legal_${String(
+                        typeof tenantID_JS !== 'undefined'
+                            ? tenantID_JS
+                            : 'default'
+                    )}`;
+
+                tenantLegal =
+                    JSON.parse(
+                        localStorage.getItem(tenantKey) || '{}'
+                    ) || {};
+            } catch (_) {
+                tenantLegal = {};
+            }
+
             return {
                 ...defaults,
-                ...saved
+                ...saved,
+                ...tenantLegal
             };
         }
 
@@ -4953,6 +5032,37 @@
                         )
                     ).sort(),
 
+                planningLegalCountry:
+                    String(source.planningLegalCountry || 'CH').toUpperCase() === 'FR'
+                        ? 'FR'
+                        : 'CH',
+
+                planningLegalFramework:
+                    String(source.planningLegalCountry || 'CH').toUpperCase() === 'FR'
+                        ? 'FR_HCR'
+                        : 'CH_CCNT',
+
+                planningLegalEstablishmentType:
+                    ['standard','seasonal','small','permanent']
+                        .includes(String(source.planningLegalEstablishmentType || '').toLowerCase())
+                        ? String(source.planningLegalEstablishmentType).toLowerCase()
+                        : (
+                            String(source.planningLegalCountry || 'CH').toUpperCase() === 'FR'
+                                ? 'permanent'
+                                : 'standard'
+                          ),
+
+                planningLegalEnforcement:
+                    source.planningLegalEnforcement !== false &&
+                    String(source.planningLegalEnforcement) !== 'false',
+
+                planningLegalReferenceDate:
+                    '2026-09-27',
+
+                planningClosureConfirmedV142:
+                    source.planningClosureConfirmedV142 === true ||
+                    String(source.planningClosureConfirmedV142) === 'true',
+
                 updatedAt: new Date().toISOString()
             };
 
@@ -4960,6 +5070,37 @@
                 'ichef_rh_settings',
                 JSON.stringify(clean)
             );
+
+            try {
+                const tenantKey =
+                    `ichef_rh_legal_${String(
+                        typeof tenantID_JS !== 'undefined'
+                            ? tenantID_JS
+                            : 'default'
+                    )}`;
+
+                localStorage.setItem(
+                    tenantKey,
+                    JSON.stringify({
+                        planningLegalCountry:
+                            clean.planningLegalCountry,
+                        planningLegalFramework:
+                            clean.planningLegalFramework,
+                        planningLegalEstablishmentType:
+                            clean.planningLegalEstablishmentType,
+                        planningLegalEnforcement:
+                            clean.planningLegalEnforcement,
+                        planningLegalReferenceDate:
+                            clean.planningLegalReferenceDate,
+                        planningClosedWeekdays:
+                            clean.planningClosedWeekdays,
+                        planningExceptionalClosedDates:
+                            clean.planningExceptionalClosedDates,
+                        planningClosureConfirmedV142:
+                            clean.planningClosureConfirmedV142
+                    })
+                );
+            } catch (_) {}
 
             API.update(
                 'RH_SETTINGS',
@@ -5018,6 +5159,30 @@
 
             const kitchenMin = document.getElementById('rh-setting-kitchen-min');
             if (kitchenMin) kitchenMin.value = Math.max(1, Number(s.kitchenMinQualifiedPerOpenService || 1));
+
+            const legalCountry =
+                document.getElementById('rh-setting-legal-country');
+
+            if (legalCountry) {
+                legalCountry.value =
+                    String(s.planningLegalCountry || 'CH').toUpperCase() === 'FR'
+                        ? 'FR'
+                        : 'CH';
+            }
+
+            if (typeof refreshLegalProfileV142 === 'function') {
+                refreshLegalProfileV142(
+                    s.planningLegalEstablishmentType
+                );
+            }
+
+            const legalEnforcement =
+                document.getElementById('rh-setting-legal-enforcement');
+
+            if (legalEnforcement) {
+                legalEnforcement.checked =
+                    s.planningLegalEnforcement !== false;
+            }
 
             document
                 .querySelectorAll('[data-v135-closed-weekday]')
@@ -5114,6 +5279,17 @@
 
                 kitchenMinQualifiedPerOpenService:
                     document.getElementById('rh-setting-kitchen-min')?.value || 1,
+
+                planningLegalCountry:
+                    document.getElementById('rh-setting-legal-country')?.value || 'CH',
+
+                planningLegalEstablishmentType:
+                    document.getElementById('rh-setting-legal-establishment')?.value || 'standard',
+
+                planningLegalEnforcement:
+                    document.getElementById('rh-setting-legal-enforcement')?.checked !== false,
+
+                planningClosureConfirmedV142: true,
 
                 planningClosedWeekdays:
                     Array.from(
@@ -7369,10 +7545,32 @@
                 return false;
             }
 
+            // V142 : aucune ancienne fermeture n'est utilisée tant que
+            // le responsable n'a pas confirmé les jours dans les paramètres.
+            if (settings?.planningClosureConfirmedV142 !== true) {
+                return false;
+            }
+
             const weekly =
-                Array.isArray(settings?.planningClosedWeekdays)
-                    ? settings.planningClosedWeekdays.map(Number)
-                    : [];
+                Array.from(
+                    new Set(
+                        (Array.isArray(settings?.planningClosedWeekdays)
+                            ? settings.planningClosedWeekdays
+                            : []
+                        )
+                        .map(Number)
+                        .filter(v =>
+                            Number.isInteger(v) &&
+                            v >= 0 &&
+                            v <= 6
+                        )
+                    )
+                );
+
+            // Une fermeture hebdomadaire 7/7 est considérée invalide.
+            if (weekly.length >= 7) {
+                return false;
+            }
 
             if (weekly.includes(dateObj.getDay())) {
                 return true;
@@ -8023,6 +8221,854 @@
             return Boolean(dayPlan.s2);
         }
 
+
+        function assistantLegalCountryV142(settings) {
+            return String(
+                settings?.planningLegalCountry ||
+                (String(settings?.currency || '').toUpperCase() === 'EUR'
+                    ? 'FR'
+                    : 'CH')
+            ).toUpperCase() === 'FR'
+                ? 'FR'
+                : 'CH';
+        }
+
+        function assistantLegalProfileV142(settings, staff) {
+            const country =
+                assistantLegalCountryV142(settings);
+
+            if (country === 'FR') {
+                const text =
+                    `${staff?.dept || ''} ${staff?.role || ''}`
+                        .toLowerCase();
+
+                let dailyMax = 11.5;
+
+                if (/cuis|chef|kitchen/.test(text)) {
+                    dailyMax = 11;
+                } else if (/réception|reception/.test(text)) {
+                    dailyMax = 12;
+                } else if (/veilleur|night|nuit/.test(text)) {
+                    dailyMax = 12;
+                } else if (/administratif|admin/.test(text)) {
+                    dailyMax = 10;
+                }
+
+                return {
+                    country: 'FR',
+                    framework: 'HCR + Code du travail',
+                    weeklyReference: 39,
+                    weeklyMax: 48,
+                    rolling12AverageMax: 46,
+                    dailyMax,
+                    dailyRestMin: 11,
+                    weeklyRestDays: 2,
+                    maxConsecutiveDays: 6,
+                    maxSpanHours: null,
+                    minPauseAfterSixHours: 20,
+                    scheduleNoticeDays: 7,
+                    establishmentType:
+                        String(
+                            settings?.planningLegalEstablishmentType ||
+                            'permanent'
+                        ).toLowerCase()
+                };
+            }
+
+            const type =
+                String(
+                    settings?.planningLegalEstablishmentType ||
+                    'standard'
+                ).toLowerCase();
+
+            const weeklyReference =
+                type === 'seasonal'
+                    ? 43.5
+                    : type === 'small'
+                        ? 45
+                        : 42;
+
+            return {
+                country: 'CH',
+                framework: 'CCNT + Loi sur le travail',
+                weeklyReference,
+                weeklyMax: 50,
+                rolling12AverageMax: null,
+                dailyMax: null,
+                dailyRestMin: 11,
+                weeklyRestDays: 2,
+                // La CCNT autorise certaines organisations sur 7 jours
+                // sous conditions strictes. iCHEF ne les automatise pas.
+                maxConsecutiveDays: 6,
+                maxSpanHours: 14,
+                minPauseMealMinutes: 30,
+                scheduleNoticeDays:
+                    type === 'seasonal'
+                        ? 7
+                        : 14,
+                establishmentType: type
+            };
+        }
+
+        function assistantLegalWeeklyReferenceV142(settings, staff) {
+            const profile =
+                assistantLegalProfileV142(settings, staff);
+
+            const contractual =
+                Number(staff?.contract || 0);
+
+            return contractual > 0
+                ? contractual
+                : profile.weeklyReference;
+        }
+
+        function assistantLegalDaySpanV142(plan) {
+            if (!plan) return 0;
+
+            const ranges =
+                [plan.s1, plan.s2]
+                    .filter(Boolean)
+                    .map(value =>
+                        String(value)
+                            .split('-')
+                            .map(v =>
+                                assistantTimeToDecimal(v)
+                            )
+                    )
+                    .filter(pair =>
+                        pair.length === 2 &&
+                        pair.every(Number.isFinite)
+                    );
+
+            if (!ranges.length) return 0;
+
+            const start =
+                Math.min(
+                    ...ranges.map(pair => pair[0])
+                );
+
+            const end =
+                Math.max(
+                    ...ranges.map(pair => pair[1])
+                );
+
+            return Math.max(0, end - start);
+        }
+
+        function assistantLegalFirstStartV142(plan) {
+            const starts =
+                [plan?.s1, plan?.s2]
+                    .filter(Boolean)
+                    .map(v =>
+                        assistantTimeToDecimal(
+                            String(v).split('-')[0]
+                        )
+                    )
+                    .filter(Number.isFinite);
+
+            return starts.length
+                ? Math.min(...starts)
+                : null;
+        }
+
+        function assistantLegalLastEndV142(plan) {
+            const ends =
+                [plan?.s1, plan?.s2]
+                    .filter(Boolean)
+                    .map(v =>
+                        assistantTimeToDecimal(
+                            String(v).split('-')[1]
+                        )
+                    )
+                    .filter(Number.isFinite);
+
+            return ends.length
+                ? Math.max(...ends)
+                : null;
+        }
+
+        function assistantLegalRestBetweenV142(previous, current) {
+            const previousEnd =
+                assistantLegalLastEndV142(previous);
+
+            const currentStart =
+                assistantLegalFirstStartV142(current);
+
+            if (
+                previousEnd === null ||
+                currentStart === null
+            ) {
+                return Infinity;
+            }
+
+            return (
+                24 -
+                previousEnd +
+                currentStart
+            );
+        }
+
+        function assistantLegalWeekBoundsV142(year, month, day) {
+            const dateObj =
+                new Date(year, month - 1, day);
+
+            const mondayOffset =
+                (dateObj.getDay() + 6) % 7;
+
+            const monday =
+                new Date(
+                    year,
+                    month - 1,
+                    day - mondayOffset
+                );
+
+            const sunday =
+                new Date(monday);
+
+            sunday.setDate(
+                monday.getDate() + 6
+            );
+
+            return { monday, sunday };
+        }
+
+        function assistantLegalDatePlanV142(
+            proposal,
+            staffId,
+            dateObj,
+            draftMonth
+        ) {
+            const monthStr =
+                `${dateObj.getFullYear()}-${String(
+                    dateObj.getMonth() + 1
+                ).padStart(2, '0')}`;
+
+            const day =
+                dateObj.getDate();
+
+            if (monthStr === draftMonth) {
+                return (
+                    proposal?.[staffId]?.[day] ||
+                    proposal?.[String(staffId)]?.[day] ||
+                    null
+                );
+            }
+
+            return (
+                getTs()?.[monthStr]?.[staffId]?.[day] ||
+                getTs()?.[monthStr]?.[String(staffId)]?.[day] ||
+                null
+            );
+        }
+
+        function assistantLegalWeekHoursV142(
+            proposal,
+            staffId,
+            year,
+            month,
+            day,
+            simulatedPlan = null
+        ) {
+            const draftMonth =
+                `${year}-${String(month).padStart(2, '0')}`;
+
+            const bounds =
+                assistantLegalWeekBoundsV142(
+                    year,
+                    month,
+                    day
+                );
+
+            let total = 0;
+
+            for (
+                let cursor = new Date(bounds.monday);
+                cursor <= bounds.sunday;
+                cursor.setDate(cursor.getDate() + 1)
+            ) {
+                const cursorMonth =
+                    `${cursor.getFullYear()}-${String(
+                        cursor.getMonth() + 1
+                    ).padStart(2, '0')}`;
+
+                const cursorDay =
+                    cursor.getDate();
+
+                let plan =
+                    assistantLegalDatePlanV142(
+                        proposal,
+                        staffId,
+                        cursor,
+                        draftMonth
+                    );
+
+                if (
+                    simulatedPlan &&
+                    cursorMonth === draftMonth &&
+                    cursorDay === day
+                ) {
+                    plan = simulatedPlan;
+                }
+
+                total += Number(
+                    calculateNet(plan) || 0
+                );
+            }
+
+            return total;
+        }
+
+
+        function assistantLegalLongestContinuousV143(plan) {
+            const segments =
+                [plan?.s1, plan?.s2]
+                    .filter(Boolean)
+                    .map(range => {
+                        const [start, end] =
+                            String(range)
+                                .split('-')
+                                .map(v =>
+                                    assistantTimeToDecimal(v)
+                                );
+
+                        return (
+                            Number.isFinite(start) &&
+                            Number.isFinite(end)
+                        )
+                            ? Math.max(0, end - start)
+                            : 0;
+                    });
+
+            return segments.length
+                ? Math.max(...segments)
+                : 0;
+        }
+
+        function assistantLegalRolling12AverageV143(
+            proposal,
+            staffId,
+            year,
+            month,
+            day,
+            simulatedPlan = null
+        ) {
+            const draftMonth =
+                `${year}-${String(month).padStart(2,'0')}`;
+
+            const dateObj =
+                new Date(year, month - 1, day);
+
+            const bounds =
+                assistantLegalWeekBoundsV142(
+                    year,
+                    month,
+                    day
+                );
+
+            const end =
+                new Date(bounds.sunday);
+
+            const start =
+                new Date(end);
+
+            start.setDate(
+                end.getDate() - 83
+            );
+
+            let total = 0;
+
+            for (
+                let cursor = new Date(start);
+                cursor <= end;
+                cursor.setDate(cursor.getDate() + 1)
+            ) {
+                const cursorMonth =
+                    `${cursor.getFullYear()}-${String(
+                        cursor.getMonth() + 1
+                    ).padStart(2,'0')}`;
+
+                const cursorDay =
+                    cursor.getDate();
+
+                let plan =
+                    assistantLegalDatePlanV142(
+                        proposal,
+                        staffId,
+                        cursor,
+                        draftMonth
+                    );
+
+                if (
+                    simulatedPlan &&
+                    cursorMonth === draftMonth &&
+                    cursorDay === day
+                ) {
+                    plan = simulatedPlan;
+                }
+
+                total += Number(
+                    calculateNet(plan) || 0
+                );
+            }
+
+            return total / 12;
+        }
+
+
+        function assistantLegalServiceAllowsV142(
+            proposal,
+            staff,
+            day,
+            service,
+            dept,
+            settings,
+            year,
+            month
+        ) {
+            if (
+                settings?.planningLegalEnforcement === false
+            ) {
+                return {
+                    ok: true,
+                    reason: ''
+                };
+            }
+
+            const profile =
+                assistantLegalProfileV142(
+                    settings,
+                    staff
+                );
+
+            const current =
+                proposal?.[staff.id]?.[day];
+
+            if (!current) {
+                return {
+                    ok: false,
+                    reason: 'case planning absente'
+                };
+            }
+
+            const simulated =
+                assistantClone(current);
+
+            assistantSetService(
+                simulated,
+                service,
+                dept,
+                settings,
+                simulated.obs || ''
+            );
+
+            const dailyHours =
+                Number(
+                    calculateNet(simulated) || 0
+                );
+
+            if (
+                Number.isFinite(profile.dailyMax) &&
+                profile.dailyMax !== null &&
+                dailyHours >
+                    profile.dailyMax + 0.01
+            ) {
+                return {
+                    ok: false,
+                    reason:
+                        `maximum journalier ${profile.dailyMax} h`
+                };
+            }
+
+            if (
+                Number.isFinite(profile.maxSpanHours) &&
+                profile.maxSpanHours !== null &&
+                assistantLegalDaySpanV142(simulated) >
+                    profile.maxSpanHours + 0.01
+            ) {
+                return {
+                    ok: false,
+                    reason:
+                        `amplitude maximale ${profile.maxSpanHours} h`
+                };
+            }
+
+            const weekHours =
+                assistantLegalWeekHoursV142(
+                    proposal,
+                    staff.id,
+                    year,
+                    month,
+                    day,
+                    simulated
+                );
+
+            if (
+                weekHours >
+                    profile.weeklyMax + 0.01
+            ) {
+                return {
+                    ok: false,
+                    reason:
+                        `maximum hebdomadaire ${profile.weeklyMax} h`
+                };
+            }
+
+            if (profile.country === 'FR') {
+                const rollingAverage =
+                    assistantLegalRolling12AverageV143(
+                        proposal,
+                        staff.id,
+                        year,
+                        month,
+                        day,
+                        simulated
+                    );
+
+                if (
+                    rollingAverage >
+                        profile.rolling12AverageMax + 0.01
+                ) {
+                    return {
+                        ok: false,
+                        reason:
+                            `moyenne 12 semaines > ${profile.rolling12AverageMax} h`
+                    };
+                }
+
+                const longestContinuous =
+                    assistantLegalLongestContinuousV143(
+                        simulated
+                    );
+
+                if (
+                    longestContinuous > 6 &&
+                    Number(simulated.pause || 0) < 20
+                ) {
+                    return {
+                        ok: false,
+                        reason:
+                            'pause minimale 20 min après 6 h continues'
+                    };
+                }
+            }
+
+            const previous =
+                day > 1
+                    ? proposal?.[staff.id]?.[day - 1]
+                    : null;
+
+            if (
+                previous &&
+                assistantLegalRestBetweenV142(
+                    previous,
+                    simulated
+                ) <
+                    profile.dailyRestMin - 0.01
+            ) {
+                return {
+                    ok: false,
+                    reason:
+                        `repos quotidien minimum ${profile.dailyRestMin} h`
+                };
+            }
+
+            const next =
+                proposal?.[staff.id]?.[day + 1];
+
+            if (
+                next &&
+                isRhWorkStatus(next.status) &&
+                assistantLegalRestBetweenV142(
+                    simulated,
+                    next
+                ) <
+                    profile.dailyRestMin - 0.01
+            ) {
+                return {
+                    ok: false,
+                    reason:
+                        `repos quotidien minimum ${profile.dailyRestMin} h`
+                };
+            }
+
+            return {
+                ok: true,
+                reason: ''
+            };
+        }
+
+        function assistantLegalAuditDraftV142(
+            draft,
+            staffList,
+            settings
+        ) {
+            const blockers = [];
+            const warnings = [];
+
+            if (
+                !draft ||
+                !draft.proposal ||
+                settings?.planningLegalEnforcement === false
+            ) {
+                return {
+                    blockers,
+                    warnings
+                };
+            }
+
+            const [year, month] =
+                String(draft.month)
+                    .split('-')
+                    .map(Number);
+
+            const daysInMonth =
+                new Date(
+                    year,
+                    month,
+                    0
+                ).getDate();
+
+            (staffList || []).forEach(staff => {
+                const profile =
+                    assistantLegalProfileV142(
+                        settings,
+                        staff
+                    );
+
+                let consecutive = 0;
+
+                for (
+                    let day = 1;
+                    day <= daysInMonth;
+                    day++
+                ) {
+                    const plan =
+                        draft.proposal?.[staff.id]?.[day];
+
+                    const dateObj =
+                        new Date(
+                            year,
+                            month - 1,
+                            day
+                        );
+
+                    const worked =
+                        Boolean(
+                            plan &&
+                            isRhWorkStatus(plan.status) &&
+                            (plan.s1 || plan.s2)
+                        );
+
+                    if (
+                        assistantIsRestaurantClosed(
+                            dateObj,
+                            settings
+                        ) &&
+                        worked
+                    ) {
+                        blockers.push(
+                            `${staff.name} · ${String(day).padStart(2,'0')}/${String(month).padStart(2,'0')} : travail planifié alors que l'établissement est fermé.`
+                        );
+                    }
+
+                    if (!worked) {
+                        consecutive = 0;
+                        continue;
+                    }
+
+                    consecutive++;
+
+                    if (
+                        consecutive >
+                        profile.maxConsecutiveDays
+                    ) {
+                        blockers.push(
+                            `${staff.name} · ${String(day).padStart(2,'0')}/${String(month).padStart(2,'0')} : plus de ${profile.maxConsecutiveDays} jours consécutifs automatisés.`
+                        );
+                    }
+
+                    const hours =
+                        Number(
+                            calculateNet(plan) || 0
+                        );
+
+                    if (
+                        profile.dailyMax !== null &&
+                        hours >
+                            profile.dailyMax + 0.01
+                    ) {
+                        blockers.push(
+                            `${staff.name} · ${String(day).padStart(2,'0')}/${String(month).padStart(2,'0')} : ${hours.toFixed(1)} h > maximum journalier ${profile.dailyMax} h (${profile.framework}).`
+                        );
+                    }
+
+                    if (
+                        profile.maxSpanHours !== null &&
+                        assistantLegalDaySpanV142(plan) >
+                            profile.maxSpanHours + 0.01
+                    ) {
+                        blockers.push(
+                            `${staff.name} · ${String(day).padStart(2,'0')}/${String(month).padStart(2,'0')} : amplitude > ${profile.maxSpanHours} h (${profile.framework}).`
+                        );
+                    }
+
+                    if (
+                        profile.country === 'FR' &&
+                        assistantLegalLongestContinuousV143(plan) > 6 &&
+                        Number(plan.pause || 0) < 20
+                    ) {
+                        blockers.push(
+                            `${staff.name} · ${String(day).padStart(2,'0')}/${String(month).padStart(2,'0')} : pause < 20 min après plus de 6 h continues.`
+                        );
+                    }
+
+                    if (day > 1) {
+                        const previous =
+                            draft.proposal?.[staff.id]?.[day - 1];
+
+                        if (
+                            previous &&
+                            isRhWorkStatus(previous.status) &&
+                            (previous.s1 || previous.s2)
+                        ) {
+                            const rest =
+                                assistantLegalRestBetweenV142(
+                                    previous,
+                                    plan
+                                );
+
+                            if (
+                                rest <
+                                profile.dailyRestMin - 0.01
+                            ) {
+                                blockers.push(
+                                    `${staff.name} · ${String(day).padStart(2,'0')}/${String(month).padStart(2,'0')} : repos ${rest.toFixed(1)} h < ${profile.dailyRestMin} h.`
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // Contrôle hebdomadaire complet sur chaque lundi du mois.
+                for (
+                    let day = 1;
+                    day <= daysInMonth;
+                    day++
+                ) {
+                    const dateObj =
+                        new Date(
+                            year,
+                            month - 1,
+                            day
+                        );
+
+                    if (dateObj.getDay() !== 1) {
+                        continue;
+                    }
+
+                    const weekHours =
+                        assistantLegalWeekHoursV142(
+                            draft.proposal,
+                            staff.id,
+                            year,
+                            month,
+                            day
+                        );
+
+                    if (
+                        weekHours >
+                        profile.weeklyMax + 0.01
+                    ) {
+                        blockers.push(
+                            `${staff.name} · semaine du ${String(day).padStart(2,'0')}/${String(month).padStart(2,'0')} : ${weekHours.toFixed(1)} h > maximum ${profile.weeklyMax} h.`
+                        );
+                    }
+
+                    // Jours de repos : calcul sur la semaine dans la proposition.
+                    let offUnits = 0;
+
+                    const bounds =
+                        assistantLegalWeekBoundsV142(
+                            year,
+                            month,
+                            day
+                        );
+
+                    for (
+                        let cursor = new Date(bounds.monday);
+                        cursor <= bounds.sunday;
+                        cursor.setDate(cursor.getDate() + 1)
+                    ) {
+                        const cursorMonth =
+                            `${cursor.getFullYear()}-${String(
+                                cursor.getMonth() + 1
+                            ).padStart(2, '0')}`;
+
+                        const plan =
+                            assistantLegalDatePlanV142(
+                                draft.proposal,
+                                staff.id,
+                                cursor,
+                                draft.month
+                            );
+
+                        // Si la semaine dépasse le mois et qu'aucun planning
+                        // adjacent n'existe, on ne bloque pas artificiellement.
+                        if (
+                            cursorMonth !== draft.month &&
+                            !plan
+                        ) {
+                            offUnits = null;
+                            break;
+                        }
+
+                        offUnits +=
+                            assistantOffUnit(plan);
+                    }
+
+                    if (
+                        offUnits !== null &&
+                        offUnits + 0.001 <
+                            profile.weeklyRestDays
+                    ) {
+                        blockers.push(
+                            `${staff.name} · semaine du ${String(day).padStart(2,'0')}/${String(month).padStart(2,'0')} : ${offUnits.toFixed(1)} jour(s) de repos < ${profile.weeklyRestDays}.`
+                        );
+                    }
+
+                    if (
+                        profile.country === 'FR'
+                    ) {
+                        const rollingAverage =
+                            assistantLegalRolling12AverageV143(
+                                draft.proposal,
+                                staff.id,
+                                year,
+                                month,
+                                day
+                            );
+
+                        if (
+                            rollingAverage >
+                                profile.rolling12AverageMax + 0.01
+                        ) {
+                            blockers.push(
+                                `${staff.name} · semaine du ${String(day).padStart(2,'0')}/${String(month).padStart(2,'0')} : moyenne ${rollingAverage.toFixed(1)} h sur 12 semaines > ${profile.rolling12AverageMax} h.`
+                            );
+                        }
+                    }
+                }
+            });
+
+            return {
+                blockers:
+                    Array.from(new Set(blockers)),
+                warnings:
+                    Array.from(new Set(warnings))
+            };
+        }
+
+
         function assistantSetService(dayPlan, service, dept, settings, note) {
             const before = calculateNet(dayPlan);
 
@@ -8063,7 +9109,35 @@
         }
 
         function assistantWeekQuotaAllows(proposal, staffId, day, settings, year, month, service = '') {
-            const daysOffPerWeek = Math.max(0.5, Math.min(7, Math.round((Number(settings?.planningDaysOffPerWeek) || 2) * 2) / 2));
+            const staff =
+                getDir().find(s =>
+                    String(s.id) === String(staffId)
+                );
+
+            const legalProfile =
+                assistantLegalProfileV142(
+                    settings,
+                    staff
+                );
+
+            const configuredDaysOff =
+                Math.max(
+                    0.5,
+                    Math.min(
+                        7,
+                        Math.round(
+                            (Number(settings?.planningDaysOffPerWeek) || 2) * 2
+                        ) / 2
+                    )
+                );
+
+            const daysOffPerWeek =
+                settings?.planningLegalEnforcement === false
+                    ? configuredDaysOff
+                    : Math.max(
+                        configuredDaysOff,
+                        legalProfile.weeklyRestDays
+                    );
             const dateObj = new Date(year, month - 1, day);
             const mondayOffset = (dateObj.getDay() + 6) % 7;
             const rawStart = day - mondayOffset;
@@ -8112,7 +9186,21 @@
             const currentStart = assistantTimeToDecimal(settings.lunchStart);
             const rest = (24 - previousEnd) + currentStart;
 
-            return rest + 0.01 >= Number(staff.minRestHours ?? 11);
+            const legalProfile =
+                assistantLegalProfileV142(
+                    settings,
+                    staff
+                );
+
+            const requiredRest =
+                settings?.planningLegalEnforcement === false
+                    ? Number(staff.minRestHours ?? 11)
+                    : Math.max(
+                        Number(staff.minRestHours ?? 11),
+                        legalProfile.dailyRestMin
+                    );
+
+            return rest + 0.01 >= requiredRest;
         }
 
         function assistantCandidateScore(staff, state, dept, day, service, demand, settings, proposal) {
@@ -8133,8 +9221,38 @@
             if (!assistantRestAllows(proposal, staff, day, service, settings)) return -99999;
 
             const consecutive = assistantCountConsecutiveDays(proposal, staff.id, day);
-            if (consecutive >= Number(staff.maxConsecutiveDays ?? 6)) return -99999;
+
+            const legalProfile =
+                assistantLegalProfileV142(
+                    settings,
+                    staff
+                );
+
+            const maxConsecutive =
+                settings?.planningLegalEnforcement === false
+                    ? Number(staff.maxConsecutiveDays ?? 6)
+                    : Math.min(
+                        Number(staff.maxConsecutiveDays ?? 6),
+                        legalProfile.maxConsecutiveDays
+                    );
+
+            if (consecutive >= maxConsecutive) return -99999;
+
             if (!assistantWeekQuotaAllows(proposal, staff.id, day, settings, state.year, state.month, service)) return -99999;
+
+            const legalService =
+                assistantLegalServiceAllowsV142(
+                    proposal,
+                    staff,
+                    day,
+                    service,
+                    dept,
+                    settings,
+                    state.year,
+                    state.month
+                );
+
+            if (!legalService.ok) return -99999;
 
             let score = (deficit / target) * 100;
             score += String(staff.dept || '') === dept ? 32 : 9;
@@ -8751,7 +9869,12 @@
             staffList.forEach(staff => {
                 proposal[staff.id] = {};
 
-                const weekly = Number(staff.contract || 0);
+                const weekly =
+                    assistantLegalWeeklyReferenceV142(
+                        settings,
+                        staff
+                    );
+
                 const expected = weekly * 52 / 12;
                 const dailyReference = weekly > 0 ? weekly / 5 : 0;
                 let absenceDays = 0;
@@ -9129,6 +10252,34 @@
                 )
                 : 100;
 
+            const legalAudit =
+                assistantLegalAuditDraftV142(
+                    {
+                        month: monthStr,
+                        proposal,
+                        states,
+                        demand
+                    },
+                    staffList,
+                    settings
+                );
+
+            legalAudit.blockers
+                .slice()
+                .reverse()
+                .forEach(message => {
+                    warnings.unshift(
+                        `JURIDIQUE BLOQUANT · ${message}`
+                    );
+                });
+
+            legalAudit.warnings
+                .forEach(message => {
+                    warnings.push(
+                        `JURIDIQUE · ${message}`
+                    );
+                });
+
             return {
                 month: monthStr,
                 createdAt: Date.now(),
@@ -9138,6 +10289,21 @@
                 warnings,
                 uncovered: uncoveredOpen,
                 criticalIssues,
+                legalIssues: legalAudit.blockers,
+                legalWarnings: legalAudit.warnings,
+                legalProfile: {
+                    country:
+                        assistantLegalCountryV142(settings),
+                    framework:
+                        assistantLegalProfileV142(
+                            settings,
+                            staffList[0] || {}
+                        ).framework,
+                    establishmentType:
+                        settings.planningLegalEstablishmentType,
+                    referenceDate:
+                        settings.planningLegalReferenceDate
+                },
                 metrics: {
                     totalTarget,
                     totalPlanned,
@@ -9270,10 +10436,14 @@
                 const coverageOk = Number(draft.metrics?.coveragePct || 0) >= 85;
                 const balanceOk = Number(draft.metrics?.staffBalanced || 0) >= Math.max(1, Math.ceil(Number(draft.metrics?.staffCount || 0) * 0.6));
                 const criticalOk = !Array.isArray(draft.criticalIssues) || draft.criticalIssues.length === 0;
+                const legalOk = !Array.isArray(draft.legalIssues) || draft.legalIssues.length === 0;
 
-                applyBtn.disabled = !(coverageOk && balanceOk && criticalOk);
+                applyBtn.disabled = !(coverageOk && balanceOk && criticalOk && legalOk);
 
-                if (!criticalOk) {
+                if (!legalOk) {
+                    applyBtn.title =
+                        'Application bloquée : le planning ne respecte pas le profil juridique du client.';
+                } else if (!criticalOk) {
                     applyBtn.title =
                         'Application bloquée : au moins un service est ouvert sans couverture cuisine qualifiée.';
                 } else {
@@ -17187,6 +18357,153 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
 }
 </style>
 
+
+<style id="ichef-rh-v142-legal-style">
+#ia-predictions-modal .v142-legal-box{
+  grid-column:1/-1;
+  margin-top:10px;
+  padding:11px;
+  border:1px solid rgba(79,166,255,.30);
+  border-radius:10px;
+  background:rgba(79,166,255,.025);
+}
+
+#ia-predictions-modal .v142-legal-head{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:10px;
+  margin-bottom:9px;
+}
+
+#ia-predictions-modal .v142-legal-head strong{
+  display:block;
+  color:#62aaff;
+  font-size:.69rem;
+  letter-spacing:.55px;
+}
+
+#ia-predictions-modal .v142-legal-head small{
+  display:block;
+  margin-top:4px;
+  color:#7e8992;
+  font-size:.53rem;
+  line-height:1.3;
+}
+
+#ia-predictions-modal .v142-legal-badge{
+  flex:0 0 auto;
+  padding:4px 7px;
+  border:1px solid rgba(79,166,255,.42);
+  border-radius:999px;
+  color:#70b3ff;
+  background:rgba(79,166,255,.06);
+  font-size:.47rem;
+  font-weight:900;
+  letter-spacing:.65px;
+}
+
+#ia-predictions-modal .v142-legal-grid{
+  display:grid;
+  grid-template-columns:1fr 1fr minmax(260px,.9fr);
+  gap:8px;
+  align-items:end;
+}
+
+#ia-predictions-modal .v142-legal-toggle{
+  min-height:40px;
+  padding:7px 9px;
+  border:1px solid #2d3942;
+  border-radius:8px;
+  background:#0f1519;
+  display:grid;
+  grid-template-columns:minmax(0,1fr) 18px;
+  align-items:center;
+  gap:7px;
+}
+
+#ia-predictions-modal .v142-legal-toggle strong{
+  display:block;
+  color:#eef1f3;
+  font-size:.59rem;
+}
+
+#ia-predictions-modal .v142-legal-toggle small{
+  display:block;
+  margin-top:3px;
+  color:#75818a;
+  font-size:.48rem;
+  line-height:1.2;
+}
+
+#ia-predictions-modal .v142-legal-toggle input{
+  width:17px;
+  height:17px;
+  accent-color:#4fa6ff;
+}
+
+#ia-predictions-modal .v142-legal-rules{
+  margin-top:8px;
+  display:grid;
+  grid-template-columns:repeat(5,minmax(0,1fr));
+  gap:6px;
+}
+
+#ia-predictions-modal .v142-rule{
+  min-width:0;
+  padding:7px 8px;
+  border:1px solid #28343c;
+  border-radius:8px;
+  background:#0d1215;
+}
+
+#ia-predictions-modal .v142-rule small{
+  display:block;
+  color:#6f7a83;
+  font-size:.45rem;
+  font-weight:900;
+  letter-spacing:.4px;
+}
+
+#ia-predictions-modal .v142-rule strong{
+  display:block;
+  margin-top:3px;
+  color:#f0f2f4;
+  font-size:.58rem;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+#ia-predictions-modal .v142-legal-source{
+  margin-top:7px;
+  color:#69757d;
+  font-size:.47rem;
+  line-height:1.3;
+}
+
+@media(max-width:1000px){
+  #ia-predictions-modal .v142-legal-grid{
+    grid-template-columns:1fr 1fr;
+  }
+  #ia-predictions-modal .v142-legal-toggle{
+    grid-column:1/-1;
+  }
+  #ia-predictions-modal .v142-legal-rules{
+    grid-template-columns:repeat(3,minmax(0,1fr));
+  }
+}
+
+@media(max-width:620px){
+  #ia-predictions-modal .v142-legal-grid{
+    grid-template-columns:1fr;
+  }
+  #ia-predictions-modal .v142-legal-rules{
+    grid-template-columns:repeat(2,minmax(0,1fr));
+  }
+}
+</style>
+
 </head><body><h1>${esc(title)}</h1><small>Imprimé le ${esc(new Date().toLocaleString('fr-FR'))}</small>${body}</body></html>`);w.document.close();setTimeout(()=>w.print(),200);
   }
   window.printPlanningHistoryV94=function(){
@@ -23879,6 +25196,420 @@ console.info('[iCHEF RH V140] correction blocage page · MutationObserver V137 s
 
 <script id="ichef-rh-v141-marker">
 console.info('[iCHEF RH V141] correction persistante FER + restauration historique + garde-fou autopilot');
+</script>
+
+
+<script id="ichef-rh-v142-legal-script">
+(() => {
+  'use strict';
+
+  const VERSION='2026-09-27';
+
+  window.refreshLegalProfileV142=function(preferredType){
+    const countryEl=
+      document.getElementById(
+        'rh-setting-legal-country'
+      );
+
+    const typeEl=
+      document.getElementById(
+        'rh-setting-legal-establishment'
+      );
+
+    const rules=
+      document.getElementById(
+        'v142-legal-rules'
+      );
+
+    const badge=
+      document.getElementById(
+        'v142-legal-status'
+      );
+
+    const enforcement=
+      document.getElementById(
+        'rh-setting-legal-enforcement'
+      );
+
+    if(!countryEl || !typeEl) return;
+
+    const country=
+      countryEl.value==='FR'
+        ? 'FR'
+        : 'CH';
+
+    const current=
+      preferredType ||
+      typeEl.value ||
+      (
+        country==='FR'
+          ? 'permanent'
+          : 'standard'
+      );
+
+    typeEl.innerHTML=
+      country==='CH'
+        ? `
+          <option value="standard">Suisse · établissement standard · référence 42 h</option>
+          <option value="seasonal">Suisse · établissement saisonnier · référence 43,5 h</option>
+          <option value="small">Suisse · petit établissement · référence 45 h</option>
+        `
+        : `
+          <option value="permanent">France · établissement HCR permanent</option>
+          <option value="seasonal">France · établissement HCR saisonnier</option>
+        `;
+
+    const allowed=
+      [...typeEl.options]
+        .map(o=>o.value);
+
+    typeEl.value=
+      allowed.includes(current)
+        ? current
+        : (
+            country==='FR'
+              ? 'permanent'
+              : 'standard'
+          );
+
+    const settings={
+      ...(typeof getRhSettings==='function'
+        ? getRhSettings()
+        : {}),
+      planningLegalCountry:country,
+      planningLegalEstablishmentType:
+        typeEl.value
+    };
+
+    const profile=
+      typeof assistantLegalProfileV142==='function'
+        ? assistantLegalProfileV142(
+            settings,
+            {}
+          )
+        : null;
+
+    if(rules && profile){
+      const items=
+        country==='CH'
+          ? [
+              ['Référence hebdo',`${profile.weeklyReference} h`],
+              ['Maximum hebdo',`${profile.weeklyMax} h`],
+              ['Repos quotidien',`${profile.dailyRestMin} h`],
+              ['Repos / semaine',`${profile.weeklyRestDays} jours`],
+              ['Amplitude',`${profile.maxSpanHours} h max`]
+            ]
+          : [
+              ['Référence HCR',`${profile.weeklyReference} h`],
+              ['Maximum hebdo',`${profile.weeklyMax} h`],
+              ['Moyenne 12 sem.',`${profile.rolling12AverageMax} h`],
+              ['Repos quotidien',`${profile.dailyRestMin} h`],
+              ['Repos / semaine',`${profile.weeklyRestDays} jours`]
+            ];
+
+      rules.innerHTML=
+        items.map(([label,value])=>`
+          <div class="v142-rule">
+            <small>${label}</small>
+            <strong>${value}</strong>
+          </div>
+        `).join('');
+    }
+
+    if(badge){
+      badge.textContent=
+        enforcement?.checked===false
+          ? 'CONTRÔLE JURIDIQUE OFF'
+          : (
+              country==='CH'
+                ? 'SUISSE · CCNT'
+                : 'FRANCE · HCR'
+            );
+    }
+
+    const currency=
+      document.getElementById(
+        'rh-setting-currency'
+      );
+
+    if(currency){
+      currency.value=
+        country==='CH'
+          ? 'CHF'
+          : 'EUR';
+    }
+  };
+
+  function tenantKey(){
+    return `ichef_rh_legal_${String(
+      typeof tenantID_JS!=='undefined'
+        ? tenantID_JS
+        : 'default'
+    )}`;
+  }
+
+  async function migrate(){
+    let legal={};
+
+    try{
+      legal=
+        JSON.parse(
+          localStorage.getItem(
+            tenantKey()
+          ) || '{}'
+        ) || {};
+    }catch(_){
+      legal={};
+    }
+
+    if(
+      String(
+        legal.planningLegalMigration ||
+        ''
+      ) === 'V142'
+    ){
+      return;
+    }
+
+    const settings=
+      typeof getRhSettings==='function'
+        ? getRhSettings()
+        : {};
+
+    const country=
+      String(settings.currency||'CHF')
+        .toUpperCase()==='EUR'
+        ? 'FR'
+        : 'CH';
+
+    // Nettoyage unique :
+    // on ne conserve pas les anciennes fermetures potentiellement
+    // contaminées. Le responsable doit confirmer les vrais jours.
+    const clean={
+      ...settings,
+      planningLegalCountry:country,
+      planningLegalFramework:
+        country==='FR'
+          ? 'FR_HCR'
+          : 'CH_CCNT',
+      planningLegalEstablishmentType:
+        country==='FR'
+          ? 'permanent'
+          : 'standard',
+      planningLegalEnforcement:true,
+      planningLegalReferenceDate:VERSION,
+      planningClosedWeekdays:[],
+      planningExceptionalClosedDates:[],
+      planningClosureConfirmedV142:false
+    };
+
+    try{
+      saveRhSettings?.(clean);
+    }catch(_){}
+
+    try{
+      const saved=
+        JSON.parse(
+          localStorage.getItem(
+            tenantKey()
+          ) || '{}'
+        ) || {};
+
+      localStorage.setItem(
+        tenantKey(),
+        JSON.stringify({
+          ...saved,
+          planningLegalMigration:'V142',
+          planningLegalCountry:
+            country,
+          planningLegalFramework:
+            clean.planningLegalFramework,
+          planningLegalEstablishmentType:
+            clean.planningLegalEstablishmentType,
+          planningLegalEnforcement:true,
+          planningLegalReferenceDate:
+            VERSION,
+          planningClosedWeekdays:[],
+          planningExceptionalClosedDates:[],
+          planningClosureConfirmedV142:false
+        })
+      );
+    }catch(_){}
+
+    // Répare immédiatement les faux FER déjà enregistrés.
+    try{
+      const month=
+        typeof getPlanningAssistantMonth==='function'
+          ? getPlanningAssistantMonth()
+          : '';
+
+      if(
+        typeof repairLegacyFerPlanningV141==='function'
+      ){
+        await repairLegacyFerPlanningV141(
+          month,
+          {silent:true}
+        );
+      }
+    }catch(error){
+      console.warn(
+        '[iCHEF RH V142] nettoyage FER',
+        error
+      );
+    }
+
+    // Supprime le draft contaminé en mémoire.
+    try{
+      if(
+        typeof planningAssistantDraft!=='undefined'
+      ){
+        planningAssistantDraft=null;
+      }
+
+      if(
+        typeof planningAssistantMultiMonths!=='undefined'
+      ){
+        planningAssistantMultiMonths=[];
+      }
+
+      renderAutomaticPlanningDraft?.(null);
+    }catch(_){}
+  }
+
+  function bindUi(){
+    const country=
+      document.getElementById(
+        'rh-setting-legal-country'
+      );
+
+    const enforcement=
+      document.getElementById(
+        'rh-setting-legal-enforcement'
+      );
+
+    country?.addEventListener(
+      'change',
+      ()=>refreshLegalProfileV142()
+    );
+
+    enforcement?.addEventListener(
+      'change',
+      ()=>refreshLegalProfileV142()
+    );
+
+    refreshLegalProfileV142(
+      getRhSettings?.()
+        ?.planningLegalEstablishmentType
+    );
+  }
+
+  // Blocage ultime, y compris autopilot.
+  const originalApply=
+    window.applyAutomaticPlanning;
+
+  if(
+    typeof originalApply==='function' &&
+    !originalApply.__v142LegalWrapped
+  ){
+    const wrapped=async function(...args){
+      const draft=
+        typeof planningAssistantDraft!=='undefined'
+          ? planningAssistantDraft
+          : null;
+
+      const settings=
+        typeof getRhSettings==='function'
+          ? getRhSettings()
+          : {};
+
+      if(
+        draft &&
+        settings.planningLegalEnforcement !== false &&
+        Array.isArray(draft.legalIssues) &&
+        draft.legalIssues.length
+      ){
+        const auto=
+          args?.[0]===true ||
+          args?.[0]?.auto===true;
+
+        const message=
+          draft.legalIssues
+            .slice(0,6)
+            .join('\n');
+
+        console.error(
+          '[iCHEF RH V142] application bloquée',
+          draft.legalIssues
+        );
+
+        if(!auto){
+          alert(
+            'PLANNING BLOQUÉ · DROIT DU TRAVAIL\n\n' +
+            message +
+            '\n\nCorrigez le planning avant validation.'
+          );
+        }else{
+          try{
+            showToast?.(
+              'Autopilot bloqué · contraintes juridiques'
+            );
+          }catch(_){}
+        }
+
+        return false;
+      }
+
+      return await originalApply.apply(
+        this,
+        args
+      );
+    };
+
+    wrapped.__v142LegalWrapped=true;
+
+    window.applyAutomaticPlanning=
+      wrapped;
+  }
+
+  async function boot(){
+    await migrate();
+
+    hydrateRhSettingsForm?.();
+
+    bindUi();
+
+    try{
+      showToast?.(
+        'Profil juridique planning activé · vérifiez le pays et les vrais jours de fermeture'
+      );
+    }catch(_){}
+  }
+
+  if(document.readyState==='loading'){
+    document.addEventListener(
+      'DOMContentLoaded',
+      ()=>setTimeout(boot,350),
+      {once:true}
+    );
+  }else{
+    setTimeout(boot,350);
+  }
+
+  window.__ICHEF_RH_LEGAL_BUILD__=
+    'V142';
+})();
+</script>
+
+
+<script id="ichef-rh-v142-marker">
+window.__ICHEF_RH_BUILD__='RH-V142-LEGAL-CH-FR';
+console.info('[iCHEF RH V142] planning juridique CH CCNT / FR HCR + purge FER hérités');
+</script>
+
+
+<script id="ichef-rh-v143-marker">
+window.__ICHEF_RH_BUILD__='RH-V143-LEGAL-HARD';
+console.info('[iCHEF RH V143] France 46h/12 sem + pause 20 min hard-block · CH/FR legal engine');
 </script>
 
 </body>
