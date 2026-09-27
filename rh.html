@@ -17173,6 +17173,20 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
 }
 </style>
 
+
+<style id="ichef-rh-v141-fer-repair-style">
+#ia-predictions-modal .v141-repair-note{
+  margin:6px 0;
+  padding:6px 9px;
+  border:1px solid rgba(255,155,74,.28);
+  border-radius:8px;
+  background:rgba(255,155,74,.04);
+  color:#a99176;
+  font-size:.52rem;
+  line-height:1.3;
+}
+</style>
+
 </head><body><h1>${esc(title)}</h1><small>Imprimé le ${esc(new Date().toLocaleString('fr-FR'))}</small>${body}</body></html>`);w.document.close();setTimeout(()=>w.print(),200);
   }
   window.printPlanningHistoryV94=function(){
@@ -23390,6 +23404,481 @@ console.info('[iCHEF RH V139] historique 360° + bulletins + certificat salaire 
 <script id="ichef-rh-v140-freeze-fix-marker">
 window.__ICHEF_RH_BUILD__='RH-V140-FREEZE-FIX';
 console.info('[iCHEF RH V140] correction blocage page · MutationObserver V137 sécurisé');
+</script>
+
+
+<script id="ichef-rh-v141-fer-repair">
+(() => {
+  'use strict';
+
+  const BUILD='RH-V141-FER-LEGACY-REPAIR';
+
+  function clone(v){
+    try{return JSON.parse(JSON.stringify(v));}
+    catch(_){return v&&typeof v==='object'?{...v}:v;}
+  }
+
+  function localDateKey(dateObj){
+    const y=dateObj.getFullYear();
+    const m=String(dateObj.getMonth()+1).padStart(2,'0');
+    const d=String(dateObj.getDate()).padStart(2,'0');
+    return `${y}-${m}-${d}`;
+  }
+
+  function safeWeekdays(settings){
+    const days=Array.from(new Set(
+      (Array.isArray(settings?.planningClosedWeekdays)
+        ? settings.planningClosedWeekdays
+        : [])
+      .map(Number)
+      .filter(v=>Number.isInteger(v)&&v>=0&&v<=6)
+    )).sort((a,b)=>a-b);
+
+    // V141 : 7 jours fermés par semaine est une ancienne valeur
+    // invalide pour ce moteur. Une fermeture longue doit être saisie
+    // comme fermeture exceptionnelle, pas comme fermeture hebdo 7/7.
+    return days.length>=7 ? [] : days;
+  }
+
+  function exceptionalDates(settings){
+    return Array.from(new Set(
+      (Array.isArray(settings?.planningExceptionalClosedDates)
+        ? settings.planningExceptionalClosedDates
+        : [])
+      .map(v=>String(v||'').trim())
+      .filter(v=>/^20\d{2}-\d{2}-\d{2}$/.test(v))
+    )).sort();
+  }
+
+  function isConfiguredClosed(dateObj,settings){
+    if(!(dateObj instanceof Date)||Number.isNaN(dateObj.getTime()))return false;
+    const weekly=safeWeekdays(settings);
+    if(weekly.includes(dateObj.getDay()))return true;
+    return exceptionalDates(settings).includes(localDateKey(dateObj));
+  }
+
+  function isLegacyFerCell(cell){
+    if(!cell||typeof cell!=='object')return false;
+    return (
+      cell.__restaurantClosed===true ||
+      String(cell.obs||'').trim()==='Établissement fermé'
+    );
+  }
+
+  function historyRows(){
+    try{
+      const rows=typeof getRhChangeHistory==='function'
+        ? getRhChangeHistory()
+        : JSON.parse(localStorage.getItem('ichef_rh_change_history')||'[]');
+      return Array.isArray(rows)?rows:[];
+    }catch(_){return [];}
+  }
+
+  function rowTime(row){
+    return Date.parse(String(
+      row?.timestamp||row?.at||row?.updatedAt||row?.createdAt||0
+    ))||0;
+  }
+
+  function recoverBeforeCell(staffId,month,day){
+    const rows=historyRows()
+      .filter(r=>
+        String(r?.staffId||'')===String(staffId) &&
+        String(r?.month||'')===String(month) &&
+        r?.before &&
+        typeof r.before==='object'
+      )
+      .sort((a,b)=>rowTime(b)-rowTime(a));
+
+    for(const row of rows){
+      const before=
+        row.before?.[day] ??
+        row.before?.[String(day)];
+
+      if(!before||typeof before!=='object')continue;
+
+      // On remonte jusqu'à la dernière version qui n'était pas
+      // elle-même une fermeture injectée par l'ancien bug.
+      if(!isLegacyFerCell(before)){
+        return clone(before);
+      }
+    }
+    return null;
+  }
+
+  function sanitizeSettings(){
+    let settings={};
+    try{settings=typeof getRhSettings==='function'?getRhSettings():{};}
+    catch(_){settings={};}
+
+    const rawDays=Array.isArray(settings?.planningClosedWeekdays)
+      ? settings.planningClosedWeekdays.map(Number)
+      : [];
+
+    if(rawDays.length<7){
+      return settings;
+    }
+
+    const clean={
+      ...settings,
+      planningClosedWeekdays:[]
+    };
+
+    try{
+      localStorage.setItem(
+        'ichef_rh_settings',
+        JSON.stringify(clean)
+      );
+    }catch(_){}
+
+    try{
+      Promise.resolve(
+        API?.update?.('RH_SETTINGS',clean)
+      ).catch(()=>{});
+    }catch(_){}
+
+    document
+      .querySelectorAll('[data-v135-closed-weekday]')
+      .forEach(input=>{input.checked=false;});
+
+    try{
+      recordRhChange?.({
+        type:'PLANNING_CLOSURE_SETTINGS_REPAIRED',
+        category:'PLANNING',
+        message:
+          'Ancienne fermeture hebdomadaire 7/7 supprimée automatiquement · jours réels à reconfigurer'
+      });
+    }catch(_){}
+
+    return clean;
+  }
+
+  async function repairMonth(monthStr,options={}){
+    const month=String(
+      monthStr ||
+      (typeof getPlanningAssistantMonth==='function'
+        ? getPlanningAssistantMonth()
+        : '')
+    ).trim();
+
+    if(!/^\d{4}-\d{2}$/.test(month)){
+      return {changed:0,recovered:0,cleared:0,month};
+    }
+
+    const settings=sanitizeSettings();
+    const [year,monthNumber]=month.split('-').map(Number);
+    const ts=typeof getTs==='function'?getTs():{};
+    const monthNode=ts?.[month];
+
+    if(!monthNode||typeof monthNode!=='object'){
+      return {changed:0,recovered:0,cleared:0,month};
+    }
+
+    const now=new Date();
+    const currentMonth=
+      `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+
+    let changed=0;
+    let recovered=0;
+    let cleared=0;
+
+    // Sauvegarde de sécurité avant toute réparation.
+    if(!localStorage.getItem(`ichef_v141_before_repair_${month}`)){
+      try{
+        localStorage.setItem(
+          `ichef_v141_before_repair_${month}`,
+          JSON.stringify(monthNode)
+        );
+      }catch(_){}
+    }
+
+    for(const [staffId,days] of Object.entries(monthNode)){
+      if(!days||typeof days!=='object')continue;
+
+      for(const [dayKey,cell] of Object.entries(days)){
+        const day=Number(dayKey);
+        if(!Number.isInteger(day)||day<1||day>31)continue;
+        if(!isLegacyFerCell(cell))continue;
+
+        const dateObj=new Date(year,monthNumber-1,day);
+
+        // Une vraie fermeture configurée reste FER.
+        if(isConfiguredClosed(dateObj,settings))continue;
+
+        const before=recoverBeforeCell(staffId,month,day);
+
+        if(before){
+          days[dayKey]={
+            ...before,
+            obs:
+              String(before.obs||'').trim()==='Établissement fermé'
+                ? ''
+                : String(before.obs||'')
+          };
+          changed++;
+          recovered++;
+          continue;
+        }
+
+        // Sans version antérieure fiable, on ne fabrique jamais un horaire.
+        // Pour aujourd'hui/futur : on remet la case à replanifier.
+        // Pour le passé : on retire uniquement la fausse étiquette FER.
+        if(month>currentMonth || (month===currentMonth && day>=now.getDate())){
+          days[dayKey]={
+            status:'off',
+            poste:String(cell?.poste||'salle'),
+            s1:'',
+            s2:'',
+            pause:0,
+            obs:'',
+            managerNote:String(cell?.managerNote||'').slice(0,40),
+            v141NeedsReplan:true
+          };
+        }else{
+          days[dayKey]={
+            ...cell,
+            __restaurantClosed:false,
+            obs:'',
+            v141LegacyFerCleared:true
+          };
+        }
+
+        changed++;
+        cleared++;
+      }
+    }
+
+    if(changed){
+      try{
+        await Promise.resolve(saveTs(ts));
+      }catch(error){
+        console.warn('[iCHEF RH V141] sauvegarde réparation FER',error);
+      }
+
+      try{
+        recordRhChange?.({
+          type:'PLANNING_LEGACY_FER_REPAIRED',
+          month,
+          category:'PLANNING',
+          message:
+            `Réparation faux FER · ${changed} case(s) · ${recovered} restaurée(s) depuis historique · ${cleared} nettoyée(s)`
+        });
+      }catch(_){}
+
+      try{
+        loadMonthData?.();
+        loadPublicPlanning?.();
+        refreshViews?.();
+      }catch(_){}
+    }
+
+    return {changed,recovered,cleared,month};
+  }
+
+  function draftSafety(draft){
+    const settings=sanitizeSettings();
+
+    if(!draft||!draft.proposal){
+      return {ok:false,reason:'Proposition de planning absente.'};
+    }
+
+    const [year,month]=String(draft.month||'').split('-').map(Number);
+    if(!year||!month){
+      return {ok:false,reason:'Mois de planning invalide.'};
+    }
+
+    let ferOutsideConfigured=0;
+    let totalGeneratedCells=0;
+
+    for(const days of Object.values(draft.proposal||{})){
+      for(const [dayKey,cell] of Object.entries(days||{})){
+        const day=Number(dayKey);
+        if(!Number.isInteger(day))continue;
+
+        const isFer=isLegacyFerCell(cell);
+        if(!isFer)continue;
+
+        totalGeneratedCells++;
+
+        const dateObj=new Date(year,month-1,day);
+        if(!isConfiguredClosed(dateObj,settings)){
+          ferOutsideConfigured++;
+        }
+      }
+    }
+
+    if(ferOutsideConfigured>0){
+      return {
+        ok:false,
+        reason:
+          `${ferOutsideConfigured} case(s) FER ne correspondent à aucun jour de fermeture configuré.`
+      };
+    }
+
+    const target=Number(draft.metrics?.totalTarget||0);
+    const planned=Number(draft.metrics?.totalPlanned||0);
+    const openDays=Object.values(draft.demand||{})
+      .filter(row=>row&&row.closed!==true).length;
+
+    if(target>0 && planned<=0.001 && openDays>0){
+      return {
+        ok:false,
+        reason:
+          'Le planning propose 0 heure alors que des jours sont ouverts. Application bloquée.'
+      };
+    }
+
+    return {ok:true,reason:''};
+  }
+
+  // assistantIsRestaurantClosed : refuse la contamination 7/7 même si
+  // une ancienne valeur se trouve encore en mémoire.
+  if(typeof window.assistantIsRestaurantClosed==='function'){
+    const original=window.assistantIsRestaurantClosed;
+    if(!original.__v141Wrapped){
+      const wrapped=function(dateObj,settings){
+        const safe={
+          ...(settings||{}),
+          planningClosedWeekdays:safeWeekdays(settings||{})
+        };
+        return original.call(this,dateObj,safe);
+      };
+      wrapped.__v141Wrapped=true;
+      window.assistantIsRestaurantClosed=wrapped;
+    }
+  }
+
+  // saveRhSettings : ne réenregistre jamais 7 jours hebdomadaires fermés.
+  if(typeof window.saveRhSettings==='function'){
+    const original=window.saveRhSettings;
+    if(!original.__v141Wrapped){
+      const wrapped=function(settings){
+        const source={...(settings||{})};
+        if(
+          Array.isArray(source.planningClosedWeekdays) &&
+          source.planningClosedWeekdays.length>=7
+        ){
+          source.planningClosedWeekdays=[];
+        }
+        return original.call(this,source);
+      };
+      wrapped.__v141Wrapped=true;
+      window.saveRhSettings=wrapped;
+    }
+  }
+
+  // Génération : réparation AVANT de produire une nouvelle proposition.
+  if(typeof window.generateAutomaticPlanning==='function'){
+    const original=window.generateAutomaticPlanning;
+    if(!original.__v141Wrapped){
+      const wrapped=async function(...args){
+        const month=
+          typeof getPlanningAssistantMonth==='function'
+            ? getPlanningAssistantMonth()
+            : '';
+        await repairMonth(month,{silent:true});
+        return await original.apply(this,args);
+      };
+      wrapped.__v141Wrapped=true;
+      window.generateAutomaticPlanning=wrapped;
+    }
+  }
+
+  // Application manuelle ET relève automatique :
+  // aucun draft incohérent ne peut être écrit dans le planning officiel.
+  if(typeof window.applyAutomaticPlanning==='function'){
+    const original=window.applyAutomaticPlanning;
+    if(!original.__v141Wrapped){
+      const wrapped=async function(...args){
+        const safety=draftSafety(
+          typeof planningAssistantDraft!=='undefined'
+            ? planningAssistantDraft
+            : null
+        );
+
+        if(!safety.ok){
+          console.error('[iCHEF RH V141] planning bloqué',safety.reason);
+
+          const auto=
+            args?.[0]===true ||
+            args?.[0]?.auto===true;
+
+          if(!auto){
+            alert(
+              'PLANNING BLOQUÉ PAR LE CONTRÔLE DE SÉCURITÉ\n\n' +
+              safety.reason +
+              '\n\nVérifiez les jours de fermeture puis régénérez le planning.'
+            );
+          }else{
+            try{
+              showToast?.(
+                'Relève IA bloquée · planning incohérent'
+              );
+            }catch(_){}
+          }
+          return false;
+        }
+
+        return await original.apply(this,args);
+      };
+      wrapped.__v141Wrapped=true;
+      window.applyAutomaticPlanning=wrapped;
+    }
+  }
+
+  async function autoRepairOnLoad(){
+    const settings=sanitizeSettings();
+
+    const month=
+      typeof getPlanningAssistantMonth==='function'
+        ? getPlanningAssistantMonth()
+        : `${new Date().getFullYear()}-${String(new Date().getMonth()+1).padStart(2,'0')}`;
+
+    const result=await repairMonth(month,{silent:true});
+
+    if(result.changed>0){
+      try{
+        showToast?.(
+          `Planning réparé · ${result.changed} faux FER supprimé(s)`
+        );
+      }catch(_){}
+
+      // Efface le vieux draft pour forcer une vraie régénération.
+      try{
+        if(typeof planningAssistantDraft!=='undefined'){
+          planningAssistantDraft=null;
+        }
+      }catch(_){}
+
+      try{
+        renderAutomaticPlanningDraft?.(null);
+      }catch(_){}
+    }
+
+    return result;
+  }
+
+  window.repairLegacyFerPlanningV141=repairMonth;
+  window.validatePlanningDraftV141=draftSafety;
+
+  if(document.readyState==='loading'){
+    document.addEventListener(
+      'DOMContentLoaded',
+      ()=>setTimeout(autoRepairOnLoad,300),
+      {once:true}
+    );
+  }else{
+    setTimeout(autoRepairOnLoad,300);
+  }
+
+  window.__ICHEF_RH_BUILD__=BUILD;
+  console.info('[iCHEF RH V141] faux FER persistants réparés + blocage sécurité draft');
+})();
+</script>
+
+
+<script id="ichef-rh-v141-marker">
+console.info('[iCHEF RH V141] correction persistante FER + restauration historique + garde-fou autopilot');
 </script>
 
 </body>
