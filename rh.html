@@ -5160,20 +5160,32 @@
         }
 
         function saveRhChangeHistory(rows) {
-            const cutoff = new Date();
-            cutoff.setFullYear(cutoff.getFullYear() - 5);
-            const cutoffMs = cutoff.getTime();
-
+            // V138 · aucune purge automatique de l'historique RH.
+            // Les règles légales de conservation restent à définir par
+            // l'établissement dans sa politique RH / RGPD.
             const retained = (Array.isArray(rows) ? rows : [])
-                .filter(row => {
-                    const raw = row?.timestamp || row?.at || row?.updatedAt || row?.createdAt || '';
-                    const parsed = Date.parse(String(raw || ''));
-                    // Les anciennes lignes sans date lisible sont conservées pour éviter toute perte silencieuse.
-                    return !Number.isFinite(parsed) || parsed >= cutoffMs;
-                })
+                .filter(Boolean)
                 .sort((a,b) => {
-                    const ta = Date.parse(String(a?.timestamp || a?.at || 0)) || 0;
-                    const tb = Date.parse(String(b?.timestamp || b?.at || 0)) || 0;
+                    const ta = Date.parse(
+                        String(
+                            a?.timestamp ||
+                            a?.at ||
+                            a?.updatedAt ||
+                            a?.createdAt ||
+                            0
+                        )
+                    ) || 0;
+
+                    const tb = Date.parse(
+                        String(
+                            b?.timestamp ||
+                            b?.at ||
+                            b?.updatedAt ||
+                            b?.createdAt ||
+                            0
+                        )
+                    ) || 0;
+
                     return ta - tb;
                 });
 
@@ -5186,21 +5198,67 @@
                 (
                     /^PLANNING_/i.test(String(row?.type || '')) ||
                     /^AI_PLANNING/i.test(String(row?.type || ''))
-                ) && String(row?.staffId || '').trim() !== ''
+                ) &&
+                String(row?.staffId || '').trim() !== ''
             );
-            localStorage.setItem('ichef_planning_history_5y', JSON.stringify(planningHistory));
+
+            // Nouvelle clé durable.
+            localStorage.setItem(
+                'ichef_planning_history_all',
+                JSON.stringify(planningHistory)
+            );
+
+            // Compatibilité avec les versions précédentes.
+            localStorage.setItem(
+                'ichef_planning_history_5y',
+                JSON.stringify(planningHistory)
+            );
 
             try {
-                Promise.resolve(API.update('RH_CHANGE_HISTORY', retained)).catch(error =>
-                    console.warn('[iCHEF RH V94] synchro historique RH différée', error)
+                Promise.resolve(
+                    API.update(
+                        'RH_CHANGE_HISTORY',
+                        retained
+                    )
+                ).catch(error =>
+                    console.warn(
+                        '[iCHEF RH V138] synchro historique RH différée',
+                        error
+                    )
                 );
-                Promise.resolve(API.update('PLANNING_HISTORY_MASTER', planningHistory)).catch(error =>
-                    console.warn('[iCHEF RH V94] synchro historique planning différée', error)
+
+                Promise.resolve(
+                    API.update(
+                        'PLANNING_HISTORY_MASTER',
+                        planningHistory
+                    )
+                ).catch(error =>
+                    console.warn(
+                        '[iCHEF RH V138] synchro historique planning différée',
+                        error
+                    )
                 );
+
+                Promise.resolve(
+                    API.update(
+                        'RH_STAFF_ARCHIVE_MASTER',
+                        buildRhStaffArchiveIndexV138()
+                    )
+                ).catch(error =>
+                    console.warn(
+                        '[iCHEF RH V138] synchro archive staff différée',
+                        error
+                    )
+                );
+
             } catch (error) {
-                console.warn('[iCHEF RH V94] historique conservé localement', error);
+                console.warn(
+                    '[iCHEF RH V138] historique conservé localement',
+                    error
+                );
             }
         }
+
 
         function recordRhChange(entry) {
             const history = getRhChangeHistory();
@@ -6928,7 +6986,14 @@
                     staffId: newStaff.id,
                     staffName: newStaff.name,
                     type: 'STAFF_UPDATED',
-                    message: 'Fiche collaborateur mise à jour'
+                    category: 'CONTRAT_PROFIL',
+                    before: existing
+                        ? JSON.parse(JSON.stringify(existing))
+                        : null,
+                    after:
+                        JSON.parse(JSON.stringify(newStaff)),
+                    message:
+                        'Fiche collaborateur / contrat mise à jour'
                 });
             } else {
                 dir.push(newStaff);
@@ -6936,7 +7001,12 @@
                     staffId: newStaff.id,
                     staffName: newStaff.name,
                     type: 'STAFF_CREATED',
-                    message: 'Collaborateur ajouté'
+                    category: 'CONTRAT_PROFIL',
+                    before: null,
+                    after:
+                        JSON.parse(JSON.stringify(newStaff)),
+                    message:
+                        'Collaborateur ajouté · dossier RH créé'
                 });
             }
 
@@ -6965,6 +7035,18 @@
                 isGlobalView = true;
             }
 
+            recordRhChange({
+                staffId: removed.id,
+                staffName: removed.name,
+                type: 'STAFF_REMOVED',
+                category: 'CONTRAT_PROFIL',
+                before:
+                    JSON.parse(JSON.stringify(removed)),
+                after: null,
+                message:
+                    'Collaborateur retiré de l’équipe · historique conservé'
+            });
+
             await persistRhStaffDirectory(dir, 'Collaborateur supprimé et synchronisé');
             closeModals();
             toggleViewDisplay();
@@ -6982,6 +7064,24 @@
                 currentStaffId = null;
                 isGlobalView = true;
             }
+
+            recordRhChange({
+                staffId: dir[idx].id,
+                staffName: dir[idx].name,
+                type:
+                    dir[idx].active
+                        ? 'STAFF_REACTIVATED'
+                        : 'STAFF_DEACTIVATED',
+                category: 'CONTRAT_PROFIL',
+                after:
+                    JSON.parse(
+                        JSON.stringify(dir[idx])
+                    ),
+                message:
+                    dir[idx].active
+                        ? 'Collaborateur réactivé'
+                        : 'Collaborateur désactivé'
+            });
 
             await persistRhStaffDirectory(
                 dir,
@@ -7448,7 +7548,18 @@
 
             const issues = [];
 
+            const criticalHorizon =
+                assistantPlanningHorizon(monthStr);
+
             for (let day = 1; day <= daysInMonth; day++) {
+
+                if (
+                    day <
+                    criticalHorizon.startDay
+                ) {
+                    continue;
+                }
+
                 const dateObj =
                     new Date(year, month - 1, day);
 
@@ -8394,6 +8505,10 @@
             year,
             month
         ) {
+            // V137 :
+            // Une fermeture n'est plus déduite automatiquement depuis
+            // un planning incomplet. Seuls les jours réellement choisis
+            // dans Paramètres de planification sont considérés fermés.
             const explicitWeekdays =
                 Array.isArray(settings?.planningClosedWeekdays)
                     ? settings.planningClosedWeekdays
@@ -8405,98 +8520,54 @@
                         )
                     : [];
 
-            if (explicitWeekdays.length) {
-                return {
-                    explicitWeekdays,
-                    inferredWeekdays: [],
-                    source: 'settings'
-                };
-            }
-
-            const daysInMonth =
-                new Date(year, month, 0).getDate();
-
-            const byWeekday =
-                Array.from(
-                    { length: 7 },
-                    () => ({
-                        observed: 0,
-                        closed: 0
-                    })
-                );
-
-            for (let day = 1; day <= daysInMonth; day++) {
-                const dateObj =
-                    new Date(year, month - 1, day);
-
-                const weekday = dateObj.getDay();
-
-                let records = 0;
-                let working = 0;
-
-                (staffList || []).forEach(staff => {
-                    const p =
-                        existingMonth?.[staff.id]?.[day] ||
-                        existingMonth?.[String(staff.id)]?.[day];
-
-                    if (!p) return;
-
-                    records++;
-
-                    if (
-                        assistantDayWorksService(p, 'lunch') ||
-                        assistantDayWorksService(p, 'dinner')
-                    ) {
-                        working++;
-                    }
-                });
-
-                // On n'infère rien depuis une journée presque vide :
-                // il faut que la majorité de l'équipe ait déjà un état.
-                const minRecords =
-                    Math.max(
-                        1,
-                        Math.ceil(
-                            (staffList || []).length * 0.75
-                        )
-                    );
-
-                if (records < minRecords) continue;
-
-                byWeekday[weekday].observed++;
-
-                if (working === 0) {
-                    byWeekday[weekday].closed++;
-                }
-            }
-
-            const inferredWeekdays = [];
-
-            byWeekday.forEach((row, weekday) => {
-                if (row.observed < 2) return;
-
-                const ratio =
-                    row.closed / row.observed;
-
-                // Au moins 60 % des occurrences du même jour
-                // sont fermées, et au moins 2 occurrences le prouvent.
-                if (
-                    row.closed >= 2 &&
-                    ratio >= 0.60
-                ) {
-                    inferredWeekdays.push(weekday);
-                }
-            });
-
             return {
-                explicitWeekdays: [],
-                inferredWeekdays,
+                explicitWeekdays,
+                inferredWeekdays: [],
                 source:
-                    inferredWeekdays.length
-                        ? 'planning'
+                    explicitWeekdays.length
+                        ? 'settings'
                         : 'none'
             };
         }
+
+
+        function assistantPlanningHorizon(monthStr) {
+            const now = new Date();
+
+            const currentMonth =
+                `${now.getFullYear()}-${String(
+                    now.getMonth() + 1
+                ).padStart(2, '0')}`;
+
+            const selected =
+                String(monthStr || '');
+
+            // Mois passé = historique uniquement.
+            if (selected < currentMonth) {
+                return {
+                    mode: 'history',
+                    startDay: 999,
+                    currentMonth
+                };
+            }
+
+            // Mois courant = aujourd'hui -> fin du mois.
+            if (selected === currentMonth) {
+                return {
+                    mode: 'current',
+                    startDay: now.getDate(),
+                    currentMonth
+                };
+            }
+
+            // Mois futur = depuis le 1er.
+            return {
+                mode: 'future',
+                startDay: 1,
+                currentMonth
+            };
+        }
+
 
         function assistantForceRestaurantClosures(
             proposal,
@@ -8512,9 +8583,16 @@
             const daysInMonth =
                 new Date(year, month, 0).getDate();
 
+            const horizon =
+                assistantPlanningHorizon(monthStr);
+
             let correctedCells = 0;
 
             for (let day = 1; day <= daysInMonth; day++) {
+
+                // V137 : le passé est figé.
+                if (day < horizon.startDay) continue;
+
                 const dateObj =
                     new Date(year, month - 1, day);
 
@@ -8536,9 +8614,7 @@
 
                     const current = node[day];
 
-                    // Une absence/congé validé reste une absence RH,
-                    // mais aucun horaire de travail ne peut subsister
-                    // sur un jour établissement fermé.
+                    // Congé / absence RH conservé mais sans heures de travail.
                     if (
                         current &&
                         isRhLeaveStatus(current.status)
@@ -8584,6 +8660,7 @@
 
             return correctedCells;
         }
+
 
         function assistantUncoveredOpenServices(
             uncovered,
@@ -8642,9 +8719,8 @@
             const existingMonth = currentTs[monthStr] || {};
             const staffList = getDir().filter(s => s.active !== false);
 
-            // V136 : si aucun jour fermé n'est explicitement configuré,
-            // iCHEF peut reconnaître une fermeture hebdomadaire déjà visible
-            // dans le planning officiel (ex. tous les samedis/dimanches OFF).
+            // V137 : fermeture = uniquement les jours configurés.
+            // Aucun jour fermé n'est déduit d'un planning incomplet.
             const closureResolution = assistantResolveRestaurantClosures(
                 settings,
                 existingMonth,
@@ -8652,18 +8728,6 @@
                 year,
                 month
             );
-
-            if (
-                (!Array.isArray(settings.planningClosedWeekdays) ||
-                 settings.planningClosedWeekdays.length === 0) &&
-                closureResolution.inferredWeekdays.length
-            ) {
-                settings = {
-                    ...settings,
-                    planningClosedWeekdays:
-                        closureResolution.inferredWeekdays
-                };
-            }
 
             const demand = buildAssistantDemand(
                 monthStr,
@@ -8676,31 +8740,13 @@
             const warnings = [];
             const uncovered = [];
 
-            if (
-                closureResolution.source === 'planning' &&
-                closureResolution.inferredWeekdays.length
-            ) {
-                const labels = [
-                    'DIM',
-                    'LUN',
-                    'MAR',
-                    'MER',
-                    'JEU',
-                    'VEN',
-                    'SAM'
-                ];
-
-                warnings.push(
-                    `Fermeture hebdomadaire détectée depuis le planning existant : ` +
-                    closureResolution.inferredWeekdays
-                        .map(d => labels[d])
-                        .join(', ') +
-                    `. À confirmer dans Équilibre & Paramètres de planification.`
-                );
-            }
-
             const now = new Date();
-            const isCurrentMonth = now.getFullYear() === year && now.getMonth() + 1 === month;
+            const isCurrentMonth =
+                now.getFullYear() === year &&
+                now.getMonth() + 1 === month;
+
+            const planningHorizon =
+                assistantPlanningHorizon(monthStr);
 
             staffList.forEach(staff => {
                 proposal[staff.id] = {};
@@ -8713,8 +8759,37 @@
                 for (let day = 1; day <= daysInMonth; day++) {
                     const dateObj = new Date(year, month - 1, day);
                     const existing = existingMonth?.[staff.id]?.[day] || existingMonth?.[String(staff.id)]?.[day] || null;
-                    const approvedRequest = assistantRequestForDate(staff, dateObj);
-                    const isPast = isCurrentMonth && day < now.getDate();
+                    const approvedRequest =
+                        assistantRequestForDate(
+                            staff,
+                            dateObj
+                        );
+
+                    const isPast =
+                        day < planningHorizon.startDay;
+
+                    // V137 : tout ce qui est avant aujourd'hui reste
+                    // exactement comme dans le planning officiel.
+                    if (isPast) {
+                        proposal[staff.id][day] = {
+                            ...(existing
+                                ? assistantClone(existing)
+                                : {
+                                    status: 'history',
+                                    poste:
+                                        staff.dept ||
+                                        'salle',
+                                    s1: '',
+                                    s2: '',
+                                    pause: 0,
+                                    obs:
+                                        'Jour passé · non recalculé'
+                                }),
+                            __protected: true,
+                            __history: true
+                        };
+                        continue;
+                    }
 
                     if (approvedRequest) {
                         const status = assistantRequestTypeToStatus(approvedRequest.type || approvedRequest.requestType);
@@ -8760,21 +8835,6 @@
                             __protected: true
                         };
                         if (isRhLeaveStatus(existing.status)) absenceDays++;
-                        continue;
-                    }
-
-                    if (settings.preservePastDays && isPast) {
-                        proposal[staff.id][day] = {
-                            ...(existing ? assistantClone(existing) : {
-                                status: 'history',
-                                poste: staff.dept || 'salle',
-                                s1: '',
-                                s2: '',
-                                pause: 0,
-                                obs: 'Jour passé · non recalculé'
-                            }),
-                            __protected: true
-                        };
                         continue;
                     }
 
@@ -8864,7 +8924,7 @@
 
             for (let day = 1; day <= daysInMonth; day++) {
                 // V115 : le moteur ne tente pas de reconstruire les jours déjà passés.
-                if (isCurrentMonth && settings.preservePastDays && day < now.getDate()) continue;
+                if (day < planningHorizon.startDay) continue;
 
                 // V135 : fermeture établissement = aucune couverture à générer.
                 if (demand?.[day]?.closed === true) continue;
@@ -8938,7 +8998,7 @@
 
                     for (const demandDay of demandDays) {
                         const day = demandDay.day;
-                        if (isCurrentMonth && settings.preservePastDays && day < now.getDate()) continue;
+                        if (day < planningHorizon.startDay) continue;
                         if (demandDay?.closed === true) continue;
 
                         const p = proposal[staff.id][day];
@@ -9040,9 +9100,8 @@
                 Object.values(demand || {}).filter(row => {
                     if (!row || row.closed === true) return false;
                     if (
-                        isCurrentMonth &&
-                        settings.preservePastDays &&
-                        Number(row.day) < now.getDate()
+                        Number(row.day) <
+                        planningHorizon.startDay
                     ) {
                         return false;
                     }
@@ -9881,6 +9940,7 @@
                         <button onclick="event.stopPropagation(); toggleStaffStatus(${sid})" style="background:#222; border:none; color:#fff; padding:4px 8px; font-size:0.6rem; border-radius:4px; cursor:pointer;">${s.active === false ? 'RÉACTIVER' : 'DÉSACTIVER'}</button>
                         <button onclick="event.stopPropagation(); openStaffModal('${s.pin}')" style="background:#222; border:none; color:#fff; padding:4px 8px; font-size:0.6rem; border-radius:4px; cursor:pointer;">ÉDITER</button>
                         <button onclick="event.stopPropagation(); openStaffDocumentsV103(${sid})" style="background:rgba(16,185,129,.08); border:1px solid rgba(16,185,129,.30); color:#8fd5b9; padding:4px 8px; font-size:0.6rem; border-radius:4px; cursor:pointer;">DOCUMENTS</button>
+                        <button onclick="event.stopPropagation(); openRhStaffHistoryV138(${sid})" class="v138-history-btn">HISTORIQUE 360°</button>
                     </div>
                 </div>`;
             });
@@ -16806,7 +16866,314 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
   };
   function printDoc(title,body){
     const w=window.open('','_blank','noopener,noreferrer'); if(!w){alert('Autorisez les fenêtres pop-up pour imprimer.');return;}
-    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>@page{size:A4 landscape;margin:10mm}body{font-family:Arial,sans-serif;color:#111}h1{font-size:18px}small{color:#666}table{width:100%;border-collapse:collapse;font-size:9px}th,td{border:1px solid #bbb;padding:5px;text-align:left;vertical-align:top}th{background:#eee}.note{font-size:8px;color:#654}</style></head><body><h1>${esc(title)}</h1><small>Imprimé le ${esc(new Date().toLocaleString('fr-FR'))}</small>${body}</body></html>`);w.document.close();setTimeout(()=>w.print(),200);
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>@page{size:A4 landscape;margin:10mm}body{font-family:Arial,sans-serif;color:#111}h1{font-size:18px}small{color:#666}table{width:100%;border-collapse:collapse;font-size:9px}th,td{border:1px solid #bbb;padding:5px;text-align:left;vertical-align:top}th{background:#eee}.note{font-size:8px;color:#654}</style>
+<style id="ichef-rh-v138-history-style">
+.v138-history-btn{
+  background:rgba(212,175,55,.08);
+  border:1px solid rgba(212,175,55,.36);
+  color:#e3c568;
+  padding:4px 8px;
+  font-size:.6rem;
+  border-radius:4px;
+  cursor:pointer;
+  font-weight:850;
+}
+
+#rh-staff-history-v138{
+  position:fixed;
+  inset:0;
+  z-index:60000;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  padding:16px;
+  box-sizing:border-box;
+  background:rgba(0,0,0,.84);
+  backdrop-filter:blur(10px);
+  -webkit-backdrop-filter:blur(10px);
+}
+
+#rh-staff-history-v138.show{display:flex}
+
+#rh-staff-history-v138 .v138-panel{
+  width:min(1380px,97vw);
+  height:min(900px,94vh);
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+  border:1px solid #38444d;
+  border-radius:14px;
+  background:#090c0e;
+  box-shadow:0 28px 80px rgba(0,0,0,.68);
+  color:#fff;
+}
+
+#rh-staff-history-v138 .v138-head{
+  flex:0 0 auto;
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto;
+  gap:12px;
+  align-items:center;
+  padding:13px 15px;
+  border-bottom:1px solid #29333a;
+  background:#0b0f11;
+}
+
+#rh-staff-history-v138 .v138-title{
+  min-width:0;
+}
+
+#rh-staff-history-v138 .v138-title strong{
+  display:block;
+  color:#e4c55e;
+  font-size:.92rem;
+  letter-spacing:.8px;
+}
+
+#rh-staff-history-v138 .v138-title small{
+  display:block;
+  margin-top:4px;
+  color:#7e8992;
+  font-size:.58rem;
+}
+
+#rh-staff-history-v138 .v138-head-actions{
+  display:flex;
+  gap:7px;
+  align-items:center;
+}
+
+#rh-staff-history-v138 .v138-head-actions button{
+  min-height:34px;
+  padding:0 10px;
+  border:1px solid #35414a;
+  border-radius:7px;
+  background:#11171b;
+  color:#dfe4e7;
+  font-size:.55rem;
+  font-weight:900;
+  cursor:pointer;
+}
+
+#rh-staff-history-v138 .v138-head-actions button.gold{
+  border-color:rgba(212,175,55,.42);
+  color:#e4c55e;
+  background:rgba(212,175,55,.045);
+}
+
+#rh-staff-history-v138 .v138-meta{
+  flex:0 0 auto;
+  display:grid;
+  grid-template-columns:repeat(6,minmax(0,1fr));
+  gap:7px;
+  padding:10px 12px;
+  border-bottom:1px solid #20292f;
+  background:#0a0d0f;
+}
+
+#rh-staff-history-v138 .v138-kpi{
+  min-width:0;
+  padding:7px 8px;
+  border:1px solid #27323a;
+  border-radius:8px;
+  background:#0e1316;
+}
+
+#rh-staff-history-v138 .v138-kpi small{
+  display:block;
+  color:#6f7981;
+  font-size:.48rem;
+  font-weight:850;
+  letter-spacing:.45px;
+}
+
+#rh-staff-history-v138 .v138-kpi strong{
+  display:block;
+  margin-top:3px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  color:#f0f2f4;
+  font-size:.67rem;
+}
+
+#rh-staff-history-v138 .v138-tabs{
+  flex:0 0 auto;
+  display:flex;
+  gap:5px;
+  padding:8px 12px;
+  overflow-x:auto;
+  border-bottom:1px solid #222c33;
+  background:#0c1012;
+}
+
+#rh-staff-history-v138 .v138-tabs button{
+  flex:0 0 auto;
+  min-height:31px;
+  padding:0 10px;
+  border:1px solid #303b43;
+  border-radius:999px;
+  background:#11171b;
+  color:#9da6ad;
+  font-size:.52rem;
+  font-weight:900;
+  cursor:pointer;
+}
+
+#rh-staff-history-v138 .v138-tabs button.active{
+  border-color:#b39132;
+  background:#19170f;
+  color:#e4c55e;
+}
+
+#rh-staff-history-v138 .v138-tools{
+  flex:0 0 auto;
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto;
+  gap:8px;
+  padding:8px 12px;
+  border-bottom:1px solid #20292f;
+}
+
+#rh-staff-history-v138 .v138-tools input{
+  min-width:0;
+  height:34px;
+  padding:0 10px;
+  border:1px solid #303c45;
+  border-radius:7px;
+  background:#0d1215;
+  color:#fff;
+  outline:none;
+}
+
+#rh-staff-history-v138 .v138-retention{
+  align-self:center;
+  color:#66d9ad;
+  font-size:.5rem;
+  font-weight:900;
+  letter-spacing:.45px;
+}
+
+#rh-staff-history-v138 .v138-content{
+  flex:1 1 auto;
+  min-height:0;
+  overflow:auto;
+  padding:10px 12px 18px;
+}
+
+#rh-staff-history-v138 .v138-event{
+  display:grid;
+  grid-template-columns:150px 140px minmax(0,1fr);
+  gap:10px;
+  align-items:start;
+  padding:9px 10px;
+  margin-bottom:6px;
+  border:1px solid #273139;
+  border-radius:8px;
+  background:#0d1215;
+}
+
+#rh-staff-history-v138 .v138-event time{
+  color:#7f8991;
+  font-size:.54rem;
+  line-height:1.3;
+}
+
+#rh-staff-history-v138 .v138-event .type{
+  color:#e3c45e;
+  font-size:.53rem;
+  font-weight:900;
+  letter-spacing:.35px;
+  overflow-wrap:anywhere;
+}
+
+#rh-staff-history-v138 .v138-event .body{
+  min-width:0;
+  color:#dce1e4;
+  font-size:.58rem;
+  line-height:1.4;
+  overflow-wrap:anywhere;
+}
+
+#rh-staff-history-v138 .v138-event .body small{
+  display:block;
+  margin-top:4px;
+  color:#727d86;
+  font-size:.49rem;
+  line-height:1.35;
+}
+
+#rh-staff-history-v138 .v138-empty{
+  padding:24px;
+  text-align:center;
+  color:#6f7981;
+  font-size:.62rem;
+}
+
+@media(max-width:900px){
+  #rh-staff-history-v138 .v138-meta{
+    grid-template-columns:repeat(3,minmax(0,1fr));
+  }
+
+  #rh-staff-history-v138 .v138-event{
+    grid-template-columns:110px minmax(0,1fr);
+  }
+
+  #rh-staff-history-v138 .v138-event .body{
+    grid-column:1/-1;
+  }
+}
+
+@media(max-width:600px){
+  #rh-staff-history-v138 .v138-meta{
+    grid-template-columns:repeat(2,minmax(0,1fr));
+  }
+
+  #rh-staff-history-v138 .v138-head{
+    grid-template-columns:1fr;
+  }
+
+  #rh-staff-history-v138 .v138-head-actions{
+    justify-content:flex-end;
+  }
+}
+</style>
+
+
+<style id="ichef-rh-v139-payroll-history-style">
+#rh-staff-history-v138 .v138-meta{
+  grid-template-columns:repeat(7,minmax(0,1fr));
+}
+
+#rh-staff-history-v138 .v139-payroll-note{
+  margin:0 12px 8px;
+  padding:7px 9px;
+  border:1px solid rgba(212,175,55,.22);
+  border-radius:8px;
+  background:rgba(212,175,55,.025);
+  color:#7f8991;
+  font-size:.5rem;
+  line-height:1.3;
+}
+
+#rh-staff-history-v138 .v139-payroll-note strong{
+  color:#e3c45e;
+}
+
+@media(max-width:1100px){
+  #rh-staff-history-v138 .v138-meta{
+    grid-template-columns:repeat(4,minmax(0,1fr));
+  }
+}
+
+@media(max-width:720px){
+  #rh-staff-history-v138 .v138-meta{
+    grid-template-columns:repeat(2,minmax(0,1fr));
+  }
+}
+</style>
+
+</head><body><h1>${esc(title)}</h1><small>Imprimé le ${esc(new Date().toLocaleString('fr-FR'))}</small>${body}</body></html>`);w.document.close();setTimeout(()=>w.print(),200);
   }
   window.printPlanningHistoryV94=function(){
     if(!window.__rhPh94Rows) window.renderPlanningHistoryV94(); const rows=window.__rhPh94Rows||[];
@@ -16867,7 +17234,18 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
   let rhDocsSessionExpiresAt = 0;
   let rhDocsRows = [];
   const MAX_FILE_BYTES = 12 * 1024 * 1024;
-  const CATEGORY_LABELS = {PAYSLIP:'Bulletin de salaire',CONTRACT:'Contrat / avenant',ATTESTATION:'Attestation de travail',CERTIFICATE:'Certificat / formation',OTHER:'Autre document'};
+  const CATEGORY_LABELS = {
+    PAYSLIP:'Bulletin / fiche de salaire',
+    SALARY_CERTIFICATE:'Certificat de salaire',
+    TAX_DOCUMENT:'Document fiscal salarié',
+    WITHHOLDING_TAX:'Impôt à la source / PAS',
+    SOCIAL_STATEMENT:'Cotisations / attestation sociale',
+    PAYROLL_OTHER:'Autre document paie',
+    CONTRACT:'Contrat / avenant',
+    ATTESTATION:'Attestation de travail',
+    CERTIFICATE:'Certificat / formation',
+    OTHER:'Autre document'
+  };
 
   function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
   function attr(v){return esc(v).replace(/`/g,'&#96;');}
@@ -16893,7 +17271,22 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
           <span class="rh-doc-v100-badge" id="rh-doc-v100-count">0 DOCUMENT</span>
         </div>
         <div class="rh-doc-v100-upload" id="rh-doc-v100-upload-box">
-          <div class="input-group"><label>Type de document</label><select class="input-full" id="rh-doc-v100-category"><option value="PAYSLIP">Bulletin de salaire</option><option value="CONTRACT">Contrat / avenant</option><option value="ATTESTATION">Attestation de travail</option><option value="CERTIFICATE">Certificat / formation</option><option value="OTHER">Autre document</option></select></div>
+          <div class="input-group"><label>Type de document</label><select class="input-full" id="rh-doc-v100-category">
+            <optgroup label="Paie & fiscalité salariale">
+              <option value="PAYSLIP">Bulletin / fiche de salaire</option>
+              <option value="SALARY_CERTIFICATE">Certificat de salaire</option>
+              <option value="TAX_DOCUMENT">Document fiscal salarié</option>
+              <option value="WITHHOLDING_TAX">Impôt à la source / prélèvement à la source</option>
+              <option value="SOCIAL_STATEMENT">Cotisations / attestation sociale</option>
+              <option value="PAYROLL_OTHER">Autre document paie</option>
+            </optgroup>
+            <optgroup label="Dossier RH">
+              <option value="CONTRACT">Contrat / avenant</option>
+              <option value="ATTESTATION">Attestation de travail</option>
+              <option value="CERTIFICATE">Certificat / formation</option>
+              <option value="OTHER">Autre document</option>
+            </optgroup>
+          </select></div>
           <div class="input-group"><label>Date du document</label><input class="input-full" id="rh-doc-v100-issued" type="date"></div>
           <div class="input-group wide"><label>Titre</label><input class="input-full" id="rh-doc-v100-title" maxlength="140" placeholder="Ex. Bulletin de salaire septembre 2026"></div>
           <div class="input-group"><label>Période / référence</label><input class="input-full" id="rh-doc-v100-period" maxlength="80" placeholder="Ex. Septembre 2026"></div>
@@ -16953,7 +17346,20 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
   }
 
   function label(category){return CATEGORY_LABELS[String(category||'OTHER').toUpperCase()]||CATEGORY_LABELS.OTHER;}
-  function icon(category){return ({PAYSLIP:'PAIE',CONTRACT:'CTRT',ATTESTATION:'ATST',CERTIFICATE:'CERT',OTHER:'DOC'})[String(category||'OTHER').toUpperCase()]||'DOC';}
+  function icon(category){
+    return ({
+      PAYSLIP:'PAIE',
+      SALARY_CERTIFICATE:'SAL.',
+      TAX_DOCUMENT:'FISC',
+      WITHHOLDING_TAX:'IMP.',
+      SOCIAL_STATEMENT:'SOC.',
+      PAYROLL_OTHER:'PAIE',
+      CONTRACT:'CTRT',
+      ATTESTATION:'ATST',
+      CERTIFICATE:'CERT',
+      OTHER:'DOC'
+    })[String(category||'OTHER').toUpperCase()]||'DOC';
+  }
   function formatDate(v){if(!v)return'';const d=new Date(v);return Number.isFinite(d.getTime())?d.toLocaleDateString('fr-FR'):String(v);}
 
   function renderRows(){
@@ -17018,6 +17424,24 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
       const proofId=String(data?.proof?.proofId||data?.document?.proofId||'').trim();
       const proofText=proofId?` · PREUVE ${proofId}`:'';
       setStatus(`✓ Document enregistré pour ${staff.name||'ce collaborateur'}${proofText}. Disponible dans son Portail Staff.`,'ok');
+
+      try{
+        recordRhChange?.({
+          staffId:String(staff.id),
+          staffName:String(staff.name||''),
+          type:'DOCUMENT_SENT',
+          category:'DOCUMENT',
+          documentId:String(data?.document?.documentId||data?.document?.id||''),
+          proofId,
+          documentCategory:category,
+          title:title||file.name,
+          fileName:file.name,
+          period,
+          issuedAt,
+          message:`Document envoyé · ${title||file.name}${proofId?` · preuve ${proofId}`:''}`
+        });
+      }catch(_){}
+
       try{showToast(proofId?`Document envoyé · ${proofId}`:'Document envoyé au collaborateur');}catch(_){ }
     }catch(e){
       console.error('[iCHEF RH Documents upload]',e);
@@ -17038,6 +17462,23 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
     if(reason===null)return; if(String(reason).trim().length<5)return alert('Indiquez un motif de suppression (5 caractères minimum).');
     try{
       await docsFetch('/api/rh/documents/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenantID_JS,documentId:String(id),reason:String(reason).trim()})});
+
+      try{
+        const staff=staffFromModal();
+        recordRhChange?.({
+          staffId:String(staff?.id||''),
+          staffName:String(staff?.name||''),
+          type:'DOCUMENT_DELETED',
+          category:'DOCUMENT',
+          documentId:String(id),
+          title:String(doc?.title||doc?.fileName||'Document'),
+          fileName:String(doc?.fileName||''),
+          reason:String(reason).trim(),
+          proofId:String(doc?.proofId||''),
+          message:`Document supprimé · ${doc?.title||doc?.fileName||'Document'} · ${String(reason).trim()}`
+        });
+      }catch(_){}
+
       rhDocsRows=rhDocsRows.filter(d=>String(d.documentId||d.id)!==String(id));renderRows();setStatus('Document supprimé du coffre-fort du collaborateur.','ok');
     }catch(e){setStatus(e.message||'Suppression impossible.','error');alert(e.message||'Suppression impossible.');}
   };
@@ -21565,6 +22006,1342 @@ console.info('[iCHEF RH V135] jours fermeture = 0 service / 0 staff');
 <script id="ichef-rh-v136-marker">
 window.__ICHEF_RH_BUILD__='RH-V136-CLOSURE-HARD-GUARD';
 console.info('[iCHEF RH V136] fermeture établissement forcée après génération + cuisine ignore les jours fermés');
+</script>
+
+
+<style id="ichef-rh-v137-today-horizon">
+#ia-predictions-modal .v137-horizon-note{
+  margin:0 0 7px;
+  padding:6px 9px;
+  border:1px solid rgba(57,143,255,.22);
+  border-radius:8px;
+  background:rgba(57,143,255,.035);
+  color:#8293a3;
+  font-size:.53rem;
+  line-height:1.25;
+}
+#ia-predictions-modal .v137-horizon-note strong{
+  color:#55a1ff;
+  font-size:.54rem;
+  letter-spacing:.35px;
+}
+/* La taille du tableau reste inchangée. */
+</style>
+
+
+<script id="ichef-rh-v137-today-horizon-js">
+(() => {
+  'use strict';
+
+  function dateFr(d){
+    return [
+      String(d.getDate()).padStart(2,'0'),
+      String(d.getMonth()+1).padStart(2,'0'),
+      d.getFullYear()
+    ].join('/');
+  }
+
+  function sync(){
+    const preview =
+      document.getElementById(
+        'ia-planning-preview'
+      );
+
+    if(!preview) return;
+
+    let note =
+      document.getElementById(
+        'v137-horizon-note'
+      );
+
+    if(!note){
+      note =
+        document.createElement('div');
+
+      note.id =
+        'v137-horizon-note';
+
+      note.className =
+        'v137-horizon-note';
+
+      preview.insertAdjacentElement(
+        'beforebegin',
+        note
+      );
+    }
+
+    const now = new Date();
+
+    const currentMonth =
+      `${now.getFullYear()}-${String(
+        now.getMonth()+1
+      ).padStart(2,'0')}`;
+
+    const selected =
+      typeof getPlanningAssistantMonth ===
+        'function'
+        ? String(
+            getPlanningAssistantMonth() ||
+            ''
+          )
+        : currentMonth;
+
+    if(selected === currentMonth){
+      note.innerHTML =
+        `<strong>MISE À JOUR À PARTIR D'AUJOURD'HUI · ${dateFr(now)}</strong>` +
+        ` · les jours précédents restent figés dans l'historique.`;
+    }else if(selected > currentMonth){
+      note.innerHTML =
+        `<strong>MOIS FUTUR</strong>` +
+        ` · génération à partir du 1er jour du mois.`;
+    }else{
+      note.innerHTML =
+        `<strong>HISTORIQUE</strong>` +
+        ` · ce mois n'est pas recalculé.`;
+    }
+  }
+
+  function boot(){
+    sync();
+
+    const modal =
+      document.getElementById(
+        'ia-predictions-modal'
+      );
+
+    if(!modal) return;
+
+    new MutationObserver(sync)
+      .observe(
+        modal,
+        {
+          childList:true,
+          subtree:true
+        }
+      );
+  }
+
+  if(
+    document.readyState ===
+    'loading'
+  ){
+    document.addEventListener(
+      'DOMContentLoaded',
+      boot,
+      {once:true}
+    );
+  }else{
+    boot();
+  }
+
+  window.__ICHEF_RH_TODAY_HORIZON_BUILD__ =
+    'V137';
+})();
+</script>
+
+
+<script id="ichef-rh-v137-marker">
+window.__ICHEF_RH_BUILD__='RH-V137-TODAY-HORIZON';
+console.info('[iCHEF RH V137] faux FER corrigé · mise à jour aujourd’hui -> futur · passé figé');
+</script>
+
+
+<script id="ichef-rh-v138-history-script">
+(() => {
+  'use strict';
+
+  const V138_MESSAGE_KEY='ichef_rh_staff_messages_archive';
+  let v138StaffId='';
+  let v138Category='ALL';
+  let v138Rows=[];
+  let v138Documents=[];
+
+  function esc(v){
+    return typeof escapeRhHtml==='function'
+      ? escapeRhHtml(String(v??''))
+      : String(v??'')
+          .replace(/[&<>"']/g,c=>({
+            '&':'&amp;','<':'&lt;','>':'&gt;',
+            '"':'&quot;',"'":'&#39;'
+          }[c]));
+  }
+
+  function dateMs(row){
+    return Date.parse(
+      String(
+        row?.timestamp ||
+        row?.at ||
+        row?.createdAt ||
+        row?.updatedAt ||
+        row?.date ||
+        0
+      )
+    ) || 0;
+  }
+
+  function fmtDate(v){
+    const d=new Date(v);
+    return Number.isFinite(d.getTime())
+      ? d.toLocaleString('fr-FR')
+      : String(v||'');
+  }
+
+  function getStaffAny(staffId){
+    const current=(typeof getDir==='function'?getDir():[])
+      .find(s=>String(s.id)===String(staffId));
+
+    if(current) return current;
+
+    const hist=
+      (typeof getRhChangeHistory==='function'
+        ? getRhChangeHistory()
+        : [])
+      .filter(r=>String(r.staffId||'')===String(staffId))
+      .slice()
+      .reverse();
+
+    for(const row of hist){
+      const snap=row?.after||row?.before;
+      if(snap && String(snap.id||'')===String(staffId)){
+        return snap;
+      }
+    }
+
+    return {
+      id:staffId,
+      name:'Ancien collaborateur',
+      role:'',
+      dept:'',
+      active:false
+    };
+  }
+
+  function messageArchive(){
+    try{
+      const rows=JSON.parse(localStorage.getItem(V138_MESSAGE_KEY)||'[]');
+      return Array.isArray(rows)?rows:[];
+    }catch(_){
+      return [];
+    }
+  }
+
+  window.archiveRhStaffMessageV138=function(staffId,message,meta={}){
+    const rows=messageArchive();
+
+    const staff=getStaffAny(staffId);
+
+    rows.push({
+      id:`MSG-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
+      timestamp:new Date().toISOString(),
+      staffId:String(staffId||''),
+      staffName:String(staff?.name||meta.staffName||''),
+      message:String(message||''),
+      ...meta
+    });
+
+    localStorage.setItem(
+      V138_MESSAGE_KEY,
+      JSON.stringify(rows)
+    );
+
+    try{
+      API.update(
+        'RH_STAFF_MESSAGES_ARCHIVE',
+        rows
+      );
+    }catch(_){}
+
+    try{
+      recordRhChange?.({
+        staffId:String(staffId||''),
+        staffName:String(staff?.name||''),
+        type:'STAFF_MESSAGE',
+        category:'MESSAGE',
+        message:String(message||''),
+        meta
+      });
+    }catch(_){}
+  };
+
+  window.buildRhStaffArchiveIndexV138=function(){
+    const dir=
+      typeof getDir==='function'
+        ? getDir()
+        : [];
+
+    const history=
+      typeof getRhChangeHistory==='function'
+        ? getRhChangeHistory()
+        : [];
+
+    const ids=new Set();
+
+    dir.forEach(s=>ids.add(String(s.id)));
+    history.forEach(r=>{
+      if(r?.staffId) ids.add(String(r.staffId));
+    });
+
+    const out={};
+
+    ids.forEach(id=>{
+      const staff=getStaffAny(id);
+
+      out[id]={
+        staffId:id,
+        staffName:String(staff?.name||''),
+        role:String(staff?.role||''),
+        dept:String(staff?.dept||''),
+        active:staff?.active!==false,
+        historyCount:
+          history.filter(r=>String(r.staffId||'')===id).length,
+        updatedAt:new Date().toISOString()
+      };
+    });
+
+    return out;
+  };
+
+  function categoryOf(row){
+    const type=String(row?.type||'').toUpperCase();
+    const category=String(row?.category||'').toUpperCase();
+    const documentCategory=String(
+      row?.documentCategory ||
+      row?.raw?.category ||
+      ''
+    ).toUpperCase();
+
+    if(
+      category.includes('PAIE') ||
+      category.includes('FISC') ||
+      type.includes('PAYROLL') ||
+      type.includes('PAIE') ||
+      type.includes('SALARY_CERTIFICATE') ||
+      type.includes('TAX_') ||
+      type.includes('WITHHOLDING') ||
+      ['PAYSLIP','SALARY_CERTIFICATE','TAX_DOCUMENT','WITHHOLDING_TAX','SOCIAL_STATEMENT','PAYROLL_OTHER']
+        .includes(documentCategory)
+    ) return 'PAIE_FISCALITE';
+
+    if(
+      category.includes('DOCUMENT') ||
+      type.includes('DOCUMENT')
+    ) return 'DOCUMENT';
+
+    if(
+      category.includes('CONTRAT') ||
+      type.includes('STAFF_')
+    ) return 'CONTRAT';
+
+    if(
+      type.includes('PLANNING') ||
+      type.includes('TIMESHEET') ||
+      type.includes('POINTAGE') ||
+      type.includes('PUNCH')
+    ) return 'PLANNING';
+
+    if(
+      category.includes('MESSAGE') ||
+      type.includes('MESSAGE') ||
+      type.includes('REQUEST') ||
+      type.includes('DEMANDE')
+    ) return 'MESSAGE';
+
+    if(
+      type.includes('ABSENCE') ||
+      type.includes('LEAVE') ||
+      type.includes('CONGE')
+    ) return 'ABSENCE';
+
+    return 'AUTRE';
+  }
+
+  function requestRows(staffId){
+    const reqs=
+      typeof getReqs==='function'
+        ? getReqs()
+        : [];
+
+    return reqs
+      .filter(r =>
+        String(
+          r?.staffId ||
+          r?.employeeId ||
+          r?.userId ||
+          ''
+        )===String(staffId)
+      )
+      .map(r=>({
+        id:`REQ-${r.id||Math.random()}`,
+        timestamp:
+          r.createdAt ||
+          r.timestamp ||
+          r.updatedAt ||
+          r.startDate ||
+          new Date().toISOString(),
+        staffId:String(staffId),
+        type:'STAFF_REQUEST',
+        category:'MESSAGE',
+        message:
+          `${r.type||r.requestType||'Demande RH'} · ${r.status||'enregistrée'}`,
+        reason:
+          r.comment ||
+          r.reason ||
+          r.message ||
+          '',
+        raw:r
+      }));
+  }
+
+  function punchRows(staffId){
+    const punches=
+      typeof getPunches==='function'
+        ? getPunches()
+        : [];
+
+    return punches
+      .filter(p=>String(p?.staffId||'')===String(staffId))
+      .map(p=>({
+        id:`PUNCH-${p.id||p.timestamp||Math.random()}`,
+        timestamp:
+          new Date(
+            Number(
+              p.timestamp ||
+              p.clientTimestamp ||
+              Date.now()
+            )
+          ).toISOString(),
+        staffId:String(staffId),
+        type:'POINTAGE',
+        category:'PLANNING',
+        message:
+          `Pointage ${String(p.type||'').toUpperCase()}`,
+        reason:
+          p.note ||
+          p.reason ||
+          '',
+        raw:p
+      }));
+  }
+
+  function planningSnapshotRows(staffId){
+    const ts=
+      typeof getTs==='function'
+        ? getTs()
+        : {};
+
+    const rows=[];
+
+    Object.entries(ts||{}).forEach(([month,node])=>{
+      const staffNode=
+        node?.[staffId] ||
+        node?.[String(staffId)];
+
+      if(!staffNode) return;
+
+      rows.push({
+        id:`PLAN-SNAPSHOT-${staffId}-${month}`,
+        timestamp:`${month}-01T00:00:00`,
+        staffId:String(staffId),
+        type:'PLANNING_MONTH_SNAPSHOT',
+        category:'PLANNING',
+        message:
+          `Planning mensuel ${month}`,
+        raw:staffNode
+      });
+    });
+
+    return rows;
+  }
+
+  function currentContractRow(staff){
+    return [{
+      id:`CURRENT-${staff.id}`,
+      timestamp:new Date().toISOString(),
+      staffId:String(staff.id),
+      type:'CURRENT_STAFF_PROFILE',
+      category:'CONTRAT',
+      message:'Situation actuelle du collaborateur',
+      raw:{
+        name:staff.name,
+        role:staff.role,
+        dept:staff.dept,
+        contract:staff.contract,
+        annualLeaveDays:staff.annualLeaveDays,
+        leaveCarryover:staff.leaveCarryover,
+        recoveryBalance:staff.recoveryBalance,
+        hourlyCost:staff.hourlyCost,
+        skillLevel:staff.skillLevel,
+        skills:staff.skills,
+        availability:staff.availability,
+        minRestHours:staff.minRestHours,
+        maxConsecutiveDays:staff.maxConsecutiveDays,
+        active:staff.active
+      }
+    }];
+  }
+
+  function payrollTaxRows(staffId){
+    const rows=[];
+
+    let runs={};
+    let profiles={};
+    let variables={};
+    let locks={};
+
+    try{runs=JSON.parse(localStorage.getItem('ichef_payroll_runs_v1')||'{}')||{}}catch(_){}
+    try{profiles=JSON.parse(localStorage.getItem('ichef_payroll_profiles_v2')||'{}')||{}}catch(_){}
+    try{variables=JSON.parse(localStorage.getItem('ichef_payroll_variables_v2')||'{}')||{}}catch(_){}
+    try{locks=JSON.parse(localStorage.getItem('ichef_payroll_locks_v2')||'{}')||{}}catch(_){}
+
+    const profile=profiles?.[staffId]||profiles?.[String(staffId)];
+    if(profile){
+      rows.push({
+        id:`PAYROLL-PROFILE-${staffId}`,
+        timestamp:new Date().toISOString(),
+        staffId:String(staffId),
+        type:'PAYROLL_PROFILE_CURRENT',
+        category:'PAIE_FISCALITE',
+        message:'Profil paie / fiscalité actuel',
+        reason:[
+          profile.payrollId?`Matricule ${profile.payrollId}`:'',
+          profile.mode?`Mode ${profile.mode}`:'',
+          profile.contractType?`Contrat ${profile.contractType}`:'',
+          profile.frPasSubject===true?`PAS ${Number(profile.frPasRate||0).toFixed(2)} %`:'',
+          profile.chQstSubject===true?`Impôt à la source ${profile.chQstTariff||''}`:'',
+          profile.chAvsStatus?`AVS ${profile.chAvsStatus}`:'',
+          profile.chLppStatus?`LPP ${profile.chLppStatus}`:''
+        ].filter(Boolean).join(' · '),
+        raw:profile
+      });
+    }
+
+    Object.entries(runs||{}).forEach(([period,run])=>{
+      const emp=(run?.employees||[]).find(
+        e=>String(e?.id||'')===String(staffId)
+      );
+      if(!emp)return;
+
+      const fiscalBits=[];
+
+      if(run?.country==='FR'){
+        fiscalBits.push('France');
+      }else if(run?.country==='CH'){
+        fiscalBits.push('Suisse');
+      }
+
+      if(emp?.variables?.withholding){
+        fiscalBits.push(`Retenue ${Number(emp.variables.withholding||0).toFixed(2)} ${run?.currency||''}`);
+      }
+
+      rows.push({
+        id:`PAYRUN-${staffId}-${period}`,
+        timestamp:
+          run.generatedAt ||
+          `${period}-01T00:00:00`,
+        staffId:String(staffId),
+        type:'PAYROLL_PREPARATION',
+        category:'PAIE_FISCALITE',
+        period,
+        message:
+          `Préparation paie ${period} · ${Number(emp.hours||0).toFixed(2)} h · brut ${Number(emp.gross||0).toFixed(2)} ${run?.currency||''} · net estimé ${Number(emp.netEstimated||0).toFixed(2)} ${run?.currency||''}`,
+        reason:[
+          ...fiscalBits,
+          Number(emp.overtime||0)>0?`H. sup. ${Number(emp.overtime).toFixed(2)} h`:'',
+          Array.isArray(emp.anomalies)&&emp.anomalies.length?`${emp.anomalies.length} anomalie(s)`:'',
+          Array.isArray(emp.regulatoryBlockers)&&emp.regulatoryBlockers.length?`${emp.regulatoryBlockers.length} blocage(s) réglementaire(s)`:''
+        ].filter(Boolean).join(' · '),
+        raw:{
+          ...emp,
+          country:run?.country,
+          currency:run?.currency,
+          runStatus:run?.status
+        }
+      });
+    });
+
+    Object.entries(variables||{}).forEach(([period,node])=>{
+      const v=node?.[staffId]||node?.[String(staffId)];
+      if(!v)return;
+
+      rows.push({
+        id:`PAYVAR-${staffId}-${period}`,
+        timestamp:`${period}-28T12:00:00`,
+        staffId:String(staffId),
+        type:'PAYROLL_VARIABLES',
+        category:'PAIE_FISCALITE',
+        period,
+        message:`Variables de paie ${period}`,
+        reason:[
+          Number(v.bonus||0)?`Prime ${Number(v.bonus).toFixed(2)}`:'',
+          Number(v.allowances||0)?`Indemnités ${Number(v.allowances).toFixed(2)}`:'',
+          Number(v.deductions||0)?`Retenues ${Number(v.deductions).toFixed(2)}`:'',
+          Number(v.withholding||0)?`Retenue fiscale ${Number(v.withholding).toFixed(2)}`:'',
+          Number(v.frPasOverride||0)?`PAS forcé ${Number(v.frPasOverride).toFixed(2)}`:'',
+          v.chTimesheetSigned===true?'Feuille d’heures signée':'',
+          Number(v.chThirteenthPayout||0)?`13e ${Number(v.chThirteenthPayout).toFixed(2)}`:''
+        ].filter(Boolean).join(' · '),
+        raw:v
+      });
+    });
+
+    Object.entries(locks||{}).forEach(([period,lock])=>{
+      rows.push({
+        id:`PAYLOCK-${staffId}-${period}`,
+        timestamp:
+          lock?.lockedAt ||
+          `${period}-28T23:00:00`,
+        staffId:String(staffId),
+        type:'PAYROLL_PERIOD_STATUS',
+        category:'PAIE_FISCALITE',
+        period,
+        message:
+          `Période de paie ${period} clôturée`,
+        reason:
+          lock?.country
+            ? `Pays ${lock.country}`
+            : '',
+        raw:lock
+      });
+    });
+
+    return rows;
+  }
+
+  function messageRows(staffId){
+    return messageArchive()
+      .filter(r=>String(r.staffId||'')===String(staffId))
+      .map(r=>({
+        ...r,
+        type:r.type||'STAFF_MESSAGE',
+        category:'MESSAGE'
+      }));
+  }
+
+  async function documentsFor(staffId){
+    // Liste sécurisée distante. Si indisponible, les preuves déjà
+    // enregistrées dans RH_CHANGE_HISTORY restent visibles.
+    try{
+      const pin=
+        typeof getRhDirectionAuthPin==='function'
+          ? String(getRhDirectionAuthPin()||'').trim()
+          : '';
+
+      if(!/^\d{4,12}$/.test(pin)) return [];
+
+      const base=
+        String(
+          window.SERVER_URL_JS ||
+          (typeof SERVER_URL_JS!=='undefined'
+            ? SERVER_URL_JS
+            : '')
+        ).replace(/\/$/,'');
+
+      const device=
+        String(
+          window.RH_DEVICE_ID ||
+          (typeof RH_DEVICE_ID!=='undefined'
+            ? RH_DEVICE_ID
+            : '') ||
+          localStorage.getItem('ichef_device_id') ||
+          ''
+        );
+
+      const sessionResp=await fetch(
+        `${base}/api/rh/documents/session`,
+        {
+          method:'POST',
+          credentials:'include',
+          cache:'no-store',
+          headers:{
+            'Content-Type':'application/json',
+            'Accept':'application/json',
+            'X-iCHEF-Tenant':tenantID_JS,
+            'X-iCHEF-Device':device
+          },
+          body:JSON.stringify({
+            tenantID:tenantID_JS,
+            pin,
+            deviceId:device
+          })
+        }
+      );
+
+      const sessionData=
+        await sessionResp.json().catch(()=>({}));
+
+      if(
+        !sessionResp.ok ||
+        !sessionData?.accessToken
+      ){
+        return [];
+      }
+
+      const r=await fetch(
+        `${base}/api/rh/documents/list?tenantID=${encodeURIComponent(tenantID_JS)}&staffId=${encodeURIComponent(String(staffId))}`,
+        {
+          credentials:'include',
+          cache:'no-store',
+          headers:{
+            'Accept':'application/json',
+            'X-iCHEF-Tenant':tenantID_JS,
+            'X-iCHEF-Device':device,
+            'Authorization':
+              `Bearer ${String(sessionData.accessToken)}`
+          }
+        }
+      );
+
+      const data=
+        await r.json().catch(()=>({}));
+
+      if(!r.ok) return [];
+
+      return (
+        Array.isArray(data.documents)
+          ? data.documents
+          : []
+      ).map(d=>({
+        id:`DOC-${d.documentId||d.id}`,
+        timestamp:
+          d.uploadedAt ||
+          d.issuedAt ||
+          d.createdAt ||
+          new Date().toISOString(),
+        staffId:String(staffId),
+        type:
+          ['PAYSLIP','SALARY_CERTIFICATE','TAX_DOCUMENT','WITHHOLDING_TAX','SOCIAL_STATEMENT','PAYROLL_OTHER']
+            .includes(String(d.category||'').toUpperCase())
+            ? 'PAYROLL_TAX_DOCUMENT'
+            : 'DOCUMENT_ARCHIVE',
+        category:
+          ['PAYSLIP','SALARY_CERTIFICATE','TAX_DOCUMENT','WITHHOLDING_TAX','SOCIAL_STATEMENT','PAYROLL_OTHER']
+            .includes(String(d.category||'').toUpperCase())
+            ? 'PAIE_FISCALITE'
+            : 'DOCUMENT',
+        documentCategory:String(d.category||''),
+        message:
+          d.title ||
+          d.fileName ||
+          'Document RH',
+        reason:[
+          d.category,
+          d.period,
+          d.proofId
+            ? `Preuve ${d.proofId}`
+            : ''
+        ].filter(Boolean).join(' · '),
+        raw:d
+      }));
+
+    }catch(error){
+      console.warn(
+        '[iCHEF RH V138] documents historique indisponibles',
+        error
+      );
+      return [];
+    }
+  }
+
+  function buildRows(staffId){
+    const history=
+      (typeof getRhChangeHistory==='function'
+        ? getRhChangeHistory()
+        : [])
+      .filter(r=>String(r.staffId||'')===String(staffId));
+
+    const staff=getStaffAny(staffId);
+
+    return [
+      ...history,
+      ...requestRows(staffId),
+      ...punchRows(staffId),
+      ...planningSnapshotRows(staffId),
+      ...currentContractRow(staff),
+      ...payrollTaxRows(staffId),
+      ...messageRows(staffId),
+      ...v138Documents
+    ]
+    .map(r=>({
+      ...r,
+      __category:categoryOf(r)
+    }))
+    .sort((a,b)=>dateMs(b)-dateMs(a));
+  }
+
+  function detailText(row){
+    const pieces=[];
+
+    if(row.message) pieces.push(String(row.message));
+    if(row.reason) pieces.push(String(row.reason));
+    if(row.by) pieces.push(`Par : ${row.by}`);
+    if(row.proofId) pieces.push(`Preuve : ${row.proofId}`);
+
+    if(row.before || row.after){
+      const before=row.before||null;
+      const after=row.after||null;
+
+      if(
+        before?.contract !== undefined ||
+        after?.contract !== undefined
+      ){
+        pieces.push(
+          `Contrat : ${before?.contract??'—'} h → ${after?.contract??'—'} h`
+        );
+      }
+
+      if(
+        before?.role !== undefined ||
+        after?.role !== undefined
+      ){
+        pieces.push(
+          `Fonction : ${before?.role??'—'} → ${after?.role??'—'}`
+        );
+      }
+
+      if(
+        before?.dept !== undefined ||
+        after?.dept !== undefined
+      ){
+        pieces.push(
+          `Département : ${before?.dept??'—'} → ${after?.dept??'—'}`
+        );
+      }
+    }
+
+    return pieces.filter(Boolean).join(' · ');
+  }
+
+  function render(){
+    const content=
+      document.getElementById(
+        'v138-history-content'
+      );
+
+    if(!content) return;
+
+    const q=
+      String(
+        document.getElementById(
+          'v138-history-search'
+        )?.value || ''
+      ).trim().toLowerCase();
+
+    const rows=v138Rows.filter(row=>{
+      if(
+        v138Category!=='ALL' &&
+        row.__category!==v138Category
+      ){
+        return false;
+      }
+
+      if(!q) return true;
+
+      return JSON.stringify(row)
+        .toLowerCase()
+        .includes(q);
+    });
+
+    if(!rows.length){
+      content.innerHTML=
+        '<div class="v138-empty">Aucun élément dans cette catégorie.</div>';
+      return;
+    }
+
+    content.innerHTML=
+      rows.map(row=>`
+        <div class="v138-event">
+          <time>${esc(fmtDate(
+            row.timestamp ||
+            row.at ||
+            row.date
+          ))}</time>
+          <div class="type">
+            ${esc(
+              row.__category
+            )}<br>
+            <span style="color:#748089;font-weight:700">
+              ${esc(row.type||'ÉVÉNEMENT')}
+            </span>
+          </div>
+          <div class="body">
+            ${esc(detailText(row)||row.type||'Événement RH')}
+            ${
+              row.raw
+                ? `<small>${esc(
+                    JSON.stringify(row.raw)
+                      .slice(0,900)
+                  )}</small>`
+                : ''
+            }
+          </div>
+        </div>
+      `).join('');
+  }
+
+  function updateKpis(staff){
+    const count=cat=>
+      v138Rows.filter(r=>r.__category===cat).length;
+
+    const set=(id,value)=>{
+      const el=document.getElementById(id);
+      if(el) el.textContent=String(value);
+    };
+
+    set('v138-kpi-total',v138Rows.length);
+    set('v138-kpi-planning',count('PLANNING'));
+    set('v138-kpi-contract',count('CONTRAT'));
+    set('v138-kpi-docs',count('DOCUMENT'));
+    set('v139-kpi-payroll',count('PAIE_FISCALITE'));
+    set('v138-kpi-msg',count('MESSAGE'));
+    set('v138-kpi-status',staff?.active===false?'ARCHIVÉ':'ACTIF');
+  }
+
+  async function syncArchive(staffId){
+    try{
+      const payload={
+        staffId:String(staffId),
+        staff:getStaffAny(staffId),
+        history:
+          v138Rows.map(r=>{
+            const copy={...r};
+            delete copy.__category;
+            return copy;
+          }),
+        archivedAt:new Date().toISOString()
+      };
+
+      localStorage.setItem(
+        `ichef_rh_staff_archive_${staffId}`,
+        JSON.stringify(payload)
+      );
+
+      await Promise.resolve(
+        API.update(
+          `RH_STAFF_ARCHIVE_${staffId}`,
+          payload
+        )
+      );
+    }catch(error){
+      console.warn(
+        '[iCHEF RH V138] archive staff locale uniquement',
+        error
+      );
+    }
+  }
+
+  function exportJson(){
+    const staff=getStaffAny(v138StaffId);
+
+    const payload={
+      exportedAt:new Date().toISOString(),
+      tenantID:
+        typeof tenantID_JS!=='undefined'
+          ? tenantID_JS
+          : '',
+      staff,
+      history:v138Rows
+    };
+
+    const blob=new Blob(
+      [JSON.stringify(payload,null,2)],
+      {type:'application/json;charset=utf-8'}
+    );
+
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+
+    a.href=url;
+    a.download=
+      `iCHEF_Historique_${String(staff?.name||v138StaffId).replace(/[^\w-]+/g,'_')}.json`;
+
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(url),500);
+  }
+
+  function ensureModal(){
+    if(
+      document.getElementById(
+        'rh-staff-history-v138'
+      )
+    ){
+      return;
+    }
+
+    document.body.insertAdjacentHTML(
+      'beforeend',
+      `
+      <div id="rh-staff-history-v138">
+        <div class="v138-panel">
+          <div class="v138-head">
+            <div class="v138-title">
+              <strong id="v138-history-title">HISTORIQUE 360°</strong>
+              <small id="v138-history-subtitle"></small>
+            </div>
+
+            <div class="v138-head-actions">
+              <button class="gold" type="button" id="v138-history-sync">ARCHIVER MAINTENANT</button>
+              <button type="button" id="v138-history-export">EXPORT JSON</button>
+              <button type="button" id="v138-history-close">FERMER</button>
+            </div>
+          </div>
+
+          <div class="v138-meta">
+            <div class="v138-kpi"><small>TOTAL</small><strong id="v138-kpi-total">0</strong></div>
+            <div class="v138-kpi"><small>PLANNING</small><strong id="v138-kpi-planning">0</strong></div>
+            <div class="v138-kpi"><small>CONTRAT / PROFIL</small><strong id="v138-kpi-contract">0</strong></div>
+            <div class="v138-kpi"><small>DOCUMENTS</small><strong id="v138-kpi-docs">0</strong></div>
+            <div class="v138-kpi"><small>PAIE / FISCAL</small><strong id="v139-kpi-payroll">0</strong></div>
+            <div class="v138-kpi"><small>MESSAGES / DEMANDES</small><strong id="v138-kpi-msg">0</strong></div>
+            <div class="v138-kpi"><small>STATUT</small><strong id="v138-kpi-status">—</strong></div>
+          </div>
+
+          <div class="v138-tabs">
+            <button data-v138-cat="ALL" class="active">TOUT</button>
+            <button data-v138-cat="PLANNING">PLANNING & POINTAGES</button>
+            <button data-v138-cat="CONTRAT">CONTRAT & PROFIL</button>
+            <button data-v138-cat="DOCUMENT">DOCUMENTS RH</button>
+            <button data-v138-cat="PAIE_FISCALITE">PAIE & FISCALITÉ</button>
+            <button data-v138-cat="MESSAGE">MESSAGES & DEMANDES</button>
+            <button data-v138-cat="ABSENCE">ABSENCES</button>
+            <button data-v138-cat="AUTRE">AUTRES</button>
+          </div>
+
+          <div class="v138-tools">
+            <input id="v138-history-search" type="search" placeholder="Rechercher dans tout l'historique…">
+            <div class="v138-retention">ARCHIVE DURABLE · AUCUNE PURGE AUTOMATIQUE</div>
+          </div>
+
+          <div id="v138-history-content" class="v138-content"></div>
+        </div>
+      </div>
+      `
+    );
+
+    document
+      .getElementById('v138-history-close')
+      ?.addEventListener('click',close);
+
+    document
+      .getElementById('v138-history-export')
+      ?.addEventListener('click',exportJson);
+
+    document
+      .getElementById('v138-history-sync')
+      ?.addEventListener('click',async()=>{
+        await syncArchive(v138StaffId);
+
+        try{
+          showToast?.(
+            'Archive collaborateur synchronisée'
+          );
+        }catch(_){}
+      });
+
+    document
+      .getElementById('v138-history-search')
+      ?.addEventListener('input',render);
+
+    document
+      .querySelectorAll('[data-v138-cat]')
+      .forEach(btn=>{
+        btn.addEventListener('click',()=>{
+          document
+            .querySelectorAll('[data-v138-cat]')
+            .forEach(x=>x.classList.remove('active'));
+
+          btn.classList.add('active');
+          v138Category=
+            String(btn.dataset.v138Cat||'ALL');
+
+          render();
+        });
+      });
+
+    document
+      .getElementById('rh-staff-history-v138')
+      ?.addEventListener('click',event=>{
+        if(
+          event.target?.id ===
+          'rh-staff-history-v138'
+        ){
+          close();
+        }
+      });
+
+    document.addEventListener('keydown',event=>{
+      if(
+        event.key==='Escape' &&
+        document
+          .getElementById('rh-staff-history-v138')
+          ?.classList.contains('show')
+      ){
+        close();
+      }
+    });
+  }
+
+  function close(){
+    document
+      .getElementById('rh-staff-history-v138')
+      ?.classList.remove('show');
+  }
+
+  window.openRhStaffHistoryV138=async function(staffId){
+    ensureModal();
+
+    v138StaffId=String(staffId);
+    v138Category='ALL';
+
+    const staff=getStaffAny(staffId);
+
+    document.getElementById('v138-history-title').textContent=
+      `HISTORIQUE 360° · ${staff?.name||'COLLABORATEUR'}`;
+
+    document.getElementById('v138-history-subtitle').textContent=
+      `${staff?.role||''} · ${String(staff?.dept||'').toUpperCase()} · planning · contrat · bulletins de salaire · certificat de salaire · fiscalité salariale · documents · messages · demandes · pointages`;
+
+    document
+      .querySelectorAll('[data-v138-cat]')
+      .forEach(btn=>{
+        btn.classList.toggle(
+          'active',
+          btn.dataset.v138Cat==='ALL'
+        );
+      });
+
+    const search=
+      document.getElementById('v138-history-search');
+
+    if(search) search.value='';
+
+    document
+      .getElementById('rh-staff-history-v138')
+      ?.classList.add('show');
+
+    v138Documents=[];
+    v138Rows=buildRows(v138StaffId);
+
+    updateKpis(staff);
+    render();
+
+    // Charge ensuite les documents distants sans bloquer l'ouverture.
+    v138Documents=
+      await documentsFor(v138StaffId);
+
+    v138Rows=buildRows(v138StaffId);
+
+    updateKpis(staff);
+    render();
+
+    // Snapshot local immédiat.
+    syncArchive(v138StaffId);
+  };
+
+  function install(){
+    ensureModal();
+  }
+
+  if(document.readyState==='loading'){
+    document.addEventListener(
+      'DOMContentLoaded',
+      install,
+      {once:true}
+    );
+  }else{
+    install();
+  }
+
+  window.__ICHEF_RH_HISTORY_BUILD__='V138';
+})();
+</script>
+
+
+<script id="ichef-rh-v138-marker">
+window.__ICHEF_RH_BUILD__='RH-V138-STAFF-HISTORY-360';
+console.info('[iCHEF RH V138] historique 360° staff · planning · contrat · documents · messages · demandes · pointages');
+</script>
+
+
+<script id="ichef-rh-v139-payroll-history-script">
+(() => {
+  'use strict';
+
+  function recordPayrollRun(run){
+    if(!run || !Array.isArray(run.employees)) return;
+
+    run.employees.forEach(emp=>{
+      try{
+        recordRhChange?.({
+          staffId:String(emp.id||''),
+          staffName:String(emp.name||''),
+          type:'PAYROLL_RUN_GENERATED',
+          category:'PAIE_FISCALITE',
+          period:String(run.period||''),
+          country:String(run.country||''),
+          currency:String(run.currency||''),
+          payrollId:String(emp.payrollId||''),
+          gross:Number(emp.gross||0),
+          netEstimated:Number(emp.netEstimated||0),
+          employeeDeductionsEstimated:Number(emp.employeeDeductionsEstimated||0),
+          employerCostEstimated:Number(emp.employerCostEstimated||0),
+          message:
+            `Préparation paie ${run.period||''} · ` +
+            `brut ${Number(emp.gross||0).toFixed(2)} ${run.currency||''} · ` +
+            `net estimé ${Number(emp.netEstimated||0).toFixed(2)} ${run.currency||''}`
+        });
+      }catch(_){}
+    });
+  }
+
+  function wrapPayrollRun(){
+    const original=window.iChefPayrollGenerateAutomaticRun;
+    if(typeof original!=='function' || original.__v139Wrapped) return false;
+
+    const wrapped=function(...args){
+      const run=original.apply(this,args);
+      try{recordPayrollRun(run)}catch(_){}
+      return run;
+    };
+
+    wrapped.__v139Wrapped=true;
+    window.iChefPayrollGenerateAutomaticRun=wrapped;
+    return true;
+  }
+
+  function wrapPayrollVariables(){
+    const original=window.savePayrollVariables;
+    if(typeof original!=='function' || original.__v139Wrapped) return false;
+
+    const wrapped=function(...args){
+      const id=String(document.getElementById('pv-staff-id')?.value||'');
+      const month=String(document.getElementById('payroll-month')?.value||'');
+      let before=null;
+
+      try{
+        const all=JSON.parse(localStorage.getItem('ichef_payroll_variables_v2')||'{}')||{};
+        before=all?.[month]?.[id]||null;
+      }catch(_){}
+
+      const result=original.apply(this,args);
+
+      try{
+        const all=JSON.parse(localStorage.getItem('ichef_payroll_variables_v2')||'{}')||{};
+        const after=all?.[month]?.[id]||null;
+        const staff=(typeof getDir==='function'?getDir():[])
+          .find(s=>String(s.id)===id);
+
+        recordRhChange?.({
+          staffId:id,
+          staffName:String(staff?.name||''),
+          type:'PAYROLL_VARIABLES_UPDATED',
+          category:'PAIE_FISCALITE',
+          period:month,
+          before,
+          after,
+          message:`Variables de paie mises à jour · ${month}`
+        });
+      }catch(_){}
+
+      return result;
+    };
+
+    wrapped.__v139Wrapped=true;
+    window.savePayrollVariables=wrapped;
+    return true;
+  }
+
+  function wrapPayrollProfile(){
+    const original=window.savePayrollProfile;
+    if(typeof original!=='function' || original.__v139Wrapped) return false;
+
+    const wrapped=function(...args){
+      const id=String(document.getElementById('pp-staff-id')?.value||'');
+      let before=null;
+
+      try{
+        const all=JSON.parse(localStorage.getItem('ichef_payroll_profiles_v2')||'{}')||{};
+        before=all?.[id]||null;
+      }catch(_){}
+
+      const result=original.apply(this,args);
+
+      try{
+        const all=JSON.parse(localStorage.getItem('ichef_payroll_profiles_v2')||'{}')||{};
+        const after=all?.[id]||null;
+        const staff=(typeof getDir==='function'?getDir():[])
+          .find(s=>String(s.id)===id);
+
+        recordRhChange?.({
+          staffId:id,
+          staffName:String(staff?.name||''),
+          type:'PAYROLL_PROFILE_UPDATED',
+          category:'PAIE_FISCALITE',
+          before,
+          after,
+          message:'Profil paie / fiscalité mis à jour'
+        });
+      }catch(_){}
+
+      return result;
+    };
+
+    wrapped.__v139Wrapped=true;
+    window.savePayrollProfile=wrapped;
+    return true;
+  }
+
+  function installPayrollNote(){
+    const modal=document.getElementById('rh-staff-history-v138');
+    const tools=modal?.querySelector('.v138-tools');
+    if(!modal || !tools || document.getElementById('v139-payroll-note')) return;
+
+    const note=document.createElement('div');
+    note.id='v139-payroll-note';
+    note.className='v139-payroll-note';
+    note.innerHTML=
+      `<strong>PAIE & FISCALITÉ SALARIALE</strong> · ` +
+      `bulletins de salaire, certificats de salaire, retenues fiscales/PAS, impôt à la source, ` +
+      `cotisations sociales, profils et variables de paie, préparations mensuelles et pièces justificatives. ` +
+      `Les transmissions fiscales/sociales officielles restent soumises aux connecteurs et validations réglementaires applicables.`;
+
+    tools.insertAdjacentElement('afterend',note);
+  }
+
+  function boot(){
+    let attempts=0;
+    const timer=setInterval(()=>{
+      attempts++;
+
+      const a=wrapPayrollRun();
+      const b=wrapPayrollVariables();
+      const c=wrapPayrollProfile();
+
+      installPayrollNote();
+
+      if((a||window.iChefPayrollGenerateAutomaticRun?.__v139Wrapped) &&
+         (b||window.savePayrollVariables?.__v139Wrapped) &&
+         (c||window.savePayrollProfile?.__v139Wrapped)){
+        clearInterval(timer);
+      }
+
+      if(attempts>40) clearInterval(timer);
+    },250);
+  }
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',boot,{once:true});
+  }else{
+    boot();
+  }
+
+  window.__ICHEF_RH_PAYROLL_HISTORY_BUILD__='V139';
+})();
+</script>
+
+
+<script id="ichef-rh-v139-marker">
+window.__ICHEF_RH_BUILD__='RH-V139-STAFF-HISTORY-PAYROLL-TAX';
+console.info('[iCHEF RH V139] historique 360° + bulletins + certificat salaire + fiscalité salariale');
 </script>
 
 </body>
