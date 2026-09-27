@@ -26844,6 +26844,293 @@ console.info('[iCHEF RH V145] conformité juridique stricte CH/FR · publication
 window.__ICHEF_RH_BUILD__='RH-V146-6DAY-OFF-VACATION-SEPARATION';
 console.info('[iCHEF RH V146] 6 jours travaillés max · 7e non travaillé · OFF ≠ MALADIE ≠ CP');
 </script>
+<!-- =========================================================
+     iCHEF RH — PATCH LÉGER JOUR + DATE / WEEK-END GRIS
+     À COLLER JUSTE AVANT </body>
+     Aucun MutationObserver · Aucun setInterval · Aucun recalcul IA
+     ========================================================= -->
+
+<style id="ichef-light-day-weekend-style">
+.ichef-day-head{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:4px;
+  white-space:nowrap;
+}
+
+.ichef-day-letter{
+  font-weight:950;
+  font-size:.58rem;
+  color:#e8ecef;
+}
+
+.ichef-day-number{
+  font-weight:850;
+  font-size:.58rem;
+  color:#9aa3aa;
+}
+
+/* Samedi + dimanche : colonne grise */
+.ichef-weekend-head{
+  background:#30343a !important;
+  color:#fff !important;
+}
+
+.ichef-weekend-cell{
+  background:#343940 !important;
+  color:#fff !important;
+  border-color:#454c53 !important;
+}
+
+/* Si la cellule contient un bouton/statut, le fond reste gris */
+.ichef-weekend-cell > button,
+.ichef-weekend-cell .status-select-cell,
+.ichef-weekend-cell .rh-status-quick-btn{
+  background:#343940 !important;
+  color:#fff !important;
+  border-color:#454c53 !important;
+}
+
+/* Ne change pas la taille des colonnes */
+</style>
+
+<script id="ichef-light-day-weekend-script">
+(() => {
+  'use strict';
+
+  if (window.__ICHEF_LIGHT_DAY_WEEKEND__) return;
+  window.__ICHEF_LIGHT_DAY_WEEKEND__ = true;
+
+  const DAY_LETTERS = ['D','L','M','M','J','V','S'];
+
+  function decorateTable(table, year, month) {
+    if (!table || !year || !month) return;
+
+    const headerRow = table.querySelector('thead tr');
+    if (!headerRow) return;
+
+    const headers = Array.from(headerRow.children);
+
+    /* 1er = collaborateur, dernier = total/heures */
+    const dayHeaders = headers.slice(1, -1);
+
+    dayHeaders.forEach((th, index) => {
+      const day = index + 1;
+      const date = new Date(year, month - 1, day);
+
+      /* Ignore les colonnes qui dépassent la fin du mois */
+      if (date.getMonth() !== month - 1) return;
+
+      const isWeekend =
+        date.getDay() === 6 ||
+        date.getDay() === 0;
+
+      th.classList.toggle(
+        'ichef-weekend-head',
+        isWeekend
+      );
+
+      th.innerHTML = `
+        <div class="ichef-day-head">
+          <span class="ichef-day-letter">
+            ${DAY_LETTERS[date.getDay()]}
+          </span>
+          <span class="ichef-day-number">
+            ${String(day).padStart(2,'0')}
+          </span>
+        </div>
+      `;
+    });
+
+    table
+      .querySelectorAll('tbody tr')
+      .forEach(tr => {
+        const cells = Array.from(tr.children);
+
+        for (let day = 1; day < cells.length - 1; day++) {
+          const date =
+            new Date(
+              year,
+              month - 1,
+              day
+            );
+
+          if (date.getMonth() !== month - 1) continue;
+
+          const isWeekend =
+            date.getDay() === 6 ||
+            date.getDay() === 0;
+
+          cells[day].classList.toggle(
+            'ichef-weekend-cell',
+            isWeekend
+          );
+        }
+      });
+  }
+
+  function selectedMainMonth() {
+    const picker =
+      document.getElementById('month-picker');
+
+    const value =
+      String(
+        picker?.value ||
+        ''
+      );
+
+    if (/^\d{4}-\d{2}$/.test(value)) {
+      const [year, month] =
+        value.split('-').map(Number);
+
+      return { year, month };
+    }
+
+    const now = new Date();
+
+    return {
+      year: now.getFullYear(),
+      month: now.getMonth() + 1
+    };
+  }
+
+  function decorateMainPlanning() {
+    const thead =
+      document.getElementById('global-thead');
+
+    const table =
+      thead?.closest('table');
+
+    if (!table) return;
+
+    const { year, month } =
+      selectedMainMonth();
+
+    decorateTable(
+      table,
+      year,
+      month
+    );
+  }
+
+  function decorateIaPlanning(draft) {
+    const table =
+      document.querySelector(
+        '#ia-planning-preview table'
+      );
+
+    if (!table) return;
+
+    let monthValue =
+      String(
+        draft?.month ||
+        ''
+      );
+
+    if (
+      !/^\d{4}-\d{2}$/.test(monthValue) &&
+      typeof getPlanningAssistantMonth === 'function'
+    ) {
+      monthValue =
+        String(
+          getPlanningAssistantMonth() ||
+          ''
+        );
+    }
+
+    if (!/^\d{4}-\d{2}$/.test(monthValue)) return;
+
+    const [year, month] =
+      monthValue.split('-').map(Number);
+
+    decorateTable(
+      table,
+      year,
+      month
+    );
+  }
+
+  /* Planning principal :
+     on applique le style uniquement APRÈS le rendu existant. */
+  if (
+    typeof window.renderGlobalView === 'function' &&
+    !window.renderGlobalView.__dayWeekendWrapped
+  ) {
+    const originalGlobal =
+      window.renderGlobalView;
+
+    const wrappedGlobal =
+      function(...args) {
+        const result =
+          originalGlobal.apply(
+            this,
+            args
+          );
+
+        decorateMainPlanning();
+        return result;
+      };
+
+    wrappedGlobal.__dayWeekendWrapped = true;
+
+    window.renderGlobalView =
+      wrappedGlobal;
+  }
+
+  /* Planning IA :
+     pareil, aucun observer et aucune boucle. */
+  if (
+    typeof window.renderAutomaticPlanningDraft === 'function' &&
+    !window.renderAutomaticPlanningDraft.__dayWeekendWrapped
+  ) {
+    const originalIa =
+      window.renderAutomaticPlanningDraft;
+
+    const wrappedIa =
+      function(draft, ...args) {
+        const result =
+          originalIa.call(
+            this,
+            draft,
+            ...args
+          );
+
+        decorateIaPlanning(draft);
+        return result;
+      };
+
+    wrappedIa.__dayWeekendWrapped = true;
+
+    window.renderAutomaticPlanningDraft =
+      wrappedIa;
+  }
+
+  /* Une seule application au chargement, si les tableaux sont déjà affichés. */
+  const runOnce = () => {
+    decorateMainPlanning();
+    decorateIaPlanning(
+      typeof planningAssistantDraft !== 'undefined'
+        ? planningAssistantDraft
+        : null
+    );
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener(
+      'DOMContentLoaded',
+      runOnce,
+      { once:true }
+    );
+  } else {
+    runOnce();
+  }
+
+  console.info(
+    '[iCHEF] Patch léger jour/date + week-end gris chargé'
+  );
+})();
+</script>
 
 </body>
 </html>
