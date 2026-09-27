@@ -3621,6 +3621,29 @@
                                     <input id="rh-setting-manager-advisor" type="checkbox" checked>
                                     <i><b>ON</b><em>OFF</em></i>
                                 </label>
+
+                                <label class="v132-switch-card v133-critical-card">
+                                    <span>
+                                        <strong>Cuisine obligatoire si service ouvert</strong>
+                                        <small>Empêche un planning où la salle travaille mais où aucun cuisinier qualifié n'est présent.</small>
+                                    </span>
+                                    <input id="rh-setting-kitchen-critical" type="checkbox" checked>
+                                    <i><b>ON</b><em>OFF</em></i>
+                                </label>
+
+                                <div class="v133-kitchen-min-card">
+                                    <span>
+                                        <strong>Minimum cuisine / service ouvert</strong>
+                                        <small>Nombre minimal de personnes qualifiées en cuisine.</small>
+                                    </span>
+                                    <input id="rh-setting-kitchen-min"
+                                           class="input-full"
+                                           type="number"
+                                           min="1"
+                                           max="10"
+                                           step="1"
+                                           value="1">
+                                </div>
                             </div>
 
                             <div id="v132-manager-advice" class="v132-manager-advice">
@@ -4755,7 +4778,11 @@
                 serviceContinuousEnabled: true,
                 serviceSplitEnabled: true,
                 optimizeStaffChoice: true,
-                managerServiceAdvisorEnabled: true
+                managerServiceAdvisorEnabled: true,
+
+                // V133 · couverture critique
+                kitchenCriticalCoverageEnabled: true,
+                kitchenMinQualifiedPerOpenService: 1
             };
 
             const saved =
@@ -4845,6 +4872,19 @@
                     source.managerServiceAdvisorEnabled !== false &&
                     String(source.managerServiceAdvisorEnabled) !== 'false',
 
+                kitchenCriticalCoverageEnabled:
+                    source.kitchenCriticalCoverageEnabled !== false &&
+                    String(source.kitchenCriticalCoverageEnabled) !== 'false',
+
+                kitchenMinQualifiedPerOpenService:
+                    Math.max(
+                        1,
+                        Math.min(
+                            10,
+                            Number(source.kitchenMinQualifiedPerOpenService) || 1
+                        )
+                    ),
+
                 updatedAt: new Date().toISOString()
             };
 
@@ -4904,6 +4944,12 @@
 
             const managerAdvisor = document.getElementById('rh-setting-manager-advisor');
             if (managerAdvisor) managerAdvisor.checked = s.managerServiceAdvisorEnabled !== false;
+
+            const kitchenCritical = document.getElementById('rh-setting-kitchen-critical');
+            if (kitchenCritical) kitchenCritical.checked = s.kitchenCriticalCoverageEnabled !== false;
+
+            const kitchenMin = document.getElementById('rh-setting-kitchen-min');
+            if (kitchenMin) kitchenMin.value = Math.max(1, Number(s.kitchenMinQualifiedPerOpenService || 1));
 
             if (typeof refreshRhServiceStrategyAdvice === 'function') {
                 refreshRhServiceStrategyAdvice();
@@ -4974,6 +5020,12 @@
 
                 managerServiceAdvisorEnabled:
                     document.getElementById('rh-setting-manager-advisor')?.checked !== false,
+
+                kitchenCriticalCoverageEnabled:
+                    document.getElementById('rh-setting-kitchen-critical')?.checked !== false,
+
+                kitchenMinQualifiedPerOpenService:
+                    document.getElementById('rh-setting-kitchen-min')?.value || 1,
 
                 planningTimezone:
                     'Europe/Paris'
@@ -7230,6 +7282,92 @@
             return Math.max(1, Math.min(activeCount, Math.ceil(activeCount * factor)));
         }
 
+
+        function assistantCriticalKitchenIssues(proposal, staffList, monthStr, settings) {
+            if (settings?.kitchenCriticalCoverageEnabled === false) return [];
+
+            const [year, month] = String(monthStr).split('-').map(Number);
+            const daysInMonth = new Date(year, month, 0).getDate();
+            const minKitchen = Math.max(
+                1,
+                Number(settings?.kitchenMinQualifiedPerOpenService || 1)
+            );
+
+            const kitchenQualified = (staffList || []).filter(staff =>
+                staff?.active !== false &&
+                assistantStaffCanCoverDept(staff, 'cuisine')
+            );
+
+            const issues = [];
+
+            for (let day = 1; day <= daysInMonth; day++) {
+                for (const service of ['lunch', 'dinner']) {
+
+                    // Le service est considéré ouvert si au moins une personne
+                    // hors cuisine est planifiée sur ce créneau.
+                    const openByOtherStaff = (staffList || []).some(staff => {
+                        if (staff?.active === false) return false;
+                        if (assistantStaffCanCoverDept(staff, 'cuisine')) return false;
+
+                        const p = proposal?.[staff.id]?.[day] ||
+                                  proposal?.[String(staff.id)]?.[day];
+
+                        return assistantDayWorksService(p, service);
+                    });
+
+                    if (!openByOtherStaff) continue;
+
+                    const kitchenPresent = kitchenQualified.filter(staff => {
+                        const p = proposal?.[staff.id]?.[day] ||
+                                  proposal?.[String(staff.id)]?.[day];
+                        return assistantDayWorksService(p, service);
+                    });
+
+                    if (kitchenPresent.length >= minKitchen) continue;
+
+                    const dateLabel =
+                        `${String(day).padStart(2,'0')}/${String(month).padStart(2,'0')}`;
+
+                    const serviceLabel = service === 'lunch' ? 'MIDI' : 'SOIR';
+
+                    if (kitchenQualified.length === 1) {
+                        issues.push({
+                            day,
+                            service,
+                            severity: 'critical',
+                            code: 'KITCHEN_UNIQUE',
+                            message:
+                                `${dateLabel} · ${serviceLabel} · CUISINE NON COUVERTE : ` +
+                                `${kitchenQualified[0].name || 'le seul cuisinier qualifié'} est l’unique ressource cuisine. ` +
+                                `Planifier cette personne, prévoir un remplaçant qualifié ou fermer ce service.`
+                        });
+                    } else if (!kitchenQualified.length) {
+                        issues.push({
+                            day,
+                            service,
+                            severity: 'critical',
+                            code: 'KITCHEN_NONE',
+                            message:
+                                `${dateLabel} · ${serviceLabel} · CUISINE IMPOSSIBLE : ` +
+                                `aucun collaborateur actif n’est identifié comme qualifié cuisine.`
+                        });
+                    } else {
+                        issues.push({
+                            day,
+                            service,
+                            severity: 'critical',
+                            code: 'KITCHEN_UNDER',
+                            message:
+                                `${dateLabel} · ${serviceLabel} · CUISINE SOUS-COUVERTE : ` +
+                                `${kitchenPresent.length}/${minKitchen} personne(s) cuisine qualifiée(s).`
+                        });
+                    }
+                }
+            }
+
+            return issues;
+        }
+
         function buildPlanningAssistantStaffAnalysis() {
             const monthStr = getPlanningAssistantMonth();
             const [year, month] = monthStr.split('-').map(Number);
@@ -7707,7 +7845,15 @@
         function assistantCandidateScore(staff, state, dept, day, service, demand, settings, proposal) {
             const target = Math.max(1, Number(state.target || 0));
             const deficit = Number(state.target || 0) - Number(state.hours || 0);
-            if (deficit <= -2.5) return -99999;
+
+            const criticalKitchen =
+                dept === 'cuisine' &&
+                settings?.kitchenCriticalCoverageEnabled !== false;
+
+            // V133 : un poste cuisine critique ne doit pas être éliminé
+            // uniquement parce que le collaborateur a atteint son objectif d'heures.
+            // Les contraintes de disponibilité, repos et jours consécutifs restent bloquantes.
+            if (deficit <= -2.5 && !criticalKitchen) return -99999;
 
             const dateObj = new Date(state.year, state.month - 1, day);
             if (!assistantAvailabilityAllows(staff, dateObj, service)) return -99999;
@@ -7719,6 +7865,12 @@
 
             let score = (deficit / target) * 100;
             score += String(staff.dept || '') === dept ? 32 : 9;
+
+            if (criticalKitchen) {
+                // Priorité forte : mieux vaut signaler une éventuelle heure sup.
+                // que produire un planning avec cuisine fermée involontairement.
+                score += 260;
+            }
 
             const rush = Number(demand?.score || 1);
             score += assistantSkillScore(staff) * (rush >= 1.5 ? 9 : 4);
@@ -8360,6 +8512,17 @@
                 warnings.push(`${uncovered.length} service(s) restent sous le niveau de couverture calculé.`);
             }
 
+            const criticalIssues = assistantCriticalKitchenIssues(
+                proposal,
+                staffList,
+                monthStr,
+                settings
+            );
+
+            criticalIssues.forEach(issue => {
+                warnings.unshift(`BLOQUANT · ${issue.message}`);
+            });
+
             const plannableDaysCount = (isCurrentMonth && settings.preservePastDays)
                 ? Math.max(0, daysInMonth - Math.max(1, now.getDate()) + 1)
                 : daysInMonth;
@@ -8376,6 +8539,7 @@
                 demand,
                 warnings,
                 uncovered,
+                criticalIssues,
                 metrics: {
                     totalTarget,
                     totalPlanned,
@@ -8505,10 +8669,18 @@
             if (applyBtn) {
                 const coverageOk = Number(draft.metrics?.coveragePct || 0) >= 85;
                 const balanceOk = Number(draft.metrics?.staffBalanced || 0) >= Math.max(1, Math.ceil(Number(draft.metrics?.staffCount || 0) * 0.6));
-                applyBtn.disabled = !(coverageOk && balanceOk);
-                applyBtn.title = applyBtn.disabled
-                    ? 'La proposition doit encore être équilibrée ou mieux couvrir les besoins avant application.'
-                    : 'Valider et appliquer la proposition au planning officiel.';
+                const criticalOk = !Array.isArray(draft.criticalIssues) || draft.criticalIssues.length === 0;
+
+                applyBtn.disabled = !(coverageOk && balanceOk && criticalOk);
+
+                if (!criticalOk) {
+                    applyBtn.title =
+                        'Application bloquée : au moins un service est ouvert sans couverture cuisine qualifiée.';
+                } else {
+                    applyBtn.title = applyBtn.disabled
+                        ? 'La proposition doit encore être équilibrée ou mieux couvrir les besoins avant application.'
+                        : 'Valider et appliquer la proposition au planning officiel.';
+                }
             }
         }
 
@@ -16497,6 +16669,18 @@ console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilib
   // Application IA : motif non demandé en planification normale. En relève automatique,
   // la cause système est enregistrée et la publication ne demande aucune validation.
   window.applyAutomaticPlanning=async function(options={}){
+    if(
+      Array.isArray(planningAssistantDraft?.criticalIssues) &&
+      planningAssistantDraft.criticalIssues.length
+    ){
+      const first=planningAssistantDraft.criticalIssues[0];
+      alert(
+        'PLANNING BLOQUÉ\n\n' +
+        (first?.message || 'Un service est ouvert sans couverture cuisine qualifiée.') +
+        '\n\nCorrigez la couverture cuisine ou fermez le service concerné avant validation.'
+      );
+      return false;
+    }
     const auto=options===true||options?.auto===true;
     if(!planningAssistantDraft){if(auto){planningAssistantDraft=buildAutomaticPlanningDraft();renderAutomaticPlanningDraft(planningAssistantDraft);}else{alert('Générez d’abord une proposition de planning.');return false;}}
     const settings=getRhSettings();if(settings.planningStatus==='locked'){if(!auto)alert('Le planning est clôturé / verrouillé.');return false;}
@@ -19142,6 +19326,1500 @@ console.info('[iCHEF RH V131] équilibre + paramètres déplacés dans un bouton
 <script id="ichef-rh-v132-marker">
 window.__ICHEF_RH_BUILD__='RH-V132-SERVICE-STRATEGY';
 console.info('[iCHEF RH V132] continu/coupé + optimisation staff + conseil manager');
+</script>
+
+
+<style id="ichef-rh-v133-critical-kitchen">
+#ia-predictions-modal .v132-switch-grid{
+  grid-template-columns:repeat(3,minmax(0,1fr)) !important;
+}
+
+#ia-predictions-modal .v133-critical-card{
+  border-color:rgba(255,174,66,.42) !important;
+  background:rgba(255,174,66,.035) !important;
+}
+
+#ia-predictions-modal .v133-kitchen-min-card{
+  min-width:0;
+  min-height:62px;
+  padding:8px 9px;
+  box-sizing:border-box;
+  border:1px solid #28343d;
+  border-radius:9px;
+  background:#10161a;
+  display:grid;
+  grid-template-columns:minmax(0,1fr) 72px;
+  align-items:center;
+  gap:8px;
+}
+
+#ia-predictions-modal .v133-kitchen-min-card > span{
+  min-width:0;
+}
+
+#ia-predictions-modal .v133-kitchen-min-card strong{
+  display:block;
+  color:#f1f3f4;
+  font-size:.62rem;
+  line-height:1.1;
+}
+
+#ia-predictions-modal .v133-kitchen-min-card small{
+  display:block;
+  margin-top:4px;
+  color:#7d8790;
+  font-size:.51rem;
+  line-height:1.2;
+}
+
+#ia-predictions-modal .v133-kitchen-min-card input{
+  width:72px !important;
+  min-width:72px !important;
+  height:34px !important;
+  min-height:34px !important;
+  padding:0 8px !important;
+  margin:0 !important;
+  text-align:center;
+}
+
+@media(max-width:1050px){
+  #ia-predictions-modal .v132-switch-grid{
+    grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+  }
+}
+
+@media(max-width:620px){
+  #ia-predictions-modal .v132-switch-grid{
+    grid-template-columns:1fr !important;
+  }
+}
+</style>
+
+
+<script id="ichef-rh-v133-critical-kitchen-js">
+(() => {
+  'use strict';
+
+  function bindV133(){
+    [
+      'rh-setting-kitchen-critical',
+      'rh-setting-kitchen-min'
+    ].forEach(id => {
+      document.getElementById(id)?.addEventListener('change', () => {
+        if (typeof refreshRhServiceStrategyAdvice === 'function') {
+          refreshRhServiceStrategyAdvice();
+        }
+      });
+    });
+  }
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',bindV133,{once:true});
+  }else{
+    bindV133();
+  }
+
+  window.__ICHEF_RH_CRITICAL_KITCHEN_BUILD__='V133';
+})();
+</script>
+
+
+<script id="ichef-rh-v133-marker">
+window.__ICHEF_RH_BUILD__='RH-V133-CRITICAL-KITCHEN-COVERAGE';
+console.info('[iCHEF RH V133] couverture cuisine critique + blocage validation');
+</script>
+
+
+<style id="ichef-rh-v134-last-minute">
+/* =========================================================
+   iCHEF RH V134 — IMPRÉVUS DE DERNIÈRE MINUTE
+   Retard · maladie · no-show · accident · urgence · départ.
+   ========================================================= */
+
+#ia-predictions-modal .v134-emergency-settings{
+  margin-top:9px;
+  padding:10px;
+  border:1px solid rgba(239,68,68,.28);
+  border-radius:9px;
+  background:rgba(239,68,68,.025);
+}
+
+#ia-predictions-modal .v134-emergency-settings-head{
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-start;
+  gap:10px;
+  margin-bottom:8px;
+}
+
+#ia-predictions-modal .v134-emergency-settings-head strong{
+  display:block;
+  color:#ff9b77;
+  font-size:.66rem;
+  letter-spacing:.5px;
+}
+
+#ia-predictions-modal .v134-emergency-settings-head small{
+  display:block;
+  margin-top:3px;
+  color:#7f8992;
+  font-size:.52rem;
+  line-height:1.25;
+}
+
+#ia-predictions-modal .v134-emergency-settings-grid{
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:7px;
+}
+
+#ia-predictions-modal .v134-setting-card{
+  min-width:0;
+  min-height:58px;
+  padding:8px;
+  box-sizing:border-box;
+  border:1px solid #28343d;
+  border-radius:8px;
+  background:#10161a;
+}
+
+#ia-predictions-modal .v134-setting-card strong{
+  display:block;
+  color:#edf0f2;
+  font-size:.59rem;
+  line-height:1.15;
+}
+
+#ia-predictions-modal .v134-setting-card small{
+  display:block;
+  margin-top:4px;
+  color:#78838c;
+  font-size:.49rem;
+  line-height:1.2;
+}
+
+#ia-predictions-modal .v134-setting-card input[type="number"]{
+  width:72px !important;
+  height:32px !important;
+  margin-top:6px !important;
+  padding:0 8px !important;
+  text-align:center;
+}
+
+#ia-predictions-modal .v134-setting-check{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+}
+
+#ia-predictions-modal .v134-setting-check input{
+  accent-color:#1fc993;
+  width:17px;
+  height:17px;
+}
+
+/* Bouton rapide */
+#ia-predictions-modal #v134-emergency-btn{
+  width:100% !important;
+  min-height:48px !important;
+  margin:7px 0 0 !important;
+  padding:8px 13px !important;
+  border:1px solid rgba(255,126,96,.42) !important;
+  border-radius:10px !important;
+  background:#17100e !important;
+  color:#ff9b77 !important;
+  box-shadow:none !important;
+  display:flex !important;
+  align-items:center !important;
+  justify-content:space-between !important;
+  gap:10px !important;
+  cursor:pointer !important;
+  text-align:left !important;
+}
+
+#ia-predictions-modal #v134-emergency-btn strong{
+  display:block;
+  color:#fff;
+  font-size:.71rem;
+  letter-spacing:.6px;
+}
+
+#ia-predictions-modal #v134-emergency-btn small{
+  display:block;
+  margin-top:3px;
+  color:#8c8582;
+  font-size:.54rem;
+}
+
+#ia-predictions-modal #v134-emergency-btn .v134-alert-count{
+  min-width:24px;
+  height:24px;
+  padding:0 6px;
+  border-radius:999px;
+  display:grid;
+  place-items:center;
+  background:#ff765c;
+  color:#160806;
+  font-size:.58rem;
+  font-weight:900;
+}
+
+/* Modal imprévu */
+#v134-emergency-overlay{
+  position:fixed;
+  inset:0;
+  z-index:50000;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  padding:18px;
+  box-sizing:border-box;
+  background:rgba(0,0,0,.80);
+  backdrop-filter:blur(10px);
+  -webkit-backdrop-filter:blur(10px);
+}
+
+#v134-emergency-overlay.show{display:flex}
+
+#v134-emergency-panel{
+  width:min(1120px,97vw);
+  max-height:92vh;
+  overflow:auto;
+  border:1px solid #39454e;
+  border-radius:14px;
+  background:#0a0d0f;
+  box-shadow:0 30px 85px rgba(0,0,0,.66);
+  color:#fff;
+}
+
+#v134-emergency-head{
+  position:sticky;
+  top:0;
+  z-index:4;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  padding:13px 15px;
+  border-bottom:1px solid #273139;
+  background:#0a0d0f;
+}
+
+#v134-emergency-head strong{
+  color:#ff9b77;
+  font-size:.86rem;
+  letter-spacing:.8px;
+}
+
+#v134-emergency-head small{
+  display:block;
+  margin-top:3px;
+  color:#7d8790;
+  font-size:.56rem;
+}
+
+#v134-emergency-close{
+  width:34px;
+  height:34px;
+  border:1px solid #37424b;
+  border-radius:50%;
+  background:#11171b;
+  color:#dce1e4;
+  cursor:pointer;
+}
+
+#v134-emergency-body{
+  padding:13px;
+}
+
+.v134-risks{
+  margin-bottom:10px;
+  padding:10px;
+  border:1px solid #2b353d;
+  border-radius:10px;
+  background:#0e1316;
+}
+
+.v134-risks-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  margin-bottom:7px;
+}
+
+.v134-risks-head strong{
+  color:#e8c85f;
+  font-size:.67rem;
+}
+
+.v134-risks-head button{
+  min-height:30px;
+  border:1px solid #36424b;
+  border-radius:7px;
+  background:#11171b;
+  color:#d8dee2;
+  font-size:.5rem;
+  font-weight:900;
+  cursor:pointer;
+}
+
+#v134-risk-list{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:6px;
+}
+
+.v134-risk{
+  min-width:0;
+  padding:8px;
+  border:1px solid rgba(255,155,119,.24);
+  border-radius:8px;
+  background:rgba(255,155,119,.025);
+  cursor:pointer;
+}
+
+.v134-risk b{
+  display:block;
+  color:#f1f3f4;
+  font-size:.58rem;
+}
+
+.v134-risk span{
+  display:block;
+  margin-top:3px;
+  color:#ff9b77;
+  font-size:.52rem;
+  font-weight:800;
+}
+
+.v134-risk small{
+  display:block;
+  margin-top:3px;
+  color:#76818a;
+  font-size:.48rem;
+  line-height:1.2;
+}
+
+.v134-form-grid{
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:8px;
+}
+
+.v134-field{
+  min-width:0;
+}
+
+.v134-field label{
+  display:block;
+  margin-bottom:5px;
+  color:#7d8790;
+  font-size:.51rem;
+  font-weight:900;
+  letter-spacing:.5px;
+  text-transform:uppercase;
+}
+
+.v134-field select,
+.v134-field input,
+.v134-field textarea{
+  width:100%;
+  min-height:39px;
+  box-sizing:border-box;
+  border:1px solid #34404a;
+  border-radius:8px;
+  background:#0d1215;
+  color:#fff;
+  padding:0 9px;
+  outline:none;
+}
+
+.v134-field textarea{
+  min-height:62px;
+  padding:9px;
+  resize:vertical;
+}
+
+.v134-field.full{grid-column:1/-1}
+
+.v134-analyse-row{
+  margin-top:9px;
+  display:flex;
+  justify-content:flex-end;
+  gap:8px;
+}
+
+.v134-analyse-row button{
+  min-height:39px;
+  padding:0 13px;
+  border-radius:8px;
+  font-size:.57rem;
+  font-weight:900;
+  cursor:pointer;
+}
+
+#v134-analyse{
+  border:1px solid #e1b94d;
+  background:#1a170e;
+  color:#e8c85f;
+}
+
+#v134-apply{
+  border:1px solid #20c995;
+  background:rgba(32,201,149,.08);
+  color:#42d7a6;
+}
+
+#v134-apply:disabled{
+  opacity:.35;
+  cursor:not-allowed;
+}
+
+#v134-result{
+  margin-top:10px;
+}
+
+.v134-result-summary{
+  padding:10px;
+  border:1px solid #2f3b43;
+  border-radius:9px;
+  background:#0d1215;
+}
+
+.v134-result-summary strong{
+  color:#f0f2f3;
+  font-size:.68rem;
+}
+
+.v134-result-summary p{
+  margin:5px 0 0;
+  color:#8a949c;
+  font-size:.57rem;
+  line-height:1.35;
+}
+
+.v134-critical{
+  margin-top:7px;
+  padding:8px 9px;
+  border:1px solid rgba(255,87,87,.45);
+  border-radius:8px;
+  background:rgba(255,87,87,.06);
+  color:#ff9c9c;
+  font-size:.58rem;
+  font-weight:800;
+  line-height:1.35;
+}
+
+.v134-candidates{
+  margin-top:8px;
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:7px;
+}
+
+.v134-candidate{
+  min-width:0;
+  padding:9px;
+  border:1px solid #2c3740;
+  border-radius:9px;
+  background:#0d1317;
+  cursor:pointer;
+}
+
+.v134-candidate.selected{
+  border-color:#20c995;
+  background:rgba(32,201,149,.055);
+}
+
+.v134-candidate b{
+  display:block;
+  color:#f2f4f5;
+  font-size:.62rem;
+}
+
+.v134-candidate span{
+  display:block;
+  margin-top:4px;
+  color:#50d8a8;
+  font-size:.53rem;
+  font-weight:800;
+}
+
+.v134-candidate small{
+  display:block;
+  margin-top:4px;
+  color:#78838b;
+  font-size:.49rem;
+  line-height:1.25;
+}
+
+.v134-log-note{
+  margin-top:9px;
+  color:#6f7981;
+  font-size:.5rem;
+  line-height:1.3;
+}
+
+@media(max-width:980px){
+  #ia-predictions-modal .v134-emergency-settings-grid,
+  .v134-form-grid{
+    grid-template-columns:repeat(2,minmax(0,1fr));
+  }
+  #v134-risk-list,
+  .v134-candidates{
+    grid-template-columns:repeat(2,minmax(0,1fr));
+  }
+}
+
+@media(max-width:600px){
+  #ia-predictions-modal .v134-emergency-settings-grid,
+  .v134-form-grid,
+  #v134-risk-list,
+  .v134-candidates{
+    grid-template-columns:1fr;
+  }
+}
+</style>
+
+
+<script id="ichef-rh-v134-last-minute-js">
+(() => {
+  'use strict';
+
+  const SETTINGS_KEY='ichef_rh_last_minute_settings';
+  const EVENTS_KEY='ichef_rh_last_minute_events';
+
+  let currentAnalysis=null;
+  let selectedCandidateId='';
+
+  function cfg(){
+    let saved={};
+    try{saved=JSON.parse(localStorage.getItem(SETTINGS_KEY)||'{}')||{}}catch(_){}
+    return {
+      enabled:saved.enabled!==false,
+      detectLate:saved.detectLate!==false,
+      lateMinutes:Math.max(1,Number(saved.lateMinutes)||10),
+      noShowMinutes:Math.max(5,Number(saved.noShowMinutes)||20),
+      maxSuggestions:Math.max(1,Math.min(10,Number(saved.maxSuggestions)||5)),
+      managerValidation:true
+    };
+  }
+
+  function saveCfg(next){
+    const clean={...cfg(),...(next||{})};
+    localStorage.setItem(SETTINGS_KEY,JSON.stringify(clean));
+    try{API?.update?.('RH_LAST_MINUTE_SETTINGS',clean)}catch(_){}
+    return clean;
+  }
+
+  function events(){
+    try{
+      const v=JSON.parse(localStorage.getItem(EVENTS_KEY)||'[]');
+      return Array.isArray(v)?v:[];
+    }catch(_){return []}
+  }
+
+  function saveEvents(list){
+    const safe=Array.isArray(list)?list.slice(-500):[];
+    localStorage.setItem(EVENTS_KEY,JSON.stringify(safe));
+    try{API?.update?.('RH_LAST_MINUTE_EVENTS',safe)}catch(_){}
+  }
+
+  function esc(v){
+    return typeof escapeRhHtml==='function'
+      ? escapeRhHtml(String(v??''))
+      : String(v??'').replace(/[&<>"']/g,c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;' }[c]));
+  }
+
+  function localDateKey(d=new Date()){
+    const y=d.getFullYear();
+    const m=String(d.getMonth()+1).padStart(2,'0');
+    const day=String(d.getDate()).padStart(2,'0');
+    return `${y}-${m}-${day}`;
+  }
+
+  function monthKey(dateStr){
+    return String(dateStr||'').slice(0,7);
+  }
+
+  function dayNum(dateStr){
+    return Number(String(dateStr||'').slice(8,10));
+  }
+
+  function getDayPlan(staffId,dateStr){
+    const ts=typeof getTs==='function'?getTs():{};
+    const month=monthKey(dateStr);
+    const day=dayNum(dateStr);
+    return ts?.[month]?.[staffId]?.[day] ||
+           ts?.[month]?.[String(staffId)]?.[day] ||
+           null;
+  }
+
+  function parseStart(range){
+    const s=String(range||'').split('-')[0];
+    const m=s.match(/^(\d{1,2}):(\d{2})$/);
+    if(!m)return null;
+    return Number(m[1])*60+Number(m[2]);
+  }
+
+  function parseEnd(range){
+    const s=String(range||'').split('-')[1];
+    const m=s?.match(/^(\d{1,2}):(\d{2})$/);
+    if(!m)return null;
+    return Number(m[1])*60+Number(m[2]);
+  }
+
+  function punchType(p){
+    const t=String(p?.type||'').toUpperCase();
+    if(t.includes('IN')||t.includes('ENTR'))return 'IN';
+    if(t.includes('OUT')||t.includes('SORT'))return 'OUT';
+    return t;
+  }
+
+  function punchDate(p){
+    const ts=Number(p?.timestamp||p?.clientTimestamp||0);
+    return ts?localDateKey(new Date(ts)):'';
+  }
+
+  function firstEntryFor(staffId,dateStr){
+    const list=(typeof getPunches==='function'?getPunches():[])
+      .filter(p=>String(p?.staffId)===String(staffId))
+      .filter(p=>punchDate(p)===dateStr)
+      .filter(p=>punchType(p)==='IN')
+      .sort((a,b)=>Number(a.timestamp||a.clientTimestamp||0)-Number(b.timestamp||b.clientTimestamp||0));
+    return list[0]||null;
+  }
+
+  function staffMonthlyHours(staffId,month){
+    const node=(typeof getTs==='function'?getTs():{})?.[month]?.[staffId] ||
+               (typeof getTs==='function'?getTs():{})?.[month]?.[String(staffId)] ||
+               {};
+    return Object.values(node||{}).reduce((sum,p)=>sum+(typeof calculateNet==='function'?Number(calculateNet(p)||0):0),0);
+  }
+
+  function staffMonthlyTarget(staff){
+    const weekly=Math.max(0,Number(staff?.contract)||0);
+    return weekly*52/12;
+  }
+
+  function activeNow(staffId,dateStr){
+    const entries=(typeof getPunches==='function'?getPunches():[])
+      .filter(p=>String(p?.staffId)===String(staffId))
+      .filter(p=>punchDate(p)===dateStr)
+      .sort((a,b)=>Number(a.timestamp||a.clientTimestamp||0)-Number(b.timestamp||b.clientTimestamp||0));
+
+    let open=false;
+    entries.forEach(p=>{
+      if(punchType(p)==='IN')open=true;
+      if(punchType(p)==='OUT')open=false;
+    });
+    return open;
+  }
+
+  function serviceFromPlan(plan,requested){
+    if(requested&&requested!=='auto')return requested;
+    if(plan?.s1&&plan?.s2)return 'day';
+    if(plan?.s1)return 'lunch';
+    if(plan?.s2)return 'dinner';
+    return 'day';
+  }
+
+  function workStatusForRemaining(plan){
+    if(plan?.s1&&plan?.s2)return 'present';
+    if(plan?.s1)return 'off_soir';
+    if(plan?.s2)return 'off_matin';
+    return 'off';
+  }
+
+  function detectRisks(){
+    const c=cfg();
+    if(!c.enabled||!c.detectLate)return [];
+
+    const dateStr=localDateKey();
+    const now=new Date();
+    const nowMin=now.getHours()*60+now.getMinutes();
+    const dir=(typeof getDir==='function'?getDir():[]).filter(s=>s.active!==false);
+    const risks=[];
+
+    dir.forEach(staff=>{
+      const plan=getDayPlan(staff.id,dateStr);
+      if(!plan || !(typeof isRhWorkStatus==='function'?isRhWorkStatus(plan.status):false))return;
+
+      const starts=[parseStart(plan.s1),parseStart(plan.s2)].filter(Number.isFinite);
+      const ends=[parseEnd(plan.s1),parseEnd(plan.s2)].filter(Number.isFinite);
+      if(!starts.length)return;
+
+      const start=Math.min(...starts);
+      const end=ends.length?Math.max(...ends):start+480;
+      const entry=firstEntryFor(staff.id,dateStr);
+
+      if(entry){
+        const dt=new Date(Number(entry.timestamp||entry.clientTimestamp||0));
+        const entryMin=dt.getHours()*60+dt.getMinutes();
+        const late=entryMin-start;
+        if(late>=c.lateMinutes){
+          risks.push({
+            staffId:String(staff.id),
+            type:'retard',
+            delayMinutes:late,
+            date:dateStr,
+            service:'auto',
+            label:`${staff.name} · retard ${late} min`,
+            detail:'Détecté depuis le premier pointage du jour.'
+          });
+        }
+      }else if(nowMin>=start+c.noShowMinutes && nowMin<=end+120){
+        risks.push({
+          staffId:String(staff.id),
+          type:'no_show',
+          delayMinutes:nowMin-start,
+          date:dateStr,
+          service:'auto',
+          label:`${staff.name} · non pointé`,
+          detail:`À vérifier · début prévu dépassé de ${Math.max(0,nowMin-start)} min.`
+        });
+      }
+    });
+
+    return risks;
+  }
+
+  function renderRiskList(){
+    const list=document.getElementById('v134-risk-list');
+    const badge=document.querySelector('#v134-emergency-btn .v134-alert-count');
+    if(!list)return;
+
+    const risks=detectRisks();
+    if(badge)badge.textContent=String(risks.length);
+
+    list.innerHTML=risks.length
+      ? risks.map((r,i)=>`
+          <div class="v134-risk" data-risk-index="${i}">
+            <b>${esc(r.label)}</b>
+            <span>${r.type==='retard'?'RETARD':'NON POINTÉ · À VÉRIFIER'}</span>
+            <small>${esc(r.detail)}</small>
+          </div>
+        `).join('')
+      : '<div style="color:#69747c;font-size:.55rem;padding:4px;">Aucun retard / non-pointé détecté sur les données disponibles.</div>';
+
+    list.querySelectorAll('[data-risk-index]').forEach(el=>{
+      el.addEventListener('click',()=>{
+        const r=risks[Number(el.dataset.riskIndex)];
+        if(!r)return;
+        fillEvent(r);
+        analyse();
+      });
+    });
+  }
+
+  function eligibleCandidate(candidate,affected,dept,dateStr,service){
+    if(candidate.active===false)return false;
+    if(String(candidate.id)===String(affected.id))return false;
+
+    if(typeof assistantStaffCanCoverDept==='function' && !assistantStaffCanCoverDept(candidate,dept)){
+      return false;
+    }
+
+    const month=monthKey(dateStr);
+    const day=dayNum(dateStr);
+    const dateObj=new Date(`${dateStr}T12:00:00`);
+    const tsMonth=(typeof getTs==='function'?getTs():{})?.[month]||{};
+    const p=tsMonth?.[candidate.id]?.[day]||tsMonth?.[String(candidate.id)]?.[day]||null;
+
+    if(p && typeof isRhLeaveStatus==='function' && isRhLeaveStatus(p.status))return false;
+
+    const services=service==='day'?['lunch','dinner']:[service];
+
+    for(const srv of services){
+      if(typeof assistantAvailabilityAllows==='function' && !assistantAvailabilityAllows(candidate,dateObj,srv)){
+        return false;
+      }
+
+      if(typeof assistantRestAllows==='function' && !assistantRestAllows(tsMonth,candidate,day,srv,typeof getRhSettings==='function'?getRhSettings():{})){
+        return false;
+      }
+
+      if(typeof assistantWeekQuotaAllows==='function' && !assistantWeekQuotaAllows(
+        tsMonth,
+        candidate.id,
+        day,
+        typeof getRhSettings==='function'?getRhSettings():{},
+        dateObj.getFullYear(),
+        dateObj.getMonth()+1,
+        srv
+      )){
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  function candidateScore(candidate,affected,dept,dateStr,service){
+    let score=0;
+    const month=monthKey(dateStr);
+    const day=dayNum(dateStr);
+    const p=getDayPlan(candidate.id,dateStr);
+    const currentHours=staffMonthlyHours(candidate.id,month);
+    const target=staffMonthlyTarget(candidate);
+    const deficit=target-currentHours;
+
+    if(String(candidate.dept||'').toLowerCase()===String(dept||'').toLowerCase())score+=70;
+
+    if(typeof assistantSkillScore==='function'){
+      score+=Number(assistantSkillScore(candidate)||0)*8;
+    }
+
+    const skillCount=Array.isArray(candidate.skills)?candidate.skills.filter(Boolean).length:0;
+    score+=Math.min(6,skillCount)*4;
+
+    if(deficit>0)score+=Math.min(50,(deficit/Math.max(1,target))*100);
+    else score-=Math.min(35,Math.abs(deficit)*1.5);
+
+    if(activeNow(candidate.id,dateStr))score+=22;
+
+    if(!p || !(typeof isRhWorkStatus==='function'&&isRhWorkStatus(p.status))){
+      score+=28;
+    }else{
+      const services=service==='day'?['lunch','dinner']:[service];
+      const already=services.some(s=>typeof assistantDayWorksService==='function'&&assistantDayWorksService(p,s));
+      if(already)score-=18;
+      else score+=8;
+    }
+
+    const cost=Number(candidate.hourlyCost||0);
+    score-=cost*0.08;
+
+    return score;
+  }
+
+  function suggestionsFor(evt){
+    const dir=(typeof getDir==='function'?getDir():[]);
+    const affected=dir.find(s=>String(s.id)===String(evt.staffId));
+    if(!affected)return {error:'Collaborateur introuvable.'};
+
+    const plan=getDayPlan(affected.id,evt.date);
+    const dept=String(plan?.poste||affected.dept||'salle').toLowerCase();
+    const service=serviceFromPlan(plan,evt.service);
+
+    const candidates=dir
+      .filter(c=>eligibleCandidate(c,affected,dept,evt.date,service))
+      .map(c=>({
+        staff:c,
+        score:candidateScore(c,affected,dept,evt.date,service),
+        plan:getDayPlan(c.id,evt.date),
+        active:activeNow(c.id,evt.date)
+      }))
+      .sort((a,b)=>b.score-a.score)
+      .slice(0,cfg().maxSuggestions);
+
+    const critical=
+      dept==='cuisine' &&
+      candidates.length===0;
+
+    return {
+      affected,
+      plan,
+      dept,
+      service,
+      candidates,
+      critical
+    };
+  }
+
+  function formEvent(){
+    return {
+      staffId:document.getElementById('v134-staff')?.value||'',
+      type:document.getElementById('v134-type')?.value||'absence',
+      date:document.getElementById('v134-date')?.value||localDateKey(),
+      service:document.getElementById('v134-service')?.value||'auto',
+      delayMinutes:Math.max(0,Number(document.getElementById('v134-delay')?.value)||0),
+      note:String(document.getElementById('v134-note')?.value||'').trim()
+    };
+  }
+
+  function fillEvent(evt){
+    const set=(id,v)=>{const el=document.getElementById(id);if(el)el.value=v??''};
+    set('v134-staff',evt.staffId);
+    set('v134-type',evt.type);
+    set('v134-date',evt.date||localDateKey());
+    set('v134-service',evt.service||'auto');
+    set('v134-delay',evt.delayMinutes||0);
+    set('v134-note',evt.note||'');
+  }
+
+  function renderAnalysis(result,evt){
+    const root=document.getElementById('v134-result');
+    const apply=document.getElementById('v134-apply');
+    if(!root)return;
+
+    selectedCandidateId='';
+    if(apply)apply.disabled=true;
+
+    if(result.error){
+      root.innerHTML=`<div class="v134-critical">${esc(result.error)}</div>`;
+      return;
+    }
+
+    const typeLabel={
+      retard:'RETARD',
+      maladie:'MALADIE',
+      no_show:'ABSENCE / NO-SHOW',
+      accident:'ACCIDENT',
+      urgence:'URGENCE PERSONNELLE',
+      depart:'DÉPART / DÉMISSION',
+      transport:'PROBLÈME DE TRANSPORT',
+      autre:'AUTRE IMPRÉVU'
+    }[evt.type]||String(evt.type).toUpperCase();
+
+    const critical=result.critical
+      ? `<div class="v134-critical">
+           COUVERTURE CRITIQUE : aucun remplaçant qualifié n'est disponible pour ${esc(result.dept)}.
+           ${result.dept==='cuisine'
+             ? 'Si le service reste ouvert, la cuisine ne peut pas fonctionner correctement. Prévoir un remplaçant qualifié ou fermer / réduire le service concerné.'
+             : 'Le manager doit réduire l’activité, déplacer une compétence ou fermer le service concerné.'}
+         </div>`
+      : '';
+
+    root.innerHTML=`
+      <div class="v134-result-summary">
+        <strong>${esc(typeLabel)} · ${esc(result.affected.name)} · ${esc(result.dept.toUpperCase())}</strong>
+        <p>
+          Date : ${esc(evt.date)} · Service : ${esc(result.service.toUpperCase())}.
+          ${evt.type==='retard'&&evt.delayMinutes?` Retard déclaré : ${evt.delayMinutes} min.`:''}
+          iCHEF ne modifie rien tant que le manager n'a pas validé une action.
+        </p>
+      </div>
+      ${critical}
+      <div class="v134-candidates">
+        ${result.candidates.length
+          ? result.candidates.map(c=>`
+              <div class="v134-candidate" data-candidate-id="${esc(c.staff.id)}">
+                <b>${esc(c.staff.name)}</b>
+                <span>${c.active?'DÉJÀ SUR SITE · ':''}${esc(String(c.staff.dept||''))}</span>
+                <small>
+                  Score remplacement ${Math.round(c.score)} ·
+                  ${Number(staffMonthlyHours(c.staff.id,monthKey(evt.date))).toFixed(1)} h planifiées ce mois.
+                </small>
+              </div>
+            `).join('')
+          : '<div style="color:#7d8790;font-size:.56rem;padding:6px;">Aucun remplaçant compatible trouvé avec les contraintes disponibles.</div>'
+        }
+      </div>
+      <div class="v134-log-note">
+        Pour un retard, iCHEF propose un renfort sans supprimer le planning initial.
+        Pour maladie / absence / accident, le service touché peut être transféré au remplaçant.
+        Pour un départ immédiat, le collaborateur est retiré des futurs services après confirmation du manager.
+      </div>
+    `;
+
+    root.querySelectorAll('[data-candidate-id]').forEach(el=>{
+      el.addEventListener('click',()=>{
+        root.querySelectorAll('.v134-candidate').forEach(x=>x.classList.remove('selected'));
+        el.classList.add('selected');
+        selectedCandidateId=el.dataset.candidateId||'';
+        if(apply)apply.disabled=false;
+      });
+    });
+
+    if(result.critical && apply){
+      apply.disabled=true;
+    }else if(evt.type==='depart' && !result.candidates.length && apply){
+      // Le départ peut quand même être enregistré, même si le remplacement reste à résoudre.
+      apply.disabled=false;
+    }
+  }
+
+  function analyse(){
+    const evt=formEvent();
+    if(!evt.staffId)return;
+
+    currentAnalysis={
+      evt,
+      result:suggestionsFor(evt)
+    };
+    renderAnalysis(currentAnalysis.result,evt);
+  }
+
+  function clearService(plan,service,statusWhenEmpty){
+    if(!plan)return;
+    if(service==='lunch'){
+      plan.s1='';
+    }else if(service==='dinner'){
+      plan.s2='';
+    }else{
+      plan.s1='';
+      plan.s2='';
+    }
+
+    if(plan.s1||plan.s2){
+      plan.status=workStatusForRemaining(plan);
+    }else{
+      plan.status=statusWhenEmpty||'off';
+      plan.pause=0;
+    }
+  }
+
+  function ensureStaffDay(ts,staffId,dateStr){
+    const month=monthKey(dateStr);
+    const day=dayNum(dateStr);
+    ts[month]=ts[month]||{};
+    ts[month][staffId]=ts[month][staffId]||{};
+    ts[month][staffId][day]=ts[month][staffId][day]||{
+      status:'off',
+      s1:'',
+      s2:'',
+      pause:0,
+      poste:''
+    };
+    return ts[month][staffId][day];
+  }
+
+  function mappedStatus(type){
+    return {
+      maladie:'maladie',
+      no_show:'absence_injustifiee',
+      accident:'accident_travail',
+      urgence:'absence_autorisee',
+      transport:'absence_autorisee',
+      autre:'absence_autorisee'
+    }[type]||'absence_autorisee';
+  }
+
+  async function applyIncident(){
+    if(!currentAnalysis)return;
+    const {evt,result}=currentAnalysis;
+    const staff=result.affected;
+    if(!staff)return;
+
+    if(result.critical && evt.type!=='depart'){
+      alert(
+        'Aucun remplacement qualifié disponible.\\n\\n' +
+        'Le service ne doit pas être validé comme normalement ouvert sans couverture du poste critique.'
+      );
+      return;
+    }
+
+    const candidate=(typeof getDir==='function'?getDir():[])
+      .find(s=>String(s.id)===String(selectedCandidateId));
+
+    const ts=typeof getTs==='function'?getTs():{};
+    const affectedPlan=ensureStaffDay(ts,String(staff.id),evt.date);
+    const originalPlan=JSON.parse(JSON.stringify(affectedPlan||{}));
+    const service=serviceFromPlan(affectedPlan,evt.service);
+    const settings=typeof getRhSettings==='function'?getRhSettings():{};
+
+    if(evt.type==='retard'){
+      affectedPlan.obs=[
+        affectedPlan.obs,
+        `IMPRÉVU · retard ${evt.delayMinutes||0} min${evt.note?' · '+evt.note:''}`
+      ].filter(Boolean).join(' · ');
+
+      affectedPlan.lastMinuteEvent='retard';
+      affectedPlan.lastMinuteDelay=evt.delayMinutes||0;
+
+      if(candidate){
+        const cp=ensureStaffDay(ts,String(candidate.id),evt.date);
+        cp.managerNote=[
+          cp.managerNote,
+          `Renfort temporaire · retard de ${staff.name} · ${evt.delayMinutes||0} min`
+        ].filter(Boolean).join(' · ');
+        cp.tempCoverMinutes=Math.max(0,Number(evt.delayMinutes)||0);
+        cp.tempCoverDept=result.dept;
+      }
+
+    }else if(evt.type==='depart'){
+      const ok=confirm(
+        `Confirmer le départ immédiat de ${staff.name} à compter du ${evt.date} ?\\n\\n` +
+        `Ses futurs services planifiés seront retirés et devront être réattribués.`
+      );
+      if(!ok)return;
+
+      const dir=getDir();
+      const index=dir.findIndex(s=>String(s.id)===String(staff.id));
+      if(index>=0){
+        dir[index]={...dir[index],active:false,departureDate:evt.date,departureReason:'last_minute'};
+        if(typeof saveDir==='function')saveDir(dir);
+        try{await syncDirectoryMasterToCloud?.(dir)}catch(_){}
+      }
+
+      Object.entries(ts).forEach(([m,node])=>{
+        if(m<monthKey(evt.date))return;
+        const staffNode=node?.[staff.id]||node?.[String(staff.id)];
+        if(!staffNode)return;
+
+        Object.entries(staffNode).forEach(([dayKey,p])=>{
+          const d=Number(dayKey);
+          if(m===monthKey(evt.date) && d<dayNum(evt.date))return;
+          if(p && typeof isRhWorkStatus==='function' && isRhWorkStatus(p.status)){
+            staffNode[dayKey]={
+              ...p,
+              status:'off',
+              s1:'',
+              s2:'',
+              pause:0,
+              obs:[
+                p.obs,
+                'Départ collaborateur · replanification requise'
+              ].filter(Boolean).join(' · ')
+            };
+          }
+        });
+      });
+
+    }else{
+      const status=mappedStatus(evt.type);
+      clearService(affectedPlan,service,status);
+      affectedPlan.obs=[
+        affectedPlan.obs,
+        `IMPRÉVU · ${evt.type}${evt.note?' · '+evt.note:''}`
+      ].filter(Boolean).join(' · ');
+      affectedPlan.lastMinuteEvent=evt.type;
+
+      if(candidate){
+        const cp=ensureStaffDay(ts,String(candidate.id),evt.date);
+
+        const services=service==='day'
+          ? [
+              originalPlan.s1?'lunch':null,
+              originalPlan.s2?'dinner':null
+            ].filter(Boolean)
+          : [service];
+
+        services.forEach(srv=>{
+          if(typeof assistantSetService==='function'){
+            assistantSetService(
+              cp,
+              srv,
+              result.dept,
+              settings,
+              `Remplacement dernière minute · ${staff.name} · ${evt.type}`
+            );
+          }
+        });
+
+        cp.managerNote=[
+          cp.managerNote,
+          `Remplace ${staff.name} · ${evt.type}`
+        ].filter(Boolean).join(' · ');
+      }
+    }
+
+    const saved=await saveTs(ts);
+
+    const log={
+      id:`LM-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
+      at:new Date().toISOString(),
+      tenantID:typeof tenantID_JS!=='undefined'?tenantID_JS:'',
+      staffId:String(staff.id),
+      staffName:String(staff.name||''),
+      type:evt.type,
+      date:evt.date,
+      service,
+      delayMinutes:evt.delayMinutes||0,
+      note:evt.note||'',
+      replacementId:candidate?String(candidate.id):'',
+      replacementName:candidate?String(candidate.name||''):'',
+      dept:result.dept,
+      saved:Boolean(saved)
+    };
+
+    const all=events();
+    all.push(log);
+    saveEvents(all);
+
+    try{
+      recordRhChange?.({
+        type:'PLANNING_LAST_MINUTE_EVENT',
+        source:'DIRECTION_URGENCE',
+        staffId:String(staff.id),
+        staffName:String(staff.name||''),
+        date:evt.date,
+        reason:evt.note||evt.type,
+        message:
+          `Imprévu dernière minute · ${evt.type} · ${staff.name}` +
+          (candidate?` · remplacement ${candidate.name}`:'')
+      });
+    }catch(_){}
+
+    try{
+      loadMonthData?.();
+      loadPublicPlanning?.();
+    }catch(_){}
+
+    if(evt.type==='depart' && typeof generateAutomaticPlanning==='function'){
+      setTimeout(()=>{
+        try{generateAutomaticPlanning()}catch(_){}
+      },120);
+    }
+
+    alert(
+      saved
+        ? `Imprévu enregistré.${candidate?`\\nRemplacement proposé/appliqué : ${candidate.name}.`:''}`
+        : `Imprévu enregistré localement, mais la synchronisation serveur doit être reprise.`
+    );
+
+    closeEmergency();
+    refreshBadge();
+  }
+
+  function populateStaff(){
+    const select=document.getElementById('v134-staff');
+    if(!select)return;
+    const dir=(typeof getDir==='function'?getDir():[]).filter(s=>s.active!==false);
+    select.innerHTML=
+      '<option value="">Choisir…</option>'+
+      dir.map(s=>`<option value="${esc(s.id)}">${esc(s.name)} · ${esc(s.dept||'')}</option>`).join('');
+  }
+
+  function openEmergency(prefill){
+    const overlay=document.getElementById('v134-emergency-overlay');
+    if(!overlay)return;
+    populateStaff();
+    fillEvent(prefill||{
+      date:localDateKey(),
+      type:'maladie',
+      service:'auto',
+      delayMinutes:0
+    });
+    currentAnalysis=null;
+    selectedCandidateId='';
+    const result=document.getElementById('v134-result');
+    if(result)result.innerHTML='';
+    const apply=document.getElementById('v134-apply');
+    if(apply)apply.disabled=true;
+    renderRiskList();
+    overlay.classList.add('show');
+  }
+
+  function closeEmergency(){
+    document.getElementById('v134-emergency-overlay')?.classList.remove('show');
+  }
+
+  function refreshBadge(){
+    const badge=document.querySelector('#v134-emergency-btn .v134-alert-count');
+    if(badge)badge.textContent=String(detectRisks().length);
+  }
+
+  function installSettings(){
+    const box=document.querySelector('#ia-predictions-modal .v132-service-mode-box');
+    if(!box || document.getElementById('v134-emergency-settings'))return;
+
+    const c=cfg();
+    const node=document.createElement('div');
+    node.id='v134-emergency-settings';
+    node.className='v134-emergency-settings';
+    node.innerHTML=`
+      <div class="v134-emergency-settings-head">
+        <div>
+          <strong>IMPRÉVUS DE DERNIÈRE MINUTE</strong>
+          <small>Retard, maladie, absence / no-show, accident, urgence, problème de transport ou départ immédiat. Aucune modification n'est appliquée sans validation manager.</small>
+        </div>
+        <span class="v132-ai-badge">TEMPS RÉEL</span>
+      </div>
+
+      <div class="v134-emergency-settings-grid">
+        <label class="v134-setting-card v134-setting-check">
+          <span>
+            <strong>Gestion des imprévus</strong>
+            <small>Recherche un remplacement ciblé sans refaire inutilement tout le mois.</small>
+          </span>
+          <input id="v134-setting-enabled" type="checkbox" ${c.enabled?'checked':''}>
+        </label>
+
+        <label class="v134-setting-card v134-setting-check">
+          <span>
+            <strong>Détecter retards / non-pointés</strong>
+            <small>Utilise le planning et les pointages disponibles. Toujours « à vérifier » avant action.</small>
+          </span>
+          <input id="v134-setting-detect" type="checkbox" ${c.detectLate?'checked':''}>
+        </label>
+
+        <label class="v134-setting-card">
+          <strong>Seuil retard</strong>
+          <small>Alerte après X minutes.</small>
+          <input id="v134-setting-late" type="number" min="1" max="180" value="${c.lateMinutes}">
+        </label>
+
+        <label class="v134-setting-card">
+          <strong>Seuil non-pointé</strong>
+          <small>Alerte « à vérifier » après X minutes.</small>
+          <input id="v134-setting-noshow" type="number" min="5" max="240" value="${c.noShowMinutes}">
+        </label>
+      </div>
+    `;
+
+    box.appendChild(node);
+
+    const persist=()=>{
+      saveCfg({
+        enabled:document.getElementById('v134-setting-enabled')?.checked!==false,
+        detectLate:document.getElementById('v134-setting-detect')?.checked!==false,
+        lateMinutes:Number(document.getElementById('v134-setting-late')?.value)||10,
+        noShowMinutes:Number(document.getElementById('v134-setting-noshow')?.value)||20
+      });
+      refreshBadge();
+    };
+
+    node.querySelectorAll('input').forEach(el=>el.addEventListener('change',persist));
+  }
+
+  function installButton(){
+    const base=document.getElementById('v131-planning-tools-btn');
+    if(!base || document.getElementById('v134-emergency-btn'))return;
+
+    const btn=document.createElement('button');
+    btn.id='v134-emergency-btn';
+    btn.type='button';
+    btn.innerHTML=`
+      <span>
+        <strong>⚠ IMPRÉVU DERNIÈRE MINUTE</strong>
+        <small>Retard · maladie · absence · accident · urgence · transport · départ / démission</small>
+      </span>
+      <span class="v134-alert-count">0</span>
+    `;
+    base.insertAdjacentElement('afterend',btn);
+    btn.addEventListener('click',()=>openEmergency());
+    refreshBadge();
+  }
+
+  function installOverlay(){
+    if(document.getElementById('v134-emergency-overlay'))return;
+
+    const overlay=document.createElement('div');
+    overlay.id='v134-emergency-overlay';
+    overlay.innerHTML=`
+      <div id="v134-emergency-panel" role="dialog" aria-modal="true" aria-label="Gestion des imprévus RH">
+        <div id="v134-emergency-head">
+          <div>
+            <strong>IMPRÉVU DE DERNIÈRE MINUTE</strong>
+            <small>Analyse ciblée · remplacement compatible · validation manager obligatoire</small>
+          </div>
+          <button id="v134-emergency-close" type="button">×</button>
+        </div>
+
+        <div id="v134-emergency-body">
+          <div class="v134-risks">
+            <div class="v134-risks-head">
+              <strong>ALERTES À VÉRIFIER AUJOURD'HUI</strong>
+              <button id="v134-refresh-risks" type="button">ACTUALISER</button>
+            </div>
+            <div id="v134-risk-list"></div>
+          </div>
+
+          <div class="v134-form-grid">
+            <div class="v134-field">
+              <label>Collaborateur</label>
+              <select id="v134-staff"></select>
+            </div>
+
+            <div class="v134-field">
+              <label>Imprévu</label>
+              <select id="v134-type">
+                <option value="retard">Retard</option>
+                <option value="maladie">Maladie</option>
+                <option value="no_show">Absence / no-show</option>
+                <option value="accident">Accident</option>
+                <option value="urgence">Urgence personnelle</option>
+                <option value="transport">Problème de transport</option>
+                <option value="depart">Départ / démission immédiate</option>
+                <option value="autre">Autre imprévu</option>
+              </select>
+            </div>
+
+            <div class="v134-field">
+              <label>Date</label>
+              <input id="v134-date" type="date">
+            </div>
+
+            <div class="v134-field">
+              <label>Service touché</label>
+              <select id="v134-service">
+                <option value="auto">Détecter depuis le planning</option>
+                <option value="lunch">Midi</option>
+                <option value="dinner">Soir</option>
+                <option value="day">Journée / tous les services</option>
+              </select>
+            </div>
+
+            <div class="v134-field">
+              <label>Retard estimé · minutes</label>
+              <input id="v134-delay" type="number" min="0" max="720" value="0">
+            </div>
+
+            <div class="v134-field full">
+              <label>Note manager</label>
+              <textarea id="v134-note" placeholder="Ex. appel à 09:42, malade aujourd'hui, train supprimé, départ immédiat…"></textarea>
+            </div>
+          </div>
+
+          <div class="v134-analyse-row">
+            <button id="v134-analyse" type="button">ANALYSER & TROUVER UN REMPLAÇANT</button>
+            <button id="v134-apply" type="button" disabled>VALIDER L'ACTION</button>
+          </div>
+
+          <div id="v134-result"></div>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    document.getElementById('v134-emergency-close')?.addEventListener('click',closeEmergency);
+    document.getElementById('v134-refresh-risks')?.addEventListener('click',renderRiskList);
+    document.getElementById('v134-analyse')?.addEventListener('click',analyse);
+    document.getElementById('v134-apply')?.addEventListener('click',applyIncident);
+
+    overlay.addEventListener('click',e=>{
+      if(e.target===overlay)closeEmergency();
+    });
+
+    document.addEventListener('keydown',e=>{
+      if(e.key==='Escape'&&overlay.classList.contains('show'))closeEmergency();
+    });
+  }
+
+  function boot(){
+    installOverlay();
+
+    let attempts=0;
+    const timer=setInterval(()=>{
+      attempts++;
+      installSettings();
+      installButton();
+      if(
+        document.getElementById('v134-emergency-settings') &&
+        document.getElementById('v134-emergency-btn')
+      ){
+        clearInterval(timer);
+      }
+      if(attempts>30)clearInterval(timer);
+    },250);
+
+    // Surveillance légère : uniquement des alertes, jamais une modification automatique.
+    setInterval(()=>{
+      if(cfg().enabled && cfg().detectLate)refreshBadge();
+    },120000);
+  }
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',boot,{once:true});
+  }else{
+    boot();
+  }
+
+  window.openRhLastMinuteIncident=openEmergency;
+  window.refreshRhLastMinuteRisks=renderRiskList;
+  window.__ICHEF_RH_LAST_MINUTE_BUILD__='V134';
+})();
+</script>
+
+
+<script id="ichef-rh-v134-marker">
+window.__ICHEF_RH_BUILD__='RH-V134-LAST-MINUTE-INCIDENTS';
+console.info('[iCHEF RH V134] retards / maladies / absences / accidents / départs + remplacement ciblé');
 </script>
 
 </body>
