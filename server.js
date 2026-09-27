@@ -1364,28 +1364,368 @@ console.error('🚨 Erreur IA Anti-Rush:', error);
 return res.status(500).json({ success: false, error: 'Analyse momentanément indisponible.' });
 }
 });
+// =========================================================================
+// 🔮 MOTEUR IA RH — V150 SECURE
+// Gemini + cache + fallback local anti-429
+// IMPORTANT : conserve l'authentification Direction / Manager
+// =========================================================================
+
+const rhAiPredictionCacheV150 = new Map();
+const rhAiCooldownV150 = new Map();
+
+function buildRhFallbackPredictionV150({
+    staffList = [],
+    reservations = [],
+    financialHistory = [],
+    reason = 'AI_UNAVAILABLE'
+} = {}) {
+    const activeStaff = Array.isArray(staffList)
+        ? staffList.filter(s => s && s.active !== false)
+        : [];
+
+    const kitchenCount = activeStaff.filter(s =>
+        /cuis|chef|kitchen/i.test(`${s?.dept || ''} ${s?.role || ''}`)
+    ).length;
+
+    const serviceCount = activeStaff.filter(s =>
+        /salle|serveur|service|restaurant/i.test(`${s?.dept || ''} ${s?.role || ''}`)
+    ).length;
+
+    const warnings = [];
+
+    if (kitchenCount === 0) {
+        warnings.push('Aucune ressource cuisine active détectée.');
+    }
+
+    if (serviceCount === 0) {
+        warnings.push('Aucune ressource salle/service active détectée.');
+    }
+
+    if (reason === 'AI_QUOTA_429') {
+        warnings.push(
+            'IA externe momentanément indisponible : plafond de dépenses Gemini atteint. Le moteur local iCHEF reste actif.'
+        );
+    } else {
+        warnings.push(
+            'IA externe momentanément indisponible. Le moteur local iCHEF reste actif.'
+        );
+    }
+
+    return {
+        highDemandDays: [],
+        protectedPeakDays: [],
+        lowDemandDays: [],
+        rushPeriods: [],
+        deadPeriods: [],
+
+        restaurantInfluence:
+            `Mode local iCHEF actif · ${activeStaff.length} collaborateur(s) actif(s) · ` +
+            `${Array.isArray(reservations) ? reservations.length : 0} réservation(s) disponible(s) · ` +
+            `${Array.isArray(financialHistory) ? financialHistory.length : 0} donnée(s) d'historique financier disponible(s).`,
+
+        monthSummary:
+            'Le planning continue avec les contrats, compétences, disponibilités, congés, règles juridiques et paramètres RH locaux.',
+
+        leaveRecommendations: [],
+
+        vacationSuggestions:
+            'Les congés et jours OFF restent calculés par le moteur de planning local iCHEF.',
+
+        warnings,
+
+        staffRecommendations: [],
+
+        hiringAdvice:
+            'La recommandation recrutement reste basée sur les contrôles locaux de couverture et de compétences tant que l’IA externe est indisponible.'
+    };
+}
+
 app.post('/api/predict-hr-schedule', async (req, res) => {
-const {
-tenantID,
-masterPin,
-month,
-staffList,
-staffAnalysis,
-requests,
-planningSettings
-} = req.body || {};
-const safeID = cleanString(tenantID);
-if (!safeID) {
-return res.status(400).json({ success: false, error: 'ID Restaurant manquant' });
-}
-try {
-const auth = await ichefAuthorizePin(safeID, masterPin, { managerOnly: true });
-if (!auth.ok) {
-return res.status(auth.status || 403).json({
-success:false,
-error:auth.error || 'Analyse RH réservée à la Direction / au Manager.'
+    const {
+        tenantID,
+        masterPin,
+        month,
+        staffList,
+        staffAnalysis,
+        requests,
+        planningSettings
+    } = req.body || {};
+
+    const safeID = cleanString(tenantID);
+
+    if (!safeID) {
+        return res.status(400).json({
+            success: false,
+            error: 'ID Restaurant manquant'
+        });
+    }
+
+    // ---------------------------------------------------------------------
+    // 🔐 SÉCURITÉ : on garde exactement le contrôle Direction / Manager.
+    // Aucun cache ni fallback n'est renvoyé avant cette autorisation.
+    // ---------------------------------------------------------------------
+    let auth;
+
+    try {
+        auth = await ichefAuthorizePin(
+            safeID,
+            masterPin,
+            { managerOnly: true }
+        );
+    } catch (authError) {
+        console.error(
+            '🚨 Erreur autorisation IA RH :',
+            authError
+        );
+
+        return res.status(503).json({
+            success: false,
+            error: 'Impossible de vérifier les droits Direction / Manager.'
+        });
+    }
+
+    if (!auth?.ok) {
+        return res.status(auth?.status || 403).json({
+            success: false,
+            error:
+                auth?.error ||
+                'Analyse RH réservée à la Direction / au Manager.'
+        });
+    }
+
+    let reservations = [];
+    let financialHistory = [];
+
+    const cached =
+        rhAiPredictionCacheV150.get(safeID);
+
+    const cooldownUntil =
+        Number(
+            rhAiCooldownV150.get(safeID) || 0
+        );
+
+    const now = Date.now();
+
+    // ---------------------------------------------------------------------
+    // Si Gemini vient de répondre 429, on ne le rappelle pas en boucle.
+    // IMPORTANT : l'utilisateur est déjà authentifié à ce stade.
+    // ---------------------------------------------------------------------
+    if (cooldownUntil > now) {
+        const prediction =
+            cached?.prediction ||
+            buildRhFallbackPredictionV150({
+                staffList,
+                reservations,
+                financialHistory,
+                reason: 'AI_QUOTA_429'
+            });
+
+        return res.status(200).json({
+            success: true,
+            prediction,
+            fallback: true,
+            fallbackReason: 'AI_COOLDOWN_429',
+            retryAfterMs:
+                cooldownUntil - now
+        });
+    }
+
+    try {
+        const state =
+            await AppState.findOne({
+                tenantID: safeID
+            });
+
+        reservations =
+            state?.activeOrders
+                ?.RESERVATIONS_MASTER
+                ?.data || [];
+
+        financialHistory =
+            state?.activeOrders
+                ?.FINANCIAL_HISTORY
+                ?.data || [];
+
+        const prompt = `Tu es l'IA "Directeur des Ressources Humaines" d'iCHEF OS.
+Analyse les effectifs et l'historique du restaurant pour prédire la charge de travail.
+
+- Mois demandé : ${String(month || '')}
+- Effectif actuel : ${JSON.stringify(Array.isArray(staffList) ? staffList : [])}
+- Analyse locale iCHEF : ${JSON.stringify(staffAnalysis || {})}
+- Demandes RH : ${JSON.stringify(Array.isArray(requests) ? requests.slice(-50) : [])}
+- Paramètres planning : ${JSON.stringify(planningSettings || {})}
+- Réservations récentes : ${JSON.stringify(Array.isArray(reservations) ? reservations.slice(-20) : [])}
+- Transactions récentes : ${JSON.stringify(Array.isArray(financialHistory) ? financialHistory.slice(-20) : [])}
+
+Ta mission est d'aider le moteur local iCHEF à identifier les périodes de forte ou faible demande.
+Ne modifie jamais les règles juridiques, contrats, congés, repos ou contraintes RH.
+
+RÉPONDS UNIQUEMENT AVEC CE JSON STRICT :
+{
+  "highDemandDays": [],
+  "protectedPeakDays": [],
+  "lowDemandDays": [],
+  "rushPeriods": [],
+  "deadPeriods": [],
+  "restaurantInfluence": "",
+  "monthSummary": "",
+  "leaveRecommendations": [],
+  "vacationSuggestions": "",
+  "warnings": [],
+  "staffRecommendations": [],
+  "hiringAdvice": ""
+}`;
+
+        const model =
+            genAI.getGenerativeModel({
+                model: 'gemini-2.5-flash'
+            });
+
+        const result =
+            await model.generateContent(
+                prompt
+            );
+
+        let responseText =
+            result?.response?.text?.() ||
+            '';
+
+        responseText =
+            responseText
+                .replace(/```json/gi, '')
+                .replace(/```/g, '')
+                .trim();
+
+        const firstBrace =
+            responseText.indexOf('{');
+
+        const lastBrace =
+            responseText.lastIndexOf('}');
+
+        if (
+            firstBrace === -1 ||
+            lastBrace === -1 ||
+            lastBrace < firstBrace
+        ) {
+            throw new Error(
+                'Réponse IA RH sans JSON exploitable.'
+            );
+        }
+
+        responseText =
+            responseText.substring(
+                firstBrace,
+                lastBrace + 1
+            );
+
+        const prediction =
+            JSON.parse(
+                responseText
+            );
+
+        rhAiPredictionCacheV150.set(
+            safeID,
+            {
+                prediction,
+                savedAt: Date.now()
+            }
+        );
+
+        rhAiCooldownV150.delete(
+            safeID
+        );
+
+        return res.status(200).json({
+            success: true,
+            prediction,
+            fallback: false
+        });
+
+    } catch (error) {
+        const message =
+            String(
+                error?.message ||
+                error ||
+                ''
+            );
+
+        const status =
+            Number(
+                error?.status ||
+                error?.response?.status ||
+                0
+            );
+
+        const quota429 =
+            status === 429 ||
+            /\b429\b/.test(message) ||
+            /monthly spending cap/i.test(message) ||
+            /spending cap/i.test(message) ||
+            /quota/i.test(message) ||
+            /too many requests/i.test(message);
+
+        if (quota429) {
+            // 10 minutes sans nouvel appel Gemini.
+            rhAiCooldownV150.set(
+                safeID,
+                Date.now() +
+                10 * 60 * 1000
+            );
+
+            console.warn(
+                '⚠️ IA RH Gemini indisponible (429 / plafond). Fallback iCHEF actif.',
+                {
+                    tenantID: safeID,
+                    month:
+                        String(month || '')
+                }
+            );
+        } else {
+            console.warn(
+                '⚠️ IA RH externe indisponible. Fallback iCHEF actif.',
+                {
+                    tenantID: safeID,
+                    month:
+                        String(month || ''),
+                    error:
+                        message.slice(0, 500)
+                }
+            );
+        }
+
+        const cachedPrediction =
+            rhAiPredictionCacheV150
+                .get(safeID)
+                ?.prediction;
+
+        const prediction =
+            cachedPrediction ||
+            buildRhFallbackPredictionV150({
+                staffList,
+                reservations,
+                financialHistory,
+                reason:
+                    quota429
+                        ? 'AI_QUOTA_429'
+                        : 'AI_UNAVAILABLE'
+            });
+
+        // -------------------------------------------------------------
+        // L'erreur Gemini n'est PAS une erreur d'authentification.
+        // On garde donc l'écran RH fonctionnel avec le moteur local.
+        // -------------------------------------------------------------
+        return res.status(200).json({
+            success: true,
+            prediction,
+            fallback: true,
+            fallbackReason:
+                quota429
+                    ? 'AI_QUOTA_429'
+                    : 'AI_UNAVAILABLE'
+        });
+    }
 });
-}
+
 const state = auth.state || await AppState.findOne({ tenantID: safeID }).lean();
 const reservations = Array.isArray(state?.activeOrders?.RESERVATIONS_MASTER?.data)
 ? state.activeOrders.RESERVATIONS_MASTER.data.slice(-120)
