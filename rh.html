@@ -22086,39 +22086,81 @@ console.info('[iCHEF RH V136] fermeture établissement forcée après générati
           )
         : currentMonth;
 
+    let desiredHtml='';
+
     if(selected === currentMonth){
-      note.innerHTML =
+      desiredHtml =
         `<strong>MISE À JOUR À PARTIR D'AUJOURD'HUI · ${dateFr(now)}</strong>` +
         ` · les jours précédents restent figés dans l'historique.`;
     }else if(selected > currentMonth){
-      note.innerHTML =
+      desiredHtml =
         `<strong>MOIS FUTUR</strong>` +
         ` · génération à partir du 1er jour du mois.`;
     }else{
-      note.innerHTML =
+      desiredHtml =
         `<strong>HISTORIQUE</strong>` +
         ` · ce mois n'est pas recalculé.`;
+    }
+
+    if(note.innerHTML !== desiredHtml){
+      note.innerHTML = desiredHtml;
     }
   }
 
   function boot(){
     sync();
 
-    const modal =
+    /* V140 :
+       IMPORTANT — ne plus observer toute la modale.
+       L'ancienne version rappelait sync() après chaque mutation du planning,
+       alors que sync() modifiait lui-même le DOM : cela pouvait créer une
+       boucle de MutationObserver et bloquer complètement la page. */
+
+    const monthPicker =
+      document.getElementById('month-picker');
+
+    monthPicker?.addEventListener(
+      'change',
+      () => requestAnimationFrame(sync)
+    );
+
+    const monthTitle =
       document.getElementById(
-        'ia-predictions-modal'
+        'assistant-month-title'
       );
 
-    if(!modal) return;
-
-    new MutationObserver(sync)
-      .observe(
-        modal,
+    if(monthTitle){
+      new MutationObserver(() => {
+        requestAnimationFrame(sync);
+      }).observe(
+        monthTitle,
         {
           childList:true,
-          subtree:true
+          subtree:true,
+          characterData:true
         }
       );
+    }
+
+    const originalOpen =
+      window.openPlanningAssistant;
+
+    if(
+      typeof originalOpen === 'function' &&
+      !originalOpen.__v140HorizonWrapped
+    ){
+      const wrappedOpen = function(...args){
+        const result =
+          originalOpen.apply(this,args);
+
+        requestAnimationFrame(sync);
+        return result;
+      };
+
+      wrappedOpen.__v140HorizonWrapped = true;
+      window.openPlanningAssistant =
+        wrappedOpen;
+    }
   }
 
   if(
@@ -23342,6 +23384,12 @@ console.info('[iCHEF RH V138] historique 360° staff · planning · contrat · d
 <script id="ichef-rh-v139-marker">
 window.__ICHEF_RH_BUILD__='RH-V139-STAFF-HISTORY-PAYROLL-TAX';
 console.info('[iCHEF RH V139] historique 360° + bulletins + certificat salaire + fiscalité salariale');
+</script>
+
+
+<script id="ichef-rh-v140-freeze-fix-marker">
+window.__ICHEF_RH_BUILD__='RH-V140-FREEZE-FIX';
+console.info('[iCHEF RH V140] correction blocage page · MutationObserver V137 sécurisé');
 </script>
 
 </body>
