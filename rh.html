@@ -3646,6 +3646,45 @@
                                 </div>
                             </div>
 
+                            <div class="v135-closure-box">
+                                <div class="v135-closure-head">
+                                    <div>
+                                        <strong>JOURS DE FERMETURE DE L'ÉTABLISSEMENT</strong>
+                                        <small>
+                                            Sur un jour fermé, iCHEF ne doit planifier aucun service
+                                            et aucun collaborateur. Les heures contractuelles sont
+                                            réparties uniquement sur les jours ouverts.
+                                        </small>
+                                    </div>
+                                    <span class="v135-closed-badge">FERMÉ = 0 STAFF</span>
+                                </div>
+
+                                <div class="v135-weekdays">
+                                    <label><input type="checkbox" data-v135-closed-weekday="1"><span>LUN</span></label>
+                                    <label><input type="checkbox" data-v135-closed-weekday="2"><span>MAR</span></label>
+                                    <label><input type="checkbox" data-v135-closed-weekday="3"><span>MER</span></label>
+                                    <label><input type="checkbox" data-v135-closed-weekday="4"><span>JEU</span></label>
+                                    <label><input type="checkbox" data-v135-closed-weekday="5"><span>VEN</span></label>
+                                    <label><input type="checkbox" data-v135-closed-weekday="6"><span>SAM</span></label>
+                                    <label><input type="checkbox" data-v135-closed-weekday="0"><span>DIM</span></label>
+                                </div>
+
+                                <div class="v135-exception-row">
+                                    <div>
+                                        <strong>Fermetures exceptionnelles</strong>
+                                        <small>
+                                            Dates séparées par une virgule :
+                                            2026-12-24, 2026-12-25
+                                        </small>
+                                    </div>
+                                    <input
+                                        id="rh-setting-exceptional-closures"
+                                        class="input-full"
+                                        type="text"
+                                        placeholder="2026-12-24, 2026-12-25">
+                                </div>
+                            </div>
+
                             <div id="v132-manager-advice" class="v132-manager-advice">
                                 <div class="v132-manager-advice-head">
                                     <div>
@@ -4782,7 +4821,11 @@
 
                 // V133 · couverture critique
                 kitchenCriticalCoverageEnabled: true,
-                kitchenMinQualifiedPerOpenService: 1
+                kitchenMinQualifiedPerOpenService: 1,
+
+                // V135 · jours de fermeture établissement
+                planningClosedWeekdays: [],
+                planningExceptionalClosedDates: []
             };
 
             const saved =
@@ -4885,6 +4928,31 @@
                         )
                     ),
 
+                planningClosedWeekdays:
+                    Array.from(
+                        new Set(
+                            (Array.isArray(source.planningClosedWeekdays)
+                                ? source.planningClosedWeekdays
+                                : []
+                            )
+                            .map(Number)
+                            .filter(v => Number.isInteger(v) && v >= 0 && v <= 6)
+                        )
+                    ).sort((a,b)=>a-b),
+
+                planningExceptionalClosedDates:
+                    Array.from(
+                        new Set(
+                            (Array.isArray(source.planningExceptionalClosedDates)
+                                ? source.planningExceptionalClosedDates
+                                : String(source.planningExceptionalClosedDates || '')
+                                    .split(/[\s,;]+/)
+                            )
+                            .map(v => String(v || '').trim())
+                            .filter(v => /^20\d{2}-\d{2}-\d{2}$/.test(v))
+                        )
+                    ).sort(),
+
                 updatedAt: new Date().toISOString()
             };
 
@@ -4950,6 +5018,26 @@
 
             const kitchenMin = document.getElementById('rh-setting-kitchen-min');
             if (kitchenMin) kitchenMin.value = Math.max(1, Number(s.kitchenMinQualifiedPerOpenService || 1));
+
+            document
+                .querySelectorAll('[data-v135-closed-weekday]')
+                .forEach(input => {
+                    input.checked =
+                        Array.isArray(s.planningClosedWeekdays) &&
+                        s.planningClosedWeekdays.includes(
+                            Number(input.dataset.v135ClosedWeekday)
+                        );
+                });
+
+            const exceptionalClosures =
+                document.getElementById('rh-setting-exceptional-closures');
+
+            if (exceptionalClosures) {
+                exceptionalClosures.value =
+                    Array.isArray(s.planningExceptionalClosedDates)
+                        ? s.planningExceptionalClosedDates.join(', ')
+                        : '';
+            }
 
             if (typeof refreshRhServiceStrategyAdvice === 'function') {
                 refreshRhServiceStrategyAdvice();
@@ -5026,6 +5114,25 @@
 
                 kitchenMinQualifiedPerOpenService:
                     document.getElementById('rh-setting-kitchen-min')?.value || 1,
+
+                planningClosedWeekdays:
+                    Array.from(
+                        document.querySelectorAll(
+                            '[data-v135-closed-weekday]:checked'
+                        )
+                    ).map(input =>
+                        Number(input.dataset.v135ClosedWeekday)
+                    ),
+
+                planningExceptionalClosedDates:
+                    String(
+                        document.getElementById(
+                            'rh-setting-exceptional-closures'
+                        )?.value || ''
+                    )
+                    .split(/[\s,;]+/)
+                    .map(v => v.trim())
+                    .filter(v => /^20\d{2}-\d{2}-\d{2}$/.test(v)),
 
                 planningTimezone:
                     'Europe/Paris'
@@ -7149,6 +7256,38 @@
             return null;
         }
 
+
+        function assistantLocalDateKey(dateObj) {
+            const y = dateObj.getFullYear();
+            const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+            const d = String(dateObj.getDate()).padStart(2, '0');
+            return `${y}-${m}-${d}`;
+        }
+
+        function assistantIsRestaurantClosed(dateObj, settings) {
+            if (!(dateObj instanceof Date) || Number.isNaN(dateObj.getTime())) {
+                return false;
+            }
+
+            const weekly =
+                Array.isArray(settings?.planningClosedWeekdays)
+                    ? settings.planningClosedWeekdays.map(Number)
+                    : [];
+
+            if (weekly.includes(dateObj.getDay())) {
+                return true;
+            }
+
+            const exceptional =
+                Array.isArray(settings?.planningExceptionalClosedDates)
+                    ? settings.planningExceptionalClosedDates.map(String)
+                    : [];
+
+            return exceptional.includes(
+                assistantLocalDateKey(dateObj)
+            );
+        }
+
         function buildAssistantDemand(monthStr, prediction, settings) {
             const [year, month] = monthStr.split('-').map(Number);
             const daysInMonth = new Date(year, month, 0).getDate();
@@ -7157,13 +7296,17 @@
             for (let day = 1; day <= daysInMonth; day++) {
                 const dateObj = new Date(year, month - 1, day);
                 const weekend = dateObj.getDay() === 5 || dateObj.getDay() === 6;
+                const closed = assistantIsRestaurantClosed(dateObj, settings);
 
                 rows[day] = {
                     day,
-                    score: weekend ? 1.22 : 1,
+                    score: closed ? 0 : (weekend ? 1.22 : 1),
                     covers: 0,
-                    reason: weekend ? 'Fin de semaine' : 'Activité standard',
-                    isPeak: false
+                    reason: closed
+                        ? 'Établissement fermé'
+                        : (weekend ? 'Fin de semaine' : 'Activité standard'),
+                    isPeak: false,
+                    closed
                 };
             }
 
@@ -7171,6 +7314,10 @@
                 (Array.isArray(items) ? items : []).forEach(item => {
                     const day = assistantResolveDayNumber(item, monthStr);
                     if (!day || !rows[day]) return;
+
+                    // Une réservation / prédiction ne réouvre jamais
+                    // automatiquement un jour déclaré fermé.
+                    if (rows[day].closed === true) return;
 
                     const covers = Number(
                         typeof item === 'object'
@@ -7201,7 +7348,7 @@
             const notes = normalizeAssistantText(settings.eventNotes || '');
             for (let day = 1; day <= daysInMonth; day++) {
                 const dayPattern = new RegExp(`(^|\\D)${day}(\\D|$)`);
-                if (notes && dayPattern.test(notes)) {
+                if (notes && dayPattern.test(notes) && rows[day].closed !== true) {
                     rows[day].score = Math.max(rows[day].score, 1.55);
                     rows[day].reason = 'Événement / contexte Direction';
                     rows[day].isPeak = true;
@@ -7258,6 +7405,7 @@
 
         function assistantRequiredCount(dept, demand, settings, activeCount) {
             if (activeCount <= 0) return 0;
+            if (demand?.closed === true) return 0;
 
             const covers = Number(demand?.covers || 0);
             let ratio = 0;
@@ -8274,6 +8422,26 @@
                         continue;
                     }
 
+                    const restaurantClosed =
+                        assistantIsRestaurantClosed(dateObj, settings);
+
+                    if (
+                        restaurantClosed &&
+                        !(settings.preservePastDays && isPast)
+                    ) {
+                        proposal[staff.id][day] = {
+                            status: 'off',
+                            poste: staff.dept || 'salle',
+                            s1: '',
+                            s2: '',
+                            pause: 0,
+                            obs: 'Établissement fermé',
+                            __restaurantClosed: true,
+                            __protected: true
+                        };
+                        continue;
+                    }
+
                     if (existing && assistantExistingDayIsProtected(existing, settings.preserveExistingPlanning)) {
                         proposal[staff.id][day] = {
                             ...assistantClone(existing),
@@ -8353,6 +8521,8 @@
                     for (const row of lowDemandDays) {
                         if (!toPlace) break;
                         const day = Number(row.day);
+                        if (demand?.[day]?.closed === true) continue;
+
                         const p = proposal?.[staff.id]?.[day];
                         if (!p || p.__protected || isRhWorkStatus(p.status) || isRhLeaveStatus(p.status)) continue;
                         const dateObj = new Date(year, month - 1, day);
@@ -8383,6 +8553,10 @@
             for (let day = 1; day <= daysInMonth; day++) {
                 // V115 : le moteur ne tente pas de reconstruire les jours déjà passés.
                 if (isCurrentMonth && settings.preservePastDays && day < now.getDate()) continue;
+
+                // V135 : fermeture établissement = aucune couverture à générer.
+                if (demand?.[day]?.closed === true) continue;
+
                 for (const service of ['lunch', 'dinner']) {
                     for (const dept of departments) {
                         const eligible = staffList.filter(staff => assistantStaffCanCoverDept(staff, dept));
@@ -8453,6 +8627,8 @@
                     for (const demandDay of demandDays) {
                         const day = demandDay.day;
                         if (isCurrentMonth && settings.preservePastDays && day < now.getDate()) continue;
+                        if (demandDay?.closed === true) continue;
+
                         const p = proposal[staff.id][day];
                         if (!p || p.__protected || isRhLeaveStatus(p.status)) continue;
 
@@ -8523,10 +8699,27 @@
                 warnings.unshift(`BLOQUANT · ${issue.message}`);
             });
 
-            const plannableDaysCount = (isCurrentMonth && settings.preservePastDays)
-                ? Math.max(0, daysInMonth - Math.max(1, now.getDate()) + 1)
-                : daysInMonth;
-            const totalRequiredChecks = plannableDaysCount * 2 * departments.filter(dept => staffList.some(s => assistantStaffCanCoverDept(s, dept))).length;
+            const plannableDaysCount =
+                Object.values(demand || {}).filter(row => {
+                    if (!row || row.closed === true) return false;
+                    if (
+                        isCurrentMonth &&
+                        settings.preservePastDays &&
+                        Number(row.day) < now.getDate()
+                    ) {
+                        return false;
+                    }
+                    return true;
+                }).length;
+
+            const totalRequiredChecks =
+                plannableDaysCount *
+                2 *
+                departments.filter(
+                    dept => staffList.some(
+                        s => assistantStaffCanCoverDept(s, dept)
+                    )
+                ).length;
             const coveragePct = totalRequiredChecks > 0
                 ? Math.max(0, Math.round((1 - uncovered.length / totalRequiredChecks) * 100))
                 : 100;
@@ -8553,6 +8746,7 @@
 
         function assistantPreviewCode(p) {
             if (!p) return 'OFF';
+            if (p.__restaurantClosed === true || p.obs === 'Établissement fermé') return 'FER';
             if (p.status === 'history') return '—';
             if (isRhLeaveStatus(p.status) || p.status === 'ferie') return rhStatusMeta(p.status).label.slice(0, 5);
             if (p.s1 && p.s2) return 'M+S';
@@ -8563,6 +8757,7 @@
 
         function assistantPreviewClass(p) {
             if (!p) return 'v117-off';
+            if (p.__restaurantClosed === true || p.obs === 'Établissement fermé') return 'v135-closed';
             if (p.status === 'history') return 'v117-history';
             if (p.status === 'off' || p.status === 'recup') return 'v117-off';
             if (p.status === 'absence' || p.status === 'absent' || p.status === 'maladie') return 'v117-abs';
@@ -19041,6 +19236,8 @@ console.info('[iCHEF RH V131] équilibre + paramètres déplacés dans un bouton
   }
 
   function modeForDemand(row,settings){
+    if(row?.closed===true) return 'FERMÉ';
+
     const continu=settings.serviceContinuousEnabled!==false;
     const split=settings.serviceSplitEnabled!==false;
 
@@ -19058,6 +19255,7 @@ console.info('[iCHEF RH V131] équilibre + paramètres déplacés dans un bouton
   }
 
   function estimatedStaff(row,settings){
+    if(row?.closed===true) return 0;
     if(typeof getDir!=='function') return 0;
     const staff=getDir().filter(s=>s.active!==false);
     if(!staff.length) return 0;
@@ -19092,6 +19290,8 @@ console.info('[iCHEF RH V131] équilibre + paramètres déplacés dans un bouton
   }
 
   function staffProfileAdvice(row,settings){
+    if(row?.closed===true) return 'Établissement fermé';
+
     if(settings.optimizeStaffChoice===false){
       return 'Choix manuel';
     }
@@ -20820,6 +21020,178 @@ console.info('[iCHEF RH V133] couverture cuisine critique + blocage validation')
 <script id="ichef-rh-v134-marker">
 window.__ICHEF_RH_BUILD__='RH-V134-LAST-MINUTE-INCIDENTS';
 console.info('[iCHEF RH V134] retards / maladies / absences / accidents / départs + remplacement ciblé');
+</script>
+
+
+<style id="ichef-rh-v135-closures">
+#ia-predictions-modal .v135-closure-box{
+  grid-column:1 / -1;
+  margin-top:9px;
+  padding:10px;
+  border:1px solid rgba(224,185,79,.28);
+  border-radius:9px;
+  background:rgba(224,185,79,.025);
+}
+
+#ia-predictions-modal .v135-closure-head{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:10px;
+}
+
+#ia-predictions-modal .v135-closure-head strong{
+  display:block;
+  color:#e7c65c;
+  font-size:.66rem;
+  letter-spacing:.55px;
+}
+
+#ia-predictions-modal .v135-closure-head small{
+  display:block;
+  margin-top:3px;
+  color:#7e8992;
+  font-size:.52rem;
+  line-height:1.25;
+}
+
+#ia-predictions-modal .v135-closed-badge{
+  flex:0 0 auto;
+  padding:4px 7px;
+  border:1px solid rgba(224,185,79,.38);
+  border-radius:999px;
+  background:rgba(224,185,79,.06);
+  color:#e7c65c;
+  font-size:.47rem;
+  font-weight:900;
+  letter-spacing:.7px;
+}
+
+#ia-predictions-modal .v135-weekdays{
+  margin-top:8px;
+  display:grid;
+  grid-template-columns:repeat(7,minmax(0,1fr));
+  gap:5px;
+}
+
+#ia-predictions-modal .v135-weekdays label{
+  min-width:0;
+  min-height:34px;
+  padding:0 7px;
+  border:1px solid #2c3740;
+  border-radius:7px;
+  background:#10161a;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:5px;
+  cursor:pointer;
+}
+
+#ia-predictions-modal .v135-weekdays input{
+  accent-color:#d7ad5c;
+}
+
+#ia-predictions-modal .v135-weekdays span{
+  color:#cbd2d7;
+  font-size:.53rem;
+  font-weight:900;
+}
+
+#ia-predictions-modal .v135-weekdays label:has(input:checked){
+  border-color:#b59032;
+  background:rgba(224,185,79,.08);
+}
+
+#ia-predictions-modal .v135-weekdays label:has(input:checked) span{
+  color:#e7c65c;
+}
+
+#ia-predictions-modal .v135-exception-row{
+  margin-top:7px;
+  display:grid;
+  grid-template-columns:minmax(0,.8fr) minmax(220px,1.2fr);
+  gap:9px;
+  align-items:center;
+}
+
+#ia-predictions-modal .v135-exception-row strong{
+  display:block;
+  color:#e8eaec;
+  font-size:.59rem;
+}
+
+#ia-predictions-modal .v135-exception-row small{
+  display:block;
+  margin-top:3px;
+  color:#76818a;
+  font-size:.49rem;
+  line-height:1.2;
+}
+
+#ia-predictions-modal .v135-exception-row input{
+  height:36px !important;
+  min-height:36px !important;
+  margin:0 !important;
+  font-size:.64rem !important;
+}
+
+/* IMPORTANT : aucune largeur/hauteur de tableau modifiée */
+#ia-predictions-modal #ia-planning-preview td.v135-closed{
+  background:#17140c !important;
+  color:#e5bf52 !important;
+  font-size:.52rem !important;
+  letter-spacing:.15px;
+}
+
+@media(max-width:800px){
+  #ia-predictions-modal .v135-weekdays{
+    grid-template-columns:repeat(4,minmax(0,1fr));
+  }
+
+  #ia-predictions-modal .v135-exception-row{
+    grid-template-columns:1fr;
+  }
+}
+</style>
+
+
+<script id="ichef-rh-v135-closures-js">
+(() => {
+  'use strict';
+
+  function refreshClosureUi(){
+    if(typeof refreshRhServiceStrategyAdvice==='function'){
+      refreshRhServiceStrategyAdvice();
+    }
+  }
+
+  function bind(){
+    document
+      .querySelectorAll('[data-v135-closed-weekday]')
+      .forEach(input => {
+        input.addEventListener('change', refreshClosureUi);
+      });
+
+    document
+      .getElementById('rh-setting-exceptional-closures')
+      ?.addEventListener('change', refreshClosureUi);
+  }
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',bind,{once:true});
+  }else{
+    bind();
+  }
+
+  window.__ICHEF_RH_CLOSURE_BUILD__='V135';
+})();
+</script>
+
+
+<script id="ichef-rh-v135-marker">
+window.__ICHEF_RH_BUILD__='RH-V135-RESTAURANT-CLOSURES';
+console.info('[iCHEF RH V135] jours fermeture = 0 service / 0 staff');
 </script>
 
 </body>
