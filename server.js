@@ -371,7 +371,9 @@ const staffChatMessageSchema = new mongoose.Schema({
 }, { minimize: false });
 staffChatMessageSchema.index({ tenantID: 1, messageId: 1 }, { unique: true });
 staffChatMessageSchema.index({ tenantID: 1, channelId: 1, createdAt: -1 });
+staffChatMessageSchema.index({ tenantID: 1, channelId: 1, deletedAt: 1, createdAt: -1 });
 staffChatMessageSchema.index({ tenantID: 1, channelId: 1, senderStaffId: 1, createdAt: -1 });
+staffChatMessageSchema.index({ tenantID: 1, channelId: 1, senderStaffId: 1, deletedAt: 1 });
 staffChatMessageSchema.index({ tenantID: 1, channelId: 1, readBy: 1 });
 const StaffChatMessage = mongoose.models.StaffChatMessage || mongoose.model('StaffChatMessage', staffChatMessageSchema);
 
@@ -961,7 +963,7 @@ app.get('/api/staff/build', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.json({
         success: true,
-        build: 'V123-CHAT-ALL-MONGO-CONFLICTS-FIX-SECURE',
+        build: 'V126-CHAT-FAST-ACTIVE-SECURE',
         staffPortal: true,
         signedSession: true,
         timestamp: new Date().toISOString()
@@ -15728,6 +15730,70 @@ async function ichefLoadActiveStaffSession(req) {
 
 
 // ============================================================================
+// ⚡ iCHEF STAFF CHAT V126 — VALIDATION ACTIVE COURTE + SESSION SIGNÉE
+// Le cache ne remplace jamais la signature ni le contrôle appareil/tenant.
+// Il mémorise seulement, quelques secondes, un profil déjà revalidé dans AppState.
+// Cela réduit les lectures lourdes sans laisser une session désactivée active longtemps.
+// ============================================================================
+const ICHEF_STAFF_CHAT_ACTIVE_CACHE_TTL_MS = Math.max(
+    5000,
+    Math.min(60000, Number(process.env.ICHEF_STAFF_CHAT_ACTIVE_CACHE_TTL_MS || 20000))
+);
+const ichefStaffChatActiveProfileCache = new Map();
+
+function ichefStaffChatActiveCacheKey(auth = {}) {
+    const claims = auth?.claims || {};
+    return [
+        cleanString(auth?.tenantID || claims.tenantID || ''),
+        String(claims.staffId || '').trim(),
+        String(claims.deviceId || '').trim(),
+        String(claims.jti || '').trim()
+    ].join('|');
+}
+
+function ichefStaffChatCacheActiveProfile(auth = {}) {
+    if (!auth?.ok || !auth?.claims?.staffId || !auth?.staff) return;
+    const key = ichefStaffChatActiveCacheKey(auth);
+    if (!key) return;
+    const now = Date.now();
+    const tokenExpMs = Number(auth.claims.exp || 0) * 1000;
+    const expiresAt = Math.min(
+        now + ICHEF_STAFF_CHAT_ACTIVE_CACHE_TTL_MS,
+        tokenExpMs > now ? tokenExpMs : now
+    );
+    if (expiresAt <= now) return;
+    ichefStaffChatActiveProfileCache.set(key, {
+        expiresAt,
+        self: {
+            id:String(auth.claims.staffId || '').trim(),
+            name:ichefStaffChatMemberName(auth.staff),
+            role:ichefStaffChatMemberRole(auth.staff),
+            dept:ichefStaffChatMemberDept(auth.staff),
+            deptKey:ichefStaffChatDeptKey(ichefStaffChatMemberDept(auth.staff))
+        }
+    });
+    if (ichefStaffChatActiveProfileCache.size > 1500) {
+        for (const [cacheKey, value] of ichefStaffChatActiveProfileCache) {
+            if (!value || Number(value.expiresAt || 0) <= now) {
+                ichefStaffChatActiveProfileCache.delete(cacheKey);
+            }
+        }
+    }
+}
+
+function ichefStaffChatGetCachedActiveProfile(auth = {}) {
+    const key = ichefStaffChatActiveCacheKey(auth);
+    if (!key) return null;
+    const row = ichefStaffChatActiveProfileCache.get(key);
+    if (!row) return null;
+    if (Number(row.expiresAt || 0) <= Date.now()) {
+        ichefStaffChatActiveProfileCache.delete(key);
+        return null;
+    }
+    return row.self || null;
+}
+
+// ============================================================================
 // ⚡ iCHEF STAFF CHAT V116 — SESSION LÉGÈRE, MÊME SÉCURITÉ
 // Charge uniquement STAFF_ACCESS + DIRECTORY_MASTER au lieu de tout AppState.
 // La signature, l'appareil, le tenant actif et le profil actif restent contrôlés.
@@ -15801,7 +15867,7 @@ async function ichefLoadActiveStaffChatSession(req) {
         };
     }
 
-    return {
+    const result = {
         ok:true,
         tenantID:auth.tenantID,
         claims:auth.claims,
@@ -15810,6 +15876,8 @@ async function ichefLoadActiveStaffChatSession(req) {
         staff,
         staffAccess
     };
+    ichefStaffChatCacheActiveProfile(result);
+    return result;
 }
 
 
@@ -16182,7 +16250,7 @@ app.get(
         res.setHeader('Cache-Control','no-store');
         return res.json({
             success:true,
-            build:'V123-CHAT-ALL-MONGO-CONFLICTS-FIX-SECURE',
+            build:'V126-CHAT-FAST-ACTIVE-SECURE',
             staffLoginRoute:'/api/staff/login',
             authentication:'STAFF_ID_RH_PLUS_PIN',
             signedSession:true,
@@ -16770,6 +16838,15 @@ app.post(
                 directoryEntry.dept ||
                 'STAFF';
 
+            const safeDept =
+                member.dept ||
+                member.department ||
+                member.service ||
+                directoryEntry.dept ||
+                directoryEntry.department ||
+                directoryEntry.service ||
+                '';
+
             const token =
                 ichefSignSession(
                     {
@@ -16777,6 +16854,7 @@ app.post(
                         scope:'STAFF',
                         staffId:String(member.id),
                         role:safeRole,
+                        dept:safeDept,
                         name:safeName,
                         deviceId
                     },
@@ -18375,6 +18453,92 @@ async function ichefStaffChatLoadChannel(auth, channelId) {
     return { ok:true, channel, self };
 }
 
+async function ichefStaffChatLoadFastChannelSession(req, channelId) {
+    const auth = ichefRequireStaffSession(req);
+    if (!auth.ok) return auth;
+
+    const safeChannelId = String(channelId || '').trim().slice(0,160);
+    if (!safeChannelId) {
+        return { ok:false, status:400, error:'Conversation invalide.' };
+    }
+
+    let tenant;
+    let channel;
+    try {
+        [tenant, channel] = await Promise.all([
+            Tenant.findOne(
+                { tenantID:auth.tenantID },
+                { tenantID:1, status:1, archivedAt:1 }
+            ).maxTimeMS(4000).lean(),
+            StaffChatChannel.findOne({
+                tenantID:auth.tenantID,
+                channelId:safeChannelId,
+                archived:{ $ne:true }
+            }).maxTimeMS(4000).lean()
+        ]);
+    } catch (error) {
+        const timeout = /time limit|timed out|maxTimeMS/i.test(String(error?.message || ''));
+        return {
+            ok:false,
+            status:timeout ? 503 : 500,
+            error:timeout
+                ? 'La base iCHEF répond trop lentement. Réessayez.'
+                : 'Conversation momentanément indisponible.'
+        };
+    }
+
+    if (!tenant || tenant.archivedAt || String(tenant.status || '').toUpperCase() !== 'ACTIF') {
+        return {
+            ok:false,
+            status:403,
+            tenantID:auth.tenantID,
+            claims:auth.claims,
+            error:'Accès établissement suspendu.'
+        };
+    }
+
+    if (!channel) {
+        return {
+            ok:false,
+            status:404,
+            tenantID:auth.tenantID,
+            claims:auth.claims,
+            error:'Conversation introuvable.'
+        };
+    }
+
+    // La signature + l'appareil sont vérifiés à chaque requête.
+    // Le statut actif du collaborateur est revalidé via AppState au maximum
+    // toutes les 20 s (configurable 5–60 s), puis mis en cache très brièvement.
+    let self = ichefStaffChatGetCachedActiveProfile(auth);
+    let fullAuth = null;
+    if (!self) {
+        fullAuth = await ichefLoadActiveStaffChatSession(req);
+        if (!fullAuth.ok) {
+            return {
+                ...fullAuth,
+                status:fullAuth.status || 401
+            };
+        }
+        self = ichefStaffChatGetCachedActiveProfile(fullAuth) || ichefStaffChatSelf(fullAuth);
+    }
+
+    if (!self?.id || !ichefStaffChatCanAccess(channel,self)) {
+        return { ok:false, status:403, error:'Conversation inaccessible.' };
+    }
+
+    return {
+        ok:true,
+        tenantID:auth.tenantID,
+        claims:auth.claims,
+        tenant,
+        channel,
+        self,
+        state:fullAuth?.state || null,
+        staff:fullAuth?.staff || null
+    };
+}
+
 const ICHEF_STAFF_CHAT_MIME_RULES = Object.freeze({
     'image/jpeg': { kind:'IMAGE', max:6 * 1024 * 1024 },
     'image/png': { kind:'IMAGE', max:6 * 1024 * 1024 },
@@ -18568,7 +18732,21 @@ async function ichefStaffChatEmit(auth, channel, message) {
     if (channel.type === 'DIRECT' || channel.type === 'CUSTOM') {
         recipients = Array.isArray(channel.participantIds) ? channel.participantIds : [];
     } else if (channel.type === 'DEPARTMENT') {
-        const directory = ichefStaffChatDirectory(auth?.state?.activeOrders || {});
+        let directory = ichefStaffChatDirectory(auth?.state?.activeOrders || {});
+        if (!directory.length) {
+            try {
+                const state = await AppState.findOne(
+                    { tenantID:auth.tenantID },
+                    {
+                        'activeOrders.STAFF_ACCESS':1,
+                        'activeOrders.DIRECTORY_MASTER':1
+                    }
+                ).maxTimeMS(4500).lean();
+                directory = ichefStaffChatDirectory(state?.activeOrders || {});
+            } catch (error) {
+                console.warn('[iCHEF STAFF CHAT dept realtime V126]',error?.message || error);
+            }
+        }
         recipients = directory
             .filter(member => ichefStaffChatDeptKey(ichefStaffChatMemberDept(member)) === String(channel.deptKey || ''))
             .map(ichefStaffChatMemberId)
@@ -18626,7 +18804,7 @@ app.get('/api/staff/chat/status', async (req,res) => {
             staffId:self.id,
             rhChannelId:channelId,
             realtime:true,
-            build:'V123-CHAT-ALL-MONGO-CONFLICTS-FIX-SECURE'
+            build:'V126-CHAT-FAST-ACTIVE-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT status V117]',error?.message || error);
@@ -18787,7 +18965,7 @@ app.post('/api/staff/chat/channels/direct', async (req,res) => {
                 participants
             },
             durationMs:Date.now()-startedAt,
-            build:'V123-CHAT-ALL-MONGO-CONFLICTS-FIX-SECURE'
+            build:'V126-CHAT-FAST-ACTIVE-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT direct V123]',{
@@ -18807,47 +18985,85 @@ app.post('/api/staff/chat/channels/direct', async (req,res) => {
 });
 
 app.get('/api/staff/chat/messages', async (req,res) => {
+    const startedAt = Date.now();
     try {
-        const auth = await ichefLoadActiveStaffChatSession(req);
-        if (!auth.ok) return res.status(401).json({ success:false, error:auth.error });
+        res.setHeader('Cache-Control','no-store');
         const channelId = String(req.query?.channelId || '').trim().slice(0,160);
-        const access = await ichefStaffChatLoadChannel(auth,channelId);
-        if (!access.ok) return res.status(access.status || 403).json({ success:false, error:access.error });
+        const access = await ichefStaffChatLoadFastChannelSession(req,channelId);
+        if (!access.ok) {
+            return res.status(access.status || 401).json({ success:false, error:access.error });
+        }
+
         const limit = Math.max(20,Math.min(100,Number(req.query?.limit || 60)));
-        const rows = await StaffChatMessage.find({ tenantID:auth.tenantID, channelId })
-            .sort({ createdAt:-1 }).limit(limit).lean();
-        return res.json({ success:true, channel:{ id:access.channel.channelId, type:access.channel.type, name:access.channel.name }, messages:rows.reverse().map(ichefStaffChatPublicMessage) });
+        const rows = await StaffChatMessage.find({
+            tenantID:access.tenantID,
+            channelId,
+            deletedAt:null
+        })
+            .sort({ createdAt:-1 })
+            .limit(limit)
+            .maxTimeMS(4500)
+            .lean();
+
+        return res.json({
+            success:true,
+            channel:{
+                id:access.channel.channelId,
+                type:access.channel.type,
+                name:access.channel.name
+            },
+            messages:rows.reverse().map(ichefStaffChatPublicMessage),
+            durationMs:Date.now()-startedAt,
+            build:'V126-CHAT-FAST-ACTIVE-SECURE'
+        });
     } catch (error) {
-        console.error('[iCHEF STAFF CHAT messages]',error?.message || error);
-        return res.status(500).json({ success:false, error:'Messages indisponibles.' });
+        console.error('[iCHEF STAFF CHAT messages V126]',{
+            message:error?.message || String(error),
+            durationMs:Date.now()-startedAt,
+            requestId:req?.ichefRequestId || ''
+        });
+        const mongoTimeout=/time limit|timed out|maxTimeMS/i.test(String(error?.message || ''));
+        return res.status(mongoTimeout ? 503 : 500).json({
+            success:false,
+            error:mongoTimeout
+                ? 'Le chargement des messages a dépassé le délai iCHEF. Réessayez.'
+                : 'Messages indisponibles.',
+            requestId:req?.ichefRequestId || ''
+        });
     }
 });
 
 app.post('/api/staff/chat/message', async (req,res) => {
     let storedAttachment = null;
     try {
-        const auth = await ichefLoadActiveStaffChatSession(req);
-        if (!auth.ok) return res.status(401).json({ success:false, error:auth.error });
         const channelId = String(req.body?.channelId || '').trim().slice(0,160);
         const text = String(req.body?.text || '').trim().slice(0,3000);
         const incomingAttachment = req.body?.attachment ? ichefStaffChatDecodeAttachment(req.body.attachment) : null;
-        if (!channelId || (!text && !incomingAttachment)) return res.status(400).json({ success:false, error:'Message vide.' });
-        const access = await ichefStaffChatLoadChannel(auth,channelId);
-        if (!access.ok) return res.status(access.status || 403).json({ success:false, error:access.error });
+        if (!channelId || (!text && !incomingAttachment)) {
+            return res.status(400).json({ success:false, error:'Message vide.' });
+        }
+
+        const access = await ichefStaffChatLoadFastChannelSession(req,channelId);
+        if (!access.ok) {
+            return res.status(access.status || 401).json({ success:false, error:access.error });
+        }
+
         const self = access.self;
         const now = new Date();
         const messageId = `MSG_${Date.now()}_${nodeCrypto.randomBytes(6).toString('hex')}`;
+
         if (incomingAttachment) {
             storedAttachment = await ichefStaffChatStoreAttachment({
-                tenantID:auth.tenantID,
+                tenantID:access.tenantID,
                 channelId,
                 messageId,
                 uploaderStaffId:self.id,
                 attachment:incomingAttachment
             });
         }
+
         const row = await StaffChatMessage.create({
-            tenantID:auth.tenantID,
+            tenantID:access.tenantID,
             channelId,
             messageId,
             senderStaffId:self.id,
@@ -18860,12 +19076,35 @@ app.post('/api/staff/chat/message', async (req,res) => {
             readBy:[self.id],
             createdAt:now
         });
-        await StaffChatChannel.updateOne({ tenantID:auth.tenantID, channelId },{ $set:{ lastMessageAt:now, updatedAt:now } });
-        await ichefStaffChatEmit(auth,access.channel,row.toObject());
-        return res.json({ success:true, message:ichefStaffChatPublicMessage(row.toObject()) });
+
+        await StaffChatChannel.updateOne(
+            { tenantID:access.tenantID, channelId },
+            { $set:{ lastMessageAt:now, updatedAt:now } }
+        ).maxTimeMS(4000);
+
+        const emitAuth = {
+            ...access,
+            staff:access.staff || {
+                id:self.id,
+                name:self.name,
+                role:self.role,
+                dept:self.dept
+            }
+        };
+        Promise.resolve(
+            ichefStaffChatEmit(emitAuth,access.channel,row.toObject())
+        ).catch(error => {
+            console.warn('[iCHEF STAFF CHAT realtime emit V126]',error?.message || error);
+        });
+
+        return res.json({
+            success:true,
+            message:ichefStaffChatPublicMessage(row.toObject()),
+            build:'V126-CHAT-FAST-ACTIVE-SECURE'
+        });
     } catch (error) {
         if (storedAttachment?.attachmentId) await ichefStaffChatDeleteAttachment(storedAttachment.attachmentId);
-        console.error('[iCHEF STAFF CHAT send]',error?.message || error);
+        console.error('[iCHEF STAFF CHAT send V126]',error?.message || error);
         const clientFileError = /fichier|type de fichier|volumineux|taille/i.test(String(error?.message || ''));
         const message = clientFileError ? String(error.message) : 'Envoi du message impossible.';
         return res.status(clientFileError ? 400 : 500).json({ success:false, error:message });
@@ -18936,19 +19175,42 @@ app.get('/api/staff/chat/attachment/:attachmentId', async (req,res) => {
 
 app.post('/api/staff/chat/read', async (req,res) => {
     try {
-        const auth = await ichefLoadActiveStaffChatSession(req);
-        if (!auth.ok) return res.status(401).json({ success:false, error:auth.error });
         const channelId = String(req.body?.channelId || '').trim().slice(0,160);
-        const access = await ichefStaffChatLoadChannel(auth,channelId);
-        if (!access.ok) return res.status(access.status || 403).json({ success:false, error:access.error });
-        await StaffChatMessage.updateMany(
-            { tenantID:auth.tenantID, channelId, senderStaffId:{ $ne:access.self.id }, readBy:{ $ne:access.self.id } },
+        const access = await ichefStaffChatLoadFastChannelSession(req,channelId);
+        if (!access.ok) {
+            return res.status(access.status || 401).json({ success:false, error:access.error });
+        }
+
+        // Le reçu de lecture ne doit jamais bloquer l'ouverture de la conversation.
+        // Après validation de la session + appareil + tenant + accès au canal,
+        // on répond immédiatement puis on persiste le readBy de façon asynchrone.
+        res.setHeader('Cache-Control','no-store');
+        res.json({
+            success:true,
+            accepted:true,
+            build:'V126-CHAT-FAST-ACTIVE-SECURE'
+        });
+
+        StaffChatMessage.updateMany(
+            {
+                tenantID:access.tenantID,
+                channelId,
+                senderStaffId:{ $ne:access.self.id },
+                readBy:{ $ne:access.self.id },
+                deletedAt:null
+            },
             { $addToSet:{ readBy:access.self.id } }
-        );
-        return res.json({ success:true });
+        )
+            .maxTimeMS(4500)
+            .catch(error => {
+                console.warn('[iCHEF STAFF CHAT read async V126]',error?.message || error);
+            });
+        return;
     } catch (error) {
-        console.error('[iCHEF STAFF CHAT read]',error?.message || error);
-        return res.status(500).json({ success:false, error:'Lecture du chat non enregistrée.' });
+        console.error('[iCHEF STAFF CHAT read V126]',error?.message || error);
+        if (!res.headersSent) {
+            return res.status(500).json({ success:false, error:'Lecture du chat non enregistrée.' });
+        }
     }
 });
 
@@ -19118,7 +19380,7 @@ app.get('/api/rh/chat/status', async (req,res) => {
             staffCount:Array.isArray(directory) ? directory.length : 0,
             realtime:true,
             privateChannels:true,
-            build:'V123-CHAT-ALL-MONGO-CONFLICTS-FIX-SECURE'
+            build:'V126-CHAT-FAST-ACTIVE-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF RH CHAT status V117]',error?.message || error);
