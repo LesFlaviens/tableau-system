@@ -963,7 +963,7 @@ app.get('/api/staff/build', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.json({
         success: true,
-        build: 'V126-CHAT-FAST-ACTIVE-SECURE',
+        build: 'V128-VIDEO-CALL-FAST-SECURE',
         staffPortal: true,
         signedSession: true,
         timestamp: new Date().toISOString()
@@ -9288,6 +9288,126 @@ console.error(
 error?.message || error
 );
 });
+
+
+// V128 — signalisation WebRTC privée. Aucun flux audio/vidéo ne transite par iCHEF :
+// le serveur ne relaie que SDP/ICE après validation tenant + session + canal DIRECT.
+socket.on('staff-video-signal', async (payload = {}) => {
+try {
+const tenantID = cleanString(socket.data.staffRealtimeTenantID || '');
+const selfStaffId = String(socket.data.staffRealtimeStaffId || '').trim();
+if (!tenantID || !selfStaffId) {
+socket.emit('staff-video-error', { success:false, error:'Session visioconférence non authentifiée.' });
+return;
+}
+
+const kind = String(payload?.kind || '').trim().toLowerCase();
+const allowedKinds = new Set(['invite','accept','reject','busy','offer','answer','ice','hangup']);
+if (!allowedKinds.has(kind)) return;
+
+const channelId = String(payload?.channelId || '').trim().slice(0,160);
+const targetStaffId = String(payload?.targetStaffId || '').trim().slice(0,120);
+const callId = String(payload?.callId || '').trim().replace(/[^a-zA-Z0-9_.:-]/g,'').slice(0,120);
+if (!channelId.startsWith('direct:') || !targetStaffId || targetStaffId === selfStaffId || !callId) {
+socket.emit('staff-video-error', { success:false, callId, error:'Appel vidéo invalide.' });
+return;
+}
+
+// Limite anti-abus par socket : suffisamment haute pour ICE, mais bloque un flood.
+const nowMs = Date.now();
+const rate = socket.data.staffVideoRate || { since:nowMs, count:0 };
+if (nowMs - Number(rate.since || 0) > 60000) {
+rate.since = nowMs;
+rate.count = 0;
+}
+rate.count += 1;
+socket.data.staffVideoRate = rate;
+if (rate.count > 360) {
+socket.emit('staff-video-error', { success:false, callId, error:'Trop de signaux vidéo. Réessayez dans un instant.' });
+return;
+}
+
+const cacheKey = `${channelId}|${targetStaffId}`;
+const authCache = socket.data.staffVideoAuthCache || {};
+let authorized = Boolean(authCache[cacheKey] && (nowMs - Number(authCache[cacheKey])) < 45000);
+if (!authorized) {
+const channel = await StaffChatChannel.findOne({
+tenantID,
+channelId,
+type:'DIRECT',
+archived:{ $ne:true },
+participantIds:{ $all:[selfStaffId,targetStaffId] }
+},{ channelId:1, participantIds:1, type:1, archived:1 })
+    .lean()
+    .maxTimeMS(3000);
+const participants = Array.isArray(channel?.participantIds) ? channel.participantIds.map(String) : [];
+authorized = Boolean(
+channel &&
+participants.length === 2 &&
+participants.includes(selfStaffId) &&
+participants.includes(targetStaffId)
+);
+if (authorized) {
+authCache[cacheKey] = nowMs;
+socket.data.staffVideoAuthCache = authCache;
+}
+}
+if (!authorized) {
+socket.emit('staff-video-error', { success:false, callId, error:'Conversation vidéo non autorisée.' });
+return;
+}
+
+let sdp = null;
+if (kind === 'offer' || kind === 'answer') {
+const raw = payload?.sdp;
+if (!raw || !['offer','answer'].includes(String(raw?.type || '')) || typeof raw?.sdp !== 'string' || raw.sdp.length > 120000) {
+socket.emit('staff-video-error', { success:false, callId, error:'Signal vidéo SDP invalide.' });
+return;
+}
+sdp = { type:String(raw.type), sdp:String(raw.sdp) };
+}
+
+let candidate = null;
+if (kind === 'ice' && payload?.candidate) {
+const raw = payload.candidate;
+const rawCandidate = String(raw?.candidate || '');
+if (rawCandidate.length > 12000) return;
+candidate = {
+candidate:rawCandidate,
+sdpMid:raw?.sdpMid == null ? null : String(raw.sdpMid).slice(0,80),
+sdpMLineIndex:Number.isInteger(raw?.sdpMLineIndex) ? raw.sdpMLineIndex : null,
+usernameFragment:raw?.usernameFragment == null ? null : String(raw.usernameFragment).slice(0,160)
+};
+}
+
+const targetRoom = ichefStaffUserRoom(tenantID,targetStaffId);
+if (!targetRoom) return;
+const fromName = String(
+socket.data.staffRealtimeName ||
+socket.data.staffRealtimeStaffName ||
+'Collaborateur'
+).slice(0,140);
+io.to(targetRoom).emit('staff-video-signal', {
+success:true,
+tenantID,
+channelId,
+callId,
+kind,
+fromStaffId:selfStaffId,
+fromName,
+sdp,
+candidate,
+timestamp:new Date().toISOString()
+});
+} catch (error) {
+console.warn('[iCHEF STAFF VIDEO signal V128]',error?.message || error);
+socket.emit('staff-video-error', {
+success:false,
+callId:String(payload?.callId || '').slice(0,120),
+error:'Signal visioconférence momentanément indisponible.'
+});
+}
+});
 socket.on('joinClientPublic', async (payload = {}) => {
 try {
 const tenantID = cleanString(
@@ -9480,6 +9600,12 @@ if (staffUserRoom) await socket.join(staffUserRoom);
 socket.data.staffRealtimeTenantID = validated.tenantID;
 socket.data.staffRealtimeStaffId = String(validated.claims.staffId);
 socket.data.staffRealtimeDeviceId = validated.deviceId;
+socket.data.staffRealtimeName = String(
+validated.staff?.name ||
+[validated.staff?.firstName,validated.staff?.lastName].filter(Boolean).join(' ') ||
+[validated.staff?.prenom,validated.staff?.nom].filter(Boolean).join(' ') ||
+'Collaborateur'
+).slice(0,140);
 socket.data.page = 'PORTAIL_STAFF';
 socket.emit('staff-realtime-joined', {
 success: true,
@@ -16250,7 +16376,7 @@ app.get(
         res.setHeader('Cache-Control','no-store');
         return res.json({
             success:true,
-            build:'V126-CHAT-FAST-ACTIVE-SECURE',
+            build:'V128-VIDEO-CALL-FAST-SECURE',
             staffLoginRoute:'/api/staff/login',
             authentication:'STAFF_ID_RH_PLUS_PIN',
             signedSession:true,
@@ -18804,7 +18930,7 @@ app.get('/api/staff/chat/status', async (req,res) => {
             staffId:self.id,
             rhChannelId:channelId,
             realtime:true,
-            build:'V126-CHAT-FAST-ACTIVE-SECURE'
+            build:'V128-VIDEO-CALL-FAST-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT status V117]',error?.message || error);
@@ -18965,7 +19091,7 @@ app.post('/api/staff/chat/channels/direct', async (req,res) => {
                 participants
             },
             durationMs:Date.now()-startedAt,
-            build:'V126-CHAT-FAST-ACTIVE-SECURE'
+            build:'V128-VIDEO-CALL-FAST-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT direct V123]',{
@@ -19014,7 +19140,7 @@ app.get('/api/staff/chat/messages', async (req,res) => {
             },
             messages:rows.reverse().map(ichefStaffChatPublicMessage),
             durationMs:Date.now()-startedAt,
-            build:'V126-CHAT-FAST-ACTIVE-SECURE'
+            build:'V128-VIDEO-CALL-FAST-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT messages V126]',{
@@ -19100,7 +19226,7 @@ app.post('/api/staff/chat/message', async (req,res) => {
         return res.json({
             success:true,
             message:ichefStaffChatPublicMessage(row.toObject()),
-            build:'V126-CHAT-FAST-ACTIVE-SECURE'
+            build:'V128-VIDEO-CALL-FAST-SECURE'
         });
     } catch (error) {
         if (storedAttachment?.attachmentId) await ichefStaffChatDeleteAttachment(storedAttachment.attachmentId);
@@ -19188,7 +19314,7 @@ app.post('/api/staff/chat/read', async (req,res) => {
         res.json({
             success:true,
             accepted:true,
-            build:'V126-CHAT-FAST-ACTIVE-SECURE'
+            build:'V128-VIDEO-CALL-FAST-SECURE'
         });
 
         StaffChatMessage.updateMany(
@@ -19211,6 +19337,62 @@ app.post('/api/staff/chat/read', async (req,res) => {
         if (!res.headersSent) {
             return res.status(500).json({ success:false, error:'Lecture du chat non enregistrée.' });
         }
+    }
+});
+
+
+// ============================================================================
+// 📹 iCHEF STAFF VIDEO CALL V128 — WEBRTC CONFIG SÉCURISÉE
+// ============================================================================
+function ichefWebRtcIceServers() {
+    const stunUrls = String(
+        process.env.ICHEF_WEBRTC_STUN_URLS ||
+        'stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302'
+    )
+        .split(',')
+        .map(value => String(value || '').trim())
+        .filter(Boolean)
+        .slice(0,8);
+
+    const iceServers = [];
+    if (stunUrls.length) iceServers.push({ urls:stunUrls });
+
+    const turnUrl = String(process.env.ICHEF_WEBRTC_TURN_URL || '').trim();
+    const turnUsername = String(process.env.ICHEF_WEBRTC_TURN_USERNAME || '').trim();
+    const turnCredential = String(process.env.ICHEF_WEBRTC_TURN_CREDENTIAL || '').trim();
+    if (turnUrl && turnUsername && turnCredential) {
+        iceServers.push({
+            urls:[turnUrl],
+            username:turnUsername,
+            credential:turnCredential
+        });
+    }
+    return iceServers;
+}
+
+app.get('/api/staff/video/config', async (req,res) => {
+    try {
+        res.setHeader('Cache-Control','no-store');
+        const auth = await ichefLoadActiveStaffChatSession(req);
+        if (!auth.ok) {
+            return res.status(401).json({ success:false, error:auth.error });
+        }
+        return res.json({
+            success:true,
+            iceServers:ichefWebRtcIceServers(),
+            turnConfigured:Boolean(
+                process.env.ICHEF_WEBRTC_TURN_URL &&
+                process.env.ICHEF_WEBRTC_TURN_USERNAME &&
+                process.env.ICHEF_WEBRTC_TURN_CREDENTIAL
+            ),
+            build:'V128-VIDEO-CALL-FAST-SECURE'
+        });
+    } catch (error) {
+        console.error('[iCHEF STAFF VIDEO config V128]',error?.message || error);
+        return res.status(500).json({
+            success:false,
+            error:'Configuration visioconférence indisponible.'
+        });
     }
 });
 
@@ -19380,7 +19562,7 @@ app.get('/api/rh/chat/status', async (req,res) => {
             staffCount:Array.isArray(directory) ? directory.length : 0,
             realtime:true,
             privateChannels:true,
-            build:'V126-CHAT-FAST-ACTIVE-SECURE'
+            build:'V128-VIDEO-CALL-FAST-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF RH CHAT status V117]',error?.message || error);
@@ -25665,6 +25847,7 @@ console.log('✅ iCHEF EMPIRE OS — SERVEUR EN LIGNE');
 console.log('==========================================');
 console.log(`✅ Port serveur : ${PORT}`);
 console.log('✅ Socket.IO activé.');
+console.log('✅ Visioconférence WebRTC Staff sécurisée activée.');
 console.log('✅ MongoDB / AppState activé.');
 console.log(`✅ Mongo pool cible : ${ICHEF_MONGO_MIN_POOL}-${ICHEF_MONGO_MAX_POOL}.`);
 console.log('✅ Moteur fiscal MongoDB activé.');
