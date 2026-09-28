@@ -961,7 +961,7 @@ app.get('/api/staff/build', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.json({
         success: true,
-        build: 'V120-STAFF-LOGIN-ID-SYNC-SECURE',
+        build: 'V123-CHAT-ALL-MONGO-CONFLICTS-FIX-SECURE',
         staffPortal: true,
         signedSession: true,
         timestamp: new Date().toISOString()
@@ -16182,7 +16182,7 @@ app.get(
         res.setHeader('Cache-Control','no-store');
         return res.json({
             success:true,
-            build:'V120-STAFF-LOGIN-ID-SYNC-SECURE',
+            build:'V123-CHAT-ALL-MONGO-CONFLICTS-FIX-SECURE',
             staffLoginRoute:'/api/staff/login',
             authentication:'STAFF_ID_RH_PLUS_PIN',
             signedSession:true,
@@ -16370,7 +16370,7 @@ app.post(
                     return values;
                 }
 
-                const rawHumanAliases = [
+                const humanAliases = [
                     item?.name,
                     item?.pseudo,
                     item?.displayName,
@@ -16381,43 +16381,10 @@ app.post(
                     value !== undefined &&
                     value !== null &&
                     String(value).trim() !== ''
-                );
+                )
+                .map(normalizeStaffLoginIdentity);
 
-                const humanAliases =
-                    rawHumanAliases
-                    .map(normalizeStaffLoginIdentity);
-
-                /*
-                 * Compatibilité RH V186 — identifiant portail :
-                 * - loginId reste l'identifiant prioritaire car il fait déjà
-                 *   partie de identityValues(item) ;
-                 * - si une ancienne fiche n'a pas encore loginId, le premier
-                 *   prénom du nom complet peut servir d'alias UNIQUEMENT quand
-                 *   le tenantID fourni correspond exactement à l'établissement.
-                 * - le PIN personnel reste obligatoire ; une ambiguïté entre
-                 *   plusieurs profils continue d'être refusée.
-                 */
-                const shortAliases =
-                    rawHumanAliases
-                    .flatMap(value => {
-                        const normalized =
-                            normalizeStaffLoginIdentity(value);
-                        const parts =
-                            normalized
-                            .split(/\s+/)
-                            .filter(Boolean);
-                        return parts.length
-                            ? [parts[0]]
-                            : [];
-                    });
-
-                return [
-                    ...new Set([
-                        ...values,
-                        ...humanAliases,
-                        ...shortAliases
-                    ])
-                ];
+                return [...new Set([...values, ...humanAliases])];
             };
 
             const stateQuery = {
@@ -18297,6 +18264,10 @@ async function ichefStaffChatEnsureDefaults(auth) {
     const now = new Date();
     const ops = [];
 
+    // IMPORTANT V122 : un même chemin MongoDB ne doit jamais être présent
+    // à la fois dans $setOnInsert et $set dans une opération avec upsert.
+    // $set s'applique aussi lors de l'insertion : on y place donc les champs
+    // qui doivent être maintenus à jour, sans doublon de chemin.
     ops.push({
         updateOne:{
             filter:{ tenantID:auth.tenantID, channelId:'all' },
@@ -18304,14 +18275,17 @@ async function ichefStaffChatEnsureDefaults(auth) {
                 $setOnInsert:{
                     tenantID:auth.tenantID,
                     channelId:'all',
-                    type:'ALL',
-                    name:'Toute l’équipe',
-                    deptKey:'',
                     participantIds:[],
                     createdBy:'SYSTEM',
                     createdAt:now
                 },
-                $set:{ name:'Toute l’équipe', archived:false }
+                $set:{
+                    type:'ALL',
+                    name:'Toute l’équipe',
+                    deptKey:'',
+                    archived:false,
+                    updatedAt:now
+                }
             },
             upsert:true
         }
@@ -18326,17 +18300,16 @@ async function ichefStaffChatEnsureDefaults(auth) {
                     $setOnInsert:{
                         tenantID:auth.tenantID,
                         channelId,
-                        type:'DEPARTMENT',
-                        name:self.dept || 'Mon service',
-                        deptKey:self.deptKey,
                         participantIds:[],
                         createdBy:'SYSTEM',
                         createdAt:now
                     },
                     $set:{
+                        type:'DEPARTMENT',
                         archived:false,
                         name:self.dept || 'Mon service',
-                        deptKey:self.deptKey
+                        deptKey:self.deptKey,
+                        updatedAt:now
                     }
                 },
                 upsert:true
@@ -18353,20 +18326,16 @@ async function ichefStaffChatEnsureDefaults(auth) {
                     $setOnInsert:{
                         tenantID:auth.tenantID,
                         channelId:rhChannelId,
-                        type:'CUSTOM',
-                        name:'Direction / RH',
-                        deptKey:'',
-                        participantIds:[self.id,'__RH__'],
                         createdBy:'SYSTEM',
-                        createdAt:now,
-                        updatedAt:now
+                        createdAt:now
                     },
                     $set:{
                         type:'CUSTOM',
                         name:'Direction / RH',
                         deptKey:'',
                         participantIds:[self.id,'__RH__'],
-                        archived:false
+                        archived:false,
+                        updatedAt:now
                     }
                 },
                 upsert:true
@@ -18378,6 +18347,9 @@ async function ichefStaffChatEnsureDefaults(auth) {
         try {
             await StaffChatChannel.bulkWrite(ops,{ordered:false});
         } catch (error) {
+            // Une course d'initialisation entre deux onglets peut provoquer
+            // un E11000 sur l'index tenantID+channelId. Dans ce seul cas,
+            // le canal existe déjà et le résultat reste valide.
             if (Number(error?.code) !== 11000) throw error;
         }
     }
@@ -18654,7 +18626,7 @@ app.get('/api/staff/chat/status', async (req,res) => {
             staffId:self.id,
             rhChannelId:channelId,
             realtime:true,
-            build:'V120-STAFF-LOGIN-ID-SYNC-SECURE'
+            build:'V123-CHAT-ALL-MONGO-CONFLICTS-FIX-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT status V117]',error?.message || error);
@@ -18758,22 +18730,53 @@ app.post('/api/staff/chat/channels/direct', async (req,res) => {
         const channelId = `direct:${hash}`;
         const now = new Date();
 
-        const channel = await StaffChatChannel.findOneAndUpdate(
-            { tenantID:auth.tenantID, channelId },
-            {
-                $setOnInsert:{
+        // V122 : création DIRECT sans upsert multi-opérateurs conflictuel.
+        // On privilégie une lecture puis update/create. En cas de course entre
+        // deux clients, E11000 est récupéré en relisant le canal créé.
+        let channel = await StaffChatChannel.findOne(
+            { tenantID:auth.tenantID, channelId }
+        ).maxTimeMS(5000).lean();
+
+        if (channel) {
+            channel = await StaffChatChannel.findOneAndUpdate(
+                { tenantID:auth.tenantID, channelId },
+                {
+                    $set:{
+                        type:'DIRECT',
+                        name:'Conversation privée',
+                        participantIds:participants,
+                        archived:false,
+                        updatedAt:now
+                    }
+                },
+                { new:true, maxTimeMS:5000 }
+            ).lean();
+        } else {
+            try {
+                const created = await StaffChatChannel.create({
                     tenantID:auth.tenantID,
                     channelId,
                     type:'DIRECT',
                     name:'Conversation privée',
+                    deptKey:'',
                     participantIds:participants,
                     createdBy:self.id,
-                    createdAt:now
-                },
-                $set:{ participantIds:participants, archived:false, updatedAt:now }
-            },
-            { upsert:true, new:true, maxTimeMS:5000 }
-        ).lean();
+                    archived:false,
+                    createdAt:now,
+                    updatedAt:now
+                });
+                channel = created?.toObject ? created.toObject() : created;
+            } catch (createError) {
+                if (Number(createError?.code) !== 11000) throw createError;
+                channel = await StaffChatChannel.findOne(
+                    { tenantID:auth.tenantID, channelId }
+                ).maxTimeMS(5000).lean();
+            }
+        }
+
+        if (!channel?.channelId) {
+            throw new Error('CHAT_CHANNEL_CREATE_EMPTY');
+        }
 
         return res.json({
             success:true,
@@ -18784,10 +18787,10 @@ app.post('/api/staff/chat/channels/direct', async (req,res) => {
                 participants
             },
             durationMs:Date.now()-startedAt,
-            build:'V120-STAFF-LOGIN-ID-SYNC-SECURE'
+            build:'V123-CHAT-ALL-MONGO-CONFLICTS-FIX-SECURE'
         });
     } catch (error) {
-        console.error('[iCHEF STAFF CHAT direct V120]',{
+        console.error('[iCHEF STAFF CHAT direct V123]',{
             message:error?.message || String(error),
             durationMs:Date.now()-startedAt,
             requestId:req?.ichefRequestId || ''
@@ -18993,6 +18996,7 @@ async function ichefRhChatDirectoryState(tenantID) {
     return { state, directory };
 }
 
+// V123 : mêmes règles anti-conflit MongoDB que le chat Staff.
 async function ichefRhChatEnsureChannels(tenantID) {
     const safeID = cleanString(tenantID);
     const { state, directory } = await ichefRhChatDirectoryState(safeID);
@@ -19009,20 +19013,16 @@ async function ichefRhChatEnsureChannels(tenantID) {
                         $setOnInsert: {
                             tenantID:safeID,
                             channelId,
-                            type:'CUSTOM',
-                            name:'Direction / RH',
-                            deptKey:'',
-                            participantIds:[staffId,ICHEF_RH_CHAT_MEMBER_ID],
                             createdBy:'SYSTEM',
-                            createdAt:now,
-                            updatedAt:now
+                            createdAt:now
                         },
                         $set: {
                             type:'CUSTOM',
                             name:'Direction / RH',
                             deptKey:'',
                             participantIds:[staffId,ICHEF_RH_CHAT_MEMBER_ID],
-                            archived:false
+                            archived:false,
+                            updatedAt:now
                         }
                     },
                     upsert:true
@@ -19118,7 +19118,7 @@ app.get('/api/rh/chat/status', async (req,res) => {
             staffCount:Array.isArray(directory) ? directory.length : 0,
             realtime:true,
             privateChannels:true,
-            build:'V120-STAFF-LOGIN-ID-SYNC-SECURE'
+            build:'V123-CHAT-ALL-MONGO-CONFLICTS-FIX-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF RH CHAT status V117]',error?.message || error);
