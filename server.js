@@ -899,6 +899,8 @@ const ICHEF_TENANT_MUTATION_PATHS = new Set([
 '/api/staff/chat/channels/direct',
 '/api/staff/chat/message',
 '/api/staff/chat/read',
+'/api/rh/chat/message',
+'/api/rh/chat/read',
 '/api/staff/workspace/memo',
 '/api/staff/workspace/training',
 '/api/rh/planning/save',
@@ -962,7 +964,7 @@ app.get('/api/staff/build', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.json({
         success: true,
-        build: 'V114-RH-DOCUMENTS-FAST-PROOF-SECURE',
+        build: 'V115-RH-STAFF-CHAT-DOCUMENTS-SECURE',
         staffPortal: true,
         signedSession: true,
         timestamp: new Date().toISOString()
@@ -18212,6 +18214,37 @@ async function ichefStaffChatEnsureDefaults(auth) {
             { upsert: true, new: true }
         );
     }
+    // V115 — canal privé Direction / RH créé côté serveur pour CE collaborateur.
+    // Les participants sont imposés à exactement [staff, __RH__] : aucun autre
+    // collaborateur ne peut être ajouté à cette conversation confidentielle.
+    if (self.id) {
+        const rhChannelId = `rh:${self.id}`;
+        await StaffChatChannel.findOneAndUpdate(
+            { tenantID: auth.tenantID, channelId: rhChannelId },
+            {
+                $setOnInsert: {
+                    tenantID: auth.tenantID,
+                    channelId: rhChannelId,
+                    type: 'CUSTOM',
+                    name: 'Direction / RH',
+                    deptKey: '',
+                    participantIds: [self.id,'__RH__'],
+                    createdBy: 'SYSTEM',
+                    createdAt: now,
+                    updatedAt: now
+                },
+                $set: {
+                    type: 'CUSTOM',
+                    name: 'Direction / RH',
+                    deptKey: '',
+                    participantIds: [self.id,'__RH__'],
+                    archived: false
+                }
+            },
+            { upsert: true, new: true }
+        );
+    }
+
     return self;
 }
 
@@ -18636,6 +18669,417 @@ app.post('/api/staff/chat/read', async (req,res) => {
         return res.status(500).json({ success:false, error:'Lecture du chat non enregistrée.' });
     }
 });
+
+
+// ============================================================================
+// 💬 iCHEF RH ↔ STAFF CHAT V115 — PRIVÉ, SESSION SIGNÉE, APPAREIL, GRIDFS
+// ============================================================================
+const ICHEF_RH_CHAT_MEMBER_ID = '__RH__';
+
+function ichefRhChatParticipantIds(channel = null) {
+    return [...new Set(
+        (Array.isArray(channel?.participantIds) ? channel.participantIds : [])
+            .map(value => String(value || '').trim())
+            .filter(Boolean)
+    )];
+}
+
+function ichefRhChatIsChannel(channel) {
+    const participants = ichefRhChatParticipantIds(channel);
+    return Boolean(
+        channel &&
+        channel.archived !== true &&
+        channel.type === 'CUSTOM' &&
+        String(channel.channelId || '').startsWith('rh:') &&
+        participants.length === 2 &&
+        participants.includes(ICHEF_RH_CHAT_MEMBER_ID)
+    );
+}
+
+function ichefRhChatStaffId(channel) {
+    if (!ichefRhChatIsChannel(channel)) return '';
+    return String(
+        ichefRhChatParticipantIds(channel)
+            .find(id => id !== ICHEF_RH_CHAT_MEMBER_ID) || ''
+    ).trim();
+}
+
+async function ichefRhChatDirectoryState(tenantID) {
+    const safeID = cleanString(tenantID);
+    const state = await AppState.findOne(
+        { tenantID:safeID },
+        { 'activeOrders.STAFF_ACCESS':1, 'activeOrders.DIRECTORY_MASTER':1 }
+    ).lean();
+    const directory = ichefStaffChatDirectory(state?.activeOrders || {});
+    return { state, directory };
+}
+
+async function ichefRhChatEnsureChannels(tenantID) {
+    const safeID = cleanString(tenantID);
+    const { state, directory } = await ichefRhChatDirectoryState(safeID);
+    const now = new Date();
+    const ops = directory
+        .map(member => {
+            const staffId = ichefStaffChatMemberId(member);
+            if (!staffId) return null;
+            const channelId = `rh:${staffId}`;
+            return {
+                updateOne: {
+                    filter: { tenantID:safeID, channelId },
+                    update: {
+                        $setOnInsert: {
+                            tenantID:safeID,
+                            channelId,
+                            type:'CUSTOM',
+                            name:'Direction / RH',
+                            deptKey:'',
+                            participantIds:[staffId,ICHEF_RH_CHAT_MEMBER_ID],
+                            createdBy:'SYSTEM',
+                            createdAt:now,
+                            updatedAt:now
+                        },
+                        $set: {
+                            type:'CUSTOM',
+                            name:'Direction / RH',
+                            deptKey:'',
+                            participantIds:[staffId,ICHEF_RH_CHAT_MEMBER_ID],
+                            archived:false
+                        }
+                    },
+                    upsert:true
+                }
+            };
+        })
+        .filter(Boolean);
+
+    if (ops.length) {
+        try {
+            await StaffChatChannel.bulkWrite(ops,{ordered:false});
+        } catch (error) {
+            // Une collision d'upsert concurrente ne doit jamais faire tomber RH.
+            if (Number(error?.code) !== 11000) {
+                console.warn('[iCHEF RH CHAT ensure channels]',error?.message || error);
+            }
+        }
+    }
+    return { state, directory };
+}
+
+async function ichefRhChatLoadChannel(auth, channelId) {
+    const safeChannelId = String(channelId || '').trim().slice(0,160);
+    if (!safeChannelId || !safeChannelId.startsWith('rh:')) {
+        return { ok:false, status:403, error:'Conversation RH inaccessible.' };
+    }
+    const channel = await StaffChatChannel.findOne({
+        tenantID:auth.tenantID,
+        channelId:safeChannelId,
+        archived:{ $ne:true }
+    }).lean();
+    if (!ichefRhChatIsChannel(channel)) {
+        return { ok:false, status:403, error:'Conversation RH inaccessible.' };
+    }
+    const staffId = ichefRhChatStaffId(channel);
+    if (!staffId) {
+        return { ok:false, status:403, error:'Conversation RH invalide.' };
+    }
+    return { ok:true, channel, staffId };
+}
+
+function ichefRhChatPacket(tenantID, channel, message) {
+    return {
+        success:true,
+        tenantID:cleanString(tenantID),
+        channelId:String(channel?.channelId || ''),
+        message:ichefStaffChatPublicMessage(message),
+        timestamp:new Date().toISOString()
+    };
+}
+
+async function ichefRhChatEmitToStaff(tenantID, channel, message) {
+    const packet = ichefRhChatPacket(tenantID,channel,message);
+    const staffId = ichefRhChatStaffId(channel);
+    const room = ichefStaffUserRoom(tenantID,staffId);
+    if (room) io.to(room).emit('staff-chat-message',packet);
+    // Signal RH temps réel sans exposer le contenu à une autre conversation.
+    try { io.to(cleanString(tenantID)).emit('rh-chat-message',{...packet,staffId}); } catch (_) {}
+    try {
+        ichefEmitStaffSyncRequired(tenantID,{
+            tableId:'RH_CHAT',
+            source:'rh-chat-message',
+            staffId,
+            timestamp:packet.timestamp
+        });
+    } catch (_) {}
+    return packet;
+}
+
+app.get('/api/rh/chat/channels', async (req,res) => {
+    try {
+        res.setHeader('Cache-Control','no-store');
+        const auth = await ichefLoadRhDocumentsManagerSession(req);
+        if (!auth.ok) return res.status(auth.status || 401).json({success:false,error:auth.error});
+
+        const { directory } = await ichefRhChatEnsureChannels(auth.tenantID);
+        const directoryById = new Map(
+            directory.map(member => [ichefStaffChatMemberId(member),member])
+        );
+
+        const rows = await StaffChatChannel.find({
+            tenantID:auth.tenantID,
+            archived:{ $ne:true },
+            type:'CUSTOM',
+            channelId:/^rh:/,
+            participantIds:ICHEF_RH_CHAT_MEMBER_ID
+        }).sort({lastMessageAt:-1,updatedAt:-1}).lean();
+
+        const channels = [];
+        let totalUnread = 0;
+
+        for (const row of rows) {
+            if (!ichefRhChatIsChannel(row)) continue;
+            const staffId = ichefRhChatStaffId(row);
+            if (!staffId) continue;
+            const member = directoryById.get(staffId) || {};
+            const last = await StaffChatMessage.findOne({
+                tenantID:auth.tenantID,
+                channelId:row.channelId,
+                deletedAt:null
+            }).sort({createdAt:-1}).lean();
+
+            const unread = await StaffChatMessage.countDocuments({
+                tenantID:auth.tenantID,
+                channelId:row.channelId,
+                senderStaffId:{ $ne:ICHEF_RH_CHAT_MEMBER_ID },
+                readBy:{ $ne:ICHEF_RH_CHAT_MEMBER_ID },
+                deletedAt:null
+            });
+
+            totalUnread += Number(unread || 0);
+            channels.push({
+                id:String(row.channelId),
+                type:'RH_STAFF',
+                name:ichefStaffChatMemberName(member) || String(last?.senderName || 'Collaborateur'),
+                staffId,
+                role:ichefStaffChatMemberRole(member),
+                dept:ichefStaffChatMemberDept(member),
+                unread:Number(unread || 0),
+                lastMessage:last
+                    ? (String(last.text || '') ||
+                       (Array.isArray(last.attachments) && last.attachments.length
+                            ? `📎 ${String(last.attachments[0]?.name || 'Pièce jointe')}`
+                            : ''))
+                    : '',
+                lastSender:last ? String(last.senderName || '') : '',
+                lastAt:last?.createdAt ? new Date(last.createdAt).toISOString() : ''
+            });
+        }
+
+        channels.sort((a,b) => {
+            const ta = Date.parse(a.lastAt || 0) || 0;
+            const tb = Date.parse(b.lastAt || 0) || 0;
+            if (tb !== ta) return tb - ta;
+            return String(a.name || '').localeCompare(String(b.name || ''),'fr',{sensitivity:'base'});
+        });
+
+        return res.json({success:true,private:true,channels,totalUnread});
+    } catch (error) {
+        console.error('[iCHEF RH CHAT channels V115]',error?.message || error);
+        return res.status(500).json({success:false,error:'Messagerie RH indisponible.'});
+    }
+});
+
+app.get('/api/rh/chat/messages', async (req,res) => {
+    try {
+        res.setHeader('Cache-Control','no-store');
+        const auth = await ichefLoadRhDocumentsManagerSession(req);
+        if (!auth.ok) return res.status(auth.status || 401).json({success:false,error:auth.error});
+        const channelId = String(req.query?.channelId || '').trim().slice(0,160);
+        const access = await ichefRhChatLoadChannel(auth,channelId);
+        if (!access.ok) return res.status(access.status || 403).json({success:false,error:access.error});
+        const limit = Math.max(20,Math.min(120,Number(req.query?.limit || 80)));
+        const rows = await StaffChatMessage.find({
+            tenantID:auth.tenantID,
+            channelId
+        }).sort({createdAt:-1}).limit(limit).lean();
+        return res.json({
+            success:true,
+            private:true,
+            channel:{id:String(access.channel.channelId),staffId:access.staffId,name:'Direction / RH'},
+            messages:rows.reverse().map(ichefStaffChatPublicMessage)
+        });
+    } catch (error) {
+        console.error('[iCHEF RH CHAT messages V115]',error?.message || error);
+        return res.status(500).json({success:false,error:'Messages RH indisponibles.'});
+    }
+});
+
+app.post('/api/rh/chat/message', async (req,res) => {
+    let storedAttachment = null;
+    try {
+        res.setHeader('Cache-Control','no-store');
+        const auth = await ichefLoadRhDocumentsManagerSession(req);
+        if (!auth.ok) return res.status(auth.status || 401).json({success:false,error:auth.error});
+
+        const channelId = String(req.body?.channelId || '').trim().slice(0,160);
+        const text = String(req.body?.text || '').replace(/\r\n?/g,'\n').trim().slice(0,3000);
+        const incomingAttachment = req.body?.attachment
+            ? ichefStaffChatDecodeAttachment(req.body.attachment)
+            : null;
+
+        if (!channelId || (!text && !incomingAttachment)) {
+            return res.status(400).json({success:false,error:'Message vide.'});
+        }
+
+        const access = await ichefRhChatLoadChannel(auth,channelId);
+        if (!access.ok) return res.status(access.status || 403).json({success:false,error:access.error});
+
+        const now = new Date();
+        const messageId = `RHMSG_${Date.now()}_${nodeCrypto.randomBytes(6).toString('hex')}`;
+
+        if (incomingAttachment) {
+            storedAttachment = await ichefStaffChatStoreAttachment({
+                tenantID:auth.tenantID,
+                channelId,
+                messageId,
+                uploaderStaffId:ICHEF_RH_CHAT_MEMBER_ID,
+                attachment:incomingAttachment
+            });
+        }
+
+        const senderName = String(auth.claims?.actorName || 'Direction / RH').trim().slice(0,120) || 'Direction / RH';
+        const row = await StaffChatMessage.create({
+            tenantID:auth.tenantID,
+            channelId,
+            messageId,
+            senderStaffId:ICHEF_RH_CHAT_MEMBER_ID,
+            senderName,
+            senderRole:String(auth.claims?.role || 'RH').slice(0,80),
+            senderDept:'RH',
+            text,
+            attachments:storedAttachment ? [storedAttachment] : [],
+            replyToMessageId:String(req.body?.replyToMessageId || '').trim().slice(0,160),
+            readBy:[ICHEF_RH_CHAT_MEMBER_ID],
+            createdAt:now
+        });
+
+        await StaffChatChannel.updateOne(
+            {tenantID:auth.tenantID,channelId},
+            {$set:{lastMessageAt:now,updatedAt:now}}
+        );
+
+        await ichefRhChatEmitToStaff(auth.tenantID,access.channel,row.toObject());
+        return res.json({success:true,private:true,message:ichefStaffChatPublicMessage(row.toObject())});
+    } catch (error) {
+        if (storedAttachment?.attachmentId) {
+            await ichefStaffChatDeleteAttachment(storedAttachment.attachmentId);
+        }
+        console.error('[iCHEF RH CHAT send V115]',error?.message || error);
+        const clientFileError = /fichier|type de fichier|volumineux|taille/i.test(String(error?.message || ''));
+        return res.status(clientFileError ? 400 : 500).json({
+            success:false,
+            error:clientFileError ? String(error.message) : 'Envoi du message RH impossible.'
+        });
+    }
+});
+
+app.post('/api/rh/chat/read', async (req,res) => {
+    try {
+        res.setHeader('Cache-Control','no-store');
+        const auth = await ichefLoadRhDocumentsManagerSession(req);
+        if (!auth.ok) return res.status(auth.status || 401).json({success:false,error:auth.error});
+        const channelId = String(req.body?.channelId || '').trim().slice(0,160);
+        const access = await ichefRhChatLoadChannel(auth,channelId);
+        if (!access.ok) return res.status(access.status || 403).json({success:false,error:access.error});
+        await StaffChatMessage.updateMany(
+            {
+                tenantID:auth.tenantID,
+                channelId,
+                senderStaffId:{ $ne:ICHEF_RH_CHAT_MEMBER_ID },
+                readBy:{ $ne:ICHEF_RH_CHAT_MEMBER_ID }
+            },
+            {$addToSet:{readBy:ICHEF_RH_CHAT_MEMBER_ID}}
+        );
+        return res.json({success:true,private:true});
+    } catch (error) {
+        console.error('[iCHEF RH CHAT read V115]',error?.message || error);
+        return res.status(500).json({success:false,error:'Lecture RH non enregistrée.'});
+    }
+});
+
+app.get('/api/rh/chat/attachment/:attachmentId', async (req,res) => {
+    try {
+        const auth = await ichefLoadRhDocumentsManagerSession(req);
+        if (!auth.ok) return res.status(auth.status || 401).end();
+
+        const attachmentId = String(req.params?.attachmentId || '').trim();
+        if (!mongoose.Types.ObjectId.isValid(attachmentId)) return res.status(404).end();
+
+        const objectId = new mongoose.Types.ObjectId(attachmentId);
+        const bucket = ichefStaffChatGridFsBucket();
+        const file = await bucket.find({_id:objectId}).next();
+        if (!file || String(file?.metadata?.tenantID || '') !== String(auth.tenantID || '')) {
+            return res.status(404).end();
+        }
+
+        const channelId = String(file?.metadata?.channelId || '');
+        const access = await ichefRhChatLoadChannel(auth,channelId);
+        if (!access.ok) return res.status(access.status || 403).end();
+
+        const linkedMessage = await StaffChatMessage.exists({
+            tenantID:auth.tenantID,
+            channelId,
+            'attachments.attachmentId':attachmentId,
+            deletedAt:null
+        });
+        if (!linkedMessage) return res.status(404).end();
+
+        const mime = String(file.contentType || 'application/octet-stream');
+        const name = ichefStaffChatSafeFilename(file?.metadata?.originalName || file.filename || 'fichier');
+        const length = Number(file.length || 0);
+        const inline = /^(image|video)\//i.test(mime) || mime === 'application/pdf';
+
+        res.setHeader('Content-Type',mime);
+        res.setHeader('Cache-Control','private, no-store, max-age=0');
+        res.setHeader('X-Content-Type-Options','nosniff');
+        res.setHeader('Accept-Ranges','bytes');
+        res.setHeader('Content-Disposition',`${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(name)}`);
+
+        let start = 0;
+        let end = Math.max(0,length - 1);
+        const range = String(req.headers.range || '');
+        if (range && length > 0) {
+            const match = range.match(/^bytes=(\d*)-(\d*)$/i);
+            if (!match) {
+                res.setHeader('Content-Range',`bytes */${length}`);
+                return res.status(416).end();
+            }
+            if (match[1]) start = Math.max(0,Math.min(length - 1,Number(match[1])));
+            if (match[2]) end = Math.max(start,Math.min(length - 1,Number(match[2])));
+            if (!match[1] && match[2]) {
+                const suffix = Math.max(1,Math.min(length,Number(match[2])));
+                start = Math.max(0,length - suffix);
+                end = length - 1;
+            }
+            res.status(206);
+            res.setHeader('Content-Range',`bytes ${start}-${end}/${length}`);
+            res.setHeader('Content-Length',String(end-start+1));
+        }
+        if (!res.getHeader('Content-Length')) res.setHeader('Content-Length',String(length));
+
+        const stream = bucket.openDownloadStream(objectId,{start,end:end+1});
+        stream.on('error',error => {
+            console.error('[iCHEF RH CHAT attachment stream V115]',error?.message || error);
+            if (!res.headersSent) res.status(500).end();
+            else res.destroy(error);
+        });
+        return stream.pipe(res);
+    } catch (error) {
+        console.error('[iCHEF RH CHAT attachment V115]',error?.message || error);
+        if (!res.headersSent) return res.status(500).end();
+    }
+});
+
+console.info('[iCHEF RH CHAT V115] Direction/RH ↔ Portail Staff sécurisé, canal isolé + pièces jointes GridFS');
 
 
 // ============================================================================
