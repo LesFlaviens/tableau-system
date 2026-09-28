@@ -2395,6 +2395,10 @@ const STAFF_SYNC = {
   socketRetryTimer: null
 };
 
+// V129 — expose le contrôleur temps réel au module visioconférence.
+// Un `const` global n'est pas automatiquement une propriété de `window`.
+window.STAFF_SYNC = STAFF_SYNC;
+
 function staffSyncStatusText(text){
   const sync=document.getElementById('rh-sync-status');
   if(sync)sync.textContent=text;
@@ -5409,7 +5413,7 @@ document.addEventListener('DOMContentLoaded',()=>setTimeout(initStaffWorkspace,7
   </div>
 </div>
 
-<script id="ichef-staff-video-call-v128-js">
+<script id="ichef-staff-video-call-v129-js">
 (()=>{
 'use strict';
 const V={
@@ -5436,7 +5440,26 @@ function showModal(){modal()?.classList.add('open');modal()?.setAttribute('aria-
 function hideModal(){modal()?.classList.remove('open');modal()?.setAttribute('aria-hidden','true');}
 function showIncoming(show){const a=$('staff-video-incoming-actions');const c=$('staff-video-controls');if(a)a.hidden=!show;if(c)c.hidden=show;}
 function showControls(show=true){const a=$('staff-video-incoming-actions');const c=$('staff-video-controls');if(a)a.hidden=true;if(c)c.hidden=!show;}
-function socketReady(){return Boolean(window.STAFF_SYNC?.socket?.connected&&window.STAFF_SYNC?.socketJoined);}
+function socketReady(){
+  const sync=window.STAFF_SYNC;
+  return Boolean(sync?.socket?.connected&&sync?.socketJoined);
+}
+async function ensureVideoRealtimeReady(timeoutMs=6500){
+  if(socketReady())return true;
+  try{
+    if(typeof connectStaffRealtime==='function')connectStaffRealtime();
+  }catch(_){}
+  try{
+    const s=window.STAFF_SYNC?.socket;
+    if(s&&!s.connected&&typeof s.connect==='function')s.connect();
+  }catch(_){}
+  const started=Date.now();
+  while(Date.now()-started<timeoutMs){
+    if(socketReady()){bindSocket();return true;}
+    await new Promise(resolve=>setTimeout(resolve,120));
+  }
+  return socketReady();
+}
 function send(kind,extra={}){const s=window.STAFF_SYNC?.socket;if(!s||!s.connected||!V.callId||!V.channelId||!V.targetStaffId)return false;s.emit('staff-video-signal',{kind,callId:V.callId,channelId:V.channelId,targetStaffId:V.targetStaffId,...extra});return true;}
 async function loadIce(){if(V.iceServers)return V.iceServers;try{const d=await staffChatApi('/api/staff/video/config');V.iceServers=Array.isArray(d?.iceServers)?d.iceServers:[];}catch(_){V.iceServers=[{urls:['stun:stun.l.google.com:19302']}];}return V.iceServers;}
 async function localMedia(){
@@ -5461,7 +5484,10 @@ function resetState(){clearTimeout(V.inviteTimer);V.inviteTimer=null;clearTracks
 function endCall(notify=true){if(notify&&V.callId)send('hangup');resetState();hideModal();}
 async function startCall(){
   const peer=currentDirectPeer();if(!peer){staffChatNotice?.('Ouvrez une conversation privée pour lancer un appel vidéo.','error');return;}
-  if(!socketReady()){staffChatNotice?.('Le temps réel iCHEF doit être connecté pour l’appel vidéo.','error');return;}
+  if(!(await ensureVideoRealtimeReady())){
+    staffChatNotice?.('Connexion temps réel indisponible pour l’appel vidéo. Réessayez dans quelques secondes.','error');
+    return;
+  }
   if(V.callId){staffChatNotice?.('Un appel vidéo est déjà en cours.','error');return;}
   V.callId=(crypto.randomUUID?.()||`call_${Date.now()}_${Math.random().toString(36).slice(2)}`).replace(/[^a-zA-Z0-9_.:-]/g,'');
   V.channelId=peer.channelId;V.targetStaffId=peer.targetStaffId;V.peerName=peer.name;V.role='caller';V.active=true;
