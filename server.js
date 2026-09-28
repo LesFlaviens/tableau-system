@@ -9269,6 +9269,100 @@ deviceId: receivedDevice || expectedDevice
 };
 }
 
+
+// ============================================================================
+// 📹 iCHEF STAFF VIDEO V130 — INVITATIONS ROBUSTES + REPRISE APRÈS RECONNEXION
+// ============================================================================
+// Les invitations sont éphémères et ne contiennent aucun flux audio/vidéo.
+// Elles permettent seulement de rejouer une sonnerie perdue lors d'un reconnect.
+const ichefPendingVideoCallsV130 = new Map();
+
+function ichefVideoPendingKeyV130(tenantID, staffId) {
+    return `${cleanString(tenantID)}::${String(staffId || '').trim()}`;
+}
+
+function ichefVideoPrunePendingV130() {
+    const now = Date.now();
+    for (const [key, item] of ichefPendingVideoCallsV130.entries()) {
+        if (!item || Number(item.expiresAt || 0) <= now) {
+            ichefPendingVideoCallsV130.delete(key);
+        }
+    }
+}
+
+function ichefVideoStorePendingV130(invite = {}) {
+    ichefVideoPrunePendingV130();
+    const key = ichefVideoPendingKeyV130(invite.tenantID, invite.toStaffId);
+    if (!key || key.endsWith('::')) return;
+    ichefPendingVideoCallsV130.set(key, {
+        tenantID: cleanString(invite.tenantID),
+        channelId: String(invite.channelId || ''),
+        callId: String(invite.callId || ''),
+        fromStaffId: String(invite.fromStaffId || ''),
+        fromName: String(invite.fromName || 'Collaborateur').slice(0, 140),
+        toStaffId: String(invite.toStaffId || ''),
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 45_000
+    });
+}
+
+function ichefVideoClearPendingV130(tenantID, callId) {
+    const safeID = cleanString(tenantID);
+    const safeCall = String(callId || '');
+    for (const [key, item] of ichefPendingVideoCallsV130.entries()) {
+        if (
+            item &&
+            item.tenantID === safeID &&
+            String(item.callId || '') === safeCall
+        ) {
+            ichefPendingVideoCallsV130.delete(key);
+        }
+    }
+}
+
+async function ichefVideoDeliverPendingV130(socket) {
+    try {
+        ichefVideoPrunePendingV130();
+        const tenantID = cleanString(socket?.data?.staffRealtimeTenantID || '');
+        const staffId = String(socket?.data?.staffRealtimeStaffId || '').trim();
+        if (!tenantID || !staffId) return false;
+        const item = ichefPendingVideoCallsV130.get(
+            ichefVideoPendingKeyV130(tenantID, staffId)
+        );
+        if (!item || Number(item.expiresAt || 0) <= Date.now()) return false;
+
+        socket.emit('staff-video-signal', {
+            success: true,
+            tenantID,
+            channelId: item.channelId,
+            callId: item.callId,
+            kind: 'invite',
+            fromStaffId: item.fromStaffId,
+            fromName: item.fromName,
+            sdp: null,
+            candidate: null,
+            replayed: true,
+            timestamp: new Date().toISOString()
+        });
+
+        const callerRoom = ichefStaffUserRoom(tenantID, item.fromStaffId);
+        if (callerRoom) {
+            io.to(callerRoom).emit('staff-video-delivery', {
+                success: true,
+                tenantID,
+                callId: item.callId,
+                targetStaffId: staffId,
+                status: 'delivered',
+                timestamp: new Date().toISOString()
+            });
+        }
+        return true;
+    } catch (error) {
+        console.warn('[iCHEF STAFF VIDEO pending V130]', error?.message || error);
+        return false;
+    }
+}
+
 io.on("connection", socket => {
 const connectedAt = Date.now();
 const currentTransport = () => socket?.conn?.transport?.name || 'unknown';
@@ -9287,6 +9381,15 @@ console.error(
 `⚠️ Erreur Socket ${socket.id} :`,
 error?.message || error
 );
+});
+
+socket.on('staff-video-ready', async () => {
+try {
+if (!socket.data.staffRealtimeTenantID || !socket.data.staffRealtimeStaffId) return;
+await ichefVideoDeliverPendingV130(socket);
+} catch (error) {
+console.warn('[iCHEF STAFF VIDEO ready V130]', error?.message || error);
+}
 });
 
 
@@ -9387,6 +9490,21 @@ socket.data.staffRealtimeName ||
 socket.data.staffRealtimeStaffName ||
 'Collaborateur'
 ).slice(0,140);
+
+if (kind === 'invite') {
+ichefVideoStorePendingV130({
+tenantID,
+channelId,
+callId,
+fromStaffId:selfStaffId,
+fromName,
+toStaffId:targetStaffId
+});
+} else if (['accept','reject','busy','offer','answer','hangup'].includes(kind)) {
+ichefVideoClearPendingV130(tenantID,callId);
+}
+
+const onlineSockets = Number(io.sockets.adapter.rooms.get(targetRoom)?.size || 0);
 io.to(targetRoom).emit('staff-video-signal', {
 success:true,
 tenantID,
@@ -9399,6 +9517,18 @@ sdp,
 candidate,
 timestamp:new Date().toISOString()
 });
+
+if (kind === 'invite') {
+socket.emit('staff-video-delivery', {
+success:true,
+tenantID,
+callId,
+targetStaffId,
+status:onlineSockets > 0 ? 'online' : 'offline',
+onlineSockets,
+timestamp:new Date().toISOString()
+});
+}
 } catch (error) {
 console.warn('[iCHEF STAFF VIDEO signal V128]',error?.message || error);
 socket.emit('staff-video-error', {
@@ -9614,6 +9744,12 @@ staffId: String(validated.claims.staffId),
 deviceId: validated.deviceId,
 serverTime: new Date().toISOString()
 });
+setTimeout(() => {
+ichefVideoDeliverPendingV130(socket).catch(error => {
+console.warn('[iCHEF STAFF VIDEO join replay V130]', error?.message || error);
+});
+}, 60);
+
 socket.emit('staff-sync-required', {
 tenantID: validated.tenantID,
 tableId: 'INITIAL',
