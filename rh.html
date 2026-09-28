@@ -4,13 +4,13 @@
 <script id="ichef-rh-v103-cache-reset">
 (async()=>{
   try {
-    if (sessionStorage.getItem('ichef_rh_v184_cache_reset_done') !== '1') {
-      sessionStorage.setItem('ichef_rh_v184_cache_reset_done','1');
+    if (sessionStorage.getItem('ichef_rh_v185_cache_reset_done') !== '1') {
+      sessionStorage.setItem('ichef_rh_v185_cache_reset_done','1');
       if ('serviceWorker' in navigator) {
         const regs = await navigator.serviceWorker.getRegistrations();
         await Promise.all(regs.map(async r => {
           const u = String(r.active?.scriptURL || r.waiting?.scriptURL || r.installing?.scriptURL || '');
-          if (u.includes('sw-rh.js') && !u.includes('v=184')) await r.unregister();
+          if (u.includes('sw-rh.js') && !u.includes('v=185')) await r.unregister();
         }));
       }
       if ('caches' in window) {
@@ -28,7 +28,7 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>iCHEF RH · Direction & Pilotage RH V103</title>
-    <meta name="ichef-build" content="RH-V184-CARDS-ORDER-1-6">
+    <meta name="ichef-build" content="RH-V185-AUTO-COUNTRY-LEGAL-SOURCES">
     
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800;900&display=swap" rel="stylesheet">
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
@@ -1504,17 +1504,32 @@
       </div>
 
       <div class="v160-fields">
-        <div class="input-group">
-          <label>Pays / droit applicable</label>
-          <select id="rh-setting-legal-country" class="input-full">
-            <option value="CH">Suisse · CCNT + Loi sur le travail</option>
-            <option value="FR">France · HCR + Code du travail</option>
-          </select>
+        <div class="input-group v185-auto-country-row">
+          <label>Pays / droit applicable · automatique</label>
+          <div class="v185-country-control">
+            <select id="rh-setting-legal-country" class="input-full" disabled aria-disabled="true">
+              <option value="CH">Suisse · CCNT + Loi sur le travail</option>
+              <option value="FR">France · HCR + Code du travail</option>
+            </select>
+            <span id="v185-country-auto-badge" class="v185-country-auto-badge">DÉTECTION CLIENT…</span>
+          </div>
         </div>
 
         <div class="input-group">
           <label>Type d'établissement</label>
           <select id="rh-setting-legal-establishment" class="input-full"></select>
+        </div>
+
+        <div id="v185-legal-sources" class="v185-legal-sources">
+          <div class="v185-legal-sources-head">
+            <div>
+              <b>RÉFÉRENCES JURIDIQUES UTILISÉES PAR iCHEF</b>
+              <span id="v185-legal-source-country">Détection du pays client…</span>
+            </div>
+            <span id="v185-legal-source-date">Référentiel · 28/09/2026</span>
+          </div>
+          <div id="v185-legal-source-list" class="v185-legal-source-list"></div>
+          <div id="v185-legal-detection-source" class="v185-legal-detection-source"></div>
         </div>
 
         <div class="v160-legal-status-row">
@@ -6064,6 +6079,8 @@
                 planningLegalEstablishmentType: 'standard',
                 planningLegalEnforcement: true,
                 planningLegalReferenceDate: '2026-09-28',
+                planningLegalCountryAuto: true,
+                planningLegalCountrySource: 'tenant',
 
                 // V180 · Suisse : le régime 7 jours n'est jamais appliqué
                 // automatiquement. Il doit être activé explicitement et
@@ -6343,6 +6360,10 @@
                 planningLegalReferenceDate:
                     '2026-09-28',
 
+                planningLegalCountryAuto: true,
+                planningLegalCountrySource:
+                    String(source.planningLegalCountrySource || 'tenant').slice(0,120),
+
                 planningSwissSevenDayException:
                     source.planningSwissSevenDayException === true ||
                     String(source.planningSwissSevenDayException) === 'true',
@@ -6401,6 +6422,10 @@
                             clean.planningLegalEnforcement,
                         planningLegalReferenceDate:
                             clean.planningLegalReferenceDate,
+                        planningLegalCountryAuto:
+                            true,
+                        planningLegalCountrySource:
+                            clean.planningLegalCountrySource,
                         planningSwissSevenDayException:
                             clean.planningSwissSevenDayException,
                         planningSwissLegalVersion:
@@ -20447,7 +20472,7 @@ function renderDirectorRequests() {
     setInterval(()=>{if(navigator.onLine)syncQueue()},30000);
 
     if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost'||location.hostname==='127.0.0.1')){
-        window.addEventListener('load',()=>navigator.serviceWorker.register('/sw-rh.js?v=184',{scope:'/'}).catch(e=>console.warn('[iCHEF RH OFFLINE] Service Worker non installé',e?.message||e)));
+        window.addEventListener('load',()=>navigator.serviceWorker.register('/sw-rh.js?v=185',{scope:'/'}).catch(e=>console.warn('[iCHEF RH OFFLINE] Service Worker non installé',e?.message||e)));
     }
 })();
 </script>
@@ -35369,6 +35394,953 @@ html body #ia-predictions-modal .v160-card-legal{
 <script id="ichef-rh-v184-marker">
 window.__ICHEF_RH_BUILD__='RH-V184-CARDS-ORDER-1-6';
 console.info('[iCHEF RH V184] cartes en ordre croissant 1 à 6');
+</script>
+
+
+
+<style id="ichef-rh-v185-auto-country-style">
+/* =========================================================
+   V185 · PAYS CLIENT AUTO + SOURCES JURIDIQUES
+   ========================================================= */
+
+#ia-predictions-modal .v185-country-control{
+  display:grid !important;
+  grid-template-columns:minmax(0,1fr) auto !important;
+  gap:8px !important;
+  align-items:center !important;
+}
+
+#ia-predictions-modal #rh-setting-legal-country:disabled{
+  opacity:1 !important;
+  color:#111 !important;
+  background:#f7f7f7 !important;
+  cursor:not-allowed !important;
+}
+
+#ia-predictions-modal .v185-country-auto-badge{
+  min-height:34px !important;
+  padding:0 10px !important;
+  display:inline-flex !important;
+  align-items:center !important;
+  justify-content:center !important;
+  border:1px solid #b58b22 !important;
+  border-radius:999px !important;
+  background:#fffaf0 !important;
+  color:#111 !important;
+  font-size:12px !important;
+  line-height:1 !important;
+  font-weight:950 !important;
+  white-space:nowrap !important;
+}
+
+#ia-predictions-modal .v185-country-auto-badge[data-country="FR"]{
+  border-color:#8b9298 !important;
+  background:#f7f8f9 !important;
+}
+
+#ia-predictions-modal .v185-legal-sources{
+  margin-top:2px !important;
+  padding:12px !important;
+  border:1px solid #c9c9c9 !important;
+  border-radius:9px !important;
+  background:#fafafa !important;
+}
+
+#ia-predictions-modal .v185-legal-sources-head{
+  display:flex !important;
+  justify-content:space-between !important;
+  align-items:flex-start !important;
+  gap:12px !important;
+}
+
+#ia-predictions-modal .v185-legal-sources-head b{
+  display:block !important;
+  color:#111 !important;
+  font-size:15px !important;
+  line-height:1.2 !important;
+}
+
+#ia-predictions-modal .v185-legal-sources-head div > span{
+  display:block !important;
+  margin-top:4px !important;
+  color:#111 !important;
+  font-size:13px !important;
+  line-height:1.3 !important;
+}
+
+#ia-predictions-modal #v185-legal-source-date{
+  flex:0 0 auto !important;
+  color:#66500f !important;
+  font-size:12px !important;
+  font-weight:900 !important;
+  white-space:nowrap !important;
+}
+
+#ia-predictions-modal .v185-legal-source-list{
+  margin-top:10px !important;
+  display:grid !important;
+  grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+  gap:7px !important;
+}
+
+#ia-predictions-modal .v185-source-card{
+  min-height:58px !important;
+  padding:9px 10px !important;
+  display:flex !important;
+  flex-direction:column !important;
+  justify-content:center !important;
+  border:1px solid #d6d6d6 !important;
+  border-radius:7px !important;
+  background:#fff !important;
+  color:#111 !important;
+  text-decoration:none !important;
+}
+
+#ia-predictions-modal .v185-source-card:hover{
+  border-color:#b58b22 !important;
+  background:#fffdf7 !important;
+}
+
+#ia-predictions-modal .v185-source-card strong{
+  color:#111 !important;
+  font-size:13px !important;
+  line-height:1.25 !important;
+}
+
+#ia-predictions-modal .v185-source-card span{
+  margin-top:4px !important;
+  color:#444 !important;
+  font-size:12px !important;
+  line-height:1.2 !important;
+}
+
+#ia-predictions-modal .v185-legal-detection-source{
+  margin-top:9px !important;
+  padding-top:8px !important;
+  border-top:1px solid #ddd !important;
+  color:#111 !important;
+  font-size:12px !important;
+  line-height:1.35 !important;
+}
+
+#ia-predictions-modal .v185-legal-detection-source b{
+  color:#111 !important;
+}
+
+#ia-predictions-modal .v185-legal-detection-source span{
+  color:#555 !important;
+}
+
+@media(max-width:900px){
+  #ia-predictions-modal .v185-country-control{
+    grid-template-columns:1fr !important;
+  }
+
+  #ia-predictions-modal .v185-country-auto-badge{
+    justify-self:start !important;
+  }
+
+  #ia-predictions-modal .v185-legal-source-list{
+    grid-template-columns:1fr !important;
+  }
+
+  #ia-predictions-modal .v185-legal-sources-head{
+    display:block !important;
+  }
+
+  #ia-predictions-modal #v185-legal-source-date{
+    display:block !important;
+    margin-top:6px !important;
+  }
+}
+</style>
+
+
+<script id="ichef-rh-v185-auto-country-legal-sources">
+(() => {
+  'use strict';
+
+  if (window.__ICHEF_RH_V185_AUTO_COUNTRY__) return;
+  window.__ICHEF_RH_V185_AUTO_COUNTRY__ = true;
+
+  const VERSION = 'RH-V185-AUTO-COUNTRY-LEGAL-SOURCES';
+  let applying = false;
+  let lastDetected = null;
+
+  const SOURCES = {
+    CH: [
+      {
+        label: 'CCNT hôtels, restaurants et cafés · Convention actuelle',
+        authority: 'Office de contrôle de la CCNT / L-GAV',
+        url: 'https://l-gav.ch/fr/convention-actuelle'
+      },
+      {
+        label: 'Durée du travail et du repos · LTr / OLT',
+        authority: 'SECO · Confédération suisse',
+        url: 'https://www.seco.admin.ch/fr/duree-du-travail-et-du-repos'
+      },
+      {
+        label: 'Protection des jeunes travailleurs',
+        authority: 'SECO · Confédération suisse',
+        url: 'https://www.seco.admin.ch/fr/faq-protection-des-jeunes-travailleurs'
+      },
+      {
+        label: 'Maternité / protection de la grossesse',
+        authority: 'SECO · Confédération suisse',
+        url: 'https://www.seco.admin.ch/fr/maternite'
+      }
+    ],
+    FR: [
+      {
+        label: 'Convention collective HCR · IDCC 1979',
+        authority: 'Légifrance',
+        url: 'https://www.legifrance.gouv.fr/conv_coll/id/KALICONT000005635534'
+      },
+      {
+        label: 'Durée et aménagement du temps de travail HCR',
+        authority: 'Légifrance · Convention HCR',
+        url: 'https://www.legifrance.gouv.fr/conv_coll/id/KALISCTA000005747435'
+      },
+      {
+        label: 'Durée et temps de travail',
+        authority: 'Ministère du Travail',
+        url: 'https://travail-emploi.gouv.fr/droit-du-travail/duree-et-temps-de-travail'
+      },
+      {
+        label: 'Travail de nuit',
+        authority: 'Ministère du Travail',
+        url: 'https://travail-emploi.gouv.fr/le-travail-de-nuit'
+      },
+      {
+        label: 'Jeunes de moins de 18 ans',
+        authority: 'Ministère du Travail',
+        url: 'https://travail-emploi.gouv.fr/le-temps-de-travail-des-jeunes-de-moins-de-18-ans'
+      }
+    ]
+  };
+
+  function normalizeCountry(value) {
+    const raw = String(value ?? '')
+      .trim()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g,'')
+      .toUpperCase();
+
+    if (!raw) return '';
+
+    if (
+      raw === 'FR' ||
+      raw === 'FRA' ||
+      raw === 'FRANCE' ||
+      raw.includes('FRANCE')
+    ) {
+      return 'FR';
+    }
+
+    if (
+      raw === 'CH' ||
+      raw === 'CHE' ||
+      raw === 'SUISSE' ||
+      raw === 'SWITZERLAND' ||
+      raw === 'SCHWEIZ' ||
+      raw === 'SVIZZERA' ||
+      raw.includes('SUISSE') ||
+      raw.includes('SWITZERLAND') ||
+      raw.includes('SCHWEIZ')
+    ) {
+      return 'CH';
+    }
+
+    return '';
+  }
+
+  function normalizeCurrency(value) {
+    const raw = String(value ?? '').trim().toUpperCase();
+    if (raw === 'EUR' || raw === '€') return 'FR';
+    if (raw === 'CHF') return 'CH';
+    return '';
+  }
+
+  function valueByKeys(obj, keys) {
+    if (!obj || typeof obj !== 'object') return '';
+
+    for (const key of keys) {
+      if (Object.prototype.hasOwnProperty.call(obj, key)) {
+        const country = normalizeCountry(obj[key]);
+        if (country) return country;
+      }
+    }
+
+    return '';
+  }
+
+  function currencyByKeys(obj, keys) {
+    if (!obj || typeof obj !== 'object') return '';
+
+    for (const key of keys) {
+      if (Object.prototype.hasOwnProperty.call(obj, key)) {
+        const country = normalizeCurrency(obj[key]);
+        if (country) return country;
+      }
+    }
+
+    return '';
+  }
+
+  function detectFromConfigObject(obj, label) {
+    if (!obj || typeof obj !== 'object') return null;
+
+    const countryKeys = [
+      'countryCode','country_code','country','pays',
+      'companyCountry','company_country',
+      'establishmentCountry','establishment_country',
+      'businessCountry','business_country',
+      'clientCountry','client_country',
+      'tenantCountry','tenant_country',
+      'legalCountry','legal_country'
+    ];
+
+    const currencyKeys = [
+      'currency','devise','currencyCode','currency_code'
+    ];
+
+    const direct = valueByKeys(obj, countryKeys);
+    if (direct) {
+      return {
+        country: direct,
+        source: label + ' · pays'
+      };
+    }
+
+    const currency = currencyByKeys(obj, currencyKeys);
+    if (currency) {
+      return {
+        country: currency,
+        source: label + ' · devise'
+      };
+    }
+
+    return null;
+  }
+
+  function detectFromLiveState(state) {
+    if (!state || typeof state !== 'object') return null;
+
+    const directObjects = [
+      ['État client', state],
+      ['Tenant', state.tenant],
+      ['Client', state.client],
+      ['Établissement', state.establishment],
+      ['Entreprise', state.company],
+      ['Business', state.business],
+      ['Configuration', state.settings],
+      ['Profil', state.profile]
+    ];
+
+    for (const [label, obj] of directObjects) {
+      const found = detectFromConfigObject(obj, label);
+      if (found) return found;
+    }
+
+    const active = state.activeOrders || {};
+    const likelyKeys = Object.keys(active).filter(key =>
+      /(CLIENT|TENANT|BUSINESS|COMPANY|ESTABLISH|SETTING|CONFIG|PROFILE|VENUE|RESTAURANT|HOTEL)/i
+        .test(String(key))
+    );
+
+    for (const key of likelyKeys) {
+      const node = active[key];
+      const payload =
+        node && typeof node === 'object' && 'data' in node
+          ? node.data
+          : node;
+
+      const found = detectFromConfigObject(
+        payload,
+        `Serveur · ${key}`
+      );
+
+      if (found) return found;
+    }
+
+    return null;
+  }
+
+  function detectFromLocalClientConfig() {
+    const countryKeys = [
+      'ichef_client_country',
+      'ichef_establishment_country',
+      'ichef_company_country',
+      'ichef_business_country',
+      'ichef_country',
+      'client_country',
+      'establishment_country'
+    ];
+
+    for (const key of countryKeys) {
+      const value = localStorage.getItem(key);
+      const country = normalizeCountry(value);
+
+      if (country) {
+        return {
+          country,
+          source: `Fiche client locale · ${key}`
+        };
+      }
+    }
+
+    // Paramètres paie = configuration entreprise, meilleure source que la devise RH.
+    try {
+      const payroll =
+        JSON.parse(
+          localStorage.getItem(
+            'ichef_payroll_settings_v2'
+          ) || '{}'
+        ) || {};
+
+      const direct = normalizeCountry(payroll.country);
+      if (direct) {
+        return {
+          country: direct,
+          source: 'Configuration entreprise / paie'
+        };
+      }
+
+      const byCurrency = normalizeCurrency(payroll.currency);
+      if (byCurrency) {
+        return {
+          country: byCurrency,
+          source: 'Configuration entreprise / paie · devise'
+        };
+      }
+    } catch (_) {}
+
+    return null;
+  }
+
+  function detectFromCashState(state) {
+    try {
+      const rows =
+        state?.activeOrders?.FINANCIAL_HISTORY?.data;
+
+      if (!Array.isArray(rows)) return null;
+
+      const currencies = rows
+        .slice(-100)
+        .map(tx =>
+          tx?.currency ||
+          tx?.details?.currency ||
+          tx?.payment?.currency
+        )
+        .filter(Boolean);
+
+      const eur = currencies.filter(v => normalizeCurrency(v) === 'FR').length;
+      const chf = currencies.filter(v => normalizeCurrency(v) === 'CH').length;
+
+      if (eur > chf && eur > 0) {
+        return {
+          country:'FR',
+          source:'Caisse iCHEF · devise EUR'
+        };
+      }
+
+      if (chf > eur && chf > 0) {
+        return {
+          country:'CH',
+          source:'Caisse iCHEF · devise CHF'
+        };
+      }
+    } catch (_) {}
+
+    return null;
+  }
+
+  function detectFallback() {
+    const settings =
+      typeof getRhSettings === 'function'
+        ? getRhSettings()
+        : {};
+
+    const currency =
+      normalizeCurrency(settings.currency);
+
+    if (currency) {
+      return {
+        country:currency,
+        source:'Paramètres établissement · devise (secours)'
+      };
+    }
+
+    const saved =
+      normalizeCountry(settings.planningLegalCountry);
+
+    if (saved) {
+      return {
+        country:saved,
+        source:'Droit précédemment enregistré (secours)'
+      };
+    }
+
+    return {
+      country:'CH',
+      source:'Valeur de secours · Suisse'
+    };
+  }
+
+  function detectClientCountry(state) {
+    return (
+      detectFromLiveState(state) ||
+      detectFromLocalClientConfig() ||
+      detectFromCashState(state) ||
+      detectFallback()
+    );
+  }
+
+  function sourceLabel(country) {
+    return country === 'FR'
+      ? 'FRANCE · HCR IDCC 1979 + CODE DU TRAVAIL'
+      : 'SUISSE · CCNT + LTr + OLT 1/2';
+  }
+
+  function renderSources(country, detectedSource) {
+    const title =
+      document.getElementById(
+        'v185-legal-source-country'
+      );
+
+    const list =
+      document.getElementById(
+        'v185-legal-source-list'
+      );
+
+    const detection =
+      document.getElementById(
+        'v185-legal-detection-source'
+      );
+
+    if (title) {
+      title.textContent =
+        country === 'FR'
+          ? 'Client France · références françaises actives'
+          : 'Client Suisse · références suisses actives';
+    }
+
+    if (list) {
+      list.innerHTML =
+        (SOURCES[country] || [])
+          .map(item => `
+            <a
+              class="v185-source-card"
+              href="${item.url}"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <strong>${item.label}</strong>
+              <span>${item.authority}</span>
+            </a>
+          `)
+          .join('');
+    }
+
+    if (detection) {
+      detection.innerHTML =
+        `<b>Pays appliqué automatiquement :</b> ` +
+        `${country === 'FR' ? 'France' : 'Suisse'} · ` +
+        `<span>source de détection : ${String(detectedSource || 'configuration client')}</span>`;
+    }
+  }
+
+  function renderAutoBadge(country, source) {
+    const badge =
+      document.getElementById(
+        'v185-country-auto-badge'
+      );
+
+    if (!badge) return;
+
+    badge.dataset.country = country;
+    badge.textContent =
+      country === 'FR'
+        ? 'AUTO · CLIENT FRANCE'
+        : 'AUTO · CLIENT SUISSE';
+
+    badge.title =
+      `Détecté depuis : ${source || 'configuration client'}`;
+  }
+
+  function syncPayrollCountry(country) {
+    try {
+      const key = 'ichef_payroll_settings_v2';
+      const current =
+        JSON.parse(
+          localStorage.getItem(key) || '{}'
+        ) || {};
+
+      const desiredCurrency =
+        country === 'FR'
+          ? 'EUR'
+          : 'CHF';
+
+      const next = {
+        ...current,
+        country,
+        currency:
+          current.currency &&
+          ['EUR','CHF'].includes(
+            String(current.currency).toUpperCase()
+          )
+            ? (
+                String(current.country || '').toUpperCase() === country
+                  ? current.currency
+                  : desiredCurrency
+              )
+            : desiredCurrency,
+        autoCountryFromTenant:true,
+        autoCountryUpdatedAt:
+          new Date().toISOString()
+      };
+
+      localStorage.setItem(
+        key,
+        JSON.stringify(next)
+      );
+    } catch (_) {}
+  }
+
+  function compatibleEstablishmentType(country, current) {
+    const value = String(current || '').toLowerCase();
+
+    if (country === 'FR') {
+      return ['permanent','seasonal'].includes(value)
+        ? value
+        : 'permanent';
+    }
+
+    return ['standard','seasonal','small'].includes(value)
+      ? value
+      : 'standard';
+  }
+
+  function applyCountry(country, source, options = {}) {
+    if (applying) return;
+
+    const safeCountry =
+      country === 'FR'
+        ? 'FR'
+        : 'CH';
+
+    const select =
+      document.getElementById(
+        'rh-setting-legal-country'
+      );
+
+    const type =
+      document.getElementById(
+        'rh-setting-legal-establishment'
+      );
+
+    if (!select) return;
+
+    const previous = select.value;
+
+    select.value = safeCountry;
+    select.disabled = true;
+    select.setAttribute('aria-disabled','true');
+
+    renderAutoBadge(
+      safeCountry,
+      source
+    );
+
+    renderSources(
+      safeCountry,
+      source
+    );
+
+    const badge =
+      document.getElementById(
+        'v142-legal-status'
+      );
+
+    if (badge) {
+      badge.textContent =
+        sourceLabel(safeCountry);
+    }
+
+    if (
+      typeof refreshLegalProfileV142 === 'function'
+    ) {
+      refreshLegalProfileV142(
+        compatibleEstablishmentType(
+          safeCountry,
+          type?.value
+        )
+      );
+    }
+
+    // Les scripts historiques peuvent essayer de réécrire le pays :
+    // on réimpose toujours le pays du client après le refresh.
+    select.value = safeCountry;
+    select.disabled = true;
+
+    if (
+      previous !== safeCountry ||
+      options.forcePersist === true
+    ) {
+      applying = true;
+
+      try {
+        const settings =
+          typeof getRhSettings === 'function'
+            ? getRhSettings()
+            : {};
+
+        const newType =
+          compatibleEstablishmentType(
+            safeCountry,
+            type?.value ||
+            settings.planningLegalEstablishmentType
+          );
+
+        if (type) {
+          type.value = newType;
+        }
+
+        if (
+          typeof saveRhSettings === 'function'
+        ) {
+          saveRhSettings({
+            ...settings,
+            planningLegalCountry:
+              safeCountry,
+            planningLegalFramework:
+              safeCountry === 'FR'
+                ? 'FR_HCR'
+                : 'CH_CCNT',
+            planningLegalEstablishmentType:
+              newType,
+            planningLegalCountryAuto:
+              true,
+            planningLegalCountrySource:
+              String(source || 'tenant'),
+            planningLegalReferenceDate:
+              '2026-09-28'
+          });
+        }
+
+        syncPayrollCountry(
+          safeCountry
+        );
+
+        try {
+          localStorage.setItem(
+            `ichef_client_country_detected_v185_${String(
+              typeof tenantID_JS !== 'undefined'
+                ? tenantID_JS
+                : 'default'
+            )}`,
+            JSON.stringify({
+              country:safeCountry,
+              source,
+              updatedAt:
+                new Date().toISOString()
+            })
+          );
+        } catch (_) {}
+      } finally {
+        applying = false;
+      }
+    }
+
+    lastDetected = {
+      country:safeCountry,
+      source
+    };
+  }
+
+  async function detectAndApply(state, options = {}) {
+    const detected =
+      detectClientCountry(
+        state ||
+        window.ICHEF_LIVE_STATE
+      );
+
+    applyCountry(
+      detected.country,
+      detected.source,
+      options
+    );
+
+    return detected;
+  }
+
+  async function refreshFromServer() {
+    try {
+      if (
+        typeof API !== 'undefined' &&
+        API &&
+        typeof API.getState === 'function'
+      ) {
+        const state =
+          await API.getState();
+
+        if (state) {
+          window.ICHEF_LIVE_STATE =
+            state;
+
+          return await detectAndApply(
+            state,
+            {
+              forcePersist:true
+            }
+          );
+        }
+      }
+    } catch (error) {
+      console.warn(
+        '[iCHEF RH V185] détection pays serveur indisponible, utilisation configuration locale.',
+        error?.message || error
+      );
+    }
+
+    return await detectAndApply(
+      null,
+      {
+        forcePersist:true
+      }
+    );
+  }
+
+  // Bloque les changements manuels : le pays suit le client.
+  function lockCountryControl() {
+    const select =
+      document.getElementById(
+        'rh-setting-legal-country'
+      );
+
+    if (!select) return;
+
+    select.disabled = true;
+    select.setAttribute(
+      'aria-disabled',
+      'true'
+    );
+
+    select.title =
+      'Automatique : le droit applicable suit le pays de l’établissement client.';
+  }
+
+  // Si un ancien script change le select, on restaure le pays client.
+  document.addEventListener(
+    'change',
+    event => {
+      if (
+        event.target?.id ===
+        'rh-setting-legal-country'
+      ) {
+        event.preventDefault();
+
+        if (lastDetected) {
+          applyCountry(
+            lastDetected.country,
+            lastDetected.source
+          );
+        }
+      }
+    },
+    true
+  );
+
+  window.addEventListener(
+    'ichef:updateState',
+    event => {
+      detectAndApply(
+        event.detail
+      );
+    }
+  );
+
+  window.addEventListener(
+    'ichef:connected',
+    () => {
+      setTimeout(
+        refreshFromServer,
+        250
+      );
+    }
+  );
+
+  window.addEventListener(
+    'focus',
+    () => {
+      detectAndApply();
+    }
+  );
+
+  document.addEventListener(
+    'ichef:rh-settings-saved',
+    () => {
+      if (
+        !applying &&
+        lastDetected
+      ) {
+        setTimeout(
+          () =>
+            applyCountry(
+              lastDetected.country,
+              lastDetected.source
+            ),
+          0
+        );
+      }
+    }
+  );
+
+  function boot() {
+    lockCountryControl();
+    detectAndApply(
+      window.ICHEF_LIVE_STATE
+    );
+
+    setTimeout(
+      refreshFromServer,
+      450
+    );
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener(
+      'DOMContentLoaded',
+      boot,
+      {
+        once:true
+      }
+    );
+  } else {
+    boot();
+  }
+
+  window.ICHEF_CLIENT_COUNTRY_V185 = {
+    detect:
+      detectAndApply,
+    refresh:
+      refreshFromServer,
+    get current() {
+      return lastDetected;
+    }
+  };
+
+  window.__ICHEF_RH_BUILD__ = VERSION;
+  console.info(
+    '[iCHEF RH V185] pays client automatique + références juridiques officielles'
+  );
+})();
+</script>
+
+
+<script id="ichef-rh-v185-marker">
+window.__ICHEF_RH_BUILD__='RH-V185-AUTO-COUNTRY-LEGAL-SOURCES';
+console.info('[iCHEF RH V185] droit automatiquement lié au pays client');
 </script>
 
 </body>
