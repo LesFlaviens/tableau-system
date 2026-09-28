@@ -4,13 +4,13 @@
 <script id="ichef-rh-v103-cache-reset">
 (async()=>{
   try {
-    if (sessionStorage.getItem('ichef_rh_v174_cache_reset_done') !== '1') {
-      sessionStorage.setItem('ichef_rh_v174_cache_reset_done','1');
+    if (sessionStorage.getItem('ichef_rh_v175_cache_reset_done') !== '1') {
+      sessionStorage.setItem('ichef_rh_v175_cache_reset_done','1');
       if ('serviceWorker' in navigator) {
         const regs = await navigator.serviceWorker.getRegistrations();
         await Promise.all(regs.map(async r => {
           const u = String(r.active?.scriptURL || r.waiting?.scriptURL || r.installing?.scriptURL || '');
-          if (u.includes('sw-rh.js') && !u.includes('v=174')) await r.unregister();
+          if (u.includes('sw-rh.js') && !u.includes('v=175')) await r.unregister();
         }));
       }
       if ('caches' in window) {
@@ -28,7 +28,7 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>iCHEF RH · Direction & Pilotage RH V103</title>
-    <meta name="ichef-build" content="RH-V174-BRIGADES-READABLE-EXPANDABLE">
+    <meta name="ichef-build" content="RH-V175-LONGPRESS-BRIGADE-ZOOM">
     
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800;900&display=swap" rel="stylesheet">
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
@@ -4919,6 +4919,57 @@
             return base;
         }
 
+        function closeExpandedBrigadeV175(card) {
+            if (!card) return;
+
+            card.classList.remove(
+                'is-expanded-v174',
+                'is-expanded-v175'
+            );
+
+            document.documentElement
+                .classList
+                .remove(
+                    'v175-brigade-focus-open'
+                );
+        }
+
+        function openExpandedBrigadeV175(card) {
+            if (!card) return;
+
+            document
+                .querySelectorAll(
+                    '#v169-brigade-container [data-v169-department].is-expanded-v175'
+                )
+                .forEach(other => {
+                    if (other !== card) {
+                        closeExpandedBrigadeV175(other);
+                    }
+                });
+
+            card.classList.add(
+                'is-expanded-v174',
+                'is-expanded-v175'
+            );
+
+            document.documentElement
+                .classList
+                .add(
+                    'v175-brigade-focus-open'
+                );
+
+            setTimeout(
+                () => {
+                    card.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'center'
+                    });
+                },
+                30
+            );
+        }
+
+        // Compatibilité interne V174.
         function toggleBrigadeDepartmentSizeV174(button) {
             const card =
                 button?.closest?.(
@@ -4927,26 +4978,14 @@
 
             if (!card) return;
 
-            const expanded =
-                card.classList.toggle(
-                    'is-expanded-v174'
-                );
-
-            button.textContent =
-                expanded
-                    ? 'RÉDUIRE'
-                    : 'AGRANDIR';
-
-            button.setAttribute(
-                'aria-expanded',
-                expanded ? 'true' : 'false'
-            );
-
-            if (expanded) {
-                card.scrollIntoView({
-                    behavior: 'smooth',
-                    block: 'nearest'
-                });
+            if (
+                card.classList.contains(
+                    'is-expanded-v175'
+                )
+            ) {
+                closeExpandedBrigadeV175(card);
+            } else {
+                openExpandedBrigadeV175(card);
             }
         }
 
@@ -5102,13 +5141,14 @@
                                 <div class="v169-department-head">
                                     <strong>${escapeRhHtml(meta.label)}</strong>
 
-                                    <div class="v174-department-actions">
+                                    <div class="v175-department-actions">
                                         <button
                                             type="button"
-                                            class="v174-size-toggle"
-                                            data-v174-size-dept="${escapeRhHtml(dept)}"
-                                            aria-expanded="false"
-                                        >AGRANDIR</button>
+                                            class="v175-close-dept"
+                                            data-v175-close-dept="${escapeRhHtml(dept)}"
+                                            aria-label="Fermer"
+                                            title="Fermer"
+                                        >×</button>
 
                                         <button
                                             type="button"
@@ -5158,17 +5198,186 @@
                 });
 
 
+            // V175 · APPUI LONG 0,5 s SUR LA CARTE = AGRANDIR
             container
                 .querySelectorAll(
-                    '[data-v174-size-dept]'
+                    '[data-v169-department]'
+                )
+                .forEach(card => {
+                    let holdTimer = null;
+                    let startX = 0;
+                    let startY = 0;
+                    let longPressTriggered = false;
+
+                    const clearHold = () => {
+                        if (holdTimer) {
+                            clearTimeout(holdTimer);
+                            holdTimer = null;
+                        }
+                    };
+
+                    const startHold = event => {
+                        const target =
+                            event.target;
+
+                        // Ne pas déclencher l'agrandissement lorsqu'on
+                        // manipule une case, un nombre ou le bouton TOUT/X.
+                        if (
+                            target?.closest?.(
+                                'input, button, select, textarea, label'
+                            )
+                        ) {
+                            return;
+                        }
+
+                        longPressTriggered = false;
+
+                        const point =
+                            event.touches?.[0] ||
+                            event;
+
+                        startX =
+                            Number(
+                                point?.clientX || 0
+                            );
+
+                        startY =
+                            Number(
+                                point?.clientY || 0
+                            );
+
+                        clearHold();
+
+                        holdTimer =
+                            setTimeout(
+                                () => {
+                                    longPressTriggered = true;
+                                    openExpandedBrigadeV175(
+                                        card
+                                    );
+                                },
+                                500
+                            );
+                    };
+
+                    const moveHold = event => {
+                        if (!holdTimer) return;
+
+                        const point =
+                            event.touches?.[0] ||
+                            event;
+
+                        const dx =
+                            Math.abs(
+                                Number(
+                                    point?.clientX || 0
+                                ) - startX
+                            );
+
+                        const dy =
+                            Math.abs(
+                                Number(
+                                    point?.clientY || 0
+                                ) - startY
+                            );
+
+                        if (
+                            dx > 12 ||
+                            dy > 12
+                        ) {
+                            clearHold();
+                        }
+                    };
+
+                    card.addEventListener(
+                        'pointerdown',
+                        startHold
+                    );
+
+                    card.addEventListener(
+                        'pointermove',
+                        moveHold
+                    );
+
+                    card.addEventListener(
+                        'pointerup',
+                        clearHold
+                    );
+
+                    card.addEventListener(
+                        'pointercancel',
+                        clearHold
+                    );
+
+                    card.addEventListener(
+                        'pointerleave',
+                        clearHold
+                    );
+
+                    // Compatibilité tactile pour navigateurs sans PointerEvent fiable.
+                    card.addEventListener(
+                        'touchstart',
+                        startHold,
+                        {
+                            passive:true
+                        }
+                    );
+
+                    card.addEventListener(
+                        'touchmove',
+                        moveHold,
+                        {
+                            passive:true
+                        }
+                    );
+
+                    card.addEventListener(
+                        'touchend',
+                        clearHold
+                    );
+
+                    card.addEventListener(
+                        'touchcancel',
+                        clearHold
+                    );
+
+                    // Double clic reste un raccourci utile sur ordinateur.
+                    card.addEventListener(
+                        'dblclick',
+                        event => {
+                            if (
+                                event.target?.closest?.(
+                                    'input, button, select, textarea, label'
+                                )
+                            ) {
+                                return;
+                            }
+
+                            openExpandedBrigadeV175(
+                                card
+                            );
+                        }
+                    );
+                });
+
+            // X = fermeture immédiate et retour taille normale.
+            container
+                .querySelectorAll(
+                    '[data-v175-close-dept]'
                 )
                 .forEach(button => {
                     button.addEventListener(
                         'click',
-                        () =>
-                            toggleBrigadeDepartmentSizeV174(
-                                button
-                            )
+                        event => {
+                            event.preventDefault();
+                            event.stopPropagation();
+
+                            closeExpandedBrigadeV175(
+                                button.closest(
+                                    '[data-v169-department]'
+                                )
+                            );
+                        }
                     );
                 });
 
@@ -19371,7 +19580,7 @@ function renderDirectorRequests() {
     setInterval(()=>{if(navigator.onLine)syncQueue()},30000);
 
     if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost'||location.hostname==='127.0.0.1')){
-        window.addEventListener('load',()=>navigator.serviceWorker.register('/sw-rh.js?v=174',{scope:'/'}).catch(e=>console.warn('[iCHEF RH OFFLINE] Service Worker non installé',e?.message||e)));
+        window.addEventListener('load',()=>navigator.serviceWorker.register('/sw-rh.js?v=175',{scope:'/'}).catch(e=>console.warn('[iCHEF RH OFFLINE] Service Worker non installé',e?.message||e)));
     }
 })();
 </script>
@@ -30065,6 +30274,216 @@ console.info('[iCHEF RH V173] cartes établissement : titres uniquement');
 <script id="ichef-rh-v174-marker">
 window.__ICHEF_RH_BUILD__='RH-V174-BRIGADES-READABLE-EXPANDABLE';
 console.info('[iCHEF RH V174] brigades lisibles + agrandir/réduire + apprenti/extra');
+</script>
+
+
+
+<style id="ichef-rh-v175-longpress-brigade">
+/* =========================================================
+   V175 · APPUI LONG 0,5 s = AGRANDIR / X = FERMER
+   ========================================================= */
+
+/* Le bouton AGRANDIR V174 n'existe plus visuellement. */
+#ia-predictions-modal .v174-size-toggle{
+  display:none !important;
+}
+
+#ia-predictions-modal .v175-department-actions{
+  display:flex !important;
+  align-items:center !important;
+  gap:4px !important;
+  flex:0 0 auto !important;
+}
+
+/* X masqué tant que la carte n'est pas agrandie */
+#ia-predictions-modal .v175-close-dept{
+  display:none !important;
+  width:28px !important;
+  height:28px !important;
+  min-width:28px !important;
+  padding:0 !important;
+  place-items:center !important;
+  border:1px solid #c9c9c9 !important;
+  border-radius:50% !important;
+  background:#fff !important;
+  color:#111 !important;
+  font-size:18px !important;
+  line-height:1 !important;
+  font-weight:500 !important;
+  box-shadow:none !important;
+  cursor:pointer !important;
+}
+
+/* Carte normale : le texte est déjà plus lisible qu'avant. */
+#ia-predictions-modal .v171-department{
+  cursor:default !important;
+  user-select:none !important;
+  -webkit-user-select:none !important;
+  touch-action:pan-y !important;
+}
+
+#ia-predictions-modal .v171-department .v169-department-head strong{
+  font-size:.54rem !important;
+  line-height:1.15 !important;
+}
+
+#ia-predictions-modal .v171-department .v171-role-main span{
+  font-size:.43rem !important;
+  line-height:1.15 !important;
+}
+
+/* CARTE AGRANDIE :
+   elle prend toute la largeur disponible et devient beaucoup plus grande. */
+#ia-predictions-modal .v171-department.is-expanded-v175{
+  position:relative !important;
+  grid-column:1 / -1 !important;
+  width:100% !important;
+  min-height:420px !important;
+  max-height:none !important;
+  z-index:50 !important;
+  overflow:visible !important;
+  border:2px solid #b58b22 !important;
+  border-radius:10px !important;
+  background:#fff !important;
+  box-shadow:0 18px 46px rgba(0,0,0,.18) !important;
+}
+
+#ia-predictions-modal .v171-department.is-expanded-v175 .v169-department-head{
+  min-height:54px !important;
+  padding:9px 12px !important;
+  position:sticky !important;
+  top:0 !important;
+  z-index:4 !important;
+  background:#fff !important;
+  border-bottom:1px solid #ddd !important;
+}
+
+#ia-predictions-modal .v171-department.is-expanded-v175 .v169-department-head strong{
+  font-size:.72rem !important;
+  line-height:1.1 !important;
+  color:#111 !important;
+}
+
+#ia-predictions-modal .v171-department.is-expanded-v175 .v175-close-dept{
+  display:grid !important;
+}
+
+#ia-predictions-modal .v171-department.is-expanded-v175 .v169-roles{
+  display:grid !important;
+  grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+  gap:8px !important;
+  padding:12px !important;
+}
+
+#ia-predictions-modal .v171-department.is-expanded-v175 .v171-role{
+  min-height:56px !important;
+  padding:9px 11px !important;
+  display:grid !important;
+  grid-template-columns:minmax(0,1fr) 68px !important;
+  gap:10px !important;
+  align-items:center !important;
+  border:1px solid #dedede !important;
+  border-radius:7px !important;
+  background:#fff !important;
+}
+
+#ia-predictions-modal .v171-department.is-expanded-v175 .v171-role-main{
+  gap:9px !important;
+}
+
+#ia-predictions-modal .v171-department.is-expanded-v175 .v171-role-main input{
+  width:20px !important;
+  height:20px !important;
+  flex:0 0 20px !important;
+}
+
+#ia-predictions-modal .v171-department.is-expanded-v175 .v171-role-main span{
+  white-space:normal !important;
+  overflow:visible !important;
+  text-overflow:clip !important;
+  font-size:.62rem !important;
+  line-height:1.2 !important;
+  font-weight:800 !important;
+  color:#111 !important;
+}
+
+#ia-predictions-modal .v171-department.is-expanded-v175 .v171-role-count{
+  width:68px !important;
+  min-width:68px !important;
+  height:38px !important;
+  font-size:.62rem !important;
+  border-radius:6px !important;
+}
+
+/* Les autres brigades s'effacent légèrement quand une carte est ouverte. */
+html.v175-brigade-focus-open
+#ia-predictions-modal
+#v169-brigade-container
+> .v171-department:not(.is-expanded-v175){
+  opacity:.28 !important;
+  filter:grayscale(.15) !important;
+  pointer-events:none !important;
+}
+
+/* Le conteneur doit laisser la grande carte respirer. */
+html.v175-brigade-focus-open
+#ia-predictions-modal
+#v169-brigade-container{
+  overflow:visible !important;
+  max-height:none !important;
+}
+
+/* Indication discrète : aucune touche supplémentaire. */
+#ia-predictions-modal .v171-brigade-title-row span::after{
+  content:" · Maintenir une brigade 0,5 s pour l’agrandir";
+  font-weight:800;
+}
+
+@media(max-width:900px){
+  #ia-predictions-modal .v171-department.is-expanded-v175 .v169-roles{
+    grid-template-columns:1fr !important;
+  }
+
+  #ia-predictions-modal .v171-department.is-expanded-v175 .v171-role-main span{
+    font-size:.58rem !important;
+  }
+}
+</style>
+
+
+<script id="ichef-rh-v175-close-escape">
+(() => {
+  'use strict';
+
+  if (window.__ICHEF_RH_V175_ESCAPE__) return;
+  window.__ICHEF_RH_V175_ESCAPE__ = true;
+
+  document.addEventListener(
+    'keydown',
+    event => {
+      if (event.key !== 'Escape') return;
+
+      document
+        .querySelectorAll(
+          '#v169-brigade-container [data-v169-department].is-expanded-v175'
+        )
+        .forEach(card => {
+          if (
+            typeof closeExpandedBrigadeV175 ===
+            'function'
+          ) {
+            closeExpandedBrigadeV175(card);
+          }
+        });
+    }
+  );
+})();
+</script>
+
+
+<script id="ichef-rh-v175-marker">
+window.__ICHEF_RH_BUILD__='RH-V175-LONGPRESS-BRIGADE-ZOOM';
+console.info('[iCHEF RH V175] appui long 0,5 s brigade + X fermeture');
 </script>
 
 </body>
