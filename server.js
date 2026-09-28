@@ -378,6 +378,80 @@ staffChatMessageSchema.index({ tenantID: 1, channelId: 1, readBy: 1 });
 const StaffChatMessage = mongoose.models.StaffChatMessage || mongoose.model('StaffChatMessage', staffChatMessageSchema);
 
 // ============================================================================
+// 📹 iCHEF STAFF VIDEO V131 — BOÎTE DE SIGNALISATION COURTE DURÉE
+// ============================================================================
+// Secours à Socket.IO : les signaux WebRTC sont conservés ~2 minutes maximum.
+// Ils restent strictement isolés par tenant + destinataire + canal DIRECT.
+const staffVideoSignalSchema = new mongoose.Schema({
+    tenantID:{type:String,required:true,index:true},
+    signalId:{type:String,required:true,index:true},
+    callId:{type:String,required:true,index:true},
+    channelId:{type:String,required:true,index:true},
+    fromStaffId:{type:String,required:true,index:true},
+    fromName:{type:String,default:''},
+    toStaffId:{type:String,required:true,index:true},
+    kind:{
+        type:String,
+        required:true,
+        enum:['invite','accept','reject','busy','offer','answer','ice','hangup'],
+        index:true
+    },
+    sdp:{type:Object,default:null},
+    candidate:{type:Object,default:null},
+    createdAt:{type:Date,default:Date.now,index:true},
+    expiresAt:{type:Date,required:true,index:true}
+},{minimize:false});
+
+staffVideoSignalSchema.index({tenantID:1,signalId:1},{unique:true});
+staffVideoSignalSchema.index({tenantID:1,toStaffId:1,createdAt:1});
+staffVideoSignalSchema.index({expiresAt:1},{expireAfterSeconds:0});
+
+const StaffVideoSignal =
+    mongoose.models.StaffVideoSignal ||
+    mongoose.model('StaffVideoSignal',staffVideoSignalSchema);
+
+function ichefStaffVideoSignalIdV131() {
+    return `VSIG_${Date.now()}_${nodeCrypto.randomBytes(8).toString('hex')}`;
+}
+
+function ichefStaffVideoPublicSignalV131(row = {}) {
+    return {
+        signalId:String(row.signalId || ''),
+        tenantID:cleanString(row.tenantID || ''),
+        callId:String(row.callId || ''),
+        channelId:String(row.channelId || ''),
+        fromStaffId:String(row.fromStaffId || ''),
+        fromName:String(row.fromName || 'Collaborateur').slice(0,140),
+        toStaffId:String(row.toStaffId || ''),
+        kind:String(row.kind || ''),
+        sdp:row.sdp || null,
+        candidate:row.candidate || null,
+        createdAt:row.createdAt ? new Date(row.createdAt).toISOString() : new Date().toISOString()
+    };
+}
+
+async function ichefStaffVideoPersistSignalV131(data = {}) {
+    const now = new Date();
+    const row = await StaffVideoSignal.create({
+        tenantID:cleanString(data.tenantID || ''),
+        signalId:String(data.signalId || ichefStaffVideoSignalIdV131()),
+        callId:String(data.callId || '').slice(0,120),
+        channelId:String(data.channelId || '').slice(0,160),
+        fromStaffId:String(data.fromStaffId || '').slice(0,120),
+        fromName:String(data.fromName || 'Collaborateur').slice(0,140),
+        toStaffId:String(data.toStaffId || '').slice(0,120),
+        kind:String(data.kind || '').toLowerCase(),
+        sdp:data.sdp || null,
+        candidate:data.candidate || null,
+        createdAt:now,
+        expiresAt:new Date(now.getTime() + 120000)
+    });
+    return ichefStaffVideoPublicSignalV131(row.toObject());
+}
+
+
+
+// ============================================================================
 // 🧰 iCHEF STAFF WORKSPACE V107 — MÉMOS + FORMATIONS PERSONNELLES
 // ============================================================================
 const staffWorkspaceTrainingProgressSchema = new mongoose.Schema({
@@ -963,7 +1037,7 @@ app.get('/api/staff/build', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.json({
         success: true,
-        build: 'V128-VIDEO-CALL-FAST-SECURE',
+        build: 'V131-VIDEO-SIGNAL-FALLBACK-SECURE',
         staffPortal: true,
         signedSession: true,
         timestamp: new Date().toISOString()
@@ -9505,18 +9579,27 @@ ichefVideoClearPendingV130(tenantID,callId);
 }
 
 const onlineSockets = Number(io.sockets.adapter.rooms.get(targetRoom)?.size || 0);
-io.to(targetRoom).emit('staff-video-signal', {
-success:true,
+
+let publicSignal = {
+signalId:ichefStaffVideoSignalIdV131(),
 tenantID,
 channelId,
 callId,
 kind,
 fromStaffId:selfStaffId,
 fromName,
+toStaffId:targetStaffId,
 sdp,
 candidate,
-timestamp:new Date().toISOString()
-});
+createdAt:new Date().toISOString()
+};
+try {
+publicSignal = await ichefStaffVideoPersistSignalV131(publicSignal);
+} catch (persistError) {
+console.warn('[iCHEF STAFF VIDEO persist socket V131]',persistError?.message || persistError);
+}
+
+io.to(targetRoom).emit('staff-video-signal', publicSignal);
 
 if (kind === 'invite') {
 socket.emit('staff-video-delivery', {
@@ -9526,6 +9609,7 @@ callId,
 targetStaffId,
 status:onlineSockets > 0 ? 'online' : 'offline',
 onlineSockets,
+signalId:publicSignal.signalId,
 timestamp:new Date().toISOString()
 });
 }
@@ -16512,7 +16596,7 @@ app.get(
         res.setHeader('Cache-Control','no-store');
         return res.json({
             success:true,
-            build:'V128-VIDEO-CALL-FAST-SECURE',
+            build:'V131-VIDEO-SIGNAL-FALLBACK-SECURE',
             staffLoginRoute:'/api/staff/login',
             authentication:'STAFF_ID_RH_PLUS_PIN',
             signedSession:true,
@@ -19066,7 +19150,7 @@ app.get('/api/staff/chat/status', async (req,res) => {
             staffId:self.id,
             rhChannelId:channelId,
             realtime:true,
-            build:'V128-VIDEO-CALL-FAST-SECURE'
+            build:'V131-VIDEO-SIGNAL-FALLBACK-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT status V117]',error?.message || error);
@@ -19227,7 +19311,7 @@ app.post('/api/staff/chat/channels/direct', async (req,res) => {
                 participants
             },
             durationMs:Date.now()-startedAt,
-            build:'V128-VIDEO-CALL-FAST-SECURE'
+            build:'V131-VIDEO-SIGNAL-FALLBACK-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT direct V123]',{
@@ -19276,7 +19360,7 @@ app.get('/api/staff/chat/messages', async (req,res) => {
             },
             messages:rows.reverse().map(ichefStaffChatPublicMessage),
             durationMs:Date.now()-startedAt,
-            build:'V128-VIDEO-CALL-FAST-SECURE'
+            build:'V131-VIDEO-SIGNAL-FALLBACK-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT messages V126]',{
@@ -19362,7 +19446,7 @@ app.post('/api/staff/chat/message', async (req,res) => {
         return res.json({
             success:true,
             message:ichefStaffChatPublicMessage(row.toObject()),
-            build:'V128-VIDEO-CALL-FAST-SECURE'
+            build:'V131-VIDEO-SIGNAL-FALLBACK-SECURE'
         });
     } catch (error) {
         if (storedAttachment?.attachmentId) await ichefStaffChatDeleteAttachment(storedAttachment.attachmentId);
@@ -19450,7 +19534,7 @@ app.post('/api/staff/chat/read', async (req,res) => {
         res.json({
             success:true,
             accepted:true,
-            build:'V128-VIDEO-CALL-FAST-SECURE'
+            build:'V131-VIDEO-SIGNAL-FALLBACK-SECURE'
         });
 
         StaffChatMessage.updateMany(
@@ -19521,7 +19605,7 @@ app.get('/api/staff/video/config', async (req,res) => {
                 process.env.ICHEF_WEBRTC_TURN_USERNAME &&
                 process.env.ICHEF_WEBRTC_TURN_CREDENTIAL
             ),
-            build:'V128-VIDEO-CALL-FAST-SECURE'
+            build:'V131-VIDEO-SIGNAL-FALLBACK-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF VIDEO config V128]',error?.message || error);
@@ -19531,6 +19615,205 @@ app.get('/api/staff/video/config', async (req,res) => {
         });
     }
 });
+
+
+// ============================================================================
+// 📹 iCHEF STAFF VIDEO V131 — SIGNALISATION HTTP DE SECOURS SÉCURISÉE
+// ============================================================================
+
+function ichefStaffVideoNormalizeSdpV131(kind, raw) {
+    if (!['offer','answer'].includes(kind)) return null;
+    if (
+        !raw ||
+        !['offer','answer'].includes(String(raw?.type || '')) ||
+        typeof raw?.sdp !== 'string' ||
+        raw.sdp.length > 120000
+    ) {
+        throw new Error('Signal vidéo SDP invalide.');
+    }
+    return {type:String(raw.type),sdp:String(raw.sdp)};
+}
+
+function ichefStaffVideoNormalizeCandidateV131(kind, raw) {
+    if (kind !== 'ice') return null;
+    if (!raw) return null;
+    const rawCandidate = String(raw?.candidate || '');
+    if (!rawCandidate || rawCandidate.length > 12000) {
+        throw new Error('Signal ICE invalide.');
+    }
+    return {
+        candidate:rawCandidate,
+        sdpMid:raw?.sdpMid == null ? null : String(raw.sdpMid).slice(0,80),
+        sdpMLineIndex:Number.isInteger(raw?.sdpMLineIndex) ? raw.sdpMLineIndex : null,
+        usernameFragment:raw?.usernameFragment == null ? null : String(raw.usernameFragment).slice(0,160)
+    };
+}
+
+app.post('/api/staff/video/signal', async (req,res) => {
+    try {
+        res.setHeader('Cache-Control','no-store');
+
+        const channelId = String(req.body?.channelId || '').trim().slice(0,160);
+        const targetStaffId = String(req.body?.targetStaffId || '').trim().slice(0,120);
+        const callId = String(req.body?.callId || '')
+            .trim()
+            .replace(/[^a-zA-Z0-9_.:-]/g,'')
+            .slice(0,120);
+        const kind = String(req.body?.kind || '').trim().toLowerCase();
+        const allowedKinds = new Set(['invite','accept','reject','busy','offer','answer','ice','hangup']);
+
+        if (!channelId.startsWith('direct:') || !targetStaffId || !callId || !allowedKinds.has(kind)) {
+            return res.status(400).json({success:false,error:'Signal visioconférence invalide.'});
+        }
+
+        const access = await ichefStaffChatLoadFastChannelSession(req,channelId);
+        if (!access.ok) {
+            return res.status(access.status || 401).json({success:false,error:access.error});
+        }
+
+        const selfId = String(access.self?.id || access.claims?.staffId || '').trim();
+        const participants = Array.isArray(access.channel?.participantIds)
+            ? access.channel.participantIds.map(String).filter(Boolean)
+            : [];
+
+        if (
+            access.channel?.type !== 'DIRECT' ||
+            participants.length !== 2 ||
+            !participants.includes(selfId) ||
+            !participants.includes(targetStaffId) ||
+            selfId === targetStaffId
+        ) {
+            return res.status(403).json({success:false,error:'Conversation vidéo non autorisée.'});
+        }
+
+        let sdp = null;
+        let candidate = null;
+        try {
+            sdp = ichefStaffVideoNormalizeSdpV131(kind,req.body?.sdp);
+            candidate = ichefStaffVideoNormalizeCandidateV131(kind,req.body?.candidate);
+        } catch (validationError) {
+            return res.status(400).json({success:false,error:validationError.message});
+        }
+
+        const fromName = String(access.self?.name || access.claims?.name || 'Collaborateur').slice(0,140);
+
+        const publicSignal = await ichefStaffVideoPersistSignalV131({
+            tenantID:access.tenantID,
+            channelId,
+            callId,
+            kind,
+            fromStaffId:selfId,
+            fromName,
+            toStaffId:targetStaffId,
+            sdp,
+            candidate
+        });
+
+        if (kind === 'invite') {
+            ichefVideoStorePendingV130({
+                tenantID:access.tenantID,
+                channelId,
+                callId,
+                fromStaffId:selfId,
+                fromName,
+                toStaffId:targetStaffId
+            });
+        } else if (['accept','reject','busy','offer','answer','hangup'].includes(kind)) {
+            ichefVideoClearPendingV130(access.tenantID,callId);
+        }
+
+        const targetRoom = ichefStaffUserRoom(access.tenantID,targetStaffId);
+        const onlineSockets = targetRoom
+            ? Number(io.sockets.adapter.rooms.get(targetRoom)?.size || 0)
+            : 0;
+
+        if (targetRoom) {
+            io.to(targetRoom).emit('staff-video-signal',publicSignal);
+        }
+
+        return res.json({
+            success:true,
+            signalId:publicSignal.signalId,
+            deliveredSockets:onlineSockets,
+            targetOnline:onlineSockets > 0,
+            build:'V131-VIDEO-SIGNAL-FALLBACK-SECURE'
+        });
+    } catch (error) {
+        console.error('[iCHEF STAFF VIDEO http signal V131]',error?.message || error);
+        return res.status(500).json({
+            success:false,
+            error:'Signal visioconférence momentanément indisponible.'
+        });
+    }
+});
+
+app.get('/api/staff/video/signals', async (req,res) => {
+    try {
+        res.setHeader('Cache-Control','no-store');
+
+        const auth = ichefRequireStaffSession(req);
+        if (!auth.ok) {
+            return res.status(401).json({success:false,error:auth.error});
+        }
+
+        const tenant = await Tenant.findOne(
+            {tenantID:auth.tenantID},
+            {tenantID:1,status:1,archivedAt:1}
+        ).maxTimeMS(3500).lean();
+
+        if (!tenant || tenant.archivedAt || String(tenant.status || '').toUpperCase() !== 'ACTIF') {
+            return res.status(403).json({success:false,error:'Accès établissement suspendu.'});
+        }
+
+        let self = ichefStaffChatGetCachedActiveProfile(auth);
+        if (!self) {
+            const fullAuth = await ichefLoadActiveStaffChatSession(req);
+            if (!fullAuth.ok) {
+                return res.status(401).json({success:false,error:fullAuth.error});
+            }
+            self = ichefStaffChatGetCachedActiveProfile(fullAuth) || ichefStaffChatSelf(fullAuth);
+        }
+
+        if (!self?.id) {
+            return res.status(401).json({success:false,error:'Profil collaborateur indisponible.'});
+        }
+
+        const now = Date.now();
+        const requestedSince = Number(req.query?.since || 0);
+        const sinceMs = Math.max(
+            now - 120000,
+            Math.min(now, Number.isFinite(requestedSince) && requestedSince > 0 ? requestedSince : now - 10000)
+        );
+
+        const rows = await StaffVideoSignal.find({
+            tenantID:auth.tenantID,
+            toStaffId:String(self.id),
+            createdAt:{$gte:new Date(sinceMs)},
+            expiresAt:{$gt:new Date()}
+        })
+            .sort({createdAt:1})
+            .limit(250)
+            .maxTimeMS(3500)
+            .lean();
+
+        return res.json({
+            success:true,
+            signals:rows.map(ichefStaffVideoPublicSignalV131),
+            serverTime:new Date().toISOString(),
+            build:'V131-VIDEO-SIGNAL-FALLBACK-SECURE'
+        });
+    } catch (error) {
+        console.error('[iCHEF STAFF VIDEO poll V131]',error?.message || error);
+        const timeout = /time limit|timed out|maxTimeMS/i.test(String(error?.message || ''));
+        return res.status(timeout ? 503 : 500).json({
+            success:false,
+            error:timeout
+                ? 'Synchronisation des appels momentanément lente.'
+                : 'Réception des appels momentanément indisponible.'
+        });
+    }
+});
+
 
 
 // ============================================================================
@@ -19698,7 +19981,7 @@ app.get('/api/rh/chat/status', async (req,res) => {
             staffCount:Array.isArray(directory) ? directory.length : 0,
             realtime:true,
             privateChannels:true,
-            build:'V128-VIDEO-CALL-FAST-SECURE'
+            build:'V131-VIDEO-SIGNAL-FALLBACK-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF RH CHAT status V117]',error?.message || error);
