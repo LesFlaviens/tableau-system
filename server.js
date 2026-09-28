@@ -349,7 +349,7 @@ const staffChatAttachmentSchema = new mongoose.Schema({
   name: { type: String, default: 'fichier' },
   mime: { type: String, default: 'application/octet-stream' },
   size: { type: Number, default: 0 },
-  kind: { type: String, enum: ['IMAGE','VIDEO','DOCUMENT'], default: 'DOCUMENT' }
+  kind: { type: String, enum: ['IMAGE','VIDEO','AUDIO','DOCUMENT'], default: 'DOCUMENT' }
 }, { _id: false, minimize: false });
 
 const staffChatMessageSchema = new mongoose.Schema({
@@ -1037,9 +1037,11 @@ app.get('/api/staff/build', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.json({
         success: true,
-        build: 'V131-VIDEO-SIGNAL-FALLBACK-SECURE',
+        build: 'V135-ICHEF-CONNECT-SECURE',
         staffPortal: true,
         signedSession: true,
+        ichefConnect: true,
+        chatAudio: true,
         timestamp: new Date().toISOString()
     });
 });
@@ -16596,7 +16598,7 @@ app.get(
         res.setHeader('Cache-Control','no-store');
         return res.json({
             success:true,
-            build:'V131-VIDEO-SIGNAL-FALLBACK-SECURE',
+            build:'V135-ICHEF-CONNECT-SECURE',
             staffLoginRoute:'/api/staff/login',
             authentication:'STAFF_ID_RH_PLUS_PIN',
             signedSession:true,
@@ -18893,6 +18895,12 @@ const ICHEF_STAFF_CHAT_MIME_RULES = Object.freeze({
     'video/mp4': { kind:'VIDEO', max:12 * 1024 * 1024 },
     'video/webm': { kind:'VIDEO', max:12 * 1024 * 1024 },
     'video/quicktime': { kind:'VIDEO', max:12 * 1024 * 1024 },
+    'audio/webm': { kind:'AUDIO', max:8 * 1024 * 1024 },
+    'audio/mpeg': { kind:'AUDIO', max:8 * 1024 * 1024 },
+    'audio/mp4': { kind:'AUDIO', max:8 * 1024 * 1024 },
+    'audio/aac': { kind:'AUDIO', max:8 * 1024 * 1024 },
+    'audio/ogg': { kind:'AUDIO', max:8 * 1024 * 1024 },
+    'audio/wav': { kind:'AUDIO', max:8 * 1024 * 1024 },
     'application/pdf': { kind:'DOCUMENT', max:8 * 1024 * 1024 },
     'text/plain': { kind:'DOCUMENT', max:3 * 1024 * 1024 },
     'application/msword': { kind:'DOCUMENT', max:8 * 1024 * 1024 },
@@ -18920,9 +18928,10 @@ function ichefStaffChatDecodeAttachment(raw = null) {
         xls:'application/vnd.ms-excel',
         xlsx:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', webp:'image/webp', gif:'image/gif',
-        mp4:'video/mp4', webm:'video/webm', mov:'video/quicktime'
+        mp4:'video/mp4', webm:'video/webm', mov:'video/quicktime',
+        mp3:'audio/mpeg', m4a:'audio/mp4', aac:'audio/aac', ogg:'audio/ogg', wav:'audio/wav'
     })[ext] || '';
-    let mime = String(raw.mime || '').trim().toLowerCase();
+    let mime = String(raw.mime || '').trim().toLowerCase().split(';')[0];
     if (!mime || mime === 'application/octet-stream') mime = inferredMime;
     const rule = ICHEF_STAFF_CHAT_MIME_RULES[mime];
     if (!rule) throw new Error('Type de fichier non autorisé dans le chat.');
@@ -18932,6 +18941,32 @@ function ichefStaffChatDecodeAttachment(raw = null) {
     try { buffer = Buffer.from(base64,'base64'); }
     catch (_) { throw new Error('Fichier illisible.'); }
     if (!buffer.length || buffer.length > rule.max) throw new Error(`Fichier trop volumineux (${Math.round(rule.max / 1024 / 1024)} Mo max).`);
+
+    // V135 iCHEF Connect — contrôle léger de signature pour les messages vocaux.
+    // La whitelist MIME + taille reste la règle principale ; ces marqueurs bloquent
+    // les fichiers manifestement déguisés sans modifier les formats existants.
+    if (rule.kind === 'AUDIO') {
+        const b0 = buffer[0] || 0;
+        const b1 = buffer[1] || 0;
+        const ascii4 = buffer.length >= 4 ? buffer.subarray(0,4).toString('ascii') : '';
+        const box4 = buffer.length >= 8 ? buffer.subarray(4,8).toString('ascii') : '';
+        const isWebm = buffer.length >= 4 && buffer[0] === 0x1A && buffer[1] === 0x45 && buffer[2] === 0xDF && buffer[3] === 0xA3;
+        const isOgg = ascii4 === 'OggS';
+        const isWav = ascii4 === 'RIFF' && buffer.length >= 12 && buffer.subarray(8,12).toString('ascii') === 'WAVE';
+        const isMp4 = box4 === 'ftyp';
+        const isMp3 = ascii4.slice(0,3) === 'ID3' || (b0 === 0xFF && (b1 & 0xE0) === 0xE0);
+        const isAac = b0 === 0xFF && (b1 & 0xF6) === 0xF0;
+        const signatureOk = (
+            (mime === 'audio/webm' && isWebm) ||
+            (mime === 'audio/ogg' && isOgg) ||
+            (mime === 'audio/wav' && isWav) ||
+            (mime === 'audio/mp4' && isMp4) ||
+            (mime === 'audio/mpeg' && isMp3) ||
+            (mime === 'audio/aac' && isAac)
+        );
+        if (!signatureOk) throw new Error('Fichier audio invalide ou format non reconnu.');
+    }
+
     const claimedSize = Number(raw.size || 0);
     if (claimedSize && Math.abs(claimedSize - buffer.length) > 4) throw new Error('Taille du fichier incohérente.');
     return {
@@ -18989,7 +19024,7 @@ function ichefStaffChatPublicAttachment(row = {}) {
         name: ichefStaffChatSafeFilename(row.name),
         mime: String(row.mime || 'application/octet-stream'),
         size: Math.max(0,Number(row.size || 0)),
-        kind: ['IMAGE','VIDEO','DOCUMENT'].includes(String(row.kind || '').toUpperCase()) ? String(row.kind).toUpperCase() : 'DOCUMENT',
+        kind: ['IMAGE','VIDEO','AUDIO','DOCUMENT'].includes(String(row.kind || '').toUpperCase()) ? String(row.kind).toUpperCase() : 'DOCUMENT',
         url: attachmentId ? `/api/staff/chat/attachment/${encodeURIComponent(attachmentId)}` : ''
     };
 }
@@ -19150,7 +19185,7 @@ app.get('/api/staff/chat/status', async (req,res) => {
             staffId:self.id,
             rhChannelId:channelId,
             realtime:true,
-            build:'V131-VIDEO-SIGNAL-FALLBACK-SECURE'
+            build:'V135-ICHEF-CONNECT-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT status V117]',error?.message || error);
@@ -19311,7 +19346,7 @@ app.post('/api/staff/chat/channels/direct', async (req,res) => {
                 participants
             },
             durationMs:Date.now()-startedAt,
-            build:'V131-VIDEO-SIGNAL-FALLBACK-SECURE'
+            build:'V135-ICHEF-CONNECT-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT direct V123]',{
@@ -19360,7 +19395,7 @@ app.get('/api/staff/chat/messages', async (req,res) => {
             },
             messages:rows.reverse().map(ichefStaffChatPublicMessage),
             durationMs:Date.now()-startedAt,
-            build:'V131-VIDEO-SIGNAL-FALLBACK-SECURE'
+            build:'V135-ICHEF-CONNECT-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT messages V126]',{
@@ -19446,7 +19481,7 @@ app.post('/api/staff/chat/message', async (req,res) => {
         return res.json({
             success:true,
             message:ichefStaffChatPublicMessage(row.toObject()),
-            build:'V131-VIDEO-SIGNAL-FALLBACK-SECURE'
+            build:'V135-ICHEF-CONNECT-SECURE'
         });
     } catch (error) {
         if (storedAttachment?.attachmentId) await ichefStaffChatDeleteAttachment(storedAttachment.attachmentId);
@@ -19481,7 +19516,7 @@ app.get('/api/staff/chat/attachment/:attachmentId', async (req,res) => {
         const mime = String(file.contentType || 'application/octet-stream');
         const name = ichefStaffChatSafeFilename(file?.metadata?.originalName || file.filename || 'fichier');
         const length = Number(file.length || 0);
-        const inline = /^(image|video)\//i.test(mime) || mime === 'application/pdf';
+        const inline = /^(image|video|audio)\//i.test(mime) || mime === 'application/pdf';
         res.setHeader('Content-Type',mime);
         res.setHeader('Cache-Control','private, no-store, max-age=0');
         res.setHeader('X-Content-Type-Options','nosniff');
@@ -19534,7 +19569,7 @@ app.post('/api/staff/chat/read', async (req,res) => {
         res.json({
             success:true,
             accepted:true,
-            build:'V131-VIDEO-SIGNAL-FALLBACK-SECURE'
+            build:'V135-ICHEF-CONNECT-SECURE'
         });
 
         StaffChatMessage.updateMany(
@@ -19605,7 +19640,7 @@ app.get('/api/staff/video/config', async (req,res) => {
                 process.env.ICHEF_WEBRTC_TURN_USERNAME &&
                 process.env.ICHEF_WEBRTC_TURN_CREDENTIAL
             ),
-            build:'V131-VIDEO-SIGNAL-FALLBACK-SECURE'
+            build:'V135-ICHEF-CONNECT-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF VIDEO config V128]',error?.message || error);
@@ -19736,7 +19771,7 @@ app.post('/api/staff/video/signal', async (req,res) => {
             signalId:publicSignal.signalId,
             deliveredSockets:onlineSockets,
             targetOnline:onlineSockets > 0,
-            build:'V131-VIDEO-SIGNAL-FALLBACK-SECURE'
+            build:'V135-ICHEF-CONNECT-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF VIDEO http signal V131]',error?.message || error);
@@ -19800,7 +19835,7 @@ app.get('/api/staff/video/signals', async (req,res) => {
             success:true,
             signals:rows.map(ichefStaffVideoPublicSignalV131),
             serverTime:new Date().toISOString(),
-            build:'V131-VIDEO-SIGNAL-FALLBACK-SECURE'
+            build:'V135-ICHEF-CONNECT-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF VIDEO poll V131]',error?.message || error);
@@ -19981,7 +20016,7 @@ app.get('/api/rh/chat/status', async (req,res) => {
             staffCount:Array.isArray(directory) ? directory.length : 0,
             realtime:true,
             privateChannels:true,
-            build:'V131-VIDEO-SIGNAL-FALLBACK-SECURE'
+            build:'V135-ICHEF-CONNECT-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF RH CHAT status V117]',error?.message || error);
@@ -20206,7 +20241,7 @@ app.get('/api/rh/chat/attachment/:attachmentId', async (req,res) => {
         const mime = String(file.contentType || 'application/octet-stream');
         const name = ichefStaffChatSafeFilename(file?.metadata?.originalName || file.filename || 'fichier');
         const length = Number(file.length || 0);
-        const inline = /^(image|video)\//i.test(mime) || mime === 'application/pdf';
+        const inline = /^(image|video|audio)\//i.test(mime) || mime === 'application/pdf';
 
         res.setHeader('Content-Type',mime);
         res.setHeader('Cache-Control','private, no-store, max-age=0');
