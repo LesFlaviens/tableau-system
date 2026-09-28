@@ -5379,7 +5379,7 @@ document.addEventListener('DOMContentLoaded',()=>setTimeout(initStaffWorkspace,7
 
   setTimeout(()=>{bindDocumentSocket();if(requireStaffSession())loadSecureStaffDocumentsV89({silent:true});},120);
   window.loadSecureStaffDocumentsV89=loadSecureStaffDocumentsV89;
-  window.__ICHEF_STAFF_BUILD__='V128-VIDEO-CONFERENCE-SECURE';
+  window.__ICHEF_STAFF_BUILD__='V130-VIDEO-NOTIFICATION-SECURE';
   console.info('[iCHEF Staff V89] documents RH : lecture GridFS dédiée + push temps réel + session Staff sécurisée');
 })();
 </script>
@@ -5413,12 +5413,13 @@ document.addEventListener('DOMContentLoaded',()=>setTimeout(initStaffWorkspace,7
   </div>
 </div>
 
-<script id="ichef-staff-video-call-v129-js">
+<script id="ichef-staff-video-call-v130-js">
 (()=>{
 'use strict';
 const V={
   pc:null,localStream:null,remoteStream:null,callId:'',channelId:'',targetStaffId:'',peerName:'',role:'',incoming:null,
-  iceQueue:[],iceServers:null,inviteTimer:null,active:false,micOff:false,cameraOff:false,boundSocket:null
+  iceQueue:[],iceServers:null,inviteTimer:null,active:false,micOff:false,cameraOff:false,boundSocket:null,
+  bindTimer:null,ringTimer:null,previousTitle:''
 };
 const $=id=>document.getElementById(id);
 const modal=()=>$('staff-video-call-modal');
@@ -5440,6 +5441,34 @@ function showModal(){modal()?.classList.add('open');modal()?.setAttribute('aria-
 function hideModal(){modal()?.classList.remove('open');modal()?.setAttribute('aria-hidden','true');}
 function showIncoming(show){const a=$('staff-video-incoming-actions');const c=$('staff-video-controls');if(a)a.hidden=!show;if(c)c.hidden=show;}
 function showControls(show=true){const a=$('staff-video-incoming-actions');const c=$('staff-video-controls');if(a)a.hidden=true;if(c)c.hidden=!show;}
+function stopIncomingCue(){
+  if(V.ringTimer){clearInterval(V.ringTimer);V.ringTimer=null;}
+  if(V.previousTitle){document.title=V.previousTitle;V.previousTitle='';}
+}
+function playIncomingCue(name='Collaborateur'){
+  stopIncomingCue();
+  V.previousTitle=document.title;
+  document.title=`📹 Appel vidéo · ${name}`;
+  const beep=()=>{
+    try{
+      const AudioCtx=window.AudioContext||window.webkitAudioContext;
+      if(!AudioCtx)return;
+      const ctx=new AudioCtx();
+      const osc=ctx.createOscillator(),gain=ctx.createGain();
+      osc.type='sine';osc.frequency.value=720;gain.gain.value=0.035;
+      osc.connect(gain);gain.connect(ctx.destination);osc.start();
+      setTimeout(()=>{try{osc.stop();ctx.close();}catch(_){}},180);
+    }catch(_){}
+  };
+  beep();V.ringTimer=setInterval(beep,2200);
+  try{
+    if(window.Notification&&Notification.permission==='granted'){
+      const n=new Notification('Appel vidéo iCHEF',{body:`${name} vous appelle`,tag:'ichef-video-call'});
+      n.onclick=()=>{try{window.focus();showModal();}catch(_){}};
+      setTimeout(()=>{try{n.close();}catch(_){}},12000);
+    }
+  }catch(_){}
+}
 function socketReady(){
   const sync=window.STAFF_SYNC;
   return Boolean(sync?.socket?.connected&&sync?.socketJoined);
@@ -5480,7 +5509,7 @@ async function createPeer(){
 }
 async function flushIce(){if(!V.pc?.remoteDescription)return;while(V.iceQueue.length){const c=V.iceQueue.shift();try{await V.pc.addIceCandidate(c);}catch(_){}}}
 function clearTracks(){try{(V.localStream?.getTracks?.()||[]).forEach(t=>t.stop());}catch(_){}V.localStream=null;try{V.pc?.close();}catch(_){}V.pc=null;V.remoteStream=null;const l=$('staff-video-local'),r=$('staff-video-remote');if(l)l.srcObject=null;if(r)r.srcObject=null;const p=$('staff-video-remote-placeholder');if(p){p.style.display='flex';p.textContent='Connexion avec votre collègue…';}}
-function resetState(){clearTimeout(V.inviteTimer);V.inviteTimer=null;clearTracks();V.callId='';V.channelId='';V.targetStaffId='';V.peerName='';V.role='';V.incoming=null;V.iceQueue=[];V.active=false;V.micOff=false;V.cameraOff=false;updateCallButton();}
+function resetState(){clearTimeout(V.inviteTimer);V.inviteTimer=null;stopIncomingCue();clearTracks();V.callId='';V.channelId='';V.targetStaffId='';V.peerName='';V.role='';V.incoming=null;V.iceQueue=[];V.active=false;V.micOff=false;V.cameraOff=false;updateCallButton();}
 function endCall(notify=true){if(notify&&V.callId)send('hangup');resetState();hideModal();}
 async function startCall(){
   const peer=currentDirectPeer();if(!peer){staffChatNotice?.('Ouvrez une conversation privée pour lancer un appel vidéo.','error');return;}
@@ -5495,18 +5524,28 @@ async function startCall(){
   try{await localMedia();setStatus('Appel en cours…');send('invite');V.inviteTimer=setTimeout(()=>{if(V.role==='caller'&&V.callId){setStatus('Pas de réponse.');send('hangup');setTimeout(()=>endCall(false),900);}},35000);}catch(error){staffChatNotice?.(error?.message||'Caméra/micro indisponibles.','error');endCall(false);}
 }
 async function acceptIncoming(){
-  if(!V.incoming)return;const inc=V.incoming;V.callId=inc.callId;V.channelId=inc.channelId;V.targetStaffId=inc.fromStaffId;V.peerName=inc.fromName||'Collaborateur';V.role='callee';V.active=true;V.incoming=null;
+  if(!V.incoming)return;stopIncomingCue();const inc=V.incoming;V.callId=inc.callId;V.channelId=inc.channelId;V.targetStaffId=inc.fromStaffId;V.peerName=inc.fromName||'Collaborateur';V.role='callee';V.active=true;V.incoming=null;
   setTitle(`Appel avec ${V.peerName}`);setStatus('Activation de la caméra…');showControls(true);
   try{await createPeer();setStatus('Connexion…');send('accept');}catch(error){send('reject');staffChatNotice?.(error?.message||'Caméra/micro indisponibles.','error');endCall(false);}
 }
-function rejectIncoming(){if(V.incoming){V.callId=V.incoming.callId;V.channelId=V.incoming.channelId;V.targetStaffId=V.incoming.fromStaffId;send('reject');}resetState();hideModal();}
+function rejectIncoming(){stopIncomingCue();if(V.incoming){V.callId=V.incoming.callId;V.channelId=V.incoming.channelId;V.targetStaffId=V.incoming.fromStaffId;send('reject');}resetState();hideModal();}
 async function handleSignal(p={}){
   if(String(p?.tenantID||'').toLowerCase()!==String(currentTenant()).toLowerCase())return;
   const kind=String(p?.kind||'').toLowerCase();const callId=String(p?.callId||'');if(!callId)return;
   if(kind==='invite'){
-    if(V.callId||V.incoming){const old={callId:V.callId,channelId:V.channelId,targetStaffId:V.targetStaffId};V.callId=callId;V.channelId=String(p.channelId||'');V.targetStaffId=String(p.fromStaffId||'');send('busy');V.callId=old.callId;V.channelId=old.channelId;V.targetStaffId=old.targetStaffId;return;}
+    if(V.incoming&&String(V.incoming.callId||'')===callId){
+      showModal();showIncoming(true);return;
+    }
+    if(V.callId&&String(V.callId)===callId)return;
+    if(V.callId||V.incoming){
+      const old={callId:V.callId,channelId:V.channelId,targetStaffId:V.targetStaffId};
+      V.callId=callId;V.channelId=String(p.channelId||'');V.targetStaffId=String(p.fromStaffId||'');send('busy');
+      V.callId=old.callId;V.channelId=old.channelId;V.targetStaffId=old.targetStaffId;return;
+    }
     V.incoming={callId,channelId:String(p.channelId||''),fromStaffId:String(p.fromStaffId||''),fromName:String(p.fromName||'Collaborateur')};
-    setTitle(`${V.incoming.fromName} vous appelle`);setStatus('Appel vidéo entrant');showModal();showIncoming(true);return;
+    setTitle(`${V.incoming.fromName} vous appelle`);setStatus('Appel vidéo entrant');showModal();showIncoming(true);
+    playIncomingCue(V.incoming.fromName);
+    return;
   }
   if(V.callId&&callId!==V.callId)return;
   if(kind==='accept'&&V.role==='caller'){
@@ -5523,14 +5562,40 @@ async function handleSignal(p={}){
   if(kind==='busy'){setStatus('Votre collègue est déjà en appel.');setTimeout(()=>endCall(false),1100);return;}
   if(kind==='hangup'){setStatus('Appel terminé.');setTimeout(()=>endCall(false),500);return;}
 }
-function bindSocket(){const s=window.STAFF_SYNC?.socket;if(!s||V.boundSocket===s)return;V.boundSocket=s;s.on('staff-video-signal',handleSignal);s.on('staff-video-error',p=>{if(!p?.callId||!V.callId||String(p.callId)===String(V.callId)){staffChatNotice?.(p?.error||'Erreur visioconférence.','error');}});s.on('disconnect',()=>{if(V.callId){setStatus('Connexion temps réel interrompue.');setTimeout(()=>endCall(false),600);}});}
+function bindSocket(){
+  const s=window.STAFF_SYNC?.socket;
+  if(!s)return;
+  if(V.boundSocket&&V.boundSocket!==s){
+    try{V.boundSocket.off('staff-video-signal',handleSignal);}catch(_){}
+  }
+  if(V.boundSocket===s&&s.__ichefVideoV130Bound){
+    if(socketReady())try{s.emit('staff-video-ready');}catch(_){}
+    return;
+  }
+  V.boundSocket=s;s.__ichefVideoV130Bound=true;
+  s.on('staff-video-signal',handleSignal);
+  s.on('staff-video-delivery',p=>{
+    if(!V.callId||String(p?.callId||'')!==String(V.callId))return;
+    const status=String(p?.status||'').toLowerCase();
+    if(status==='offline')setStatus('Votre collègue n’est pas connecté. Appel en attente…');
+    else if(status==='delivered'||status==='online')setStatus(`Sonnerie chez ${V.peerName||'votre collègue'}…`);
+  });
+  s.on('staff-video-error',p=>{if(!p?.callId||!V.callId||String(p.callId)===String(V.callId)){staffChatNotice?.(p?.error||'Erreur visioconférence.','error');}});
+  s.on('staff-realtime-joined',()=>{setTimeout(()=>{try{s.emit('staff-video-ready');}catch(_){}},40);});
+  s.on('connect',()=>setTimeout(bindSocket,80));
+  s.on('disconnect',()=>{if(V.callId){setStatus('Connexion temps réel interrompue.');}});
+  if(socketReady())try{s.emit('staff-video-ready');}catch(_){}
+}
 function toggleMic(){V.micOff=!V.micOff;(V.localStream?.getAudioTracks?.()||[]).forEach(t=>t.enabled=!V.micOff);const b=$('staff-video-mute');if(b){b.classList.toggle('off',V.micOff);b.textContent=V.micOff?'Micro coupé':'Micro';}}
 function toggleCamera(){V.cameraOff=!V.cameraOff;(V.localStream?.getVideoTracks?.()||[]).forEach(t=>t.enabled=!V.cameraOff);const b=$('staff-video-camera');if(b){b.classList.toggle('off',V.cameraOff);b.textContent=V.cameraOff?'Caméra coupée':'Caméra';}}
 function init(){
   $('staff-video-call-btn')?.addEventListener('click',startCall);$('staff-video-accept')?.addEventListener('click',acceptIncoming);$('staff-video-reject')?.addEventListener('click',rejectIncoming);$('staff-video-hangup')?.addEventListener('click',()=>endCall(true));$('staff-video-close')?.addEventListener('click',()=>{if(V.incoming)rejectIncoming();else if(V.callId)endCall(true);else hideModal();});$('staff-video-mute')?.addEventListener('click',toggleMic);$('staff-video-camera')?.addEventListener('click',toggleCamera);
-  updateCallButton();bindSocket();setTimeout(bindSocket,600);setTimeout(bindSocket,1800);
-  const old=window.connectStaffRealtime;if(typeof old==='function'&&!old.__videoV128Wrapped){const wrapped=function(...args){const out=old.apply(this,args);setTimeout(bindSocket,80);setTimeout(bindSocket,800);return out;};wrapped.__videoV128Wrapped=true;window.connectStaffRealtime=wrapped;}
-  window.addEventListener('beforeunload',()=>{try{if(V.callId)send('hangup');}catch(_){}clearTracks();});
+  updateCallButton();bindSocket();setTimeout(bindSocket,300);setTimeout(bindSocket,1200);
+  if(!V.bindTimer)V.bindTimer=setInterval(bindSocket,1200);
+  window.addEventListener('focus',bindSocket);
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden)bindSocket();});
+  const old=window.connectStaffRealtime;if(typeof old==='function'&&!old.__videoV130Wrapped){const wrapped=function(...args){const out=old.apply(this,args);setTimeout(bindSocket,50);setTimeout(bindSocket,500);return out;};wrapped.__videoV130Wrapped=true;window.connectStaffRealtime=wrapped;}
+  window.addEventListener('beforeunload',()=>{try{if(V.callId)send('hangup');}catch(_){}if(V.bindTimer)clearInterval(V.bindTimer);stopIncomingCue();clearTracks();});
 }
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init,{once:true});else init();
 })();
