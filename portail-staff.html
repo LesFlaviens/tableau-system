@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>iCHEF OS — Mon espace collaborateur</title>
-<meta name="ichef-build" content="V118-CHAT-CLICK-FIX-SECURE">
+<meta name="ichef-build" content="V124-CHAT-OPEN-UI-FIX-SECURE">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -3390,7 +3390,7 @@ if ('serviceWorker' in navigator) {
     document.getElementById('rh-history-print-btn')?.addEventListener('click',printHistory);
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',connect,{once:true});else connect();
-  window.__ICHEF_STAFF_BUILD__='V118-CHAT-CLICK-FIX-SECURE';
+  window.__ICHEF_STAFF_BUILD__='V124-CHAT-OPEN-UI-FIX-SECURE';
   console.info('[iCHEF Staff V71] Compteurs RH synchronisés + archives 5 ans');
 })();
 </script>
@@ -3503,7 +3503,7 @@ if ('serviceWorker' in navigator) {
     return refresh({force,reason});
   };
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bind,{once:true});else bind();
-  window.__ICHEF_STAFF_BUILD__='V118-CHAT-CLICK-FIX-SECURE';
+  window.__ICHEF_STAFF_BUILD__='V124-CHAT-OPEN-UI-FIX-SECURE';
   console.info('[iCHEF Staff V88] Mobile App UI robuste · ≤1100px · Connexion rapide · Planning stable · Jour / Semaine / Mois · +6 mois');
 })();
 </script>
@@ -4004,7 +4004,7 @@ body.staff-force-mobile .app{display:block!important}
   window.addEventListener('orientationchange',()=>setTimeout(applyMode,120));
   applyMode();
   window.showStaffMobileScreenV82=showMobileScreen;
-  window.__ICHEF_STAFF_BUILD__='V118-CHAT-CLICK-FIX-SECURE';
+  window.__ICHEF_STAFF_BUILD__='V124-CHAT-OPEN-UI-FIX-SECURE';
   console.info('[iCHEF Staff V88] navigation mobile pratique active');
 })();
 </script>
@@ -4251,7 +4251,7 @@ body.staff-app-v82 #staff-mobile-more-btn.active{color:#f1b941!important;backgro
   document.getElementById('staff-mobile-drawer-close')?.addEventListener('click',closeDrawer,true);
   document.getElementById('staff-mobile-drawer-backdrop')?.addEventListener('click',closeDrawer,true);
 
-  window.__ICHEF_STAFF_BUILD__='V118-CHAT-CLICK-FIX-SECURE';
+  window.__ICHEF_STAFF_BUILD__='V124-CHAT-OPEN-UI-FIX-SECURE';
   console.info('[iCHEF Staff V88] menu latéral uniquement via PLUS');
 })();
 </script>
@@ -4295,7 +4295,7 @@ async function staffChatApi(path, options={}){
     return data;
   }catch(error){
     if(error?.name==='AbortError' || controller.signal.aborted){
-      const timeoutError=new Error('Le serveur iCHEF ne répond pas assez vite. Vérifiez que le server.js V118 est bien en ligne.');
+      const timeoutError=new Error('Le serveur iCHEF ne répond pas assez vite. Vérifiez que le server.js V123 est bien en ligne.');
       timeoutError.code='CHAT_TIMEOUT';
       throw timeoutError;
     }
@@ -4545,12 +4545,28 @@ function renderStaffChatMessages(){
 }
 
 async function openStaffChatChannel(channelId){
-  const id=String(channelId||''); if(!id)return;
+  const id=String(channelId||'').trim();
+  if(!id) return false;
+
+  const titleEl=document.getElementById('staff-chat-title');
+  const metaEl=document.getElementById('staff-chat-meta');
+  const emptyEl=document.getElementById('staff-chat-empty');
+  const threadEl=document.getElementById('staff-chat-thread');
+  const messagesSection=document.getElementById('messages');
+  const root=document.getElementById('staff-chat-messages');
+
+  // V124 : ne jamais fermer la sélection si l'interface de conversation n'existe pas.
+  if(!threadEl || !root){
+    const error=new Error('Interface de conversation indisponible. Rechargez le Portail Staff.');
+    error.code='CHAT_UI_MISSING';
+    throw error;
+  }
+
   STAFF_CHAT.currentChannelId=id;
   const ch=STAFF_CHAT.channels.find(row=>String(row.id)===id);
   STAFF_CHAT.currentName=ch?.name||'Conversation';
-  document.getElementById('staff-chat-title').textContent=STAFF_CHAT.currentName;
-  document.getElementById('staff-chat-meta').textContent=
+  if(titleEl) titleEl.textContent=STAFF_CHAT.currentName;
+  if(metaEl) metaEl.textContent=
     ch?.type==='ALL'
       ? 'Toute l’entreprise'
       : ch?.type==='DEPARTMENT'
@@ -4558,21 +4574,29 @@ async function openStaffChatChannel(channelId){
         : (ch?.type==='CUSTOM' && String(ch?.id||'').startsWith('rh:'))
           ? 'Échange privé avec la Direction / RH'
           : 'Conversation privée';
-  document.getElementById('staff-chat-empty').hidden=true;
-  document.getElementById('staff-chat-thread').hidden=false;
-  document.getElementById('messages')?.classList.add('chat-open');
+  if(emptyEl) emptyEl.hidden=true;
+  threadEl.hidden=false;
+  messagesSection?.classList.add('chat-open');
   renderStaffChatChannels();
-  const root=document.getElementById('staff-chat-messages'); if(root)root.innerHTML='<div class="empty">Chargement…</div>';
+  root.innerHTML='<div class="empty">Chargement…</div>';
+
   try{
-    const data=await staffChatApi(`/api/staff/chat/messages?channelId=${encodeURIComponent(id)}&limit=80`);
-    if(STAFF_CHAT.currentChannelId!==id)return;
+    const data=await staffChatApi(`/api/staff/chat/messages?channelId=${encodeURIComponent(id)}&limit=80`,{timeoutMs:8000});
+    if(STAFF_CHAT.currentChannelId!==id) return true;
     STAFF_CHAT.messages=Array.isArray(data.messages)?data.messages:[];
     renderStaffChatMessages();
-    await staffChatApi('/api/staff/chat/read',{method:'POST',body:JSON.stringify({channelId:id})});
+    staffChatApi('/api/staff/chat/read',{method:'POST',body:JSON.stringify({channelId:id}),timeoutMs:6000})
+      .catch(error=>console.warn('[iCHEF Chat read]',error?.message||error));
     const local=STAFF_CHAT.channels.find(row=>String(row.id)===id); if(local)local.unread=0;
     STAFF_CHAT.totalUnread=STAFF_CHAT.channels.reduce((sum,row)=>sum+Number(row.unread||0),0);
     renderStaffChatChannels(); staffChatUpdateBadges();
-  }catch(error){if(root)root.innerHTML=`<div class="empty">${escapeHtml(error.message||'Conversation indisponible.')}</div>`;}
+    return true;
+  }catch(error){
+    root.innerHTML=`<div class="empty">${escapeHtml(error?.message||'Conversation indisponible.')}</div>`;
+    console.error('[iCHEF Chat open channel]',{channelId:id,error:error?.message||error});
+    // L'écran de conversation est bien ouvert : on affiche l'erreur dedans.
+    return true;
+  }
 }
 
 async function sendStaffChatMessage(event){
@@ -4612,7 +4636,19 @@ function renderStaffChatPeople(filter=''){
   root.innerHTML=people.map(p=>`<button type="button" class="staff-chat-person" data-chat-person="${escapeAttribute(p.id)}">
     <span class="staff-chat-channel-avatar">${escapeHtml(staffChatInitials(p.name))}</span><span><strong>${escapeHtml(p.name)}</strong><small>${escapeHtml([p.role,p.dept].filter(Boolean).join(' · '))}</small></span><span>›</span>
   </button>`).join('');
-  root.querySelectorAll('[data-chat-person]').forEach(btn=>btn.addEventListener('click',e=>{e.preventDefault();startStaffDirectChat(btn.dataset.chatPerson,btn);}));
+}
+
+function staffChatPeopleDelegatedClick(event){
+  const button=event.target?.closest?.('[data-chat-person]');
+  if(!button)return;
+  event.preventDefault();
+  event.stopPropagation();
+  const staffId=String(button.dataset.chatPerson||'').trim();
+  if(!staffId)return;
+  startStaffDirectChat(staffId,button).catch(error=>{
+    console.error('[iCHEF Chat delegated click]',error);
+    staffChatNotice(error?.message||'Conversation impossible.','error');
+  });
 }
 
 async function openStaffChatPeople(){
@@ -4639,49 +4675,64 @@ function closeStaffChatPeople(){
 }
 async function startStaffDirectChat(staffId,sourceButton=null){
   const targetId=String(staffId||'').trim();
-  if(!targetId)return;
-  if(STAFF_CHAT.openingDirect)return;
-
-  // Si la conversation existe déjà, ouverture immédiate sans POST inutile.
-  const existing=STAFF_CHAT.channels.find(ch=>
-    ch?.type==='DIRECT' && Array.isArray(ch.participants) && ch.participants.map(String).includes(targetId)
-  );
-  if(existing?.id){
-    closeStaffChatPeople();
-    await openStaffChatChannel(existing.id);
-    return;
+  if(!targetId)return false;
+  if(STAFF_CHAT.openingDirect){
+    staffChatPersonStatus('Ouverture déjà en cours…');
+    return false;
   }
 
   STAFF_CHAT.openingDirect=true;
-  const btn=sourceButton || document.querySelector(`[data-chat-person="${CSS.escape(targetId)}"]`);
+  const btn=sourceButton || document.querySelector('[data-chat-person="'+targetId.replace(/"/g,'\"')+'"]');
   btn?.classList.add('busy');
   btn?.setAttribute('aria-busy','true');
   staffChatPersonStatus('Ouverture de la conversation…');
+
   try{
+    // Si la conversation existe déjà, on vérifie d'abord que l'écran peut vraiment s'ouvrir.
+    const existing=STAFF_CHAT.channels.find(ch=>
+      ch?.type==='DIRECT' && Array.isArray(ch.participants) && ch.participants.map(String).includes(targetId)
+    );
+    if(existing?.id){
+      const opened=await openStaffChatChannel(existing.id);
+      if(opened){
+        closeStaffChatPeople();
+        return true;
+      }
+    }
+
+    console.info('[iCHEF Chat direct] création',targetId);
     const data=await staffChatApi('/api/staff/chat/channels/direct',{
       method:'POST',
       body:JSON.stringify({staffId:targetId}),
-      timeoutMs:7000
+      timeoutMs:9000
     });
     const channel=data?.channel;
     if(!channel?.id)throw new Error('Le serveur n’a pas renvoyé la conversation.');
 
-    // Ajoute le canal localement avant tout rafraîchissement : l'écran s'ouvre tout de suite.
-    if(!STAFF_CHAT.channels.some(ch=>String(ch.id)===String(channel.id))){
-      STAFF_CHAT.channels.unshift({
-        id:String(channel.id),
-        type:String(channel.type||'DIRECT'),
-        name:String(channel.name||'Conversation privée'),
-        participants:Array.isArray(channel.participants)?channel.participants.map(String):[],
-        unread:0,lastMessage:'',lastSender:'',lastAt:''
-      });
-    }
+    const localChannel={
+      id:String(channel.id),
+      type:String(channel.type||'DIRECT'),
+      name:String(channel.name||'Conversation privée'),
+      participants:Array.isArray(channel.participants)?channel.participants.map(String):[],
+      unread:0,lastMessage:'',lastSender:'',lastAt:''
+    };
+    const index=STAFF_CHAT.channels.findIndex(ch=>String(ch.id)===String(localChannel.id));
+    if(index>=0) STAFF_CHAT.channels[index]={...STAFF_CHAT.channels[index],...localChannel};
+    else STAFF_CHAT.channels.unshift(localChannel);
+    renderStaffChatChannels();
+
+    const opened=await openStaffChatChannel(localChannel.id);
+    if(!opened)throw new Error('La conversation a été créée mais son écran ne peut pas s’ouvrir.');
+
+    // V124 : fermer la sélection seulement APRÈS ouverture réelle de l'écran.
     closeStaffChatPeople();
-    await openStaffChatChannel(channel.id);
-    setTimeout(()=>refreshStaffChatChannels().catch(()=>{}),0);
+    setTimeout(()=>refreshStaffChatChannels().catch(error=>console.warn('[iCHEF Chat refresh after direct]',error)),0);
+    return true;
   }catch(error){
     const message=error?.message||'Conversation impossible.';
+    console.error('[iCHEF Chat direct click]',{staffId:targetId,message,status:error?.status||0,code:error?.code||''});
     staffChatNotice(message,'error');
+    return false;
   }finally{
     STAFF_CHAT.openingDirect=false;
     btn?.classList.remove('busy');
@@ -4695,6 +4746,7 @@ function initStaffChat(){
   document.getElementById('staff-chat-new-btn')?.addEventListener('click',openStaffChatPeople);
   document.getElementById('staff-chat-person-close')?.addEventListener('click',closeStaffChatPeople);
   document.getElementById('staff-chat-person-modal')?.addEventListener('click',e=>{if(e.target===e.currentTarget)closeStaffChatPeople();});
+  document.getElementById('staff-chat-people')?.addEventListener('click',staffChatPeopleDelegatedClick);
   document.getElementById('staff-chat-person-search')?.addEventListener('input',e=>renderStaffChatPeople(e.target.value));
   document.getElementById('staff-chat-back-btn')?.addEventListener('click',()=>{document.getElementById('messages')?.classList.remove('chat-open');});
   document.getElementById('staff-chat-input')?.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendStaffChatMessage(e);}});
@@ -5169,7 +5221,7 @@ document.addEventListener('DOMContentLoaded',()=>setTimeout(initStaffWorkspace,7
   const previous=renderDashboard;
   renderDashboard=function(data){const out=previous.apply(this,arguments);notices=Array.isArray(data?.planningNotices)?data.planningNotices:[];render();return out;};
   window.renderStaffPlanningNoticesV87=render;
-  window.__ICHEF_STAFF_BUILD__='V118-CHAT-CLICK-FIX-SECURE';
+  window.__ICHEF_STAFF_BUILD__='V124-CHAT-OPEN-UI-FIX-SECURE';
   console.info('[iCHEF Staff V88] planning : modifications reçues + motif urgent + preuve « Vu »');
 })();
 </script>
