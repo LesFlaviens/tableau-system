@@ -961,7 +961,7 @@ app.get('/api/staff/build', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.json({
         success: true,
-        build: 'V117-RH-CHAT-LIVE-SECURE',
+        build: 'V119-CHAT-CLICK-CURRENT-SECURE',
         staffPortal: true,
         signedSession: true,
         timestamp: new Date().toISOString()
@@ -16182,7 +16182,7 @@ app.get(
         res.setHeader('Cache-Control','no-store');
         return res.json({
             success:true,
-            build:'V108-RH-DOCUMENTS-COLLABORATEURS-STAFF-SECURE',
+            build:'V119-CHAT-CLICK-CURRENT-SECURE',
             staffLoginRoute:'/api/staff/login',
             authentication:'STAFF_ID_RH_PLUS_PIN',
             signedSession:true,
@@ -18621,7 +18621,7 @@ app.get('/api/staff/chat/status', async (req,res) => {
             staffId:self.id,
             rhChannelId:channelId,
             realtime:true,
-            build:'V117-RH-CHAT-LIVE-SECURE'
+            build:'V119-CHAT-CLICK-CURRENT-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT status V117]',error?.message || error);
@@ -18700,31 +18700,73 @@ app.get('/api/staff/chat/channels', async (req,res) => {
 });
 
 app.post('/api/staff/chat/channels/direct', async (req,res) => {
+    const startedAt = Date.now();
     try {
+        res.setHeader('Cache-Control','no-store');
         const auth = await ichefLoadActiveStaffChatSession(req);
         if (!auth.ok) return res.status(401).json({ success:false, error:auth.error });
+
         const self = ichefStaffChatSelf(auth);
         const targetId = String(req.body?.staffId || '').trim().slice(0,120);
-        if (!targetId || targetId === self.id) return res.status(400).json({ success:false, error:'Collaborateur invalide.' });
+        if (!targetId || targetId === self.id) {
+            return res.status(400).json({ success:false, error:'Collaborateur invalide.' });
+        }
+
         const directory = ichefStaffChatDirectory(auth?.state?.activeOrders || {});
         const target = directory.find(member => ichefStaffChatMemberId(member) === targetId);
-        if (!target) return res.status(404).json({ success:false, error:'Collaborateur introuvable.' });
+        if (!target) {
+            return res.status(404).json({ success:false, error:'Collaborateur introuvable.' });
+        }
+
         const participants = [self.id,targetId].sort();
-        const hash = nodeCrypto.createHash('sha256').update(`${auth.tenantID}|${participants.join('|')}`).digest('hex').slice(0,24);
+        const hash = nodeCrypto.createHash('sha256')
+            .update(`${auth.tenantID}|${participants.join('|')}`)
+            .digest('hex').slice(0,24);
         const channelId = `direct:${hash}`;
         const now = new Date();
+
         const channel = await StaffChatChannel.findOneAndUpdate(
             { tenantID:auth.tenantID, channelId },
             {
-                $setOnInsert:{ tenantID:auth.tenantID, channelId, type:'DIRECT', name:'Conversation privée', participantIds:participants, createdBy:self.id, createdAt:now },
+                $setOnInsert:{
+                    tenantID:auth.tenantID,
+                    channelId,
+                    type:'DIRECT',
+                    name:'Conversation privée',
+                    participantIds:participants,
+                    createdBy:self.id,
+                    createdAt:now
+                },
                 $set:{ participantIds:participants, archived:false, updatedAt:now }
             },
-            { upsert:true, new:true }
+            { upsert:true, new:true, maxTimeMS:5000 }
         ).lean();
-        return res.json({ success:true, channel:{ id:channel.channelId, type:'DIRECT', name:ichefStaffChatMemberName(target), participants } });
+
+        return res.json({
+            success:true,
+            channel:{
+                id:channel.channelId,
+                type:'DIRECT',
+                name:ichefStaffChatMemberName(target),
+                participants
+            },
+            durationMs:Date.now()-startedAt,
+            build:'V119-CHAT-CLICK-CURRENT-SECURE'
+        });
     } catch (error) {
-        console.error('[iCHEF STAFF CHAT direct]',error?.message || error);
-        return res.status(500).json({ success:false, error:'Conversation privée impossible.' });
+        console.error('[iCHEF STAFF CHAT direct V119]',{
+            message:error?.message || String(error),
+            durationMs:Date.now()-startedAt,
+            requestId:req?.ichefRequestId || ''
+        });
+        const mongoTimeout = /time limit|timed out|maxTimeMS/i.test(String(error?.message || ''));
+        return res.status(mongoTimeout ? 503 : 500).json({
+            success:false,
+            error:mongoTimeout
+                ? 'La base iCHEF répond trop lentement. Réessayez dans quelques secondes.'
+                : 'Conversation privée impossible.',
+            requestId:req?.ichefRequestId || ''
+        });
     }
 });
 
@@ -19043,7 +19085,7 @@ app.get('/api/rh/chat/status', async (req,res) => {
             staffCount:Array.isArray(directory) ? directory.length : 0,
             realtime:true,
             privateChannels:true,
-            build:'V117-RH-CHAT-LIVE-SECURE'
+            build:'V119-CHAT-CLICK-CURRENT-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF RH CHAT status V117]',error?.message || error);
