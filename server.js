@@ -961,7 +961,7 @@ app.get('/api/staff/build', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.json({
         success: true,
-        build: 'V119-CHAT-CLICK-CURRENT-SECURE',
+        build: 'V120-STAFF-LOGIN-ID-SYNC-SECURE',
         staffPortal: true,
         signedSession: true,
         timestamp: new Date().toISOString()
@@ -16182,7 +16182,7 @@ app.get(
         res.setHeader('Cache-Control','no-store');
         return res.json({
             success:true,
-            build:'V119-CHAT-CLICK-CURRENT-SECURE',
+            build:'V120-STAFF-LOGIN-ID-SYNC-SECURE',
             staffLoginRoute:'/api/staff/login',
             authentication:'STAFF_ID_RH_PLUS_PIN',
             signedSession:true,
@@ -16370,7 +16370,7 @@ app.post(
                     return values;
                 }
 
-                const humanAliases = [
+                const rawHumanAliases = [
                     item?.name,
                     item?.pseudo,
                     item?.displayName,
@@ -16381,10 +16381,43 @@ app.post(
                     value !== undefined &&
                     value !== null &&
                     String(value).trim() !== ''
-                )
-                .map(normalizeStaffLoginIdentity);
+                );
 
-                return [...new Set([...values, ...humanAliases])];
+                const humanAliases =
+                    rawHumanAliases
+                    .map(normalizeStaffLoginIdentity);
+
+                /*
+                 * Compatibilité RH V186 — identifiant portail :
+                 * - loginId reste l'identifiant prioritaire car il fait déjà
+                 *   partie de identityValues(item) ;
+                 * - si une ancienne fiche n'a pas encore loginId, le premier
+                 *   prénom du nom complet peut servir d'alias UNIQUEMENT quand
+                 *   le tenantID fourni correspond exactement à l'établissement.
+                 * - le PIN personnel reste obligatoire ; une ambiguïté entre
+                 *   plusieurs profils continue d'être refusée.
+                 */
+                const shortAliases =
+                    rawHumanAliases
+                    .flatMap(value => {
+                        const normalized =
+                            normalizeStaffLoginIdentity(value);
+                        const parts =
+                            normalized
+                            .split(/\s+/)
+                            .filter(Boolean);
+                        return parts.length
+                            ? [parts[0]]
+                            : [];
+                    });
+
+                return [
+                    ...new Set([
+                        ...values,
+                        ...humanAliases,
+                        ...shortAliases
+                    ])
+                ];
             };
 
             const stateQuery = {
@@ -18621,7 +18654,7 @@ app.get('/api/staff/chat/status', async (req,res) => {
             staffId:self.id,
             rhChannelId:channelId,
             realtime:true,
-            build:'V119-CHAT-CLICK-CURRENT-SECURE'
+            build:'V120-STAFF-LOGIN-ID-SYNC-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT status V117]',error?.message || error);
@@ -18751,10 +18784,10 @@ app.post('/api/staff/chat/channels/direct', async (req,res) => {
                 participants
             },
             durationMs:Date.now()-startedAt,
-            build:'V119-CHAT-CLICK-CURRENT-SECURE'
+            build:'V120-STAFF-LOGIN-ID-SYNC-SECURE'
         });
     } catch (error) {
-        console.error('[iCHEF STAFF CHAT direct V119]',{
+        console.error('[iCHEF STAFF CHAT direct V120]',{
             message:error?.message || String(error),
             durationMs:Date.now()-startedAt,
             requestId:req?.ichefRequestId || ''
@@ -19085,7 +19118,7 @@ app.get('/api/rh/chat/status', async (req,res) => {
             staffCount:Array.isArray(directory) ? directory.length : 0,
             realtime:true,
             privateChannels:true,
-            build:'V119-CHAT-CLICK-CURRENT-SECURE'
+            build:'V120-STAFF-LOGIN-ID-SYNC-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF RH CHAT status V117]',error?.message || error);
