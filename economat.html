@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#071018">
-<title>iCHEF OS - Économat V5 · Achats 1 clic & livraisons</title>
+<title>iCHEF OS - Économat V6 · Devise automatique CH / Europe</title>
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <style>
 :root{
@@ -793,6 +793,31 @@ tbody tr:hover td{
 @media print{body *{visibility:hidden!important}#fusion-order-print,#fusion-order-print *{visibility:visible!important}#fusion-order-print{display:block!important;position:absolute;inset:0;width:100%}}
 @media(max-width:800px){.econ-fusion-head{align-items:flex-start;flex-direction:column}.econ-fusion-tools{grid-template-columns:1fr}.econ-order-kpis{grid-template-columns:repeat(2,1fr)}.fusion-order-row{grid-template-columns:1fr 1fr}.fusion-order-row [data-fo="name"]{grid-column:1/-1}}
 
+
+.auto-currency-box{
+  min-height:40px;
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  padding:7px 10px;
+  border:1px solid rgba(212,175,55,.28);
+  border-radius:9px;
+  background:rgba(212,175,55,.055);
+}
+.auto-currency-box small{
+  color:#8ca0b3;
+  font-size:.56rem;
+  font-weight:900;
+  text-transform:uppercase;
+  letter-spacing:.55px;
+}
+.auto-currency-box strong{
+  margin-top:2px;
+  color:#e4c66e;
+  font-size:.76rem;
+  letter-spacing:.25px;
+}
+
 </style>
 </head>
 <body>
@@ -825,7 +850,7 @@ tbody tr:hover td{
     </div>
     <div class="economat-hero-status">
       <span class="hero-dot"></span>
-      PILOTAGE OPÉRATIONNEL
+      <span>PILOTAGE OPÉRATIONNEL · <b id="economat-auto-currency">DEVise AUTO</b></span>
     </div>
   </section>
 
@@ -1042,7 +1067,7 @@ tbody tr:hover td{
       <input id="fs-email" type="email" placeholder="Email">
       <input id="fs-whatsapp" placeholder="WhatsApp">
       <input id="fs-category" placeholder="Catégorie">
-      <select id="fs-currency"><option value="CHF">CHF</option><option value="EUR">EUR</option></select>
+      <div class="auto-currency-box"><small>Devise automatique</small><strong id="fs-currency-label">—</strong><input id="fs-currency" type="hidden" value="CHF"></div>
       <select id="fs-channel">
         <option value="MEMO">Mémo interne</option><option value="PDF">PDF / bon de commande</option>
         <option value="WHATSAPP">WhatsApp</option><option value="EMAIL">Email</option>
@@ -1066,7 +1091,7 @@ tbody tr:hover td{
     <div class="formgrid">
       <select id="fo-supplier" class="full"></select>
       <select id="fo-sector"><option value="cuisine">Cuisine</option><option value="service">Service / Salle</option><option value="bar">Bar</option><option value="hotel">Hôtel</option><option value="reception">Réception</option><option value="housekeeping">Housekeeping / Étages</option><option value="maintenance">Maintenance</option><option value="economat" selected>Économat</option></select>
-      <select id="fo-currency"><option value="CHF">CHF</option><option value="EUR">EUR</option></select>
+      <div class="auto-currency-box"><small>Devise automatique</small><strong id="fo-currency-label">—</strong><input id="fo-currency" type="hidden" value="CHF"></div>
       <input id="fo-delivery" type="datetime-local">
       <select id="fo-workflow"><option value="0">Brouillon</option><option value="1">Envoyer pour validation</option></select>
       <textarea class="full" id="fo-notes" placeholder="Observation / consigne fournisseur"></textarea>
@@ -1426,6 +1451,7 @@ function normalizeState(state) {
   inventoryMovements = Array.isArray(a["INVENTORY_MOVEMENTS"]?.data) ? a["INVENTORY_MOVEMENTS"].data : [];
   settings = a["SETTINGS_MASTER"]?.data || {};
   stockCategories = Array.isArray(a["STOCK_CATS"]?.data) ? a["STOCK_CATS"].data : [];
+  applyAutomaticCurrency();
   refreshCategoryOptions();
   renderStock();
   setSync("live", "SERVEUR · CONNECTÉ");
@@ -1451,8 +1477,65 @@ function setSync(kind, text) {
   el.textContent = text;
 }
 
+function ichefAutomaticCurrencyCode() {
+  const raw = [
+    settings?.country,
+    settings?.countryCode,
+    settings?.pays,
+    settings?.fiscalCountry,
+    settings?.billingCountry,
+    settings?.establishmentCountry,
+    settings?.timezone,
+    settings?.planningTimezone,
+    settings?.locale
+  ]
+    .filter(v => v !== undefined && v !== null)
+    .map(v => String(v).trim())
+    .join(" ")
+    .toUpperCase();
+
+  // Suisse : code, nom ou fuseau suisse.
+  if (
+    /(^|[\s,;|])(CH|CHE)(?=$|[\s,;|])/.test(raw) ||
+    raw.includes("SUISSE") ||
+    raw.includes("SWITZERLAND") ||
+    raw.includes("SCHWEIZ") ||
+    raw.includes("SVIZZERA") ||
+    raw.includes("EUROPE/ZURICH")
+  ) {
+    return "CHF";
+  }
+
+  // Si le pays n'est pas encore renseigné, on respecte l'ancienne
+  // configuration CHF explicite pour ne pas changer un établissement suisse.
+  const legacy = String(settings?.currency || settings?.devise || "").trim().toUpperCase();
+  if (legacy === "CHF" || legacy.includes("FRANC")) return "CHF";
+
+  // Zone Europe iCHEF : EUR par défaut.
+  return "EUR";
+}
+
 function getCurrency() {
-  return String(settings.currency || settings.devise || "€");
+  return ichefAutomaticCurrencyCode() === "CHF" ? "CHF" : "€";
+}
+
+function applyAutomaticCurrency() {
+  const code = ichefAutomaticCurrencyCode();
+  const label = code === "CHF" ? "CHF · SUISSE" : "€ · EUROPE";
+
+  for (const id of ["fs-currency","fo-currency"]) {
+    const el = document.getElementById(id);
+    if (el) el.value = code;
+  }
+  for (const id of ["fs-currency-label","fo-currency-label"]) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = label;
+  }
+
+  document.documentElement.dataset.ichefCurrency = code;
+  const hero = document.getElementById("economat-auto-currency");
+  if (hero) hero.textContent = code === "CHF" ? "CHF · SUISSE" : "€ · EUROPE";
+  return code;
 }
 
 function n(v) {
@@ -1633,7 +1716,7 @@ async function quickSupplierOrder(id,button) {
   const state=reorderState(item),old=button?.textContent;
   if(button){button.disabled=true;button.textContent="CRÉATION…";}
   try{
-    const currency=String(getCurrency()).includes("€")?"EUR":"CHF";
+    const currency=ichefAutomaticCurrencyCode();
     const data=await opsApi(`/api/ops/inventory/${encodeURIComponent(id)}/quick-order`,{method:"POST",body:JSON.stringify({quantity:state.recommended,sectorKey:item.sectorKey||"economat",currency,observation:item.observation||""})});
     const o=data.order||{};
     alert(`Commande créée ✅\n${o.supplierName||item.fournisseur}\n${state.recommended} ${item.unit||""} · ${sectorLabel(o.sectorKey||item.sectorKey)}\nStatut : ${o.status||"créée"}\nCanal : ${o.orderChannel||"MEMO"}\n\nLa tâche de réception est déjà envoyée au secteur.`);
@@ -2382,7 +2465,7 @@ window.switchEconomatView=async function(name){
   window.scrollTo({top:0,behavior:'smooth'});
 };
 
-window.openFusionSupplierModal=()=>{$f('fusion-supplier-modal').classList.add('open');setTimeout(()=>$f('fs-name').focus(),30)};
+window.openFusionSupplierModal=()=>{applyAutomaticCurrency();$f('fusion-supplier-modal').classList.add('open');setTimeout(()=>$f('fs-name').focus(),30)};
 window.closeFusionSupplierModal=()=>{$f('fusion-supplier-modal').classList.remove('open')};
 
 window.loadFusionSuppliers=async function(){
@@ -2431,7 +2514,7 @@ window.saveFusionSupplier=async function(){
     const name=$f('fs-name').value.trim();if(name.length<2)throw new Error('Nom du fournisseur requis.');
     await opsApi('/api/ops/suppliers',{method:'POST',body:JSON.stringify({
       name,contactName:$f('fs-contact').value,phone:$f('fs-phone').value,email:$f('fs-email').value,
-      whatsappPhone:$f('fs-whatsapp').value,category:$f('fs-category').value,defaultCurrency:$f('fs-currency').value,
+      whatsappPhone:$f('fs-whatsapp').value,category:$f('fs-category').value,defaultCurrency:ichefAutomaticCurrencyCode(),
       orderChannel:$f('fs-channel').value,minimumOrder:Number($f('fs-minimum').value||0),orderPortalUrl:$f('fs-portal').value,notes:$f('fs-notes').value
     })});
     ['fs-name','fs-contact','fs-phone','fs-email','fs-whatsapp','fs-category','fs-minimum','fs-portal','fs-notes'].forEach(id=>$f(id).value='');
@@ -2443,9 +2526,9 @@ function syncFusionOrderSuppliers(){
   const el=$f('fo-supplier');if(!el)return;const selected=el.value;
   el.innerHTML=FUSION_SUPPLIERS.filter(s=>s.active).map(s=>`<option value="${fesc(s.id)}">${fesc(s.name)}</option>`).join('');
   if([...el.options].some(o=>o.value===selected))el.value=selected;
-  const s=FUSION_SUPPLIERS.find(x=>x.id===el.value);if(s)$f('fo-currency').value=s.defaultCurrency||'CHF';
+  applyAutomaticCurrency();
 }
-$f('fo-supplier')?.addEventListener('change',()=>{const s=FUSION_SUPPLIERS.find(x=>x.id===$f('fo-supplier').value);if(s)$f('fo-currency').value=s.defaultCurrency||'CHF'});
+$f('fo-supplier')?.addEventListener('change',()=>applyAutomaticCurrency());
 
 window.fusionAddOrderRow=function(v={}){
   const row=document.createElement('div');row.className='fusion-order-row';row.dataset.inventoryItemId=String(v.inventoryItemId||'');
@@ -2453,10 +2536,10 @@ window.fusionAddOrderRow=function(v={}){
   row.querySelector('.fusion-remove').onclick=()=>row.remove();$f('fusion-order-lines').appendChild(row);
 };
 
-window.openFusionOrderModal=async function(supplierId=''){
+window.openFusionOrderModal=async function(supplierId=''){applyAutomaticCurrency();
   if(!FUSION_SUPPLIERS.length)await loadFusionSuppliers();
   syncFusionOrderSuppliers();if(supplierId&&[...$f('fo-supplier').options].some(o=>o.value===supplierId))$f('fo-supplier').value=supplierId;
-  const s=FUSION_SUPPLIERS.find(x=>x.id===$f('fo-supplier').value);if(s)$f('fo-currency').value=s.defaultCurrency||'CHF';
+  applyAutomaticCurrency();
   $f('fusion-order-lines').innerHTML='';fusionAddOrderRow();$f('fusion-order-modal').classList.add('open');
 };
 window.closeFusionOrderModal=()=> $f('fusion-order-modal').classList.remove('open');
@@ -2469,7 +2552,2626 @@ window.saveFusionOrder=async function(){
     }).filter(i=>i.name&&i.quantity>0);
     if(!items.length)throw new Error('Ajoutez au moins un article.');
     await opsApi('/api/ops/purchase-orders',{method:'POST',body:JSON.stringify({
-      supplierId:$f('fo-supplier').value,currency:$f('fo-currency').value,sectorKey:$f('fo-sector').value,
+      supplierId:$f('fo-supplier').value,currency:ichefAutomaticCurrencyCode(),sectorKey:$f('fo-sector').value,
+      requestedDeliveryAt:$f('fo-delivery').value||null,notes:$f('fo-notes').value,items,
+      submitForApproval:$f('fo-workflow').value==='1',createReceptionTask:true
+    })});
+    closeFusionOrderModal();$f('fo-notes').value='';$f('fo-delivery').value='';await loadFusionOrders();
+  }catch(e){alert(e.message)}
+};
+
+window.loadFusionOrders=async function(){
+  const root=$f('fusion-order-grid');if(root)root.innerHTML='<div class="empty">Chargement…</div>';
+  try{const d=await opsApi('/api/ops/purchase-orders');FUSION_ORDERS=d.orders||[];FUSION_CAPS={...FUSION_CAPS,...(d.capabilities||{})};renderFusionOrders()}
+  catch(e){if(root)root.innerHTML=`<div class="empty">${fesc(e.message)}</div>`}
+};
+
+function fusionOrderText(o){
+  const lines=(o.items||[]).map(i=>`- ${i.name}: ${i.quantity} ${i.unit}`).join('\n');
+  return `Bonjour,\n\nCommande iCHEF ${o.id}\nSecteur : ${o.sectorLabel||'Économat'}\n${lines}\n\nTotal estimé : ${fmoney(o.totalEstimated,o.currency)}${o.requestedDeliveryAt?`\nLivraison souhaitée : ${fdate(o.requestedDeliveryAt)}`:''}\n\nMerci.`;
+}
+function fusionPrintOrder(o){
+  const box=$f('fusion-order-print');box.hidden=false;
+  box.innerHTML=`<h1>iCHEF · BON DE COMMANDE</h1><p><strong>${fesc(o.supplierName)}</strong><br>${fesc(o.id)} · ${fesc(o.sectorLabel||'Économat')}</p><table style="width:100%;border-collapse:collapse"><thead><tr><th>Article</th><th>Qté</th><th>Unité</th><th>Prix/u</th><th>Total</th></tr></thead><tbody>${(o.items||[]).map(i=>`<tr><td>${fesc(i.name)}</td><td>${i.quantity}</td><td>${fesc(i.unit)}</td><td>${fmoney(i.unitPrice,o.currency)}</td><td>${fmoney(Number(i.quantity||0)*Number(i.unitPrice||0),o.currency)}</td></tr>`).join('')}</tbody></table><h3>Total : ${fmoney(o.totalEstimated,o.currency)}</h3>`;
+  window.print();setTimeout(()=>{box.hidden=true},400);
+}
+async function fusionTransmitOrder(o){
+  const c=String(o.supplierOrderChannel||'MEMO').toUpperCase(),txt=fusionOrderText(o);
+  if(c==='WHATSAPP'){const p=String(o.supplierWhatsappPhone||o.supplierPhone||'').replace(/[^\d+]/g,'');if(!p)throw new Error('Numéro WhatsApp manquant.');window.open(`https://wa.me/${p.replace(/^\+/,'')}?text=${encodeURIComponent(txt)}`,'_blank','noopener')}
+  else if(c==='EMAIL'){if(!o.supplierEmail)throw new Error('Email fournisseur manquant.');location.href=`mailto:${encodeURIComponent(o.supplierEmail)}?subject=${encodeURIComponent(`Commande iCHEF ${o.id}`)}&body=${encodeURIComponent(txt)}`}
+  else if(c==='PORTAL'){if(!o.supplierPortalUrl)throw new Error('Portail fournisseur manquant.');window.open(o.supplierPortalUrl,'_blank','noopener')}
+  else if(c==='PDF'||c==='MEMO')fusionPrintOrder(o);
+  await opsApi(`/api/ops/purchase-orders/${encodeURIComponent(o.id)}`,{method:'PUT',body:JSON.stringify({action:'SEND'})});await loadFusionOrders();
+}
+
+window.renderFusionOrders=function(){
+  const root=$f('fusion-order-grid');if(!root)return;
+  $f('fusion-order-pending').textContent=FUSION_ORDERS.filter(o=>o.status==='PENDING_APPROVAL').length;
+  $f('fusion-order-approved').textContent=FUSION_ORDERS.filter(o=>o.status==='APPROVED').length;
+  $f('fusion-order-sent').textContent=FUSION_ORDERS.filter(o=>['SENT','PARTIAL'].includes(o.status)).length;
+  $f('fusion-order-received').textContent=FUSION_ORDERS.filter(o=>o.status==='RECEIVED').length;
+  const q=String($f('fusion-order-search')?.value||'').trim().toLowerCase(),f=$f('fusion-order-filter')?.value||'';
+  const rows=FUSION_ORDERS.filter(o=>(!f||o.status===f)&&(!q||`${o.id} ${o.supplierName} ${o.sectorLabel||''}`.toLowerCase().includes(q)));
+  root.innerHTML=rows.length?rows.map(o=>`<article class="econ-fusion-card">
+    <h3>${fesc(o.supplierName)}</h3><div class="chips"><span class="econ-chip gold">${fesc(statusLabel(o.status))}</span><span class="econ-chip">${fesc(o.sectorLabel||'Économat')}</span><span class="econ-chip">${fesc(channelLabel(o.supplierOrderChannel))}</span></div>
+    <p>${fesc(o.id)} · ${o.items?.length||0} article(s) · <strong>${fmoney(o.totalEstimated,o.currency)}</strong>${o.requestedDeliveryAt?`<br>Livraison : ${fesc(fdate(o.requestedDeliveryAt))}`:''}</p>
+    <div class="econ-card-actions">
+      ${o.status==='DRAFT'&&FUSION_CAPS.createPurchases?`<button class="mini" data-ford-action="SUBMIT" data-id="${fesc(o.id)}">VALIDATION</button>`:''}
+      ${['DRAFT','PENDING_APPROVAL'].includes(o.status)&&FUSION_CAPS.approvePurchases?`<button class="mini order" data-ford-action="APPROVE" data-id="${fesc(o.id)}">APPROUVER</button>`:''}
+      ${o.status==='APPROVED'&&FUSION_CAPS.approvePurchases?`<button class="mini order" data-ford-transmit="${fesc(o.id)}">TRANSMETTRE</button>`:''}
+      ${!['RECEIVED','CANCELLED'].includes(o.status)?`<button class="mini danger" data-ford-action="CANCEL" data-id="${fesc(o.id)}">ANNULER</button>`:''}
+    </div>
+    <details><summary>Voir les articles</summary>${(o.items||[]).map(i=>`<p>${fesc(i.name)} · ${i.quantity} ${fesc(i.unit)}${Number(i.receivedQuantity||0)?` · reçu ${i.receivedQuantity}`:''}</p>`).join('')}</details>
+  </article>`).join(''):'<div class="empty">Aucune commande.</div>';
+};
+
+$f('fusion-order-grid')?.addEventListener('click',async e=>{
+  const a=e.target.closest('[data-ford-action]'),t=e.target.closest('[data-ford-transmit]');
+  try{
+    if(a){await opsApi(`/api/ops/purchase-orders/${encodeURIComponent(a.dataset.id)}`,{method:'PUT',body:JSON.stringify({action:a.dataset.fordAction})});await loadFusionOrders()}
+    else if(t){const o=FUSION_ORDERS.find(x=>x.id===t.dataset.fordTransmit);if(o)await fusionTransmitOrder(o)}
+  }catch(err){alert(err.message)}
+});
+
+window.addEventListener('ichef:inventory-updated',()=>{if(!$f('econ-orders-view')?.hidden)loadFusionOrders()});
+})();
+</script>
+</body>
+</html><!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#071018">
+<title>iCHEF OS - Économat V6 · Devise automatique CH / Europe</title>
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<style>
+:root{
+  --bg:#071018;--panel:#0d1721;--panel2:#111f2b;--line:#233444;
+  --txt:#f3f7fa;--muted:#8ca0b3;--gold:#d4af37;--green:#39d98a;
+  --red:#ff5f68;--blue:#54a8ff;--radius:12px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;color:var(--txt);font-family:Inter,Arial,sans-serif}
+html{background:var(--bg)}
+body{
+  min-height:100vh;
+  background-image:
+    linear-gradient(rgba(7,16,24,.72),rgba(7,16,24,.82)),
+    url("ChatGPT Image 20 sept. 2026, 14_24_41.png");
+  background-position:center center;
+  background-size:cover;
+  background-repeat:no-repeat;
+  background-attachment:fixed;
+}
+button,input,select{font:inherit}
+button{cursor:pointer}
+.topbar{
+  position:sticky;top:0;z-index:40;display:flex;align-items:center;gap:7px;
+  padding:8px 10px;background:rgba(7,16,24,.97);border-bottom:1px solid var(--line);
+  overflow-x:auto;white-space:nowrap
+}
+.brand{font-weight:900;letter-spacing:.7px;color:var(--gold);padding:8px 10px;border:1px solid #5b4b1c;border-radius:9px}
+.brand-logo{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  min-width:82px;
+  height:46px;
+  padding:3px 7px;
+  overflow:hidden;
+}
+.brand-logo-img{
+  display:block;
+  width:auto;
+  height:auto;
+  max-width:145px;
+  max-height:38px;
+  object-fit:contain;
+}
+
+.badge,.topbtn{
+  min-height:34px;border:1px solid var(--line);border-radius:9px;background:#0b141d;color:var(--txt);
+  padding:7px 10px;font-size:.72rem;font-weight:800
+}
+.badge{color:var(--muted)}
+.badge.live{color:var(--green);border-color:#235b43}
+.badge.warn{color:#ffc861;border-color:#6a5120}
+.topbtn.gold{color:var(--gold);border-color:#5b4b1c}
+.topbtn.red{color:var(--red);border-color:#653038}
+.spacer{flex:1}
+.wrap{padding:10px;max-width:1600px;margin:auto}
+.kpis{display:grid;grid-template-columns:repeat(5,minmax(135px,1fr));gap:8px;margin-bottom:9px}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:10px}
+.kpi small{display:block;color:var(--muted);font-size:.64rem;font-weight:800;text-transform:uppercase}
+.kpi strong{display:block;font-size:1.1rem;margin-top:5px}
+.toolbar{
+  display:grid;grid-template-columns:minmax(220px,1fr) 210px auto auto;gap:7px;
+  padding:9px;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);margin-bottom:9px
+}
+input,select{
+  width:100%;min-height:40px;border:1px solid var(--line);border-radius:9px;
+  background:#071018;color:var(--txt);padding:8px 10px;outline:none
+}
+input:focus,select:focus{border-color:var(--gold)}
+.action{
+  border:1px solid #5b4b1c;border-radius:9px;background:rgba(212,175,55,.08);
+  color:var(--gold);font-weight:900;padding:8px 12px;min-height:40px
+}
+.action.blue{color:var(--blue);border-color:#285783;background:rgba(84,168,255,.07)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+.panelhead{
+  display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line)
+}
+.panelhead h2{font-size:.82rem;margin:0;text-transform:uppercase;letter-spacing:.5px}
+.tablewrap{overflow:auto;max-height:calc(100dvh - 245px)}
+table{width:100%;border-collapse:collapse;min-width:920px}
+th,td{padding:9px 10px;border-bottom:1px solid #172735;text-align:left;font-size:.76rem;vertical-align:middle}
+th{position:sticky;top:0;background:#0a151e;color:var(--muted);z-index:2;text-transform:uppercase;font-size:.62rem}
+td b{font-size:.79rem}
+.money{font-variant-numeric:tabular-nums}
+.qty-zero{color:var(--red);font-weight:900}
+.row-actions{display:flex;gap:5px}
+.mini{
+  border:1px solid var(--line);background:#09131b;color:var(--txt);border-radius:7px;padding:6px 8px;font-size:.66rem;font-weight:800
+}
+.mini.danger{color:var(--red);border-color:#5b2a32}
+.empty{text-align:center!important;color:var(--muted);padding:32px!important}
+.overlay{
+  position:fixed;inset:0;z-index:100;
+  background-image:
+    linear-gradient(rgba(3,8,12,.48),rgba(3,8,12,.60)),
+    url("Gemini_Generated_Image_1ypyur1ypyur1ypy-Photoroom.png");
+  background-position:center center;
+  background-size:cover;
+  background-repeat:no-repeat;
+  display:flex;align-items:center;justify-content:center;padding:18px;
+  backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px)
+}
+.loginbox,.modalbox{
+  width:min(520px,100%);background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:18px;
+  box-shadow:0 25px 80px rgba(0,0,0,.45)
+}
+.loginbox h1,.modalbox h2{margin:0 0 6px;color:var(--gold);font-size:1.25rem}
+.loginbox p,.modalbox p{margin:0 0 14px;color:var(--muted);font-size:.78rem;line-height:1.4}
+.pinrow{display:flex;gap:7px}
+.pinrow input{text-align:center;font-size:1.15rem;letter-spacing:5px}
+.primary{
+  border:0;background:var(--gold);color:#0a0d10;border-radius:9px;padding:9px 13px;font-weight:900;min-height:40px
+}
+.err{display:none;color:var(--red);font-size:.75rem;font-weight:800;margin-top:10px}
+.modal{position:fixed;inset:0;z-index:90;background:rgba(0,0,0,.72);display:none;align-items:center;justify-content:center;padding:16px}
+.modal.open{display:flex}
+.formgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.formgrid .full{grid-column:1/-1}
+.modalactions{display:flex;justify-content:flex-end;gap:7px;margin-top:12px}
+.secondary{border:1px solid var(--line);background:#09131b;color:var(--txt);border-radius:9px;padding:8px 12px;font-weight:800}
+.supplier-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:8px;max-height:55vh;overflow:auto}
+.supplier{border:1px solid var(--line);background:#09131b;border-radius:10px;padding:10px}
+.supplier b{display:block;margin-bottom:4px}
+.supplier span{display:block;color:var(--muted);font-size:.7rem;line-height:1.35}
+.invoice-drop{
+  border:1px dashed #4d6173;border-radius:12px;padding:16px;text-align:center;
+  background:#09131b;margin:10px 0
+}
+.invoice-drop.drag{border-color:var(--gold);background:rgba(212,175,55,.06)}
+.invoice-status{font-size:.72rem;color:var(--muted);margin:8px 0;min-height:18px}
+.invoice-status.ok{color:var(--green)}
+.invoice-status.err{color:var(--red)}
+.invoice-progress{height:7px;border-radius:999px;background:#071018;border:1px solid var(--line);overflow:hidden;margin:8px 0}
+.invoice-progress > i{display:block;height:100%;width:0;background:var(--gold);transition:width .2s}
+.invoice-preview{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+.invoice-lines{margin-top:10px;border:1px solid var(--line);border-radius:10px;overflow:auto;max-height:34vh}
+.invoice-lines table{min-width:760px}
+.invoice-lines input,.invoice-lines select{min-height:34px;padding:5px 7px;font-size:.72rem}
+.invoice-tools{display:flex;gap:7px;flex-wrap:wrap;margin-top:8px}
+.invoice-capture-actions{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:12px}
+.invoice-capture-actions .action{min-width:170px}
+.invoice-raw{width:100%;min-height:95px;resize:vertical;border:1px solid var(--line);border-radius:9px;background:#071018;color:var(--txt);padding:8px;font:12px/1.35 monospace}
+@media(max-width:700px){.invoice-preview{grid-template-columns:1fr}}
+@media(max-width:900px){
+ .kpis{grid-template-columns:repeat(2,1fr)}
+ .toolbar{grid-template-columns:1fr 1fr}
+ .tablewrap{max-height:none}
+}
+@media(max-width:560px){
+ .wrap{padding:7px}
+ .kpis{grid-template-columns:repeat(2,1fr);gap:6px}
+ .kpi{padding:8px}
+ .toolbar{grid-template-columns:1fr}
+ .formgrid{grid-template-columns:1fr}
+ .formgrid .full{grid-column:auto}
+ .topbar{padding:6px 7px}
+ .brand-logo{min-width:68px;height:40px;padding:2px 5px}
+ .brand-logo-img{max-width:112px;max-height:32px}
+ input,select{font-size:16px}
+}
+
+/* --- BOUTON ACCUEIL UNIVERSEL --- */
+#ichef-universal-home-btn {
+    position: fixed !important;
+    top: 20px !important;
+    left: 20px !important;
+    z-index: 999999 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+    padding: 8px 16px !important;
+    background: rgba(7, 7, 7, 0.4) !important;
+    backdrop-filter: blur(10px) !important;
+    -webkit-backdrop-filter: blur(10px) !important;
+    color: var(--gold) !important;
+    border: 1px solid rgba(215, 173, 92, 0.4) !important;
+    border-radius: 999px !important;
+    font-family: 'Inter', Arial, sans-serif !important;
+    font-size: 10px !important;
+    font-weight: 800 !important;
+    letter-spacing: 1.5px !important;
+    text-transform: uppercase !important;
+    text-decoration: none !important;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.4) !important;
+    transition: all 0.15s ease-in-out !important;
+}
+
+#ichef-universal-home-btn:hover {
+    background: #e7c67e !important;
+    color: #080808 !important;
+    border-color: #f2d58f !important;
+    transform: translateY(-2px) !important;
+    box-shadow: 0 6px 20px rgba(215, 173, 92, 0.3) !important;
+}
+
+#ichef-universal-home-btn svg {
+    width: 14px !important;
+    height: 14px !important;
+}
+
+@media (max-width: 900px) {
+    #ichef-universal-home-btn {
+        top: 15px !important;
+        left: 15px !important;
+        padding: 6px 12px !important;
+        font-size: 9px !important;
+    }
+    #ichef-universal-home-btn svg {
+        width: 12px !important;
+        height: 12px !important;
+    }
+}
+
+.stock-low td{background:rgba(255,95,104,.035)}
+.reorder-flag{display:inline-flex;margin-top:4px;padding:3px 6px;border-radius:999px;border:1px solid #653038;color:#ff8f98;background:rgba(255,95,104,.06);font-size:.57rem;font-weight:900}
+.mini.order{color:var(--gold);border-color:#5b4b1c;background:rgba(212,175,55,.07)}
+.mini.task{color:var(--blue);border-color:#285783;background:rgba(84,168,255,.07)}
+.mini.level{color:#b7c5d1;border-color:#34495a}
+
+.login-entry-logo{
+  display:block;
+  width:min(190px,58vw);
+  max-height:86px;
+  object-fit:contain;
+  margin:0 auto 12px;
+  filter:drop-shadow(0 10px 22px rgba(0,0,0,.38));
+}
+
+
+/* V140 — PORTE D'ENTRÉE : CADRE TRANSPARENT + TEXTE BLANC */
+#login-overlay .loginbox{
+  background:rgba(7,16,24,.28) !important;
+  border:1px solid rgba(255,255,255,.34) !important;
+  box-shadow:0 24px 70px rgba(0,0,0,.34) !important;
+  backdrop-filter:blur(12px) !important;
+  -webkit-backdrop-filter:blur(12px) !important;
+}
+
+#login-overlay .loginbox h1{
+  color:#fff !important;
+  text-shadow:0 2px 10px rgba(0,0,0,.45);
+}
+
+#login-overlay .loginbox p{
+  color:#fff !important;
+  opacity:.95;
+  text-shadow:0 1px 8px rgba(0,0,0,.45);
+}
+
+#login-overlay .pinrow input{
+  background:rgba(7,16,24,.24) !important;
+  border:1px solid rgba(255,255,255,.38) !important;
+  color:#fff !important;
+  box-shadow:none !important;
+}
+
+#login-overlay .pinrow input::placeholder{
+  color:rgba(255,255,255,.78) !important;
+}
+
+#login-overlay .err{
+  color:#fff !important;
+  background:rgba(115,20,28,.38);
+  border:1px solid rgba(255,255,255,.20);
+  border-radius:9px;
+  padding:8px 10px;
+}
+
+
+/* V141 — PORTE D'ENTRÉE PREMIUM */
+#login-overlay{
+  background-image:
+    linear-gradient(135deg,rgba(4,9,14,.40),rgba(4,9,14,.62)),
+    url("Gemini_Generated_Image_1ypyur1ypyur1ypy-Photoroom.png") !important;
+  background-position:center center !important;
+  background-size:cover !important;
+  background-repeat:no-repeat !important;
+}
+
+#login-overlay::before{
+  content:"";
+  position:absolute;
+  inset:0;
+  background:
+    radial-gradient(circle at 50% 18%,rgba(255,255,255,.10),transparent 24%),
+    radial-gradient(circle at 50% 80%,rgba(212,175,55,.10),transparent 30%);
+  pointer-events:none;
+}
+
+#login-overlay .loginbox{
+  position:relative;
+  z-index:2;
+  width:min(440px,calc(100vw - 28px)) !important;
+  padding:28px 28px 24px !important;
+  background:linear-gradient(
+    145deg,
+    rgba(10,17,24,.34),
+    rgba(7,14,20,.20)
+  ) !important;
+  border:1px solid rgba(255,255,255,.26) !important;
+  border-radius:24px !important;
+  box-shadow:
+    0 26px 80px rgba(0,0,0,.44),
+    inset 0 1px 0 rgba(255,255,255,.12) !important;
+  backdrop-filter:blur(18px) saturate(125%) !important;
+  -webkit-backdrop-filter:blur(18px) saturate(125%) !important;
+  overflow:hidden;
+}
+
+#login-overlay .loginbox::before{
+  content:"";
+  position:absolute;
+  top:0;
+  left:18%;
+  right:18%;
+  height:1px;
+  background:linear-gradient(90deg,transparent,rgba(242,213,143,.95),transparent);
+}
+
+#login-overlay .login-entry-logo{
+  width:min(172px,52vw) !important;
+  max-height:74px !important;
+  margin:0 auto 14px !important;
+  filter:drop-shadow(0 12px 24px rgba(0,0,0,.38));
+}
+
+#login-overlay .entry-kicker{
+  text-align:center;
+  color:#e7c67e;
+  font-size:.62rem;
+  font-weight:900;
+  letter-spacing:2.2px;
+  margin-bottom:8px;
+  text-transform:uppercase;
+}
+
+#login-overlay .loginbox h1{
+  margin:0 !important;
+  text-align:center;
+  color:#fff !important;
+  font-size:1.55rem !important;
+  font-weight:900;
+  letter-spacing:-.02em;
+  text-shadow:0 3px 16px rgba(0,0,0,.45);
+}
+
+#login-overlay .entry-subtitle{
+  margin:8px auto 16px !important;
+  max-width:330px;
+  text-align:center;
+  color:rgba(255,255,255,.88) !important;
+  font-size:.75rem !important;
+  line-height:1.5 !important;
+  text-shadow:0 2px 10px rgba(0,0,0,.35);
+}
+
+#login-overlay .entry-security{
+  width:max-content;
+  max-width:100%;
+  margin:0 auto 18px;
+  padding:6px 10px;
+  border:1px solid rgba(231,198,126,.34);
+  border-radius:999px;
+  background:rgba(212,175,55,.08);
+  color:#f0d896;
+  font-size:.56rem;
+  font-weight:900;
+  letter-spacing:1.05px;
+  white-space:nowrap;
+}
+
+#login-overlay .pinrow{
+  display:grid !important;
+  grid-template-columns:1fr !important;
+  gap:10px !important;
+}
+
+#login-overlay .pinrow input{
+  min-height:52px !important;
+  border-radius:14px !important;
+  background:rgba(4,10,15,.36) !important;
+  border:1px solid rgba(255,255,255,.26) !important;
+  color:#fff !important;
+  font-size:1.08rem !important;
+  font-weight:800;
+  letter-spacing:7px !important;
+  text-align:center !important;
+  transition:border-color .18s ease,background .18s ease,box-shadow .18s ease !important;
+}
+
+#login-overlay .pinrow input:focus{
+  border-color:rgba(231,198,126,.90) !important;
+  background:rgba(5,11,16,.48) !important;
+  box-shadow:0 0 0 3px rgba(212,175,55,.11) !important;
+}
+
+#login-overlay .pinrow input::placeholder{
+  color:rgba(255,255,255,.62) !important;
+  letter-spacing:2px !important;
+  font-size:.78rem;
+  font-weight:700;
+}
+
+#login-overlay #pin-submit{
+  min-height:50px !important;
+  border-radius:14px !important;
+  background:linear-gradient(135deg,#f0d58e,#cfa548) !important;
+  color:#111 !important;
+  border:1px solid rgba(255,241,194,.65) !important;
+  box-shadow:
+    0 12px 28px rgba(189,145,52,.24),
+    inset 0 1px 0 rgba(255,255,255,.38) !important;
+  font-size:.78rem !important;
+  letter-spacing:1.15px;
+  transition:transform .16s ease,box-shadow .16s ease,filter .16s ease;
+}
+
+#login-overlay #pin-submit:hover{
+  transform:translateY(-1px);
+  filter:brightness(1.04);
+  box-shadow:0 16px 34px rgba(189,145,52,.30) !important;
+}
+
+#login-overlay #pin-submit:active{
+  transform:translateY(0);
+}
+
+#login-overlay .err{
+  margin-top:12px !important;
+  text-align:center;
+  color:#fff !important;
+  background:rgba(122,30,37,.46) !important;
+  border:1px solid rgba(255,255,255,.20) !important;
+  border-radius:12px !important;
+  padding:9px 11px !important;
+}
+
+@media(max-width:560px){
+  #login-overlay .loginbox{
+    padding:24px 18px 20px !important;
+    border-radius:20px !important;
+  }
+  #login-overlay .entry-security{
+    font-size:.51rem;
+    letter-spacing:.8px;
+  }
+  #login-overlay .loginbox h1{
+    font-size:1.38rem !important;
+  }
+}
+
+
+/* ==========================================================================
+   V143 — INTÉRIEUR ÉCONOMAT PREMIUM
+   ========================================================================== */
+
+body{
+  background-image:
+    linear-gradient(rgba(4,10,15,.80),rgba(4,10,15,.91)),
+    url("ChatGPT Image 20 sept. 2026, 14_24_41.png") !important;
+}
+
+.topbar{
+  min-height:72px;
+  padding:10px 14px !important;
+  gap:9px !important;
+  background:rgba(5,12,18,.96) !important;
+  border-bottom:1px solid rgba(212,175,55,.18) !important;
+  box-shadow:0 10px 30px rgba(0,0,0,.18);
+}
+
+.brand-logo{
+  min-width:154px !important;
+  height:48px !important;
+  border-color:rgba(212,175,55,.46) !important;
+  background:rgba(255,255,255,.015);
+}
+
+.brand-logo-img{
+  max-width:132px !important;
+  max-height:34px !important;
+}
+
+.topbar .badge,
+.topbar .topbtn{
+  min-height:40px !important;
+  border-radius:12px !important;
+  padding:8px 13px !important;
+  font-size:.68rem !important;
+  letter-spacing:.2px;
+}
+
+.topbar .badge{
+  background:#0b1620 !important;
+  border-color:#263948 !important;
+}
+
+.topbar .badge.live{
+  color:#7ee6ad !important;
+  border-color:rgba(57,217,138,.34) !important;
+}
+
+.topbar .badge.warn{
+  color:#f2c35f !important;
+  border-color:rgba(212,175,55,.38) !important;
+}
+
+.topbar .topbtn{
+  background:#0a141d !important;
+  transition:.16s ease;
+}
+
+.topbar .topbtn:hover{
+  transform:translateY(-1px);
+  background:#101c26 !important;
+}
+
+.wrap{
+  max-width:1700px !important;
+  padding:22px 18px 24px !important;
+}
+
+.economat-hero{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:18px;
+  margin:0 0 16px;
+  padding:4px 4px 2px;
+}
+
+.economat-eyebrow{
+  color:#d4af37;
+  font-size:.66rem;
+  font-weight:950;
+  letter-spacing:2.4px;
+  text-transform:uppercase;
+  margin-bottom:4px;
+}
+
+.economat-hero h1{
+  margin:0;
+  color:#e5be42;
+  font-size:clamp(1.65rem,2.5vw,2.35rem);
+  line-height:1;
+  letter-spacing:-.04em;
+  font-weight:950;
+  text-shadow:0 7px 24px rgba(0,0,0,.28);
+}
+
+.economat-hero p{
+  margin:7px 0 0;
+  color:#98adbf;
+  font-size:.74rem;
+  letter-spacing:.12px;
+}
+
+.economat-hero-status{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:8px 11px;
+  border:1px solid rgba(212,175,55,.20);
+  border-radius:999px;
+  background:rgba(212,175,55,.055);
+  color:#d7bd72;
+  font-size:.58rem;
+  font-weight:900;
+  letter-spacing:1px;
+}
+
+.hero-dot{
+  width:7px;
+  height:7px;
+  border-radius:50%;
+  background:#39d98a;
+  box-shadow:0 0 0 4px rgba(57,217,138,.09);
+}
+
+.kpis{
+  gap:10px !important;
+  margin-bottom:12px !important;
+}
+
+.kpi{
+  position:relative;
+  overflow:hidden;
+  min-height:92px;
+  padding:14px 15px !important;
+  border-radius:16px !important;
+  background:
+    linear-gradient(145deg,rgba(16,30,41,.96),rgba(10,21,30,.96)) !important;
+  border:1px solid rgba(86,112,132,.36) !important;
+  box-shadow:0 14px 32px rgba(0,0,0,.14);
+}
+
+.kpi::before{
+  content:"";
+  position:absolute;
+  top:0;
+  left:0;
+  width:100%;
+  height:1px;
+  background:linear-gradient(90deg,transparent,rgba(212,175,55,.34),transparent);
+}
+
+.kpi small{
+  color:#90a9bd !important;
+  font-size:.61rem !important;
+  letter-spacing:.45px;
+}
+
+.kpi strong{
+  margin-top:8px !important;
+  font-size:1.45rem !important;
+  color:#fff;
+  letter-spacing:-.03em;
+}
+
+.toolbar{
+  grid-template-columns:minmax(260px,1.6fr) minmax(180px,.52fr) auto auto auto auto !important;
+  gap:8px !important;
+  padding:10px !important;
+  margin-bottom:12px !important;
+  border-radius:16px !important;
+  background:rgba(10,22,31,.92) !important;
+  border:1px solid rgba(65,91,111,.40) !important;
+  box-shadow:0 14px 34px rgba(0,0,0,.12);
+}
+
+.toolbar input,
+.toolbar select{
+  min-height:46px !important;
+  border-radius:11px !important;
+  border-color:#263a4a !important;
+  background:#07121a !important;
+}
+
+.toolbar input:focus,
+.toolbar select:focus{
+  border-color:#d4af37 !important;
+  box-shadow:0 0 0 3px rgba(212,175,55,.08);
+}
+
+.toolbar .action{
+  min-height:46px !important;
+  border-radius:11px !important;
+  padding:9px 15px !important;
+  white-space:nowrap;
+  font-size:.72rem;
+  transition:.16s ease;
+}
+
+.toolbar .action:hover{
+  transform:translateY(-1px);
+  filter:brightness(1.06);
+}
+
+.panel{
+  border-radius:18px !important;
+  border:1px solid rgba(65,91,111,.42) !important;
+  background:rgba(9,20,29,.94) !important;
+  box-shadow:0 18px 42px rgba(0,0,0,.16);
+}
+
+.panelhead{
+  min-height:58px;
+  padding:13px 15px !important;
+  border-bottom:1px solid rgba(51,73,90,.48) !important;
+  background:linear-gradient(180deg,rgba(14,29,40,.78),rgba(10,21,30,.60));
+}
+
+.panelhead h2{
+  color:#f1f5f7;
+  font-size:.76rem !important;
+  letter-spacing:1.05px !important;
+}
+
+.tablewrap{
+  max-height:calc(100dvh - 365px) !important;
+}
+
+table{
+  min-width:1000px !important;
+}
+
+th{
+  top:0;
+  padding:11px 12px !important;
+  background:#0a1720 !important;
+  color:#89a7be !important;
+  font-size:.59rem !important;
+  letter-spacing:.55px;
+}
+
+td{
+  padding:11px 12px !important;
+  border-bottom:1px solid rgba(29,48,62,.64) !important;
+}
+
+tbody tr{
+  transition:background .14s ease;
+}
+
+tbody tr:hover td{
+  background:rgba(255,255,255,.018);
+}
+
+.row-actions{
+  gap:6px !important;
+  flex-wrap:wrap;
+}
+
+.mini{
+  min-height:31px;
+  border-radius:8px !important;
+  padding:6px 9px !important;
+  font-size:.60rem !important;
+}
+
+.stock-low td{
+  background:rgba(255,95,104,.025) !important;
+}
+
+.reorder-flag{
+  margin-top:5px !important;
+}
+
+@media(max-width:1200px){
+  .toolbar{
+    grid-template-columns:1fr 220px repeat(2,auto) !important;
+  }
+  .toolbar .action:nth-of-type(n+3){
+    grid-column:auto;
+  }
+}
+
+@media(max-width:900px){
+  .economat-hero{
+    align-items:flex-start;
+    flex-direction:column;
+  }
+  .toolbar{
+    grid-template-columns:1fr 1fr !important;
+  }
+}
+
+@media(max-width:560px){
+  .wrap{
+    padding:14px 9px 18px !important;
+  }
+  .economat-hero{
+    margin-bottom:12px;
+  }
+  .economat-hero-status{
+    display:none;
+  }
+  .toolbar{
+    grid-template-columns:1fr !important;
+  }
+  .topbar{
+    min-height:auto;
+  }
+}
+
+
+/* V144 · ÉCONOMAT FUSION STOCK + FOURNISSEURS + COMMANDES */
+.econ-fusion-tabs{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px;padding:7px;border:1px solid rgba(65,91,111,.34);border-radius:15px;background:rgba(8,18,26,.78)}
+.econ-fusion-tab{border:1px solid transparent;border-radius:10px;background:transparent;color:#91a6b8;padding:10px 14px;font-weight:900;font-size:.68rem;letter-spacing:.55px;cursor:pointer}
+.econ-fusion-tab.active{color:#111;background:linear-gradient(135deg,#f0d58e,#cfa548);border-color:#e3c46f;box-shadow:0 8px 22px rgba(189,145,52,.16)}
+.econ-fusion-view[hidden]{display:none!important}
+.econ-fusion-view.active{display:block}
+.econ-fusion-head{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:15px 16px;margin-bottom:10px;border:1px solid rgba(65,91,111,.38);border-radius:16px;background:rgba(10,22,31,.92)}
+.econ-fusion-head small{color:#d4af37;font-size:.59rem;font-weight:950;letter-spacing:1.7px}.econ-fusion-head h2{margin:3px 0 2px;color:#fff;font-size:1.25rem}.econ-fusion-head p{margin:0;color:#899eaf;font-size:.7rem}
+.econ-fusion-tools{display:grid;grid-template-columns:minmax(220px,1fr) 200px auto;gap:8px;margin-bottom:10px;padding:9px;border:1px solid rgba(65,91,111,.35);border-radius:14px;background:rgba(9,20,29,.9)}
+.econ-card-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px}
+.econ-fusion-card{border:1px solid rgba(65,91,111,.38);border-radius:16px;background:linear-gradient(145deg,rgba(15,29,39,.97),rgba(8,18,26,.97));padding:14px;box-shadow:0 14px 35px rgba(0,0,0,.13)}
+.econ-fusion-card h3{margin:0;color:#fff;font-size:.95rem}.econ-fusion-card p{margin:6px 0;color:#91a2ae;font-size:.68rem;line-height:1.45}.econ-fusion-card .chips{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}.econ-chip{display:inline-flex;border:1px solid rgba(255,255,255,.09);border-radius:999px;padding:5px 7px;color:#aab7c0;font-size:.57rem;font-weight:850}.econ-chip.gold{color:#e1c36e;border-color:rgba(212,175,55,.25)}
+.econ-card-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.econ-order-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px}.econ-order-kpis>div{padding:12px;border:1px solid rgba(65,91,111,.35);border-radius:14px;background:rgba(10,22,31,.9)}.econ-order-kpis small{display:block;color:#8498a8;font-size:.58rem;font-weight:900;text-transform:uppercase}.econ-order-kpis strong{display:block;margin-top:4px;font-size:1.2rem}
+.fusion-order-lines-head{display:flex;align-items:center;justify-content:space-between;margin-top:14px;padding-bottom:7px;border-bottom:1px solid rgba(255,255,255,.08)}
+.fusion-order-row{display:grid;grid-template-columns:2fr .7fr .7fr .8fr auto;gap:7px;margin-top:7px}.fusion-order-row input{min-height:38px}.fusion-remove{border:1px solid #5b2a32;background:#171015;color:#ff7c84;border-radius:8px;padding:0 10px;font-weight:900}
+#fusion-order-print{background:#fff;color:#111;padding:28px}
+@media print{body *{visibility:hidden!important}#fusion-order-print,#fusion-order-print *{visibility:visible!important}#fusion-order-print{display:block!important;position:absolute;inset:0;width:100%}}
+@media(max-width:800px){.econ-fusion-head{align-items:flex-start;flex-direction:column}.econ-fusion-tools{grid-template-columns:1fr}.econ-order-kpis{grid-template-columns:repeat(2,1fr)}.fusion-order-row{grid-template-columns:1fr 1fr}.fusion-order-row [data-fo="name"]{grid-column:1/-1}}
+
+
+.auto-currency-box{
+  min-height:40px;
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  padding:7px 10px;
+  border:1px solid rgba(212,175,55,.28);
+  border-radius:9px;
+  background:rgba(212,175,55,.055);
+}
+.auto-currency-box small{
+  color:#8ca0b3;
+  font-size:.56rem;
+  font-weight:900;
+  text-transform:uppercase;
+  letter-spacing:.55px;
+}
+.auto-currency-box strong{
+  margin-top:2px;
+  color:#e4c66e;
+  font-size:.76rem;
+  letter-spacing:.25px;
+}
+
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand brand-logo" title="iCHEF · Économat V4">
+  <img
+    src="logo-ichef.png"
+    alt="iCHEF"
+    class="brand-logo-img"
+  >
+</div>
+  <div id="tenant-badge" class="badge">ÉTABLISSEMENT —</div>
+  <div id="sync-badge" class="badge warn">SERVEUR · CONNEXION…</div>
+  <div id="role-badge" class="badge">ACCÈS —</div>
+  <div class="spacer"></div>
+  <button class="topbtn gold" onclick="switchEconomatView('orders')">COMMANDES</button>
+  <button class="topbtn gold" onclick="goTasks()">TÂCHES</button>
+  <button class="topbtn gold" onclick="goHaccp()">HACCP</button>
+  <button class="topbtn gold" onclick="goAdmin()">RETOUR ADMIN</button>
+  <button class="topbtn red" onclick="lockEconomat()">VERROUILLER</button>
+</div>
+
+<main class="wrap">
+  <section class="economat-hero">
+    <div>
+      <div class="economat-eyebrow">iCHEF OS</div>
+      <h1>ÉCONOMAT</h1>
+      <p>Stock central · Achats · Fournisseurs · Réceptions</p>
+    </div>
+    <div class="economat-hero-status">
+      <span class="hero-dot"></span>
+      <span>PILOTAGE OPÉRATIONNEL · <b id="economat-auto-currency">DEVise AUTO</b></span>
+    </div>
+  </section>
+
+  <nav class="econ-fusion-tabs" aria-label="Économat">
+    <button type="button" class="econ-fusion-tab active" data-econ-tab="stock" onclick="switchEconomatView('stock')">STOCK</button>
+    <button type="button" class="econ-fusion-tab" data-econ-tab="suppliers" onclick="switchEconomatView('suppliers')">FOURNISSEURS</button>
+    <button type="button" class="econ-fusion-tab" data-econ-tab="orders" onclick="switchEconomatView('orders')">COMMANDES FOURNISSEURS</button>
+  </nav>
+
+  <section id="econ-stock-view" class="econ-fusion-view active">
+  <section class="kpis">
+    <div class="kpi"><small>Valeur stock central</small><strong id="kpi-value">—</strong></div>
+    <div class="kpi"><small>Articles référencés</small><strong id="kpi-items">0</strong></div>
+    <div class="kpi"><small>Ruptures</small><strong id="kpi-zero">0</strong></div>
+    <div class="kpi"><small>À commander</small><strong id="kpi-reorder">0</strong></div>
+    <div class="kpi"><small>Fournisseurs</small><strong id="kpi-suppliers">0</strong></div>
+  </section>
+
+  <section class="toolbar">
+    <input id="search" type="search" placeholder="Rechercher un produit ou un fournisseur…" oninput="renderStock()">
+    <select id="category-filter" onchange="renderStock()"><option value="">Toutes les catégories</option></select>
+    <button class="action" onclick="openStockModal()">+ AJOUTER UN ARTICLE</button>
+    <button class="action blue" onclick="switchEconomatView('suppliers')">FOURNISSEURS</button>
+    <button class="action blue" onclick="openMovements()">MOUVEMENTS</button>
+    <button class="action blue" onclick="openInvoiceRecognition()">RECONNAISSANCE FACTURE</button>
+  </section>
+
+  <section class="panel">
+    <div class="panelhead">
+      <h2>Inventaire central · INVENTORY_MASTER</h2>
+      <div class="spacer"></div>
+      <span id="updated-at" class="badge">—</span>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Produit</th><th>Catégorie</th><th>Secteur</th><th>Fournisseur</th><th>Stock central</th>
+            <th>Prix unitaire</th><th>Valeur</th><th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="stock-body"></tbody>
+      </table>
+    </div>
+  </section>
+  </section>
+
+  <section id="econ-suppliers-view" class="econ-fusion-view" hidden>
+    <div class="econ-fusion-head">
+      <div><small>ACHATS</small><h2>Fournisseurs</h2><p>Fiches, coordonnées et canal de commande.</p></div>
+      <button class="action" type="button" onclick="openFusionSupplierModal()">+ AJOUTER UN FOURNISSEUR</button>
+    </div>
+    <div class="econ-fusion-tools">
+      <input id="fusion-supplier-search" type="search" placeholder="Rechercher un fournisseur…" oninput="renderFusionSuppliers()">
+      <select id="fusion-supplier-filter" onchange="renderFusionSuppliers()"><option value="">Tous</option><option value="ACTIVE">Actifs</option><option value="INACTIVE">Inactifs</option></select>
+      <button class="action blue" type="button" onclick="loadFusionSuppliers()">ACTUALISER</button>
+    </div>
+    <div id="fusion-supplier-grid" class="econ-card-grid"><div class="empty">Chargement des fournisseurs…</div></div>
+  </section>
+
+  <section id="econ-orders-view" class="econ-fusion-view" hidden>
+    <div class="econ-fusion-head">
+      <div><small>ACHATS</small><h2>Commandes fournisseurs</h2><p>Préparation, validation, transmission et suivi des livraisons.</p></div>
+      <button class="action" type="button" onclick="openFusionOrderModal()">+ NOUVELLE COMMANDE</button>
+    </div>
+    <div class="econ-order-kpis">
+      <div><small>À valider</small><strong id="fusion-order-pending">0</strong></div>
+      <div><small>Approuvées</small><strong id="fusion-order-approved">0</strong></div>
+      <div><small>Envoyées</small><strong id="fusion-order-sent">0</strong></div>
+      <div><small>Reçues</small><strong id="fusion-order-received">0</strong></div>
+    </div>
+    <div class="econ-fusion-tools">
+      <input id="fusion-order-search" type="search" placeholder="Commande, fournisseur, secteur…" oninput="renderFusionOrders()">
+      <select id="fusion-order-filter" onchange="renderFusionOrders()"><option value="">Tous les statuts</option><option value="DRAFT">Brouillon</option><option value="PENDING_APPROVAL">À valider</option><option value="APPROVED">Approuvée</option><option value="SENT">Envoyée</option><option value="PARTIAL">Partielle</option><option value="RECEIVED">Reçue</option><option value="CANCELLED">Annulée</option></select>
+      <button class="action blue" type="button" onclick="loadFusionOrders()">ACTUALISER</button>
+    </div>
+    <div id="fusion-order-grid" class="econ-card-grid"><div class="empty">Chargement des commandes…</div></div>
+  </section>
+</main>
+
+<div id="login-overlay" class="overlay">
+  <div class="loginbox">
+    <img src="logo-ichef.png" alt="iCHEF" class="login-entry-logo">
+    <h1>Accès Économat</h1>
+    <p class="entry-subtitle">Connectez-vous pour accéder au stock, aux achats et aux réceptions.</p>
+    <div class="entry-security">ACCÈS SÉCURISÉ · SERVEUR iCHEF</div>
+    <div class="pinrow">
+      <input id="pin-input" type="password" inputmode="numeric" autocomplete="off" placeholder="Code PIN">
+      <button id="pin-submit" class="primary" onclick="verifyEconomatPin()">ENTRER</button>
+    </div>
+    <div id="login-error" class="err">Accès refusé.</div>
+  </div>
+</div>
+
+<div id="stock-modal" class="modal">
+  <div class="modalbox">
+    <h2>Nouvel article</h2>
+    <p>Création dans le stock central. HACCP lira ensuite la même donnée.</p>
+    <div class="formgrid">
+      <input class="full" id="m-name" placeholder="Nom du produit">
+      <input id="m-category" list="category-list" placeholder="Catégorie">
+      <datalist id="category-list"></datalist>
+      <select id="m-sector"><option value="cuisine">Cuisine</option><option value="service">Service / Salle</option><option value="bar">Bar</option><option value="hotel">Hôtel</option><option value="reception">Réception</option><option value="housekeeping">Housekeeping / Étages</option><option value="maintenance">Maintenance</option><option value="economat" selected>Économat</option></select>
+      <input id="m-supplier" placeholder="Fournisseur">
+      <input id="m-qty" type="number" step="0.001" min="0" placeholder="Quantité">
+      <input id="m-min-stock" type="number" step="0.001" min="0" placeholder="Stock minimum / alerte">
+      <input id="m-reorder-qty" type="number" step="0.001" min="0" placeholder="Qté commande habituelle">
+      <select id="m-unit">
+        <option value="pce">pce</option><option value="kg">kg</option><option value="g">g</option>
+        <option value="L">L</option><option value="cl">cl</option><option value="ml">ml</option>
+      </select>
+      <input id="m-total-price" type="number" step="0.01" min="0" placeholder="Prix total d’achat">
+      <input id="m-phone" placeholder="Téléphone fournisseur">
+      <input class="full" id="m-address" placeholder="Adresse fournisseur">
+    </div>
+    <div class="modalactions">
+      <button class="secondary" onclick="closeStockModal()">ANNULER</button>
+      <button class="primary" onclick="saveNewStockItem()">ENREGISTRER</button>
+    </div>
+  </div>
+</div>
+
+<div id="supplier-modal" class="modal">
+  <div class="modalbox" style="width:min(850px,100%)">
+    <h2>Annuaire fournisseurs</h2>
+    <p>Construit automatiquement à partir d’INVENTORY_MASTER.</p>
+    <div id="supplier-grid" class="supplier-grid"></div>
+    <div class="modalactions"><button class="secondary" onclick="closeSuppliers()">FERMER</button></div>
+  </div>
+</div>
+
+<div id="movement-modal" class="modal">
+  <div class="modalbox" style="width:min(1100px,100%)">
+    <h2>Journal des mouvements de stock</h2>
+    <p>Source centrale : INVENTORY_MOVEMENTS. Réceptions Économat, comptages HACCP et autres mouvements futurs.</p>
+    <div class="tablewrap" style="max-height:62vh;border:1px solid var(--line);border-radius:10px;">
+      <table style="min-width:980px;">
+        <thead>
+          <tr><th>Date</th><th>Type</th><th>Produit</th><th>ID produit</th><th>Avant</th><th>Mouvement</th><th>Après</th><th>Valeur</th><th>Source</th></tr>
+        </thead>
+        <tbody id="movement-body"></tbody>
+      </table>
+    </div>
+    <div class="modalactions"><button class="secondary" onclick="closeMovements()">FERMER</button></div>
+  </div>
+</div>
+
+<div id="invoice-modal" class="modal">
+  <div class="modalbox" style="width:min(1180px,100%)">
+    <h2>Reconnaissance facture</h2>
+    <p>Importez une photo ou un PDF. iCHEF lit le document, prépare les lignes puis vous laisse tout vérifier avant la réception en stock.</p>
+
+    <div id="invoice-drop" class="invoice-drop"
+         ondragover="invoiceDragOver(event)"
+         ondragleave="invoiceDragLeave(event)"
+         ondrop="invoiceDrop(event)">
+      <b>FACTURE PHOTO / PDF</b><br>
+      <span style="color:var(--muted);font-size:.72rem">Prenez la facture en photo avec votre téléphone ou choisissez un fichier existant.</span>
+
+      <div class="invoice-capture-actions">
+        <button type="button" class="action" onclick="document.getElementById('invoice-camera').click()">PRENDRE UNE PHOTO</button>
+        <button type="button" class="action blue" onclick="document.getElementById('invoice-file').click()">CHOISIR PHOTO / PDF</button>
+      </div>
+
+      <input id="invoice-camera" type="file" accept="image/*" capture="environment" hidden onchange="handleInvoiceFile(event)">
+      <input id="invoice-file" type="file" accept="image/*,.pdf,application/pdf" hidden onchange="handleInvoiceFile(event)">
+    </div>
+
+    <div class="invoice-progress"><i id="invoice-progress-bar"></i></div>
+    <div id="invoice-status" class="invoice-status">Aucun document chargé.</div>
+
+    <div class="invoice-preview">
+      <input id="invoice-supplier" placeholder="Fournisseur détecté / à confirmer">
+      <input id="invoice-number" placeholder="N° facture (facultatif)">
+      <input id="invoice-date" type="date">
+      <input id="invoice-total" type="number" step="0.01" min="0" placeholder="Total facture (facultatif)">
+    </div>
+
+    <div class="invoice-tools">
+      <button class="secondary" onclick="reparseInvoiceText()">RELIRE LE TEXTE</button>
+      <button class="secondary" onclick="addInvoiceLine()">+ AJOUTER UNE LIGNE</button>
+      <button class="secondary" onclick="toggleInvoiceRaw()">VOIR / MASQUER TEXTE OCR</button>
+    </div>
+
+    <textarea id="invoice-raw" class="invoice-raw" style="display:none" placeholder="Texte reconnu sur la facture…"></textarea>
+
+    <div class="invoice-lines">
+      <table>
+        <thead>
+          <tr><th>Produit</th><th>Qté</th><th>Unité</th><th>Montant ligne</th><th>Action</th></tr>
+        </thead>
+        <tbody id="invoice-lines-body">
+          <tr><td colspan="5" class="empty">Chargez une facture.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="modalactions">
+      <button class="secondary" onclick="closeInvoiceRecognition()">ANNULER</button>
+      <button id="invoice-import-btn" class="primary" onclick="importInvoiceToStock()">VALIDER LA RÉCEPTION</button>
+    </div>
+  </div>
+</div>
+
+
+<div id="fusion-supplier-modal" class="modal">
+  <div class="modalbox" style="width:min(760px,100%)">
+    <h2>Nouveau fournisseur</h2>
+    <p>Une seule fiche pour les achats, commandes et réceptions.</p>
+    <div class="formgrid">
+      <input class="full" id="fs-name" placeholder="Nom du fournisseur">
+      <input id="fs-contact" placeholder="Contact">
+      <input id="fs-phone" placeholder="Téléphone">
+      <input id="fs-email" type="email" placeholder="Email">
+      <input id="fs-whatsapp" placeholder="WhatsApp">
+      <input id="fs-category" placeholder="Catégorie">
+      <div class="auto-currency-box"><small>Devise automatique</small><strong id="fs-currency-label">—</strong><input id="fs-currency" type="hidden" value="CHF"></div>
+      <select id="fs-channel">
+        <option value="MEMO">Mémo interne</option><option value="PDF">PDF / bon de commande</option>
+        <option value="WHATSAPP">WhatsApp</option><option value="EMAIL">Email</option>
+        <option value="PORTAL">Portail fournisseur</option><option value="MANUAL">Téléphone / manuel</option>
+      </select>
+      <input id="fs-minimum" type="number" min="0" step=".01" placeholder="Commande minimum">
+      <input id="fs-portal" placeholder="Portail fournisseur https://…">
+      <textarea class="full" id="fs-notes" placeholder="Notes"></textarea>
+    </div>
+    <div class="modalactions">
+      <button class="secondary" type="button" onclick="closeFusionSupplierModal()">ANNULER</button>
+      <button class="primary" type="button" onclick="saveFusionSupplier()">ENREGISTRER</button>
+    </div>
+  </div>
+</div>
+
+<div id="fusion-order-modal" class="modal">
+  <div class="modalbox" style="width:min(980px,100%)">
+    <h2>Nouvelle commande fournisseur</h2>
+    <p>La tâche de réception du secteur est créée automatiquement.</p>
+    <div class="formgrid">
+      <select id="fo-supplier" class="full"></select>
+      <select id="fo-sector"><option value="cuisine">Cuisine</option><option value="service">Service / Salle</option><option value="bar">Bar</option><option value="hotel">Hôtel</option><option value="reception">Réception</option><option value="housekeeping">Housekeeping / Étages</option><option value="maintenance">Maintenance</option><option value="economat" selected>Économat</option></select>
+      <div class="auto-currency-box"><small>Devise automatique</small><strong id="fo-currency-label">—</strong><input id="fo-currency" type="hidden" value="CHF"></div>
+      <input id="fo-delivery" type="datetime-local">
+      <select id="fo-workflow"><option value="0">Brouillon</option><option value="1">Envoyer pour validation</option></select>
+      <textarea class="full" id="fo-notes" placeholder="Observation / consigne fournisseur"></textarea>
+    </div>
+    <div class="fusion-order-lines-head"><strong>Articles</strong><button class="secondary" type="button" onclick="fusionAddOrderRow()">+ AJOUTER</button></div>
+    <div id="fusion-order-lines"></div>
+    <div class="modalactions">
+      <button class="secondary" type="button" onclick="closeFusionOrderModal()">ANNULER</button>
+      <button class="primary" type="button" onclick="saveFusionOrder()">CRÉER LA COMMANDE</button>
+    </div>
+  </div>
+</div>
+
+<section id="fusion-order-print" hidden></section>
+
+<script>
+const SERVER_URL =
+  (location.hostname === "localhost" || location.hostname === "127.0.0.1" || location.protocol === "file:")
+    ? "http://localhost:10000"
+    : "https://tableau-system.onrender.com";
+
+const qs = new URLSearchParams(location.search);
+const tenantID = String(qs.get("tenantID") || localStorage.getItem("ichef_tenant_id") || "").trim();
+
+if (!tenantID) {
+  location.href = "connexionpartenaire.html";
+  throw new Error("TENANT_REQUIRED");
+}
+localStorage.setItem("ichef_tenant_id", tenantID);
+
+/* Nettoyage d’anciennes versions : aucune utilisation du PIN navigateur. */
+localStorage.removeItem("ichef_master_pin");
+
+function getDeviceId() {
+  let id = localStorage.getItem("ichef_device_fingerprint");
+  if (!id) {
+    id = "device_" + cryptoRandomToken();
+    localStorage.setItem("ichef_device_fingerprint", id);
+  }
+  return id;
+}
+
+function cryptoRandomToken() {
+  try {
+    const a = new Uint32Array(4);
+    crypto.getRandomValues(a);
+    return Array.from(a, n => n.toString(36)).join("");
+  } catch (_) {
+    return Math.random().toString(36).slice(2) + Date.now().toString(36);
+  }
+}
+
+const deviceId = getDeviceId();
+let authenticated = false;
+let currentRole = "";
+let inventory = [];
+let inventoryMovements = [];
+let settings = {};
+let stockCategories = [];
+let socket = null;
+
+document.getElementById("tenant-badge").textContent = "ÉTABLISSEMENT · " + tenantID;
+
+function apiHeaders(extra = {}) {
+  return {
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+    "X-iCHEF-Tenant": tenantID,
+    "X-iCHEF-Device": deviceId,
+    ...extra
+  };
+}
+
+function opsHeaders() {
+  const token = String(sessionStorage.getItem("ichef_ops_token") || "").trim();
+  return {
+    "Content-Type":"application/json","Accept":"application/json",
+    "X-iCHEF-Tenant":tenantID,"X-iCHEF-Device":deviceId,
+    ...(token ? {"Authorization":`Bearer ${token}`} : {})
+  };
+}
+async function opsApi(path, options={}) {
+  const r = await fetch(`${SERVER_URL}${path}`,{
+    cache:"no-store",credentials:"omit",...options,
+    headers:{...opsHeaders(),...(options.headers||{})}
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok||data?.success===false)throw new Error(data?.error||`Erreur ${r.status}`);
+  return data;
+}
+function sectorLabel(key){
+  return ({cuisine:"Cuisine",service:"Service / Salle",bar:"Bar",hotel:"Hôtel",reception:"Réception",housekeeping:"Housekeeping / Étages",maintenance:"Maintenance",economat:"Économat"})[String(key||"economat")]||"Économat";
+}
+
+
+const API = {
+  async getState() {
+    const r = await fetch(
+      `${SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(tenantID)}&economatBuild=300`,
+      {
+        method: "GET",
+        credentials: "include",
+        cache: "no-store",
+        headers: {
+          "Accept": "application/json",
+          "X-iCHEF-Tenant": tenantID,
+          "X-iCHEF-Device": deviceId
+        }
+      }
+    );
+    if (!r.ok) throw new Error("STATE_HTTP_" + r.status);
+    return await r.json();
+  },
+
+  async save(key, data) {
+    if (!authenticated) throw new Error("AUTH_REQUIRED");
+    const r = await fetch(
+      `${SERVER_URL}/update-order?tenantID=${encodeURIComponent(tenantID)}&economatBuild=300`,
+      {
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
+        headers: apiHeaders(),
+        body: JSON.stringify({
+          tableId: key,
+          order: data === null ? null : { data }
+        })
+      }
+    );
+    let payload = null;
+    try { payload = await r.json(); } catch (_) {}
+    if (!r.ok || payload?.success === false) {
+      throw new Error(payload?.error || ("SAVE_HTTP_" + r.status));
+    }
+    return payload;
+  }
+};
+
+function extractInventoryFromState(state) {
+  return Array.isArray(state?.activeOrders?.["INVENTORY_MASTER"]?.data)
+    ? state.activeOrders["INVENTORY_MASTER"].data.map(x => ({...x}))
+    : [];
+}
+
+function extractMovementsFromState(state) {
+  return Array.isArray(state?.activeOrders?.["INVENTORY_MOVEMENTS"]?.data)
+    ? state.activeOrders["INVENTORY_MOVEMENTS"].data.slice()
+    : [];
+}
+
+function movementId(prefix = "move") {
+  return `${prefix}_${Date.now()}_${cryptoRandomToken().slice(0,8)}`;
+}
+
+function buildMovement({
+  type, item, beforeQty, deltaQty, afterQty, unitPriceValue = null,
+  valueDelta = null, note = "", source = "ECONOMAT"
+}) {
+  const price = unitPriceValue === null ? unitPrice(item) : Number(unitPriceValue || 0);
+  const deltaValue = valueDelta === null ? Number(deltaQty || 0) * price : Number(valueDelta || 0);
+  return {
+    id: movementId(String(type || "move").toLowerCase()),
+    timestamp: new Date().toISOString(),
+    type: String(type || "ADJUSTMENT"),
+    inventoryItemId: item?.id ?? null,
+    productName: item?.name || "",
+    category: item?.cat || "",
+    supplier: item?.fournisseur || "",
+    unit: item?.unit || "",
+    beforeQty: Number(beforeQty || 0),
+    deltaQty: Number(deltaQty || 0),
+    afterQty: Number(afterQty || 0),
+    unitPrice: price,
+    valueDelta: deltaValue,
+    currency: getCurrency(),
+    sourceModule: source,
+    actorRole: currentRole || "",
+    deviceId,
+    note
+  };
+}
+
+const ECON_PENDING_MOVEMENTS_KEY = `ICHEF_ECON_PENDING_MOVEMENTS_${tenantID}`;
+
+function readPendingMovements() {
+  try {
+    const rows = JSON.parse(localStorage.getItem(ECON_PENDING_MOVEMENTS_KEY) || "[]");
+    return Array.isArray(rows) ? rows : [];
+  } catch (_) { return []; }
+}
+
+function queuePendingMovement(movement) {
+  const rows = readPendingMovements();
+  if (!rows.some(x => String(x.id) === String(movement.id))) rows.unshift(movement);
+  try { localStorage.setItem(ECON_PENDING_MOVEMENTS_KEY, JSON.stringify(rows.slice(0,200))); } catch (_) {}
+}
+
+async function appendInventoryMovement(movement) {
+  try {
+    const state = await API.getState();
+    const current = extractMovementsFromState(state);
+    const ids = new Set(current.map(x => String(x?.id ?? "")));
+    const merged = ids.has(String(movement.id)) ? current : [movement, ...current];
+    await API.save("INVENTORY_MOVEMENTS", merged);
+    inventoryMovements = merged;
+    return true;
+  } catch (e) {
+    queuePendingMovement(movement);
+    console.warn("[iCHEF ECONOMAT] Mouvement en attente :", e);
+    return false;
+  }
+}
+
+async function flushPendingMovements() {
+  const pending = readPendingMovements();
+  if (!pending.length || !authenticated) return;
+  try {
+    const state = await API.getState();
+    const current = extractMovementsFromState(state);
+    const ids = new Set(current.map(x => String(x?.id ?? "")));
+    const merged = [...pending.filter(x => !ids.has(String(x.id))), ...current];
+    await API.save("INVENTORY_MOVEMENTS", merged);
+    inventoryMovements = merged;
+    localStorage.removeItem(ECON_PENDING_MOVEMENTS_KEY);
+  } catch (_) {}
+}
+
+let inventoryIdMigrationDone = false;
+async function ensurePermanentInventoryIds() {
+  if (inventoryIdMigrationDone || !authenticated) return;
+  inventoryIdMigrationDone = true;
+  try {
+    const state = await API.getState();
+    const latest = extractInventoryFromState(state);
+    let changed = false;
+    const migrated = latest.map(item => {
+      if (item?.id !== undefined && item?.id !== null && String(item.id).trim() !== "") return item;
+      changed = true;
+      return {
+        ...item,
+        id: "inv_legacy_" + cryptoRandomToken().slice(0,12),
+        idMigratedAt: new Date().toISOString(),
+        idMigratedByModule: "ECONOMAT"
+      };
+    });
+    if (changed) {
+      await API.save("INVENTORY_MASTER", migrated);
+      inventory = migrated;
+      emitEconomatInventorySignal("id-migration");
+      renderStock();
+    }
+  } catch (e) {
+    inventoryIdMigrationDone = false;
+    console.warn("[iCHEF ECONOMAT] Migration ID reportée :", e);
+  }
+}
+
+function emitEconomatInventorySignal(action, itemId = null) {
+  try {
+    if (!socket?.connected) return;
+    const payload = { tenantID, source:"ECONOMAT", action, itemId };
+    socket.emit("orderUpdated", { tableId:"INVENTORY_MASTER", tenantID, source:"ECONOMAT" });
+    socket.emit("inventory-updated", payload);
+  } catch (_) {}
+}
+
+async function verifyEconomatPin() {
+  const input = document.getElementById("pin-input");
+  const error = document.getElementById("login-error");
+  const btn = document.getElementById("pin-submit");
+  const pin = String(input.value || "").trim();
+
+  error.style.display = "none";
+  if (!pin) {
+    error.textContent = "Saisissez votre code PIN.";
+    error.style.display = "block";
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = "VÉRIFICATION…";
+
+  try {
+    // 1) Le PIN est vérifié uniquement par le serveur iCHEF.
+    const r = await fetch(`${SERVER_URL}/api/verify-pin?economatBuild=300`, {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      headers: apiHeaders(),
+      body: JSON.stringify({
+        tenantID,
+        pin,
+        deviceId,
+        terminal: "ECONOMAT",
+        module: "ECONOMAT",
+        source: "economat-v1-securise.html"
+      })
+    });
+
+    let data = {};
+    try { data = await r.json(); } catch (_) {}
+
+    if (!r.ok || !data.success) {
+      throw new Error(data.error || "PIN_REFUSED");
+    }
+
+    // 2) Dès que le serveur confirme le PIN, l'accès est validé.
+    authenticated = true;
+    currentRole = String(data.role || "AUTORISÉ").toUpperCase();
+    const opsToken = String(data.operationsToken || data.accessToken || data.token || "").trim();
+    if (opsToken) {
+      sessionStorage.setItem("ichef_ops_token", opsToken);
+      sessionStorage.setItem("ichef_ops_tenant", tenantID);
+    } else {
+      sessionStorage.removeItem("ichef_ops_token");
+      sessionStorage.removeItem("ichef_ops_tenant");
+    }
+    document.getElementById("role-badge").textContent = "ACCÈS · " + currentRole;
+    document.getElementById("login-overlay").style.display = "none";
+    input.value = "";
+
+    try {
+      await loadState();
+    } catch (stateError) {
+      console.warn("[iCHEF ECONOMAT] PIN accepté, mais état temporairement indisponible :", stateError);
+      setSync("warn", "SERVEUR · STOCK EN RECONNEXION…");
+    }
+
+    startRealtime();
+  } catch (e) {
+    // MISE À JOUR FRONT-END : Débogage ciblé
+    console.error("[DEBUG PIN iCHEF]", e);
+    authenticated = false;
+    input.value = "";
+    
+    if (e.message === "Failed to fetch") {
+        error.textContent = "Erreur réseau (CORS ou serveur injoignable). Vérifie ton backend.";
+    } else {
+        error.textContent = "Code PIN refusé : " + (e.message || "Erreur serveur.");
+    }
+    
+    error.style.display = "block";
+    setSync("warn", "SERVEUR · NON CONNECTÉ");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "ENTRER";
+  }
+}
+
+document.getElementById("pin-input").addEventListener("keydown", e => {
+  if (e.key === "Enter") verifyEconomatPin();
+});
+
+function normalizeState(state) {
+  const a = state?.activeOrders || {};
+  inventory = Array.isArray(a["INVENTORY_MASTER"]?.data) ? a["INVENTORY_MASTER"].data : [];
+  inventoryMovements = Array.isArray(a["INVENTORY_MOVEMENTS"]?.data) ? a["INVENTORY_MOVEMENTS"].data : [];
+  settings = a["SETTINGS_MASTER"]?.data || {};
+  stockCategories = Array.isArray(a["STOCK_CATS"]?.data) ? a["STOCK_CATS"].data : [];
+  applyAutomaticCurrency();
+  refreshCategoryOptions();
+  renderStock();
+  setSync("live", "SERVEUR · CONNECTÉ");
+  document.getElementById("updated-at").textContent =
+    "MAJ · " + new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"});
+}
+async function loadState() {
+  try {
+    const state = await API.getState();
+    normalizeState(state);
+    await ensurePermanentInventoryIds();
+    await flushPendingMovements();
+  } catch (e) {
+    setSync("warn", "SERVEUR · ERREUR");
+    throw e;
+  }
+}
+
+function setSync(kind, text) {
+  const el = document.getElementById("sync-badge");
+  el.classList.remove("live","warn");
+  el.classList.add(kind);
+  el.textContent = text;
+}
+
+function ichefAutomaticCurrencyCode() {
+  const raw = [
+    settings?.country,
+    settings?.countryCode,
+    settings?.pays,
+    settings?.fiscalCountry,
+    settings?.billingCountry,
+    settings?.establishmentCountry,
+    settings?.timezone,
+    settings?.planningTimezone,
+    settings?.locale
+  ]
+    .filter(v => v !== undefined && v !== null)
+    .map(v => String(v).trim())
+    .join(" ")
+    .toUpperCase();
+
+  // Suisse : code, nom ou fuseau suisse.
+  if (
+    /(^|[\s,;|])(CH|CHE)(?=$|[\s,;|])/.test(raw) ||
+    raw.includes("SUISSE") ||
+    raw.includes("SWITZERLAND") ||
+    raw.includes("SCHWEIZ") ||
+    raw.includes("SVIZZERA") ||
+    raw.includes("EUROPE/ZURICH")
+  ) {
+    return "CHF";
+  }
+
+  // Si le pays n'est pas encore renseigné, on respecte l'ancienne
+  // configuration CHF explicite pour ne pas changer un établissement suisse.
+  const legacy = String(settings?.currency || settings?.devise || "").trim().toUpperCase();
+  if (legacy === "CHF" || legacy.includes("FRANC")) return "CHF";
+
+  // Zone Europe iCHEF : EUR par défaut.
+  return "EUR";
+}
+
+function getCurrency() {
+  return ichefAutomaticCurrencyCode() === "CHF" ? "CHF" : "€";
+}
+
+function applyAutomaticCurrency() {
+  const code = ichefAutomaticCurrencyCode();
+  const label = code === "CHF" ? "CHF · SUISSE" : "€ · EUROPE";
+
+  for (const id of ["fs-currency","fo-currency"]) {
+    const el = document.getElementById(id);
+    if (el) el.value = code;
+  }
+  for (const id of ["fs-currency-label","fo-currency-label"]) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = label;
+  }
+
+  document.documentElement.dataset.ichefCurrency = code;
+  const hero = document.getElementById("economat-auto-currency");
+  if (hero) hero.textContent = code === "CHF" ? "CHF · SUISSE" : "€ · EUROPE";
+  return code;
+}
+
+function n(v) {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : 0;
+}
+
+function unitPrice(item) {
+  if (Number.isFinite(Number(item?.unitPrice))) return Number(item.unitPrice);
+  const qty = n(item?.currentQty ?? item?.initialQty);
+  const total = n(item?.totalPrice);
+  return qty > 0 ? total / qty : total;
+}
+
+function currentQty(item) {
+  if (Number.isFinite(Number(item?.currentQty))) return Number(item.currentQty);
+  if (Number.isFinite(Number(item?.initialQty))) return Number(item.initialQty);
+  return 0;
+}
+
+function escapeHtml(v) {
+  return String(v ?? "")
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;").replace(/'/g,"&#039;");
+}
+
+function money(v) {
+  return n(v).toLocaleString("fr-FR",{minimumFractionDigits:2,maximumFractionDigits:2}) + " " + getCurrency();
+}
+
+function refreshCategoryOptions() {
+  const derived = inventory.map(x => String(x.cat || "").trim()).filter(Boolean);
+  const cats = [...new Set([...stockCategories, ...derived])].sort((a,b)=>a.localeCompare(b,"fr"));
+  const filter = document.getElementById("category-filter");
+  const old = filter.value;
+  filter.innerHTML = '<option value="">Toutes les catégories</option>' +
+    cats.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
+  if (cats.includes(old)) filter.value = old;
+  document.getElementById("category-list").innerHTML =
+    cats.map(c => `<option value="${escapeHtml(c)}"></option>`).join("");
+}
+
+function reorderState(item) {
+  const qty = currentQty(item);
+  const minStock = Math.max(0,n(item?.minStock));
+  const reorderQty = Math.max(0,n(item?.reorderQty));
+  const low = minStock > 0 && qty <= minStock;
+  const recommended = reorderQty > 0 ? reorderQty : (minStock > 0 ? Math.max(minStock * 2 - qty, minStock - qty, 1) : 1);
+  return {qty,minStock,reorderQty,low,recommended};
+}
+
+function renderStock() {
+  const q = document.getElementById("search").value.trim().toLowerCase();
+  const cat = document.getElementById("category-filter").value;
+  const rows = inventory.filter(item => {
+    const hay = [item.name,item.cat,item.fournisseur].join(" ").toLowerCase();
+    return (!q || hay.includes(q)) && (!cat || item.cat === cat);
+  });
+  const body = document.getElementById("stock-body");
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="8" class="empty">Aucun article correspondant.</td></tr>';
+  } else {
+    body.innerHTML = rows.map(item => {
+      const state = reorderState(item), qty=state.qty, price=unitPrice(item), value=qty*price, id=String(item.id??"");
+      return `<tr class="${state.low?"stock-low":""}">
+        <td><b>${escapeHtml(item.name||"Sans nom")}</b>${state.low?`<br><span class="reorder-flag">À COMMANDER · seuil ${state.minStock.toLocaleString("fr-FR",{maximumFractionDigits:3})} ${escapeHtml(item.unit||"")}</span>`:""}</td>
+        <td>${escapeHtml(item.cat||"—")}</td><td>${escapeHtml(sectorLabel(item.sectorKey||"economat"))}</td><td>${escapeHtml(item.fournisseur||"—")}</td>
+        <td class="${qty<=0?"qty-zero":""}">${qty.toLocaleString("fr-FR",{maximumFractionDigits:3})} ${escapeHtml(item.unit||"")}</td>
+        <td class="money">${money(price)}</td><td class="money">${money(value)}</td>
+        <td><div class="row-actions">
+          <button class="mini order" onclick='quickSupplierOrder(${JSON.stringify(id)},this)'>COMMANDER 1 CLIC</button>
+          <button class="mini task" onclick='quickInventoryTask(${JSON.stringify(id)},this)'>TÂCHE 1 CLIC</button>
+          <button class="mini" onclick='adjustQty(${JSON.stringify(id)})'>RÉCEPTION</button>
+          <button class="mini level" onclick='setReorderLevel(${JSON.stringify(id)})'>SEUIL</button>
+          <button class="mini danger" onclick='deleteItem(${JSON.stringify(id)})'>SUPPRIMER</button>
+        </div></td></tr>`;
+    }).join("");
+  }
+  const value = inventory.reduce((s,x)=>s+currentQty(x)*unitPrice(x),0);
+  const suppliers = new Set(inventory.map(x=>String(x.fournisseur||"").trim()).filter(Boolean));
+  document.getElementById("kpi-value").textContent=money(value);
+  document.getElementById("kpi-items").textContent=String(inventory.length);
+  document.getElementById("kpi-zero").textContent=String(inventory.filter(x=>currentQty(x)<=0).length);
+  document.getElementById("kpi-reorder").textContent=String(inventory.filter(x=>reorderState(x).low).length);
+  document.getElementById("kpi-suppliers").textContent=String(suppliers.size);
+}
+
+function openStockModal() {
+  document.getElementById("stock-modal").classList.add("open");
+  setTimeout(()=>document.getElementById("m-name").focus(),20);
+}
+function closeStockModal() {
+  document.getElementById("stock-modal").classList.remove("open");
+}
+async function saveNewStockItem() {
+  const name = document.getElementById("m-name").value.trim();
+  const cat = document.getElementById("m-category").value.trim();
+  const supplier = document.getElementById("m-supplier").value.trim();
+  const sectorKey = document.getElementById("m-sector").value || "economat";
+  const qty = n(document.getElementById("m-qty").value);
+  const minStock = Math.max(0,n(document.getElementById("m-min-stock").value));
+  const reorderQty = Math.max(0,n(document.getElementById("m-reorder-qty").value));
+  const unit = document.getElementById("m-unit").value;
+  const totalPrice = n(document.getElementById("m-total-price").value);
+  const telephone = document.getElementById("m-phone").value.trim();
+  const adresse = document.getElementById("m-address").value.trim();
+
+  if (!name || qty < 0) {
+    alert("Nom du produit et quantité valides requis.");
+    return;
+  }
+
+  const now = new Date();
+  const item = {
+    id: "inv_" + Date.now() + "_" + cryptoRandomToken().slice(0,6),
+    name,
+    cat: cat || "Non classé",
+    fournisseur: supplier,
+    sectorKey,
+    adresse,
+    telephone,
+    qtyStr: `${qty} ${unit}`,
+    initialQty: qty,
+    currentQty: qty,
+    minStock,
+    reorderQty,
+    unit,
+    totalPrice,
+    unitPrice: qty > 0 ? totalPrice / qty : totalPrice,
+    date: now.toLocaleDateString("fr-FR"),
+    updatedAt: now.toISOString(),
+    updatedByRole: currentRole,
+    updatedByModule: "ECONOMAT"
+  };
+
+  try {
+    const fresh = await API.getState();
+    const latest = extractInventoryFromState(fresh);
+    const next = [item, ...latest];
+
+    await API.save("INVENTORY_MASTER", next);
+    inventory = next;
+    const movement = buildMovement({
+      type:"CREATE",
+      item,
+      beforeQty:0,
+      deltaQty:qty,
+      afterQty:qty,
+      unitPriceValue:item.unitPrice,
+      valueDelta:qty * item.unitPrice,
+      note:"Création article stock central"
+    });
+    await appendInventoryMovement(movement);
+    emitEconomatInventorySignal("create", item.id);
+
+    closeStockModal();
+    ["m-name","m-category","m-supplier","m-qty","m-min-stock","m-reorder-qty","m-total-price","m-phone","m-address"]
+      .forEach(id => document.getElementById(id).value = "");
+    refreshCategoryOptions();
+    renderStock();
+    setSync("live","SERVEUR · STOCK SYNCHRONISÉ");
+  } catch (e) {
+    setSync("warn","SERVEUR · ÉCHEC ENREGISTREMENT");
+    alert("Le serveur n’a pas confirmé l’enregistrement. Aucun stock local n’a été appliqué.");
+  }
+}
+
+function economatModuleUrl(file, params={}) {
+  const q = new URLSearchParams({tenantID,returnTo:"economat.html",...params});
+  return `${file}?${q.toString()}`;
+}
+function goPurchaseOrders(){ location.href=economatModuleUrl("commandes-fournisseurs.html"); }
+function goTasks(){ location.href=economatModuleUrl("taches.html"); }
+
+async function quickSupplierOrder(id,button) {
+  const item=inventory.find(x=>String(x.id??"")===String(id));if(!item)return;
+  if(!String(item.fournisseur||"").trim())return alert("Renseignez d’abord le fournisseur de cet article.");
+  const state=reorderState(item),old=button?.textContent;
+  if(button){button.disabled=true;button.textContent="CRÉATION…";}
+  try{
+    const currency=ichefAutomaticCurrencyCode();
+    const data=await opsApi(`/api/ops/inventory/${encodeURIComponent(id)}/quick-order`,{method:"POST",body:JSON.stringify({quantity:state.recommended,sectorKey:item.sectorKey||"economat",currency,observation:item.observation||""})});
+    const o=data.order||{};
+    alert(`Commande créée ✅\n${o.supplierName||item.fournisseur}\n${state.recommended} ${item.unit||""} · ${sectorLabel(o.sectorKey||item.sectorKey)}\nStatut : ${o.status||"créée"}\nCanal : ${o.orderChannel||"MEMO"}\n\nLa tâche de réception est déjà envoyée au secteur.`);
+  }catch(e){alert(e?.message||"Commande impossible.");}
+  finally{if(button){button.disabled=false;button.textContent=old||"COMMANDER 1 CLIC";}}
+}
+
+async function quickInventoryTask(id,button) {
+  const item=inventory.find(x=>String(x.id??"")===String(id));if(!item)return;
+  const old=button?.textContent;if(button){button.disabled=true;button.textContent="CRÉATION…";}
+  try{
+    await opsApi(`/api/ops/inventory/${encodeURIComponent(id)}/quick-task`,{method:"POST",body:JSON.stringify({sectorKey:item.sectorKey||"economat"})});
+    alert(`Tâche créée ✅\n${item.name||"Article"} · ${sectorLabel(item.sectorKey||"economat")}`);
+  }catch(e){alert(e?.message||"Création de tâche impossible.");}
+  finally{if(button){button.disabled=false;button.textContent=old||"TÂCHE 1 CLIC";}}
+}
+
+async function setReorderLevel(id) {
+  const item=inventory.find(x=>String(x.id??"")===String(id)); if(!item)return;
+  const rawMin=prompt(`Stock minimum pour "${item.name}" (${item.unit||""})`,String(Math.max(0,n(item.minStock))));
+  if(rawMin===null)return;
+  const minStock=Number(String(rawMin).replace(",",".")); if(!Number.isFinite(minStock)||minStock<0)return alert("Seuil invalide.");
+  const rawOrder=prompt("Quantité habituelle à commander",String(Math.max(0,n(item.reorderQty))||minStock||1));
+  if(rawOrder===null)return;
+  const reorderQty=Number(String(rawOrder).replace(",",".")); if(!Number.isFinite(reorderQty)||reorderQty<0)return alert("Quantité invalide.");
+  const fresh=await API.getState(), latest=extractInventoryFromState(fresh), idx=latest.findIndex(x=>String(x.id??"")===String(id));
+  if(idx<0)return alert("Article introuvable sur le serveur.");
+  latest[idx]={...latest[idx],minStock,reorderQty,updatedAt:new Date().toISOString(),updatedByModule:"ECONOMAT"};
+  await API.save("INVENTORY_MASTER",latest); inventory=latest; emitEconomatInventorySignal("reorder-level",id); renderStock();
+}
+
+async function adjustQty(id) {
+  const localItem = inventory.find(x => String(x.id ?? "") === String(id));
+  if (!localItem) return;
+
+  const rawQty = prompt(`Réception pour "${localItem.name}" (${localItem.unit || ""}) : quantité à AJOUTER`, "");
+  if (rawQty === null) return;
+  const receivedQty = Number(String(rawQty).replace(",", "."));
+  if (!Number.isFinite(receivedQty) || receivedQty <= 0) return alert("Quantité reçue invalide.");
+
+  const rawTotal = prompt("Montant total de cette réception (facultatif) :", "");
+  const receivedTotal = rawTotal === null || String(rawTotal).trim() === ""
+    ? null
+    : Number(String(rawTotal).replace(",", "."));
+  if (receivedTotal !== null && (!Number.isFinite(receivedTotal) || receivedTotal < 0)) {
+    return alert("Montant invalide.");
+  }
+
+  try {
+    // Toujours repartir du stock serveur le plus récent.
+    const fresh = await API.getState();
+    const latest = extractInventoryFromState(fresh);
+    const idx = latest.findIndex(x => String(x.id ?? "") === String(id));
+    if (idx < 0) throw new Error("Article supprimé ou modifié sur un autre poste.");
+
+    const current = latest[idx];
+    const beforeQty = currentQty(current);
+    const oldUnitPrice = unitPrice(current);
+    const newQty = beforeQty + receivedQty;
+
+    let newUnitPrice = oldUnitPrice;
+    if (receivedTotal !== null && receivedQty > 0) {
+      const oldValue = beforeQty * oldUnitPrice;
+      newUnitPrice = newQty > 0 ? (oldValue + receivedTotal) / newQty : oldUnitPrice;
+    }
+
+    const now = new Date();
+    latest[idx] = {
+      ...current,
+      currentQty: newQty,
+      qtyStr: `${newQty} ${current.unit || ""}`.trim(),
+      unitPrice: newUnitPrice,
+      totalPrice: newQty * newUnitPrice,
+      lastReceptionAt: now.toISOString(),
+      lastReceptionQty: receivedQty,
+      lastReceptionBy: currentRole,
+      updatedAt: now.toISOString(),
+      updatedByModule: "ECONOMAT"
+    };
+
+    await API.save("INVENTORY_MASTER", latest);
+    inventory = latest;
+    const movement = buildMovement({
+      type:"RECEPTION",
+      item:latest[idx],
+      beforeQty,
+      deltaQty:receivedQty,
+      afterQty:newQty,
+      unitPriceValue:newUnitPrice,
+      valueDelta:receivedTotal !== null ? receivedTotal : receivedQty * newUnitPrice,
+      note:receivedTotal !== null ? "Réception avec valorisation d’achat" : "Réception stock"
+    });
+    await appendInventoryMovement(movement);
+    emitEconomatInventorySignal("reception", id);
+    renderStock();
+    setSync("live","SERVEUR · RÉCEPTION SYNCHRONISÉE");
+  } catch (e) {
+    setSync("warn","SERVEUR · ÉCHEC RÉCEPTION");
+    alert(e?.message || "Le serveur n’a pas confirmé la réception.");
+  }
+}
+async function deleteItem(id) {
+  const item = inventory.find(x => String(x.id ?? "") === String(id));
+  if (!item) return;
+  if (!confirm(`Supprimer "${item.name}" du stock central ?`)) return;
+
+  try {
+    const fresh = await API.getState();
+    const latest = extractInventoryFromState(fresh);
+    const exists = latest.some(x => String(x.id ?? "") === String(id));
+    if (!exists) {
+      inventory = latest;
+      renderStock();
+      return;
+    }
+
+    const removed = latest.find(x => String(x.id ?? "") === String(id));
+    const beforeQty = currentQty(removed);
+    const removedUnitPrice = unitPrice(removed);
+    const next = latest.filter(x => String(x.id ?? "") !== String(id));
+    await API.save("INVENTORY_MASTER", next);
+    inventory = next;
+    const movement = buildMovement({
+      type:"DELETE",
+      item:removed,
+      beforeQty,
+      deltaQty:-beforeQty,
+      afterQty:0,
+      unitPriceValue:removedUnitPrice,
+      valueDelta:-(beforeQty * removedUnitPrice),
+      note:"Suppression article depuis Économat"
+    });
+    await appendInventoryMovement(movement);
+    emitEconomatInventorySignal("delete", id);
+    refreshCategoryOptions();
+    renderStock();
+    setSync("live","SERVEUR · SUPPRESSION SYNCHRONISÉE");
+  } catch (e) {
+    setSync("warn","SERVEUR · ÉCHEC SUPPRESSION");
+    alert("Suppression non confirmée par le serveur.");
+  }
+}
+
+function openSuppliers() {
+  const map = new Map();
+  inventory.forEach(x => {
+    const name = String(x.fournisseur || "").trim();
+    if (!name) return;
+    if (!map.has(name)) map.set(name,{name,phone:x.telephone||"",address:x.adresse||"",count:0});
+    const s = map.get(name);
+    s.count++;
+    if (!s.phone && x.telephone) s.phone=x.telephone;
+    if (!s.address && x.adresse) s.address=x.adresse;
+  });
+  const arr = [...map.values()].sort((a,b)=>a.name.localeCompare(b.name,"fr"));
+  document.getElementById("supplier-grid").innerHTML = arr.length
+    ? arr.map(s=>`<div class="supplier"><b>${escapeHtml(s.name)}</b><span>${s.count} article(s)</span><span>${escapeHtml(s.phone||"Téléphone non renseigné")}</span><span>${escapeHtml(s.address||"Adresse non renseignée")}</span></div>`).join("")
+    : '<div class="empty">Aucun fournisseur enregistré.</div>';
+  document.getElementById("supplier-modal").classList.add("open");
+}
+function closeSuppliers(){document.getElementById("supplier-modal").classList.remove("open")}
+
+function openMovements() {
+  const rows = Array.isArray(inventoryMovements) ? inventoryMovements.slice(0,250) : [];
+  const body = document.getElementById("movement-body");
+  body.innerHTML = rows.length ? rows.map(m => {
+    const ts = m.timestamp ? new Date(m.timestamp).toLocaleString("fr-FR") : "—";
+    const delta = Number(m.deltaQty || 0);
+    const sign = delta > 0 ? "+" : "";
+    return `<tr>
+      <td>${escapeHtml(ts)}</td>
+      <td><b>${escapeHtml(m.type || "—")}</b></td>
+      <td>${escapeHtml(m.productName || "—")}</td>
+      <td style="font-family:monospace;font-size:.67rem;">${escapeHtml(m.inventoryItemId || "—")}</td>
+      <td>${n(m.beforeQty).toLocaleString("fr-FR",{maximumFractionDigits:3})} ${escapeHtml(m.unit || "")}</td>
+      <td class="${delta < 0 ? "qty-zero" : ""}">${sign}${delta.toLocaleString("fr-FR",{maximumFractionDigits:3})} ${escapeHtml(m.unit || "")}</td>
+      <td>${n(m.afterQty).toLocaleString("fr-FR",{maximumFractionDigits:3})} ${escapeHtml(m.unit || "")}</td>
+      <td class="money">${money(m.valueDelta)}</td>
+      <td>${escapeHtml(m.sourceModule || "—")}</td>
+    </tr>`;
+  }).join("") : '<tr><td colspan="9" class="empty">Aucun mouvement enregistré.</td></tr>';
+  document.getElementById("movement-modal").classList.add("open");
+}
+function closeMovements() {
+  document.getElementById("movement-modal").classList.remove("open");
+}
+
+
+let invoiceRows = [];
+let invoiceOcrText = "";
+let invoiceCurrentFileName = "";
+
+function openInvoiceRecognition() {
+  document.getElementById("invoice-modal").classList.add("open");
+  document.getElementById("invoice-date").value = new Date().toISOString().slice(0,10);
+}
+
+function closeInvoiceRecognition() {
+  document.getElementById("invoice-modal").classList.remove("open");
+}
+
+function setInvoiceStatus(text, kind = "") {
+  const el = document.getElementById("invoice-status");
+  el.textContent = text;
+  el.className = "invoice-status" + (kind ? " " + kind : "");
+}
+
+function setInvoiceProgress(v) {
+  const n = Math.max(0, Math.min(100, Number(v) || 0));
+  document.getElementById("invoice-progress-bar").style.width = n + "%";
+}
+
+function invoiceDragOver(e){ e.preventDefault(); document.getElementById("invoice-drop").classList.add("drag"); }
+function invoiceDragLeave(e){ e.preventDefault(); document.getElementById("invoice-drop").classList.remove("drag"); }
+function invoiceDrop(e){
+  e.preventDefault();
+  document.getElementById("invoice-drop").classList.remove("drag");
+  const file = e.dataTransfer?.files?.[0];
+  if (file) processInvoiceFile(file);
+}
+async function handleInvoiceFile(e){
+  const file = e.target.files?.[0];
+  if (file) await processInvoiceFile(file);
+  e.target.value = "";
+}
+
+async function processInvoiceFile(file) {
+  invoiceCurrentFileName = file.name || "facture";
+  invoiceRows = [];
+  invoiceOcrText = "";
+  renderInvoiceLines();
+  setInvoiceProgress(2);
+  setInvoiceStatus("Lecture de " + invoiceCurrentFileName + "…");
+
+  try {
+    let text = "";
+    if (file.type === "application/pdf" || /\.pdf$/i.test(file.name || "")) {
+      text = await ocrPdfInvoice(file);
+    } else {
+      text = await ocrImageInvoice(file);
+    }
+    invoiceOcrText = String(text || "").trim();
+    document.getElementById("invoice-raw").value = invoiceOcrText;
+    parseInvoiceText(invoiceOcrText);
+    setInvoiceProgress(100);
+    setInvoiceStatus("Facture lue. Vérifiez les informations avant validation.", "ok");
+  } catch (e) {
+    console.error("[iCHEF FACTURE]", e);
+    setInvoiceProgress(0);
+    setInvoiceStatus("Lecture impossible : " + (e?.message || "erreur OCR"), "err");
+  }
+}
+
+let tesseractLoadPromise = null;
+function loadTesseract() {
+  if (window.Tesseract) return Promise.resolve(window.Tesseract);
+  if (tesseractLoadPromise) return tesseractLoadPromise;
+
+  tesseractLoadPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+    script.async = true;
+    script.onload = () => window.Tesseract
+      ? resolve(window.Tesseract)
+      : reject(new Error("Moteur OCR indisponible."));
+    script.onerror = () => reject(new Error("Impossible de charger le moteur OCR."));
+    document.head.appendChild(script);
+  });
+  return tesseractLoadPromise;
+}
+
+async function ocrImageInvoice(file) {
+  const TesseractEngine = await loadTesseract();
+  const result = await TesseractEngine.recognize(file, "fra+eng", {
+    logger: m => {
+      if (m.status === "recognizing text") {
+        setInvoiceProgress(8 + Math.round((m.progress || 0) * 82));
+        setInvoiceStatus("Reconnaissance du texte… " + Math.round((m.progress || 0) * 100) + "%");
+      }
+    }
+  });
+  return result?.data?.text || "";
+}
+
+async function getPdfJs() {
+  if (window.pdfjsLib) return window.pdfjsLib;
+  const mod = await import("https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs");
+  mod.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs";
+  return mod;
+}
+
+async function ocrPdfInvoice(file) {
+  const TesseractEngine = await loadTesseract();
+  const pdfjs = await getPdfJs();
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const pdf = await pdfjs.getDocument({data:bytes}).promise;
+  const maxPages = Math.min(pdf.numPages, 5);
+  let all = [];
+
+  for (let p = 1; p <= maxPages; p++) {
+    setInvoiceStatus(`PDF · page ${p}/${maxPages}`);
+    const page = await pdf.getPage(p);
+
+    // Tente d'abord le texte natif du PDF.
+    try {
+      const tc = await page.getTextContent();
+      // Reconstruit les lignes du PDF à partir de leur position verticale.
+      const grouped = [];
+      for (const item of tc.items || []) {
+        const y = Math.round(Number(item?.transform?.[5] || 0) / 3) * 3;
+        let row = grouped.find(r => Math.abs(r.y - y) <= 3);
+        if (!row) {
+          row = {y, parts:[]};
+          grouped.push(row);
+        }
+        row.parts.push({
+          x:Number(item?.transform?.[4] || 0),
+          text:String(item?.str || "")
+        });
+      }
+      const nativeText = grouped
+        .sort((a,b)=>b.y-a.y)
+        .map(r => r.parts.sort((a,b)=>a.x-b.x).map(x=>x.text).join(" ").replace(/\s+/g," ").trim())
+        .filter(Boolean)
+        .join("\n")
+        .trim();
+      if (nativeText.length > 80) {
+        all.push(nativeText);
+        setInvoiceProgress(Math.round((p / maxPages) * 95));
+        continue;
+      }
+    } catch (_) {}
+
+    // Sinon, rendu image + OCR.
+    const viewport = page.getViewport({scale:2});
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    canvas.width = Math.ceil(viewport.width);
+    canvas.height = Math.ceil(viewport.height);
+    await page.render({canvasContext:ctx,viewport}).promise;
+
+    const result = await TesseractEngine.recognize(canvas, "fra+eng", {
+      logger: m => {
+        if (m.status === "recognizing text") {
+          const pageBase = ((p - 1) / maxPages) * 90;
+          const pagePart = ((m.progress || 0) / maxPages) * 90;
+          setInvoiceProgress(5 + Math.round(pageBase + pagePart));
+        }
+      }
+    });
+    all.push(result?.data?.text || "");
+  }
+  return all.join("\n");
+}
+
+function frNumber(v) {
+  let s = String(v ?? "").trim().replace(/\s/g,"");
+  if (!s) return NaN;
+  // 1.234,56 -> 1234.56 ; 123,45 -> 123.45
+  if (s.includes(",") && s.includes(".")) {
+    if (s.lastIndexOf(",") > s.lastIndexOf(".")) s = s.replace(/\./g,"").replace(",",".");
+    else s = s.replace(/,/g,"");
+  } else {
+    s = s.replace(",",".");
+  }
+  s = s.replace(/[^\d.-]/g,"");
+  const n = Number(s);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+function cleanInvoiceLine(s) {
+  return String(s || "").replace(/\s+/g," ").replace(/[|]/g," ").trim();
+}
+
+function normalizeInvoiceName(s) {
+  return String(s || "")
+    .toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+    .replace(/[^a-z0-9]+/g," ")
+    .trim();
+}
+
+function parseInvoiceText(raw) {
+  const lines = String(raw || "").split(/\r?\n/).map(cleanInvoiceLine).filter(Boolean);
+  detectInvoiceHeader(lines);
+
+  const parsed = [];
+  const ignored = /(tva|vat|total|sous[- ]?total|subtotal|montant|iban|bic|échéance|echeance|facture|invoice|adresse|tél|tel|siret|siren)/i;
+
+  for (const line of lines) {
+    if (line.length < 4 || ignored.test(line)) continue;
+
+    // Montants trouvés sur la ligne.
+    const amounts = [...line.matchAll(/(?:^|\s)(-?\d{1,6}(?:[ .]\d{3})*(?:[,.]\d{1,2})?)(?=\s|€|EUR|CHF|$\vert{}$)/g)]
+      .map(m => ({raw:m[1], value:frNumber(m[1]), index:m.index || 0}))
+      .filter(x => Number.isFinite(x.value));
+
+    if (!amounts.length) continue;
+
+    const total = amounts[amounts.length - 1].value;
+    if (!(total >= 0)) continue;
+
+    let qty = 1;
+    let unit = "pce";
+
+    const qmatch = line.match(/(?:^|\s)(\d+(?:[,.]\d+)?)\s*(kg|g|l|cl|ml|pcs?|pce|pi[eè]ce?s?|x)\b/i);
+    if (qmatch) {
+      qty = frNumber(qmatch[1]);
+      const u = String(qmatch[2] || "").toLowerCase();
+      if (u === "x" || /^pc|pi/.test(u)) unit = "pce";
+      else if (u === "l") unit = "L";
+      else unit = u;
+    } else {
+      const startQty = line.match(/^\s*(\d+(?:[,.]\d+)?)\s+/);
+      if (startQty && amounts.length >= 2) {
+        const q = frNumber(startQty[1]);
+        if (Number.isFinite(q) && q > 0 && q < 10000) qty = q;
+      }
+    }
+
+    let name = line;
+    // Coupe avant le dernier montant pour retirer prix/total.
+    const last = amounts[amounts.length - 1];
+    name = name.slice(0, last.index).trim();
+    name = name
+      .replace(/^\d+(?:[,.]\d+)?\s*(?:kg|g|l|cl|ml|pcs?|pce|pi[eè]ce?s?|x)?\s*/i,"")
+      .replace(/\s+\d+(?:[,.]\d+)?\s*(?:€|EUR|CHF)?\s*$/i,"")
+      .trim();
+
+    if (name.length < 2 || /^\d+$/.test(name)) continue;
+
+    parsed.push({
+      id:"invline_" + cryptoRandomToken().slice(0,8),
+      name,
+      qty:Number.isFinite(qty) && qty > 0 ? qty : 1,
+      unit,
+      total
+    });
+  }
+
+  // Déduplication prudente.
+  const seen = new Set();
+  invoiceRows = parsed.filter(r => {
+    const k = normalizeInvoiceName(r.name) + "|" + r.qty + "|" + r.total;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  }).slice(0,120);
+
+  if (!invoiceRows.length) {
+    invoiceRows = [{
+      id:"invline_" + cryptoRandomToken().slice(0,8),
+      name:"",
+      qty:1,
+      unit:"pce",
+      total:0
+    }];
+  }
+  renderInvoiceLines();
+}
+
+function detectInvoiceHeader(lines) {
+  const meaningful = lines.filter(x => x.length >= 3);
+  const bad = /(facture|invoice|avoir|date|client|livraison|tva|vat|page|original|copie)/i;
+  const supplier = meaningful.find(x => !bad.test(x) && /[A-Za-zÀ-ÿ]{3}/.test(x) && x.length <= 80);
+  if (supplier && !document.getElementById("invoice-supplier").value.trim()) {
+    document.getElementById("invoice-supplier").value = supplier;
+  }
+
+  const all = meaningful.join(" ");
+  const num = all.match(/(?:facture|invoice|n[°ºo.]?)\s*[:#-]?\s*([A-Z0-9][A-Z0-9\/._-]{2,})/i);
+  if (num) document.getElementById("invoice-number").value = num[1];
+
+  const totalMatches = [...all.matchAll(/(?:total\s*(?:ttc)?|net\s*[àa]\s*payer)\D{0,15}(\d[\d .]*[,.]\d{2})/gi)];
+  if (totalMatches.length) {
+    const v = frNumber(totalMatches[totalMatches.length - 1][1]);
+    if (Number.isFinite(v)) document.getElementById("invoice-total").value = v.toFixed(2);
+  }
+}
+
+function reparseInvoiceText() {
+  invoiceOcrText = document.getElementById("invoice-raw").value;
+  parseInvoiceText(invoiceOcrText);
+}
+
+function toggleInvoiceRaw() {
+  const el = document.getElementById("invoice-raw");
+  el.style.display = el.style.display === "none" ? "block" : "none";
+}
+
+function addInvoiceLine() {
+  invoiceRows.push({
+    id:"invline_" + cryptoRandomToken().slice(0,8),
+    name:"",
+    qty:1,
+    unit:"pce",
+    total:0
+  });
+  renderInvoiceLines();
+}
+
+function deleteInvoiceLine(id) {
+  invoiceRows = invoiceRows.filter(x => String(x.id) !== String(id));
+  renderInvoiceLines();
+}
+
+function updateInvoiceRow(id, key, value) {
+  const r = invoiceRows.find(x => String(x.id) === String(id));
+  if (!r) return;
+  if (key === "qty" || key === "total") r[key] = Math.max(0, frNumber(value) || 0);
+  else r[key] = value;
+}
+
+function renderInvoiceLines() {
+  const body = document.getElementById("invoice-lines-body");
+  if (!invoiceRows.length) {
+    body.innerHTML = '<tr><td colspan="5" class="empty">Aucune ligne détectée.</td></tr>';
+    return;
+  }
+  const units = ["pce","kg","g","L","cl","ml"];
+  body.innerHTML = invoiceRows.map(r => `
+    <tr>
+      <td><input value="${escapeHtml(r.name || "")}" oninput='updateInvoiceRow(${JSON.stringify(r.id)},"name",this.value)' placeholder="Produit"></td>
+      <td><input type="number" min="0" step="0.001" value="${Number(r.qty || 0)}" oninput='updateInvoiceRow(${JSON.stringify(r.id)},"qty",this.value)'></td>
+      <td><select onchange='updateInvoiceRow(${JSON.stringify(r.id)},"unit",this.value)'>
+        ${units.map(u=>`<option value="${u}" ${u===r.unit?"selected":""}>${u}</option>`).join("")}
+      </select></td>
+      <td><input type="number" min="0" step="0.01" value="${Number(r.total || 0)}" oninput='updateInvoiceRow(${JSON.stringify(r.id)},"total",this.value)'></td>
+      <td><button class="mini danger" onclick='deleteInvoiceLine(${JSON.stringify(r.id)})'>RETIRER</button></td>
+    </tr>`).join("");
+}
+
+async function importInvoiceToStock() {
+  const supplier = document.getElementById("invoice-supplier").value.trim();
+  const invoiceNumber = document.getElementById("invoice-number").value.trim();
+  const invoiceDate = document.getElementById("invoice-date").value || new Date().toISOString().slice(0,10);
+  const validRows = invoiceRows
+    .map(r => ({
+      ...r,
+      name:String(r.name || "").trim(),
+      qty:Number(r.qty || 0),
+      total:Number(r.total || 0)
+    }))
+    .filter(r => r.name && r.qty > 0);
+
+  if (!validRows.length) return alert("Aucune ligne valide à réceptionner.");
+
+  const btn = document.getElementById("invoice-import-btn");
+  btn.disabled = true;
+  btn.textContent = "ENREGISTREMENT…";
+  setInvoiceStatus("Enregistrement de la facture dans le stock…");
+
+  try {
+    const fresh = await API.getState();
+    const latest = extractInventoryFromState(fresh).map(x => ({...x}));
+    const newMovements = [];
+    const now = new Date();
+
+    for (const row of validRows) {
+      const key = normalizeInvoiceName(row.name);
+      let idx = latest.findIndex(x => normalizeInvoiceName(x.name) === key);
+
+      if (idx >= 0) {
+        const current = latest[idx];
+        const beforeQty = currentQty(current);
+        const oldUnitPrice = unitPrice(current);
+        const newQty = beforeQty + row.qty;
+        const receivedValue = row.total > 0 ? row.total : row.qty * oldUnitPrice;
+        const oldValue = beforeQty * oldUnitPrice;
+        const newUnitPrice = newQty > 0 ? (oldValue + receivedValue) / newQty : oldUnitPrice;
+
+        latest[idx] = {
+          ...current,
+          fournisseur: supplier || current.fournisseur || "",
+          currentQty:newQty,
+          qtyStr:`${newQty} ${current.unit || row.unit || ""}`.trim(),
+          unit:current.unit || row.unit || "pce",
+          unitPrice:newUnitPrice,
+          totalPrice:newQty * newUnitPrice,
+          lastReceptionAt:now.toISOString(),
+          lastReceptionQty:row.qty,
+          lastReceptionBy:currentRole,
+          lastInvoiceNumber:invoiceNumber,
+          lastInvoiceDate:invoiceDate,
+          lastInvoiceFile:invoiceCurrentFileName,
+          updatedAt:now.toISOString(),
+          updatedByModule:"ECONOMAT_FACTURE"
+        };
+
+        newMovements.push(buildMovement({
+          type:"RECEPTION_FACTURE",
+          item:latest[idx],
+          beforeQty,
+          deltaQty:row.qty,
+          afterQty:newQty,
+          unitPriceValue:newUnitPrice,
+          valueDelta:receivedValue,
+          note:`Facture ${invoiceNumber || "sans n°"} · ${supplier || "fournisseur non renseigné"}`
+        }));
+      } else {
+        const unitPriceValue = row.qty > 0 && row.total > 0 ? row.total / row.qty : 0;
+        const item = {
+          id:"inv_" + Date.now() + "_" + cryptoRandomToken().slice(0,6),
+          name:row.name,
+          cat:"Non classé",
+          fournisseur:supplier,
+          adresse:"",
+          telephone:"",
+          qtyStr:`${row.qty} ${row.unit || "pce"}`,
+          initialQty:row.qty,
+          currentQty:row.qty,
+          unit:row.unit || "pce",
+          totalPrice:row.total,
+          unitPrice:unitPriceValue,
+          date:new Date(invoiceDate).toLocaleDateString("fr-FR"),
+          lastReceptionAt:now.toISOString(),
+          lastReceptionQty:row.qty,
+          lastReceptionBy:currentRole,
+          lastInvoiceNumber:invoiceNumber,
+          lastInvoiceDate:invoiceDate,
+          lastInvoiceFile:invoiceCurrentFileName,
+          updatedAt:now.toISOString(),
+          updatedByRole:currentRole,
+          updatedByModule:"ECONOMAT_FACTURE"
+        };
+        latest.unshift(item);
+        newMovements.push(buildMovement({
+          type:"CREATE_FACTURE",
+          item,
+          beforeQty:0,
+          deltaQty:row.qty,
+          afterQty:row.qty,
+          unitPriceValue:unitPriceValue,
+          valueDelta:row.total,
+          note:`Création depuis facture ${invoiceNumber || "sans n°"} · ${supplier || "fournisseur non renseigné"}`
+        }));
+      }
+    }
+
+    await API.save("INVENTORY_MASTER", latest);
+    inventory = latest;
+
+    // Sauvegarde groupée des mouvements afin d'éviter plusieurs allers-retours.
+    const state2 = await API.getState();
+    const currentMoves = extractMovementsFromState(state2);
+    const mergedMoves = [...newMovements.reverse(), ...currentMoves];
+    await API.save("INVENTORY_MOVEMENTS", mergedMoves);
+    inventoryMovements = mergedMoves;
+
+    emitEconomatInventorySignal("invoice-reception");
+    refreshCategoryOptions();
+    renderStock();
+    setSync("live","SERVEUR · FACTURE SYNCHRONISÉE");
+    setInvoiceStatus(`${validRows.length} ligne(s) intégrée(s) au stock.`, "ok");
+    setTimeout(closeInvoiceRecognition, 700);
+  } catch (e) {
+    console.error("[iCHEF FACTURE] import", e);
+    setInvoiceStatus("Échec d’enregistrement : " + (e?.message || "serveur indisponible"), "err");
+    setSync("warn","SERVEUR · ÉCHEC FACTURE");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "VALIDER LA RÉCEPTION";
+  }
+}
+
+function startRealtime() {
+  if (socket || typeof io !== "function") {
+    if (typeof io !== "function") startPolling();
+    return;
+  }
+  socket = io(SERVER_URL,{transports:["polling","websocket"],reconnection:true});
+
+  socket.on("connect",()=>{
+    socket.emit("joinTenant",tenantID);
+    setSync("live","TEMPS RÉEL · CONNECTÉ");
+  });
+  socket.on("disconnect",()=>setSync("warn","TEMPS RÉEL · RECONNEXION…"));
+  ["updateState","state-updated","inventory-updated","haccp-updated","ichef:core:update"].forEach(evt => {
+    socket.on(evt, async state => {
+      if (!authenticated) return;
+      if (state?.activeOrders) {
+        normalizeState(state);
+      } else {
+        try { normalizeState(await API.getState()); } catch (_) {}
+      }
+    });
+  });
+  startPolling();
+}
+
+let pollTimer = null;
+function startPolling() {
+  if (pollTimer) return;
+  pollTimer = setInterval(async()=>{
+    if (!authenticated) return;
+    try {
+      const state = await API.getState();
+      normalizeState(state);
+      await flushPendingMovements();
+    } catch (_) {
+      setSync("warn","SERVEUR · RECONNEXION…");
+    }
+  }, 10000);
+}
+
+function goAdmin() {
+  location.href = `admin.html?tenantID=${encodeURIComponent(tenantID)}`;
+}
+function goHaccp() {
+  location.href = `haccp.html?tenantID=${encodeURIComponent(tenantID)}`;
+}
+function lockEconomat() {
+  authenticated = false;
+  currentRole = "";
+  sessionStorage.removeItem("ichef_ops_token");
+  sessionStorage.removeItem("ichef_ops_tenant");
+  document.getElementById("role-badge").textContent = "ACCÈS —";
+  document.getElementById("pin-input").value = "";
+  document.getElementById("login-overlay").style.display = "flex";
+  setTimeout(()=>document.getElementById("pin-input").focus(),20);
+}
+
+window.addEventListener("load",()=>document.getElementById("pin-input").focus());
+</script>
+
+
+
+<script id="ichef-economat-fusion-v144">
+(()=>{
+'use strict';
+let FUSION_SUPPLIERS=[],FUSION_ORDERS=[],FUSION_CAPS={};
+
+const $f=id=>document.getElementById(id);
+const fesc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmoney=(v,c='CHF')=>`${Number(v||0).toLocaleString('fr-FR',{minimumFractionDigits:2,maximumFractionDigits:2})} ${c}`;
+const fdate=v=>{if(!v)return'—';const d=new Date(v);return Number.isNaN(d.getTime())?'—':d.toLocaleString('fr-FR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})};
+const channelLabel=c=>({MEMO:'Mémo',PDF:'PDF',WHATSAPP:'WhatsApp',EMAIL:'Email',PORTAL:'Portail',MANUAL:'Manuel'})[c]||c||'Mémo';
+const statusLabel=s=>({DRAFT:'Brouillon',PENDING_APPROVAL:'À valider',APPROVED:'Approuvée',SENT:'Envoyée',PARTIAL:'Partielle',RECEIVED:'Reçue',CANCELLED:'Annulée'})[s]||s;
+
+window.switchEconomatView=async function(name){
+  const safe=['stock','suppliers','orders'].includes(name)?name:'stock';
+  document.querySelectorAll('.econ-fusion-view').forEach(v=>{const on=v.id===`econ-${safe}-view`;v.hidden=!on;v.classList.toggle('active',on)});
+  document.querySelectorAll('[data-econ-tab]').forEach(b=>b.classList.toggle('active',b.dataset.econTab===safe));
+  if(safe==='suppliers')await loadFusionSuppliers();
+  if(safe==='orders')await loadFusionOrders();
+  window.scrollTo({top:0,behavior:'smooth'});
+};
+
+window.openFusionSupplierModal=()=>{applyAutomaticCurrency();$f('fusion-supplier-modal').classList.add('open');setTimeout(()=>$f('fs-name').focus(),30)};
+window.closeFusionSupplierModal=()=>{$f('fusion-supplier-modal').classList.remove('open')};
+
+window.loadFusionSuppliers=async function(){
+  const root=$f('fusion-supplier-grid');if(root)root.innerHTML='<div class="empty">Chargement…</div>';
+  try{
+    const d=await opsApi('/api/ops/suppliers');FUSION_SUPPLIERS=d.suppliers||[];FUSION_CAPS={...FUSION_CAPS,...(d.capabilities||{})};renderFusionSuppliers();syncFusionOrderSuppliers();
+  }catch(e){if(root)root.innerHTML=`<div class="empty">${fesc(e.message)}</div>`}
+};
+
+window.renderFusionSuppliers=function(){
+  const root=$f('fusion-supplier-grid');if(!root)return;
+  const q=String($f('fusion-supplier-search')?.value||'').trim().toLowerCase(),filter=$f('fusion-supplier-filter')?.value||'';
+  const rows=FUSION_SUPPLIERS.filter(s=>(!q||`${s.name} ${s.category||''} ${s.email||''} ${s.phone||''}`.toLowerCase().includes(q))&&(!filter||(filter==='ACTIVE'?s.active:s.active===false)));
+  root.innerHTML=rows.length?rows.map(s=>`<article class="econ-fusion-card">
+    <h3>${fesc(s.name)}</h3>
+    <div class="chips"><span class="econ-chip gold">${fesc(channelLabel(s.orderChannel))}</span><span class="econ-chip">${fesc(s.defaultCurrency||'CHF')}</span><span class="econ-chip">${s.active?'ACTIF':'INACTIF'}</span></div>
+    <p>${fesc(s.contactName||'')}${s.contactName?'<br>':''}${fesc(s.phone||'Téléphone non renseigné')}${s.email?` · ${fesc(s.email)}`:''}</p>
+    <p>Commande minimum : <strong>${fmoney(s.minimumOrder,s.defaultCurrency)}</strong>${s.category?` · ${fesc(s.category)}`:''}</p>
+    <div class="econ-card-actions">
+      ${FUSION_CAPS.manageSuppliers?`<button class="mini" data-fsup-config="${fesc(s.id)}">CANAL</button><button class="mini ${s.active?'danger':''}" data-fsup-toggle="${fesc(s.id)}">${s.active?'DÉSACTIVER':'RÉACTIVER'}</button>`:''}
+      ${FUSION_CAPS.createPurchases&&s.active?`<button class="mini order" data-fsup-order="${fesc(s.id)}">COMMANDER</button>`:''}
+    </div>
+  </article>`).join(''):'<div class="empty">Aucun fournisseur.</div>';
+};
+
+$f('fusion-supplier-grid')?.addEventListener('click',async e=>{
+  const cfg=e.target.closest('[data-fsup-config]'),tog=e.target.closest('[data-fsup-toggle]'),ord=e.target.closest('[data-fsup-order]');
+  try{
+    if(cfg){
+      const s=FUSION_SUPPLIERS.find(x=>x.id===cfg.dataset.fsupConfig);if(!s)return;
+      const c=prompt('Mode : MEMO, PDF, WHATSAPP, EMAIL, PORTAL ou MANUAL',String(s.orderChannel||'MEMO').toUpperCase());if(c===null)return;
+      const channel=String(c).trim().toUpperCase();if(!['MEMO','PDF','WHATSAPP','EMAIL','PORTAL','MANUAL'].includes(channel))throw new Error('Mode invalide.');
+      let whatsapp=s.whatsappPhone||s.phone||'',portal=s.orderPortalUrl||'';
+      if(channel==='WHATSAPP'){const v=prompt('Numéro WhatsApp',whatsapp);if(v===null)return;whatsapp=v}
+      if(channel==='PORTAL'){const v=prompt('Adresse du portail',portal);if(v===null)return;portal=v}
+      await opsApi(`/api/ops/suppliers/${encodeURIComponent(s.id)}`,{method:'PUT',body:JSON.stringify({orderChannel:channel,whatsappPhone:whatsapp,orderPortalUrl:portal})});await loadFusionSuppliers();
+    }else if(tog){
+      const s=FUSION_SUPPLIERS.find(x=>x.id===tog.dataset.fsupToggle);if(!s)return;
+      await opsApi(`/api/ops/suppliers/${encodeURIComponent(s.id)}`,{method:'PUT',body:JSON.stringify({active:!s.active})});await loadFusionSuppliers();
+    }else if(ord){openFusionOrderModal(ord.dataset.fsupOrder)}
+  }catch(err){alert(err.message)}
+});
+
+window.saveFusionSupplier=async function(){
+  try{
+    const name=$f('fs-name').value.trim();if(name.length<2)throw new Error('Nom du fournisseur requis.');
+    await opsApi('/api/ops/suppliers',{method:'POST',body:JSON.stringify({
+      name,contactName:$f('fs-contact').value,phone:$f('fs-phone').value,email:$f('fs-email').value,
+      whatsappPhone:$f('fs-whatsapp').value,category:$f('fs-category').value,defaultCurrency:ichefAutomaticCurrencyCode(),
+      orderChannel:$f('fs-channel').value,minimumOrder:Number($f('fs-minimum').value||0),orderPortalUrl:$f('fs-portal').value,notes:$f('fs-notes').value
+    })});
+    ['fs-name','fs-contact','fs-phone','fs-email','fs-whatsapp','fs-category','fs-minimum','fs-portal','fs-notes'].forEach(id=>$f(id).value='');
+    closeFusionSupplierModal();await loadFusionSuppliers();renderStock();
+  }catch(e){alert(e.message)}
+};
+
+function syncFusionOrderSuppliers(){
+  const el=$f('fo-supplier');if(!el)return;const selected=el.value;
+  el.innerHTML=FUSION_SUPPLIERS.filter(s=>s.active).map(s=>`<option value="${fesc(s.id)}">${fesc(s.name)}</option>`).join('');
+  if([...el.options].some(o=>o.value===selected))el.value=selected;
+  applyAutomaticCurrency();
+}
+$f('fo-supplier')?.addEventListener('change',()=>applyAutomaticCurrency());
+
+window.fusionAddOrderRow=function(v={}){
+  const row=document.createElement('div');row.className='fusion-order-row';row.dataset.inventoryItemId=String(v.inventoryItemId||'');
+  row.innerHTML=`<input data-fo="name" placeholder="Article" value="${fesc(v.name||'')}"><input data-fo="quantity" type="number" min=".001" step=".001" placeholder="Qté" value="${fesc(v.quantity||'')}"><input data-fo="unit" placeholder="Unité" value="${fesc(v.unit||'unité')}"><input data-fo="unitPrice" type="number" min="0" step=".01" placeholder="Prix/u" value="${fesc(v.unitPrice||'')}"><button type="button" class="fusion-remove">×</button>`;
+  row.querySelector('.fusion-remove').onclick=()=>row.remove();$f('fusion-order-lines').appendChild(row);
+};
+
+window.openFusionOrderModal=async function(supplierId=''){applyAutomaticCurrency();
+  if(!FUSION_SUPPLIERS.length)await loadFusionSuppliers();
+  syncFusionOrderSuppliers();if(supplierId&&[...$f('fo-supplier').options].some(o=>o.value===supplierId))$f('fo-supplier').value=supplierId;
+  applyAutomaticCurrency();
+  $f('fusion-order-lines').innerHTML='';fusionAddOrderRow();$f('fusion-order-modal').classList.add('open');
+};
+window.closeFusionOrderModal=()=> $f('fusion-order-modal').classList.remove('open');
+
+window.saveFusionOrder=async function(){
+  try{
+    const items=[...$f('fusion-order-lines').querySelectorAll('.fusion-order-row')].map(r=>{
+      const g=k=>r.querySelector(`[data-fo="${k}"]`)?.value?.trim()||'';
+      return {name:g('name'),quantity:Number(g('quantity')),unit:g('unit'),unitPrice:Number(g('unitPrice')||0),inventoryItemId:String(r.dataset.inventoryItemId||'')};
+    }).filter(i=>i.name&&i.quantity>0);
+    if(!items.length)throw new Error('Ajoutez au moins un article.');
+    await opsApi('/api/ops/purchase-orders',{method:'POST',body:JSON.stringify({
+      supplierId:$f('fo-supplier').value,currency:ichefAutomaticCurrencyCode(),sectorKey:$f('fo-sector').value,
       requestedDeliveryAt:$f('fo-delivery').value||null,notes:$f('fo-notes').value,items,
       submitForApproval:$f('fo-workflow').value==='1',createReceptionTask:true
     })});
