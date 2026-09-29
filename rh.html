@@ -952,8 +952,12 @@
 
   <div class="input-group">
     <label>Code PIN · accès collaborateur</label>
-    <input type="password" id="staff-pin" class="input-full" placeholder="4 chiffres minimum" autocomplete="new-password">
-    <small class="staff-pro-help">Le PIN sert à l’accès opérationnel. Il ne remplace pas une signature électronique ni une authentification forte.</small>
+    <div class="rh-v203-pin-row">
+      <input type="password" id="staff-pin" class="input-full" placeholder="4 à 12 chiffres" autocomplete="new-password" inputmode="numeric" pattern="[0-9]*" minlength="4" maxlength="12">
+      <button type="button" id="rh-v203-test-pin" class="btn-outline" onclick="testStaffPinV203()">TESTER LE PIN</button>
+    </div>
+    <div id="rh-v203-pin-status" class="rh-v203-pin-status neutral">PIN non testé</div>
+    <small class="staff-pro-help">Le PIN sert à l’accès opérationnel. Après enregistrement, iCHEF vérifie aussi qu’il est bien reconnu par le serveur.</small>
   </div>
 </section>
 
@@ -2082,8 +2086,40 @@
                 : [];
             return staffAccess;
         }
+        function normalizePinAuthResponseV203(data = {}) {
+            const user = data?.user || data?.staff || data?.profile || {};
+            const role = String(
+                data?.role ??
+                data?.accessRole ??
+                user?.role ??
+                user?.accessRole ??
+                ''
+            ).trim();
+            const dept = String(
+                data?.dept ??
+                data?.department ??
+                user?.dept ??
+                user?.department ??
+                ''
+            ).trim();
+            return {
+                ...data,
+                role,
+                dept,
+                isManager:
+                    data?.isManager === true ||
+                    data?.manager === true ||
+                    user?.isManager === true ||
+                    user?.manager === true,
+                isMaster:
+                    data?.isMaster === true ||
+                    data?.master === true ||
+                    user?.isMaster === true ||
+                    user?.master === true
+            };
+        }
         async function verifyPinWithServer(pin) {
-            const safePin = String(pin || '').trim();
+            const safePin = String(pin || '').replace(/\D+/g, '').slice(0, 12);
             if (!/^\d{4,12}$/.test(safePin)) {
                 return {
                     success: false,
@@ -2098,6 +2134,7 @@
                 module: 'RH'
             };
             let lastError = null;
+            let lastCode = '';
             for (let attempt = 0; attempt < 2; attempt++) {
                 try {
                     const controller = new AbortController();
@@ -2125,21 +2162,22 @@
                     }
                     const data = await response.json().catch(() => ({}));
                     if (response.ok && data.success) {
-                        return data;
+                        return normalizePinAuthResponseV203(data);
                     }
-                    lastError = data.error || `Connexion RH refusée (HTTP ${response.status}).`;
-                    const transient =
-                        response.status === 503 ||
-                        data.code === 'MONGO_NOT_READY';
-                    if (transient && attempt === 0) {
-                        await new Promise(resolve => setTimeout(resolve, 1200));
+                    lastCode = String(data.code || '');
+                    lastError = data.error || data.message || `Connexion RH refusée (HTTP ${response.status}).`;
+
+                    // Un PIN venant juste d'être créé peut arriver quelques
+                    // centaines de ms avant la mise à jour du cache d'auth.
+                    // On fait donc toujours un second essai bref.
+                    if (attempt === 0) {
+                        const wait =
+                            response.status === 503 || lastCode === 'MONGO_NOT_READY'
+                                ? 1200
+                                : 450;
+                        await new Promise(resolve => setTimeout(resolve, wait));
                         continue;
                     }
-                    return {
-                        success: false,
-                        code: data.code || '',
-                        error: lastError
-                    };
                 } catch (error) {
                     lastError = error?.name === 'AbortError'
                         ? 'Le serveur RH met trop de temps à répondre.'
@@ -2152,6 +2190,7 @@
             }
             return {
                 success: false,
+                code: lastCode,
                 error: lastError || 'Connexion RH momentanément indisponible.'
             };
         }
@@ -8333,9 +8372,18 @@
                         'responsable rh',
                         'rh',
                         'superviseur',
-                        'supervisor'
+                        'supervisor',
+                        'owner',
+                        'proprietaire',
+                        'propriétaire',
+                        'founder',
+                        'fondateur'
                     ]);
-                    const serverManager = auth?.isManager === true || auth?.isMaster === true;
+                    const serverDept = String(auth?.dept || '').trim().toLowerCase();
+                    const serverManager =
+                        auth?.isManager === true ||
+                        auth?.isMaster === true ||
+                        ['admin','direction','rh','management'].includes(serverDept);
                     if (!serverManager && !directionRoles.has(serverRole)) {
                         alert("PIN Direction requis pour quitter le mode pointeuse.");
                         currentPin = "";
@@ -8363,9 +8411,18 @@
                         'responsable rh',
                         'rh',
                         'superviseur',
-                        'supervisor'
+                        'supervisor',
+                        'owner',
+                        'proprietaire',
+                        'propriétaire',
+                        'founder',
+                        'fondateur'
                     ]);
-                    const serverManager = auth?.isManager === true || auth?.isMaster === true;
+                    const serverDept = String(auth?.dept || '').trim().toLowerCase();
+                    const serverManager =
+                        auth?.isManager === true ||
+                        auth?.isMaster === true ||
+                        ['admin','direction','rh','management'].includes(serverDept);
                     if (!serverManager && !directionRoles.has(serverRole)) {
                         alert("Ce code PIN n'a pas les droits Direction.");
                         currentPin = "";
@@ -8739,6 +8796,22 @@
                 document.getElementById('staff-max-consecutive').value = 6;
                 document.getElementById('staff-active').checked = true; 
             }
+            const staffPinInputV203 = document.getElementById('staff-pin');
+            if (staffPinInputV203 && !staffPinInputV203.dataset.v203Bound) {
+                staffPinInputV203.dataset.v203Bound = '1';
+                staffPinInputV203.addEventListener('input', () => {
+                    const cleaned = String(staffPinInputV203.value || '').replace(/\D+/g, '').slice(0, 12);
+                    if (staffPinInputV203.value !== cleaned) staffPinInputV203.value = cleaned;
+                    setStaffPinStatusV203(
+                        cleaned.length >= 4 ? 'neutral' : 'warn',
+                        cleaned.length >= 4 ? 'PIN prêt à être enregistré' : '4 chiffres minimum'
+                    );
+                });
+            }
+            setStaffPinStatusV203(
+                pin ? 'neutral' : 'warn',
+                pin ? 'PIN chargé · vous pouvez le tester' : 'Créez un PIN de 4 à 12 chiffres'
+            );
             updateStaffGrossHourlyCost();
             if (typeof updateStaffProfessionalLegalUIV193 === 'function') {
                 updateStaffProfessionalLegalUIV193(pin);
@@ -8757,17 +8830,34 @@
         }
         async function persistRhStaffDirectory(dir, successMessage) {
             saveDir(dir);
-            const [directoryOk, accessOk] = await Promise.all([
-                syncDirectoryMasterToCloud(dir),
-                syncStaffAccessToCloud(dir)
+            setStaffPinStatusV203('syncing','Synchronisation du PIN et du dossier…');
+
+            // STAFF_ACCESS est prioritaire : c'est ce qui rend le PIN utilisable
+            // par les portails et la pointeuse.
+            const accessPromise = syncStaffAccessToCloud(dir);
+            const directoryPromise = syncDirectoryMasterToCloud(dir);
+            const [accessOk, directoryOk] = await Promise.all([
+                accessPromise,
+                directoryPromise
             ]);
+
             refreshViews();
             if (directoryOk && accessOk) {
+                setStaffPinStatusV203('ok','Dossier et accès PIN synchronisés');
                 if (successMessage) showToast(successMessage);
                 return true;
             }
+
+            setStaffPinStatusV203(
+                accessOk ? 'warn' : 'error',
+                accessOk
+                    ? 'PIN synchronisé · dossier RH encore en attente'
+                    : 'PIN non synchronisé avec le serveur'
+            );
             alert(
-                "La modification est enregistrée localement, mais la synchronisation complète avec le portail Staff / la pointeuse / l’administration n’a pas abouti. Vérifiez la connexion puis réessayez."
+                accessOk
+                    ? "Le PIN est synchronisé, mais une partie du dossier RH reste en attente de synchronisation."
+                    : "Le dossier est enregistré localement, mais le PIN n’a pas été synchronisé avec le serveur. La fenêtre reste ouverte pour vous permettre de réessayer."
             );
             return false;
         }
@@ -8905,8 +8995,29 @@
             syncStaffGrossSalaryToPayrollProfile(newStaff);
             document.getElementById('staff-edit-original-pin').value = pin;
             const ok = await persistRhStaffDirectory(dir, existing ? 'Collaborateur synchronisé' : 'Collaborateur créé et synchronisé');
-            closeModals();
-            return ok;
+            if (!ok) {
+                // Ne pas fermer : sinon l'utilisateur croit que le PIN est
+                // opérationnel alors que sa synchronisation a échoué.
+                return false;
+            }
+
+            setStaffPinStatusV203('syncing','Vérification du PIN sur le serveur…');
+            const pinCheck = await verifyPinWithServer(pin);
+            if (!pinCheck?.success) {
+                setStaffPinStatusV203(
+                    'error',
+                    `PIN enregistré mais non reconnu : ${pinCheck?.error || 'réessayez dans quelques secondes'}`
+                );
+                alert(
+                    "Le collaborateur a été enregistré, mais le serveur d’authentification ne reconnaît pas encore ce PIN. La fiche reste ouverte : cliquez sur « TESTER LE PIN » pour réessayer."
+                );
+                return false;
+            }
+
+            setStaffPinStatusV203('ok','✓ PIN reconnu par le serveur');
+            showToast('PIN vérifié · collaborateur synchronisé');
+            setTimeout(closeModals, 350);
+            return true;
         }
         async function deleteStaff() {
             const origPin = document.getElementById('staff-edit-original-pin').value;
@@ -18256,6 +18367,7 @@ async function submitOfficialGatewayPin() {
             return;
         }
         const serverRole = String(auth.role || "").trim().toLowerCase();
+        const serverDept = String(auth.dept || "").trim().toLowerCase();
         const directionRoles = new Set([
             "master",
             "admin",
@@ -18264,17 +18376,26 @@ async function submitOfficialGatewayPin() {
             "directeur",
             "gerant",
             "gérant",
-            "chef",
-            "chef de service",
             "responsable",
             "responsable rh",
             "rh",
             "superviseur",
-            "supervisor"
+            "supervisor",
+            "owner",
+            "proprietaire",
+            "propriétaire",
+            "founder",
+            "fondateur"
         ]);
-        if (!directionRoles.has(serverRole)) {
+        const directionDepts = new Set(["admin","direction","rh","management"]);
+        const serverManager =
+            auth?.isManager === true ||
+            auth?.isMaster === true ||
+            directionRoles.has(serverRole) ||
+            directionDepts.has(serverDept);
+        if (!serverManager) {
             renderOfficialGatewayPin(true);
-            setOfficialGatewayStatus("ACCÈS NON AUTORISÉ SUR LE PAD PRINCIPAL", "error");
+            setOfficialGatewayStatus("PIN VALIDE · DROITS DIRECTION REQUIS", "error");
             return;
         }
         // Le portail vérifie le PIN puis le conserve uniquement en mémoire
@@ -38379,5 +38500,147 @@ window.__ICHEF_RH_BUILD__='RH-V201-COLOR-TOUCH-FASTSAVE';
 
 <script id="ichef-rh-v202-marker">
 window.__ICHEF_RH_BUILD__='RH-V202-CLIENT-CATEGORIES';
+</script>
+
+
+<style id="ichef-rh-v203-pin-fix-style">
+.rh-v203-pin-row{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto;
+  gap:8px;
+  align-items:stretch;
+}
+.rh-v203-pin-row #staff-pin{
+  min-width:0;
+}
+.rh-v203-pin-row #rh-v203-test-pin{
+  min-height:44px;
+  white-space:nowrap;
+  border:1px solid #111!important;
+  background:#fff!important;
+  color:#111!important;
+}
+.rh-v203-pin-status{
+  display:flex;
+  align-items:center;
+  gap:7px;
+  min-height:30px;
+  margin-top:2px;
+  padding:6px 9px;
+  border:1px solid #aaa;
+  border-radius:7px;
+  background:#f6f6f6;
+  color:#333!important;
+  font-size:.61rem;
+  font-weight:800;
+}
+.rh-v203-pin-status::before{
+  content:"";
+  width:8px;height:8px;border-radius:50%;
+  background:#888;
+  flex:0 0 8px;
+}
+.rh-v203-pin-status.ok{background:#e5f5eb;border-color:#278a52}
+.rh-v203-pin-status.ok::before{background:#278a52}
+.rh-v203-pin-status.warn{background:#fff4d8;border-color:#b48200}
+.rh-v203-pin-status.warn::before{background:#b48200}
+.rh-v203-pin-status.error{background:#fde7e7;border-color:#bd4242}
+.rh-v203-pin-status.error::before{background:#bd4242}
+.rh-v203-pin-status.syncing{background:#e8f1fb;border-color:#4d82b8}
+.rh-v203-pin-status.syncing::before{background:#4d82b8;animation:rhV203Pulse .8s ease-in-out infinite alternate}
+@keyframes rhV203Pulse{from{opacity:.35}to{opacity:1}}
+@media(max-width:640px){
+  .rh-v203-pin-row{grid-template-columns:1fr}
+  .rh-v203-pin-row #rh-v203-test-pin{width:100%}
+}
+</style>
+
+<script id="ichef-rh-v203-pin-fix">
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V203_PIN_FIX__) return;
+  window.__ICHEF_RH_V203_PIN_FIX__=true;
+
+  window.setStaffPinStatusV203=function(type='neutral',message=''){
+    const el=document.getElementById('rh-v203-pin-status');
+    if(!el) return;
+    el.className=`rh-v203-pin-status ${String(type||'neutral')}`;
+    el.textContent=String(message||'');
+  };
+
+  window.testStaffPinV203=async function(){
+    const input=document.getElementById('staff-pin');
+    const btn=document.getElementById('rh-v203-test-pin');
+    const pin=String(input?.value||'').replace(/\D+/g,'').slice(0,12);
+    if(input) input.value=pin;
+
+    if(!/^\d{4,12}$/.test(pin)){
+      setStaffPinStatusV203('error','PIN invalide · 4 à 12 chiffres');
+      return false;
+    }
+
+    // Si le PIN vient d'être modifié mais pas encore enregistré, prévenir
+    // clairement : le serveur ne peut pas connaître une valeur non sauvegardée.
+    const original=String(document.getElementById('staff-edit-original-pin')?.value||'').trim();
+    const existing=(()=>{
+      try{return getDir().find(s=>String(s.pin||'')===original)||null}
+      catch(_){return null}
+    })();
+
+    if(existing && pin!==String(existing.pin||'')){
+      setStaffPinStatusV203('warn','PIN modifié · enregistrez la fiche avant de le tester');
+      return false;
+    }
+
+    if(!existing && !original){
+      setStaffPinStatusV203('warn','Nouveau collaborateur · enregistrez d’abord la fiche');
+      return false;
+    }
+
+    if(btn){btn.disabled=true;btn.textContent='TEST…';}
+    setStaffPinStatusV203('syncing','Vérification sécurisée avec le serveur…');
+
+    try{
+      const auth=await verifyPinWithServer(pin);
+      if(auth?.success){
+        const role=String(auth.role||auth.dept||'accès').trim();
+        setStaffPinStatusV203('ok',`✓ PIN reconnu${role?` · ${role}`:''}`);
+        return true;
+      }
+      setStaffPinStatusV203('error',auth?.error||'PIN non reconnu par le serveur');
+      return false;
+    }catch(error){
+      setStaffPinStatusV203('error',error?.message||'Serveur PIN indisponible');
+      return false;
+    }finally{
+      if(btn){btn.disabled=false;btn.textContent='TESTER LE PIN';}
+    }
+  };
+
+  // Autoriser Entrée sur le pad officiel.
+  const submitOfficial=window.submitOfficialGatewayPin;
+  document.addEventListener('keydown',event=>{
+    const landing=document.getElementById('landing-portal');
+    if(!landing || landing.style.display==='none') return;
+    if(event.key==='Enter' && typeof window.submitOfficialGatewayPin==='function'){
+      event.preventDefault();
+      window.submitOfficialGatewayPin();
+    }
+  },true);
+
+  // Nettoyage automatique : uniquement des chiffres dans la fiche employé.
+  document.addEventListener('input',event=>{
+    if(event.target?.id!=='staff-pin') return;
+    const clean=String(event.target.value||'').replace(/\D+/g,'').slice(0,12);
+    if(event.target.value!==clean) event.target.value=clean;
+  },true);
+
+  window.__ICHEF_RH_BUILD__='RH-V203-PIN-FIX-SYNC-TEST';
+  console.info('[iCHEF RH V203] PIN : validation serveur renforcée · sync prioritaire · test intégré');
+})();
+</script>
+
+<script id="ichef-rh-v203-marker">
+window.__ICHEF_RH_BUILD__='RH-V203-PIN-FIX-SYNC-TEST';
 </script>
 
