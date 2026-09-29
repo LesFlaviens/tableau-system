@@ -173,6 +173,8 @@ console.warn('⚠️ STRIPE_SECRET_KEY manquante : paiements Stripe désactivés
 const twilioAccountSid = process.env.TWILIO_ACCOUNT_SID;
 const twilioAuthToken = process.env.TWILIO_AUTH_TOKEN;
 const twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER;
+const ICHEF_TWILIO_VERIFY_SERVICE_SID = String(process.env.TWILIO_VERIFY_SERVICE_SID || '').trim();
+const ICHEF_STAFF_IDENTITY_STRICT = /^(1|true|yes|on)$/i.test(String(process.env.ICHEF_STAFF_IDENTITY_STRICT || '').trim());
 const NUMERO_FLAVIEN = '+330641437265';
 let twilioClient = null;
 if (twilioAccountSid && twilioAuthToken) {
@@ -660,7 +662,11 @@ const ICHEF_OFFICIAL_MODULES = Object.freeze([
 "reservation.html",
 "rh.html",
 "roadmap.html",
-"runner-pass1.html"
+"runner-pass1.html",
+"taches.html",
+"fournisseurs.html",
+"commandes-fournisseurs.html",
+"livraisons-staff.html"
 ]);
 const ICHEF_OFFICIAL_MODULE_SET = new Set(ICHEF_OFFICIAL_MODULES);
 function ichefNormalizeModuleAccess(raw = {}) {
@@ -1037,11 +1043,19 @@ app.get('/api/staff/build', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.json({
         success: true,
-        build: 'V135-ICHEF-CONNECT-SECURE',
+        build: 'V147-CURRENT-FUSION-OPS-IDENTITY-SECURE',
         staffPortal: true,
         signedSession: true,
         ichefConnect: true,
         chatAudio: true,
+        operations: true,
+        tasks: true,
+        supplierOrders: true,
+        staffDeliveries: true,
+        whatsappOtp: Boolean(twilioClient && ICHEF_TWILIO_VERIFY_SERVICE_SID),
+        trustedDevice: true,
+        appDeviceProof: true,
+        strictIdentity: ICHEF_STAFF_IDENTITY_STRICT,
         timestamp: new Date().toISOString()
     });
 });
@@ -6110,6 +6124,21 @@ String(deviceId || '')
 )
 : null;
 
+const operationsToken =
+isMaster
+? ichefSignSession(
+{
+tenantID:tenant.tenantID,
+scope:'OPS_MASTER',
+staffId:`MASTER:${tenant.tenantID}`,
+role:'MASTER',
+name:'Direction',
+deviceId:String(deviceId||'').trim().slice(0,180)
+},
+8 * 60 * 60
+)
+: staffPortalToken;
+
 ichefPinAttemptSuccess(
 req,
 safeID,
@@ -6153,6 +6182,8 @@ accessToken:
 staffPortalToken,
 token:
 staffPortalToken,
+operationsToken:
+operationsToken,
 staff:
 resolvedStaff
 ? {
@@ -15952,6 +15983,289 @@ function ichefRequireStaffSession(req) {
     };
 }
 
+// ============================================================================
+// 🔐 iCHEF V146 — ANTI-USURPATION STAFF · WHATSAPP OTP + APPAREIL DE CONFIANCE
+// ============================================================================
+
+const ichefStaffTrustedDeviceSchema = new mongoose.Schema({
+    tenantID:{type:String,required:true,index:true},
+    staffId:{type:String,required:true,index:true},
+    deviceHash:{type:String,required:true,index:true},
+    deviceLabel:{type:String,default:'',maxlength:180},
+    platform:{type:String,default:'',maxlength:160},
+    publicKeyJwk:{type:mongoose.Schema.Types.Mixed,default:null},
+    verifiedVia:{type:String,enum:['WHATSAPP','ADMIN','LEGACY'],default:'WHATSAPP'},
+    createdAt:{type:Date,default:Date.now},
+    lastVerifiedAt:{type:Date,default:Date.now},
+    lastUsedAt:{type:Date,default:Date.now},
+    revokedAt:{type:Date,default:null,index:true},
+    revokedBy:{type:String,default:'',maxlength:180}
+},{minimize:false});
+ichefStaffTrustedDeviceSchema.index(
+    {tenantID:1,staffId:1,deviceHash:1},
+    {unique:true}
+);
+
+const IchefStaffTrustedDevice =
+    mongoose.models.IchefStaffTrustedDevice ||
+    mongoose.model('IchefStaffTrustedDevice',ichefStaffTrustedDeviceSchema);
+
+const ichefStaffDeviceChallengeSchema = new mongoose.Schema({
+    challengeId:{type:String,required:true,unique:true,index:true},
+    tenantID:{type:String,required:true,index:true},
+    staffId:{type:String,required:true,index:true},
+    deviceHash:{type:String,required:true,index:true},
+    challenge:{type:String,required:true},
+    createdAt:{type:Date,default:Date.now},
+    expiresAt:{type:Date,required:true,index:{expires:0}},
+    usedAt:{type:Date,default:null,index:true}
+},{minimize:false});
+
+const IchefStaffDeviceChallenge =
+    mongoose.models.IchefStaffDeviceChallenge ||
+    mongoose.model('IchefStaffDeviceChallenge',ichefStaffDeviceChallengeSchema);
+
+function ichefStaffDeviceHash(deviceId=''){
+    return nodeCrypto
+        .createHash('sha256')
+        .update(String(deviceId||'').trim())
+        .digest('hex');
+}
+
+function ichefStaffNormalizePhone(value=''){
+    let phone=String(value||'').trim().replace(/[()\s.-]/g,'');
+    if(phone.startsWith('00')) phone='+'+phone.slice(2);
+    return /^\+[1-9]\d{7,14}$/.test(phone) ? phone : '';
+}
+
+function ichefStaffMaskedPhone(phone=''){
+    const p=String(phone||'');
+    if(p.length<6)return '••••';
+    return p.slice(0,Math.min(4,p.length-4))+' •••• '+p.slice(-4);
+}
+
+function ichefStaffPhoneFromRecords(member={},directoryEntry={}){
+    const values=[
+        member?.whatsappPhone,member?.mobile,member?.mobilePhone,member?.phone,member?.telephone,
+        directoryEntry?.whatsappPhone,directoryEntry?.mobile,directoryEntry?.mobilePhone,directoryEntry?.phone,directoryEntry?.telephone
+    ];
+    for(const value of values){
+        const phone=ichefStaffNormalizePhone(value);
+        if(phone)return phone;
+    }
+    return '';
+}
+
+function ichefStaffPublicJwkSafe(value){
+    if(!value || typeof value!=='object' || Array.isArray(value))return null;
+    const jwk={
+        kty:String(value.kty||''),
+        crv:String(value.crv||''),
+        x:String(value.x||''),
+        y:String(value.y||''),
+        ext:value.ext!==false
+    };
+    if(
+        jwk.kty!=='EC' ||
+        jwk.crv!=='P-256' ||
+        !/^[A-Za-z0-9_-]{20,}$/.test(jwk.x) ||
+        !/^[A-Za-z0-9_-]{20,}$/.test(jwk.y)
+    ) return null;
+    return jwk;
+}
+
+function ichefStaffDeviceLabel(req={},body={}){
+    const bodyLabel=String(body?.deviceLabel||'').trim().slice(0,180);
+    if(bodyLabel)return bodyLabel;
+    const ua=String(req.headers?.['user-agent']||'').trim();
+    return ua.slice(0,180) || 'Appareil Staff';
+}
+
+function ichefStaffPlatform(req={},body={}){
+    return String(body?.platform||req.headers?.['sec-ch-ua-platform']||'')
+        .replace(/^"|"$/g,'')
+        .trim()
+        .slice(0,160);
+}
+
+async function ichefStaffFindActiveSecurityProfile(tenantID,staffId){
+    const safeTenant=cleanString(tenantID),id=String(staffId||'').trim();
+    if(!safeTenant||!id)return null;
+
+    const tenant=await Tenant.findOne(
+        {tenantID:safeTenant},
+        {tenantID:1,status:1,archivedAt:1,demoExpiration:1}
+    ).lean();
+
+    if(
+        !tenant ||
+        tenant.archivedAt ||
+        String(tenant.status||'').toUpperCase()==='SUSPENDU' ||
+        (tenant.demoExpiration && new Date()>new Date(tenant.demoExpiration))
+    ) return null;
+
+    const state=await AppState.findOne(
+        {tenantID:safeTenant},
+        {'activeOrders.STAFF_ACCESS.data':1,'activeOrders.DIRECTORY_MASTER.data':1}
+    ).lean();
+
+    const access=Array.isArray(state?.activeOrders?.STAFF_ACCESS?.data)
+        ? state.activeOrders.STAFF_ACCESS.data : [];
+    const directory=Array.isArray(state?.activeOrders?.DIRECTORY_MASTER?.data)
+        ? state.activeOrders.DIRECTORY_MASTER.data : [];
+
+    let member=access.find(x=>x?.active!==false && String(x?.id||'')===id) || null;
+    let directoryEntry=null;
+
+    const idsOf=x=>[
+        x?.id,x?.staffId,x?.employeeId,x?.rhId,x?.matricule,x?.employeeNo,x?.employeeNumber,x?.internalId
+    ].filter(v=>v!==undefined&&v!==null&&String(v).trim()!=='').map(String);
+
+    if(member){
+        const memberIds=idsOf(member);
+        directoryEntry=directory.find(x=>x?.active!==false && idsOf(x).some(v=>memberIds.includes(v))) || null;
+    }else{
+        directoryEntry=directory.find(x=>x?.active!==false && idsOf(x).includes(id)) || null;
+        if(directoryEntry){
+            member={
+                ...directoryEntry,
+                id,
+                name:directoryEntry.name ||
+                    [directoryEntry.firstName,directoryEntry.lastName].filter(Boolean).join(' ') ||
+                    [directoryEntry.prenom,directoryEntry.nom].filter(Boolean).join(' ') ||
+                    'Collaborateur'
+            };
+        }
+    }
+
+    if(!member)return null;
+    return {tenant,state,member,directoryEntry:directoryEntry||{}};
+}
+
+function ichefStaffBuildLoginPayload({
+    tenantID,member,directoryEntry={},deviceId='',loginIdentifier='',
+    deviceTrusted=false,identityMode='PIN_DEVICE'
+}){
+    const safeName=
+        member?.name ||
+        directoryEntry?.name ||
+        [member?.prenom,member?.nom].filter(Boolean).join(' ') ||
+        [member?.firstName,member?.lastName].filter(Boolean).join(' ') ||
+        'Collaborateur';
+
+    const safeRole=
+        member?.role ||
+        member?.dept ||
+        directoryEntry?.role ||
+        directoryEntry?.dept ||
+        'STAFF';
+
+    const safeDept=
+        member?.dept ||
+        member?.department ||
+        member?.service ||
+        directoryEntry?.dept ||
+        directoryEntry?.department ||
+        directoryEntry?.service ||
+        '';
+
+    const token=ichefSignSession({
+        tenantID,
+        scope:'STAFF',
+        staffId:String(member.id),
+        role:safeRole,
+        dept:safeDept,
+        name:safeName,
+        deviceId:String(deviceId||'').trim().slice(0,180)
+    },8*60*60);
+
+    return {
+        success:true,
+        accountType:'COLLABORATOR',
+        accessToken:token,
+        token,
+        safeTenantID:tenantID,
+        staffId:member.id,
+        staffName:safeName,
+        role:safeRole,
+        loginIdentifier,
+        deviceTrusted:deviceTrusted===true,
+        identityProtection:{
+            mode:identityMode,
+            whatsappConfigured:Boolean(twilioClient && ICHEF_TWILIO_VERIFY_SERVICE_SID),
+            strict:ICHEF_STAFF_IDENTITY_STRICT
+        },
+        staff:{
+            id:member.id,
+            name:safeName,
+            role:member.role || directoryEntry.role || '',
+            dept:member.dept || directoryEntry.dept || '',
+            active:member.active !== false,
+            onDuty:member.onDuty === true,
+            lastPunchAt:member.lastPunchAt || null,
+            lastPunchType:member.lastPunchType || '',
+            workProfile:
+                (member.workProfile && typeof member.workProfile==='object')
+                ? member.workProfile : null,
+            padAssignment:
+                (member.padAssignment && typeof member.padAssignment==='object')
+                ? member.padAssignment : null
+        }
+    };
+}
+
+async function ichefStaffStartWhatsappVerify(phone){
+    if(!twilioClient || !ICHEF_TWILIO_VERIFY_SERVICE_SID){
+        const error=new Error('WhatsApp Verify iCHEF non configuré.');
+        error.code='WHATSAPP_VERIFY_NOT_CONFIGURED';
+        throw error;
+    }
+    return await twilioClient.verify.v2
+        .services(ICHEF_TWILIO_VERIFY_SERVICE_SID)
+        .verifications
+        .create({to:phone,channel:'whatsapp'});
+}
+
+async function ichefStaffCheckWhatsappVerify(phone,code){
+    if(!twilioClient || !ICHEF_TWILIO_VERIFY_SERVICE_SID){
+        const error=new Error('WhatsApp Verify iCHEF non configuré.');
+        error.code='WHATSAPP_VERIFY_NOT_CONFIGURED';
+        throw error;
+    }
+    return await twilioClient.verify.v2
+        .services(ICHEF_TWILIO_VERIFY_SERVICE_SID)
+        .verificationChecks
+        .create({to:phone,code:String(code||'').replace(/\D/g,'').slice(0,10)});
+}
+
+async function ichefStaffTrustedDevice(tenantID,staffId,deviceId){
+    const deviceHash=ichefStaffDeviceHash(deviceId);
+    if(!deviceHash || !deviceId)return null;
+    return await IchefStaffTrustedDevice.findOne({
+        tenantID:cleanString(tenantID),
+        staffId:String(staffId||''),
+        deviceHash,
+        revokedAt:null
+    });
+}
+
+async function ichefStaffSessionDeviceIsRevoked(auth={}){
+    const tenantID=cleanString(auth?.tenantID || auth?.claims?.tenantID || '');
+    const staffId=String(auth?.claims?.staffId || '').trim();
+    const deviceId=String(auth?.claims?.deviceId || '').trim();
+    if(!tenantID || !staffId || !deviceId)return false;
+
+    const revoked=await IchefStaffTrustedDevice.findOne({
+        tenantID,
+        staffId,
+        deviceHash:ichefStaffDeviceHash(deviceId),
+        revokedAt:{$ne:null}
+    },{_id:1}).lean();
+
+    return Boolean(revoked);
+}
+
+
 async function ichefLoadActiveStaffSession(req) {
     const auth =
         ichefRequireStaffSession(req);
@@ -16060,6 +16374,15 @@ async function ichefLoadActiveStaffSession(req) {
                 auth.claims,
             error:
                 'Profil collaborateur introuvable ou désactivé.'
+        };
+    }
+
+    if (await ichefStaffSessionDeviceIsRevoked(auth)) {
+        return {
+            ok:false,
+            tenantID:auth.tenantID,
+            claims:auth.claims,
+            error:'Cet appareil a été révoqué. Une nouvelle vérification WhatsApp est nécessaire.'
         };
     }
 
@@ -16212,6 +16535,15 @@ async function ichefLoadActiveStaffChatSession(req) {
             tenantID:auth.tenantID,
             claims:auth.claims,
             error:'Profil collaborateur introuvable ou désactivé.'
+        };
+    }
+
+    if (await ichefStaffSessionDeviceIsRevoked(auth)) {
+        return {
+            ok:false,
+            tenantID:auth.tenantID,
+            claims:auth.claims,
+            error:'Cet appareil a été révoqué. Une nouvelle vérification WhatsApp est nécessaire.'
         };
     }
 
@@ -17195,61 +17527,99 @@ app.post(
                 directoryEntry.service ||
                 '';
 
-            const token =
-                ichefSignSession(
-                    {
+            if(!deviceId){
+                return res.status(400).json({
+                    success:false,
+                    code:'STAFF_DEVICE_REQUIRED',
+                    error:'Cet appareil ne peut pas être identifié. Réessayez depuis l’app iCHEF ou un navigateur compatible.'
+                });
+            }
+
+            const deviceHash=ichefStaffDeviceHash(deviceId);
+            const trusted=await IchefStaffTrustedDevice.findOne({
+                tenantID,
+                staffId:String(member.id),
+                deviceHash,
+                revokedAt:null
+            });
+
+            if(trusted){
+                trusted.lastUsedAt=new Date();
+                await trusted.save().catch(()=>{});
+            }
+
+            const staffPhone=ichefStaffPhoneFromRecords(member,directoryEntry);
+            const whatsappReady=Boolean(twilioClient && ICHEF_TWILIO_VERIFY_SERVICE_SID);
+
+            if(!trusted && whatsappReady && staffPhone){
+                try{
+                    await ichefStaffStartWhatsappVerify(staffPhone);
+
+                    const pendingToken=ichefSignSession({
                         tenantID,
-                        scope:'STAFF',
+                        scope:'STAFF_WHATSAPP_PENDING',
                         staffId:String(member.id),
                         role:safeRole,
                         dept:safeDept,
                         name:safeName,
-                        deviceId
-                    },
-                    8 * 60 * 60
-                );
+                        deviceId,
+                        loginIdentifier:submittedStaffId
+                    },10*60);
 
-            ichefPinAttemptSuccess(
-                req,
-                attemptKey,
-                deviceId
-            );
+                    ichefPinAttemptSuccess(req,attemptKey,deviceId);
 
-            return res.json({
-                success:true,
-                accountType:'COLLABORATOR',
-                accessToken:token,
-                token,
-                safeTenantID:tenantID,
-                staffId:member.id,
-                staffName:safeName,
-                role:safeRole,
-                loginIdentifier:submittedStaffId,
-                staff:{
-                    id:member.id,
-                    name:safeName,
-                    role:member.role || directoryEntry.role || '',
-                    dept:member.dept || directoryEntry.dept || '',
-                    active:member.active !== false,
-                    onDuty:member.onDuty === true,
-                    lastPunchAt:member.lastPunchAt || null,
-                    lastPunchType:member.lastPunchType || '',
-                    workProfile:
-                        (
-                            member.workProfile &&
-                            typeof member.workProfile === 'object'
-                        )
-                        ? member.workProfile
-                        : null,
-                    padAssignment:
-                        (
-                            member.padAssignment &&
-                            typeof member.padAssignment === 'object'
-                        )
-                        ? member.padAssignment
-                        : null
+                    return res.status(202).json({
+                        success:true,
+                        verificationRequired:true,
+                        method:'WHATSAPP',
+                        pendingToken,
+                        maskedPhone:ichefStaffMaskedPhone(staffPhone),
+                        safeTenantID:tenantID,
+                        staffId:member.id,
+                        staffName:safeName,
+                        role:safeRole,
+                        deviceTrusted:false,
+                        accountType:'COLLABORATOR'
+                    });
+                }catch(verifyError){
+                    console.error('[iCHEF STAFF WhatsApp start]',verifyError?.message||verifyError);
+                    if(ICHEF_STAFF_IDENTITY_STRICT){
+                        return res.status(503).json({
+                            success:false,
+                            code:'STAFF_WHATSAPP_UNAVAILABLE',
+                            error:'La vérification WhatsApp est momentanément indisponible.'
+                        });
+                    }
                 }
-            });
+            }
+
+            if(
+                !trusted &&
+                ICHEF_STAFF_IDENTITY_STRICT &&
+                (!whatsappReady || !staffPhone)
+            ){
+                return res.status(428).json({
+                    success:false,
+                    code:!staffPhone?'STAFF_WHATSAPP_PHONE_REQUIRED':'STAFF_WHATSAPP_NOT_CONFIGURED',
+                    error:!staffPhone
+                        ? 'Votre numéro WhatsApp doit être renseigné au format international (+33… / +41…) dans votre fiche RH.'
+                        : 'La vérification WhatsApp iCHEF doit être configurée avant cette connexion.'
+                });
+            }
+
+            ichefPinAttemptSuccess(req,attemptKey,deviceId);
+
+            return res.json(
+                ichefStaffBuildLoginPayload({
+                    tenantID,
+                    member,
+                    directoryEntry,
+                    deviceId,
+                    loginIdentifier:submittedStaffId,
+                    deviceTrusted:Boolean(trusted),
+                    identityMode:trusted?'TRUSTED_DEVICE':'PIN_DEVICE'
+                })
+            );
 
         } catch (error) {
             console.error(
@@ -17267,6 +17637,342 @@ app.post(
     }
 );
 
+
+
+// ============================================================================
+// 🔐 V146 — ROUTES SÉCURITÉ APP / WHATSAPP / APPAREILS
+// ============================================================================
+
+app.post('/api/staff/security/whatsapp/check',async(req,res)=>{
+    try{
+        res.setHeader('Cache-Control','no-store');
+
+        const tenantID=cleanString(req.body?.tenantID || req.headers?.['x-ichef-tenant']);
+        const deviceId=String(req.body?.deviceId || req.headers?.['x-ichef-device'] || '').trim().slice(0,180);
+        const pendingToken=String(req.body?.pendingToken||'').trim();
+        const code=String(req.body?.code||'').replace(/\D/g,'').slice(0,10);
+
+        if(!tenantID||!deviceId||!pendingToken||!/^\d{4,10}$/.test(code)){
+            return res.status(400).json({success:false,error:'Vérification WhatsApp invalide.'});
+        }
+
+        const claims=ichefVerifySignedSession(pendingToken,{
+            tenantID,
+            scope:'STAFF_WHATSAPP_PENDING'
+        });
+
+        if(
+            !claims?.staffId ||
+            String(claims.deviceId||'')!==deviceId
+        ){
+            return res.status(401).json({
+                success:false,
+                code:'STAFF_WHATSAPP_PENDING_INVALID',
+                error:'La vérification a expiré ou ne correspond pas à cet appareil.'
+            });
+        }
+
+        const profile=await ichefStaffFindActiveSecurityProfile(tenantID,claims.staffId);
+        if(!profile){
+            return res.status(401).json({success:false,error:'Profil collaborateur indisponible.'});
+        }
+
+        const phone=ichefStaffPhoneFromRecords(profile.member,profile.directoryEntry);
+        if(!phone){
+            return res.status(428).json({
+                success:false,
+                code:'STAFF_WHATSAPP_PHONE_REQUIRED',
+                error:'Numéro WhatsApp RH manquant ou invalide.'
+            });
+        }
+
+        const verifyAttemptKey=`staff-whatsapp-${tenantID}-${claims.staffId}`;
+        const verifyAttempt=ichefPinAttemptCheck(req,verifyAttemptKey,deviceId);
+        if(!verifyAttempt.ok){
+            res.setHeader('Retry-After',String(Math.max(1,Math.ceil(Number(verifyAttempt.retryAfterMs||0)/1000))));
+            return res.status(429).json({
+                success:false,
+                code:'STAFF_WHATSAPP_RATE_LIMITED',
+                error:'Trop de codes incorrects. Réessayez dans quelques minutes.'
+            });
+        }
+
+        const check=await ichefStaffCheckWhatsappVerify(phone,code);
+        if(String(check?.status||'').toLowerCase()!=='approved'){
+            ichefPinAttemptFailure(req,verifyAttemptKey,deviceId);
+            return res.status(401).json({
+                success:false,
+                code:'STAFF_WHATSAPP_CODE_INVALID',
+                error:'Code WhatsApp incorrect ou expiré.'
+            });
+        }
+
+        ichefPinAttemptSuccess(req,verifyAttemptKey,deviceId);
+
+        const publicKeyJwk=ichefStaffPublicJwkSafe(req.body?.publicKeyJwk);
+        const now=new Date();
+        const deviceHash=ichefStaffDeviceHash(deviceId);
+
+        await IchefStaffTrustedDevice.findOneAndUpdate(
+            {tenantID,staffId:String(claims.staffId),deviceHash},
+            {
+                $set:{
+                    deviceLabel:ichefStaffDeviceLabel(req,req.body),
+                    platform:ichefStaffPlatform(req,req.body),
+                    publicKeyJwk:publicKeyJwk || null,
+                    verifiedVia:'WHATSAPP',
+                    lastVerifiedAt:now,
+                    lastUsedAt:now,
+                    revokedAt:null,
+                    revokedBy:''
+                },
+                $setOnInsert:{createdAt:now}
+            },
+            {upsert:true,new:true,setDefaultsOnInsert:true}
+        );
+
+        return res.json(
+            ichefStaffBuildLoginPayload({
+                tenantID,
+                member:profile.member,
+                directoryEntry:profile.directoryEntry,
+                deviceId,
+                loginIdentifier:String(claims.loginIdentifier||''),
+                deviceTrusted:true,
+                identityMode:'WHATSAPP_TRUSTED_DEVICE'
+            })
+        );
+    }catch(error){
+        console.error('[iCHEF STAFF WhatsApp check V146]',error);
+        return res.status(500).json({
+            success:false,
+            error:'Vérification WhatsApp momentanément indisponible.'
+        });
+    }
+});
+
+app.get('/api/staff/security/devices',async(req,res)=>{
+    try{
+        res.setHeader('Cache-Control','no-store');
+        const auth=await ichefLoadActiveStaffSession(req);
+        if(!auth.ok)return res.status(401).json({success:false,error:auth.error});
+
+        const rows=await IchefStaffTrustedDevice.find({
+            tenantID:auth.tenantID,
+            staffId:String(auth.claims.staffId)
+        }).sort({lastUsedAt:-1,createdAt:-1}).lean();
+
+        const currentHash=ichefStaffDeviceHash(
+            String(req.headers?.['x-ichef-device']||'')
+        );
+
+        return res.json({
+            success:true,
+            devices:rows.map(x=>({
+                id:String(x._id),
+                label:x.deviceLabel||'Appareil Staff',
+                platform:x.platform||'',
+                verifiedVia:x.verifiedVia||'WHATSAPP',
+                createdAt:x.createdAt,
+                lastVerifiedAt:x.lastVerifiedAt,
+                lastUsedAt:x.lastUsedAt,
+                revoked:x.revokedAt!=null,
+                current:x.deviceHash===currentHash,
+                appUnlockReady:Boolean(x.publicKeyJwk)
+            }))
+        });
+    }catch(error){
+        console.error('[iCHEF STAFF devices GET V146]',error);
+        return res.status(500).json({success:false,error:'Appareils indisponibles.'});
+    }
+});
+
+app.delete('/api/staff/security/devices/:deviceRecordId',async(req,res)=>{
+    try{
+        res.setHeader('Cache-Control','no-store');
+        const auth=await ichefLoadActiveStaffSession(req);
+        if(!auth.ok)return res.status(401).json({success:false,error:auth.error});
+
+        const row=await IchefStaffTrustedDevice.findOne({
+            _id:req.params.deviceRecordId,
+            tenantID:auth.tenantID,
+            staffId:String(auth.claims.staffId)
+        });
+
+        if(!row)return res.status(404).json({success:false,error:'Appareil introuvable.'});
+
+        row.revokedAt=new Date();
+        row.revokedBy=String(auth.claims.staffId||'');
+        await row.save();
+
+        return res.json({success:true});
+    }catch(error){
+        console.error('[iCHEF STAFF devices DELETE V146]',error);
+        return res.status(500).json({success:false,error:'Révocation impossible.'});
+    }
+});
+
+app.post('/api/staff/security/app-challenge',async(req,res)=>{
+    try{
+        res.setHeader('Cache-Control','no-store');
+
+        const tenantID=cleanString(req.body?.tenantID || req.headers?.['x-ichef-tenant']);
+        const staffId=String(req.body?.staffId||'').trim().slice(0,180);
+        const deviceId=String(req.body?.deviceId || req.headers?.['x-ichef-device'] || '').trim().slice(0,180);
+
+        if(!tenantID||!staffId||!deviceId){
+            return res.status(400).json({success:false,error:'Appareil ou profil incomplet.'});
+        }
+
+        const attempt=ichefPinAttemptCheck(req,`staff-app-${tenantID}-${staffId}`,deviceId);
+        if(!attempt.ok){
+            return res.status(429).json({success:false,error:'Trop de tentatives. Réessayez plus tard.'});
+        }
+
+        const device=await IchefStaffTrustedDevice.findOne({
+            tenantID,
+            staffId,
+            deviceHash:ichefStaffDeviceHash(deviceId),
+            revokedAt:null
+        }).lean();
+
+        if(!device?.publicKeyJwk){
+            return res.status(409).json({
+                success:false,
+                code:'STAFF_APP_DEVICE_KEY_REQUIRED',
+                error:'Cet appareil doit être vérifié une fois avec PIN + WhatsApp.'
+            });
+        }
+
+        const profile=await ichefStaffFindActiveSecurityProfile(tenantID,staffId);
+        if(!profile){
+            return res.status(401).json({success:false,error:'Profil collaborateur indisponible.'});
+        }
+
+        const challengeId=nodeCrypto.randomUUID();
+        const challenge=nodeCrypto.randomBytes(32).toString('base64url');
+        const expiresAt=new Date(Date.now()+2*60*1000);
+
+        await IchefStaffDeviceChallenge.create({
+            challengeId,
+            tenantID,
+            staffId,
+            deviceHash:ichefStaffDeviceHash(deviceId),
+            challenge,
+            expiresAt
+        });
+
+        return res.json({
+            success:true,
+            challengeId,
+            challenge,
+            expiresInSeconds:120,
+            biometricHook:true
+        });
+    }catch(error){
+        console.error('[iCHEF STAFF app-challenge V146]',error);
+        return res.status(500).json({success:false,error:'Déverrouillage sécurisé indisponible.'});
+    }
+});
+
+app.post('/api/staff/security/app-unlock',async(req,res)=>{
+    try{
+        res.setHeader('Cache-Control','no-store');
+
+        const tenantID=cleanString(req.body?.tenantID || req.headers?.['x-ichef-tenant']);
+        const staffId=String(req.body?.staffId||'').trim().slice(0,180);
+        const deviceId=String(req.body?.deviceId || req.headers?.['x-ichef-device'] || '').trim().slice(0,180);
+        const challengeId=String(req.body?.challengeId||'').trim();
+        const signature=String(req.body?.signature||'').trim();
+
+        if(!tenantID||!staffId||!deviceId||!challengeId||!signature){
+            return res.status(400).json({success:false,error:'Preuve appareil incomplète.'});
+        }
+
+        const challenge=await IchefStaffDeviceChallenge.findOne({
+            challengeId,tenantID,staffId,
+            deviceHash:ichefStaffDeviceHash(deviceId),
+            usedAt:null,
+            expiresAt:{$gt:new Date()}
+        });
+
+        if(!challenge){
+            return res.status(401).json({
+                success:false,
+                code:'STAFF_APP_CHALLENGE_INVALID',
+                error:'Défi expiré ou déjà utilisé.'
+            });
+        }
+
+        const device=await IchefStaffTrustedDevice.findOne({
+            tenantID,staffId,
+            deviceHash:ichefStaffDeviceHash(deviceId),
+            revokedAt:null
+        });
+
+        const jwk=ichefStaffPublicJwkSafe(device?.publicKeyJwk);
+        if(!device||!jwk){
+            return res.status(401).json({success:false,error:'Appareil non autorisé.'});
+        }
+
+        let publicKey;
+        try{
+            publicKey=nodeCrypto.createPublicKey({key:jwk,format:'jwk'});
+        }catch(_){
+            return res.status(401).json({success:false,error:'Clé appareil invalide.'});
+        }
+
+        let signatureBuffer;
+        try{
+            signatureBuffer=Buffer.from(signature,'base64url');
+        }catch(_){
+            return res.status(401).json({success:false,error:'Signature appareil invalide.'});
+        }
+
+        const verified=nodeCrypto.verify(
+            'sha256',
+            Buffer.from(String(challenge.challenge),'utf8'),
+            {key:publicKey,dsaEncoding:'ieee-p1363'},
+            signatureBuffer
+        );
+
+        if(!verified){
+            ichefPinAttemptFailure(req,`staff-app-${tenantID}-${staffId}`,deviceId);
+            return res.status(401).json({
+                success:false,
+                code:'STAFF_APP_PROOF_INVALID',
+                error:'Preuve cryptographique de l’appareil refusée.'
+            });
+        }
+
+        challenge.usedAt=new Date();
+        await challenge.save();
+
+        const profile=await ichefStaffFindActiveSecurityProfile(tenantID,staffId);
+        if(!profile){
+            return res.status(401).json({success:false,error:'Profil collaborateur indisponible.'});
+        }
+
+        device.lastUsedAt=new Date();
+        await device.save().catch(()=>{});
+        ichefPinAttemptSuccess(req,`staff-app-${tenantID}-${staffId}`,deviceId);
+
+        return res.json(
+            ichefStaffBuildLoginPayload({
+                tenantID,
+                member:profile.member,
+                directoryEntry:profile.directoryEntry,
+                deviceId,
+                loginIdentifier:staffId,
+                deviceTrusted:true,
+                identityMode:'APP_DEVICE_PROOF'
+            })
+        );
+    }catch(error){
+        console.error('[iCHEF STAFF app-unlock V146]',error);
+        return res.status(500).json({success:false,error:'Déverrouillage sécurisé indisponible.'});
+    }
+});
 
 
 // ============================================================================
@@ -26236,6 +26942,586 @@ app.post('/api/staff/planning/ack', async (req,res) => {
     }
 });
 
+
+// ============================================================================
+// ✅ iCHEF OPERATIONS V136 — TÂCHES + FOURNISSEURS + COMMANDES FOURNISSEURS
+// ============================================================================
+// Réutilise la session STAFF signée existante, le binding appareil,
+// le tenant actif et le profil collaborateur actif. Aucun rôle envoyé par le
+// navigateur n'est utilisé comme autorisation.
+// ============================================================================
+
+const ichefOpsTaskCommentSchema = new mongoose.Schema({
+commentId:{type:String,required:true},
+staffId:{type:String,required:true},
+staffName:{type:String,default:''},
+text:{type:String,default:'',maxlength:1200},
+createdAt:{type:Date,default:Date.now}
+},{_id:false,minimize:false});
+
+const ichefOpsHistorySchema = new mongoose.Schema({
+eventId:{type:String,required:true},
+action:{type:String,required:true},
+staffId:{type:String,default:''},
+staffName:{type:String,default:''},
+details:{type:Object,default:{}},
+createdAt:{type:Date,default:Date.now}
+},{_id:false,minimize:false});
+
+const ichefOpsTaskSchema = new mongoose.Schema({
+tenantID:{type:String,required:true,index:true},
+taskId:{type:String,required:true,index:true},
+title:{type:String,required:true,maxlength:220},
+description:{type:String,default:'',maxlength:5000},
+priority:{type:String,enum:['NORMAL','IMPORTANT','URGENT'],default:'NORMAL',index:true},
+status:{type:String,enum:['TODO','IN_PROGRESS','BLOCKED','DONE','CANCELLED'],default:'TODO',index:true},
+assignedStaffIds:{type:[String],default:[],index:true},
+assignedTeamKeys:{type:[String],default:[],index:true},
+assignedTeamLabels:{type:[String],default:[]},
+recurrence:{type:String,enum:['NONE','DAILY','WEEKLY','MONTHLY'],default:'NONE'},
+dueAt:{type:Date,default:null,index:true},
+startedAt:{type:Date,default:null},
+completedAt:{type:Date,default:null,index:true},
+completedByStaffId:{type:String,default:''},
+completedByName:{type:String,default:''},
+createdByStaffId:{type:String,required:true,index:true},
+createdByName:{type:String,default:''},
+createdByRole:{type:String,default:''},
+sourceType:{type:String,default:'MANUAL',index:true},
+sourceRefId:{type:String,default:'',index:true},
+comments:{type:[ichefOpsTaskCommentSchema],default:[]},
+history:{type:[ichefOpsHistorySchema],default:[]},
+archived:{type:Boolean,default:false,index:true},
+createdAt:{type:Date,default:Date.now,index:true},
+updatedAt:{type:Date,default:Date.now,index:true}
+},{minimize:false});
+ichefOpsTaskSchema.index({tenantID:1,taskId:1},{unique:true});
+ichefOpsTaskSchema.index({tenantID:1,status:1,dueAt:1});
+ichefOpsTaskSchema.index({tenantID:1,assignedStaffIds:1,status:1});
+const IchefOpsTask = mongoose.models.IchefOpsTask || mongoose.model('IchefOpsTask',ichefOpsTaskSchema);
+
+const ichefOpsSupplierSchema = new mongoose.Schema({
+tenantID:{type:String,required:true,index:true},
+supplierId:{type:String,required:true,index:true},
+name:{type:String,required:true,maxlength:220},
+contactName:{type:String,default:'',maxlength:180},
+email:{type:String,default:'',maxlength:240},
+phone:{type:String,default:'',maxlength:80},
+category:{type:String,default:'',maxlength:180,index:true},
+deliveryDays:{type:[String],default:[]},
+minimumOrder:{type:Number,default:0,min:0},
+defaultCurrency:{type:String,enum:['CHF','EUR'],default:'CHF'},
+orderChannel:{type:String,enum:['MEMO','PDF','WHATSAPP','EMAIL','PORTAL','MANUAL'],default:'MEMO',index:true},
+whatsappPhone:{type:String,default:'',maxlength:80},
+orderPortalUrl:{type:String,default:'',maxlength:500},
+notes:{type:String,default:'',maxlength:4000},
+active:{type:Boolean,default:true,index:true},
+createdByStaffId:{type:String,required:true},
+createdByName:{type:String,default:''},
+createdAt:{type:Date,default:Date.now,index:true},
+updatedAt:{type:Date,default:Date.now,index:true}
+},{minimize:false});
+ichefOpsSupplierSchema.index({tenantID:1,supplierId:1},{unique:true});
+ichefOpsSupplierSchema.index({tenantID:1,name:1});
+const IchefOpsSupplier = mongoose.models.IchefOpsSupplier || mongoose.model('IchefOpsSupplier',ichefOpsSupplierSchema);
+
+const ichefOpsOrderItemSchema = new mongoose.Schema({
+itemId:{type:String,required:true},
+name:{type:String,required:true,maxlength:220},
+sku:{type:String,default:'',maxlength:120},
+unit:{type:String,default:'unité',maxlength:80},
+quantity:{type:Number,required:true,min:0.001,max:1000000},
+unitPrice:{type:Number,default:0,min:0,max:100000000},
+receivedQuantity:{type:Number,default:0,min:0,max:1000000},
+notes:{type:String,default:'',maxlength:1000},
+inventoryItemId:{type:String,default:'',maxlength:180,index:true}
+},{_id:false,minimize:false});
+
+const ichefOpsPurchaseOrderSchema = new mongoose.Schema({
+tenantID:{type:String,required:true,index:true},
+orderId:{type:String,required:true,index:true},
+supplierId:{type:String,required:true,index:true},
+supplierName:{type:String,required:true,maxlength:220},
+status:{type:String,enum:['DRAFT','PENDING_APPROVAL','APPROVED','SENT','PARTIAL','RECEIVED','CANCELLED'],default:'DRAFT',index:true},
+currency:{type:String,enum:['CHF','EUR'],default:'CHF'},
+sectorKey:{type:String,default:'economat',index:true,maxlength:80},
+sectorLabel:{type:String,default:'Économat',maxlength:120},
+supplierOrderChannel:{type:String,enum:['MEMO','PDF','WHATSAPP','EMAIL','PORTAL','MANUAL'],default:'MEMO'},
+supplierPhone:{type:String,default:'',maxlength:80},
+supplierWhatsappPhone:{type:String,default:'',maxlength:80},
+supplierEmail:{type:String,default:'',maxlength:240},
+supplierPortalUrl:{type:String,default:'',maxlength:500},
+items:{type:[ichefOpsOrderItemSchema],default:[]},
+totalEstimated:{type:Number,default:0,min:0},
+requestedDeliveryAt:{type:Date,default:null,index:true},
+notes:{type:String,default:'',maxlength:5000},
+createdByStaffId:{type:String,required:true,index:true},
+createdByName:{type:String,default:''},
+createdByRole:{type:String,default:''},
+approvedByStaffId:{type:String,default:''},
+approvedByName:{type:String,default:''},
+approvedAt:{type:Date,default:null},
+sentAt:{type:Date,default:null},
+receivedAt:{type:Date,default:null},
+receivedByStaffId:{type:String,default:''},
+receivedByName:{type:String,default:''},
+receptionNote:{type:String,default:'',maxlength:2500},
+receptionHasIssue:{type:Boolean,default:false,index:true},
+cancelledAt:{type:Date,default:null},
+linkedReceptionTaskId:{type:String,default:'',index:true},
+history:{type:[ichefOpsHistorySchema],default:[]},
+createdAt:{type:Date,default:Date.now,index:true},
+updatedAt:{type:Date,default:Date.now,index:true}
+},{minimize:false});
+ichefOpsPurchaseOrderSchema.index({tenantID:1,orderId:1},{unique:true});
+ichefOpsPurchaseOrderSchema.index({tenantID:1,status:1,createdAt:-1});
+const IchefOpsPurchaseOrder = mongoose.models.IchefOpsPurchaseOrder || mongoose.model('IchefOpsPurchaseOrder',ichefOpsPurchaseOrderSchema);
+
+function ichefOpsId(prefix='OPS'){return `${prefix}_${Date.now()}_${nodeCrypto.randomBytes(8).toString('hex')}`;}
+function ichefOpsText(value='',max=5000){return String(value ?? '').trim().slice(0,max);}
+function ichefOpsKey(value=''){return ichefStaffChatDeptKey(value);}
+
+const ICHEF_OPS_SECTORS = Object.freeze([
+{key:'cuisine',label:'Cuisine'},
+{key:'service',label:'Service / Salle'},
+{key:'bar',label:'Bar'},
+{key:'hotel',label:'Hôtel'},
+{key:'reception',label:'Réception'},
+{key:'housekeeping',label:'Housekeeping / Étages'},
+{key:'maintenance',label:'Maintenance'},
+{key:'economat',label:'Économat'}
+]);
+function ichefOpsSectorKey(value=''){
+const raw=ichefOpsKey(value);
+const aliases={
+cuisine:'cuisine',kitchen:'cuisine',
+service:'service',salle:'service',serveur:'service',restaurant:'service',
+bar:'bar',
+hotel:'hotel',hotellerie:'hotel',
+reception:'reception',front_office:'reception',frontoffice:'reception',accueil:'reception',
+housekeeping:'housekeeping',etages:'housekeeping',etage:'housekeeping',menage:'housekeeping',linge:'housekeeping',
+maintenance:'maintenance',technique:'maintenance',
+economat:'economat',achats:'economat',achat:'economat',stocks:'economat',stock:'economat'
+};
+return aliases[raw] || (ICHEF_OPS_SECTORS.some(s=>s.key===raw)?raw:'economat');
+}
+function ichefOpsSectorLabel(value=''){
+const key=ichefOpsSectorKey(value);
+return ICHEF_OPS_SECTORS.find(s=>s.key===key)?.label || 'Économat';
+}
+function ichefOpsCanReceiveOrder(order={},auth={}){
+const caps=ichefOpsCapabilities(auth.staff||{});
+if(caps.manageTasks||caps.createPurchases||caps.approvePurchases)return true;
+const self=ichefOpsSelf(auth);
+return Boolean(self.deptKey && ichefOpsSectorKey(self.deptKey)===ichefOpsSectorKey(order.sectorKey||'economat'));
+}
+
+function ichefOpsStaffId(item={}){return String(item?.id ?? item?.staffId ?? item?.employeeId ?? item?.rhId ?? item?.matricule ?? '').trim().slice(0,120);}
+function ichefOpsStaffName(item={}){return ichefStaffChatMemberName(item) || 'Collaborateur';}
+function ichefOpsRoleText(item={}){
+const raw=[item?.role,item?.position,item?.poste,item?.fonction,item?.jobTitle,item?.title,item?.type,item?.profile,item?.department,item?.dept,item?.service,item?.team].filter(Boolean).join(' ');
+return raw.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+}
+function ichefOpsExplicitPermission(staff={},group='',key=''){
+const p=staff?.permissions&&typeof staff.permissions==='object'?staff.permissions:{};
+const g=p?.[group]&&typeof p[group]==='object'?p[group]:{};
+if(typeof g?.[key]==='boolean')return g[key];
+const flat=p?.[`${group}.${key}`];
+if(typeof flat==='boolean')return flat;
+return null;
+}
+function ichefOpsCapabilities(staff={}){
+const role=ichefOpsRoleText(staff);
+const taskManagerRole=/master|direction|directeur|directrice|gerant|gerante|manager|chef|responsable|superviseur|supervisor|rh|ressources humaines|admin/.test(role);
+const purchaseCreatorRole=/master|direction|directeur|directrice|gerant|gerante|manager|chef|responsable|economat|achat|approvision|purchas|admin/.test(role);
+const purchaseApproverRole=/master|direction|directeur|directrice|gerant|gerante|manager|economat|achat|approvision|admin/.test(role);
+const a=ichefOpsExplicitPermission(staff,'tasks','manage');
+const b=ichefOpsExplicitPermission(staff,'purchases','create');
+const c=ichefOpsExplicitPermission(staff,'purchases','approve');
+const d=ichefOpsExplicitPermission(staff,'suppliers','manage');
+const manageTasks=a===null?taskManagerRole:a;
+const createPurchases=b===null?purchaseCreatorRole:b;
+const approvePurchases=c===null?purchaseApproverRole:c;
+const manageSuppliers=d===null?purchaseApproverRole:d;
+return {manageTasks,createSelfTasks:true,createPurchases,approvePurchases,viewPurchases:createPurchases||approvePurchases,manageSuppliers,viewSuppliers:createPurchases||approvePurchases||manageSuppliers};
+}
+function ichefOpsDirectory(auth={}){
+const source=[...(Array.isArray(auth.staffAccess)?auth.staffAccess:[]),...ichefStaffPortalArray(auth.state?.activeOrders?.DIRECTORY_MASTER)];
+const map=new Map();
+for(const item of source){
+if(!item||item.active===false)continue;
+const id=ichefOpsStaffId(item);if(!id||map.has(id))continue;
+const dept=ichefStaffChatMemberDept(item);
+map.set(id,{id,name:ichefOpsStaffName(item),role:ichefStaffChatMemberRole(item),dept,deptKey:ichefStaffChatDeptKey(dept)});
+}
+return [...map.values()];
+}
+function ichefOpsSelf(auth={}){
+const id=String(auth?.claims?.staffId||ichefOpsStaffId(auth?.staff)||'').trim();
+const dept=ichefStaffChatMemberDept(auth?.staff||{});
+return {id,name:ichefOpsStaffName(auth?.staff||{}),role:ichefStaffChatMemberRole(auth?.staff||{}),dept,deptKey:ichefStaffChatDeptKey(dept)};
+}
+function ichefOpsTaskCanView(task={},auth={}){
+const caps=ichefOpsCapabilities(auth.staff||{});if(caps.manageTasks)return true;
+const self=ichefOpsSelf(auth);
+if(String(task.createdByStaffId||'')===self.id)return true;
+if((task.assignedStaffIds||[]).some(id=>String(id)===self.id))return true;
+if(self.deptKey&&(task.assignedTeamKeys||[]).some(k=>ichefOpsSectorKey(k)===ichefOpsSectorKey(self.deptKey)))return true;
+return false;
+}
+function ichefOpsTaskCanWork(task={},auth={}){
+const caps=ichefOpsCapabilities(auth.staff||{});if(caps.manageTasks)return true;
+const self=ichefOpsSelf(auth);
+if((task.assignedStaffIds||[]).some(id=>String(id)===self.id))return true;
+if(self.deptKey&&(task.assignedTeamKeys||[]).some(k=>ichefOpsSectorKey(k)===ichefOpsSectorKey(self.deptKey)))return true;
+return false;
+}
+function ichefOpsHistory(action,auth={},details={}){
+const self=ichefOpsSelf(auth);
+return {eventId:ichefOpsId('EVT'),action:ichefOpsText(action,80),staffId:self.id,staffName:self.name,details:details&&typeof details==='object'?details:{},createdAt:new Date()};
+}
+function ichefOpsOrderTotal(items=[]){return Math.round(items.reduce((sum,item)=>sum+(Number(item.quantity||0)*Number(item.unitPrice||0)),0)*100)/100;}
+function ichefOpsPublicTask(row={}){
+const x=row?.toObject?row.toObject():row;
+return {id:String(x.taskId||''),title:String(x.title||''),description:String(x.description||''),priority:String(x.priority||'NORMAL'),status:String(x.status||'TODO'),assignedStaffIds:Array.isArray(x.assignedStaffIds)?x.assignedStaffIds:[],assignedTeamKeys:Array.isArray(x.assignedTeamKeys)?x.assignedTeamKeys:[],assignedTeamLabels:Array.isArray(x.assignedTeamLabels)?x.assignedTeamLabels:[],recurrence:String(x.recurrence||'NONE'),dueAt:x.dueAt||null,startedAt:x.startedAt||null,completedAt:x.completedAt||null,completedByName:String(x.completedByName||''),createdByStaffId:String(x.createdByStaffId||''),createdByName:String(x.createdByName||''),createdByRole:String(x.createdByRole||''),sourceType:String(x.sourceType||'MANUAL'),sourceRefId:String(x.sourceRefId||''),comments:Array.isArray(x.comments)?x.comments:[],history:Array.isArray(x.history)?x.history.slice(-40):[],createdAt:x.createdAt||null,updatedAt:x.updatedAt||null};
+}
+function ichefOpsEmitTask(tenantID,task,kind='updated'){
+const packet={tenantID:cleanString(tenantID),taskId:String(task?.taskId||task?.id||''),kind,timestamp:new Date().toISOString()};
+const room=ichefStaffRealtimeRoom(tenantID);if(room)io.to(room).emit('ops-task-changed',packet);
+for(const staffId of(task?.assignedStaffIds||[])){const userRoom=ichefStaffUserRoom(tenantID,staffId);if(userRoom)io.to(userRoom).emit('ops-task-changed',packet);}
+}
+async function ichefOpsLoadAuthorizedSession(req){
+let auth=await ichefLoadActiveStaffSession(req);
+if(auth.ok)return auth;
+const tenantID=cleanString(req.query?.tenantID||req.body?.tenantID||req.headers?.['x-ichef-tenant']);
+const claims=ichefVerifySignedSession(ichefBearerToken(req),{tenantID,scope:'OPS_MASTER'});
+if(!tenantID||claims?.role!=='MASTER')return auth;
+const tokenDevice=String(claims.deviceId||'').trim();
+const requestDevice=String(req.headers?.['x-ichef-device']||'').trim();
+if(tokenDevice&&(!requestDevice||tokenDevice!==requestDevice))return {ok:false,tenantID,error:'Session Operations non reconnue sur cet appareil.'};
+const tenant=await Tenant.findOne({tenantID},{tenantID:1,status:1,archivedAt:1}).lean();
+if(!tenant||tenant.archivedAt||String(tenant.status||'').toUpperCase()!=='ACTIF')return {ok:false,tenantID,error:'Accès établissement suspendu.'};
+const state=await AppState.findOne({tenantID});
+const staffAccess=ichefStaffPortalArray(state?.activeOrders?.STAFF_ACCESS);
+return {ok:true,tenantID,claims:{...claims,staffId:`MASTER:${tenantID}`},tenant,state,staffAccess,staff:{id:`MASTER:${tenantID}`,name:'Direction',role:'MASTER',dept:'DIRECTION',active:true,permissions:{tasks:{manage:true},purchases:{create:true,approve:true},suppliers:{manage:true}}}};
+}
+async function ichefOpsRequire(req,res,{purchaseView=false,purchaseCreate=false,purchaseApprove=false,supplierManage=false}={}){
+const auth=await ichefOpsLoadAuthorizedSession(req);
+if(!auth.ok){res.status(401).json({success:false,error:auth.error||'Session Operations invalide.'});return null;}
+const caps=ichefOpsCapabilities(auth.staff||{});
+if(purchaseView&&!caps.viewPurchases){res.status(403).json({success:false,error:'Accès achats fournisseurs non autorisé.'});return null;}
+if(purchaseCreate&&!caps.createPurchases){res.status(403).json({success:false,error:'Création de commande fournisseur non autorisée.'});return null;}
+if(purchaseApprove&&!caps.approvePurchases){res.status(403).json({success:false,error:'Validation de commande fournisseur non autorisée.'});return null;}
+if(supplierManage&&!caps.manageSuppliers){res.status(403).json({success:false,error:'Gestion des fournisseurs non autorisée.'});return null;}
+return {...auth,caps,self:ichefOpsSelf(auth)};
+}
+
+app.get('/api/ops/context',async(req,res)=>{
+try{
+res.setHeader('Cache-Control','no-store');
+const auth=await ichefOpsRequire(req,res);if(!auth)return;
+const people=ichefOpsDirectory(auth),teamMap=new Map();
+for(const p of people){if(p.deptKey&&!teamMap.has(p.deptKey))teamMap.set(p.deptKey,{key:p.deptKey,label:p.dept||p.deptKey});}
+return res.json({success:true,self:auth.self,capabilities:auth.caps,people,teams:[...teamMap.values()].sort((a,b)=>String(a.label).localeCompare(String(b.label),'fr')),sectors:ICHEF_OPS_SECTORS,build:'V146-STAFF-IDENTITY-WHATSAPP-DEVICE-SECURE'});
+}catch(error){console.error('[iCHEF OPS context]',error);return res.status(500).json({success:false,error:'Contexte opérationnel momentanément indisponible.'});}
+});
+
+app.get('/api/ops/tasks',async(req,res)=>{
+try{
+res.setHeader('Cache-Control','no-store');
+const auth=await ichefOpsRequire(req,res);if(!auth)return;
+const query={tenantID:auth.tenantID,archived:false};
+const status=ichefOpsText(req.query?.status||'',30).toUpperCase();
+if(['TODO','IN_PROGRESS','BLOCKED','DONE','CANCELLED'].includes(status))query.status=status;
+const rows=await IchefOpsTask.find(query).sort({status:1,dueAt:1,createdAt:-1}).limit(500).lean();
+return res.json({success:true,tasks:rows.filter(row=>ichefOpsTaskCanView(row,auth)).map(ichefOpsPublicTask),capabilities:auth.caps,self:auth.self});
+}catch(error){console.error('[iCHEF OPS tasks GET]',error);return res.status(500).json({success:false,error:'Chargement des tâches impossible.'});}
+});
+
+app.post('/api/ops/tasks',async(req,res)=>{
+try{
+res.setHeader('Cache-Control','no-store');
+const auth=await ichefOpsRequire(req,res);if(!auth)return;
+const title=ichefOpsText(req.body?.title,220);if(title.length<2)return res.status(400).json({success:false,error:'Titre de tâche requis.'});
+const people=ichefOpsDirectory(auth),validPeople=new Set(people.map(p=>p.id)),teamMap=new Map(people.filter(p=>p.deptKey).map(p=>[p.deptKey,p.dept||p.deptKey]));
+let assignedStaffIds=[...new Set((Array.isArray(req.body?.assignedStaffIds)?req.body.assignedStaffIds:[]).map(v=>String(v).trim()).filter(v=>validPeople.has(v)))];
+let assignedTeamKeys=[...new Set((Array.isArray(req.body?.assignedTeamKeys)?req.body.assignedTeamKeys:[]).map(ichefOpsKey).filter(v=>teamMap.has(v)))];
+if(!auth.caps.manageTasks){assignedStaffIds=[auth.self.id];assignedTeamKeys=[];}else if(!assignedStaffIds.length&&!assignedTeamKeys.length){assignedStaffIds=[auth.self.id];}
+const p=String(req.body?.priority||'NORMAL').toUpperCase(),r=String(req.body?.recurrence||'NONE').toUpperCase();
+const dueAt=req.body?.dueAt?new Date(req.body.dueAt):null;if(dueAt&&Number.isNaN(dueAt.getTime()))return res.status(400).json({success:false,error:'Échéance invalide.'});
+const now=new Date();
+const task=await IchefOpsTask.create({tenantID:auth.tenantID,taskId:ichefOpsId('TASK'),title,description:ichefOpsText(req.body?.description,5000),priority:['NORMAL','IMPORTANT','URGENT'].includes(p)?p:'NORMAL',status:'TODO',assignedStaffIds,assignedTeamKeys,assignedTeamLabels:assignedTeamKeys.map(k=>teamMap.get(k)||k),recurrence:['NONE','DAILY','WEEKLY','MONTHLY'].includes(r)?r:'NONE',dueAt,createdByStaffId:auth.self.id,createdByName:auth.self.name,createdByRole:auth.self.role,sourceType:ichefOpsText(req.body?.sourceType||'MANUAL',80).toUpperCase(),sourceRefId:ichefOpsText(req.body?.sourceRefId||'',180),history:[ichefOpsHistory('CREATED',auth,{assignedStaffIds,assignedTeamKeys})],createdAt:now,updatedAt:now});
+ichefOpsEmitTask(auth.tenantID,task,'created');
+return res.status(201).json({success:true,task:ichefOpsPublicTask(task)});
+}catch(error){console.error('[iCHEF OPS task POST]',error);return res.status(500).json({success:false,error:'Création de tâche impossible.'});}
+});
+
+app.put('/api/ops/tasks/:taskId',async(req,res)=>{
+try{
+res.setHeader('Cache-Control','no-store');
+const auth=await ichefOpsRequire(req,res);if(!auth)return;
+const task=await IchefOpsTask.findOne({tenantID:auth.tenantID,taskId:String(req.params.taskId||'')});
+if(!task||task.archived)return res.status(404).json({success:false,error:'Tâche introuvable.'});
+if(!ichefOpsTaskCanView(task,auth))return res.status(403).json({success:false,error:'Cette tâche ne vous est pas accessible.'});
+const action=String(req.body?.action||'').toUpperCase(),now=new Date();
+if(action==='STATUS'){
+const status=String(req.body?.status||'').toUpperCase();
+if(!['TODO','IN_PROGRESS','BLOCKED','DONE'].includes(status)&&!(auth.caps.manageTasks&&status==='CANCELLED'))return res.status(400).json({success:false,error:'Statut de tâche invalide.'});
+if(!ichefOpsTaskCanWork(task,auth))return res.status(403).json({success:false,error:'Vous ne pouvez pas modifier cette tâche.'});
+task.status=status;if(status==='IN_PROGRESS'&&!task.startedAt)task.startedAt=now;
+if(status==='DONE'){task.completedAt=now;task.completedByStaffId=auth.self.id;task.completedByName=auth.self.name;}else if(status!=='DONE'){task.completedAt=null;task.completedByStaffId='';task.completedByName='';}
+task.history.push(ichefOpsHistory('STATUS',auth,{status}));
+}else if(action==='EDIT'){
+if(!auth.caps.manageTasks)return res.status(403).json({success:false,error:'Modification réservée au responsable.'});
+const people=ichefOpsDirectory(auth),validPeople=new Set(people.map(p=>p.id)),teamMap=new Map(people.filter(p=>p.deptKey).map(p=>[p.deptKey,p.dept||p.deptKey]));
+if(req.body?.title!==undefined){const title=ichefOpsText(req.body.title,220);if(title.length<2)return res.status(400).json({success:false,error:'Titre invalide.'});task.title=title;}
+if(req.body?.description!==undefined)task.description=ichefOpsText(req.body.description,5000);
+if(req.body?.priority!==undefined){const pr=String(req.body.priority).toUpperCase();if(['NORMAL','IMPORTANT','URGENT'].includes(pr))task.priority=pr;}
+if(req.body?.dueAt!==undefined){if(!req.body.dueAt)task.dueAt=null;else{const d=new Date(req.body.dueAt);if(Number.isNaN(d.getTime()))return res.status(400).json({success:false,error:'Échéance invalide.'});task.dueAt=d;}}
+if(Array.isArray(req.body?.assignedStaffIds))task.assignedStaffIds=[...new Set(req.body.assignedStaffIds.map(v=>String(v).trim()).filter(v=>validPeople.has(v)))];
+if(Array.isArray(req.body?.assignedTeamKeys)){task.assignedTeamKeys=[...new Set(req.body.assignedTeamKeys.map(ichefOpsKey).filter(v=>teamMap.has(v)))];task.assignedTeamLabels=task.assignedTeamKeys.map(k=>teamMap.get(k)||k);}
+task.history.push(ichefOpsHistory('EDITED',auth,{}));
+}else if(action==='ARCHIVE'){
+if(!auth.caps.manageTasks)return res.status(403).json({success:false,error:'Archivage réservé au responsable.'});task.archived=true;task.history.push(ichefOpsHistory('ARCHIVED',auth,{}));
+}else return res.status(400).json({success:false,error:'Action de tâche inconnue.'});
+task.updatedAt=now;await task.save();ichefOpsEmitTask(auth.tenantID,task,action.toLowerCase());
+return res.json({success:true,task:ichefOpsPublicTask(task)});
+}catch(error){console.error('[iCHEF OPS task PUT]',error);return res.status(500).json({success:false,error:'Mise à jour de tâche impossible.'});}
+});
+
+app.post('/api/ops/tasks/:taskId/comments',async(req,res)=>{
+try{
+res.setHeader('Cache-Control','no-store');
+const auth=await ichefOpsRequire(req,res);if(!auth)return;
+const task=await IchefOpsTask.findOne({tenantID:auth.tenantID,taskId:String(req.params.taskId||'')});
+if(!task||task.archived)return res.status(404).json({success:false,error:'Tâche introuvable.'});
+if(!ichefOpsTaskCanView(task,auth))return res.status(403).json({success:false,error:'Cette tâche ne vous est pas accessible.'});
+const text=ichefOpsText(req.body?.text,1200);if(!text)return res.status(400).json({success:false,error:'Commentaire vide.'});
+task.comments.push({commentId:ichefOpsId('CMT'),staffId:auth.self.id,staffName:auth.self.name,text,createdAt:new Date()});
+task.history.push(ichefOpsHistory('COMMENT',auth,{}));task.updatedAt=new Date();await task.save();ichefOpsEmitTask(auth.tenantID,task,'comment');
+return res.status(201).json({success:true,task:ichefOpsPublicTask(task)});
+}catch(error){console.error('[iCHEF OPS comment]',error);return res.status(500).json({success:false,error:'Ajout du commentaire impossible.'});}
+});
+
+app.get('/api/ops/suppliers',async(req,res)=>{
+try{
+res.setHeader('Cache-Control','no-store');const auth=await ichefOpsRequire(req,res,{purchaseView:true});if(!auth)return;
+const rows=await IchefOpsSupplier.find({tenantID:auth.tenantID}).sort({active:-1,name:1}).limit(1000).lean();
+return res.json({success:true,suppliers:rows.map(x=>({id:x.supplierId,name:x.name,contactName:x.contactName,email:x.email,phone:x.phone,category:x.category,deliveryDays:x.deliveryDays||[],minimumOrder:Number(x.minimumOrder||0),defaultCurrency:x.defaultCurrency||'CHF',orderChannel:x.orderChannel||'MEMO',whatsappPhone:x.whatsappPhone||'',orderPortalUrl:x.orderPortalUrl||'',notes:x.notes||'',active:x.active!==false,createdAt:x.createdAt,updatedAt:x.updatedAt})),capabilities:auth.caps});
+}catch(error){console.error('[iCHEF OPS suppliers GET]',error);return res.status(500).json({success:false,error:'Chargement des fournisseurs impossible.'});}
+});
+
+app.post('/api/ops/suppliers',async(req,res)=>{
+try{
+res.setHeader('Cache-Control','no-store');const auth=await ichefOpsRequire(req,res,{supplierManage:true});if(!auth)return;
+const name=ichefOpsText(req.body?.name,220);if(name.length<2)return res.status(400).json({success:false,error:'Nom du fournisseur requis.'});
+const c=String(req.body?.defaultCurrency||'CHF').toUpperCase();
+const row=await IchefOpsSupplier.create({tenantID:auth.tenantID,supplierId:ichefOpsId('SUP'),name,contactName:ichefOpsText(req.body?.contactName,180),email:ichefOpsText(req.body?.email,240),phone:ichefOpsText(req.body?.phone,80),category:ichefOpsText(req.body?.category,180),deliveryDays:(Array.isArray(req.body?.deliveryDays)?req.body.deliveryDays:[]).map(v=>ichefOpsText(v,40)).slice(0,7),minimumOrder:Math.max(0,Number(req.body?.minimumOrder||0)),defaultCurrency:['CHF','EUR'].includes(c)?c:'CHF',
+orderChannel:['MEMO','PDF','WHATSAPP','EMAIL','PORTAL','MANUAL'].includes(String(req.body?.orderChannel||'MEMO').toUpperCase())?String(req.body?.orderChannel||'MEMO').toUpperCase():'MEMO',
+whatsappPhone:ichefOpsText(req.body?.whatsappPhone||req.body?.phone,80),
+orderPortalUrl:ichefOpsText(req.body?.orderPortalUrl,500),
+notes:ichefOpsText(req.body?.notes,4000),active:req.body?.active!==false,createdByStaffId:auth.self.id,createdByName:auth.self.name,createdAt:new Date(),updatedAt:new Date()});
+const room=ichefStaffRealtimeRoom(auth.tenantID);if(room)io.to(room).emit('ops-supplier-changed',{tenantID:auth.tenantID,supplierId:row.supplierId,kind:'created'});
+return res.status(201).json({success:true,supplier:{id:row.supplierId,name:row.name}});
+}catch(error){console.error('[iCHEF OPS supplier POST]',error);return res.status(500).json({success:false,error:'Création du fournisseur impossible.'});}
+});
+
+app.put('/api/ops/suppliers/:supplierId',async(req,res)=>{
+try{
+res.setHeader('Cache-Control','no-store');const auth=await ichefOpsRequire(req,res,{supplierManage:true});if(!auth)return;
+const row=await IchefOpsSupplier.findOne({tenantID:auth.tenantID,supplierId:String(req.params.supplierId||'')});if(!row)return res.status(404).json({success:false,error:'Fournisseur introuvable.'});
+for(const[key,max]of[['name',220],['contactName',180],['email',240],['phone',80],['category',180],['notes',4000]])if(req.body?.[key]!==undefined)row[key]=ichefOpsText(req.body[key],max);
+if(req.body?.minimumOrder!==undefined)row.minimumOrder=Math.max(0,Number(req.body.minimumOrder||0));
+if(req.body?.defaultCurrency!==undefined){const c=String(req.body.defaultCurrency).toUpperCase();if(['CHF','EUR'].includes(c))row.defaultCurrency=c;}
+if(req.body?.orderChannel!==undefined){const c=String(req.body.orderChannel).toUpperCase();if(['MEMO','PDF','WHATSAPP','EMAIL','PORTAL','MANUAL'].includes(c))row.orderChannel=c;}
+if(req.body?.whatsappPhone!==undefined)row.whatsappPhone=ichefOpsText(req.body.whatsappPhone,80);
+if(req.body?.orderPortalUrl!==undefined)row.orderPortalUrl=ichefOpsText(req.body.orderPortalUrl,500);
+if(Array.isArray(req.body?.deliveryDays))row.deliveryDays=req.body.deliveryDays.map(v=>ichefOpsText(v,40)).slice(0,7);
+if(req.body?.active!==undefined)row.active=req.body.active!==false;
+row.updatedAt=new Date();await row.save();
+const room=ichefStaffRealtimeRoom(auth.tenantID);if(room)io.to(room).emit('ops-supplier-changed',{tenantID:auth.tenantID,supplierId:row.supplierId,kind:'updated'});
+return res.json({success:true,supplier:{id:row.supplierId,name:row.name,active:row.active}});
+}catch(error){console.error('[iCHEF OPS supplier PUT]',error);return res.status(500).json({success:false,error:'Mise à jour du fournisseur impossible.'});}
+});
+
+
+
+app.post('/api/ops/inventory/:inventoryItemId/quick-order',async(req,res)=>{
+try{
+res.setHeader('Cache-Control','no-store');
+const auth=await ichefOpsRequire(req,res,{purchaseCreate:true});if(!auth)return;
+const state=await AppState.findOne({tenantID:auth.tenantID});if(!state)return res.status(404).json({success:false,error:'Économat introuvable.'});
+const inventory=ichefStaffPortalArray(state?.activeOrders?.INVENTORY_MASTER);
+const item=inventory.find(x=>String(x?.id??'')===String(req.params.inventoryItemId||''));if(!item)return res.status(404).json({success:false,error:'Article Économat introuvable.'});
+const supplierName=ichefOpsText(item?.fournisseur,220);if(!supplierName)return res.status(400).json({success:false,error:'Aucun fournisseur n’est renseigné sur cet article.'});
+let supplier=(await IchefOpsSupplier.find({tenantID:auth.tenantID,active:true})).find(x=>ichefOpsKey(x.name)===ichefOpsKey(supplierName));
+if(!supplier){
+supplier=await IchefOpsSupplier.create({tenantID:auth.tenantID,supplierId:ichefOpsId('SUP'),name:supplierName,phone:ichefOpsText(item?.telephone,80),whatsappPhone:ichefOpsText(item?.telephone,80),category:ichefOpsText(item?.cat,180),defaultCurrency:String(req.body?.currency||'CHF').toUpperCase()==='EUR'?'EUR':'CHF',orderChannel:'MEMO',active:true,createdByStaffId:auth.self.id,createdByName:auth.self.name,createdAt:new Date(),updatedAt:new Date()});
+}
+const currentQty=Number.isFinite(Number(item?.currentQty))?Number(item.currentQty):Number(item?.initialQty||0);
+const minStock=Math.max(0,Number(item?.minStock||0)),reorderQty=Math.max(0,Number(item?.reorderQty||0));
+const quantity=Math.max(0.001,Number(req.body?.quantity||0)||reorderQty||(minStock>0?Math.max(minStock*2-currentQty,minStock-currentQty,1):1));
+const unitPrice=Number.isFinite(Number(item?.unitPrice))?Math.max(0,Number(item.unitPrice)):0;
+const sectorKey=ichefOpsSectorKey(req.body?.sectorKey||item?.sectorKey||item?.sector||'economat'),sectorLabel=ichefOpsSectorLabel(sectorKey);
+const now=new Date(),status=auth.caps.approvePurchases?'APPROVED':'PENDING_APPROVAL';
+const poItem={itemId:ichefOpsId('IT1'),name:ichefOpsText(item?.name||'Article',220),sku:ichefOpsText(item?.sku,120),unit:ichefOpsText(item?.unit||'unité',80),quantity,unitPrice,receivedQuantity:0,notes:ichefOpsText(item?.observation,1000),inventoryItemId:String(item?.id||'')};
+const order=await IchefOpsPurchaseOrder.create({tenantID:auth.tenantID,orderId:ichefOpsId('PO'),supplierId:supplier.supplierId,supplierName:supplier.name,status,currency:supplier.defaultCurrency||'CHF',sectorKey,sectorLabel,supplierOrderChannel:supplier.orderChannel||'MEMO',supplierPhone:supplier.phone||'',supplierWhatsappPhone:supplier.whatsappPhone||supplier.phone||'',supplierEmail:supplier.email||'',supplierPortalUrl:supplier.orderPortalUrl||'',items:[poItem],totalEstimated:ichefOpsOrderTotal([poItem]),requestedDeliveryAt:req.body?.requestedDeliveryAt?new Date(req.body.requestedDeliveryAt):null,notes:ichefOpsText(req.body?.observation||item?.observation||`Commande rapide depuis Économat · stock ${currentQty} ${item?.unit||''}`,5000),createdByStaffId:auth.self.id,createdByName:auth.self.name,createdByRole:auth.self.role,approvedByStaffId:status==='APPROVED'?auth.self.id:'',approvedByName:status==='APPROVED'?auth.self.name:'',approvedAt:status==='APPROVED'?now:null,history:[ichefOpsHistory('QUICK_ORDER_FROM_INVENTORY',auth,{inventoryItemId:String(item?.id||''),sectorKey,status})],createdAt:now,updatedAt:now});
+const task=await IchefOpsTask.create({tenantID:auth.tenantID,taskId:ichefOpsId('TASK'),title:`Réception ${sectorLabel} — ${supplier.name}`.slice(0,220),description:`Commande ${order.orderId} · ${quantity} ${item?.unit||''} ${item?.name||''}`.slice(0,5000),priority:'IMPORTANT',status:'TODO',assignedStaffIds:[],assignedTeamKeys:[sectorKey],assignedTeamLabels:[sectorLabel],recurrence:'NONE',dueAt:order.requestedDeliveryAt,createdByStaffId:auth.self.id,createdByName:auth.self.name,createdByRole:auth.self.role,sourceType:'PURCHASE_ORDER',sourceRefId:order.orderId,history:[ichefOpsHistory('CREATED_FROM_QUICK_ORDER',auth,{orderId:order.orderId,sectorKey})],createdAt:now,updatedAt:now});
+order.linkedReceptionTaskId=task.taskId;await order.save();ichefOpsEmitTask(auth.tenantID,task,'created');
+return res.status(201).json({success:true,order:{id:order.orderId,status:order.status,sectorKey,sectorLabel,supplierName:supplier.name,orderChannel:supplier.orderChannel||'MEMO',totalEstimated:order.totalEstimated},taskId:task.taskId});
+}catch(error){console.error('[iCHEF OPS quick-order]',error);return res.status(500).json({success:false,error:'Commande rapide impossible.'});}
+});
+
+app.post('/api/ops/inventory/:inventoryItemId/quick-task',async(req,res)=>{
+try{
+res.setHeader('Cache-Control','no-store');
+const auth=await ichefOpsRequire(req,res);if(!auth)return;
+const state=await AppState.findOne({tenantID:auth.tenantID});if(!state)return res.status(404).json({success:false,error:'Économat introuvable.'});
+const inventory=ichefStaffPortalArray(state?.activeOrders?.INVENTORY_MASTER);
+const item=inventory.find(x=>String(x?.id??'')===String(req.params.inventoryItemId||''));if(!item)return res.status(404).json({success:false,error:'Article Économat introuvable.'});
+const sectorKey=ichefOpsSectorKey(req.body?.sectorKey||item?.sectorKey||item?.sector||auth.self?.deptKey||'economat'),sectorLabel=ichefOpsSectorLabel(sectorKey);
+const currentQty=Number.isFinite(Number(item?.currentQty))?Number(item.currentQty):Number(item?.initialQty||0),minStock=Math.max(0,Number(item?.minStock||0));
+const task=await IchefOpsTask.create({tenantID:auth.tenantID,taskId:ichefOpsId('TASK'),title:ichefOpsText(req.body?.title||(minStock>0&&currentQty<=minStock?`Commander ${item?.name||'article'}`:`Vérifier stock — ${item?.name||'article'}`),220),description:ichefOpsText(req.body?.description||`Stock actuel : ${currentQty} ${item?.unit||''}. Seuil : ${minStock} ${item?.unit||''}. Fournisseur : ${item?.fournisseur||'non renseigné'}.${item?.observation?` Observation : ${item.observation}`:''}`,5000),priority:minStock>0&&currentQty<=minStock?'IMPORTANT':'NORMAL',status:'TODO',assignedStaffIds:auth.caps.manageTasks?[]:[auth.self.id],assignedTeamKeys:auth.caps.manageTasks?[sectorKey]:[],assignedTeamLabels:auth.caps.manageTasks?[sectorLabel]:[],recurrence:'NONE',dueAt:null,createdByStaffId:auth.self.id,createdByName:auth.self.name,createdByRole:auth.self.role,sourceType:'INVENTORY',sourceRefId:String(item?.id||''),history:[ichefOpsHistory('QUICK_TASK_FROM_INVENTORY',auth,{inventoryItemId:String(item?.id||''),sectorKey})],createdAt:new Date(),updatedAt:new Date()});
+ichefOpsEmitTask(auth.tenantID,task,'created');return res.status(201).json({success:true,task:ichefOpsPublicTask(task)});
+}catch(error){console.error('[iCHEF OPS quick-task]',error);return res.status(500).json({success:false,error:'Création rapide de tâche impossible.'});}
+});
+
+app.get('/api/ops/deliveries',async(req,res)=>{
+try{
+res.setHeader('Cache-Control','no-store');
+const auth=await ichefOpsRequire(req,res);if(!auth)return;
+const rows=await IchefOpsPurchaseOrder.find({tenantID:auth.tenantID,status:{$in:['APPROVED','SENT','PARTIAL']}}).sort({requestedDeliveryAt:1,createdAt:1}).limit(500).lean();
+const deliveries=rows.filter(row=>ichefOpsCanReceiveOrder(row,auth)).map(x=>({
+id:x.orderId,supplierId:x.supplierId,supplierName:x.supplierName,status:x.status,currency:x.currency,
+sectorKey:x.sectorKey||'economat',sectorLabel:x.sectorLabel||ichefOpsSectorLabel(x.sectorKey),
+items:x.items||[],totalEstimated:Number(x.totalEstimated||0),requestedDeliveryAt:x.requestedDeliveryAt,
+notes:x.notes||'',supplierOrderChannel:x.supplierOrderChannel||'MEMO',createdAt:x.createdAt
+}));
+return res.json({success:true,deliveries,self:auth.self});
+}catch(error){console.error('[iCHEF OPS deliveries GET]',error);return res.status(500).json({success:false,error:'Chargement des livraisons impossible.'});}
+});
+
+app.get('/api/ops/purchase-orders',async(req,res)=>{
+try{
+res.setHeader('Cache-Control','no-store');const auth=await ichefOpsRequire(req,res,{purchaseView:true});if(!auth)return;
+const query={tenantID:auth.tenantID},status=ichefOpsText(req.query?.status||'',40).toUpperCase();
+if(['DRAFT','PENDING_APPROVAL','APPROVED','SENT','PARTIAL','RECEIVED','CANCELLED'].includes(status))query.status=status;
+const rows=await IchefOpsPurchaseOrder.find(query).sort({createdAt:-1}).limit(500).lean();
+return res.json({success:true,orders:rows.map(x=>({id:x.orderId,supplierId:x.supplierId,supplierName:x.supplierName,status:x.status,currency:x.currency,
+sectorKey:x.sectorKey||'economat',sectorLabel:x.sectorLabel||ichefOpsSectorLabel(x.sectorKey),
+supplierOrderChannel:x.supplierOrderChannel||'MEMO',supplierPhone:x.supplierPhone||'',supplierWhatsappPhone:x.supplierWhatsappPhone||'',supplierEmail:x.supplierEmail||'',supplierPortalUrl:x.supplierPortalUrl||'',
+items:x.items||[],totalEstimated:Number(x.totalEstimated||0),requestedDeliveryAt:x.requestedDeliveryAt,notes:x.notes||'',createdByStaffId:x.createdByStaffId,createdByName:x.createdByName,createdByRole:x.createdByRole,approvedByName:x.approvedByName||'',approvedAt:x.approvedAt,sentAt:x.sentAt,receivedAt:x.receivedAt,receivedByName:x.receivedByName||'',receptionNote:x.receptionNote||'',receptionHasIssue:x.receptionHasIssue===true,linkedReceptionTaskId:x.linkedReceptionTaskId||'',history:Array.isArray(x.history)?x.history.slice(-40):[],createdAt:x.createdAt,updatedAt:x.updatedAt})),capabilities:auth.caps,self:auth.self});
+}catch(error){console.error('[iCHEF OPS purchase-orders GET]',error);return res.status(500).json({success:false,error:'Chargement des commandes fournisseurs impossible.'});}
+});
+
+app.post('/api/ops/purchase-orders',async(req,res)=>{
+try{
+res.setHeader('Cache-Control','no-store');const auth=await ichefOpsRequire(req,res,{purchaseCreate:true});if(!auth)return;
+const supplierId=String(req.body?.supplierId||'').trim(),supplier=await IchefOpsSupplier.findOne({tenantID:auth.tenantID,supplierId,active:true}).lean();
+if(!supplier)return res.status(400).json({success:false,error:'Fournisseur actif introuvable.'});
+const raw=Array.isArray(req.body?.items)?req.body.items:[];
+const items=raw.slice(0,150).map((item,index)=>({itemId:ichefOpsId(`IT${index+1}`),name:ichefOpsText(item?.name,220),sku:ichefOpsText(item?.sku,120),unit:ichefOpsText(item?.unit||'unité',80),quantity:Number(item?.quantity||0),unitPrice:Math.max(0,Number(item?.unitPrice||0)),receivedQuantity:0,notes:ichefOpsText(item?.notes,1000),inventoryItemId:ichefOpsText(item?.inventoryItemId,180)})).filter(item=>item.name&&Number.isFinite(item.quantity)&&item.quantity>0&&item.quantity<=1000000);
+if(!items.length)return res.status(400).json({success:false,error:'Ajoutez au moins un article à la commande.'});
+const delivery=req.body?.requestedDeliveryAt?new Date(req.body.requestedDeliveryAt):null;if(delivery&&Number.isNaN(delivery.getTime()))return res.status(400).json({success:false,error:'Date de livraison invalide.'});
+const c=String(req.body?.currency||supplier.defaultCurrency||'CHF').toUpperCase(),status=req.body?.submitForApproval===true?'PENDING_APPROVAL':'DRAFT',now=new Date();
+const sectorKey=ichefOpsSectorKey(req.body?.sectorKey||req.body?.sector||'economat'),sectorLabel=ichefOpsSectorLabel(sectorKey);
+const order=await IchefOpsPurchaseOrder.create({tenantID:auth.tenantID,orderId:ichefOpsId('PO'),supplierId:supplier.supplierId,supplierName:supplier.name,status,currency:['CHF','EUR'].includes(c)?c:'CHF',
+sectorKey,sectorLabel,supplierOrderChannel:String(supplier.orderChannel||'MEMO').toUpperCase(),supplierPhone:String(supplier.phone||''),supplierWhatsappPhone:String(supplier.whatsappPhone||supplier.phone||''),supplierEmail:String(supplier.email||''),supplierPortalUrl:String(supplier.orderPortalUrl||''),
+items,totalEstimated:ichefOpsOrderTotal(items),requestedDeliveryAt:delivery,notes:ichefOpsText(req.body?.notes,5000),createdByStaffId:auth.self.id,createdByName:auth.self.name,createdByRole:auth.self.role,history:[ichefOpsHistory('CREATED',auth,{status,sectorKey})],createdAt:now,updatedAt:now});
+if(req.body?.createReceptionTask!==false){
+const task=await IchefOpsTask.create({tenantID:auth.tenantID,taskId:ichefOpsId('TASK'),title:`Réception ${sectorLabel} — ${supplier.name}`.slice(0,220),description:`Commande ${order.orderId} · ${items.length} article(s) · ${order.totalEstimated.toFixed(2)} ${order.currency}`,priority:'IMPORTANT',status:'TODO',assignedStaffIds:[],assignedTeamKeys:[sectorKey],assignedTeamLabels:[sectorLabel],recurrence:'NONE',dueAt:delivery,createdByStaffId:auth.self.id,createdByName:auth.self.name,createdByRole:auth.self.role,sourceType:'PURCHASE_ORDER',sourceRefId:order.orderId,history:[ichefOpsHistory('CREATED_FROM_PURCHASE_ORDER',auth,{orderId:order.orderId,sectorKey})],createdAt:now,updatedAt:now});
+order.linkedReceptionTaskId=task.taskId;order.history.push(ichefOpsHistory('RECEPTION_TASK_CREATED',auth,{taskId:task.taskId}));await order.save();ichefOpsEmitTask(auth.tenantID,task,'created');
+}
+const room=ichefStaffRealtimeRoom(auth.tenantID);if(room)io.to(room).emit('ops-purchase-order-changed',{tenantID:auth.tenantID,orderId:order.orderId,kind:'created',status:order.status});
+return res.status(201).json({success:true,order:{id:order.orderId,status:order.status,totalEstimated:order.totalEstimated,linkedReceptionTaskId:order.linkedReceptionTaskId}});
+}catch(error){console.error('[iCHEF OPS purchase-order POST]',error);return res.status(500).json({success:false,error:'Création de commande fournisseur impossible.'});}
+});
+
+app.put('/api/ops/purchase-orders/:orderId',async(req,res)=>{
+try{
+res.setHeader('Cache-Control','no-store');const auth=await ichefOpsRequire(req,res);if(!auth)return;
+const order=await IchefOpsPurchaseOrder.findOne({tenantID:auth.tenantID,orderId:String(req.params.orderId||'')});if(!order)return res.status(404).json({success:false,error:'Commande fournisseur introuvable.'});
+const action=String(req.body?.action||'').toUpperCase(),isCreator=String(order.createdByStaffId||'')===auth.self.id,now=new Date();
+if(action==='SUBMIT'){
+if(!auth.caps.createPurchases||(!isCreator&&!auth.caps.approvePurchases))return res.status(403).json({success:false,error:'Envoi en validation non autorisé.'});
+if(order.status!=='DRAFT')return res.status(409).json({success:false,error:'Cette commande ne peut plus être envoyée en validation.'});
+order.status='PENDING_APPROVAL';order.history.push(ichefOpsHistory('SUBMITTED',auth,{}));
+}else if(action==='APPROVE'){
+if(!auth.caps.approvePurchases)return res.status(403).json({success:false,error:'Validation non autorisée.'});
+if(!['PENDING_APPROVAL','DRAFT'].includes(order.status))return res.status(409).json({success:false,error:'Commande non validable dans cet état.'});
+order.status='APPROVED';order.approvedByStaffId=auth.self.id;order.approvedByName=auth.self.name;order.approvedAt=now;order.history.push(ichefOpsHistory('APPROVED',auth,{}));
+}else if(action==='SEND'){
+if(!auth.caps.approvePurchases)return res.status(403).json({success:false,error:'Envoi fournisseur non autorisé.'});
+if(order.status!=='APPROVED')return res.status(409).json({success:false,error:'La commande doit être approuvée avant envoi.'});
+order.status='SENT';order.sentAt=now;order.history.push(ichefOpsHistory('SENT',auth,{}));
+}else if(action==='RECEIVE'){
+if(!ichefOpsCanReceiveOrder(order,auth))return res.status(403).json({success:false,error:'Réception non autorisée pour votre secteur.'});
+if(!['SENT','APPROVED','PARTIAL'].includes(order.status))return res.status(409).json({success:false,error:'Commande non réceptionnable dans cet état.'});
+const received=req.body?.received&&typeof req.body.received==='object'?req.body.received:{};
+const stockDeltas=[];let complete=true;
+for(const item of order.items){
+const previous=Math.max(0,Number(item.receivedQuantity||0));
+let next=previous;
+if(received[item.itemId]!==undefined){
+next=Math.max(0,Math.min(1000000,Number(received[item.itemId])||0));
+if(next+1e-9<previous)return res.status(409).json({success:false,error:`La quantité reçue de "${item.name}" ne peut pas diminuer.`});
+item.receivedQuantity=next;
+}
+const delta=Math.max(0,next-previous);
+if(delta>0&&String(item.inventoryItemId||'').trim())stockDeltas.push({inventoryItemId:String(item.inventoryItemId).trim(),delta,unitPrice:Math.max(0,Number(item.unitPrice||0)),name:String(item.name||''),unit:String(item.unit||'')});
+if(next+1e-9<Number(item.quantity||0))complete=false;
+}
+if(stockDeltas.length){
+const state=await AppState.findOne({tenantID:auth.tenantID});
+if(!state)return res.status(409).json({success:false,error:'Stock Économat introuvable.'});
+const inventory=ichefStaffPortalArray(state?.activeOrders?.INVENTORY_MASTER).map(x=>({...x}));
+const movements=ichefStaffPortalArray(state?.activeOrders?.INVENTORY_MOVEMENTS).slice();
+const timestamp=new Date().toISOString();
+for(const change of stockDeltas){
+const idx=inventory.findIndex(x=>String(x?.id??'')===change.inventoryItemId);
+if(idx<0)return res.status(409).json({success:false,error:`Article "${change.name}" introuvable dans le stock Économat.`});
+const current=inventory[idx]||{};
+const beforeQty=Number.isFinite(Number(current.currentQty))?Number(current.currentQty):Number(current.initialQty||0);
+const oldPrice=Number.isFinite(Number(current.unitPrice))?Number(current.unitPrice):(beforeQty>0?Number(current.totalPrice||0)/beforeQty:Number(current.totalPrice||0));
+const afterQty=beforeQty+change.delta;
+const purchasePrice=change.unitPrice>0?change.unitPrice:oldPrice;
+const newPrice=afterQty>0?((beforeQty*oldPrice)+(change.delta*purchasePrice))/afterQty:oldPrice;
+inventory[idx]={...current,currentQty:afterQty,qtyStr:`${afterQty} ${current.unit||change.unit||''}`.trim(),unitPrice:newPrice,totalPrice:afterQty*newPrice,lastReceptionAt:timestamp,lastReceptionQty:change.delta,lastReceptionBy:auth.self.name||auth.self.role||'COMMANDES FOURNISSEURS',lastPurchaseOrderId:order.orderId,updatedAt:timestamp,updatedByModule:'COMMANDES_FOURNISSEURS'};
+movements.unshift({id:ichefOpsId('MOVE'),timestamp,type:'RECEPTION_COMMANDE',inventoryItemId:change.inventoryItemId,productName:current.name||change.name,category:current.cat||'',supplier:order.supplierName||current.fournisseur||'',unit:current.unit||change.unit||'',beforeQty,deltaQty:change.delta,afterQty,unitPrice:newPrice,valueDelta:change.delta*purchasePrice,currency:order.currency||'CHF',sourceModule:'COMMANDES_FOURNISSEURS',actorRole:auth.self.role||'',deviceId:String(req.headers?.['x-ichef-device']||'').slice(0,180),note:`Commande ${order.orderId}`});
+}
+await AppState.updateOne({tenantID:auth.tenantID},{$set:{'activeOrders.INVENTORY_MASTER.data':inventory,'activeOrders.INVENTORY_MASTER.updatedAt':timestamp,'activeOrders.INVENTORY_MOVEMENTS.data':movements.slice(0,5000),'activeOrders.INVENTORY_MOVEMENTS.updatedAt':timestamp}});
+}
+order.status=complete?'RECEIVED':'PARTIAL';
+if(complete)order.receivedAt=now;
+order.receivedByStaffId=auth.self.id;order.receivedByName=auth.self.name;
+order.receptionHasIssue=req.body?.hasIssue===true||!complete;
+order.receptionNote=ichefOpsText(req.body?.receptionNote||'',2500);
+order.history.push(ichefOpsHistory('RECEIVED_UPDATE',auth,{status:order.status,stockUpdatedItems:stockDeltas.length,sectorKey:order.sectorKey,hasIssue:order.receptionHasIssue}));
+if(order.linkedReceptionTaskId){
+const linkedTask=await IchefOpsTask.findOne({tenantID:auth.tenantID,taskId:order.linkedReceptionTaskId,archived:false});
+if(linkedTask){
+linkedTask.status=complete?'DONE':'IN_PROGRESS';
+if(complete){linkedTask.completedAt=now;linkedTask.completedByStaffId=auth.self.id;linkedTask.completedByName=auth.self.name;}
+else if(!linkedTask.startedAt)linkedTask.startedAt=now;
+linkedTask.updatedAt=now;
+linkedTask.history.push(ichefOpsHistory(complete?'AUTO_DONE_FROM_RECEPTION':'AUTO_PROGRESS_FROM_RECEPTION',auth,{orderId:order.orderId}));
+await linkedTask.save();
+ichefOpsEmitTask(auth.tenantID,linkedTask,complete?'done':'progress');
+}
+}
+if(stockDeltas.length)io.to(auth.tenantID).emit('inventory-updated',{tenantID:auth.tenantID,source:'COMMANDES_FOURNISSEURS',orderId:order.orderId,timestamp:new Date().toISOString()});
+}else if(action==='CANCEL'){
+if(!(auth.caps.approvePurchases||(isCreator&&['DRAFT','PENDING_APPROVAL'].includes(order.status))))return res.status(403).json({success:false,error:'Annulation non autorisée.'});
+if(['RECEIVED','CANCELLED'].includes(order.status))return res.status(409).json({success:false,error:'Cette commande ne peut plus être annulée.'});
+order.status='CANCELLED';order.cancelledAt=now;order.history.push(ichefOpsHistory('CANCELLED',auth,{}));
+}else return res.status(400).json({success:false,error:'Action de commande inconnue.'});
+order.updatedAt=now;await order.save();const room=ichefStaffRealtimeRoom(auth.tenantID);if(room)io.to(room).emit('ops-purchase-order-changed',{tenantID:auth.tenantID,orderId:order.orderId,kind:action.toLowerCase(),status:order.status});
+return res.json({success:true,order:{id:order.orderId,status:order.status,receivedAt:order.receivedAt}});
+}catch(error){console.error('[iCHEF OPS purchase-order PUT]',error);return res.status(500).json({success:false,error:'Mise à jour de commande fournisseur impossible.'});}
+});
+
+
+
 let ichefShuttingDown = false;
 async function ichefGracefulShutdown(signal, exitCode = 0) {
 if (ichefShuttingDown) return;
@@ -26302,6 +27588,8 @@ console.log('==========================================');
 console.log(`✅ Port serveur : ${PORT}`);
 console.log('✅ Socket.IO activé.');
 console.log('✅ Visioconférence WebRTC Staff sécurisée activée.');
+console.log('✅ iCHEF Operations V147 : Économat + tâches + fournisseurs + livraisons Staff connectés.');
+console.log('✅ Sécurité Staff V147 : appareil de confiance + WhatsApp OTP + preuve cryptographique app.');
 console.log('✅ MongoDB / AppState activé.');
 console.log(`✅ Mongo pool cible : ${ICHEF_MONGO_MIN_POOL}-${ICHEF_MONGO_MAX_POOL}.`);
 console.log('✅ Moteur fiscal MongoDB activé.');
