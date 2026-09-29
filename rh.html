@@ -36307,7 +36307,33 @@ window.__ICHEF_RH_BUILD__='RH-V199-ASSISTANCE-LIGHT-MODAL-FIX';
   }
 
   function visibleTargets(){
-    return [...selected].map(parseKey);
+    const month=monthValue();
+    const result=[];
+
+    [...selected].forEach(key=>{
+      const target=parseKey(key);
+      const validDate=/^\d{4}-\d{2}-\d{2}$/.test(target.dateStr);
+      const sameMonth=validDate && target.dateStr.startsWith(`${month}-`);
+      const day=sameMonth ? Number(target.dateStr.slice(-2)) : 0;
+
+      // La cible doit appartenir au mois actuellement affiché ET exister
+      // encore dans la matrice visible. Cela élimine les sélections fantômes
+      // après changement de mois / rerender.
+      const visibleCell = sameMonth && day
+        ? [...document.querySelectorAll('#global-view-container .rh-status-quick-btn')].some(btn =>
+            String(btn.dataset.rhStaff||'')===String(target.staffId) &&
+            Number(btn.dataset.rhDay||0)===day
+          )
+        : false;
+
+      if(!sameMonth || !visibleCell){
+        selected.delete(key);
+        return;
+      }
+      result.push(target);
+    });
+
+    return result;
   }
 
   function toolbarPlan(){
@@ -36333,8 +36359,9 @@ window.__ICHEF_RH_BUILD__='RH-V199-ASSISTANCE-LIGHT-MODAL-FIX';
   function refreshToolbar(){
     const count=document.querySelector('#rh-v200-fastbar .rh-v200-count');
     if(count){
-      count.textContent=selected.size
-        ? `${selected.size} case${selected.size>1?'s':''} sélectionnée${selected.size>1?'s':''}`
+      const visibleCount=visibleTargets().length;
+      count.textContent=visibleCount
+        ? `${visibleCount} case${visibleCount>1?'s':''} sélectionnée${visibleCount>1?'s':''}`
         : 'Aucune case sélectionnée';
     }
     document.querySelector('#rh-v200-fastbar .rh-v200-select-mode')?.classList.toggle('active',selectionMode);
@@ -36403,11 +36430,6 @@ window.__ICHEF_RH_BUILD__='RH-V199-ASSISTANCE-LIGHT-MODAL-FIX';
     }
 
     const toolbarCategory=document.getElementById('rh-v200-toolbar-status');
-    if(toolbarCategory){
-      toolbarCategory.value=category.id;
-      currentToolbarStatus=category.id;
-      toolbarCategory.dispatchEvent(new Event('change',{bubbles:true}));
-    }
 
     const template=templateById(currentToolbarTemplate);
     const legalStatus=String(category.legalType||'off');
@@ -36457,7 +36479,12 @@ window.__ICHEF_RH_BUILD__='RH-V199-ASSISTANCE-LIGHT-MODAL-FIX';
     );
 
     if(ok){
-      toast(`${targets.length} jour${targets.length>1?'s':''} → ${category.short||category.label}`);
+      if(toolbarCategory){
+        toolbarCategory.value=category.id;
+        currentToolbarStatus=category.id;
+        toolbarCategory.dispatchEvent(new Event('change',{bubbles:true}));
+      }
+      toast(`${targets.length} case${targets.length>1?'s':''} → ${category.short||category.label}`);
       if(clearAfter) clearSelection();
     }
     return ok;
@@ -39033,7 +39060,7 @@ window.__ICHEF_RH_BUILD__='RH-V204-PERFORMANCE-SAFE-CLEANUP';
     const n=count();
     el.classList.toggle('rh-v205-has-selection',n>0);
     el.dataset.selectionLabel=n
-      ? `${n} jour${n>1?'s':''} sélectionné${n>1?'s':''}`
+      ? `${n} case${n>1?'s':''} sélectionnée${n>1?'s':''}`
       : '';
 
     const current=String(document.getElementById('rh-v200-toolbar-status')?.value||'');
@@ -39042,8 +39069,8 @@ window.__ICHEF_RH_BUILD__='RH-V204-PERFORMANCE-SAFE-CLEANUP';
       btn.setAttribute(
         'aria-label',
         n
-          ? `Appliquer ${btn.textContent.trim()} aux ${n} jours sélectionnés`
-          : `Choisir ${btn.textContent.trim()} puis sélectionner des jours`
+          ? `Appliquer ${btn.textContent.trim()} aux ${n} cases sélectionnées`
+          : `Choisir ${btn.textContent.trim()} puis sélectionner des cases`
       );
     });
   }
@@ -39055,7 +39082,7 @@ window.__ICHEF_RH_BUILD__='RH-V204-PERFORMANCE-SAFE-CLEANUP';
     const n=count();
     if(!n){
       api.setCategory?.(categoryId);
-      try{showToast?.('Catégorie choisie · sélectionnez maintenant les jours');}catch(_){}
+      try{showToast?.('Catégorie choisie · sélectionnez maintenant les cases');}catch(_){}
       refresh();
       return false;
     }
@@ -39150,5 +39177,204 @@ window.__ICHEF_RH_BUILD__='RH-V204-PERFORMANCE-SAFE-CLEANUP';
 
 <script id="ichef-rh-v205-marker">
 window.__ICHEF_RH_BUILD__='RH-V205-TOUCH-APPLY-CATEGORY';
+</script>
+
+
+<style id="ichef-rh-v206-bugfix-style">
+/* iCHEF RH V206 · BUGFIX TACTILE / SÉLECTION */
+
+#rh-v201-legend.rh-v206-clean-selection{
+  border-bottom-color:#3778d4 !important;
+}
+
+#rh-v206-debug-indicator{
+  display:none;
+}
+
+/* Évite qu'un bouton de catégorie reste visuellement "pressé"
+   après un prompt annulé ou un pointercancel tactile. */
+#rh-v201-legend .rh-v205-category-action{
+  transform:none;
+}
+
+#rh-v201-legend .rh-v205-category-action:active{
+  transform:scale(.97);
+}
+</style>
+
+<script id="ichef-rh-v206-bugfix-script">
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V206_BUGFIX__) return;
+  window.__ICHEF_RH_V206_BUGFIX__=true;
+
+  const HOUR_LIMIT=5;
+
+  function parseCalendarDate(dateStr){
+    const m=String(dateStr||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if(!m) return null;
+    const y=Number(m[1]), mo=Number(m[2]), d=Number(m[3]);
+    const test=new Date(y,mo-1,d,12,0,0,0);
+    if(
+      test.getFullYear()!==y ||
+      test.getMonth()!==mo-1 ||
+      test.getDate()!==d
+    ) return null;
+    return {y,mo,d};
+  }
+
+  function firstStartV206(plan){
+    const p=plan&&typeof plan==='object'?plan:{};
+    const starts=[p.s1,p.s2]
+      .map(v=>String(v||'').match(/^(\d{1,2}):(\d{2})/)?.slice(1,3))
+      .filter(Boolean)
+      .map(([h,m])=>({h:Number(h),m:Number(m)}))
+      .filter(x=>x.h>=0&&x.h<=23&&x.m>=0&&x.m<=59)
+      .sort((a,b)=>(a.h*60+a.m)-(b.h*60+b.m));
+
+    if(starts.length) return starts[0];
+
+    const s=typeof getRhSettings==='function'?(getRhSettings()||{}):{};
+    const st=String(p.status||'').toLowerCase();
+    let raw='';
+    if(st==='off_matin') raw=String(s.dinnerWorkStart||s.dinnerStart||'18:00');
+    else if(['present','off_soir','ferie'].includes(st)) raw=String(s.lunchWorkStart||s.lunchStart||'10:00');
+    else return null;
+
+    const mm=raw.match(/^(\d{1,2}):(\d{2})/);
+    if(!mm) return null;
+    return {h:Number(mm[1]),m:Number(mm[2])};
+  }
+
+  /* Remplace seulement le calcul de fenêtre temporelle.
+     La sécurité, le motif obligatoire et la sauvegarde signée V102 restent actifs. */
+  const previousWindow=window.rhPlanningChangeWindowV102;
+  window.rhPlanningChangeWindowV102=function(dateStr,before,after){
+    const cal=parseCalendarDate(dateStr);
+    if(!cal){
+      console.warn('[iCHEF RH V206] date planning invalide ignorée',dateStr);
+      return {needsReason:false,kind:'INVALID_DATE',start:'',hours:null};
+    }
+
+    const start=firstStartV206(after)||firstStartV206(before);
+
+    // Pour une absence/repos sans horaire explicite :
+    // on utilise midi comme V102, mais avec construction locale numérique
+    // pour éviter toute ambiguïté de parsing navigateur.
+    const dt=start
+      ? new Date(cal.y,cal.mo-1,cal.d,start.h,start.m,0,0)
+      : new Date(cal.y,cal.mo-1,cal.d,12,0,0,0);
+
+    const hours=(dt.getTime()-Date.now())/3600000;
+
+    if(hours<=0){
+      return {
+        needsReason:true,
+        kind:'STARTED_OR_PAST',
+        start:start?`${String(start.h).padStart(2,'0')}:${String(start.m).padStart(2,'0')}`:'',
+        hours
+      };
+    }
+    if(start && hours<=HOUR_LIMIT){
+      return {
+        needsReason:true,
+        kind:'URGENT_5H',
+        start:`${String(start.h).padStart(2,'0')}:${String(start.m).padStart(2,'0')}`,
+        hours
+      };
+    }
+    return {
+      needsReason:false,
+      kind:'NORMAL',
+      start:start?`${String(start.h).padStart(2,'0')}:${String(start.m).padStart(2,'0')}`:'',
+      hours
+    };
+  };
+  window.rhPlanningChangeWindowV102.__v206Fixed=true;
+  window.__rhPlanningChangeWindowBeforeV206=previousWindow;
+
+  function clearPlanningSelection(reason=''){
+    const api=window.ICHEF_FAST_PLANNING_V205;
+    try{api?.clearSelection?.();}catch(_){}
+    document.querySelectorAll('#global-view-container .rh-v200-selected')
+      .forEach(el=>el.classList.remove('rh-v200-selected'));
+
+    const legend=document.getElementById('rh-v201-legend');
+    if(legend){
+      legend.classList.remove('rh-v205-has-selection');
+      legend.dataset.selectionLabel='';
+    }
+
+    if(reason){
+      console.info('[iCHEF RH V206] sélection planning effacée',reason);
+    }
+  }
+
+  /* Changement manuel de mois. */
+  document.getElementById('month-selector')?.addEventListener('change',()=>{
+    clearPlanningSelection('month-change');
+  },true);
+
+  /* Flèches mois précédent/suivant : changeMonth appelle handleMonthChange
+     sans déclencher nécessairement l'événement change. */
+  const previousChangeMonth=window.changeMonth;
+  if(typeof previousChangeMonth==='function'&&!previousChangeMonth.__v206Wrapped){
+    const wrapped=function(...args){
+      clearPlanningSelection('month-navigation');
+      return previousChangeMonth.apply(this,args);
+    };
+    wrapped.__v206Wrapped=true;
+    window.changeMonth=wrapped;
+  }
+
+  const previousHandleMonth=window.handleMonthChange;
+  if(typeof previousHandleMonth==='function'&&!previousHandleMonth.__v206Wrapped){
+    const wrapped=function(...args){
+      clearPlanningSelection('month-render');
+      return previousHandleMonth.apply(this,args);
+    };
+    wrapped.__v206Wrapped=true;
+    window.handleMonthChange=wrapped;
+  }
+
+  /* Si le mois est modifié par l'IA/autopilote de façon programmatique,
+     détecter uniquement la valeur du sélecteur, pas tout le DOM. */
+  const selector=document.getElementById('month-selector');
+  let lastMonth=String(selector?.value||'');
+  const checkMonth=()=>{
+    const current=String(selector?.value||'');
+    if(current!==lastMonth){
+      lastMonth=current;
+      clearPlanningSelection('programmatic-month-change');
+    }
+  };
+  if(selector){
+    selector.addEventListener('input',checkMonth,true);
+    selector.addEventListener('change',checkMonth,true);
+  }
+
+  /* Avant toute action de catégorie, enlever un éventuel transform tactile
+     resté après un pointercancel. */
+  document.addEventListener('pointercancel',()=>{
+    document.querySelectorAll('#rh-v201-legend .rh-v205-category-action')
+      .forEach(btn=>btn.style.removeProperty('transform'));
+  },true);
+
+  /* Petit test interne non intrusif : décembre 2026 doit être futur depuis
+     septembre 2026 et ne doit donc jamais demander un motif par erreur. */
+  window.ICHEF_RH_V206_TESTS={
+    planningWindow(dateStr,before={},after={}){
+      return window.rhPlanningChangeWindowV102(dateStr,before,after);
+    },
+    clearSelection:clearPlanningSelection
+  };
+
+  window.__ICHEF_RH_BUILD__='RH-V206-BUGFIX-TACTILE-SELECTION';
+  console.info('[iCHEF RH V206] bugs sélection fantôme / changement de mois / motif futur corrigés');
+})();
+</script>
+
+<script id="ichef-rh-v206-marker">
+window.__ICHEF_RH_BUILD__='RH-V206-BUGFIX-TACTILE-SELECTION';
 </script>
 
