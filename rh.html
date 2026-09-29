@@ -33129,3 +33129,3518 @@ body hr{
 })();
 </script>
 
+
+<!-- iCHEF RH V196 · DEVISE AUTOMATIQUE PAR PAYS ÉTABLISSEMENT
+     France -> EUR / €
+     Suisse -> CHF
+     Source prioritaire : établissement / tenant / configuration client.
+     Aucun recours à la géolocalisation du navigateur : un manager peut travailler à distance.
+-->
+<script id="ichef-rh-v196-auto-currency-zone">
+(() => {
+  'use strict';
+  if (window.__ICHEF_RH_V196_AUTO_CURRENCY_ZONE__) return;
+  window.__ICHEF_RH_V196_AUTO_CURRENCY_ZONE__ = true;
+
+  const VERSION = 'RH-V196-AUTO-EUR-CHF';
+  const RH_SETTINGS_KEY = 'ichef_rh_settings';
+  const PAYROLL_KEY = 'ichef_payroll_settings_v2';
+
+  const safeJson = (raw, fallback={}) => {
+    try { return JSON.parse(raw || '') || fallback; }
+    catch (_) { return fallback; }
+  };
+  const getJson = (key, fallback={}) => safeJson(localStorage.getItem(key), fallback);
+  const setJson = (key, value) => {
+    try { localStorage.setItem(key, JSON.stringify(value)); return true; }
+    catch (_) { return false; }
+  };
+
+  function normCountry(value){
+    const raw = String(value ?? '').trim().toUpperCase();
+    if (!raw) return '';
+    if (
+      raw === 'FR' || raw === 'FRA' || raw === 'FRANCE' ||
+      raw.includes('FRANCE')
+    ) return 'FR';
+    if (
+      raw === 'CH' || raw === 'CHE' || raw === 'SUISSE' ||
+      raw === 'SWITZERLAND' || raw === 'SCHWEIZ' || raw === 'SVIZZERA' ||
+      raw.includes('SUISSE') || raw.includes('SWITZERLAND') ||
+      raw.includes('SCHWEIZ') || raw.includes('SVIZZERA')
+    ) return 'CH';
+    return '';
+  }
+
+  function normCurrency(value){
+    const raw = String(value ?? '').trim().toUpperCase();
+    if (raw === 'EUR' || raw === '€') return 'FR';
+    if (raw === 'CHF') return 'CH';
+    return '';
+  }
+
+  function profile(country){
+    return country === 'FR'
+      ? {
+          country:'FR',
+          countryLabel:'France',
+          currency:'EUR',
+          symbol:'€',
+          agreement:'Convention collective HCR · IDCC 1979',
+          legalFramework:'FR_HCR'
+        }
+      : {
+          country:'CH',
+          countryLabel:'Suisse',
+          currency:'CHF',
+          symbol:'CHF',
+          agreement:'CCNT hôtels, restaurants & cafés (L-GAV)',
+          legalFramework:'CH_CCNT'
+        };
+  }
+
+  function readObjectCountry(obj){
+    if (!obj || typeof obj !== 'object') return '';
+    const countryKeys = [
+      'countryCode','country_code','country','pays',
+      'companyCountry','company_country',
+      'establishmentCountry','establishment_country',
+      'businessCountry','business_country',
+      'clientCountry','client_country',
+      'tenantCountry','tenant_country',
+      'legalCountry','legal_country'
+    ];
+    for (const key of countryKeys) {
+      if (Object.prototype.hasOwnProperty.call(obj,key)) {
+        const c = normCountry(obj[key]);
+        if (c) return c;
+      }
+    }
+    const currencyKeys = ['currency','devise','currencyCode','currency_code'];
+    for (const key of currencyKeys) {
+      if (Object.prototype.hasOwnProperty.call(obj,key)) {
+        const c = normCurrency(obj[key]);
+        if (c) return c;
+      }
+    }
+    return '';
+  }
+
+  function detectFromState(){
+    const state = window.ICHEF_LIVE_STATE;
+    if (!state || typeof state !== 'object') return null;
+
+    const candidates = [
+      ['Établissement', state.establishment],
+      ['Entreprise', state.company],
+      ['Tenant', state.tenant],
+      ['Client', state.client],
+      ['Business', state.business],
+      ['Configuration', state.settings],
+      ['Profil', state.profile],
+      ['État client', state]
+    ];
+    for (const [source,obj] of candidates) {
+      const country = readObjectCountry(obj);
+      if (country) return {country,source:`${source} connecté`};
+    }
+
+    const orders = state.activeOrders || {};
+    const keys = Object.keys(orders).filter(k =>
+      /(ESTABLISH|COMPANY|TENANT|CLIENT|BUSINESS|SETTING|CONFIG|PROFILE|VENUE|RESTAURANT|HOTEL)/i.test(String(k))
+    );
+    for (const key of keys) {
+      const node = orders[key];
+      const payload = node && typeof node === 'object' && 'data' in node ? node.data : node;
+      const country = readObjectCountry(payload);
+      if (country) return {country,source:`Serveur · ${key}`};
+    }
+    return null;
+  }
+
+  function detectCountry(){
+    // 1. Détection automatique déjà faite par le moteur établissement V185.
+    const v185 = normCountry(window.ICHEF_CLIENT_COUNTRY_V185?.current?.country);
+    if (v185) {
+      return {
+        country:v185,
+        source:window.ICHEF_CLIENT_COUNTRY_V185?.current?.source || 'Détection établissement iCHEF'
+      };
+    }
+
+    // 2. État connecté du client / établissement.
+    const live = detectFromState();
+    if (live) return live;
+
+    // 3. Fiche locale explicite de l'établissement.
+    const localCountryKeys = [
+      'ichef_establishment_country',
+      'ichef_client_country',
+      'ichef_company_country',
+      'ichef_business_country',
+      'ichef_country',
+      'establishment_country',
+      'client_country'
+    ];
+    for (const key of localCountryKeys) {
+      const c = normCountry(localStorage.getItem(key));
+      if (c) return {country:c,source:`Fiche établissement · ${key}`};
+    }
+
+    // 4. Référentiel RH déjà enregistré.
+    try {
+      if (typeof getRhSettings === 'function') {
+        const s = getRhSettings() || {};
+        const c = normCountry(s.planningLegalCountry) || normCurrency(s.currency);
+        if (c) return {country:c,source:'Référentiel RH enregistré'};
+      }
+    } catch (_) {}
+
+    // 5. Profil paie entreprise.
+    const pay = getJson(PAYROLL_KEY,{});
+    const pc = normCountry(pay.country) || normCurrency(pay.currency);
+    if (pc) return {country:pc,source:'Configuration paie entreprise'};
+
+    // 6. Dernière détection V185 par tenant.
+    try {
+      const tenant =
+        typeof tenantID_JS !== 'undefined' && tenantID_JS
+          ? String(tenantID_JS)
+          : 'default';
+      const saved = getJson(`ichef_client_country_detected_v185_${tenant}`,{});
+      const c = normCountry(saved.country);
+      if (c) return {country:c,source:saved.source || 'Dernière détection établissement'};
+    } catch (_) {}
+
+    // Compatibilité historique : iCHEF était initialement configuré Suisse.
+    return {country:'CH',source:'Configuration de secours iCHEF'};
+  }
+
+  function persistCountryAndCurrency(detected){
+    const p = profile(detected.country);
+    const now = new Date().toISOString();
+
+    // RH
+    let rh = {};
+    try {
+      rh = typeof getRhSettings === 'function'
+        ? (getRhSettings() || {})
+        : getJson(RH_SETTINGS_KEY,{});
+    } catch (_) {
+      rh = getJson(RH_SETTINGS_KEY,{});
+    }
+    const nextRh = {
+      ...rh,
+      currency:p.currency,
+      planningLegalCountry:p.country,
+      planningLegalFramework:p.legalFramework,
+      planningLegalCountryAuto:true,
+      planningLegalCountrySource:String(detected.source || 'établissement'),
+      planningCurrencyAuto:true,
+      planningCurrencySource:'establishment-country',
+      planningCurrencyUpdatedAt:now
+    };
+    if (typeof saveRhSettings === 'function') {
+      try { saveRhSettings(nextRh); }
+      catch (_) { setJson(RH_SETTINGS_KEY,nextRh); }
+    } else {
+      setJson(RH_SETTINGS_KEY,nextRh);
+    }
+
+    // Paie
+    const pay = getJson(PAYROLL_KEY,{});
+    const nextPay = {
+      ...pay,
+      country:p.country,
+      currency:p.currency,
+      agreement:p.agreement,
+      autoCountryFromTenant:true,
+      autoCurrencyFromCountry:true,
+      autoAgreementFromCountry:true,
+      autoCountryUpdatedAt:now,
+      autoCurrencyUpdatedAt:now,
+      autoAgreementUpdatedAt:now
+    };
+    if (p.country === 'FR') {
+      nextPay.frRegime = 'HCR';
+    } else {
+      nextPay.chRegime = 'LGAV';
+    }
+    setJson(PAYROLL_KEY,nextPay);
+
+    return p;
+  }
+
+  function lockSelect(id,value,title){
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.value = value;
+    el.disabled = true;
+    el.setAttribute('aria-disabled','true');
+    el.title = title;
+    el.style.cursor = 'not-allowed';
+  }
+
+  function setText(id,value){
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+  }
+
+  function updateCurrencyLabels(p){
+    // Fiche employé
+    setText('staff-gross-currency-label',p.symbol);
+    setText('staff-hourly-currency-label',p.symbol);
+    setText('staff-actual-cost-currency-label',p.symbol);
+
+    // Paramètres RH / Paie
+    lockSelect(
+      'rh-setting-currency',
+      p.currency,
+      `Automatique : ${p.countryLabel} = ${p.currency} (${p.symbol})`
+    );
+    lockSelect(
+      'ps-country',
+      p.country,
+      `Automatique : établissement ${p.countryLabel}`
+    );
+    lockSelect(
+      'ps-currency',
+      p.currency,
+      `Automatique : ${p.countryLabel} = ${p.currency} (${p.symbol})`
+    );
+
+    const agreement = document.getElementById('ps-agreement');
+    if (agreement) {
+      agreement.value = p.agreement;
+      agreement.readOnly = true;
+      agreement.setAttribute('aria-readonly','true');
+      agreement.title = 'Automatique selon le pays de l’établissement.';
+    }
+
+    document.querySelectorAll('#payroll-country-segment button').forEach(btn => {
+      btn.disabled = true;
+      btn.setAttribute('aria-disabled','true');
+      btn.classList.toggle('active',String(btn.dataset.country||'').toUpperCase()===p.country);
+      btn.title = `Pays automatique : ${p.countryLabel}`;
+    });
+
+    // Bouton d'optimisation : symbole cohérent partout.
+    document.querySelectorAll('[data-v109-mode="cost"]').forEach(btn => {
+      const small = btn.querySelector('small');
+      const detail = small?.textContent || 'Optimise les effectifs sans ignorer les contraintes';
+      btn.innerHTML = `${p.symbol} Réduire les coûts<small>${detail}</small>`;
+    });
+
+    // Badge visible de la détection.
+    const badge = document.getElementById('v185-country-auto-badge');
+    if (badge) {
+      badge.textContent = p.country === 'FR'
+        ? 'AUTO · FRANCE · €'
+        : 'AUTO · SUISSE · CHF';
+    }
+
+    // Command Center
+    setText('staff-legal-country-badge',p.country === 'FR' ? 'FRANCE · €' : 'SUISSE · CHF');
+  }
+
+  function updateKnownMoneySuffixes(p){
+    // Certains éléments sont recréés dynamiquement. On ne remplace JAMAIS
+    // les montants légaux spécifiques à un pays ; uniquement les unités
+    // explicitement marquées comme devise de l'établissement.
+    document.querySelectorAll('[data-ichef-currency-symbol]').forEach(el => {
+      el.textContent = p.symbol;
+    });
+    document.querySelectorAll('[data-ichef-currency-code]').forEach(el => {
+      el.textContent = p.currency;
+    });
+  }
+
+  let applying = false;
+  let lastKey = '';
+
+  function apply(reason='sync'){
+    if (applying) return null;
+    applying = true;
+    try {
+      const detected = detectCountry();
+      const p = persistCountryAndCurrency(detected);
+      updateCurrencyLabels(p);
+      updateKnownMoneySuffixes(p);
+
+      const key = `${p.country}|${p.currency}|${detected.source}`;
+      if (key !== lastKey) {
+        lastKey = key;
+        window.dispatchEvent(new CustomEvent('ichef:currency-country-applied',{
+          detail:{
+            version:VERSION,
+            country:p.country,
+            countryLabel:p.countryLabel,
+            currency:p.currency,
+            symbol:p.symbol,
+            source:detected.source,
+            reason,
+            at:new Date().toISOString()
+          }
+        }));
+      }
+
+      window.ICHEF_AUTO_CURRENCY_V196 = {
+        country:p.country,
+        currency:p.currency,
+        symbol:p.symbol,
+        source:detected.source,
+        version:VERSION
+      };
+      return window.ICHEF_AUTO_CURRENCY_V196;
+    } finally {
+      applying = false;
+    }
+  }
+
+  // Rendre les helpers accessibles aux autres modules.
+  window.iChefCurrencyProfile = function(){
+    const d = detectCountry();
+    return {...profile(d.country),source:d.source};
+  };
+  window.iChefCurrencySymbol = function(){
+    return window.iChefCurrencyProfile().symbol;
+  };
+  window.iChefCurrencyCode = function(){
+    return window.iChefCurrencyProfile().currency;
+  };
+  window.iChefApplyAutoCurrency = apply;
+
+  // Renforcer les anciens points d'entrée sans changer leur comportement métier.
+  const priorRenderPayroll = window.renderPayrollCenter;
+  if (typeof priorRenderPayroll === 'function') {
+    window.renderPayrollCenter = function(...args){
+      apply('before-payroll-render');
+      const result = priorRenderPayroll.apply(this,args);
+      queueMicrotask(() => apply('after-payroll-render'));
+      return result;
+    };
+  }
+
+  const priorOpenStaff = window.openStaffModal;
+  if (typeof priorOpenStaff === 'function') {
+    window.openStaffModal = function(...args){
+      apply('before-staff-modal');
+      const result = priorOpenStaff.apply(this,args);
+      queueMicrotask(() => apply('after-staff-modal'));
+      return result;
+    };
+  }
+
+  // Les composants peuvent être reconstruits dynamiquement : resynchroniser
+  // les libellés sans toucher aux calculs.
+  let mutationTimer = null;
+  const observer = new MutationObserver(() => {
+    clearTimeout(mutationTimer);
+    mutationTimer = setTimeout(() => apply('ui-mutation'),80);
+  });
+
+  function boot(){
+    apply('boot');
+    if (document.body) {
+      observer.observe(document.body,{childList:true,subtree:true});
+    }
+    setTimeout(() => apply('boot-delayed-1'),450);
+    setTimeout(() => apply('boot-delayed-2'),1200);
+  }
+
+  window.addEventListener('ichef:updateState',() => setTimeout(() => apply('state-update'),0));
+  window.addEventListener('ichef:connected',() => setTimeout(() => apply('connected'),250));
+  window.addEventListener('focus',() => setTimeout(() => apply('focus'),0));
+  document.addEventListener('ichef:rh-settings-saved',() => setTimeout(() => apply('rh-settings'),0));
+  window.addEventListener('storage',e => {
+    if (
+      e.key === RH_SETTINGS_KEY ||
+      e.key === PAYROLL_KEY ||
+      /country/i.test(String(e.key||''))
+    ) {
+      setTimeout(() => apply('storage'),0);
+    }
+  });
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded',boot,{once:true});
+  } else {
+    boot();
+  }
+
+  window.__ICHEF_RH_BUILD__ = VERSION;
+  console.info('[iCHEF RH V196] France = EUR (€) · Suisse = CHF · détection automatique établissement');
+})();
+</script>
+<script id="ichef-rh-v196-marker">
+window.__ICHEF_RH_BUILD__='RH-V196-AUTO-EUR-CHF';
+console.info('[iCHEF RH V196] devise automatique FR € / CH CHF');
+</script>
+
+
+<style id="ichef-rh-v197-global-light-fix">
+/* =========================================================
+   iCHEF RH V197 · GLOBAL LIGHT FIX
+   Objectif demandé :
+   - fond général blanc
+   - cadres / cartes blancs ou gris clair
+   - bordures noires
+   - texte noir
+   - aucun fond sombre résiduel
+   ========================================================= */
+
+:root{
+  color-scheme:light !important;
+  --bg:#ffffff !important;
+  --panel:#ffffff !important;
+  --panel2:#f3f3f3 !important;
+  --border:#111111 !important;
+  --border-strong:#111111 !important;
+  --text-main:#111111 !important;
+  --text-muted:#3f3f3f !important;
+  --sub:#555555 !important;
+  --gold:#111111 !important;
+  --accent:#111111 !important;
+  --rh-bg:#ffffff !important;
+  --rh-panel:#ffffff !important;
+  --rh-panel2:#f3f3f3 !important;
+  --rh-line:#111111 !important;
+  --rh-soft:#444444 !important;
+  --rh-gold:#111111 !important;
+}
+
+/* ---------- BASE GLOBALE ---------- */
+html,
+body{
+  background:#ffffff !important;
+  color:#111111 !important;
+}
+
+body{
+  background-image:none !important;
+}
+
+body,
+body *{
+  color:#111111 !important;
+  text-shadow:none !important;
+}
+
+body :where(
+  main,section,article,aside,header,footer,nav,
+  .full-interface,.main,.main-content,.content,.container,
+  .rh-workspace,.rh-layout,.rh-shell,.rh-page,.rh-dashboard
+){
+  color:#111111 !important;
+}
+
+/* ---------- HUB / DASHBOARD PRINCIPAL ---------- */
+#director-hub.rh-cockpit-shell{
+  background:#ffffff !important;
+  background-image:none !important;
+  color:#111111 !important;
+}
+
+#director-hub.rh-cockpit-shell *{
+  color:#111111 !important;
+  text-shadow:none !important;
+}
+
+.rh-cockpit-sidebar{
+  background:#f3f3f3 !important;
+  background-image:none !important;
+  border-right:1px solid #111111 !important;
+}
+
+.rh-cockpit-sidebar::after{
+  display:none !important;
+}
+
+.rh-cockpit-brand,
+.rh-cockpit-brand-main,
+.rh-cockpit-brand-sub,
+.rh-cockpit-side-footer,
+.rh-cockpit-side-footer strong,
+.rh-cockpit-side-footer span{
+  color:#111111 !important;
+}
+
+.rh-cockpit-nav button{
+  background:#ffffff !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+  box-shadow:none !important;
+}
+
+.rh-cockpit-nav button:hover{
+  background:#e9e9e9 !important;
+  color:#111111 !important;
+}
+
+.rh-cockpit-nav button.active{
+  background:#dcdcdc !important;
+  background-image:none !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+  border-left:4px solid #111111 !important;
+}
+
+.rh-cockpit-nav b{
+  background:#e0e0e0 !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+}
+
+.rh-staff-portal-link{
+  background:#ffffff !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+}
+
+.rh-staff-portal-link:hover{
+  background:#e9e9e9 !important;
+}
+
+/* ---------- BARRE HAUTE ---------- */
+.rh-cockpit-main,
+.rh-cockpit-content{
+  background:#ffffff !important;
+  color:#111111 !important;
+}
+
+.rh-cockpit-topbar{
+  background:#ffffff !important;
+  background-image:none !important;
+  border-bottom:1px solid #111111 !important;
+  backdrop-filter:none !important;
+}
+
+.rh-cockpit-search,
+.rh-cockpit-online,
+.rh-cockpit-venue,
+.rh-cockpit-logout,
+.rh-week-controls{
+  background:#ffffff !important;
+  background-image:none !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+  box-shadow:none !important;
+}
+
+.rh-cockpit-search input{
+  background:#ffffff !important;
+  color:#111111 !important;
+}
+
+.rh-cockpit-search input::placeholder{
+  color:#555555 !important;
+}
+
+.rh-cockpit-online i,
+.rh-cockpit-footer i{
+  background:#5f5f5f !important;
+  box-shadow:none !important;
+}
+
+.rh-week-controls button,
+.rh-week-controls strong{
+  background:#ffffff !important;
+  color:#111111 !important;
+  border-color:#111111 !important;
+}
+
+/* ---------- CARTES KPI ---------- */
+.rh-cockpit-kpis{
+  background:#ffffff !important;
+}
+
+.rh-kpi-card{
+  background:#f3f3f3 !important;
+  background-image:none !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+  box-shadow:none !important;
+}
+
+.rh-kpi-card::before,
+.rh-kpi-card::after{
+  box-shadow:none !important;
+}
+
+.rh-kpi-icon{
+  background:#ffffff !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+}
+
+/* ---------- PANNEAUX / CADRES ---------- */
+.rh-cockpit-panel,
+.rh-live-panel,
+.rh-balance-panel,
+.rh-today-panel,
+.rh-planning-panel{
+  background:#ffffff !important;
+  background-image:none !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+  box-shadow:none !important;
+}
+
+.rh-panel-head,
+.rh-panel-head.compact{
+  background:#f3f3f3 !important;
+  border-bottom:1px solid #111111 !important;
+}
+
+.rh-panel-tabs button,
+.rh-panel-actions button,
+.rh-text-link,
+.rh-view-full-plan{
+  background:#ffffff !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+}
+
+.rh-panel-tabs button:hover,
+.rh-panel-actions button:hover,
+.rh-text-link:hover,
+.rh-view-full-plan:hover{
+  background:#e9e9e9 !important;
+  color:#111111 !important;
+}
+
+.rh-panel-tabs button.active{
+  background:#dcdcdc !important;
+  color:#111111 !important;
+  border-color:#111111 !important;
+}
+
+.rh-panel-actions .publish{
+  background:#d8d8d8 !important;
+  background-image:none !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+  font-weight:900 !important;
+}
+
+/* ---------- PLANNING ---------- */
+.rh-planning-table-wrap,
+.rh-planning-table{
+  background:#ffffff !important;
+}
+
+.rh-planning-table th{
+  background:#e9e9e9 !important;
+  color:#111111 !important;
+  border-right:1px solid #111111 !important;
+  border-bottom:1px solid #111111 !important;
+}
+
+.rh-planning-table td{
+  background:#ffffff !important;
+  color:#111111 !important;
+  border-right:1px solid #111111 !important;
+  border-bottom:1px solid #111111 !important;
+}
+
+.rh-planning-table td:first-child,
+.rh-planning-table th:first-child{
+  background:#f3f3f3 !important;
+  color:#111111 !important;
+}
+
+.rh-plan-avatar{
+  background:#dcdcdc !important;
+  background-image:none !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+}
+
+.rh-plan-person strong,
+.rh-plan-person small{
+  color:#111111 !important;
+}
+
+/* Shifts : gris clair, texte noir */
+.rh-shift-chip,
+.rh-shift-chip.purple,
+.rh-shift-chip.off,
+.rh-shift-chip.leave,
+.rh-shift-chip.sick,
+.rh-shift-chip.recovery{
+  background:#e2e2e2 !important;
+  background-image:none !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+}
+
+.rh-shift-chip.off{
+  background:#f4f4f4 !important;
+}
+
+.rh-shift-chip.leave{
+  background:#ececec !important;
+}
+
+.rh-shift-chip.sick{
+  background:#dedede !important;
+}
+
+.rh-shift-chip.recovery{
+  background:#e7e7e7 !important;
+}
+
+.rh-today-col{
+  box-shadow:inset 0 3px 0 #111111 !important;
+}
+
+/* ---------- LISTES / ALERTES / HEURES ---------- */
+.rh-cockpit-bottom-grid{
+  background:#ffffff !important;
+}
+
+.rh-cockpit-list,
+.rh-hours-summary{
+  background:#ffffff !important;
+}
+
+.rh-list-item{
+  background:#f3f3f3 !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+}
+
+.rh-list-ico,
+.rh-list-actions button,
+.rh-list-actions button.ok,
+.rh-list-actions button.no{
+  background:#ffffff !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+}
+
+.rh-hours-line{
+  color:#111111 !important;
+  border-bottom:1px solid #111111 !important;
+}
+
+.rh-hours-line strong,
+.rh-hours-line.emph strong,
+.rh-hours-percent{
+  color:#111111 !important;
+}
+
+.rh-hours-progress{
+  background:#dddddd !important;
+  border:1px solid #111111 !important;
+}
+
+.rh-hours-progress i{
+  background:#777777 !important;
+  background-image:none !important;
+}
+
+.rh-alert-red .rh-list-ico,
+.rh-alert-gold .rh-list-ico,
+.rh-alert-blue .rh-list-ico,
+.rh-alert-green .rh-list-ico{
+  background:#e7e7e7 !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+}
+
+/* ---------- FOOTER ---------- */
+.rh-cockpit-footer{
+  background:#ffffff !important;
+  color:#111111 !important;
+  border-top:1px solid #111111 !important;
+}
+
+.rh-cockpit-footer strong,
+.rh-cockpit-footer span,
+.rh-cockpit-footer #rh-cockpit-sync-time{
+  color:#111111 !important;
+}
+
+.rh-cockpit-footer button{
+  background:#ffffff !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+}
+
+/* ---------- TOUTES LES AUTRES INTERFACES RH ---------- */
+.full-interface,
+#hr-interface,
+#team-interface,
+#timesheets-interface,
+#requests-interface,
+#leaves-interface,
+#contracts-interface,
+#documents-interface{
+  background:#ffffff !important;
+  background-image:none !important;
+  color:#111111 !important;
+}
+
+.full-interface .header,
+#hr-interface .header{
+  background:#ffffff !important;
+  color:#111111 !important;
+  border-bottom:1px solid #111111 !important;
+}
+
+/* Cadres génériques : blanc + bordure noire */
+body :where(
+  .panel,.card,.box,.section,.container-card,
+  .stat-box,.payroll-card,.payroll-kpi,
+  .rh-cockpit-panel,.rh-kpi-card,.rh-section,
+  .rh-proof-box,.rh-detail-stat,.rh-list-item,
+  .staff-pro-section,.staff-pay-card,
+  .v116-item,.v132-advice-kpi,.v134-setting-card,
+  .v138-kpi,.v146-rule-card,.v160-card,.v170-metric,
+  .rh-v194-command-strip,.rh-v194-health-card,
+  .rh-v194-source-card,.rh-v194-rule-card
+){
+  background:#ffffff !important;
+  background-image:none !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+  box-shadow:none !important;
+}
+
+/* Sous-cadres : gris clair */
+body :where(
+  .staff-right-card,.staff-right-metrics>span,
+  .staff-pro-legalbar,.staff-pro-checklist,
+  .staff-pro-thirteenth,.staff-pay-month,
+  .staff-pro-rights-note,.staff-pro-legal-disclaimer,
+  .v193-legal-assurance-note,
+  .rh-v194-command-head,.rh-v194-tabbar,
+  .rh-v194-health-grid,.rh-v194-grid,
+  .table-container,.global-table
+){
+  background:#f3f3f3 !important;
+  background-image:none !important;
+  color:#111111 !important;
+  border-color:#111111 !important;
+}
+
+/* ---------- FORMULAIRES ---------- */
+body :where(input,select,textarea){
+  background:#ffffff !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+  box-shadow:none !important;
+  caret-color:#111111 !important;
+}
+
+body :where(input,select,textarea)::placeholder{
+  color:#666666 !important;
+  opacity:1 !important;
+}
+
+body :where(input,select,textarea):focus{
+  outline:2px solid #777777 !important;
+  outline-offset:1px !important;
+  border-color:#111111 !important;
+  box-shadow:none !important;
+}
+
+body select option{
+  background:#ffffff !important;
+  color:#111111 !important;
+}
+
+/* ---------- TABLEAUX ---------- */
+body table{
+  background:#ffffff !important;
+  color:#111111 !important;
+  border-color:#111111 !important;
+}
+
+body :where(th,thead td){
+  background:#e9e9e9 !important;
+  color:#111111 !important;
+  border-color:#111111 !important;
+}
+
+body :where(td,tr){
+  color:#111111 !important;
+  border-color:#111111 !important;
+}
+
+body tbody tr:hover td{
+  background:#f3f3f3 !important;
+}
+
+/* ---------- BOUTONS ---------- */
+body :where(
+  button,.btn,.btn-outline,.btn-nav,.btn-save-green,.pay-btn,
+  .rh-proof-btn,.payroll-export,.rh-text-link,
+  .rh-v194-tab,.rh-v194-legal-btn,.month-nav-btn
+){
+  color:#111111 !important;
+  border-color:#111111 !important;
+  box-shadow:none !important;
+}
+
+body :where(
+  button,.btn,.btn-outline,.btn-nav,.btn-save-green,.pay-btn,
+  .rh-proof-btn,.payroll-export,.rh-text-link,
+  .rh-v194-tab,.rh-v194-legal-btn,.month-nav-btn
+):not(.publish){
+  background:#ffffff !important;
+  background-image:none !important;
+}
+
+body :where(
+  button,.btn,.btn-outline,.btn-nav,.btn-save-green,.pay-btn,
+  .rh-proof-btn,.payroll-export,.rh-text-link,
+  .rh-v194-tab,.rh-v194-legal-btn,.month-nav-btn
+):hover{
+  background:#e9e9e9 !important;
+  color:#111111 !important;
+}
+
+/* ---------- MODALES ---------- */
+.modal{
+  background:rgba(0,0,0,.18) !important;
+}
+
+.modal-content,
+.payroll-modal-content,
+#staff-modal .modal-content,
+#rh-v194-legal-modal .modal-content{
+  background:#ffffff !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+  box-shadow:0 18px 55px rgba(0,0,0,.16) !important;
+}
+
+.modal-header{
+  background:#f3f3f3 !important;
+  color:#111111 !important;
+  border-bottom:1px solid #111111 !important;
+}
+
+/* ---------- FICHE EMPLOYÉ ---------- */
+#staff-modal .modal-content,
+.staff-pro-form,
+.staff-pro-section{
+  background:#ffffff !important;
+  color:#111111 !important;
+}
+
+.staff-pro-section{
+  border:1px solid #111111 !important;
+}
+
+.staff-pro-section-head{
+  border-bottom:1px solid #111111 !important;
+}
+
+.staff-right-card,
+.staff-right-metrics>span,
+.staff-pro-inline-input>span{
+  background:#f3f3f3 !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+}
+
+.staff-pay-badge,
+.proof-chip,
+.payroll-chip,
+.gateway-key,
+.v116-code{
+  background:#e9e9e9 !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+}
+
+.staff-pro-status,
+.staff-pro-status.ok,
+.staff-pro-status.warn,
+.staff-pro-status.block{
+  background:#ffffff !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+}
+
+/* ---------- COMMAND CENTER LÉGAL ---------- */
+.rh-v194-command-strip,
+.rh-v194-command-head,
+.rh-v194-health-card,
+.rh-v194-source-card,
+.rh-v194-rule-card{
+  background:#ffffff !important;
+  background-image:none !important;
+  color:#111111 !important;
+  border-color:#111111 !important;
+}
+
+.rh-v194-tab,
+.rh-v194-legal-btn{
+  background:#ffffff !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+}
+
+.rh-v194-tab.active,
+.rh-v194-tab[aria-selected="true"]{
+  background:#dcdcdc !important;
+  color:#111111 !important;
+}
+
+/* ---------- COULEURS INLINE SOMBRES FRÉQUENTES ---------- */
+/* Corrige les blocs historiques dont la couleur a été écrite directement
+   dans l'attribut style. */
+body [style*="background:#0"],
+body [style*="background: #0"],
+body [style*="background:#1"],
+body [style*="background: #1"],
+body [style*="background:#2"],
+body [style*="background: #2"],
+body [style*="background:rgb(0"],
+body [style*="background: rgb(0"],
+body [style*="background:rgba(0"],
+body [style*="background: rgba(0"]{
+  background:#f3f3f3 !important;
+  background-image:none !important;
+  color:#111111 !important;
+}
+
+body [style*="color:#fff"],
+body [style*="color: #fff"],
+body [style*="color:white"],
+body [style*="color: white"],
+body [style*="color:#eee"],
+body [style*="color: #eee"],
+body [style*="color:#ddd"],
+body [style*="color: #ddd"]{
+  color:#111111 !important;
+}
+
+/* ---------- ÉTATS ---------- */
+/* Les états restent distinguables par une nuance de gris et une bordure,
+   jamais par un texte blanc sur fond sombre. */
+body :where(.success,.ok,.approved,.valid,.is-valid,.status-ok,.badge-success){
+  background:#eeeeee !important;
+  color:#111111 !important;
+  border-color:#111111 !important;
+}
+
+body :where(.warning,.warn,.pending,.status-warning,.badge-warning){
+  background:#e4e4e4 !important;
+  color:#111111 !important;
+  border-color:#111111 !important;
+}
+
+body :where(.danger,.error,.blocked,.block,.status-danger,.badge-danger){
+  background:#d8d8d8 !important;
+  color:#111111 !important;
+  border-color:#111111 !important;
+}
+
+/* ---------- SCROLLBARS ---------- */
+*{
+  scrollbar-color:#8c8c8c #f1f1f1;
+}
+
+*::-webkit-scrollbar{
+  width:10px;
+  height:10px;
+}
+
+*::-webkit-scrollbar-track{
+  background:#f1f1f1;
+}
+
+*::-webkit-scrollbar-thumb{
+  background:#8c8c8c;
+  border:2px solid #f1f1f1;
+  border-radius:999px;
+}
+
+/* ---------- IMPRESSION ---------- */
+@media print{
+  html,body,body *{
+    background:#ffffff !important;
+    color:#000000 !important;
+    border-color:#000000 !important;
+    box-shadow:none !important;
+    text-shadow:none !important;
+  }
+}
+</style>
+
+<script id="ichef-rh-v197-marker">
+window.__ICHEF_RH_BUILD__='RH-V197-GLOBAL-LIGHT-FIX';
+document.documentElement.dataset.ichefTheme='light-monochrome-pro';
+console.info('[iCHEF RH V197] fond blanc · cadres blancs/gris · bordures noires · texte noir');
+</script>
+
+
+<style id="ichef-rh-v198-light-layout-fix">
+/* iCHEF RH V198 · LIGHT + FIT SCREEN */
+
+/* ===== ÉDITEUR PLANNING ===== */
+#rh-cockpit-shift-editor{
+  background:rgba(0,0,0,.18)!important;
+  backdrop-filter:blur(3px)!important;
+  -webkit-backdrop-filter:blur(3px)!important;
+  padding:14px!important;
+}
+#rh-cockpit-shift-editor .rh-cse-card{
+  width:min(720px,calc(100vw - 28px))!important;
+  max-height:calc(100dvh - 28px)!important;
+  overflow:auto!important;
+  background:#fff!important;
+  background-image:none!important;
+  color:#111!important;
+  border:1px solid #111!important;
+  border-radius:14px!important;
+  box-shadow:0 22px 60px rgba(0,0,0,.16)!important;
+}
+#rh-cockpit-shift-editor .rh-cse-head{
+  background:#f3f3f3!important;
+  color:#111!important;
+  border-bottom:1px solid #111!important;
+}
+#rh-cockpit-shift-editor .rh-cse-head *,
+#rh-cockpit-shift-editor .rh-cse-body *,
+#rh-cockpit-shift-editor .rh-cse-actions *{color:#111!important;}
+#rh-cockpit-shift-editor .rh-cse-close{
+  background:#fff!important;color:#111!important;border:1px solid #111!important;
+}
+#rh-cockpit-shift-editor .rh-cse-close:hover{background:#e6e6e6!important;}
+#rh-cockpit-shift-editor .rh-cse-body{background:#fff!important;}
+#rh-cockpit-shift-editor .rh-cse-field label{color:#111!important;}
+#rh-cockpit-shift-editor .rh-cse-field input,
+#rh-cockpit-shift-editor .rh-cse-field select,
+#rh-cockpit-shift-editor .rh-cse-field textarea{
+  background:#fff!important;color:#111!important;border:1px solid #111!important;
+}
+#rh-cockpit-shift-editor .rh-cse-field input:disabled,
+#rh-cockpit-shift-editor .rh-cse-field select:disabled,
+#rh-cockpit-shift-editor .rh-cse-field textarea:disabled{
+  background:#ededed!important;color:#555!important;opacity:1!important;
+}
+#rh-cockpit-shift-editor .rh-cse-status-actions{background:#fff!important;}
+#rh-cockpit-shift-editor .rh-cse-status-action{
+  background:#f3f3f3!important;color:#111!important;border:1px solid #111!important;
+}
+#rh-cockpit-shift-editor .rh-cse-status-action:hover,
+#rh-cockpit-shift-editor .rh-cse-status-action.is-current{
+  background:#ddd!important;color:#111!important;border-color:#111!important;
+}
+#rh-cockpit-shift-editor .rh-cse-note,
+#rh-cockpit-shift-editor .rh-v102-window-note,
+#rh-cockpit-shift-editor .rh-v102-window-note.urgent,
+#rh-cockpit-shift-editor .rh-v102-window-note.started{
+  background:#f3f3f3!important;color:#111!important;border:1px solid #111!important;
+}
+#rh-cockpit-shift-editor .rh-cse-actions{
+  background:#f3f3f3!important;border-top:1px solid #111!important;
+}
+#rh-cockpit-shift-editor .rh-cse-actions button,
+#rh-cockpit-shift-editor .rh-cse-cancel,
+#rh-cockpit-shift-editor .rh-cse-save{
+  background:#fff!important;background-image:none!important;color:#111!important;border:1px solid #111!important;
+}
+#rh-cockpit-shift-editor .rh-cse-save{background:#ddd!important;font-weight:900!important;}
+#rh-cockpit-shift-editor .rh-cse-count{color:#444!important;}
+
+/* ===== DASHBOARD : ÉLÉMENTS RESTÉS SOMBRES ===== */
+#director-hub .rh-balance-grid{background:#fff!important;}
+#director-hub .rh-balance-card,
+#director-hub .rh-balance-card.high,
+#director-hub .rh-balance-card.low,
+#director-hub .rh-balance-card.positive,
+#director-hub .rh-balance-card.negative{
+  background:#f3f3f3!important;background-image:none!important;color:#111!important;
+  border:1px solid #111!important;box-shadow:none!important;
+}
+#director-hub .rh-balance-card *,
+#director-hub .rh-live-row *,
+#director-hub .rh-today-row *{color:#111!important;}
+#director-hub .rh-today-shift,
+#director-hub .rh-live-badge,
+#director-hub .rh-offline-badge,
+#director-hub .rh-month-mini,
+#director-hub .rh-month-mini.off,
+#director-hub .rh-month-mini.leave,
+#director-hub .rh-month-mini.sick,
+#director-hub .rh-month-mini.recovery{
+  background:#ededed!important;background-image:none!important;color:#111!important;border:1px solid #111!important;
+}
+#director-hub .rh-live-row,
+#director-hub .rh-today-row{background:#fff!important;border-color:#111!important;}
+#director-hub .rh-today-dot,
+#director-hub .rh-today-dot.live{background:#666!important;box-shadow:none!important;}
+
+/* ===== PLANNING COMPLET : CLAIR + PLEIN ÉCRAN ===== */
+#hr-interface{
+  background:#fff!important;background-image:none!important;color:#111!important;
+  height:100dvh!important;min-height:0!important;overflow:hidden!important;padding:0!important;
+}
+#hr-interface>.header{
+  flex:0 0 auto!important;margin:0!important;padding:12px 18px!important;
+  background:#fff!important;border-bottom:1px solid #111!important;gap:12px!important;
+}
+#hr-interface>.header>div{gap:7px!important;}
+#hr-interface .btn-nav,
+#hr-interface .month-nav-btn{
+  min-height:34px!important;padding:7px 11px!important;font-size:.62rem!important;
+  background:#fff!important;color:#111!important;border:1px solid #111!important;
+}
+#hr-interface #month-selector{color:#111!important;background:#fff!important;}
+
+#hr-interface .rh-v194-command-strip{
+  flex:0 0 auto!important;margin:9px 18px 0!important;background:#fff!important;
+  border:1px solid #111!important;border-radius:12px!important;
+}
+#hr-interface .rh-v194-command-head{
+  padding:9px 14px!important;background:#f3f3f3!important;border-bottom:1px solid #111!important;
+}
+#hr-interface .rh-v194-command-grid{background:#fff!important;}
+#hr-interface .rh-v194-command-grid article{
+  padding:9px 12px!important;background:#fff!important;border-color:#111!important;
+}
+#hr-interface .rh-v194-command-grid article small,
+#hr-interface .rh-v194-command-grid article strong,
+#hr-interface .rh-v194-command-grid article span{color:#111!important;}
+#hr-interface .rh-v194-command-foot{
+  padding:8px 14px!important;background:#f3f3f3!important;border-top:1px solid #111!important;
+}
+
+#hr-interface .planning-pro-summary{
+  flex:0 0 auto!important;margin:8px 18px 0!important;background:#fff!important;
+  border:1px solid #111!important;border-radius:12px!important;
+}
+#hr-interface .planning-pro-top{background:#fff!important;border-bottom:1px solid #111!important;}
+#hr-interface .planning-pro-kpi{
+  padding:9px 12px!important;background:#fff!important;border-color:#111!important;
+}
+#hr-interface .planning-pro-kpi *,
+#hr-interface .planning-pro-bottom *{color:#111!important;}
+#hr-interface .planning-pro-bottom{padding:7px 12px!important;background:#f3f3f3!important;}
+#hr-interface .planning-pro-chip,
+#hr-interface .planning-pro-chip.good,
+#hr-interface .planning-pro-chip.attn,
+#hr-interface .planning-pro-action{
+  background:#fff!important;color:#111!important;border:1px solid #111!important;
+}
+
+#hr-interface .main-container{
+  flex:1 1 auto!important;min-height:0!important;height:auto!important;overflow:hidden!important;
+  gap:10px!important;margin:8px 0 0!important;padding:0 18px 12px!important;
+}
+#hr-interface .staff-sidebar,
+#hr-interface .month-view{
+  min-height:0!important;height:100%!important;max-height:none!important;
+  background:#fff!important;color:#111!important;border:1px solid #111!important;
+  border-radius:10px!important;box-shadow:none!important;
+}
+#hr-interface .staff-sidebar{width:260px!important;}
+#hr-interface .staff-sidebar>div:first-child{
+  background:#f3f3f3!important;border-bottom:1px solid #111!important;
+}
+#hr-interface #staff-list-render{background:#fff!important;}
+#hr-interface .staff-card,
+#hr-interface .staff-card:hover,
+#hr-interface .staff-card.active{
+  background:#fff!important;color:#111!important;border-color:#111!important;
+}
+#hr-interface .staff-card.active{background:#e9e9e9!important;}
+#hr-interface .staff-name,
+#hr-interface .staff-role{color:#111!important;}
+
+/* Vue globale : sidebar redondante, donc masquée pour récupérer 260px de largeur. */
+#hr-interface.rh-v198-global-fit .staff-sidebar{display:none!important;}
+#hr-interface.rh-v198-global-fit .month-view{width:100%!important;flex:1 1 100%!important;}
+
+#global-view-container,
+#annual-view-container,
+#table-container-individual{
+  min-height:0!important;height:100%!important;background:#fff!important;color:#111!important;overflow:auto!important;
+}
+#global-view-container .global-table,
+#annual-view-container .global-table{
+  background:#fff!important;color:#111!important;border-collapse:separate!important;border-spacing:0!important;
+}
+#global-view-container .global-table th,
+#global-view-container .global-table td,
+#annual-view-container .global-table th,
+#annual-view-container .global-table td{
+  background:#fff!important;color:#111!important;border-right:1px solid #111!important;border-bottom:1px solid #111!important;
+}
+#global-view-container .global-table th,
+#annual-view-container .global-table th{background:#e9e9e9!important;}
+#global-view-container .global-table th.weekend-head,
+#global-view-container .global-table td.weekend-cell{background:#f3f3f3!important;color:#111!important;}
+#global-view-container .global-table th.today-head,
+#global-view-container .global-table td.today-cell{
+  background:#ededed!important;color:#111!important;box-shadow:inset 0 -3px 0 #111!important;
+}
+#global-view-container .sticky-col,
+#annual-view-container .sticky-col{
+  background:#f3f3f3!important;color:#111!important;border-right:1px solid #111!important;
+}
+#global-view-container .rh-matrix-person *,
+#annual-view-container .rh-matrix-person *{color:#111!important;}
+#global-view-container .status-select-cell,
+#global-view-container .rh-status-quick-btn,
+#annual-view-container .status-select-cell{
+  background:#fff!important;background-image:none!important;color:#111!important;border:1px solid #111!important;
+}
+#global-view-container .status-select-cell:hover,
+#global-view-container .rh-status-quick-btn:hover,
+#annual-view-container .status-select-cell:hover{
+  background:#e9e9e9!important;color:#111!important;
+}
+#global-view-container .status-select-cell.status-present,
+#global-view-container .status-select-cell.status-off,
+#global-view-container .status-select-cell.status-off_soir,
+#global-view-container .status-select-cell.status-off_matin,
+#global-view-container .status-select-cell.status-conge,
+#global-view-container .status-select-cell.status-recup,
+#global-view-container .status-select-cell.status-maladie,
+#global-view-container .status-select-cell.status-formation,
+#global-view-container .status-select-cell.status-absence_injustifiee{
+  background:#f3f3f3!important;color:#111!important;border-color:#111!important;
+}
+#global-view-container button,
+#annual-view-container button{color:#111!important;}
+
+/* ===== COMPACTER LE HAUT SUR ÉCRANS COURANTS ===== */
+@media (min-width:1100px) and (max-height:950px){
+  #hr-interface>.header{padding:8px 14px!important;}
+  #hr-interface>.header h2{font-size:.9rem!important;}
+  #hr-interface .btn-nav,
+  #hr-interface .month-nav-btn{
+    min-height:31px!important;padding:5px 9px!important;font-size:.57rem!important;
+  }
+  #hr-interface .rh-v194-command-strip{margin:6px 14px 0!important;}
+  #hr-interface .rh-v194-command-head{padding:6px 10px!important;}
+  #hr-interface .rh-v194-command-head strong{font-size:.78rem!important;}
+  #hr-interface .rh-v194-command-kicker{font-size:.52rem!important;}
+  #hr-interface .rh-v194-command-grid article{padding:6px 9px!important;}
+  #hr-interface .rh-v194-command-grid article strong{font-size:.95rem!important;}
+  #hr-interface .rh-v194-command-grid article span{font-size:.55rem!important;}
+  #hr-interface .rh-v194-command-foot{padding:5px 10px!important;font-size:.56rem!important;}
+  #hr-interface .planning-pro-summary{margin:6px 14px 0!important;}
+  #hr-interface .planning-pro-kpi{padding:6px 10px!important;}
+  #hr-interface .planning-pro-kpi strong{margin-top:3px!important;font-size:1rem!important;}
+  #hr-interface .planning-pro-kpi span{margin-top:2px!important;font-size:.57rem!important;}
+  #hr-interface .planning-pro-bottom{padding:5px 10px!important;}
+  #hr-interface .main-container{margin-top:6px!important;padding:0 14px 8px!important;}
+}
+
+/* ===== MOBILE / TABLETTE ===== */
+@media(max-width:1000px){
+  #hr-interface{overflow:auto!important;}
+  #hr-interface .main-container{
+    flex:0 0 auto!important;height:auto!important;min-height:520px!important;overflow:visible!important;
+  }
+  #hr-interface .staff-sidebar,
+  #hr-interface .month-view{height:auto!important;}
+  #hr-interface.rh-v198-global-fit .staff-sidebar{display:none!important;}
+}
+@media(max-width:640px){
+  #rh-cockpit-shift-editor{padding:0!important;align-items:stretch!important;}
+  #rh-cockpit-shift-editor .rh-cse-card{
+    width:100vw!important;max-height:100dvh!important;min-height:100dvh!important;
+    border-radius:0!important;border-left:0!important;border-right:0!important;
+  }
+}
+</style>
+
+<script id="ichef-rh-v198-light-layout-script">
+(() => {
+  'use strict';
+  if (window.__ICHEF_RH_V198_LIGHT_LAYOUT__) return;
+  window.__ICHEF_RH_V198_LIGHT_LAYOUT__ = true;
+
+  function syncPlanningLayoutV198(){
+    const hr = document.getElementById('hr-interface');
+    const globalView = document.getElementById('global-view-container');
+    if (!hr || !globalView) return;
+    const globalVisible =
+      globalView.style.display === 'block' ||
+      getComputedStyle(globalView).display === 'block';
+    hr.classList.toggle('rh-v198-global-fit', globalVisible);
+  }
+
+  const globalView = document.getElementById('global-view-container');
+  if (globalView) {
+    new MutationObserver(syncPlanningLayoutV198).observe(globalView,{
+      attributes:true,attributeFilter:['style','class']
+    });
+  }
+  const hr = document.getElementById('hr-interface');
+  if (hr) {
+    new MutationObserver(syncPlanningLayoutV198).observe(hr,{
+      attributes:true,attributeFilter:['style']
+    });
+  }
+
+  document.addEventListener('click',event => {
+    if (
+      event.target?.closest?.('#btn-toggle-view') ||
+      event.target?.closest?.('[onclick*="selectStaff"]') ||
+      event.target?.closest?.('[onclick*="openInterface"]')
+    ) setTimeout(syncPlanningLayoutV198,0);
+  },true);
+
+  window.addEventListener('resize',syncPlanningLayoutV198);
+  document.addEventListener('DOMContentLoaded',syncPlanningLayoutV198);
+  setTimeout(syncPlanningLayoutV198,50);
+  setTimeout(syncPlanningLayoutV198,500);
+
+  window.__ICHEF_RH_BUILD__='RH-V198-LIGHT-LAYOUT-FIX';
+  console.info('[iCHEF RH V198] couleurs résiduelles corrigées + planning plein écran optimisé');
+})();
+</script>
+
+<script id="ichef-rh-v198-marker">
+window.__ICHEF_RH_BUILD__='RH-V198-LIGHT-LAYOUT-FIX';
+</script>
+
+
+<style id="ichef-rh-v199-assistance-light-modal-fix">
+/* =========================================================
+   iCHEF RH V199
+   Correctif Assistance Planning / Réglages IA
+   - aucun panneau noir
+   - fond blanc
+   - sous-cadres gris clair
+   - bordures noires
+   - police noire
+   - modales toujours au-dessus des badges fixes
+   ========================================================= */
+
+/* Les modales importantes doivent passer AU-DESSUS des badges
+   Synchronisé / Accueil et non derrière eux. */
+#ia-predictions-modal,
+#rh-ai-settings-v103,
+#rh-v111-help-modal{
+  z-index:400000 !important;
+}
+
+#ia-predictions-modal,
+#rh-ai-settings-v103{
+  align-items:flex-start !important;
+  justify-content:center !important;
+  padding:14px !important;
+  overflow:auto !important;
+  background:rgba(0,0,0,.22) !important;
+  backdrop-filter:none !important;
+  -webkit-backdrop-filter:none !important;
+}
+
+/* ---------- ASSISTANCE PLANNING ---------- */
+#ia-predictions-modal .modal-content{
+  position:relative !important;
+  top:auto !important;
+  right:auto !important;
+  bottom:auto !important;
+  left:auto !important;
+  transform:none !important;
+  margin:auto !important;
+  width:min(1460px,calc(100vw - 28px)) !important;
+  max-width:1460px !important;
+  max-height:calc(100dvh - 28px) !important;
+  overflow:auto !important;
+  background:#ffffff !important;
+  background-image:none !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+  border-radius:14px !important;
+  box-shadow:0 24px 70px rgba(0,0,0,.18) !important;
+  opacity:1 !important;
+  visibility:visible !important;
+}
+
+#ia-predictions-modal .modal-content > .header{
+  position:sticky !important;
+  top:0 !important;
+  z-index:50 !important;
+  background:#ffffff !important;
+  background-image:none !important;
+  border-bottom:1px solid #111111 !important;
+}
+
+#ia-predictions-modal,
+#ia-predictions-modal *{
+  color:#111111 !important;
+  text-shadow:none !important;
+}
+
+/* Cartes et conteneurs historiquement sombres */
+#ia-predictions-modal :where(
+  .ia-step-card,
+  .rh-section,
+  .v113-step,
+  .v113-plan-wrap,
+  .v131-tools-head,
+  #v131-planning-tools-panel,
+  #v131-planning-tools-content,
+  .v132-service-mode-box,
+  .v134-risks,
+  .v134-risk,
+  .v134-result-summary,
+  .v134-candidate,
+  .v135-closure-box,
+  .v142-legal-box,
+  .v142-legal-toggle,
+  .v142-rule,
+  .v144-legal-box,
+  .v144-legal-card,
+  .v144-rule-grid .v142-rule,
+  .v144-legal-explain > div,
+  .v160-hero,
+  .v160-card,
+  .v170-metric
+){
+  background:#ffffff !important;
+  background-image:none !important;
+  color:#111111 !important;
+  border-color:#111111 !important;
+  box-shadow:none !important;
+}
+
+/* Sous-zones légèrement grisées pour garder une hiérarchie claire */
+#ia-predictions-modal :where(
+  .v113-plan-head,
+  .v131-tools-head,
+  .v144-legal-titlebar,
+  .v160-card-head,
+  .v170-cash-head
+){
+  background:#f3f3f3 !important;
+  background-image:none !important;
+  color:#111111 !important;
+  border-color:#111111 !important;
+}
+
+/* Inline dark backgrounds encore présents dans l'ancien code */
+#ia-predictions-modal [style*="background:rgba(0"],
+#ia-predictions-modal [style*="background: rgba(0"],
+#ia-predictions-modal [style*="background:#0"],
+#ia-predictions-modal [style*="background: #0"],
+#ia-predictions-modal [style*="background:#1"],
+#ia-predictions-modal [style*="background: #1"]{
+  background:#f3f3f3 !important;
+  background-image:none !important;
+  color:#111111 !important;
+  border-color:#111111 !important;
+}
+
+/* Zone Jour OFF générée en inline */
+#ia-predictions-modal #assistant-day-off-panel{
+  background:#ffffff !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+}
+
+#ia-predictions-modal #assistant-day-off-panel *,
+#ia-predictions-modal #assistant-global-summary *,
+#ia-predictions-modal #ia-planning-draft-summary *,
+#ia-predictions-modal #ia-planning-preview *{
+  color:#111111 !important;
+}
+
+/* Cartes étapes du haut */
+#ia-predictions-modal .ia-steps-container{
+  background:#ffffff !important;
+}
+
+#ia-predictions-modal .ia-step-card{
+  min-height:78px !important;
+  border:1px solid #111111 !important;
+}
+
+#ia-predictions-modal .ia-step-card.active{
+  background:#e5e5e5 !important;
+  border:2px solid #111111 !important;
+}
+
+#ia-predictions-modal .ia-step-card strong,
+#ia-predictions-modal .ia-step-card span,
+#ia-predictions-modal .ia-step-card.active strong{
+  color:#111111 !important;
+}
+
+/* Paramètres V160 */
+#ia-predictions-modal .v160-card{
+  border:1px solid #111111 !important;
+}
+
+#ia-predictions-modal .v160-card-head{
+  border-bottom:1px solid #111111 !important;
+}
+
+#ia-predictions-modal .v160-number,
+#ia-predictions-modal .v160-hero-icon{
+  background:#e7e7e7 !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+}
+
+#ia-predictions-modal .v160-recommended,
+#ia-predictions-modal .v160-save{
+  background:#ffffff !important;
+  background-image:none !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+}
+
+/* Légalité : monochrome lisible */
+#ia-predictions-modal .v142-legal-badge,
+#ia-predictions-modal .v145-lock-state,
+#ia-predictions-modal .v135-closed-badge,
+#ia-predictions-modal .v170-cash-status{
+  background:#e9e9e9 !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+}
+
+#ia-predictions-modal .v144-blocking-note,
+#ia-predictions-modal .v137-horizon-note,
+#ia-predictions-modal .v141-repair-note{
+  background:#f3f3f3 !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+}
+
+/* Aperçu planning IA */
+#ia-predictions-modal #ia-planning-preview,
+#ia-predictions-modal .v113-native-preview{
+  background:#ffffff !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+}
+
+#ia-predictions-modal #ia-planning-preview table,
+#ia-predictions-modal #ia-planning-preview th,
+#ia-predictions-modal #ia-planning-preview td{
+  color:#111111 !important;
+  border-color:#111111 !important;
+}
+
+#ia-predictions-modal #ia-planning-preview th{
+  background:#e9e9e9 !important;
+}
+
+#ia-predictions-modal #ia-planning-preview td{
+  background:#ffffff !important;
+}
+
+#ia-predictions-modal #ia-planning-preview td.v135-closed{
+  background:#ededed !important;
+  color:#111111 !important;
+}
+
+/* Champs de l'assistant */
+#ia-predictions-modal :where(input,select,textarea){
+  background:#ffffff !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+}
+
+#ia-predictions-modal :where(input,select,textarea):disabled{
+  background:#ededed !important;
+  color:#555555 !important;
+  opacity:1 !important;
+}
+
+/* Boutons */
+#ia-predictions-modal :where(
+  button,.btn-outline,.btn-save-green,
+  #assistant-analyse-btn,#assistant-off-btn,
+  #assistant-generate-btn,#assistant-apply-btn
+){
+  background:#ffffff !important;
+  background-image:none !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+  box-shadow:none !important;
+}
+
+#ia-predictions-modal #assistant-generate-btn{
+  background:#dddddd !important;
+  font-weight:900 !important;
+}
+
+#ia-predictions-modal #assistant-apply-btn:disabled{
+  background:#f5f5f5 !important;
+  color:#777777 !important;
+  border-color:#777777 !important;
+  opacity:1 !important;
+}
+
+#ia-predictions-modal :where(button,.btn-outline,.btn-save-green):hover{
+  background:#e9e9e9 !important;
+  color:#111111 !important;
+}
+
+/* ---------- MODALE RÉGLAGES IA ---------- */
+#rh-ai-settings-v103 .modal-content{
+  position:relative !important;
+  inset:auto !important;
+  transform:none !important;
+  margin:auto !important;
+  width:min(1120px,calc(100vw - 28px)) !important;
+  max-width:1120px !important;
+  max-height:calc(100dvh - 28px) !important;
+  overflow:hidden !important;
+  background:#ffffff !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+  border-radius:14px !important;
+  box-shadow:0 24px 70px rgba(0,0,0,.18) !important;
+  opacity:1 !important;
+  visibility:visible !important;
+}
+
+#rh-ai-settings-v103 .modal-header{
+  background:#f3f3f3 !important;
+  color:#111111 !important;
+  border-bottom:1px solid #111111 !important;
+}
+
+#rh-ai-settings-v103 .rh-v109-body{
+  max-height:calc(100dvh - 110px) !important;
+  background:#ffffff !important;
+}
+
+#rh-ai-settings-v103 .rh-v109-hero,
+#rh-ai-settings-v103 .rh-v109-card,
+#rh-ai-settings-v103 .rh-v109-advanced,
+#rh-ai-settings-v103 .rh-v103-config-section{
+  background:#ffffff !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+}
+
+#rh-ai-settings-v103 .rh-v109-mode button{
+  position:relative !important;
+  inset:auto !important;
+  transform:none !important;
+  background:#ffffff !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+  box-shadow:none !important;
+}
+
+#rh-ai-settings-v103 .rh-v109-mode button.active{
+  background:#dddddd !important;
+  color:#111111 !important;
+  border:2px solid #111111 !important;
+}
+
+#rh-ai-settings-v103 .rh-v109-mode button small,
+#rh-ai-settings-v103 .rh-v109-check,
+#rh-ai-settings-v103 .rh-v109-check span,
+#rh-ai-settings-v103 p,
+#rh-ai-settings-v103 small,
+#rh-ai-settings-v103 label,
+#rh-ai-settings-v103 strong,
+#rh-ai-settings-v103 h3,
+#rh-ai-settings-v103 h4{
+  color:#111111 !important;
+}
+
+#rh-ai-settings-v103 .rh-v109-info{
+  background:#f3f3f3 !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+}
+
+#rh-ai-settings-v103 :where(input,select,textarea){
+  background:#ffffff !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+}
+
+#rh-ai-settings-v103 :where(button,.btn-outline,.btn-save-green){
+  background:#ffffff !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+}
+
+#rh-ai-settings-v103 .btn-save-green{
+  background:#dddddd !important;
+}
+
+/* ---------- AIDE IA ---------- */
+#rh-v111-help-modal{
+  background:rgba(0,0,0,.22) !important;
+  backdrop-filter:none !important;
+}
+
+#rh-v111-help-modal .rh-v111-help-panel,
+#rh-v111-help-modal .rh-v111-help-head,
+#rh-v111-help-modal .rh-v111-help-body,
+#rh-v111-help-modal .rh-v111-mode-card{
+  background:#ffffff !important;
+  color:#111111 !important;
+  border-color:#111111 !important;
+}
+
+#rh-v111-help-modal .rh-v111-intro,
+#rh-v111-help-modal .rh-v111-decision,
+#rh-v111-help-modal .rh-v111-example{
+  background:#f3f3f3 !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+}
+
+#rh-v111-help-modal *{
+  color:#111111 !important;
+}
+
+/* ---------- BADGES FIXES ----------
+   Ils ne doivent jamais passer devant une modale. */
+#v161-rh-sync-badge,
+#v189-rh-connection-badge,
+.rh-cockpit-online,
+.top-status{
+  z-index:5000 !important;
+}
+
+#v161-rh-sync-badge{
+  background:#ffffff !important;
+  color:#111111 !important;
+  border:1px solid #111111 !important;
+  box-shadow:0 5px 16px rgba(0,0,0,.09) !important;
+}
+
+#v161-rh-sync-badge strong{
+  color:#111111 !important;
+}
+
+/* ---------- RESPONSIVE ---------- */
+@media(max-width:900px){
+  #ia-predictions-modal,
+  #rh-ai-settings-v103{
+    padding:8px !important;
+  }
+
+  #ia-predictions-modal .modal-content,
+  #rh-ai-settings-v103 .modal-content{
+    width:calc(100vw - 16px) !important;
+    max-height:calc(100dvh - 16px) !important;
+  }
+
+  #rh-ai-settings-v103 .rh-v109-body{
+    grid-template-columns:1fr !important;
+    max-height:calc(100dvh - 95px) !important;
+  }
+}
+
+@media(max-width:640px){
+  #ia-predictions-modal,
+  #rh-ai-settings-v103{
+    padding:0 !important;
+  }
+
+  #ia-predictions-modal .modal-content,
+  #rh-ai-settings-v103 .modal-content{
+    width:100vw !important;
+    max-width:none !important;
+    max-height:100dvh !important;
+    min-height:100dvh !important;
+    border-radius:0 !important;
+    border-left:0 !important;
+    border-right:0 !important;
+  }
+}
+</style>
+
+<script id="ichef-rh-v199-assistance-modal-repair">
+(() => {
+  'use strict';
+  if (window.__ICHEF_RH_V199_ASSISTANCE_FIX__) return;
+  window.__ICHEF_RH_V199_ASSISTANCE_FIX__ = true;
+
+  function repairModal(id){
+    const modal=document.getElementById(id);
+    if(!modal) return;
+
+    const content=modal.querySelector('.modal-content');
+    if(content){
+      content.style.removeProperty('transform');
+      content.style.removeProperty('top');
+      content.style.removeProperty('left');
+      content.style.removeProperty('right');
+      content.style.removeProperty('bottom');
+      content.style.removeProperty('position');
+    }
+
+    /* Si la modale est ouverte, elle reste dans le viewport. */
+    const visible =
+      modal.classList.contains('show') ||
+      getComputedStyle(modal).display !== 'none';
+
+    if(visible && content){
+      requestAnimationFrame(() => {
+        try{
+          const r=content.getBoundingClientRect();
+          if(r.top < 0 || r.left < -2 || r.right > innerWidth + 2){
+            content.scrollIntoView({block:'start',inline:'nearest'});
+          }
+        }catch(_){}
+      });
+    }
+  }
+
+  function repairAll(){
+    repairModal('ia-predictions-modal');
+    repairModal('rh-ai-settings-v103');
+  }
+
+  /* Répare après les fonctions historiques qui construisent les réglages IA. */
+  const previousPlanningSettings=window.openRhPlanningSettingsV103;
+  if(typeof previousPlanningSettings==='function'){
+    window.openRhPlanningSettingsV103=function(...args){
+      const result=previousPlanningSettings.apply(this,args);
+      setTimeout(repairAll,0);
+      setTimeout(repairAll,80);
+      return result;
+    };
+  }
+
+  const previousAssistant=window.openPlanningAssistant;
+  if(typeof previousAssistant==='function'){
+    window.openPlanningAssistant=function(...args){
+      const result=previousAssistant.apply(this,args);
+      setTimeout(repairAll,0);
+      setTimeout(repairAll,80);
+      return result;
+    };
+  }
+
+  /* Les deux interfaces sont très dynamiques : surveiller seulement leurs
+     attributs et enfants, sans relancer les calculs métier. */
+  function observe(id){
+    const el=document.getElementById(id);
+    if(!el) return;
+    new MutationObserver(() => requestAnimationFrame(() => repairModal(id)))
+      .observe(el,{attributes:true,childList:true,subtree:true,attributeFilter:['style','class']});
+  }
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',()=>{
+      observe('ia-predictions-modal');
+      observe('rh-ai-settings-v103');
+      repairAll();
+    },{once:true});
+  }else{
+    observe('ia-predictions-modal');
+    observe('rh-ai-settings-v103');
+    repairAll();
+  }
+
+  window.__ICHEF_RH_BUILD__='RH-V199-ASSISTANCE-LIGHT-MODAL-FIX';
+  console.info('[iCHEF RH V199] assistance planning claire + modales au premier plan');
+})();
+</script>
+
+<script id="ichef-rh-v199-marker">
+window.__ICHEF_RH_BUILD__='RH-V199-ASSISTANCE-LIGHT-MODAL-FIX';
+</script>
+
+
+<style id="ichef-rh-v200-fast-manual-planning-style">
+/* =========================================================
+   iCHEF RH V200 · PLANNING MANUEL RAPIDE
+   Inspiré du mockup validé :
+   - 1 clic = édition rapide
+   - double clic = éditeur complet
+   - sélection multiple
+   - modèles d'horaires
+   - copier/coller
+   - dupliquer semaine précédente
+   - pinceau
+   - cycle répétitif
+   - audit légal conservé
+   ========================================================= */
+
+/* Barre rapide dans la vue planning globale */
+#rh-v200-fastbar{
+  position:sticky;
+  top:0;
+  z-index:35;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  min-height:48px;
+  padding:7px 9px;
+  background:#ffffff;
+  border-bottom:1px solid #111111;
+  color:#111111;
+}
+
+#rh-v200-fastbar .rh-v200-count{
+  min-width:142px;
+  font-size:.67rem;
+  font-weight:900;
+  letter-spacing:.15px;
+}
+
+#rh-v200-fastbar button,
+#rh-v200-fastbar select{
+  min-height:34px;
+  border:1px solid #111111;
+  border-radius:7px;
+  background:#ffffff;
+  color:#111111;
+  padding:0 10px;
+  font:800 .61rem/1 Inter,Arial,sans-serif;
+  cursor:pointer;
+  box-shadow:none;
+}
+
+#rh-v200-fastbar button:hover,
+#rh-v200-fastbar select:hover{
+  background:#ececec;
+}
+
+#rh-v200-fastbar .rh-v200-select-mode.active,
+#rh-v200-fastbar .rh-v200-brush.active{
+  background:#dcdcdc;
+  border-width:2px;
+}
+
+#rh-v200-fastbar .rh-v200-apply{
+  background:#dddddd;
+  font-weight:900;
+}
+
+#rh-v200-fastbar .rh-v200-spacer{
+  flex:1;
+}
+
+#rh-v200-fastbar .rh-v200-draft{
+  white-space:nowrap;
+  color:#555555;
+  font-size:.55rem;
+  font-weight:800;
+}
+
+/* Cellules sélectionnées */
+#global-view-container .rh-status-quick-btn.rh-v200-selected{
+  outline:3px solid #5b8def !important;
+  outline-offset:-3px !important;
+  background:#eaf1ff !important;
+  color:#111111 !important;
+}
+
+#global-view-container .rh-status-quick-btn.rh-v200-brush-ready{
+  cursor:crosshair !important;
+}
+
+#global-view-container .rh-status-quick-btn.rh-v200-brush-ready:hover{
+  background:#e5e5e5 !important;
+  outline:2px dashed #111111 !important;
+  outline-offset:-3px !important;
+}
+
+/* Dock d'édition rapide */
+#rh-v200-quick-drawer{
+  position:fixed;
+  top:82px;
+  right:18px;
+  z-index:36000;
+  width:min(390px,calc(100vw - 30px));
+  max-height:calc(100dvh - 104px);
+  display:none;
+  flex-direction:column;
+  overflow:hidden;
+  background:#ffffff;
+  color:#111111;
+  border:1px solid #111111;
+  border-radius:12px;
+  box-shadow:0 22px 65px rgba(0,0,0,.18);
+}
+
+#rh-v200-quick-drawer.show{
+  display:flex;
+}
+
+.rh-v200-drawer-head{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:12px;
+  padding:13px 14px 11px;
+  background:#f3f3f3;
+  border-bottom:1px solid #111111;
+}
+
+.rh-v200-drawer-head strong{
+  display:block;
+  color:#111111;
+  font-size:.88rem;
+}
+
+.rh-v200-drawer-head small{
+  display:block;
+  margin-top:3px;
+  color:#555555;
+  font-size:.59rem;
+}
+
+.rh-v200-close{
+  width:32px;
+  height:32px;
+  border:1px solid #111111;
+  border-radius:7px;
+  background:#ffffff;
+  color:#111111;
+  cursor:pointer;
+  font-size:1rem;
+  font-weight:900;
+}
+
+.rh-v200-drawer-body{
+  overflow:auto;
+  padding:13px;
+}
+
+.rh-v200-kicker{
+  margin:0 0 7px;
+  color:#555555;
+  font-size:.54rem;
+  font-weight:900;
+  letter-spacing:.7px;
+  text-transform:uppercase;
+}
+
+.rh-v200-status-grid{
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:6px;
+  margin-bottom:12px;
+}
+
+.rh-v200-status-grid button{
+  min-height:34px;
+  background:#f3f3f3;
+  color:#111111;
+  border:1px solid #111111;
+  border-radius:7px;
+  cursor:pointer;
+  font-size:.57rem;
+  font-weight:900;
+}
+
+.rh-v200-status-grid button.active{
+  background:#dcdcdc;
+  border-width:2px;
+}
+
+.rh-v200-field{
+  margin-bottom:10px;
+}
+
+.rh-v200-field label{
+  display:block;
+  margin-bottom:5px;
+  color:#111111;
+  font-size:.56rem;
+  font-weight:900;
+  text-transform:uppercase;
+  letter-spacing:.45px;
+}
+
+.rh-v200-field input,
+.rh-v200-field select,
+.rh-v200-field textarea{
+  width:100%;
+  min-height:38px;
+  padding:8px 10px;
+  background:#ffffff;
+  color:#111111;
+  border:1px solid #111111;
+  border-radius:7px;
+  font:650 .72rem/1.25 Inter,Arial,sans-serif;
+}
+
+.rh-v200-field textarea{
+  min-height:58px;
+  resize:vertical;
+}
+
+.rh-v200-presets{
+  display:grid;
+  grid-template-columns:repeat(5,1fr);
+  gap:5px;
+  margin:6px 0 12px;
+}
+
+.rh-v200-presets button{
+  min-height:36px;
+  padding:4px 3px;
+  border:1px solid #111111;
+  border-radius:7px;
+  background:#ffffff;
+  color:#111111;
+  font-size:.52rem;
+  font-weight:900;
+  cursor:pointer;
+}
+
+.rh-v200-presets button.active{
+  background:#dcdcdc;
+}
+
+.rh-v200-time-grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:8px;
+}
+
+.rh-v200-drawer-tools{
+  display:flex;
+  gap:6px;
+  flex-wrap:wrap;
+  margin:8px 0 12px;
+}
+
+.rh-v200-drawer-tools button{
+  min-height:32px;
+  border:1px solid #111111;
+  border-radius:7px;
+  background:#ffffff;
+  color:#111111;
+  padding:0 9px;
+  font-size:.54rem;
+  font-weight:850;
+  cursor:pointer;
+}
+
+.rh-v200-scope{
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:6px;
+  margin-top:5px;
+}
+
+.rh-v200-scope button{
+  min-height:34px;
+  border:1px solid #111111;
+  border-radius:7px;
+  background:#ffffff;
+  color:#111111;
+  font-size:.55rem;
+  font-weight:850;
+  cursor:pointer;
+}
+
+.rh-v200-scope button.active{
+  background:#dedede;
+  border-width:2px;
+}
+
+.rh-v200-drawer-actions{
+  position:sticky;
+  bottom:0;
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:8px;
+  padding:11px 13px;
+  background:#f3f3f3;
+  border-top:1px solid #111111;
+}
+
+.rh-v200-drawer-actions button{
+  min-height:40px;
+  border:1px solid #111111;
+  border-radius:8px;
+  background:#ffffff;
+  color:#111111;
+  font-size:.62rem;
+  font-weight:900;
+  cursor:pointer;
+}
+
+.rh-v200-drawer-actions .primary{
+  background:#dddddd;
+}
+
+/* Panneau outils comme dans le mockup */
+#rh-v200-tools-deck{
+  display:none;
+  grid-template-columns:1.1fr 1fr 1.15fr 1fr;
+  gap:9px;
+  padding:10px;
+  background:#ffffff;
+  border-bottom:1px solid #111111;
+}
+
+#rh-v200-tools-deck.show{
+  display:grid;
+}
+
+.rh-v200-tool-card{
+  min-width:0;
+  padding:10px;
+  background:#f3f3f3;
+  border:1px solid #111111;
+  border-radius:9px;
+}
+
+.rh-v200-tool-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  margin-bottom:8px;
+  color:#111111;
+  font-size:.61rem;
+  font-weight:900;
+}
+
+.rh-v200-template-list{
+  display:flex;
+  flex-direction:column;
+  gap:5px;
+}
+
+.rh-v200-template-row{
+  display:grid;
+  grid-template-columns:9px 1fr auto;
+  gap:7px;
+  align-items:center;
+  min-height:29px;
+  padding:4px 6px;
+  background:#ffffff;
+  border:1px solid #bcbcbc;
+  border-radius:6px;
+  cursor:pointer;
+}
+
+.rh-v200-template-row:hover{
+  border-color:#111111;
+}
+
+.rh-v200-template-dot{
+  width:8px;
+  height:8px;
+  border-radius:50%;
+  background:#777777;
+}
+
+.rh-v200-template-row strong{
+  overflow:hidden;
+  color:#111111;
+  font-size:.55rem;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+.rh-v200-template-row small{
+  color:#555555;
+  font-size:.5rem;
+  white-space:nowrap;
+}
+
+.rh-v200-tool-card select,
+.rh-v200-tool-card input{
+  width:100%;
+  min-height:32px;
+  margin-bottom:6px;
+  padding:5px 7px;
+  border:1px solid #111111;
+  border-radius:6px;
+  background:#ffffff;
+  color:#111111;
+  font-size:.57rem;
+}
+
+.rh-v200-tool-card button{
+  width:100%;
+  min-height:32px;
+  margin-top:4px;
+  border:1px solid #111111;
+  border-radius:6px;
+  background:#ffffff;
+  color:#111111;
+  font-size:.55rem;
+  font-weight:900;
+  cursor:pointer;
+}
+
+.rh-v200-tool-card button:hover{
+  background:#e7e7e7;
+}
+
+.rh-v200-four-tools{
+  display:grid;
+  grid-template-columns:repeat(2,1fr);
+  gap:6px;
+}
+
+.rh-v200-four-tools button{
+  min-height:54px;
+  line-height:1.25;
+}
+
+.rh-v200-cycle-grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:5px;
+}
+
+.rh-v200-cycle-grid label{
+  color:#555555;
+  font-size:.49rem;
+  font-weight:800;
+  text-transform:uppercase;
+}
+
+/* Petit retour visuel */
+#rh-v200-toast{
+  position:fixed;
+  left:50%;
+  bottom:24px;
+  z-index:50000;
+  transform:translateX(-50%) translateY(80px);
+  opacity:0;
+  pointer-events:none;
+  padding:9px 13px;
+  border:1px solid #111111;
+  border-radius:999px;
+  background:#ffffff;
+  color:#111111;
+  font-size:.62rem;
+  font-weight:900;
+  box-shadow:0 10px 30px rgba(0,0,0,.12);
+  transition:.2s ease;
+}
+
+#rh-v200-toast.show{
+  transform:translateX(-50%) translateY(0);
+  opacity:1;
+}
+
+/* Responsif */
+@media(max-width:1180px){
+  #rh-v200-fastbar{
+    flex-wrap:wrap;
+  }
+  #rh-v200-fastbar .rh-v200-spacer{
+    display:none;
+  }
+  #rh-v200-tools-deck{
+    grid-template-columns:1fr 1fr;
+  }
+}
+
+@media(max-width:760px){
+  #rh-v200-fastbar{
+    position:relative;
+    top:auto;
+  }
+  #rh-v200-fastbar .rh-v200-count{
+    min-width:100%;
+  }
+  #rh-v200-quick-drawer{
+    inset:0;
+    width:100vw;
+    max-height:100dvh;
+    border-radius:0;
+  }
+  #rh-v200-tools-deck{
+    grid-template-columns:1fr;
+  }
+  .rh-v200-time-grid{
+    grid-template-columns:1fr;
+  }
+}
+</style>
+
+<script id="ichef-rh-v200-fast-manual-planning">
+(() => {
+  'use strict';
+  if (window.__ICHEF_RH_V200_FAST_MANUAL__) return;
+  window.__ICHEF_RH_V200_FAST_MANUAL__ = true;
+
+  const VERSION = 'RH-V200-FAST-MANUAL-PLANNING';
+  const selected = new Set();
+  const STATUS_WORK = new Set(['present','off_matin','off_soir','ferie']);
+  let selectionMode = false;
+  let brushMode = false;
+  let drawerCtx = null;
+  let drawerScope = 'day';
+  let clipboard = null;
+  let lastSelected = null;
+  let currentToolbarStatus = 'present';
+  let currentToolbarTemplate = 'coupure';
+
+  const esc = v => String(v ?? '').replace(/[&<>"']/g,c=>({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+
+  function toast(message){
+    let el=document.getElementById('rh-v200-toast');
+    if(!el){
+      el=document.createElement('div');
+      el.id='rh-v200-toast';
+      document.body.appendChild(el);
+    }
+    el.textContent=String(message||'');
+    el.classList.add('show');
+    clearTimeout(el._t);
+    el._t=setTimeout(()=>el.classList.remove('show'),1700);
+  }
+
+  function monthValue(){
+    return String(document.getElementById('month-selector')?.value||'');
+  }
+
+  function dateStringFromDay(day){
+    const month=monthValue();
+    return month ? `${month}-${String(Number(day)).padStart(2,'0')}` : '';
+  }
+
+  function keyOf(staffId,dateStr){
+    return `${String(staffId)}|${String(dateStr)}`;
+  }
+
+  function parseKey(key){
+    const idx=String(key).indexOf('|');
+    return {
+      staffId:String(key).slice(0,idx),
+      dateStr:String(key).slice(idx+1)
+    };
+  }
+
+  function staffById(id){
+    try{
+      return typeof getDir==='function'
+        ? (getDir()||[]).find(s=>String(s.id)===String(id))
+        : null;
+    }catch(_){ return null; }
+  }
+
+  function getPlan(staffId,dateStr){
+    const [y,m,d]=String(dateStr).split('-').map(Number);
+    const month=`${y}-${String(m).padStart(2,'0')}`;
+    const ts=typeof getTs==='function'?getTs():{};
+    const staff=staffById(staffId);
+    const raw=ts?.[month]?.[String(staffId)]?.[d]
+      || ts?.[month]?.[String(staffId)]?.[String(d)]
+      || ts?.[month]?.[staffId]?.[d]
+      || {};
+    return {
+      month,day:d,staff,
+      plan:{
+        status:'off',
+        poste:staff?.dept||'salle',
+        s1:'',
+        s2:'',
+        pause:0,
+        obs:'',
+        managerNote:'',
+        ...raw
+      }
+    };
+  }
+
+  function settings(){
+    try{return typeof getRhSettings==='function'?(getRhSettings()||{}):{}}
+    catch(_){return{}}
+  }
+
+  function defaultTemplates(){
+    const s=settings();
+    const lunchStart=String(s.lunchWorkStart||s.lunchStart||'10:00');
+    const lunchEnd=String(s.lunchWorkEnd||s.lunchEnd||'14:45');
+    const dinnerStart=String(s.dinnerWorkStart||s.dinnerStart||'18:00');
+    const dinnerEnd=String(s.dinnerWorkEnd||s.dinnerEnd||'22:45');
+    return [
+      {id:'matin',name:'Matin',status:'off_soir',s1:`${lunchStart}-${lunchEnd}`,s2:'',pause:0},
+      {id:'soir',name:'Soir',status:'off_matin',s1:'',s2:`${dinnerStart}-${dinnerEnd}`,pause:0},
+      {id:'coupure',name:'Coupure',status:'present',s1:`${lunchStart}-${lunchEnd}`,s2:`${dinnerStart}-${dinnerEnd}`,pause:30},
+      {id:'journee',name:'Journée',status:'present',s1:'08:00-16:00',s2:'',pause:30},
+      {id:'fermeture',name:'Fermeture',status:'present',s1:'',s2:'16:00-23:00',pause:30}
+    ];
+  }
+
+  function templateStorageKey(){
+    let tenant='default';
+    try{
+      tenant=String(
+        (typeof tenantID_JS!=='undefined'&&tenantID_JS) ||
+        (typeof tenantID!=='undefined'&&tenantID) ||
+        localStorage.getItem('ichef_tenant_id') ||
+        'default'
+      );
+    }catch(_){}
+    return `ichef_rh_shift_templates_v200_${tenant}`;
+  }
+
+  function getTemplates(){
+    const defs=defaultTemplates();
+    try{
+      const custom=JSON.parse(localStorage.getItem(templateStorageKey())||'[]');
+      return Array.isArray(custom)?[...defs,...custom]:defs;
+    }catch(_){return defs}
+  }
+
+  function saveCustomTemplate(tpl){
+    try{
+      const key=templateStorageKey();
+      const current=JSON.parse(localStorage.getItem(key)||'[]');
+      const list=Array.isArray(current)?current:[];
+      list.push(tpl);
+      localStorage.setItem(key,JSON.stringify(list.slice(-20)));
+      return true;
+    }catch(_){return false}
+  }
+
+  function templateById(id){
+    return getTemplates().find(t=>String(t.id)===String(id)) || getTemplates()[0];
+  }
+
+  function planFromTemplate(id,base={}){
+    const t=templateById(id);
+    return {
+      ...base,
+      status:t?.status||'present',
+      poste:base.poste||'salle',
+      s1:String(t?.s1||''),
+      s2:String(t?.s2||''),
+      pause:Number(t?.pause||0)
+    };
+  }
+
+  function normalizedCandidate(base,next){
+    let p={...base,...next};
+    p.status=String(p.status||'off');
+    p.poste=String(p.poste||base.poste||'salle');
+    p.s1=String(p.s1||'').trim();
+    p.s2=String(p.s2||'').trim();
+    p.pause=Math.max(0,Math.min(240,Number(p.pause)||0));
+    p.obs=String(p.obs||'').trim().slice(0,500);
+    p.managerNote=String(p.managerNote||'').trim().slice(0,40);
+
+    if(!STATUS_WORK.has(p.status)){
+      p.s1='';p.s2='';p.pause=0;
+    }
+    if(p.status==='off_soir') p.s2='';
+    if(p.status==='off_matin') p.s1='';
+    return p;
+  }
+
+  function comparable(n){
+    return JSON.stringify({
+      status:String(n?.status||'off'),
+      poste:String(n?.poste||''),
+      s1:String(n?.s1||''),
+      s2:String(n?.s2||''),
+      pause:Number(n?.pause||0),
+      obs:String(n?.obs||''),
+      managerNote:String(n?.managerNote||'')
+    });
+  }
+
+  function validatePlan(p){
+    const pat=/^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/;
+    if(p.s1&&!pat.test(p.s1)) return 'Horaire matin invalide. Exemple : 10:00-14:45';
+    if(p.s2&&!pat.test(p.s2)) return 'Horaire soir invalide. Exemple : 18:00-22:45';
+    return '';
+  }
+
+  function actor(){
+    try{
+      if(typeof window.rhAuditActorV94==='function') return window.rhAuditActorV94();
+    }catch(_){}
+    return 'Direction / RH';
+  }
+
+  function planningWindow(dateStr,before,after){
+    try{
+      if(typeof window.rhPlanningChangeWindowV102==='function'){
+        return window.rhPlanningChangeWindowV102(dateStr,before,after);
+      }
+    }catch(_){}
+    const dt=new Date(`${dateStr}T12:00:00`);
+    return dt.getTime()<=Date.now()
+      ? {needsReason:true,kind:'STARTED_OR_PAST'}
+      : {needsReason:false,kind:'NORMAL'};
+  }
+
+  function ensureEditable(){
+    const s=settings();
+    if(String(s.planningStatus||'draft')!=='locked') return true;
+    const ok=confirm('Ce planning est verrouillé. Voulez-vous le repasser en BROUILLON pour le modifier ?');
+    if(!ok) return false;
+    try{saveRhSettings?.({...s,planningStatus:'draft'});}catch(_){}
+    return true;
+  }
+
+  function horizonAccepts(dateStr){
+    try{
+      const h=window.getRhPlanningHorizonEnd?.();
+      if(!h) return true;
+      const d=new Date(`${dateStr}T12:00:00`);
+      return Number.isNaN(d.getTime()) || d.getTime()<=h.getTime();
+    }catch(_){return true}
+  }
+
+  async function applyToTargets(targets,producer,source='DIRECTION_QUICK_EDIT'){
+    if(!targets?.length) return false;
+    if(!ensureEditable()) return false;
+
+    const unique=[];
+    const seen=new Set();
+    targets.forEach(t=>{
+      const k=keyOf(t.staffId,t.dateStr);
+      if(!seen.has(k)){seen.add(k);unique.push({staffId:String(t.staffId),dateStr:String(t.dateStr)});}
+    });
+
+    const over=unique.find(t=>!horizonAccepts(t.dateStr));
+    if(over){
+      alert(`La date ${over.dateStr} dépasse l’horizon de préparation autorisé.`);
+      return false;
+    }
+
+    const ts=typeof getTs==='function'?getTs():{};
+    const changes=[];
+    let reasonNeeded=false;
+
+    for(const target of unique){
+      const data=getPlan(target.staffId,target.dateStr);
+      const before=JSON.parse(JSON.stringify(data.plan||{}));
+      const nextRaw=typeof producer==='function'
+        ? producer({target,before,data})
+        : producer;
+      const after=normalizedCandidate(before,nextRaw||{});
+      const error=validatePlan(after);
+      if(error){alert(error);return false;}
+      if(comparable(before)===comparable(after)) continue;
+
+      const windowInfo=planningWindow(target.dateStr,before,after);
+      if(windowInfo?.needsReason) reasonNeeded=true;
+
+      changes.push({
+        ...target,
+        month:data.month,
+        day:data.day,
+        staff:data.staff,
+        before,after,
+        windowInfo
+      });
+    }
+
+    if(!changes.length){
+      toast('Aucune modification');
+      return true;
+    }
+
+    let reason='';
+    if(reasonNeeded){
+      reason=String(prompt(
+        'Une ou plusieurs modifications concernent un service dans moins de 5 h, déjà commencé ou une date passée.\n\nMotif obligatoire pour la traçabilité :'
+      )||'').trim().slice(0,180);
+      if(!reason) return false;
+    }
+
+    const auditAt=new Date().toISOString();
+    const auditBy=actor();
+
+    changes.forEach(c=>{
+      if(!ts[c.month]) ts[c.month]={};
+      if(!ts[c.month][String(c.staffId)]) ts[c.month][String(c.staffId)]={};
+
+      const perChangeReason=c.windowInfo?.needsReason?reason:'';
+      ts[c.month][String(c.staffId)][c.day]={
+        ...c.after,
+        lastChangeReason:perChangeReason,
+        lastChangeAt:auditAt,
+        lastChangeBy:auditBy,
+        planningChangeKind:c.windowInfo?.kind||'NORMAL',
+        planningUrgent:c.windowInfo?.kind==='URGENT_5H',
+        updatedAt:auditAt
+      };
+
+      try{
+        recordRhChange?.({
+          type:'PLANNING_MANUAL_EDIT',
+          source,
+          staffId:String(c.staffId),
+          staffName:String(c.staff?.name||''),
+          date:c.dateStr,
+          month:c.month,
+          day:Number(c.day),
+          reason:perChangeReason,
+          changeKind:c.windowInfo?.kind||'NORMAL',
+          managerNote:String(c.after.managerNote||''),
+          by:auditBy,
+          before:c.before,
+          after:JSON.parse(JSON.stringify(ts[c.month][String(c.staffId)][c.day])),
+          message:perChangeReason
+            ? `Planning modifié · ${c.dateStr} · ${perChangeReason}`
+            : `Planning modifié · ${c.dateStr} · édition rapide iCHEF`
+        });
+      }catch(_){}
+    });
+
+    let ok=true;
+    try{
+      if(typeof saveTs==='function'){
+        const first=changes[0];
+        ok=await saveTs(ts,{
+          source,
+          reason,
+          staffId:String(first.staffId),
+          date:first.dateStr
+        });
+      }else{
+        localStorage.setItem('empire_hr_timesheets',JSON.stringify(ts));
+      }
+    }catch(e){
+      console.error('[iCHEF RH V200] save',e);
+      ok=false;
+    }
+
+    try{
+      loadMonthData?.();
+      loadPublicPlanning?.();
+      Promise.resolve(broadcastStaffingLevels?.()).catch(()=>{});
+      renderRhCockpit?.();
+    }catch(_){}
+
+    setTimeout(reapplySelection,30);
+    toast(ok
+      ? `${changes.length} case${changes.length>1?'s':''} mise${changes.length>1?'s':''} à jour`
+      : 'Enregistré localement · synchronisation en attente'
+    );
+    return ok;
+  }
+
+  function visibleTargets(){
+    return [...selected].map(parseKey);
+  }
+
+  function toolbarPlan(){
+    const template=templateById(currentToolbarTemplate);
+    const status=String(document.getElementById('rh-v200-toolbar-status')?.value||currentToolbarStatus||'present');
+    let p={
+      status,
+      s1:template?.s1||'',
+      s2:template?.s2||'',
+      pause:Number(template?.pause||0)
+    };
+    if(status==='off') p={status:'off',s1:'',s2:'',pause:0};
+    if(status==='conge') p={status:'conge',s1:'',s2:'',pause:0};
+    if(status==='recup') p={status:'recup',s1:'',s2:'',pause:0};
+    if(status==='maladie') p={status:'maladie',s1:'',s2:'',pause:0};
+    if(status==='formation') p={status:'formation',s1:'',s2:'',pause:0};
+    return p;
+  }
+
+  function refreshToolbar(){
+    const count=document.querySelector('#rh-v200-fastbar .rh-v200-count');
+    if(count){
+      count.textContent=selected.size
+        ? `${selected.size} case${selected.size>1?'s':''} sélectionnée${selected.size>1?'s':''}`
+        : 'Aucune case sélectionnée';
+    }
+    document.querySelector('#rh-v200-fastbar .rh-v200-select-mode')?.classList.toggle('active',selectionMode);
+    document.querySelector('#rh-v200-fastbar .rh-v200-brush')?.classList.toggle('active',brushMode);
+    document.querySelectorAll('#global-view-container .rh-status-quick-btn')
+      .forEach(btn=>btn.classList.toggle('rh-v200-brush-ready',brushMode));
+  }
+
+  function reapplySelection(){
+    document.querySelectorAll('#global-view-container .rh-status-quick-btn').forEach(btn=>{
+      const dateStr=dateStringFromDay(btn.dataset.rhDay);
+      const key=keyOf(btn.dataset.rhStaff,dateStr);
+      btn.classList.toggle('rh-v200-selected',selected.has(key));
+      btn.classList.toggle('rh-v200-brush-ready',brushMode);
+    });
+    refreshToolbar();
+  }
+
+  function selectRange(staffId,fromDate,toDate){
+    const a=new Date(`${fromDate}T12:00:00`);
+    const b=new Date(`${toDate}T12:00:00`);
+    if(Number.isNaN(a.getTime())||Number.isNaN(b.getTime())) return;
+    const start=a<=b?a:b;
+    const end=a<=b?b:a;
+    const month=monthValue();
+    for(let d=new Date(start);d<=end;d.setDate(d.getDate()+1)){
+      const ds=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+      if(ds.startsWith(month)) selected.add(keyOf(staffId,ds));
+    }
+  }
+
+  function toggleSelection(staffId,dateStr,event){
+    const key=keyOf(staffId,dateStr);
+    if(event?.shiftKey && lastSelected?.staffId===String(staffId)){
+      selectRange(String(staffId),lastSelected.dateStr,dateStr);
+    }else if(selected.has(key)){
+      selected.delete(key);
+    }else{
+      selected.add(key);
+    }
+    lastSelected={staffId:String(staffId),dateStr:String(dateStr)};
+    reapplySelection();
+  }
+
+  function clearSelection(){
+    selected.clear();
+    lastSelected=null;
+    reapplySelection();
+  }
+
+  function ensureFastUi(){
+    const global=document.getElementById('global-view-container');
+    if(!global) return;
+
+    if(!document.getElementById('rh-v200-fastbar')){
+      const bar=document.createElement('div');
+      bar.id='rh-v200-fastbar';
+      bar.innerHTML=`
+        <div class="rh-v200-count">Aucune case sélectionnée</div>
+        <button type="button" class="rh-v200-select-mode">☑ SÉLECTION</button>
+        <select id="rh-v200-toolbar-status" title="Statut à appliquer">
+          <option value="present">TRAVAIL</option>
+          <option value="off">REPOS / OFF</option>
+          <option value="conge">CONGÉ</option>
+          <option value="recup">RÉCUP.</option>
+          <option value="maladie">MALADIE</option>
+          <option value="formation">FORMATION</option>
+        </select>
+        <select id="rh-v200-toolbar-template" title="Modèle d'horaire"></select>
+        <button type="button" class="rh-v200-copy">⧉ COPIER</button>
+        <button type="button" class="rh-v200-paste">COLLER</button>
+        <button type="button" class="rh-v200-apply">APPLIQUER</button>
+        <button type="button" class="rh-v200-brush">✎ PINCEAU</button>
+        <button type="button" class="rh-v200-tools-toggle">OUTILS ▾</button>
+        <button type="button" class="rh-v200-clear">EFFACER SÉLECTION</button>
+        <div class="rh-v200-spacer"></div>
+        <div class="rh-v200-draft">Brouillon · publication séparée</div>`;
+      global.insertBefore(bar,global.firstChild);
+
+      bar.querySelector('.rh-v200-select-mode').onclick=()=>{
+        selectionMode=!selectionMode;
+        if(selectionMode) brushMode=false;
+        refreshToolbar();
+      };
+      bar.querySelector('#rh-v200-toolbar-status').onchange=e=>{
+        currentToolbarStatus=e.target.value;
+      };
+      bar.querySelector('#rh-v200-toolbar-template').onchange=e=>{
+        currentToolbarTemplate=e.target.value;
+      };
+      bar.querySelector('.rh-v200-copy').onclick=copySelected;
+      bar.querySelector('.rh-v200-paste').onclick=pasteSelected;
+      bar.querySelector('.rh-v200-apply').onclick=()=>{
+        const targets=visibleTargets();
+        if(!targets.length){toast('Sélectionnez au moins une case');return;}
+        applyToTargets(targets,()=>toolbarPlan(),'DIRECTION_QUICK_BULK');
+      };
+      bar.querySelector('.rh-v200-brush').onclick=()=>{
+        brushMode=!brushMode;
+        if(brushMode) selectionMode=false;
+        refreshToolbar();
+        toast(brushMode?'Pinceau activé · cliquez les cases':'Pinceau désactivé');
+      };
+      bar.querySelector('.rh-v200-tools-toggle').onclick=()=>{
+        document.getElementById('rh-v200-tools-deck')?.classList.toggle('show');
+      };
+      bar.querySelector('.rh-v200-clear').onclick=clearSelection;
+    }
+
+    if(!document.getElementById('rh-v200-tools-deck')){
+      const deck=document.createElement('div');
+      deck.id='rh-v200-tools-deck';
+      deck.innerHTML=`
+        <section class="rh-v200-tool-card">
+          <div class="rh-v200-tool-head"><span>MODÈLES D'HORAIRES</span><button type="button" id="rh-v200-new-template" style="width:auto;margin:0;padding:0 8px">+ NOUVEAU</button></div>
+          <div id="rh-v200-template-list" class="rh-v200-template-list"></div>
+        </section>
+        <section class="rh-v200-tool-card">
+          <div class="rh-v200-tool-head"><span>COPIER / COLLER</span></div>
+          <select id="rh-v200-copy-mode">
+            <option value="previous-week">Semaine précédente</option>
+          </select>
+          <button type="button" id="rh-v200-copy-week">DUPLIQUER LA SEMAINE</button>
+          <button type="button" id="rh-v200-fill-selection">REMPLIR AVEC LA 1re CASE</button>
+        </section>
+        <section class="rh-v200-tool-card">
+          <div class="rh-v200-tool-head"><span>OUTILS RAPIDES</span></div>
+          <div class="rh-v200-four-tools">
+            <button type="button" id="rh-v200-brush-card">✎<br>PINCEAU</button>
+            <button type="button" id="rh-v200-off-card">OFF<br>REPOS</button>
+            <button type="button" id="rh-v200-copy-card">⧉<br>COPIER</button>
+            <button type="button" id="rh-v200-paste-card">↳<br>COLLER</button>
+          </div>
+        </section>
+        <section class="rh-v200-tool-card">
+          <div class="rh-v200-tool-head"><span>RÉPÉTER CE RYTHME</span></div>
+          <div class="rh-v200-cycle-grid">
+            <label>Travail<input id="rh-v200-cycle-work" type="number" min="1" max="14" value="3"></label>
+            <label>Repos<input id="rh-v200-cycle-off" type="number" min="1" max="14" value="2"></label>
+          </div>
+          <label style="display:block;color:#555;font-size:.49rem;font-weight:800;text-transform:uppercase;margin-top:4px">Sur</label>
+          <select id="rh-v200-cycle-weeks">
+            <option value="2">2 semaines</option>
+            <option value="4" selected>4 semaines</option>
+            <option value="6">6 semaines</option>
+            <option value="8">8 semaines</option>
+          </select>
+          <button type="button" id="rh-v200-cycle-apply">APPLIQUER LE CYCLE</button>
+        </section>`;
+      global.insertBefore(deck,document.getElementById('rh-v200-fastbar')?.nextSibling || global.firstChild);
+
+      deck.querySelector('#rh-v200-new-template').onclick=saveCurrentAsTemplate;
+      deck.querySelector('#rh-v200-copy-week').onclick=duplicatePreviousWeek;
+      deck.querySelector('#rh-v200-fill-selection').onclick=fillSelectionFromFirst;
+      deck.querySelector('#rh-v200-brush-card').onclick=()=>{
+        document.querySelector('#rh-v200-fastbar .rh-v200-brush')?.click();
+      };
+      deck.querySelector('#rh-v200-off-card').onclick=()=>{
+        currentToolbarStatus='off';
+        const sel=document.getElementById('rh-v200-toolbar-status');
+        if(sel) sel.value='off';
+        const targets=visibleTargets();
+        if(!targets.length){toast('Sélectionnez des cases');return;}
+        applyToTargets(targets,{status:'off',s1:'',s2:'',pause:0},'DIRECTION_QUICK_OFF');
+      };
+      deck.querySelector('#rh-v200-copy-card').onclick=copySelected;
+      deck.querySelector('#rh-v200-paste-card').onclick=pasteSelected;
+      deck.querySelector('#rh-v200-cycle-apply').onclick=applyCycle;
+    }
+
+    populateTemplateUi();
+    reapplySelection();
+  }
+
+  function populateTemplateUi(){
+    const templates=getTemplates();
+    const select=document.getElementById('rh-v200-toolbar-template');
+    if(select){
+      const old=select.value||currentToolbarTemplate;
+      select.innerHTML=templates.map(t=>
+        `<option value="${esc(t.id)}">${esc(t.name)}${t.s1||t.s2?' · '+esc([t.s1,t.s2].filter(Boolean).join(' / ')):''}</option>`
+      ).join('');
+      if(templates.some(t=>String(t.id)===String(old))) select.value=old;
+      currentToolbarTemplate=select.value||templates[0]?.id||'coupure';
+    }
+    const list=document.getElementById('rh-v200-template-list');
+    if(list){
+      list.innerHTML=templates.slice(0,9).map((t,i)=>`
+        <div class="rh-v200-template-row" data-template="${esc(t.id)}">
+          <i class="rh-v200-template-dot"></i>
+          <strong>${esc(t.name)}</strong>
+          <small>${esc([t.s1,t.s2].filter(Boolean).join(' / ')||String(t.status||''))}</small>
+        </div>`).join('');
+      list.querySelectorAll('[data-template]').forEach(row=>{
+        row.onclick=()=>{
+          currentToolbarTemplate=row.dataset.template;
+          const sel=document.getElementById('rh-v200-toolbar-template');
+          if(sel) sel.value=currentToolbarTemplate;
+          toast(`Modèle : ${templateById(currentToolbarTemplate)?.name||''}`);
+        };
+      });
+    }
+  }
+
+  function ensureDrawer(){
+    let drawer=document.getElementById('rh-v200-quick-drawer');
+    if(drawer) return drawer;
+    drawer=document.createElement('aside');
+    drawer.id='rh-v200-quick-drawer';
+    document.body.appendChild(drawer);
+    return drawer;
+  }
+
+  function drawerPlan(){
+    if(!drawerCtx) return {};
+    return normalizedCandidate(drawerCtx.base,{
+      status:document.querySelector('#rh-v200-quick-drawer [data-status].active')?.dataset.status||drawerCtx.base.status||'off',
+      poste:document.getElementById('rh-v200-drawer-poste')?.value||drawerCtx.base.poste||'salle',
+      s1:document.getElementById('rh-v200-drawer-s1')?.value||'',
+      s2:document.getElementById('rh-v200-drawer-s2')?.value||'',
+      pause:Number(document.getElementById('rh-v200-drawer-pause')?.value)||0,
+      managerNote:document.getElementById('rh-v200-drawer-note')?.value||''
+    });
+  }
+
+  function setDrawerStatus(status){
+    document.querySelectorAll('#rh-v200-quick-drawer [data-status]').forEach(b=>{
+      b.classList.toggle('active',b.dataset.status===status);
+    });
+    const plan=drawerPlan();
+    if(!STATUS_WORK.has(status)){
+      setDrawerTimes('','',0);
+    }else if(status==='present'&&!plan.s1&&!plan.s2){
+      applyDrawerPreset('coupure');
+    }
+  }
+
+  function setDrawerTimes(s1,s2,pause){
+    const a=document.getElementById('rh-v200-drawer-s1');
+    const b=document.getElementById('rh-v200-drawer-s2');
+    const p=document.getElementById('rh-v200-drawer-pause');
+    if(a)a.value=s1||'';
+    if(b)b.value=s2||'';
+    if(p)p.value=Number(pause||0);
+  }
+
+  function applyDrawerPreset(id){
+    const t=templateById(id);
+    if(!t)return;
+    setDrawerTimes(t.s1,t.s2,t.pause);
+    setDrawerStatus(t.status||'present');
+    document.querySelectorAll('#rh-v200-quick-drawer [data-preset]').forEach(b=>{
+      b.classList.toggle('active',b.dataset.preset===id);
+    });
+  }
+
+  function openDrawer(staffId,dateStr){
+    const data=getPlan(staffId,dateStr);
+    if(!data.staff){toast('Collaborateur introuvable');return;}
+    drawerCtx={staffId:String(staffId),dateStr:String(dateStr),base:data.plan,staff:data.staff};
+    drawerScope='day';
+
+    const d=new Date(`${dateStr}T12:00:00`);
+    const dateLabel=d.toLocaleDateString('fr-FR',{weekday:'short',day:'2-digit',month:'2-digit'});
+    const drawer=ensureDrawer();
+    const p=data.plan;
+
+    drawer.innerHTML=`
+      <div class="rh-v200-drawer-head">
+        <div><strong>${esc(data.staff.name||'Collaborateur')} · ${esc(dateLabel)}</strong><small>Édition rapide · double clic = fiche complète</small></div>
+        <button type="button" class="rh-v200-close" aria-label="Fermer">×</button>
+      </div>
+      <div class="rh-v200-drawer-body">
+        <div class="rh-v200-kicker">Statut</div>
+        <div class="rh-v200-status-grid">
+          ${[
+            ['present','TRAVAIL'],['off','REPOS'],['conge','CONGÉ'],
+            ['recup','RÉCUP.'],['maladie','MALADIE'],['formation','FORMATION']
+          ].map(([v,l])=>`<button type="button" data-status="${v}" class="${String(p.status)===v?'active':''}">${l}</button>`).join('')}
+        </div>
+
+        <div class="rh-v200-field">
+          <label>Poste</label>
+          <select id="rh-v200-drawer-poste">
+            ${[['salle','Salle'],['cuisine','Cuisine'],['patisserie','Pâtisserie'],['bar','Bar'],['admin','Admin']]
+              .map(([v,l])=>`<option value="${v}" ${String(p.poste||data.staff.dept||'salle')===v?'selected':''}>${l}</option>`).join('')}
+          </select>
+        </div>
+
+        <div class="rh-v200-kicker">Horaire rapide</div>
+        <div class="rh-v200-presets">
+          <button type="button" data-preset="matin">MATIN</button>
+          <button type="button" data-preset="soir">SOIR</button>
+          <button type="button" data-preset="coupure">COUPURE</button>
+          <button type="button" data-preset="journee">JOURNÉE</button>
+          <button type="button" data-preset="fermeture">FERMETURE</button>
+        </div>
+
+        <div class="rh-v200-time-grid">
+          <div class="rh-v200-field"><label>Matin (S1)</label><input id="rh-v200-drawer-s1" value="${esc(p.s1||'')}" placeholder="10:00-14:45"></div>
+          <div class="rh-v200-field"><label>Soir (S2)</label><input id="rh-v200-drawer-s2" value="${esc(p.s2||'')}" placeholder="18:00-22:45"></div>
+        </div>
+
+        <div class="rh-v200-field"><label>Pause (minutes)</label><input id="rh-v200-drawer-pause" type="number" min="0" max="240" step="5" value="${Number(p.pause)||0}"></div>
+        <div class="rh-v200-field"><label>Note visible dans la case · optionnel</label><input id="rh-v200-drawer-note" maxlength="40" value="${esc(p.managerNote||'')}" placeholder="Ex. Remplace Paul à 18h"></div>
+
+        <div class="rh-v200-drawer-tools">
+          <button type="button" id="rh-v200-drawer-detail">+ OPTIONS AVANCÉES</button>
+          <button type="button" id="rh-v200-drawer-save-template">ENREGISTRER COMME MODÈLE</button>
+          <button type="button" id="rh-v200-drawer-copy">⧉ COPIER</button>
+        </div>
+
+        <div class="rh-v200-kicker">Appliquer à</div>
+        <div class="rh-v200-scope">
+          <button type="button" data-scope="day" class="active">CE JOUR</button>
+          <button type="button" data-scope="week">SEMAINE</button>
+          <button type="button" data-scope="selected">JOURS SÉLECTIONNÉS</button>
+        </div>
+      </div>
+      <div class="rh-v200-drawer-actions">
+        <button type="button" class="rh-v200-drawer-cancel">FERMER</button>
+        <button type="button" class="primary rh-v200-drawer-apply">APPLIQUER</button>
+      </div>`;
+
+    drawer.querySelector('.rh-v200-close').onclick=closeDrawer;
+    drawer.querySelector('.rh-v200-drawer-cancel').onclick=closeDrawer;
+    drawer.querySelectorAll('[data-status]').forEach(btn=>{
+      btn.onclick=()=>setDrawerStatus(btn.dataset.status);
+    });
+    drawer.querySelectorAll('[data-preset]').forEach(btn=>{
+      btn.onclick=()=>applyDrawerPreset(btn.dataset.preset);
+    });
+    drawer.querySelectorAll('[data-scope]').forEach(btn=>{
+      btn.onclick=()=>{
+        drawerScope=btn.dataset.scope;
+        drawer.querySelectorAll('[data-scope]').forEach(x=>x.classList.toggle('active',x===btn));
+      };
+    });
+    drawer.querySelector('#rh-v200-drawer-detail').onclick=()=>{
+      closeDrawer();
+      window.openRhCockpitShiftEditor?.(staffId,dateStr);
+    };
+    drawer.querySelector('#rh-v200-drawer-save-template').onclick=saveCurrentAsTemplate;
+    drawer.querySelector('#rh-v200-drawer-copy').onclick=()=>{
+      clipboard={...drawerPlan()};
+      toast('Horaire copié');
+    };
+    drawer.querySelector('.rh-v200-drawer-apply').onclick=applyDrawer;
+
+    drawer.classList.add('show');
+  }
+
+  function closeDrawer(){
+    document.getElementById('rh-v200-quick-drawer')?.classList.remove('show');
+    drawerCtx=null;
+  }
+
+  function datesOfWeek(dateStr){
+    const d=new Date(`${dateStr}T12:00:00`);
+    const day=(d.getDay()+6)%7; // lundi=0
+    d.setDate(d.getDate()-day);
+    return Array.from({length:7},(_,i)=>{
+      const x=new Date(d);
+      x.setDate(d.getDate()+i);
+      return `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,'0')}-${String(x.getDate()).padStart(2,'0')}`;
+    });
+  }
+
+  async function applyDrawer(){
+    if(!drawerCtx)return;
+    const plan=drawerPlan();
+    let targets=[];
+    if(drawerScope==='week'){
+      targets=datesOfWeek(drawerCtx.dateStr).map(dateStr=>({staffId:drawerCtx.staffId,dateStr}));
+    }else if(drawerScope==='selected'){
+      targets=visibleTargets();
+      if(!targets.length) targets=[{staffId:drawerCtx.staffId,dateStr:drawerCtx.dateStr}];
+    }else{
+      targets=[{staffId:drawerCtx.staffId,dateStr:drawerCtx.dateStr}];
+    }
+    const ok=await applyToTargets(targets,()=>plan,'DIRECTION_QUICK_DRAWER');
+    if(ok){
+      closeDrawer();
+      clearSelection();
+    }
+  }
+
+  function copySelected(){
+    const targets=visibleTargets();
+    const first=targets[0] || (drawerCtx?{staffId:drawerCtx.staffId,dateStr:drawerCtx.dateStr}:null);
+    if(!first){toast('Sélectionnez une case');return;}
+    clipboard=JSON.parse(JSON.stringify(getPlan(first.staffId,first.dateStr).plan));
+    toast('Horaire copié');
+  }
+
+  function pasteSelected(){
+    if(!clipboard){toast('Aucun horaire copié');return;}
+    const targets=visibleTargets();
+    if(!targets.length){toast('Sélectionnez les cases à remplir');return;}
+    applyToTargets(targets,({before})=>({...before,...clipboard}),'DIRECTION_QUICK_PASTE');
+  }
+
+  function fillSelectionFromFirst(){
+    const targets=visibleTargets();
+    if(targets.length<2){toast('Sélectionnez au moins 2 cases');return;}
+    const source=getPlan(targets[0].staffId,targets[0].dateStr).plan;
+    applyToTargets(targets.slice(1),({before})=>({...before,...source}),'DIRECTION_QUICK_FILL');
+  }
+
+  function duplicatePreviousWeek(){
+    const targets=visibleTargets();
+    const anchor=targets[0] || (drawerCtx?{staffId:drawerCtx.staffId,dateStr:drawerCtx.dateStr}:null);
+    if(!anchor){toast('Sélectionnez une case de la semaine cible');return;}
+
+    const staffIds=[...new Set((targets.length?targets:[anchor]).map(t=>String(t.staffId)))];
+    const week=datesOfWeek(anchor.dateStr);
+    const operations=[];
+
+    staffIds.forEach(staffId=>{
+      week.forEach(targetDate=>{
+        const td=new Date(`${targetDate}T12:00:00`);
+        const sourceDate=new Date(td);
+        sourceDate.setDate(sourceDate.getDate()-7);
+        const sourceStr=`${sourceDate.getFullYear()}-${String(sourceDate.getMonth()+1).padStart(2,'0')}-${String(sourceDate.getDate()).padStart(2,'0')}`;
+        const sourcePlan=getPlan(staffId,sourceStr).plan;
+        operations.push({staffId,targetDate,sourcePlan});
+      });
+    });
+
+    applyToTargets(
+      operations.map(x=>({staffId:x.staffId,dateStr:x.targetDate})),
+      ({target,before})=>{
+        const op=operations.find(x=>String(x.staffId)===String(target.staffId)&&x.targetDate===target.dateStr);
+        return {...before,...(op?.sourcePlan||{})};
+      },
+      'DIRECTION_DUPLICATE_PREVIOUS_WEEK'
+    );
+  }
+
+  function saveCurrentAsTemplate(){
+    let plan=null;
+    if(drawerCtx) plan=drawerPlan();
+    else{
+      const t=visibleTargets()[0];
+      if(t) plan=getPlan(t.staffId,t.dateStr).plan;
+    }
+    if(!plan){toast('Ouvrez une case ou sélectionnez-en une');return;}
+    const name=String(prompt('Nom du modèle d’horaire :','Mon modèle')||'').trim().slice(0,30);
+    if(!name)return;
+    const tpl={
+      id:`custom_${Date.now()}`,
+      name,
+      status:String(plan.status||'present'),
+      s1:String(plan.s1||''),
+      s2:String(plan.s2||''),
+      pause:Number(plan.pause||0)
+    };
+    if(saveCustomTemplate(tpl)){
+      populateTemplateUi();
+      currentToolbarTemplate=tpl.id;
+      const sel=document.getElementById('rh-v200-toolbar-template');
+      if(sel)sel.value=tpl.id;
+      toast('Modèle enregistré');
+    }
+  }
+
+  function applyCycle(){
+    const targets=visibleTargets();
+    const anchor=targets[0] || (drawerCtx?{staffId:drawerCtx.staffId,dateStr:drawerCtx.dateStr}:null);
+    if(!anchor){toast('Sélectionnez la première case du cycle');return;}
+    const work=Math.max(1,Math.min(14,Number(document.getElementById('rh-v200-cycle-work')?.value)||3));
+    const off=Math.max(1,Math.min(14,Number(document.getElementById('rh-v200-cycle-off')?.value)||2));
+    const weeks=Math.max(1,Math.min(12,Number(document.getElementById('rh-v200-cycle-weeks')?.value)||4));
+    const cycle=work+off;
+    const total=weeks*7;
+    const start=new Date(`${anchor.dateStr}T12:00:00`);
+    const items=[];
+
+    for(let i=0;i<total;i++){
+      const d=new Date(start);
+      d.setDate(start.getDate()+i);
+      const dateStr=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+      const isWork=(i%cycle)<work;
+      items.push({
+        staffId:anchor.staffId,
+        dateStr,
+        plan:isWork?toolbarPlan():{status:'off',s1:'',s2:'',pause:0}
+      });
+    }
+
+    applyToTargets(
+      items.map(x=>({staffId:x.staffId,dateStr:x.dateStr})),
+      ({target,before})=>{
+        const item=items.find(x=>x.dateStr===target.dateStr&&String(x.staffId)===String(target.staffId));
+        return {...before,...(item?.plan||{})};
+      },
+      'DIRECTION_REPEAT_CYCLE'
+    );
+  }
+
+  // Remplace le vieux petit menu de statut par le nouveau panneau rapide.
+  window.openRhQuickStatus=function(event,staffId,day){
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+
+    const dateStr=dateStringFromDay(day);
+    if(!dateStr)return;
+
+    if(brushMode){
+      applyToTargets(
+        [{staffId:String(staffId),dateStr}],
+        ()=>toolbarPlan(),
+        'DIRECTION_BRUSH'
+      );
+      return;
+    }
+
+    if(selectionMode || event?.ctrlKey || event?.metaKey || event?.shiftKey){
+      toggleSelection(String(staffId),dateStr,event);
+      return;
+    }
+
+    openDrawer(String(staffId),dateStr);
+  };
+
+  // Double clic = fenêtre complète existante.
+  document.addEventListener('dblclick',event=>{
+    const btn=event.target?.closest?.('.rh-status-quick-btn');
+    if(!btn)return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeDrawer();
+    const dateStr=dateStringFromDay(btn.dataset.rhDay);
+    window.openRhCockpitShiftEditor?.(btn.dataset.rhStaff,dateStr);
+  },true);
+
+  // Raccourcis clavier copier/coller pour les cases sélectionnées.
+  document.addEventListener('keydown',event=>{
+    const tag=String(event.target?.tagName||'').toLowerCase();
+    if(['input','textarea','select'].includes(tag))return;
+
+    if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='c'&&selected.size){
+      event.preventDefault();
+      copySelected();
+    }
+    if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='v'&&selected.size){
+      event.preventDefault();
+      pasteSelected();
+    }
+    if(event.key==='Escape'){
+      if(drawerCtx)closeDrawer();
+      if(selectionMode||brushMode){
+        selectionMode=false;brushMode=false;refreshToolbar();
+      }
+    }
+  });
+
+  // Recréer la barre après les re-rendus du planning.
+  const global=document.getElementById('global-view-container');
+  if(global){
+    new MutationObserver(()=>{
+      if(!document.getElementById('rh-v200-fastbar')) ensureFastUi();
+      requestAnimationFrame(reapplySelection);
+    }).observe(global,{childList:true,subtree:true});
+  }
+
+  const oldLoad=window.loadMonthData;
+  if(typeof oldLoad==='function'){
+    window.loadMonthData=function(...args){
+      const result=oldLoad.apply(this,args);
+      setTimeout(()=>{ensureFastUi();reapplySelection();},0);
+      return result;
+    };
+  }
+
+  window.addEventListener('resize',()=>{
+    if(drawerCtx && innerWidth<760){
+      const drawer=document.getElementById('rh-v200-quick-drawer');
+      if(drawer)drawer.scrollTop=0;
+    }
+  });
+
+  document.addEventListener('DOMContentLoaded',()=>setTimeout(ensureFastUi,0));
+  setTimeout(ensureFastUi,120);
+  setTimeout(ensureFastUi,700);
+
+  window.__ICHEF_RH_BUILD__=VERSION;
+  console.info('[iCHEF RH V200] planning manuel rapide · multi-sélection · modèles · copier/coller · pinceau · cycles');
+})();
+</script>
+
+<script id="ichef-rh-v200-marker">
+window.__ICHEF_RH_BUILD__='RH-V200-FAST-MANUAL-PLANNING';
+</script>
+
