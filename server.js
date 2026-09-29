@@ -1035,6 +1035,9 @@ prewarm: true,
 uptimeSeconds: Math.round(process.uptime()),
 mongoReadyState: mongoose.connection.readyState,
 socketEngine: true,
+staffIdentitySecurity: true,
+whatsappVerifyConfigured: Boolean(twilioClient && ICHEF_TWILIO_VERIFY_SERVICE_SID),
+operationsApi: true,
 timestamp: new Date().toISOString()
 });
 });
@@ -1043,7 +1046,7 @@ app.get('/api/staff/build', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.json({
         success: true,
-        build: 'V147-CURRENT-FUSION-OPS-IDENTITY-SECURE',
+        build: 'V150-CURRENT-CONNEXIONS-FONCTIONS-SECURE',
         staffPortal: true,
         signedSession: true,
         ichefConnect: true,
@@ -16930,11 +16933,21 @@ app.get(
         res.setHeader('Cache-Control','no-store');
         return res.json({
             success:true,
-            build:'V135-ICHEF-CONNECT-SECURE',
+            build:'V150-CURRENT-CONNEXIONS-FONCTIONS-SECURE',
             staffLoginRoute:'/api/staff/login',
             authentication:'STAFF_ID_RH_PLUS_PIN',
             signedSession:true,
             tenantHint:true,
+            ichefConnect:true,
+            chatAudio:true,
+            operations:true,
+            tasks:true,
+            supplierOrders:true,
+            staffDeliveries:true,
+            whatsappOtp:Boolean(twilioClient && ICHEF_TWILIO_VERIFY_SERVICE_SID),
+            trustedDevice:true,
+            appDeviceProof:true,
+            strictIdentity:ICHEF_STAFF_IDENTITY_STRICT,
             timestamp:new Date().toISOString()
         });
     }
@@ -19891,7 +19904,7 @@ app.get('/api/staff/chat/status', async (req,res) => {
             staffId:self.id,
             rhChannelId:channelId,
             realtime:true,
-            build:'V135-ICHEF-CONNECT-SECURE'
+            build:'V150-CURRENT-CONNEXIONS-FONCTIONS-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT status V117]',error?.message || error);
@@ -20052,7 +20065,7 @@ app.post('/api/staff/chat/channels/direct', async (req,res) => {
                 participants
             },
             durationMs:Date.now()-startedAt,
-            build:'V135-ICHEF-CONNECT-SECURE'
+            build:'V150-CURRENT-CONNEXIONS-FONCTIONS-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT direct V123]',{
@@ -20101,7 +20114,7 @@ app.get('/api/staff/chat/messages', async (req,res) => {
             },
             messages:rows.reverse().map(ichefStaffChatPublicMessage),
             durationMs:Date.now()-startedAt,
-            build:'V135-ICHEF-CONNECT-SECURE'
+            build:'V150-CURRENT-CONNEXIONS-FONCTIONS-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT messages V126]',{
@@ -20187,7 +20200,7 @@ app.post('/api/staff/chat/message', async (req,res) => {
         return res.json({
             success:true,
             message:ichefStaffChatPublicMessage(row.toObject()),
-            build:'V135-ICHEF-CONNECT-SECURE'
+            build:'V150-CURRENT-CONNEXIONS-FONCTIONS-SECURE'
         });
     } catch (error) {
         if (storedAttachment?.attachmentId) await ichefStaffChatDeleteAttachment(storedAttachment.attachmentId);
@@ -20275,7 +20288,7 @@ app.post('/api/staff/chat/read', async (req,res) => {
         res.json({
             success:true,
             accepted:true,
-            build:'V135-ICHEF-CONNECT-SECURE'
+            build:'V150-CURRENT-CONNEXIONS-FONCTIONS-SECURE'
         });
 
         StaffChatMessage.updateMany(
@@ -20346,7 +20359,7 @@ app.get('/api/staff/video/config', async (req,res) => {
                 process.env.ICHEF_WEBRTC_TURN_USERNAME &&
                 process.env.ICHEF_WEBRTC_TURN_CREDENTIAL
             ),
-            build:'V135-ICHEF-CONNECT-SECURE'
+            build:'V150-CURRENT-CONNEXIONS-FONCTIONS-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF VIDEO config V128]',error?.message || error);
@@ -20477,7 +20490,7 @@ app.post('/api/staff/video/signal', async (req,res) => {
             signalId:publicSignal.signalId,
             deliveredSockets:onlineSockets,
             targetOnline:onlineSockets > 0,
-            build:'V135-ICHEF-CONNECT-SECURE'
+            build:'V150-CURRENT-CONNEXIONS-FONCTIONS-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF VIDEO http signal V131]',error?.message || error);
@@ -20541,7 +20554,7 @@ app.get('/api/staff/video/signals', async (req,res) => {
             success:true,
             signals:rows.map(ichefStaffVideoPublicSignalV131),
             serverTime:new Date().toISOString(),
-            build:'V135-ICHEF-CONNECT-SECURE'
+            build:'V150-CURRENT-CONNEXIONS-FONCTIONS-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF VIDEO poll V131]',error?.message || error);
@@ -20722,7 +20735,7 @@ app.get('/api/rh/chat/status', async (req,res) => {
             staffCount:Array.isArray(directory) ? directory.length : 0,
             realtime:true,
             privateChannels:true,
-            build:'V135-ICHEF-CONNECT-SECURE'
+            build:'V150-CURRENT-CONNEXIONS-FONCTIONS-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF RH CHAT status V117]',error?.message || error);
