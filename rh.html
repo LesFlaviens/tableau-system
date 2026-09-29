@@ -36386,6 +36386,99 @@ window.__ICHEF_RH_BUILD__='RH-V199-ASSISTANCE-LIGHT-MODAL-FIX';
     reapplySelection();
   }
 
+  // V205 · API tactile publique.
+  // Elle réutilise EXACTEMENT le moteur V200 (validation, historique,
+  // motif si modification tardive, sauvegarde locale + synchro serveur).
+  async function applyCategoryToSelectionV205(categoryId,{clearAfter=true}={}){
+    const targets=visibleTargets();
+    if(!targets.length){
+      toast('Sélectionnez d’abord les jours');
+      return false;
+    }
+
+    const category=window.iChefPlanningCategoryByIdV202?.(String(categoryId||''));
+    if(!category){
+      toast('Catégorie planning introuvable');
+      return false;
+    }
+
+    const toolbarCategory=document.getElementById('rh-v200-toolbar-status');
+    if(toolbarCategory){
+      toolbarCategory.value=category.id;
+      currentToolbarStatus=category.id;
+      toolbarCategory.dispatchEvent(new Event('change',{bubbles:true}));
+    }
+
+    const template=templateById(currentToolbarTemplate);
+    const legalStatus=String(category.legalType||'off');
+
+    const ok=await applyToTargets(
+      targets,
+      ({before})=>{
+        const next={
+          ...before,
+          status:legalStatus,
+          categoryId:category.id
+        };
+
+        // Pour TRAVAIL / MATIN / SOIR :
+        // conserver l'horaire existant si la case en possède déjà un.
+        // Sinon utiliser le modèle sélectionné dans la barre rapide.
+        if(legalStatus==='present'){
+          if(!String(before.s1||'').trim() && !String(before.s2||'').trim()){
+            next.s1=String(template?.s1||'');
+            next.s2=String(template?.s2||'');
+            next.pause=Number(template?.pause||0);
+          }
+        }else if(legalStatus==='off_soir'){
+          next.s1=String(before.s1||templateById('matin')?.s1||'');
+          next.s2='';
+          next.pause=0;
+        }else if(legalStatus==='off_matin'){
+          next.s1='';
+          next.s2=String(before.s2||templateById('soir')?.s2||'');
+          next.pause=0;
+        }else if(legalStatus==='ferie'){
+          // Un férié peut être travaillé ou non selon la situation.
+          // On conserve donc les horaires déjà présents, sans en inventer.
+          next.s1=String(before.s1||'');
+          next.s2=String(before.s2||'');
+          next.pause=Number(before.pause||0);
+        }else{
+          // Repos, congé, récupération, maladie, formation, etc.
+          next.s1='';
+          next.s2='';
+          next.pause=0;
+        }
+
+        return next;
+      },
+      'DIRECTION_TOUCH_CATEGORY'
+    );
+
+    if(ok){
+      toast(`${targets.length} jour${targets.length>1?'s':''} → ${category.short||category.label}`);
+      if(clearAfter) clearSelection();
+    }
+    return ok;
+  }
+
+  window.ICHEF_FAST_PLANNING_V205={
+    getSelectedTargets:()=>visibleTargets().map(x=>({...x})),
+    getSelectionCount:()=>selected.size,
+    clearSelection,
+    applyCategory:applyCategoryToSelectionV205,
+    setCategory(categoryId){
+      const category=window.iChefPlanningCategoryByIdV202?.(String(categoryId||''));
+      const select=document.getElementById('rh-v200-toolbar-status');
+      if(!category||!select) return false;
+      select.value=category.id;
+      currentToolbarStatus=category.id;
+      select.dispatchEvent(new Event('change',{bubbles:true}));
+      return true;
+    }
+  };
+
   function ensureFastUi(){
     const global=document.getElementById('global-view-container');
     if(!global) return;
@@ -37377,13 +37470,13 @@ window.__ICHEF_RH_BUILD__='RH-V200-FAST-MANUAL-PLANNING';
       const legend=document.createElement('div');
       legend.id='rh-v201-legend';
       legend.innerHTML=`
-        <span class="rh-v201-legend-chip work"><i></i>TRAVAIL</span>
-        <span class="rh-v201-legend-chip rest"><i></i>REPOS</span>
-        <span class="rh-v201-legend-chip leave"><i></i>CONGÉ</span>
-        <span class="rh-v201-legend-chip recup"><i></i>RÉCUP.</span>
-        <span class="rh-v201-legend-chip sick"><i></i>MALADIE</span>
-        <span class="rh-v201-legend-chip training"><i></i>FORMATION</span>
-        <span class="rh-v201-legend-chip holiday"><i></i>FÉRIÉ</span>`;
+        <button type="button" class="rh-v201-legend-chip work rh-v205-category-action" data-rh-category="present"><i></i>TRAVAIL</button>
+        <button type="button" class="rh-v201-legend-chip rest rh-v205-category-action" data-rh-category="off"><i></i>REPOS</button>
+        <button type="button" class="rh-v201-legend-chip leave rh-v205-category-action" data-rh-category="conge"><i></i>CONGÉ</button>
+        <button type="button" class="rh-v201-legend-chip recup rh-v205-category-action" data-rh-category="recup"><i></i>RÉCUP.</button>
+        <button type="button" class="rh-v201-legend-chip sick rh-v205-category-action" data-rh-category="maladie"><i></i>MALADIE</button>
+        <button type="button" class="rh-v201-legend-chip training rh-v205-category-action" data-rh-category="formation"><i></i>FORMATION</button>
+        <button type="button" class="rh-v201-legend-chip holiday rh-v205-category-action" data-rh-category="ferie"><i></i>FÉRIÉ</button>`;
       bar.insertAdjacentElement('afterend',legend);
     }
 
@@ -38284,11 +38377,12 @@ window.__ICHEF_RH_BUILD__='RH-V201-COLOR-TOUCH-FASTSAVE';
     const signature=active.map(c=>`${c.id}:${c.short||c.label}:${c.color}:${c.meaning}`).join('|');
     if(legend.dataset.v202Signature===signature) return;
     legend.innerHTML=active.map(c=>`
-      <span class="rh-v201-legend-chip"
-            data-rh-category="${esc(c.id)}"
-            title="${esc(c.meaning||window.iChefLegalTypeLabelV202(c.legalType))}">
+      <button type="button"
+              class="rh-v201-legend-chip rh-v205-category-action"
+              data-rh-category="${esc(c.id)}"
+              title="Appliquer ${esc(c.label)} aux jours sélectionnés · ${esc(c.meaning||window.iChefLegalTypeLabelV202(c.legalType))}">
         <i style="background:${esc(darken(c.color))}"></i>${esc(c.short||c.label)}
-      </span>`).join('');
+      </button>`).join('');
     legend.dataset.v202Signature=signature;
   }
 
@@ -38782,5 +38876,279 @@ window.__ICHEF_RH_BUILD__='RH-V203-PIN-FIX-SYNC-TEST';
 </script>
 <script id="ichef-rh-v204-marker">
 window.__ICHEF_RH_BUILD__='RH-V204-PERFORMANCE-SAFE-CLEANUP';
+</script>
+
+
+<style id="ichef-rh-v205-touch-category-actions-style">
+/* =========================================================
+   iCHEF RH V205 · SÉLECTION TACTILE → CATÉGORIE EN 1 TAP
+   Exemple :
+   1) sélectionner 2 jours
+   2) toucher FÉRIÉ
+   3) sélectionner 4 jours
+   4) toucher TRAVAIL
+   ========================================================= */
+
+#rh-v201-legend{
+  position:sticky;
+  top:48px;
+  z-index:34;
+  align-items:center;
+}
+
+#rh-v201-legend .rh-v201-legend-chip{
+  appearance:none;
+  -webkit-appearance:none;
+  min-height:34px;
+  padding:4px 10px;
+  border-style:solid;
+  cursor:pointer;
+  font-family:inherit;
+  line-height:1;
+  box-shadow:none;
+  user-select:none;
+  -webkit-user-select:none;
+  touch-action:manipulation;
+}
+
+#rh-v201-legend .rh-v205-category-action:hover{
+  filter:brightness(.96);
+}
+
+#rh-v201-legend .rh-v205-category-action:active{
+  transform:scale(.96);
+}
+
+#rh-v201-legend .rh-v205-category-action.rh-v205-ready{
+  box-shadow:inset 0 0 0 2px #111 !important;
+}
+
+#rh-v201-legend.rh-v205-has-selection{
+  background:#eef5ff;
+  border-bottom:2px solid #3778d4;
+}
+
+#rh-v201-legend.rh-v205-has-selection::before{
+  content:attr(data-selection-label);
+  display:inline-flex;
+  align-items:center;
+  min-height:26px;
+  padding:3px 8px;
+  border:1px solid #3778d4;
+  border-radius:999px;
+  background:#fff;
+  color:#111;
+  font-size:.5rem;
+  font-weight:900;
+  white-space:nowrap;
+}
+
+#rh-v205-touch-tip{
+  display:none;
+  align-items:center;
+  gap:6px;
+  margin-left:auto;
+  color:#111;
+  font-size:.49rem;
+  font-weight:850;
+  white-space:nowrap;
+}
+
+#rh-v201-legend.rh-v205-has-selection #rh-v205-touch-tip{
+  display:inline-flex;
+}
+
+#rh-v205-touch-tip strong{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:22px;
+  height:22px;
+  border:1px solid #111;
+  border-radius:999px;
+  background:#fff;
+}
+
+/* Pendant l'application : éviter le double tap accidentel */
+#rh-v201-legend.rh-v205-applying .rh-v205-category-action{
+  pointer-events:none;
+  opacity:.55;
+}
+
+@media(pointer:coarse){
+  #rh-v201-legend .rh-v201-legend-chip{
+    min-height:44px !important;
+    padding:5px 12px !important;
+    font-size:.58rem !important;
+  }
+}
+
+@media(max-width:760px){
+  #rh-v201-legend{
+    top:0;
+  }
+
+  #rh-v205-touch-tip{
+    width:100%;
+    margin-left:0;
+    white-space:normal;
+  }
+}
+</style>
+
+<script id="ichef-rh-v205-touch-category-actions">
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V205_TOUCH_CATEGORY__) return;
+  window.__ICHEF_RH_V205_TOUCH_CATEGORY__=true;
+
+  let applying=false;
+
+  function legend(){
+    return document.getElementById('rh-v201-legend');
+  }
+
+  function count(){
+    try{
+      return Number(window.ICHEF_FAST_PLANNING_V205?.getSelectionCount?.()||0);
+    }catch(_){
+      return document.querySelectorAll('#global-view-container .rh-v200-selected').length;
+    }
+  }
+
+  function ensureTip(){
+    const el=legend();
+    if(!el || document.getElementById('rh-v205-touch-tip')) return;
+    const tip=document.createElement('span');
+    tip.id='rh-v205-touch-tip';
+    tip.innerHTML='<strong>☝</strong> Touchez maintenant la catégorie à appliquer';
+    el.appendChild(tip);
+  }
+
+  function refresh(){
+    const el=legend();
+    if(!el) return;
+    ensureTip();
+
+    const n=count();
+    el.classList.toggle('rh-v205-has-selection',n>0);
+    el.dataset.selectionLabel=n
+      ? `${n} jour${n>1?'s':''} sélectionné${n>1?'s':''}`
+      : '';
+
+    const current=String(document.getElementById('rh-v200-toolbar-status')?.value||'');
+    el.querySelectorAll('.rh-v205-category-action').forEach(btn=>{
+      btn.classList.toggle('rh-v205-ready',String(btn.dataset.rhCategory||'')===current);
+      btn.setAttribute(
+        'aria-label',
+        n
+          ? `Appliquer ${btn.textContent.trim()} aux ${n} jours sélectionnés`
+          : `Choisir ${btn.textContent.trim()} puis sélectionner des jours`
+      );
+    });
+  }
+
+  async function applyCategory(categoryId){
+    const api=window.ICHEF_FAST_PLANNING_V205;
+    if(!api?.applyCategory) return false;
+
+    const n=count();
+    if(!n){
+      api.setCategory?.(categoryId);
+      try{showToast?.('Catégorie choisie · sélectionnez maintenant les jours');}catch(_){}
+      refresh();
+      return false;
+    }
+
+    if(applying) return false;
+    applying=true;
+
+    const el=legend();
+    el?.classList.add('rh-v205-applying');
+
+    try{
+      // clearAfter=true : exactement le flux tactile demandé.
+      // 2 jours → FÉRIÉ, la sélection s'efface ;
+      // puis 4 autres jours → TRAVAIL.
+      return await api.applyCategory(categoryId,{clearAfter:true});
+    }finally{
+      applying=false;
+      el?.classList.remove('rh-v205-applying');
+      refresh();
+    }
+  }
+
+  document.addEventListener('click',event=>{
+    const btn=event.target?.closest?.('#rh-v201-legend .rh-v205-category-action[data-rh-category]');
+    if(!btn) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    applyCategory(String(btn.dataset.rhCategory||''));
+  },true);
+
+  // Sur tactile, click est déjà produit après pointerup ; pas de double handler.
+  // On donne simplement un retour visuel dès le contact.
+  document.addEventListener('pointerdown',event=>{
+    const btn=event.target?.closest?.('#rh-v201-legend .rh-v205-category-action[data-rh-category]');
+    if(!btn) return;
+    if(['touch','pen'].includes(String(event.pointerType||''))){
+      btn.style.transform='scale(.96)';
+    }
+  },true);
+
+  document.addEventListener('pointerup',event=>{
+    const btn=event.target?.closest?.('#rh-v201-legend .rh-v205-category-action[data-rh-category]');
+    if(btn) btn.style.removeProperty('transform');
+  },true);
+
+  document.addEventListener('pointercancel',event=>{
+    const btn=event.target?.closest?.('#rh-v201-legend .rh-v205-category-action[data-rh-category]');
+    if(btn) btn.style.removeProperty('transform');
+  },true);
+
+  // La sélection change souvent sans reconstruction DOM.
+  // On se branche donc sur l'API de rafraîchissement tactile V201.
+  const oldRefresh=window.iChefV201RefreshTouchState;
+  window.iChefV201RefreshTouchState=function(...args){
+    const result=typeof oldRefresh==='function'
+      ? oldRefresh.apply(this,args)
+      : undefined;
+    requestAnimationFrame(refresh);
+    return result;
+  };
+
+  // Si la légende est reconstruite par les catégories client V202.
+  const global=document.getElementById('global-view-container');
+  if(global){
+    let frame=0;
+    new MutationObserver(()=>{
+      if(frame) return;
+      frame=requestAnimationFrame(()=>{
+        frame=0;
+        refresh();
+      });
+    }).observe(global,{childList:true,subtree:true});
+  }
+
+  document.addEventListener('change',event=>{
+    if(event.target?.id==='rh-v200-toolbar-status') refresh();
+  },true);
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',refresh,{once:true});
+  }else{
+    refresh();
+  }
+  setTimeout(refresh,180);
+
+  window.__ICHEF_RH_BUILD__='RH-V205-TOUCH-APPLY-CATEGORY';
+  console.info('[iCHEF RH V205] sélection tactile → catégorie en un tap');
+})();
+</script>
+
+<script id="ichef-rh-v205-marker">
+window.__ICHEF_RH_BUILD__='RH-V205-TOUCH-APPLY-CATEGORY';
 </script>
 
