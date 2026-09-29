@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#071018">
-<title>iCHEF OS - Économat V3 · Stock maître & mouvements</title>
+<title>iCHEF OS - Économat V4 · Stock, achats & tâches</title>
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <style>
 :root{
@@ -19,7 +19,7 @@ body{
   min-height:100vh;
   background-image:
     linear-gradient(rgba(7,16,24,.72),rgba(7,16,24,.82)),
-    url("ChatGPT Image 20 sept. 2026, 14_24_41.png");
+    url("Gemini_Generated_Image_1ypyur1ypyur1ypy-Photoroom.png");
   background-position:center center;
   background-size:cover;
   background-repeat:no-repeat;
@@ -62,7 +62,7 @@ button{cursor:pointer}
 .topbtn.red{color:var(--red);border-color:#653038}
 .spacer{flex:1}
 .wrap{padding:10px;max-width:1600px;margin:auto}
-.kpis{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:8px;margin-bottom:9px}
+.kpis{display:grid;grid-template-columns:repeat(5,minmax(135px,1fr));gap:8px;margin-bottom:9px}
 .kpi{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:10px}
 .kpi small{display:block;color:var(--muted);font-size:.64rem;font-weight:800;text-transform:uppercase}
 .kpi strong{display:block;font-size:1.1rem;margin-top:5px}
@@ -212,14 +212,30 @@ td b{font-size:.79rem}
         height: 12px !important;
     }
 }
+
+.stock-low td{background:rgba(255,95,104,.035)}
+.reorder-flag{display:inline-flex;margin-top:4px;padding:3px 6px;border-radius:999px;border:1px solid #653038;color:#ff8f98;background:rgba(255,95,104,.06);font-size:.57rem;font-weight:900}
+.mini.order{color:var(--gold);border-color:#5b4b1c;background:rgba(212,175,55,.07)}
+.mini.task{color:var(--blue);border-color:#285783;background:rgba(84,168,255,.07)}
+.mini.level{color:#b7c5d1;border-color:#34495a}
+
+.login-entry-logo{
+  display:block;
+  width:min(190px,58vw);
+  max-height:86px;
+  object-fit:contain;
+  margin:0 auto 12px;
+  filter:drop-shadow(0 10px 22px rgba(0,0,0,.38));
+}
+
 </style>
 </head>
 <body>
 
 <div class="topbar">
-  <div class="brand brand-logo" title="iCHEF · Économat V3">
+  <div class="brand brand-logo" title="iCHEF · Économat V4">
   <img
-    src="Gemini_Generated_Image_q748ueq748ueq748-Photoroom (1) (1) (1).png"
+    src="logo-ichef.png"
     alt="iCHEF"
     class="brand-logo-img"
   >
@@ -228,6 +244,8 @@ td b{font-size:.79rem}
   <div id="sync-badge" class="badge warn">SERVEUR · CONNEXION…</div>
   <div id="role-badge" class="badge">ACCÈS —</div>
   <div class="spacer"></div>
+  <button class="topbtn gold" onclick="goPurchaseOrders()">COMMANDES</button>
+  <button class="topbtn gold" onclick="goTasks()">TÂCHES</button>
   <button class="topbtn gold" onclick="goHaccp()">HACCP</button>
   <button class="topbtn gold" onclick="goAdmin()">RETOUR ADMIN</button>
   <button class="topbtn red" onclick="lockEconomat()">VERROUILLER</button>
@@ -238,6 +256,7 @@ td b{font-size:.79rem}
     <div class="kpi"><small>Valeur stock central</small><strong id="kpi-value">—</strong></div>
     <div class="kpi"><small>Articles référencés</small><strong id="kpi-items">0</strong></div>
     <div class="kpi"><small>Ruptures</small><strong id="kpi-zero">0</strong></div>
+    <div class="kpi"><small>À commander</small><strong id="kpi-reorder">0</strong></div>
     <div class="kpi"><small>Fournisseurs</small><strong id="kpi-suppliers">0</strong></div>
   </section>
 
@@ -272,6 +291,7 @@ td b{font-size:.79rem}
 
 <div id="login-overlay" class="overlay">
   <div class="loginbox">
+    <img src="logo-ichef.png" alt="iCHEF" class="login-entry-logo">
     <h1>Accès Économat</h1>
     <p>Le code est vérifié par le serveur iCHEF. Aucun PIN fixe ou PIN local n’est accepté.</p>
     <div class="pinrow">
@@ -292,6 +312,8 @@ td b{font-size:.79rem}
       <datalist id="category-list"></datalist>
       <input id="m-supplier" placeholder="Fournisseur">
       <input id="m-qty" type="number" step="0.001" min="0" placeholder="Quantité">
+      <input id="m-min-stock" type="number" step="0.001" min="0" placeholder="Stock minimum / alerte">
+      <input id="m-reorder-qty" type="number" step="0.001" min="0" placeholder="Qté commande habituelle">
       <select id="m-unit">
         <option value="pce">pce</option><option value="kg">kg</option><option value="g">g</option>
         <option value="L">L</option><option value="cl">cl</option><option value="ml">ml</option>
@@ -661,6 +683,14 @@ async function verifyEconomatPin() {
     // 2) Dès que le serveur confirme le PIN, l'accès est validé.
     authenticated = true;
     currentRole = String(data.role || "AUTORISÉ").toUpperCase();
+    const opsToken = String(data.operationsToken || data.accessToken || data.token || "").trim();
+    if (opsToken) {
+      sessionStorage.setItem("ichef_ops_token", opsToken);
+      sessionStorage.setItem("ichef_ops_tenant", tenantID);
+    } else {
+      sessionStorage.removeItem("ichef_ops_token");
+      sessionStorage.removeItem("ichef_ops_tenant");
+    }
     document.getElementById("role-badge").textContent = "ACCÈS · " + currentRole;
     document.getElementById("login-overlay").style.display = "none";
     input.value = "";
@@ -772,45 +802,49 @@ function refreshCategoryOptions() {
     cats.map(c => `<option value="${escapeHtml(c)}"></option>`).join("");
 }
 
+function reorderState(item) {
+  const qty = currentQty(item);
+  const minStock = Math.max(0,n(item?.minStock));
+  const reorderQty = Math.max(0,n(item?.reorderQty));
+  const low = minStock > 0 && qty <= minStock;
+  const recommended = reorderQty > 0 ? reorderQty : (minStock > 0 ? Math.max(minStock * 2 - qty, minStock - qty, 1) : 1);
+  return {qty,minStock,reorderQty,low,recommended};
+}
+
 function renderStock() {
   const q = document.getElementById("search").value.trim().toLowerCase();
   const cat = document.getElementById("category-filter").value;
-
   const rows = inventory.filter(item => {
     const hay = [item.name,item.cat,item.fournisseur].join(" ").toLowerCase();
     return (!q || hay.includes(q)) && (!cat || item.cat === cat);
   });
-
   const body = document.getElementById("stock-body");
   if (!rows.length) {
     body.innerHTML = '<tr><td colspan="7" class="empty">Aucun article correspondant.</td></tr>';
   } else {
     body.innerHTML = rows.map(item => {
-      const qty = currentQty(item);
-      const price = unitPrice(item);
-      const value = qty * price;
-      const id = String(item.id ?? "");
-      return `<tr>
-        <td><b>${escapeHtml(item.name || "Sans nom")}</b></td>
-        <td>${escapeHtml(item.cat || "—")}</td>
-        <td>${escapeHtml(item.fournisseur || "—")}</td>
-        <td class="${qty <= 0 ? "qty-zero" : ""}">${qty.toLocaleString("fr-FR",{maximumFractionDigits:3})} ${escapeHtml(item.unit || "")}</td>
-        <td class="money">${money(price)}</td>
-        <td class="money">${money(value)}</td>
+      const state = reorderState(item), qty=state.qty, price=unitPrice(item), value=qty*price, id=String(item.id??"");
+      return `<tr class="${state.low?"stock-low":""}">
+        <td><b>${escapeHtml(item.name||"Sans nom")}</b>${state.low?`<br><span class="reorder-flag">À COMMANDER · seuil ${state.minStock.toLocaleString("fr-FR",{maximumFractionDigits:3})} ${escapeHtml(item.unit||"")}</span>`:""}</td>
+        <td>${escapeHtml(item.cat||"—")}</td><td>${escapeHtml(item.fournisseur||"—")}</td>
+        <td class="${qty<=0?"qty-zero":""}">${qty.toLocaleString("fr-FR",{maximumFractionDigits:3})} ${escapeHtml(item.unit||"")}</td>
+        <td class="money">${money(price)}</td><td class="money">${money(value)}</td>
         <td><div class="row-actions">
+          <button class="mini order" onclick='openSupplierOrder(${JSON.stringify(id)})'>COMMANDER</button>
+          <button class="mini task" onclick='openInventoryTask(${JSON.stringify(id)})'>TÂCHE</button>
           <button class="mini" onclick='adjustQty(${JSON.stringify(id)})'>RÉCEPTION</button>
+          <button class="mini level" onclick='setReorderLevel(${JSON.stringify(id)})'>SEUIL</button>
           <button class="mini danger" onclick='deleteItem(${JSON.stringify(id)})'>SUPPRIMER</button>
-        </div></td>
-      </tr>`;
+        </div></td></tr>`;
     }).join("");
   }
-
-  const value = inventory.reduce((s,x)=>s + currentQty(x)*unitPrice(x),0);
+  const value = inventory.reduce((s,x)=>s+currentQty(x)*unitPrice(x),0);
   const suppliers = new Set(inventory.map(x=>String(x.fournisseur||"").trim()).filter(Boolean));
-  document.getElementById("kpi-value").textContent = money(value);
-  document.getElementById("kpi-items").textContent = String(inventory.length);
-  document.getElementById("kpi-zero").textContent = String(inventory.filter(x=>currentQty(x)<=0).length);
-  document.getElementById("kpi-suppliers").textContent = String(suppliers.size);
+  document.getElementById("kpi-value").textContent=money(value);
+  document.getElementById("kpi-items").textContent=String(inventory.length);
+  document.getElementById("kpi-zero").textContent=String(inventory.filter(x=>currentQty(x)<=0).length);
+  document.getElementById("kpi-reorder").textContent=String(inventory.filter(x=>reorderState(x).low).length);
+  document.getElementById("kpi-suppliers").textContent=String(suppliers.size);
 }
 
 function openStockModal() {
@@ -825,6 +859,8 @@ async function saveNewStockItem() {
   const cat = document.getElementById("m-category").value.trim();
   const supplier = document.getElementById("m-supplier").value.trim();
   const qty = n(document.getElementById("m-qty").value);
+  const minStock = Math.max(0,n(document.getElementById("m-min-stock").value));
+  const reorderQty = Math.max(0,n(document.getElementById("m-reorder-qty").value));
   const unit = document.getElementById("m-unit").value;
   const totalPrice = n(document.getElementById("m-total-price").value);
   const telephone = document.getElementById("m-phone").value.trim();
@@ -846,6 +882,8 @@ async function saveNewStockItem() {
     qtyStr: `${qty} ${unit}`,
     initialQty: qty,
     currentQty: qty,
+    minStock,
+    reorderQty,
     unit,
     totalPrice,
     unitPrice: qty > 0 ? totalPrice / qty : totalPrice,
@@ -876,7 +914,7 @@ async function saveNewStockItem() {
     emitEconomatInventorySignal("create", item.id);
 
     closeStockModal();
-    ["m-name","m-category","m-supplier","m-qty","m-total-price","m-phone","m-address"]
+    ["m-name","m-category","m-supplier","m-qty","m-min-stock","m-reorder-qty","m-total-price","m-phone","m-address"]
       .forEach(id => document.getElementById(id).value = "");
     refreshCategoryOptions();
     renderStock();
@@ -886,6 +924,48 @@ async function saveNewStockItem() {
     alert("Le serveur n’a pas confirmé l’enregistrement. Aucun stock local n’a été appliqué.");
   }
 }
+
+function economatModuleUrl(file, params={}) {
+  const q = new URLSearchParams({tenantID,returnTo:"economat.html",...params});
+  return `${file}?${q.toString()}`;
+}
+function goPurchaseOrders(){ location.href=economatModuleUrl("commandes-fournisseurs.html"); }
+function goTasks(){ location.href=economatModuleUrl("taches.html"); }
+
+function openSupplierOrder(id) {
+  const item=inventory.find(x=>String(x.id??"")===String(id)); if(!item)return;
+  const supplierName=String(item.fournisseur||"").trim();
+  if(!supplierName)return alert("Renseignez d’abord le fournisseur de cet article.");
+  const s=reorderState(item);
+  location.href=economatModuleUrl("commandes-fournisseurs.html",{
+    new:"1",supplierName,product:String(item.name||""),quantity:String(s.recommended),
+    unit:String(item.unit||"unité"),unitPrice:String(unitPrice(item)||0),
+    inventoryItemId:String(item.id||""),source:"ECONOMAT"
+  });
+}
+function openInventoryTask(id) {
+  const item=inventory.find(x=>String(x.id??"")===String(id)); if(!item)return;
+  const s=reorderState(item);
+  location.href=economatModuleUrl("taches.html",{
+    new:"1",title:s.low?`Commander ${item.name||"article"}`:`Vérifier stock — ${item.name||"article"}`,
+    description:`Stock actuel : ${s.qty} ${item.unit||""}. Seuil : ${s.minStock} ${item.unit||""}. Fournisseur : ${item.fournisseur||"non renseigné"}.`,
+    priority:s.low?"IMPORTANT":"NORMAL",sourceType:"INVENTORY",sourceRefId:String(item.id||"")
+  });
+}
+async function setReorderLevel(id) {
+  const item=inventory.find(x=>String(x.id??"")===String(id)); if(!item)return;
+  const rawMin=prompt(`Stock minimum pour "${item.name}" (${item.unit||""})`,String(Math.max(0,n(item.minStock))));
+  if(rawMin===null)return;
+  const minStock=Number(String(rawMin).replace(",",".")); if(!Number.isFinite(minStock)||minStock<0)return alert("Seuil invalide.");
+  const rawOrder=prompt("Quantité habituelle à commander",String(Math.max(0,n(item.reorderQty))||minStock||1));
+  if(rawOrder===null)return;
+  const reorderQty=Number(String(rawOrder).replace(",",".")); if(!Number.isFinite(reorderQty)||reorderQty<0)return alert("Quantité invalide.");
+  const fresh=await API.getState(), latest=extractInventoryFromState(fresh), idx=latest.findIndex(x=>String(x.id??"")===String(id));
+  if(idx<0)return alert("Article introuvable sur le serveur.");
+  latest[idx]={...latest[idx],minStock,reorderQty,updatedAt:new Date().toISOString(),updatedByModule:"ECONOMAT"};
+  await API.save("INVENTORY_MASTER",latest); inventory=latest; emitEconomatInventorySignal("reorder-level",id); renderStock();
+}
+
 async function adjustQty(id) {
   const localItem = inventory.find(x => String(x.id ?? "") === String(id));
   if (!localItem) return;
@@ -1569,6 +1649,8 @@ function goHaccp() {
 function lockEconomat() {
   authenticated = false;
   currentRole = "";
+  sessionStorage.removeItem("ichef_ops_token");
+  sessionStorage.removeItem("ichef_ops_tenant");
   document.getElementById("role-badge").textContent = "ACCÈS —";
   document.getElementById("pin-input").value = "";
   document.getElementById("login-overlay").style.display = "flex";
