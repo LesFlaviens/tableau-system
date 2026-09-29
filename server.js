@@ -137,6 +137,7 @@ allowedHeaders: [
 'X-iCHEF-Device',
 'X-iCHEF-Master-Device',
 'X-iCHEF-Tenant',
+'X-iCHEF-PWA',
 'X-iCHEF-PIN',
 'Idempotency-Key',
 'X-Requested-With'
@@ -175,6 +176,12 @@ const twilioAuthToken = process.env.TWILIO_AUTH_TOKEN;
 const twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER;
 const ICHEF_TWILIO_VERIFY_SERVICE_SID = String(process.env.TWILIO_VERIFY_SERVICE_SID || '').trim();
 const ICHEF_STAFF_IDENTITY_STRICT = /^(1|true|yes|on)$/i.test(String(process.env.ICHEF_STAFF_IDENTITY_STRICT || '').trim());
+const ICHEF_STAFF_ACTIVATION_REQUIRED =
+    !/^(0|false|no|off)$/i.test(String(process.env.ICHEF_STAFF_ACTIVATION_REQUIRED || 'true').trim());
+const ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED =
+    !/^(0|false|no|off)$/i.test(String(process.env.ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED || 'true').trim());
+const ICHEF_STAFF_PWA_REQUIRED =
+    !/^(0|false|no|off)$/i.test(String(process.env.ICHEF_STAFF_PWA_REQUIRED || 'true').trim());
 const NUMERO_FLAVIEN = '+330641437265';
 let twilioClient = null;
 if (twilioAccountSid && twilioAuthToken) {
@@ -1037,6 +1044,10 @@ mongoReadyState: mongoose.connection.readyState,
 socketEngine: true,
 staffIdentitySecurity: true,
 whatsappVerifyConfigured: Boolean(twilioClient && ICHEF_TWILIO_VERIFY_SERVICE_SID),
+staffActivationRequired: ICHEF_STAFF_ACTIVATION_REQUIRED,
+staffActivationWhatsappRequired: ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED,
+staffActivationQr: true,
+pwaRequired: ICHEF_STAFF_PWA_REQUIRED,
 operationsApi: true,
 timestamp: new Date().toISOString()
 });
@@ -1046,7 +1057,7 @@ app.get('/api/staff/build', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.json({
         success: true,
-        build: 'V150-CURRENT-CONNEXIONS-FONCTIONS-SECURE',
+        build: 'V160-CURRENT-STAFF-ACTIVATION-SECURE',
         staffPortal: true,
         signedSession: true,
         ichefConnect: true,
@@ -1059,6 +1070,10 @@ app.get('/api/staff/build', (req, res) => {
         trustedDevice: true,
         appDeviceProof: true,
         strictIdentity: ICHEF_STAFF_IDENTITY_STRICT,
+        activationRequired: ICHEF_STAFF_ACTIVATION_REQUIRED,
+        activationWhatsappRequired: ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED,
+        activationQr: true,
+        pwaRequired: ICHEF_STAFF_PWA_REQUIRED,
         timestamp: new Date().toISOString()
     });
 });
@@ -15979,6 +15994,19 @@ function ichefRequireStaffSession(req) {
         };
     }
 
+    if (
+        ICHEF_STAFF_ACTIVATION_REQUIRED &&
+        String(claims.accessChannel||'') === 'STAFF_PWA' &&
+        claims.deviceTrusted !== true
+    ) {
+        return {
+            ok:false,
+            tenantID,
+            claims:null,
+            error:'Cet appareil doit être activé avec le QR iCHEF Staff fourni par votre responsable.'
+        };
+    }
+
     return {
         ok: true,
         tenantID,
@@ -16033,6 +16061,12 @@ function ichefStaffDeviceHash(deviceId=''){
         .createHash('sha256')
         .update(String(deviceId||'').trim())
         .digest('hex');
+}
+
+function ichefStaffRequestIsPwa(req={}){
+    return String(req.headers?.['x-ichef-pwa']||'')
+        .trim()
+        .toLowerCase()==='standalone';
 }
 
 function ichefStaffNormalizePhone(value=''){
@@ -16179,7 +16213,10 @@ function ichefStaffBuildLoginPayload({
         role:safeRole,
         dept:safeDept,
         name:safeName,
-        deviceId:String(deviceId||'').trim().slice(0,180)
+        deviceId:String(deviceId||'').trim().slice(0,180),
+        deviceTrusted:deviceTrusted===true,
+        activationVersion:deviceTrusted===true ? 1 : 0,
+        accessChannel:'STAFF_PWA'
     },8*60*60);
 
     return {
@@ -16196,7 +16233,10 @@ function ichefStaffBuildLoginPayload({
         identityProtection:{
             mode:identityMode,
             whatsappConfigured:Boolean(twilioClient && ICHEF_TWILIO_VERIFY_SERVICE_SID),
-            strict:ICHEF_STAFF_IDENTITY_STRICT
+            strict:ICHEF_STAFF_IDENTITY_STRICT,
+            activationRequired:ICHEF_STAFF_ACTIVATION_REQUIRED,
+            activationWhatsappRequired:ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED,
+            pwaRequired:ICHEF_STAFF_PWA_REQUIRED
         },
         staff:{
             id:member.id,
@@ -16266,6 +16306,408 @@ async function ichefStaffSessionDeviceIsRevoked(auth={}){
     },{_id:1}).lean();
 
     return Boolean(revoked);
+}
+
+// ============================================================================
+// 🔑 iCHEF V160 — ACTIVATION STAFF PAR QR / CODE UNIQUE / PWA
+// ============================================================================
+
+const ichefStaffActivationSchema = new mongoose.Schema({
+    activationId:{type:String,required:true,unique:true,index:true},
+    tenantID:{type:String,required:true,index:true},
+    staffId:{type:String,required:true,index:true},
+    tokenHash:{type:String,required:true},
+    shortCodeHash:{type:String,required:true},
+    createdById:{type:String,default:'',maxlength:160},
+    createdByName:{type:String,default:'Direction / RH',maxlength:180},
+    createdByRole:{type:String,default:'MANAGER',maxlength:120},
+    createdAt:{type:Date,default:Date.now,index:true},
+    expiresAt:{type:Date,required:true,index:true},
+    cleanupAt:{type:Date,required:true,index:{expires:0}},
+    usedAt:{type:Date,default:null,index:true},
+    revokedAt:{type:Date,default:null,index:true},
+    lockedAt:{type:Date,default:null},
+    lockedBy:{type:String,default:'',maxlength:80},
+    lastWhatsappSentAt:{type:Date,default:null},
+    activatedDeviceHash:{type:String,default:'',maxlength:80},
+    whatsappVerifiedAt:{type:Date,default:null}
+},{minimize:false});
+
+ichefStaffActivationSchema.index(
+    {tenantID:1,staffId:1,createdAt:-1}
+);
+
+const IchefStaffActivation =
+    mongoose.models.IchefStaffActivation ||
+    mongoose.model('IchefStaffActivation',ichefStaffActivationSchema);
+
+function ichefStaffActivationHmac(value=''){
+    return nodeCrypto
+        .createHmac('sha256',ICHEF_SESSION_SECRET)
+        .update(`ICHEF_STAFF_ACTIVATION_V1|${String(value||'')}`)
+        .digest('hex');
+}
+
+function ichefStaffActivationSafeEqual(a='',b=''){
+    try{
+        const aa=Buffer.from(String(a||''),'utf8');
+        const bb=Buffer.from(String(b||''),'utf8');
+        return aa.length===bb.length && nodeCrypto.timingSafeEqual(aa,bb);
+    }catch(_){
+        return false;
+    }
+}
+
+function ichefStaffActivationCode(){
+    const alphabet='ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+    let out='';
+    for(let i=0;i<8;i++){
+        out+=alphabet[nodeCrypto.randomInt(0,alphabet.length)];
+    }
+    return out;
+}
+
+function ichefStaffActivationParseToken(raw=''){
+    const value=String(raw||'').trim();
+    const match=/^act1\.([A-Za-z0-9_-]{16,80})\.([A-Za-z0-9_-]{30,160})$/.exec(value);
+    if(!match)return null;
+    return {activationId:match[1],secret:match[2],raw:value};
+}
+
+function ichefStaffActivationTechnicalId(item={}){
+    const value=
+        item?.id ??
+        item?.staffId ??
+        item?.employeeId ??
+        item?.rhId ??
+        item?.matricule ??
+        item?.employeeNo ??
+        item?.employeeNumber ??
+        item?.internalId ??
+        '';
+    return String(value||'').trim();
+}
+
+function ichefStaffActivationDisplayName(item={}){
+    return String(
+        item?.name ||
+        item?.displayName ||
+        [item?.firstName,item?.lastName].filter(Boolean).join(' ') ||
+        [item?.prenom,item?.nom].filter(Boolean).join(' ') ||
+        item?.pseudo ||
+        'Collaborateur'
+    ).trim().slice(0,160);
+}
+
+function ichefStaffActivationRole(item={}){
+    return String(
+        item?.role ||
+        item?.dept ||
+        item?.department ||
+        item?.fonction ||
+        item?.title ||
+        'STAFF'
+    ).trim().slice(0,120);
+}
+
+function ichefStaffActivationPublicBase(req){
+    const forwarded=String(req?.headers?.['x-forwarded-proto']||'').split(',')[0].trim();
+    const protocol=forwarded || req?.protocol || 'https';
+    const host=String(req?.get?.('host') || req?.headers?.host || '').trim();
+    if(host){
+        return `${protocol}://${host}`.replace(/^http:\/\/(.*\.onrender\.com)$/i,'https://$1');
+    }
+    return String(
+        process.env.ICHEF_PUBLIC_API_URL ||
+        'https://tableau-system.onrender.com'
+    ).replace(/\/$/,'');
+}
+
+function ichefStaffActivationQrSvg(value=''){
+    // QR généré localement : aucun jeton n'est envoyé à un service tiers.
+    const QRCode=require(path.join(__dirname,'ichef-qr','QRCode'));
+    const QRErrorCorrectLevel=require(
+        path.join(__dirname,'ichef-qr','QRCode','QRErrorCorrectLevel')
+    );
+
+    const qr=new QRCode(-1,QRErrorCorrectLevel.M);
+    qr.addData(String(value||''));
+    qr.make();
+
+    const n=qr.getModuleCount();
+    const quiet=4;
+    const moduleSize=6;
+    const size=(n+quiet*2)*moduleSize;
+    const rects=[];
+
+    for(let row=0;row<n;row++){
+        for(let col=0;col<n;col++){
+            if(qr.isDark(row,col)){
+                rects.push(
+                    `<rect x="${(col+quiet)*moduleSize}" y="${(row+quiet)*moduleSize}" width="${moduleSize}" height="${moduleSize}"/>`
+                );
+            }
+        }
+    }
+
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" role="img" aria-label="QR activation iCHEF Staff"><rect width="100%" height="100%" fill="#fff"/><g fill="#05090c">${rects.join('')}</g></svg>`;
+}
+
+async function ichefStaffActivationLoadCredential(input={}){
+    const tokenParsed=ichefStaffActivationParseToken(input?.token||'');
+    let row=null;
+
+    if(tokenParsed){
+        row=await IchefStaffActivation.findOne({
+            activationId:tokenParsed.activationId
+        });
+
+        if(!row)return {ok:false,error:'Activation invalide ou expirée.'};
+
+        const expected=ichefStaffActivationHmac(
+            `${tokenParsed.activationId}|${tokenParsed.secret}`
+        );
+
+        if(!ichefStaffActivationSafeEqual(expected,row.tokenHash)){
+            return {ok:false,error:'Activation invalide ou expirée.'};
+        }
+    }else{
+        const tenantID=cleanString(input?.tenantID||'');
+        const staffId=String(input?.staffId||'').trim().slice(0,160);
+        const code=String(input?.activationCode||'')
+            .toUpperCase()
+            .replace(/[^A-Z0-9]/g,'')
+            .slice(0,16);
+
+        if(!tenantID || !staffId || code.length<6){
+            return {ok:false,error:'Activation invalide ou expirée.'};
+        }
+
+        const rows=await IchefStaffActivation.find({
+            tenantID,
+            staffId,
+            usedAt:null,
+            revokedAt:null,
+            expiresAt:{$gt:new Date()}
+        }).sort({createdAt:-1}).limit(4);
+
+        const codeHash=ichefStaffActivationHmac(
+            `${tenantID}|${staffId}|${code}`
+        );
+
+        row=rows.find(candidate=>
+            ichefStaffActivationSafeEqual(codeHash,candidate.shortCodeHash)
+        ) || null;
+
+        if(!row)return {ok:false,error:'Activation invalide ou expirée.'};
+    }
+
+    if(
+        row.revokedAt ||
+        row.usedAt ||
+        !row.expiresAt ||
+        new Date(row.expiresAt).getTime()<=Date.now()
+    ){
+        return {ok:false,error:'Activation invalide ou expirée.'};
+    }
+
+    const profile=await ichefStaffFindActiveSecurityProfile(
+        row.tenantID,
+        row.staffId
+    );
+
+    if(!profile){
+        return {ok:false,error:'Profil collaborateur indisponible.'};
+    }
+
+    return {ok:true,row,profile};
+}
+
+async function ichefLoadStaffActivationManagerSession(req){
+    // 1. Jeton Direction/Master issu de /api/verify-pin
+    try{
+        const opsAuth=await ichefOpsLoadAuthorizedSession(req);
+        if(
+            opsAuth?.ok &&
+            String(
+                opsAuth.staff?.role ||
+                opsAuth.claims?.role ||
+                ''
+            ).toUpperCase()==='MASTER'
+        ){
+            return {
+                ok:true,
+                tenantID:opsAuth.tenantID,
+                actorId:String(
+                    opsAuth.claims?.staffId ||
+                    `MASTER:${opsAuth.tenantID}`
+                ),
+                actorName:String(
+                    opsAuth.staff?.name ||
+                    'Direction'
+                ).slice(0,180),
+                actorRole:'MASTER',
+                source:'OPS_MASTER',
+                auth:opsAuth
+            };
+        }
+    }catch(_){}
+
+    // 2. Session Staff privilégiée
+    try{
+        const staffAuth=await ichefLoadActiveStaffSession(req);
+        if(
+            staffAuth?.ok &&
+            (
+                String(staffAuth.claims?.role||'').toUpperCase()==='MASTER' ||
+                ichefStaffIsRhPrivileged(staffAuth.staff||{})
+            )
+        ){
+            return {
+                ok:true,
+                tenantID:staffAuth.tenantID,
+                actorId:String(staffAuth.claims?.staffId||''),
+                actorName:String(
+                    staffAuth.staff?.name ||
+                    staffAuth.claims?.name ||
+                    'Responsable'
+                ).slice(0,180),
+                actorRole:String(
+                    staffAuth.claims?.role ||
+                    staffAuth.staff?.role ||
+                    'MANAGER'
+                ).slice(0,120),
+                source:'STAFF',
+                auth:staffAuth
+            };
+        }
+    }catch(_){}
+
+    // 3. Session RH documents existante
+    try{
+        const rhAuth=await ichefLoadRhDocumentsManagerSession(req);
+        if(rhAuth?.ok){
+            return {
+                ok:true,
+                tenantID:rhAuth.tenantID,
+                actorId:String(rhAuth.claims?.actorId||'MASTER'),
+                actorName:String(
+                    rhAuth.claims?.actorName ||
+                    'Direction / RH'
+                ).slice(0,180),
+                actorRole:String(
+                    rhAuth.claims?.role ||
+                    'MANAGER'
+                ).slice(0,120),
+                source:'RH_DOCUMENTS',
+                auth:rhAuth
+            };
+        }
+    }catch(_){}
+
+    return {
+        ok:false,
+        status:401,
+        error:'Session Direction / RH requise.'
+    };
+}
+
+async function ichefStaffActivationUpdatePin(tenantID,staffId,newPin){
+    const safeTenant=cleanString(tenantID);
+    const id=String(staffId||'').trim();
+
+    const state=await AppState.findOne(
+        {tenantID:safeTenant},
+        {
+            'activeOrders.STAFF_ACCESS':1,
+            'activeOrders.DIRECTORY_MASTER':1
+        }
+    ).lean();
+
+    if(!state)return false;
+
+    const access=Array.isArray(state?.activeOrders?.STAFF_ACCESS?.data)
+        ? JSON.parse(JSON.stringify(state.activeOrders.STAFF_ACCESS.data))
+        : [];
+
+    const directory=Array.isArray(state?.activeOrders?.DIRECTORY_MASTER?.data)
+        ? JSON.parse(JSON.stringify(state.activeOrders.DIRECTORY_MASTER.data))
+        : [];
+
+    const matches=item=>{
+        const values=[
+            item?.id,
+            item?.staffId,
+            item?.employeeId,
+            item?.rhId,
+            item?.matricule,
+            item?.employeeNo,
+            item?.employeeNumber,
+            item?.internalId
+        ]
+        .filter(v=>
+            v!==undefined &&
+            v!==null &&
+            String(v).trim()!==''
+        )
+        .map(String);
+
+        return values.includes(id);
+    };
+
+    const now=new Date().toISOString();
+    let touched=false;
+
+    for(const item of access){
+        if(matches(item)){
+            item.pin=newPin;
+            item.pinUpdatedAt=now;
+            item.staffActivatedAt=now;
+            touched=true;
+        }
+    }
+
+    for(const item of directory){
+        if(matches(item)){
+            item.pin=newPin;
+            item.pinUpdatedAt=now;
+            item.staffActivatedAt=now;
+            touched=true;
+        }
+    }
+
+    if(!touched)return false;
+
+    const set={};
+
+    if(access.length){
+        set['activeOrders.STAFF_ACCESS.data']=access;
+        set['activeOrders.STAFF_ACCESS.updatedAt']=now;
+    }
+
+    if(directory.length){
+        set['activeOrders.DIRECTORY_MASTER.data']=directory;
+        set['activeOrders.DIRECTORY_MASTER.updatedAt']=now;
+    }
+
+    await AppState.updateOne(
+        {tenantID:safeTenant},
+        {$set:set}
+    );
+
+    try{
+        ichefEmitStaffSyncRequired(
+            safeTenant,
+            {
+                tableId:'STAFF_ACCESS',
+                source:'staff-activation-v160',
+                staffId:id,
+                timestamp:now
+            }
+        );
+    }catch(_){}
+
+    return true;
 }
 
 
@@ -16933,7 +17375,7 @@ app.get(
         res.setHeader('Cache-Control','no-store');
         return res.json({
             success:true,
-            build:'V150-CURRENT-CONNEXIONS-FONCTIONS-SECURE',
+            build:'V160-CURRENT-STAFF-ACTIVATION-SECURE',
             staffLoginRoute:'/api/staff/login',
             authentication:'STAFF_ID_RH_PLUS_PIN',
             signedSession:true,
@@ -16948,6 +17390,10 @@ app.get(
             trustedDevice:true,
             appDeviceProof:true,
             strictIdentity:ICHEF_STAFF_IDENTITY_STRICT,
+            activationRequired:ICHEF_STAFF_ACTIVATION_REQUIRED,
+            activationWhatsappRequired:ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED,
+            activationQr:true,
+            pwaRequired:ICHEF_STAFF_PWA_REQUIRED,
             timestamp:new Date().toISOString()
         });
     }
@@ -16956,6 +17402,18 @@ app.get(
 app.post(
     '/api/staff/login',
     async (req, res) => {
+        if(
+            ICHEF_STAFF_PWA_REQUIRED &&
+            !ichefStaffRequestIsPwa(req)
+        ){
+            return res.status(428).json({
+                success:false,
+                code:'STAFF_PWA_REQUIRED',
+                pwaRequired:true,
+                error:'Installez et ouvrez iCHEF Staff depuis l’application pour vous connecter.'
+            });
+        }
+
         const submittedStaffId =
             String(
                 req.body?.staffId ||
@@ -17564,6 +18022,20 @@ app.post(
             const staffPhone=ichefStaffPhoneFromRecords(member,directoryEntry);
             const whatsappReady=Boolean(twilioClient && ICHEF_TWILIO_VERIFY_SERVICE_SID);
 
+            if(!trusted && ICHEF_STAFF_ACTIVATION_REQUIRED){
+                ichefPinAttemptSuccess(req,attemptKey,deviceId);
+
+                return res.status(428).json({
+                    success:false,
+                    code:'STAFF_ACTIVATION_REQUIRED',
+                    activationRequired:true,
+                    pwaRequired:true,
+                    safeTenantID:tenantID,
+                    staffId:String(member.id),
+                    error:'Nouvel appareil : utilisez le QR ou le code d’activation fourni par votre responsable.'
+                });
+            }
+
             if(!trusted && whatsappReady && staffPhone){
                 try{
                     await ichefStaffStartWhatsappVerify(staffPhone);
@@ -17650,6 +18122,1016 @@ app.post(
     }
 );
 
+
+
+// ============================================================================
+// 🔑 V160 — ACTIVATION STAFF QR + CODE + PWA
+// ============================================================================
+
+app.get('/api/staff/activation/admin/staff',async(req,res)=>{
+    try{
+        res.setHeader('Cache-Control','no-store');
+
+        const auth=await ichefLoadStaffActivationManagerSession(req);
+        if(!auth.ok){
+            return res.status(auth.status||401).json({
+                success:false,
+                error:auth.error
+            });
+        }
+
+        const state=await AppState.findOne(
+            {tenantID:auth.tenantID},
+            {
+                'activeOrders.STAFF_ACCESS.data':1,
+                'activeOrders.DIRECTORY_MASTER.data':1
+            }
+        ).lean();
+
+        const access=Array.isArray(
+            state?.activeOrders?.STAFF_ACCESS?.data
+        ) ? state.activeOrders.STAFF_ACCESS.data : [];
+
+        const directory=Array.isArray(
+            state?.activeOrders?.DIRECTORY_MASTER?.data
+        ) ? state.activeOrders.DIRECTORY_MASTER.data : [];
+
+        const map=new Map();
+
+        for(const item of [...access,...directory]){
+            if(!item || item.active===false)continue;
+
+            const id=ichefStaffActivationTechnicalId(item);
+            if(!id)continue;
+
+            const existing=map.get(id)||{};
+
+            map.set(id,{
+                id,
+                name:
+                    ichefStaffActivationDisplayName(item) ||
+                    existing.name ||
+                    'Collaborateur',
+                role:
+                    ichefStaffActivationRole(item) ||
+                    existing.role ||
+                    'STAFF',
+                phone:ichefStaffPhoneFromRecords(
+                    item,
+                    existing.raw||{}
+                ),
+                raw:{...existing.raw,...item}
+            });
+        }
+
+        const ids=[...map.keys()];
+
+        const devices=ids.length
+            ? await IchefStaffTrustedDevice.find(
+                {
+                    tenantID:auth.tenantID,
+                    staffId:{$in:ids},
+                    revokedAt:null
+                },
+                {staffId:1,lastUsedAt:1}
+            ).lean()
+            : [];
+
+        const activeRows=ids.length
+            ? await IchefStaffActivation.find(
+                {
+                    tenantID:auth.tenantID,
+                    staffId:{$in:ids},
+                    usedAt:null,
+                    revokedAt:null,
+                    expiresAt:{$gt:new Date()}
+                },
+                {
+                    staffId:1,
+                    activationId:1,
+                    expiresAt:1,
+                    createdAt:1
+                }
+            )
+            .sort({createdAt:-1})
+            .lean()
+            : [];
+
+        const trustedMap=new Map();
+
+        for(const d of devices){
+            const id=String(d.staffId||'');
+            const previous=trustedMap.get(id);
+
+            if(
+                !previous ||
+                new Date(d.lastUsedAt||0) >
+                new Date(previous.lastUsedAt||0)
+            ){
+                trustedMap.set(id,d);
+            }
+        }
+
+        const pendingMap=new Map();
+
+        for(const row of activeRows){
+            const id=String(row.staffId||'');
+            if(!pendingMap.has(id)){
+                pendingMap.set(id,row);
+            }
+        }
+
+        const staff=[...map.values()]
+            .map(item=>{
+                const trusted=trustedMap.get(item.id);
+                const pending=pendingMap.get(item.id);
+
+                return {
+                    id:item.id,
+                    name:item.name,
+                    role:item.role,
+                    whatsappReady:Boolean(item.phone),
+                    maskedPhone:
+                        item.phone
+                            ? ichefStaffMaskedPhone(item.phone)
+                            : '',
+                    status:
+                        trusted
+                            ? 'ACTIVÉ'
+                            : pending
+                                ? 'EN_ATTENTE'
+                                : 'NON_ACTIVÉ',
+                    lastDeviceAt:trusted?.lastUsedAt||null,
+                    activationExpiresAt:
+                        pending?.expiresAt||null
+                };
+            })
+            .sort((a,b)=>
+                a.name.localeCompare(b.name,'fr')
+            );
+
+        return res.json({
+            success:true,
+            activationRequired:
+                ICHEF_STAFF_ACTIVATION_REQUIRED,
+            whatsappRequired:
+                ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED,
+            whatsappConfigured:
+                Boolean(
+                    twilioClient &&
+                    ICHEF_TWILIO_VERIFY_SERVICE_SID
+                ),
+            pwaRequired:
+                ICHEF_STAFF_PWA_REQUIRED,
+            staff
+        });
+
+    }catch(error){
+        console.error(
+            '[iCHEF Staff activation admin list V160]',
+            error
+        );
+
+        return res.status(500).json({
+            success:false,
+            error:'Liste collaborateurs momentanément indisponible.'
+        });
+    }
+});
+
+app.post('/api/staff/activation/admin/create',async(req,res)=>{
+    try{
+        res.setHeader('Cache-Control','no-store');
+
+        const auth=
+            await ichefLoadStaffActivationManagerSession(req);
+
+        if(!auth.ok){
+            return res.status(auth.status||401).json({
+                success:false,
+                error:auth.error
+            });
+        }
+
+        const staffId=
+            String(req.body?.staffId||'')
+                .trim()
+                .slice(0,160);
+
+        if(!staffId){
+            return res.status(400).json({
+                success:false,
+                error:'Collaborateur manquant.'
+            });
+        }
+
+        const profile=
+            await ichefStaffFindActiveSecurityProfile(
+                auth.tenantID,
+                staffId
+            );
+
+        if(!profile){
+            return res.status(404).json({
+                success:false,
+                error:'Collaborateur introuvable ou désactivé.'
+            });
+        }
+
+        const phone=
+            ichefStaffPhoneFromRecords(
+                profile.member,
+                profile.directoryEntry
+            );
+
+        const whatsappConfigured=
+            Boolean(
+                twilioClient &&
+                ICHEF_TWILIO_VERIFY_SERVICE_SID
+            );
+
+        if(
+            ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED &&
+            !phone
+        ){
+            return res.status(428).json({
+                success:false,
+                code:'STAFF_ACTIVATION_PHONE_REQUIRED',
+                error:'Renseignez d’abord le numéro WhatsApp du collaborateur au format +33… / +41…'
+            });
+        }
+
+        if(
+            ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED &&
+            !whatsappConfigured
+        ){
+            return res.status(503).json({
+                success:false,
+                code:'STAFF_ACTIVATION_WHATSAPP_NOT_CONFIGURED',
+                error:'Twilio Verify WhatsApp doit être configuré avant de générer une activation.'
+            });
+        }
+
+        const hours=
+            Math.max(
+                1,
+                Math.min(
+                    72,
+                    Number(req.body?.expiresHours||24)
+                )
+            );
+
+        const now=new Date();
+        const expiresAt=
+            new Date(
+                now.getTime() +
+                hours*60*60*1000
+            );
+
+        const cleanupAt=
+            new Date(
+                expiresAt.getTime() +
+                90*24*60*60*1000
+            );
+
+        await IchefStaffActivation.updateMany(
+            {
+                tenantID:auth.tenantID,
+                staffId,
+                usedAt:null,
+                revokedAt:null,
+                expiresAt:{$gt:now}
+            },
+            {
+                $set:{
+                    revokedAt:now
+                }
+            }
+        );
+
+        const activationId=
+            nodeCrypto
+                .randomBytes(18)
+                .toString('base64url');
+
+        const secret=
+            nodeCrypto
+                .randomBytes(32)
+                .toString('base64url');
+
+        const activationCode=
+            ichefStaffActivationCode();
+
+        const token=
+            `act1.${activationId}.${secret}`;
+
+        await IchefStaffActivation.create({
+            activationId,
+            tenantID:auth.tenantID,
+            staffId,
+            tokenHash:
+                ichefStaffActivationHmac(
+                    `${activationId}|${secret}`
+                ),
+            shortCodeHash:
+                ichefStaffActivationHmac(
+                    `${auth.tenantID}|${staffId}|${activationCode}`
+                ),
+            createdById:auth.actorId,
+            createdByName:auth.actorName,
+            createdByRole:auth.actorRole,
+            createdAt:now,
+            expiresAt,
+            cleanupAt
+        });
+
+        const activationUrl=
+            `${ichefStaffActivationPublicBase(req)}` +
+            `/portail-staff.html#activate=` +
+            `${encodeURIComponent(token)}`;
+
+        let qrSvg='';
+
+        try{
+            qrSvg=
+                ichefStaffActivationQrSvg(
+                    activationUrl
+                );
+        }catch(qrError){
+            console.error(
+                '[iCHEF QR activation]',
+                qrError?.message || qrError
+            );
+
+            return res.status(500).json({
+                success:false,
+                code:'STAFF_ACTIVATION_QR_UNAVAILABLE',
+                error:'QR local indisponible. Vérifiez que le dossier ichef-qr est déployé avec server.js.'
+            });
+        }
+
+        return res.json({
+            success:true,
+            staff:{
+                id:staffId,
+                name:
+                    ichefStaffActivationDisplayName(
+                        profile.member
+                    ),
+                role:
+                    ichefStaffActivationRole(
+                        profile.member
+                    ),
+                maskedPhone:
+                    phone
+                        ? ichefStaffMaskedPhone(phone)
+                        : ''
+            },
+            activation:{
+                activationId,
+                activationCode,
+                activationUrl,
+                qrSvg,
+                expiresAt,
+                oneTime:true
+            }
+        });
+
+    }catch(error){
+        console.error(
+            '[iCHEF Staff activation create V160]',
+            error
+        );
+
+        return res.status(500).json({
+            success:false,
+            error:'Création de l’activation impossible.'
+        });
+    }
+});
+
+app.post('/api/staff/activation/admin/revoke',async(req,res)=>{
+    try{
+        res.setHeader('Cache-Control','no-store');
+
+        const auth=
+            await ichefLoadStaffActivationManagerSession(req);
+
+        if(!auth.ok){
+            return res.status(auth.status||401).json({
+                success:false,
+                error:auth.error
+            });
+        }
+
+        const activationId=
+            String(req.body?.activationId||'')
+                .trim()
+                .slice(0,100);
+
+        const staffId=
+            String(req.body?.staffId||'')
+                .trim()
+                .slice(0,160);
+
+        const filter={
+            tenantID:auth.tenantID,
+            usedAt:null,
+            revokedAt:null
+        };
+
+        if(activationId){
+            filter.activationId=activationId;
+        }else if(staffId){
+            filter.staffId=staffId;
+        }else{
+            return res.status(400).json({
+                success:false,
+                error:'Activation manquante.'
+            });
+        }
+
+        await IchefStaffActivation.updateMany(
+            filter,
+            {
+                $set:{
+                    revokedAt:new Date()
+                }
+            }
+        );
+
+        return res.json({success:true});
+
+    }catch(error){
+        console.error(
+            '[iCHEF Staff activation revoke V160]',
+            error
+        );
+
+        return res.status(500).json({
+            success:false,
+            error:'Révocation impossible.'
+        });
+    }
+});
+
+app.post('/api/staff/activation/inspect',async(req,res)=>{
+    try{
+        res.setHeader('Cache-Control','no-store');
+
+        const deviceId=
+            String(
+                req.body?.deviceId ||
+                req.headers?.['x-ichef-device'] ||
+                ''
+            )
+            .trim()
+            .slice(0,180);
+
+        if(!deviceId){
+            return res.status(400).json({
+                success:false,
+                error:'Appareil non identifié.'
+            });
+        }
+
+        const attemptKey=
+            `staff-activation-inspect-` +
+            ichefStaffDeviceHash(deviceId).slice(0,20);
+
+        const attempt=
+            ichefPinAttemptCheck(
+                req,
+                attemptKey,
+                deviceId
+            );
+
+        if(!attempt.ok){
+            return res.status(429).json({
+                success:false,
+                error:'Trop de tentatives. Réessayez plus tard.'
+            });
+        }
+
+        const credential=
+            await ichefStaffActivationLoadCredential(
+                req.body||{}
+            );
+
+        if(!credential.ok){
+            ichefPinAttemptFailure(
+                req,
+                attemptKey,
+                deviceId
+            );
+
+            return res.status(401).json({
+                success:false,
+                error:'Activation invalide ou expirée.'
+            });
+        }
+
+        ichefPinAttemptSuccess(
+            req,
+            attemptKey,
+            deviceId
+        );
+
+        const phone=
+            ichefStaffPhoneFromRecords(
+                credential.profile.member,
+                credential.profile.directoryEntry
+            );
+
+        return res.json({
+            success:true,
+            pwaRequired:true,
+            activationId:
+                credential.row.activationId,
+            tenantID:
+                credential.row.tenantID,
+            staff:{
+                id:credential.row.staffId,
+                name:
+                    ichefStaffActivationDisplayName(
+                        credential.profile.member
+                    ),
+                role:
+                    ichefStaffActivationRole(
+                        credential.profile.member
+                    )
+            },
+            whatsappRequired:
+                ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED,
+            whatsappConfigured:
+                Boolean(
+                    twilioClient &&
+                    ICHEF_TWILIO_VERIFY_SERVICE_SID
+                ),
+            maskedPhone:
+                phone
+                    ? ichefStaffMaskedPhone(phone)
+                    : '',
+            expiresAt:
+                credential.row.expiresAt
+        });
+
+    }catch(error){
+        console.error(
+            '[iCHEF Staff activation inspect V160]',
+            error
+        );
+
+        return res.status(500).json({
+            success:false,
+            error:'Activation momentanément indisponible.'
+        });
+    }
+});
+
+app.post('/api/staff/activation/whatsapp/request',async(req,res)=>{
+    try{
+        res.setHeader('Cache-Control','no-store');
+
+        const deviceId=
+            String(
+                req.body?.deviceId ||
+                req.headers?.['x-ichef-device'] ||
+                ''
+            )
+            .trim()
+            .slice(0,180);
+
+        if(!deviceId){
+            return res.status(400).json({
+                success:false,
+                error:'Appareil non identifié.'
+            });
+        }
+
+        const credential=
+            await ichefStaffActivationLoadCredential(
+                req.body||{}
+            );
+
+        if(!credential.ok){
+            return res.status(401).json({
+                success:false,
+                error:'Activation invalide ou expirée.'
+            });
+        }
+
+        if(!ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED){
+            return res.json({
+                success:true,
+                whatsappRequired:false,
+                skipped:true
+            });
+        }
+
+        if(
+            !twilioClient ||
+            !ICHEF_TWILIO_VERIFY_SERVICE_SID
+        ){
+            return res.status(503).json({
+                success:false,
+                code:'STAFF_ACTIVATION_WHATSAPP_NOT_CONFIGURED',
+                error:'Vérification WhatsApp momentanément indisponible.'
+            });
+        }
+
+        const phone=
+            ichefStaffPhoneFromRecords(
+                credential.profile.member,
+                credential.profile.directoryEntry
+            );
+
+        if(!phone){
+            return res.status(428).json({
+                success:false,
+                code:'STAFF_ACTIVATION_PHONE_REQUIRED',
+                error:'Numéro WhatsApp RH manquant.'
+            });
+        }
+
+        const last=
+            credential.row.lastWhatsappSentAt
+                ? new Date(
+                    credential.row.lastWhatsappSentAt
+                  ).getTime()
+                : 0;
+
+        const waitMs=
+            45000 -
+            (Date.now()-last);
+
+        if(waitMs>0){
+            res.setHeader(
+                'Retry-After',
+                String(
+                    Math.ceil(waitMs/1000)
+                )
+            );
+
+            return res.status(429).json({
+                success:false,
+                code:'STAFF_ACTIVATION_WHATSAPP_COOLDOWN',
+                error:
+                    `Un code vient d’être envoyé. ` +
+                    `Réessayez dans ${Math.ceil(waitMs/1000)} s.`
+            });
+        }
+
+        await ichefStaffStartWhatsappVerify(phone);
+
+        credential.row.lastWhatsappSentAt=
+            new Date();
+
+        await credential.row.save();
+
+        return res.json({
+            success:true,
+            whatsappRequired:true,
+            maskedPhone:
+                ichefStaffMaskedPhone(phone)
+        });
+
+    }catch(error){
+        console.error(
+            '[iCHEF Staff activation WhatsApp V160]',
+            error
+        );
+
+        return res.status(500).json({
+            success:false,
+            error:'Envoi du code WhatsApp impossible.'
+        });
+    }
+});
+
+app.post('/api/staff/activation/complete',async(req,res)=>{
+    let lockedRow=null;
+
+    try{
+        res.setHeader('Cache-Control','no-store');
+
+        if(
+            ICHEF_STAFF_PWA_REQUIRED &&
+            !ichefStaffRequestIsPwa(req)
+        ){
+            return res.status(428).json({
+                success:false,
+                code:'STAFF_PWA_REQUIRED',
+                pwaRequired:true,
+                error:'Finalisez l’activation depuis l’application iCHEF Staff installée.'
+            });
+        }
+
+        const deviceId=
+            String(
+                req.body?.deviceId ||
+                req.headers?.['x-ichef-device'] ||
+                ''
+            )
+            .trim()
+            .slice(0,180);
+
+        const newPin=
+            String(req.body?.newPin||'')
+                .replace(/\D/g,'')
+                .slice(0,12);
+
+        const code=
+            String(req.body?.whatsappCode||'')
+                .replace(/\D/g,'')
+                .slice(0,10);
+
+        if(
+            !deviceId ||
+            !/^\d{4,12}$/.test(newPin)
+        ){
+            return res.status(400).json({
+                success:false,
+                error:'Choisissez un PIN personnel de 4 à 12 chiffres.'
+            });
+        }
+
+        const credential=
+            await ichefStaffActivationLoadCredential(
+                req.body||{}
+            );
+
+        if(!credential.ok){
+            return res.status(401).json({
+                success:false,
+                error:'Activation invalide ou expirée.'
+            });
+        }
+
+        const phone=
+            ichefStaffPhoneFromRecords(
+                credential.profile.member,
+                credential.profile.directoryEntry
+            );
+
+        if(ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED){
+            if(
+                !phone ||
+                !twilioClient ||
+                !ICHEF_TWILIO_VERIFY_SERVICE_SID
+            ){
+                return res.status(503).json({
+                    success:false,
+                    error:'Vérification WhatsApp indisponible pour ce collaborateur.'
+                });
+            }
+
+            if(!/^\d{4,10}$/.test(code)){
+                return res.status(400).json({
+                    success:false,
+                    error:'Saisissez le code reçu sur WhatsApp.'
+                });
+            }
+
+            const attemptKey=
+                `staff-activation-wa-` +
+                credential.row.activationId;
+
+            const attempt=
+                ichefPinAttemptCheck(
+                    req,
+                    attemptKey,
+                    deviceId
+                );
+
+            if(!attempt.ok){
+                return res.status(429).json({
+                    success:false,
+                    error:'Trop de codes incorrects. Réessayez dans quelques minutes.'
+                });
+            }
+
+            const check=
+                await ichefStaffCheckWhatsappVerify(
+                    phone,
+                    code
+                );
+
+            if(
+                String(check?.status||'')
+                    .toLowerCase()!=='approved'
+            ){
+                ichefPinAttemptFailure(
+                    req,
+                    attemptKey,
+                    deviceId
+                );
+
+                return res.status(401).json({
+                    success:false,
+                    error:'Code WhatsApp incorrect ou expiré.'
+                });
+            }
+
+            ichefPinAttemptSuccess(
+                req,
+                attemptKey,
+                deviceId
+            );
+        }
+
+        const publicKeyJwk=
+            ichefStaffPublicJwkSafe(
+                req.body?.publicKeyJwk
+            );
+
+        if(!publicKeyJwk){
+            return res.status(400).json({
+                success:false,
+                error:'Clé de sécurité de l’appareil indisponible. Réessayez depuis iCHEF Staff.'
+            });
+        }
+
+        const now=new Date();
+        const staleLock=
+            new Date(
+                Date.now() -
+                2*60*1000
+            );
+
+        const deviceHash=
+            ichefStaffDeviceHash(
+                deviceId
+            );
+
+        lockedRow=
+            await IchefStaffActivation
+                .findOneAndUpdate(
+                    {
+                        _id:credential.row._id,
+                        usedAt:null,
+                        revokedAt:null,
+                        expiresAt:{$gt:now},
+                        $or:[
+                            {lockedAt:null},
+                            {lockedAt:{$lt:staleLock}}
+                        ]
+                    },
+                    {
+                        $set:{
+                            lockedAt:now,
+                            lockedBy:deviceHash
+                        }
+                    },
+                    {
+                        new:true
+                    }
+                );
+
+        if(!lockedRow){
+            return res.status(409).json({
+                success:false,
+                error:'Cette activation est déjà utilisée ou en cours.'
+            });
+        }
+
+        const pinUpdated=
+            await ichefStaffActivationUpdatePin(
+                lockedRow.tenantID,
+                lockedRow.staffId,
+                newPin
+            );
+
+        if(!pinUpdated){
+            throw new Error(
+                'Profil Staff non modifiable.'
+            );
+        }
+
+        await IchefStaffTrustedDevice
+            .findOneAndUpdate(
+                {
+                    tenantID:lockedRow.tenantID,
+                    staffId:
+                        String(
+                            lockedRow.staffId
+                        ),
+                    deviceHash
+                },
+                {
+                    $set:{
+                        deviceLabel:
+                            ichefStaffDeviceLabel(
+                                req,
+                                req.body
+                            ),
+                        platform:
+                            ichefStaffPlatform(
+                                req,
+                                req.body
+                            ),
+                        publicKeyJwk,
+                        verifiedVia:
+                            ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED
+                                ? 'WHATSAPP'
+                                : 'ADMIN',
+                        lastVerifiedAt:now,
+                        lastUsedAt:now,
+                        revokedAt:null,
+                        revokedBy:''
+                    },
+                    $setOnInsert:{
+                        createdAt:now
+                    }
+                },
+                {
+                    upsert:true,
+                    new:true,
+                    setDefaultsOnInsert:true
+                }
+            );
+
+        lockedRow.usedAt=now;
+        lockedRow.activatedDeviceHash=deviceHash;
+        lockedRow.whatsappVerifiedAt=
+            ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED
+                ? now
+                : null;
+        lockedRow.lockedAt=null;
+        lockedRow.lockedBy='';
+
+        await lockedRow.save();
+
+        const freshProfile=
+            await ichefStaffFindActiveSecurityProfile(
+                lockedRow.tenantID,
+                lockedRow.staffId
+            );
+
+        if(!freshProfile){
+            throw new Error(
+                'Profil Staff indisponible après activation.'
+            );
+        }
+
+        const payload=
+            ichefStaffBuildLoginPayload({
+                tenantID:
+                    lockedRow.tenantID,
+                member:
+                    freshProfile.member,
+                directoryEntry:
+                    freshProfile.directoryEntry,
+                deviceId,
+                loginIdentifier:
+                    String(
+                        lockedRow.staffId
+                    ),
+                deviceTrusted:true,
+                identityMode:
+                    ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED
+                        ? 'QR_ACTIVATION_WHATSAPP'
+                        : 'QR_ACTIVATION'
+            });
+
+        return res.json({
+            ...payload,
+            activationCompleted:true,
+            pwaRequired:true
+        });
+
+    }catch(error){
+        if(
+            lockedRow?._id &&
+            !lockedRow.usedAt
+        ){
+            try{
+                await IchefStaffActivation.updateOne(
+                    {
+                        _id:lockedRow._id,
+                        usedAt:null
+                    },
+                    {
+                        $set:{
+                            lockedAt:null,
+                            lockedBy:''
+                        }
+                    }
+                );
+            }catch(_){}
+        }
+
+        console.error(
+            '[iCHEF Staff activation complete V160]',
+            error
+        );
+
+        return res.status(500).json({
+            success:false,
+            error:'Activation momentanément impossible. Aucun accès n’a été ouvert.'
+        });
+    }
+});
 
 
 // ============================================================================
@@ -19904,7 +21386,7 @@ app.get('/api/staff/chat/status', async (req,res) => {
             staffId:self.id,
             rhChannelId:channelId,
             realtime:true,
-            build:'V150-CURRENT-CONNEXIONS-FONCTIONS-SECURE'
+            build:'V160-CURRENT-STAFF-ACTIVATION-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT status V117]',error?.message || error);
@@ -20065,7 +21547,7 @@ app.post('/api/staff/chat/channels/direct', async (req,res) => {
                 participants
             },
             durationMs:Date.now()-startedAt,
-            build:'V150-CURRENT-CONNEXIONS-FONCTIONS-SECURE'
+            build:'V160-CURRENT-STAFF-ACTIVATION-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT direct V123]',{
@@ -20114,7 +21596,7 @@ app.get('/api/staff/chat/messages', async (req,res) => {
             },
             messages:rows.reverse().map(ichefStaffChatPublicMessage),
             durationMs:Date.now()-startedAt,
-            build:'V150-CURRENT-CONNEXIONS-FONCTIONS-SECURE'
+            build:'V160-CURRENT-STAFF-ACTIVATION-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT messages V126]',{
@@ -20200,7 +21682,7 @@ app.post('/api/staff/chat/message', async (req,res) => {
         return res.json({
             success:true,
             message:ichefStaffChatPublicMessage(row.toObject()),
-            build:'V150-CURRENT-CONNEXIONS-FONCTIONS-SECURE'
+            build:'V160-CURRENT-STAFF-ACTIVATION-SECURE'
         });
     } catch (error) {
         if (storedAttachment?.attachmentId) await ichefStaffChatDeleteAttachment(storedAttachment.attachmentId);
@@ -20288,7 +21770,7 @@ app.post('/api/staff/chat/read', async (req,res) => {
         res.json({
             success:true,
             accepted:true,
-            build:'V150-CURRENT-CONNEXIONS-FONCTIONS-SECURE'
+            build:'V160-CURRENT-STAFF-ACTIVATION-SECURE'
         });
 
         StaffChatMessage.updateMany(
@@ -20359,7 +21841,7 @@ app.get('/api/staff/video/config', async (req,res) => {
                 process.env.ICHEF_WEBRTC_TURN_USERNAME &&
                 process.env.ICHEF_WEBRTC_TURN_CREDENTIAL
             ),
-            build:'V150-CURRENT-CONNEXIONS-FONCTIONS-SECURE'
+            build:'V160-CURRENT-STAFF-ACTIVATION-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF VIDEO config V128]',error?.message || error);
@@ -20490,7 +21972,7 @@ app.post('/api/staff/video/signal', async (req,res) => {
             signalId:publicSignal.signalId,
             deliveredSockets:onlineSockets,
             targetOnline:onlineSockets > 0,
-            build:'V150-CURRENT-CONNEXIONS-FONCTIONS-SECURE'
+            build:'V160-CURRENT-STAFF-ACTIVATION-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF VIDEO http signal V131]',error?.message || error);
@@ -20554,7 +22036,7 @@ app.get('/api/staff/video/signals', async (req,res) => {
             success:true,
             signals:rows.map(ichefStaffVideoPublicSignalV131),
             serverTime:new Date().toISOString(),
-            build:'V150-CURRENT-CONNEXIONS-FONCTIONS-SECURE'
+            build:'V160-CURRENT-STAFF-ACTIVATION-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF STAFF VIDEO poll V131]',error?.message || error);
@@ -20735,7 +22217,7 @@ app.get('/api/rh/chat/status', async (req,res) => {
             staffCount:Array.isArray(directory) ? directory.length : 0,
             realtime:true,
             privateChannels:true,
-            build:'V150-CURRENT-CONNEXIONS-FONCTIONS-SECURE'
+            build:'V160-CURRENT-STAFF-ACTIVATION-SECURE'
         });
     } catch (error) {
         console.error('[iCHEF RH CHAT status V117]',error?.message || error);
