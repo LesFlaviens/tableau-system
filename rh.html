@@ -5565,6 +5565,8 @@
                 planningBrigadeRoleRatios:
                     defaultBrigadeRoleRatiosV179('restaurant'),
                 planningStatus: 'draft',
+                // V202 · catalogue client des catégories/couleurs du planning
+                planningStatusCatalogV202: null,
                 currency: 'CHF',
                 eventNotes: '',
                 planningPriority: 'balanced',
@@ -5722,6 +5724,41 @@
                 planningStatus: ['draft', 'published', 'locked'].includes(source.planningStatus)
                     ? source.planningStatus
                     : 'draft',
+                // V202 · catégories planning personnalisées par client.
+                // Chaque catégorie garde un "legalType" iCHEF afin que le client
+                // puisse changer le nom / la couleur / le sens opérationnel
+                // sans casser les règles légales, la paie ou les compteurs.
+                planningStatusCatalogV202:
+                    Array.isArray(source.planningStatusCatalogV202)
+                        ? source.planningStatusCatalogV202.slice(0, 40).map((c, index) => {
+                            const allowed = new Set([
+                                'present','off_soir','off_matin','off','conge','recup','maladie',
+                                'accident_travail','maternite','paternite','parental','enfant_malade',
+                                'evenement_familial','deces','formation','sans_solde',
+                                'absence_autorisee','absence_injustifiee','ferie'
+                            ]);
+                            const rawId = String(c?.id || `categorie_${index + 1}`)
+                                .toLowerCase()
+                                .replace(/[^a-z0-9_-]+/g, '_')
+                                .replace(/^_+|_+$/g, '')
+                                .slice(0, 48) || `categorie_${index + 1}`;
+                            const legalType = allowed.has(String(c?.legalType || ''))
+                                ? String(c.legalType)
+                                : 'off';
+                            const rawColor = String(c?.color || '#eeeeee');
+                            return {
+                                id: rawId,
+                                label: String(c?.label || 'Catégorie').trim().slice(0, 42) || 'Catégorie',
+                                short: String(c?.short || c?.label || 'CAT').trim().slice(0, 12) || 'CAT',
+                                color: /^#[0-9a-f]{6}$/i.test(rawColor) ? rawColor : '#eeeeee',
+                                legalType,
+                                meaning: String(c?.meaning || '').trim().slice(0, 180),
+                                active: c?.active !== false,
+                                builtin: c?.builtin === true,
+                                order: Math.max(0, Math.min(999, Number(c?.order) || index))
+                            };
+                        })
+                        : null,
                 currency: String(source.currency || 'CHF'),
                 eventNotes: String(source.eventNotes || '').slice(0, 2000),
                 planningPriority: ['balanced', 'quality', 'coverage', 'cost'].includes(source.planningPriority)
@@ -14181,12 +14218,12 @@
                     const isToday = sameMonth && today.getDate() === d;
                     const p = staffMonth?.[d] || staffMonth?.[String(d)] || { status:'off' };
                     const status = String(p.status || 'off');
-                    const meta = rhStatusMeta(status);
+                    const meta = window.iChefPlanningMetaV202?.(p) || rhStatusMeta(status);
                     const net = calculateNet(p);
                     totalH += net;
                     const schedule = [p.s1, p.s2].filter(Boolean).join(' / ');
                     const managerNote = String(p.managerNote || p.manager_note || '').trim().slice(0, 40);
-                    const title = `${meta.label}${schedule ? ' · ' + schedule : ''}${net > 0 ? ' · ' + net.toFixed(1) + ' h' : ''}${managerNote ? ' · Note: ' + managerNote : ''}`;
+                    const title = `${meta.label}${meta.meaning ? ' · ' + meta.meaning : ''}${schedule ? ' · ' + schedule : ''}${net > 0 ? ' · ' + net.toFixed(1) + ' h' : ''}${managerNote ? ' · Note: ' + managerNote : ''}`;
                     rowHtml += `
                         <td class="${isWeekend ? 'weekend-cell' : ''} ${isToday ? 'today-cell' : ''}" title="${escapeRhHtml(title)}">
                             <button
@@ -14195,6 +14232,7 @@
                                 aria-label="${escapeRhHtml(staff.name || 'Collaborateur')} - ${d}/${month} - ${escapeRhHtml(meta.label)}${managerNote ? ' - ' + escapeRhHtml(managerNote) : ''}"
                                 data-rh-staff="${escapeRhHtml(String(staff.id))}"
                                 data-rh-day="${d}"
+                                data-rh-category="${escapeRhHtml(String(p.categoryId || status))}"
                                 onclick='openRhQuickStatus(event, ${sid}, ${d})'>
                                 <span class="rh-cell-status">${escapeRhHtml(meta.short)}</span>
                                 ${managerNote ? `<span class="rh-cell-note">${escapeRhHtml(managerNote)}</span>` : ''}
@@ -17593,6 +17631,14 @@ function renderDirectorRequests() {
     };
     const shiftText = p => {
         const status = String(p?.status || 'off').toLowerCase();
+        const category = window.iChefPlanningMetaV202?.(p);
+        const shifts=[p?.s1,p?.s2].filter(Boolean);
+        if(category && String(p?.categoryId||'') && String(p.categoryId)!==status){
+            if(['present','off_soir','off_matin','ferie'].includes(String(category.legalType||status)) && shifts.length){
+                return shifts.join(' / ');
+            }
+            return String(category.label||category.short||status).toUpperCase();
+        }
         const map = {
             off:'REPOS', conge:'CP', maladie:'MALADIE', recup:'RÉCUP', ferie:'FÉRIÉ',
             formation:'FORMATION', sans_solde:'SANS SOLDE', absence_autorisee:'ABSENCE',
@@ -17600,7 +17646,6 @@ function renderDirectorRequests() {
             paternite:'PATERNITÉ', parental:'PARENTAL', enfant_malade:'ENFANT MALADE'
         };
         if (map[status]) return map[status];
-        const shifts=[p?.s1,p?.s2].filter(Boolean);
         if(!shifts.length) return status==='present'?'TRAVAIL':status.replaceAll('_',' ').toUpperCase();
         return shifts.join(' / ');
     };
@@ -17651,6 +17696,8 @@ function renderDirectorRequests() {
     };
     const monthChipText = p => {
         const st=String(p?.status||'off').toLowerCase();
+        const category=window.iChefPlanningMetaV202?.(p);
+        if(category && String(p?.categoryId||'')) return String(category.short||category.label||st).slice(0,10).toUpperCase();
         const map={present:'TRAV',off:'OFF',conge:'CP',maladie:'MAL',recup:'REC',ferie:'FER',formation:'FORM',sans_solde:'SS',absence_autorisee:'ABS',absence_injustifiee:'ABS'};
         return map[st] || st.slice(0,4).toUpperCase();
     };
@@ -17782,7 +17829,7 @@ function renderDirectorRequests() {
             if(body){
                 body.innerHTML=visible.slice(0,14).map(s=>{
                     const p=planFor(s,today), state=currentServiceState(s), dateKeyToday=dayKey(today);
-                    return `<tr><td><div class="rh-plan-person"><span class="rh-plan-avatar">${esc(initials(s.name))}</span><div><strong>${esc(s.name||'Collaborateur')}</strong><small>${esc(s.role||s.dept||'Équipe')}</small></div></div></td><td><button type="button" class="rh-shift-chip rh-cockpit-edit-chip ${chipClass(p)}" data-rh-edit-staff="${esc(String(s.id))}" data-rh-edit-date="${dateKeyToday}">${esc(String(p?.status||'off').replaceAll('_',' ').toUpperCase())}<span class="rh-edit-mark">✎</span></button></td><td><button type="button" class="rh-shift-chip rh-cockpit-edit-chip ${chipClass(p)}" data-rh-edit-staff="${esc(String(s.id))}" data-rh-edit-date="${dateKeyToday}">${esc(shiftText(p))}<span class="rh-edit-mark">✎</span></button></td><td>${state.live?`<span class="rh-live-badge">EN SERVICE${state.since?' · '+new Date(state.since).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}):''}</span>`:'<span class="rh-offline-badge">HORS SERVICE</span>'}</td></tr>`;
+                    return `<tr><td><div class="rh-plan-person"><span class="rh-plan-avatar">${esc(initials(s.name))}</span><div><strong>${esc(s.name||'Collaborateur')}</strong><small>${esc(s.role||s.dept||'Équipe')}</small></div></div></td><td><button type="button" class="rh-shift-chip rh-cockpit-edit-chip ${chipClass(p)}" data-rh-edit-staff="${esc(String(s.id))}" data-rh-edit-date="${dateKeyToday}">${esc(window.iChefPlanningMetaV202?.(p)?.label || String(p?.status||'off').replaceAll('_',' ').toUpperCase())}<span class="rh-edit-mark">✎</span></button></td><td><button type="button" class="rh-shift-chip rh-cockpit-edit-chip ${chipClass(p)}" data-rh-edit-staff="${esc(String(s.id))}" data-rh-edit-date="${dateKeyToday}">${esc(shiftText(p))}<span class="rh-edit-mark">✎</span></button></td><td>${state.live?`<span class="rh-live-badge">EN SERVICE${state.since?' · '+new Date(state.since).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}):''}</span>`:'<span class="rh-offline-badge">HORS SERVICE</span>'}</td></tr>`;
                 }).join('') || '<tr><td colspan="4"><div class="rh-empty-line">Aucun collaborateur à afficher.</div></td></tr>';
             }
         }else if(rhCockpitPlanView==='month'){
@@ -18540,7 +18587,14 @@ console.info('[iCHEF RH V84] Planning manuel + sauvegarde cloud + IA planning s�
             </div>
             <div class="rh-cse-body">
                 <div class="rh-cse-grid">
-                    <div class="rh-cse-field"><label>Statut</label><select id="rh-cse-status">${statusRows.map(([v,l])=>`<option value="${v}" ${String(data.p.status)===v?'selected':''}>${esc(l)}</option>`).join('')}</select></div>
+                    <div class="rh-cse-field">
+                        <label>Catégorie planning</label>
+                        <select id="rh-cse-category">
+                            ${window.iChefPlanningCategoryOptionsV202?.(data.p.categoryId||data.p.status) || `<option value="${esc(String(data.p.status||'off'))}">${esc(String(data.p.status||'off').toUpperCase())}</option>`}
+                        </select>
+                        <small id="rh-cse-category-meaning" class="rh-v202-category-meaning"></small>
+                    </div>
+                    <div class="rh-cse-field rh-v202-legal-status-field"><label>Comportement légal · automatique</label><select id="rh-cse-status">${statusRows.map(([v,l])=>`<option value="${v}" ${String(data.p.status)===v?'selected':''}>${esc(l)}</option>`).join('')}</select></div>
                     <div class="rh-cse-field"><label>Poste</label><select id="rh-cse-poste">${posteRows.map(([v,l])=>`<option value="${v}" ${String(data.p.poste||data.staff.dept||'salle')===v?'selected':''}>${esc(l)}</option>`).join('')}</select></div>
                     <div class="rh-cse-field"><label>Matin (S1)</label><input id="rh-cse-s1" type="text" placeholder="10:00-14:45" value="${esc(data.p.s1||'')}"></div>
                     <div class="rh-cse-field"><label>Soir (S2)</label><input id="rh-cse-s2" type="text" placeholder="18:00-22:45" value="${esc(data.p.s2||'')}"></div>
@@ -18563,6 +18617,28 @@ console.info('[iCHEF RH V84] Planning manuel + sauvegarde cloud + IA planning s�
                 <button type="button" class="rh-cse-cancel" onclick="closeRhCockpitShiftEditor()">ANNULER</button>
                 <button type="button" class="rh-cse-save" onclick="saveRhCockpitShiftEditor()">ENREGISTRER</button>
             </div>`;
+        const syncCategoryV202 = () => {
+            const categoryId=String(document.getElementById('rh-cse-category')?.value||data.p.categoryId||data.p.status||'off');
+            const category=window.iChefPlanningCategoryByIdV202?.(categoryId);
+            const statusSelect=document.getElementById('rh-cse-status');
+            if(category?.legalType && statusSelect){
+                statusSelect.value=category.legalType;
+            }
+            const meaning=document.getElementById('rh-cse-category-meaning');
+            if(meaning){
+                meaning.textContent=category?.meaning
+                    ? `${category.meaning} · traitement : ${window.iChefLegalTypeLabelV202?.(category.legalType)||category.legalType}`
+                    : `Traitement : ${window.iChefLegalTypeLabelV202?.(category?.legalType||statusSelect?.value)||category?.legalType||statusSelect?.value||''}`;
+            }
+            const color=category?.color||'#eeeeee';
+            const categorySelect=document.getElementById('rh-cse-category');
+            if(categorySelect) categorySelect.style.background=color;
+        };
+        document.getElementById('rh-cse-category')?.addEventListener('change',()=>{
+            syncCategoryV202();
+            document.getElementById('rh-cse-status')?.dispatchEvent(new Event('change',{bubbles:true}));
+        });
+        syncCategoryV202();
         document.getElementById('rh-cse-status')?.addEventListener('change',()=>{
             const st=document.getElementById('rh-cse-status')?.value||'off';
             if(st==='present'){
@@ -18604,7 +18680,10 @@ console.info('[iCHEF RH V84] Planning manuel + sauvegarde cloud + IA planning s�
     };
     window.saveRhCockpitShiftEditor = async function(){
         if(!editorCtx) return;
-        const status=String(document.getElementById('rh-cse-status')?.value||'off');
+        let status=String(document.getElementById('rh-cse-status')?.value||'off');
+        const categoryId=String(document.getElementById('rh-cse-category')?.value||editorCtx.p?.categoryId||status||'off');
+        const category=window.iChefPlanningCategoryByIdV202?.(categoryId);
+        if(category?.legalType) status=String(category.legalType);
         const poste=String(document.getElementById('rh-cse-poste')?.value||editorCtx.staff?.dept||'salle');
         let s1=String(document.getElementById('rh-cse-s1')?.value||'').trim();
         let s2=String(document.getElementById('rh-cse-s2')?.value||'').trim();
@@ -18626,9 +18705,9 @@ console.info('[iCHEF RH V84] Planning manuel + sauvegarde cloud + IA planning s�
         if(!ts[month][sid]) ts[month][sid]={};
         const previous=ts[month][sid][day] || ts[month][sid][String(day)] || {};
         const previousSnapshot=JSON.parse(JSON.stringify(previous || {}));
-        const candidate={...previous,status,poste,s1,s2,pause,obs,managerNote};
+        const candidate={...previous,status,categoryId,poste,s1,s2,pause,obs,managerNote};
         const comparable = node => JSON.stringify({
-            status:String(node?.status||'off'),poste:String(node?.poste||''),s1:String(node?.s1||''),s2:String(node?.s2||''),
+            status:String(node?.status||'off'),categoryId:String(node?.categoryId||node?.status||'off'),poste:String(node?.poste||''),s1:String(node?.s1||''),s2:String(node?.s2||''),
             pause:Number(node?.pause||0),obs:String(node?.obs||''),managerNote:String(node?.managerNote||'')
         });
         if(comparable(previousSnapshot)===comparable(candidate)){
@@ -35821,6 +35900,7 @@ window.__ICHEF_RH_BUILD__='RH-V199-ASSISTANCE-LIGHT-MODAL-FIX';
   function normalizedCandidate(base,next){
     let p={...base,...next};
     p.status=String(p.status||'off');
+    p.categoryId=String(p.categoryId||base.categoryId||p.status||'off');
     p.poste=String(p.poste||base.poste||'salle');
     p.s1=String(p.s1||'').trim();
     p.s2=String(p.s2||'').trim();
@@ -35839,6 +35919,7 @@ window.__ICHEF_RH_BUILD__='RH-V199-ASSISTANCE-LIGHT-MODAL-FIX';
   function comparable(n){
     return JSON.stringify({
       status:String(n?.status||'off'),
+      categoryId:String(n?.categoryId||n?.status||'off'),
       poste:String(n?.poste||''),
       s1:String(n?.s1||''),
       s2:String(n?.s2||''),
@@ -35994,30 +36075,49 @@ window.__ICHEF_RH_BUILD__='RH-V199-ASSISTANCE-LIGHT-MODAL-FIX';
     try{
       if(typeof saveTs==='function'){
         const first=changes[0];
-        ok=await saveTs(ts,{
+        window.iChefV201SaveState?.('saving',changes.length);
+        const syncPromise=saveTs(ts,{
           source,
           reason,
           staffId:String(first.staffId),
           date:first.dateStr
         });
+        // saveTs enregistre déjà le snapshot local AVANT l'appel réseau.
+        // L'édition peut donc continuer immédiatement sans attendre le serveur.
+        ok=true;
+        window.iChefV201SaveState?.('local',changes.length);
+        Promise.resolve(syncPromise)
+          .then(syncOk=>{
+            window.iChefV201SaveState?.(syncOk===false?'pending':'synced',changes.length);
+          })
+          .catch(err=>{
+            console.warn('[iCHEF RH V201] synchronisation planning différée',err);
+            window.iChefV201SaveState?.('pending',changes.length);
+          });
       }else{
         localStorage.setItem('empire_hr_timesheets',JSON.stringify(ts));
+        window.iChefV201SaveState?.('local',changes.length);
       }
     }catch(e){
-      console.error('[iCHEF RH V200] save',e);
+      console.error('[iCHEF RH V201] save local',e);
       ok=false;
+      window.iChefV201SaveState?.('pending',changes.length);
     }
 
+    // Rafraîchissement visuel immédiat ; les traitements plus lourds
+    // sont différés pour garder le tactile fluide.
     try{
       loadMonthData?.();
-      loadPublicPlanning?.();
-      Promise.resolve(broadcastStaffingLevels?.()).catch(()=>{});
-      renderRhCockpit?.();
+      requestAnimationFrame(()=>{ try{ renderRhCockpit?.(); }catch(_){} });
+      setTimeout(()=>{
+        try{ loadPublicPlanning?.(); }catch(_){}
+        try{ Promise.resolve(broadcastStaffingLevels?.()).catch(()=>{}); }catch(_){}
+      },120);
     }catch(_){}
 
     setTimeout(reapplySelection,30);
     toast(ok
-      ? `${changes.length} case${changes.length>1?'s':''} mise${changes.length>1?'s':''} à jour`
+      ? `${changes.length} case${changes.length>1?'s':''} enregistrée${changes.length>1?'s':''}`
       : 'Enregistré localement · synchronisation en attente'
     );
     return ok;
@@ -36029,18 +36129,21 @@ window.__ICHEF_RH_BUILD__='RH-V199-ASSISTANCE-LIGHT-MODAL-FIX';
 
   function toolbarPlan(){
     const template=templateById(currentToolbarTemplate);
-    const status=String(document.getElementById('rh-v200-toolbar-status')?.value||currentToolbarStatus||'present');
+    const categoryId=String(document.getElementById('rh-v200-toolbar-status')?.value||currentToolbarStatus||'present');
+    const category=window.iChefPlanningCategoryByIdV202?.(categoryId);
+    const status=String(category?.legalType||categoryId||'present');
     let p={
       status,
+      categoryId:category?.id||categoryId||status,
       s1:template?.s1||'',
       s2:template?.s2||'',
       pause:Number(template?.pause||0)
     };
-    if(status==='off') p={status:'off',s1:'',s2:'',pause:0};
-    if(status==='conge') p={status:'conge',s1:'',s2:'',pause:0};
-    if(status==='recup') p={status:'recup',s1:'',s2:'',pause:0};
-    if(status==='maladie') p={status:'maladie',s1:'',s2:'',pause:0};
-    if(status==='formation') p={status:'formation',s1:'',s2:'',pause:0};
+    if(status==='off') p={...p,status:'off',s1:'',s2:'',pause:0};
+    if(status==='conge') p={...p,status:'conge',s1:'',s2:'',pause:0};
+    if(status==='recup') p={...p,status:'recup',s1:'',s2:'',pause:0};
+    if(status==='maladie') p={...p,status:'maladie',s1:'',s2:'',pause:0};
+    if(status==='formation') p={...p,status:'formation',s1:'',s2:'',pause:0};
     return p;
   }
 
@@ -36264,8 +36367,10 @@ window.__ICHEF_RH_BUILD__='RH-V199-ASSISTANCE-LIGHT-MODAL-FIX';
 
   function drawerPlan(){
     if(!drawerCtx) return {};
+    const activeCategory=document.querySelector('#rh-v200-quick-drawer [data-status].active');
     return normalizedCandidate(drawerCtx.base,{
-      status:document.querySelector('#rh-v200-quick-drawer [data-status].active')?.dataset.status||drawerCtx.base.status||'off',
+      status:activeCategory?.dataset.status||drawerCtx.base.status||'off',
+      categoryId:activeCategory?.dataset.categoryId||drawerCtx.base.categoryId||activeCategory?.dataset.status||drawerCtx.base.status||'off',
       poste:document.getElementById('rh-v200-drawer-poste')?.value||drawerCtx.base.poste||'salle',
       s1:document.getElementById('rh-v200-drawer-s1')?.value||'',
       s2:document.getElementById('rh-v200-drawer-s2')?.value||'',
@@ -36274,14 +36379,25 @@ window.__ICHEF_RH_BUILD__='RH-V199-ASSISTANCE-LIGHT-MODAL-FIX';
     });
   }
 
-  function setDrawerStatus(status){
+  function setDrawerStatus(statusOrCategory){
+    let selectedButton=null;
     document.querySelectorAll('#rh-v200-quick-drawer [data-status]').forEach(b=>{
-      b.classList.toggle('active',b.dataset.status===status);
+      const selected=
+        String(b.dataset.categoryId||'')===String(statusOrCategory||'') ||
+        (!b.dataset.categoryId && String(b.dataset.status||'')===String(statusOrCategory||''));
+      b.classList.toggle('active',selected);
+      if(selected&&!selectedButton) selectedButton=b;
     });
+    if(!selectedButton){
+      selectedButton=[...document.querySelectorAll('#rh-v200-quick-drawer [data-status]')]
+        .find(b=>String(b.dataset.status||'')===String(statusOrCategory||''))||null;
+      if(selectedButton) selectedButton.classList.add('active');
+    }
+    const legalStatus=String(selectedButton?.dataset.status||statusOrCategory||'off');
     const plan=drawerPlan();
-    if(!STATUS_WORK.has(status)){
+    if(!STATUS_WORK.has(legalStatus)){
       setDrawerTimes('','',0);
-    }else if(status==='present'&&!plan.s1&&!plan.s2){
+    }else if(legalStatus==='present'&&!plan.s1&&!plan.s2){
       applyDrawerPreset('coupure');
     }
   }
@@ -36299,7 +36415,7 @@ window.__ICHEF_RH_BUILD__='RH-V199-ASSISTANCE-LIGHT-MODAL-FIX';
     const t=templateById(id);
     if(!t)return;
     setDrawerTimes(t.s1,t.s2,t.pause);
-    setDrawerStatus(t.status||'present');
+    setDrawerStatus(t.categoryId||t.status||'present');
     document.querySelectorAll('#rh-v200-quick-drawer [data-preset]').forEach(b=>{
       b.classList.toggle('active',b.dataset.preset===id);
     });
@@ -36324,10 +36440,10 @@ window.__ICHEF_RH_BUILD__='RH-V199-ASSISTANCE-LIGHT-MODAL-FIX';
       <div class="rh-v200-drawer-body">
         <div class="rh-v200-kicker">Statut</div>
         <div class="rh-v200-status-grid">
-          ${[
+          ${window.iChefPlanningCategoryButtonsV202?.(p.categoryId||p.status) || [
             ['present','TRAVAIL'],['off','REPOS'],['conge','CONGÉ'],
             ['recup','RÉCUP.'],['maladie','MALADIE'],['formation','FORMATION']
-          ].map(([v,l])=>`<button type="button" data-status="${v}" class="${String(p.status)===v?'active':''}">${l}</button>`).join('')}
+          ].map(([v,l])=>`<button type="button" data-status="${v}" data-category-id="${v}" class="${String(p.status)===v?'active':''}">${l}</button>`).join('')}
         </div>
 
         <div class="rh-v200-field">
@@ -36376,7 +36492,7 @@ window.__ICHEF_RH_BUILD__='RH-V199-ASSISTANCE-LIGHT-MODAL-FIX';
     drawer.querySelector('.rh-v200-close').onclick=closeDrawer;
     drawer.querySelector('.rh-v200-drawer-cancel').onclick=closeDrawer;
     drawer.querySelectorAll('[data-status]').forEach(btn=>{
-      btn.onclick=()=>setDrawerStatus(btn.dataset.status);
+      btn.onclick=()=>setDrawerStatus(btn.dataset.categoryId||btn.dataset.status);
     });
     drawer.querySelectorAll('[data-preset]').forEach(btn=>{
       btn.onclick=()=>applyDrawerPreset(btn.dataset.preset);
@@ -36642,5 +36758,1626 @@ window.__ICHEF_RH_BUILD__='RH-V199-ASSISTANCE-LIGHT-MODAL-FIX';
 
 <script id="ichef-rh-v200-marker">
 window.__ICHEF_RH_BUILD__='RH-V200-FAST-MANUAL-PLANNING';
+</script>
+
+
+<style id="ichef-rh-v201-status-touch-style">
+/* =========================================================
+   iCHEF RH V201 · CODE COULEUR UNIQUE + TACTILE + FAST SAVE
+   Un même statut = une même couleur dans tout le système.
+   Texte toujours noir pour conserver la lisibilité.
+   ========================================================= */
+
+:root{
+  --rh-work-bg:#dff6e7;
+  --rh-work-border:#278a52;
+
+  --rh-morning-bg:#e4f1ff;
+  --rh-morning-border:#4d82b8;
+
+  --rh-evening-bg:#eee8ff;
+  --rh-evening-border:#7657b2;
+
+  --rh-rest-bg:#eeeeee;
+  --rh-rest-border:#777777;
+
+  --rh-leave-bg:#fff1bd;
+  --rh-leave-border:#b48200;
+
+  --rh-recovery-bg:#dff4fb;
+  --rh-recovery-border:#29879e;
+
+  --rh-sick-bg:#fde1e1;
+  --rh-sick-border:#bd4242;
+
+  --rh-accident-bg:#ffd6d6;
+  --rh-accident-border:#a72f2f;
+
+  --rh-family-bg:#f8e2f0;
+  --rh-family-border:#a45182;
+
+  --rh-training-bg:#eee6ff;
+  --rh-training-border:#7652a8;
+
+  --rh-unpaid-bg:#f2e7da;
+  --rh-unpaid-border:#8a6846;
+
+  --rh-absence-bg:#ffe6cf;
+  --rh-absence-border:#b65e24;
+
+  --rh-holiday-bg:#ffe9c9;
+  --rh-holiday-border:#b66b10;
+
+  --rh-selected:#3778d4;
+}
+
+/* ====== PLANNING PRINCIPAL ====== */
+#global-view-container .rh-status-quick-btn,
+#global-view-container .status-select-cell{
+  color:#111111 !important;
+  font-weight:900 !important;
+  border-width:1px !important;
+  border-style:solid !important;
+}
+
+#global-view-container .status-present,
+#global-view-container .rh-status-quick-btn.status-present{
+  background:var(--rh-work-bg) !important;
+  border-color:var(--rh-work-border) !important;
+}
+
+#global-view-container .status-off_soir,
+#global-view-container .rh-status-quick-btn.status-off_soir{
+  background:var(--rh-morning-bg) !important;
+  border-color:var(--rh-morning-border) !important;
+}
+
+#global-view-container .status-off_matin,
+#global-view-container .rh-status-quick-btn.status-off_matin{
+  background:var(--rh-evening-bg) !important;
+  border-color:var(--rh-evening-border) !important;
+}
+
+#global-view-container .status-off,
+#global-view-container .rh-status-quick-btn.status-off{
+  background:var(--rh-rest-bg) !important;
+  border-color:var(--rh-rest-border) !important;
+}
+
+#global-view-container .status-conge,
+#global-view-container .rh-status-quick-btn.status-conge{
+  background:var(--rh-leave-bg) !important;
+  border-color:var(--rh-leave-border) !important;
+}
+
+#global-view-container .status-recup,
+#global-view-container .rh-status-quick-btn.status-recup{
+  background:var(--rh-recovery-bg) !important;
+  border-color:var(--rh-recovery-border) !important;
+}
+
+#global-view-container .status-maladie,
+#global-view-container .rh-status-quick-btn.status-maladie{
+  background:var(--rh-sick-bg) !important;
+  border-color:var(--rh-sick-border) !important;
+}
+
+#global-view-container .status-accident_travail,
+#global-view-container .rh-status-quick-btn.status-accident_travail{
+  background:var(--rh-accident-bg) !important;
+  border-color:var(--rh-accident-border) !important;
+}
+
+#global-view-container :is(.status-maternite,.status-paternite,.status-parental,.status-enfant_malade,.status-evenement_familial,.status-deces){
+  background:var(--rh-family-bg) !important;
+  border-color:var(--rh-family-border) !important;
+}
+
+#global-view-container .status-formation,
+#global-view-container .rh-status-quick-btn.status-formation{
+  background:var(--rh-training-bg) !important;
+  border-color:var(--rh-training-border) !important;
+}
+
+#global-view-container .status-sans_solde,
+#global-view-container .rh-status-quick-btn.status-sans_solde{
+  background:var(--rh-unpaid-bg) !important;
+  border-color:var(--rh-unpaid-border) !important;
+}
+
+#global-view-container :is(.status-absence_autorisee,.status-absence_injustifiee){
+  background:var(--rh-absence-bg) !important;
+  border-color:var(--rh-absence-border) !important;
+}
+
+#global-view-container .status-ferie,
+#global-view-container .rh-status-quick-btn.status-ferie{
+  background:var(--rh-holiday-bg) !important;
+  border-color:var(--rh-holiday-border) !important;
+}
+
+/* Sélection = contour bleu, sans perdre la couleur du statut */
+#global-view-container .rh-status-quick-btn.rh-v200-selected{
+  outline:3px solid var(--rh-selected) !important;
+  outline-offset:-3px !important;
+  box-shadow:inset 0 0 0 2px #ffffff !important;
+}
+
+/* ====== ÉDITEUR COMPLET ====== */
+.rh-cse-status-action[data-status="present"]{
+  background:var(--rh-work-bg) !important;border-color:var(--rh-work-border) !important;color:#111 !important;
+}
+.rh-cse-status-action[data-status="off_soir"]{
+  background:var(--rh-morning-bg) !important;border-color:var(--rh-morning-border) !important;color:#111 !important;
+}
+.rh-cse-status-action[data-status="off_matin"]{
+  background:var(--rh-evening-bg) !important;border-color:var(--rh-evening-border) !important;color:#111 !important;
+}
+.rh-cse-status-action[data-status="off"]{
+  background:var(--rh-rest-bg) !important;border-color:var(--rh-rest-border) !important;color:#111 !important;
+}
+.rh-cse-status-action[data-status="conge"]{
+  background:var(--rh-leave-bg) !important;border-color:var(--rh-leave-border) !important;color:#111 !important;
+}
+.rh-cse-status-action[data-status="recup"]{
+  background:var(--rh-recovery-bg) !important;border-color:var(--rh-recovery-border) !important;color:#111 !important;
+}
+.rh-cse-status-action[data-status="maladie"]{
+  background:var(--rh-sick-bg) !important;border-color:var(--rh-sick-border) !important;color:#111 !important;
+}
+.rh-cse-status-action[data-status="formation"]{
+  background:var(--rh-training-bg) !important;border-color:var(--rh-training-border) !important;color:#111 !important;
+}
+.rh-cse-status-action[data-status="ferie"]{
+  background:var(--rh-holiday-bg) !important;border-color:var(--rh-holiday-border) !important;color:#111 !important;
+}
+
+.rh-cse-status-action.is-current{
+  box-shadow:inset 0 0 0 2px #111111 !important;
+}
+
+/* ====== PANNEAU RAPIDE V200 ====== */
+#rh-v200-quick-drawer [data-status="present"]{
+  background:var(--rh-work-bg) !important;border-color:var(--rh-work-border) !important;
+}
+#rh-v200-quick-drawer [data-status="off"]{
+  background:var(--rh-rest-bg) !important;border-color:var(--rh-rest-border) !important;
+}
+#rh-v200-quick-drawer [data-status="conge"]{
+  background:var(--rh-leave-bg) !important;border-color:var(--rh-leave-border) !important;
+}
+#rh-v200-quick-drawer [data-status="recup"]{
+  background:var(--rh-recovery-bg) !important;border-color:var(--rh-recovery-border) !important;
+}
+#rh-v200-quick-drawer [data-status="maladie"]{
+  background:var(--rh-sick-bg) !important;border-color:var(--rh-sick-border) !important;
+}
+#rh-v200-quick-drawer [data-status="formation"]{
+  background:var(--rh-training-bg) !important;border-color:var(--rh-training-border) !important;
+}
+#rh-v200-quick-drawer [data-status].active{
+  box-shadow:inset 0 0 0 2px #111111 !important;
+}
+
+/* ====== DASHBOARD / PLANNING DU JOUR ====== */
+.rh-shift-chip:not(.off):not(.leave):not(.sick):not(.recovery),
+.rh-today-shift:not(.off):not(.leave):not(.sick):not(.recovery){
+  background:var(--rh-work-bg) !important;
+  border-color:var(--rh-work-border) !important;
+  color:#111111 !important;
+}
+.rh-shift-chip.off,
+.rh-month-mini.off{
+  background:var(--rh-rest-bg) !important;border-color:var(--rh-rest-border) !important;color:#111 !important;
+}
+.rh-shift-chip.leave,
+.rh-month-mini.leave{
+  background:var(--rh-leave-bg) !important;border-color:var(--rh-leave-border) !important;color:#111 !important;
+}
+.rh-shift-chip.sick,
+.rh-month-mini.sick{
+  background:var(--rh-sick-bg) !important;border-color:var(--rh-sick-border) !important;color:#111 !important;
+}
+.rh-shift-chip.recovery,
+.rh-month-mini.recovery{
+  background:var(--rh-recovery-bg) !important;border-color:var(--rh-recovery-border) !important;color:#111 !important;
+}
+
+/* ====== BARRE RAPIDE / LÉGENDE ====== */
+#rh-v201-legend{
+  display:flex;
+  align-items:center;
+  gap:5px;
+  flex-wrap:wrap;
+  padding:5px 8px;
+  background:#f7f7f7;
+  border-bottom:1px solid #111111;
+}
+
+.rh-v201-legend-chip{
+  display:inline-flex;
+  align-items:center;
+  gap:5px;
+  min-height:25px;
+  padding:3px 7px;
+  border:1px solid #111111;
+  border-radius:999px;
+  color:#111111;
+  font-size:.5rem;
+  font-weight:900;
+  white-space:nowrap;
+}
+
+.rh-v201-legend-chip i{
+  width:8px;height:8px;border-radius:50%;border:1px solid currentColor;
+}
+
+.rh-v201-legend-chip.work{background:var(--rh-work-bg);border-color:var(--rh-work-border)}
+.rh-v201-legend-chip.rest{background:var(--rh-rest-bg);border-color:var(--rh-rest-border)}
+.rh-v201-legend-chip.leave{background:var(--rh-leave-bg);border-color:var(--rh-leave-border)}
+.rh-v201-legend-chip.recup{background:var(--rh-recovery-bg);border-color:var(--rh-recovery-border)}
+.rh-v201-legend-chip.sick{background:var(--rh-sick-bg);border-color:var(--rh-sick-border)}
+.rh-v201-legend-chip.training{background:var(--rh-training-bg);border-color:var(--rh-training-border)}
+.rh-v201-legend-chip.holiday{background:var(--rh-holiday-bg);border-color:var(--rh-holiday-border)}
+
+/* Statut de sauvegarde */
+#rh-v200-fastbar .rh-v200-draft{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  min-height:28px;
+  padding:4px 8px;
+  border:1px solid #111111;
+  border-radius:999px;
+  background:#ffffff;
+  color:#111111;
+}
+
+#rh-v200-fastbar .rh-v200-draft::before{
+  content:"";
+  width:8px;height:8px;border-radius:50%;background:#777777;
+}
+
+#rh-v200-fastbar .rh-v200-draft[data-save-state="saving"]::before{background:#d8a500}
+#rh-v200-fastbar .rh-v200-draft[data-save-state="local"]::before{background:#2a7fbe}
+#rh-v200-fastbar .rh-v200-draft[data-save-state="synced"]::before{background:#278a52}
+#rh-v200-fastbar .rh-v200-draft[data-save-state="pending"]::before{background:#bd4242}
+
+/* ====== TACTILE MULTI-SÉLECTION ====== */
+#global-view-container.rh-v201-touch-mode .rh-status-quick-btn{
+  touch-action:none !important;
+  cursor:crosshair !important;
+}
+
+#global-view-container.rh-v201-touch-mode .rh-status-quick-btn::after{
+  inset:-3px !important;
+}
+
+#global-view-container th.rh-v201-day-selectable{
+  cursor:pointer;
+  user-select:none;
+  -webkit-user-select:none;
+}
+
+#global-view-container.rh-v201-touch-mode th.rh-v201-day-selectable{
+  background:#eaf1ff !important;
+  box-shadow:inset 0 -3px 0 var(--rh-selected) !important;
+}
+
+#global-view-container th.rh-v201-day-selected{
+  background:#dbe8ff !important;
+  outline:2px solid var(--rh-selected);
+  outline-offset:-2px;
+}
+
+#rh-v201-touch-help{
+  display:inline-flex;
+  align-items:center;
+  gap:5px;
+  color:#444444;
+  font-size:.5rem;
+  font-weight:850;
+  white-space:nowrap;
+}
+
+#rh-v201-touch-help b{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-width:22px;
+  height:22px;
+  border:1px solid #111111;
+  border-radius:999px;
+  background:#ffffff;
+  color:#111111;
+}
+
+/* Touch targets confortables */
+@media(pointer:coarse){
+  #rh-v200-fastbar button,
+  #rh-v200-fastbar select{
+    min-height:44px !important;
+    font-size:.68rem !important;
+  }
+
+  #global-view-container .rh-status-quick-btn{
+    min-height:44px !important;
+  }
+
+  #global-view-container .global-table td{
+    height:54px !important;
+  }
+
+  #rh-v200-quick-drawer button,
+  #rh-v200-quick-drawer input,
+  #rh-v200-quick-drawer select{
+    min-height:44px !important;
+  }
+}
+
+@media(max-width:820px){
+  #rh-v201-touch-help{
+    width:100%;
+    white-space:normal;
+  }
+
+  #rh-v201-legend{
+    overflow-x:auto;
+    flex-wrap:nowrap;
+  }
+}
+</style>
+
+<script id="ichef-rh-v201-status-touch-fastsave">
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V201_STATUS_TOUCH__) return;
+  window.__ICHEF_RH_V201_STATUS_TOUCH__=true;
+
+  const STATUS_COLORS={
+    present:{label:'TRAVAIL',bg:'#dff6e7',border:'#278a52'},
+    off_soir:{label:'MATIN',bg:'#e4f1ff',border:'#4d82b8'},
+    off_matin:{label:'SOIR',bg:'#eee8ff',border:'#7657b2'},
+    off:{label:'REPOS',bg:'#eeeeee',border:'#777777'},
+    conge:{label:'CONGÉ',bg:'#fff1bd',border:'#b48200'},
+    recup:{label:'RÉCUP.',bg:'#dff4fb',border:'#29879e'},
+    maladie:{label:'MALADIE',bg:'#fde1e1',border:'#bd4242'},
+    accident_travail:{label:'ACCIDENT',bg:'#ffd6d6',border:'#a72f2f'},
+    maternite:{label:'MATERNITÉ',bg:'#f8e2f0',border:'#a45182'},
+    paternite:{label:'PATERNITÉ',bg:'#f8e2f0',border:'#a45182'},
+    parental:{label:'PARENTAL',bg:'#f8e2f0',border:'#a45182'},
+    enfant_malade:{label:'PROCHE',bg:'#f8e2f0',border:'#a45182'},
+    evenement_familial:{label:'ÉVÉN.',bg:'#f8e2f0',border:'#a45182'},
+    deces:{label:'DEUIL',bg:'#f8e2f0',border:'#a45182'},
+    formation:{label:'FORMATION',bg:'#eee6ff',border:'#7652a8'},
+    sans_solde:{label:'SANS SOLDE',bg:'#f2e7da',border:'#8a6846'},
+    absence_autorisee:{label:'ABSENCE',bg:'#ffe6cf',border:'#b65e24'},
+    absence_injustifiee:{label:'ABSENCE !',bg:'#ffe6cf',border:'#b65e24'},
+    ferie:{label:'FÉRIÉ',bg:'#ffe9c9',border:'#b66b10'}
+  };
+  window.ICHEF_RH_STATUS_COLORS_V201=STATUS_COLORS;
+
+  /* -------------------------------------------------------
+     ENREGISTREMENT RAPIDE
+     L'état local est immédiat. La synchronisation serveur
+     continue en arrière-plan via saveTs.
+     ------------------------------------------------------- */
+  window.iChefV201SaveState=function(state,count=0){
+    const el=document.querySelector('#rh-v200-fastbar .rh-v200-draft');
+    if(!el) return;
+    el.dataset.saveState=state;
+    const labels={
+      saving:'Enregistrement…',
+      local:'✓ Enregistré · synchro…',
+      synced:'✓ Synchronisé',
+      pending:'⚠ Local · serveur en attente'
+    };
+    el.textContent=labels[state]||'Brouillon';
+    el.title=count?`${count} modification${count>1?'s':''}`:'État de sauvegarde du planning';
+  };
+
+  /* -------------------------------------------------------
+     LÉGENDE COULEUR
+     ------------------------------------------------------- */
+  function ensureLegend(){
+    const global=document.getElementById('global-view-container');
+    const bar=document.getElementById('rh-v200-fastbar');
+    if(!global||!bar) return;
+
+    if(!document.getElementById('rh-v201-legend')){
+      const legend=document.createElement('div');
+      legend.id='rh-v201-legend';
+      legend.innerHTML=`
+        <span class="rh-v201-legend-chip work"><i></i>TRAVAIL</span>
+        <span class="rh-v201-legend-chip rest"><i></i>REPOS</span>
+        <span class="rh-v201-legend-chip leave"><i></i>CONGÉ</span>
+        <span class="rh-v201-legend-chip recup"><i></i>RÉCUP.</span>
+        <span class="rh-v201-legend-chip sick"><i></i>MALADIE</span>
+        <span class="rh-v201-legend-chip training"><i></i>FORMATION</span>
+        <span class="rh-v201-legend-chip holiday"><i></i>FÉRIÉ</span>`;
+      bar.insertAdjacentElement('afterend',legend);
+    }
+
+    if(!document.getElementById('rh-v201-touch-help')){
+      const hint=document.createElement('span');
+      hint.id='rh-v201-touch-help';
+      hint.innerHTML='<b>☝</b> Tactile : activez SÉLECTION puis glissez sur plusieurs jours · appui long fonctionne aussi';
+      bar.appendChild(hint);
+    }
+
+    const selectBtn=bar.querySelector('.rh-v200-select-mode');
+    if(selectBtn){
+      selectBtn.textContent='☝ MULTI / TACTILE';
+      selectBtn.title='Sur écran tactile : activez puis glissez sur plusieurs cases. Un appui long sur une case active aussi ce mode.';
+    }
+
+    const save=bar.querySelector('.rh-v200-draft');
+    if(save&&!save.dataset.saveState){
+      save.dataset.saveState='synced';
+      save.textContent='✓ Synchronisé';
+    }
+  }
+
+  /* -------------------------------------------------------
+     COLORER LES COMPOSANTS DYNAMIQUES QUI NE PORTENT PAS
+     ENCORE UNE CLASSE CSS DE STATUT.
+     ------------------------------------------------------- */
+  function paintDynamicStatusControls(root=document){
+    root.querySelectorAll('[data-status]').forEach(el=>{
+      const status=String(el.dataset.status||'');
+      const c=STATUS_COLORS[status];
+      if(!c) return;
+      if(
+        el.classList.contains('rh-cse-status-action') ||
+        el.closest('#rh-v200-quick-drawer')
+      ){
+        el.style.setProperty('--rh-v201-bg',c.bg);
+        el.style.setProperty('--rh-v201-border',c.border);
+      }
+    });
+
+    const toolbarStatus=document.getElementById('rh-v200-toolbar-status');
+    if(toolbarStatus){
+      const c=STATUS_COLORS[String(toolbarStatus.value||'present')]||STATUS_COLORS.present;
+      toolbarStatus.style.background=c.bg;
+      toolbarStatus.style.borderColor=c.border;
+      toolbarStatus.style.color='#111111';
+    }
+  }
+
+  /* -------------------------------------------------------
+     DÉCORER LES EN-TÊTES DE JOUR
+     Permet un tap sur un jour pour sélectionner toute la
+     colonne lorsque le mode multi-sélection est actif.
+     ------------------------------------------------------- */
+  function decorateDayHeaders(){
+    const head=document.querySelectorAll('#global-thead th');
+    if(!head.length) return;
+    head.forEach((th,index)=>{
+      if(index===0||index===head.length-1) return;
+      th.dataset.rhDay=String(index);
+      th.classList.add('rh-v201-day-selectable');
+      th.title='Mode MULTI : toucher pour sélectionner/désélectionner toute cette journée';
+    });
+  }
+
+  function selectionButton(){
+    return document.querySelector('#rh-v200-fastbar .rh-v200-select-mode');
+  }
+
+  function selectionIsActive(){
+    return selectionButton()?.classList.contains('active')===true;
+  }
+
+  function activateSelection(){
+    const btn=selectionButton();
+    if(btn&&!btn.classList.contains('active')) btn.click();
+    syncTouchMode();
+  }
+
+  function syncTouchMode(){
+    const global=document.getElementById('global-view-container');
+    if(!global) return;
+    global.classList.toggle('rh-v201-touch-mode',selectionIsActive());
+  }
+
+  function monthValue(){
+    return String(document.getElementById('month-selector')?.value||'');
+  }
+
+  function selectCellIfNeeded(btn){
+    if(!btn||btn.classList.contains('rh-v200-selected')) return false;
+    const staff=btn.dataset.rhStaff;
+    const day=btn.dataset.rhDay;
+    if(!staff||!day) return false;
+    window.openRhQuickStatus?.(
+      {
+        preventDefault(){},
+        stopPropagation(){},
+        ctrlKey:false,
+        metaKey:false,
+        shiftKey:false
+      },
+      staff,
+      Number(day)
+    );
+    return true;
+  }
+
+  function deselectCellIfNeeded(btn){
+    if(!btn||!btn.classList.contains('rh-v200-selected')) return false;
+    const staff=btn.dataset.rhStaff;
+    const day=btn.dataset.rhDay;
+    if(!staff||!day) return false;
+    window.openRhQuickStatus?.(
+      {
+        preventDefault(){},
+        stopPropagation(){},
+        ctrlKey:false,
+        metaKey:false,
+        shiftKey:false
+      },
+      staff,
+      Number(day)
+    );
+    return true;
+  }
+
+  function toggleWholeDay(day){
+    if(!selectionIsActive()) activateSelection();
+    const cells=[...document.querySelectorAll(`#global-view-container .rh-status-quick-btn[data-rh-day="${CSS.escape(String(day))}"]`)];
+    if(!cells.length) return;
+    const allSelected=cells.every(x=>x.classList.contains('rh-v200-selected'));
+    cells.forEach(btn=>{
+      if(allSelected) deselectCellIfNeeded(btn);
+      else selectCellIfNeeded(btn);
+    });
+    updateDayHeaderSelection();
+  }
+
+  function updateDayHeaderSelection(){
+    document.querySelectorAll('#global-thead th[data-rh-day]').forEach(th=>{
+      const day=th.dataset.rhDay;
+      const cells=[...document.querySelectorAll(`#global-view-container .rh-status-quick-btn[data-rh-day="${CSS.escape(day)}"]`)];
+      th.classList.toggle('rh-v201-day-selected',cells.length>0&&cells.every(x=>x.classList.contains('rh-v200-selected')));
+    });
+  }
+
+  /* -------------------------------------------------------
+     SÉLECTION TACTILE PAR GLISSER
+     - si MULTI est actif : toucher + glisser immédiatement
+     - sinon : appui long ~330 ms puis glisser
+     ------------------------------------------------------- */
+  let gesture=null;
+  let suppressClickUntil=0;
+
+  function cellAtPoint(x,y){
+    const el=document.elementFromPoint(x,y);
+    return el?.closest?.('#global-view-container .rh-status-quick-btn')||null;
+  }
+
+  function autoScroll(x,y){
+    const scroller=document.getElementById('global-view-container');
+    if(!scroller) return;
+    const r=scroller.getBoundingClientRect();
+    const edge=42;
+    if(x>r.right-edge) scroller.scrollLeft+=28;
+    else if(x<r.left+edge) scroller.scrollLeft-=28;
+    if(y>r.bottom-edge) scroller.scrollTop+=24;
+    else if(y<r.top+edge) scroller.scrollTop-=24;
+  }
+
+  function startGesture(btn,event,longPress=false){
+    activateSelection();
+    const visited=new Set();
+    gesture={
+      pointerId:event.pointerId,
+      visited,
+      active:true,
+      longPress,
+      startX:event.clientX,
+      startY:event.clientY
+    };
+    const key=`${btn.dataset.rhStaff}|${btn.dataset.rhDay}`;
+    visited.add(key);
+    selectCellIfNeeded(btn);
+    suppressClickUntil=Date.now()+800;
+    try{navigator.vibrate?.(12)}catch(_){}
+  }
+
+  function onPointerDown(event){
+    if(!['touch','pen'].includes(String(event.pointerType||''))) return;
+    const btn=event.target?.closest?.('#global-view-container .rh-status-quick-btn');
+    if(!btn) return;
+
+    const base={
+      pointerId:event.pointerId,
+      btn,
+      startX:event.clientX,
+      startY:event.clientY,
+      moved:false,
+      active:false,
+      timer:null
+    };
+
+    if(selectionIsActive()){
+      startGesture(btn,event,false);
+      gesture.pointerId=event.pointerId;
+      event.preventDefault();
+      return;
+    }
+
+    gesture=base;
+    gesture.timer=setTimeout(()=>{
+      if(gesture&&gesture.pointerId===event.pointerId&&!gesture.moved){
+        startGesture(btn,event,true);
+      }
+    },330);
+  }
+
+  function onPointerMove(event){
+    if(!gesture||gesture.pointerId!==event.pointerId) return;
+
+    const dx=Math.abs(event.clientX-gesture.startX);
+    const dy=Math.abs(event.clientY-gesture.startY);
+
+    if(!gesture.active){
+      if(dx>9||dy>9){
+        gesture.moved=true;
+        clearTimeout(gesture.timer);
+        gesture.timer=null;
+      }
+      return;
+    }
+
+    event.preventDefault();
+    autoScroll(event.clientX,event.clientY);
+
+    const btn=cellAtPoint(event.clientX,event.clientY);
+    if(!btn) return;
+    const key=`${btn.dataset.rhStaff}|${btn.dataset.rhDay}`;
+    if(gesture.visited.has(key)) return;
+    gesture.visited.add(key);
+    selectCellIfNeeded(btn);
+    updateDayHeaderSelection();
+  }
+
+  function finishGesture(event){
+    if(!gesture||gesture.pointerId!==event.pointerId) return;
+    clearTimeout(gesture.timer);
+    if(gesture.active){
+      suppressClickUntil=Date.now()+700;
+      updateDayHeaderSelection();
+    }
+    gesture=null;
+  }
+
+  document.addEventListener('pointerdown',onPointerDown,{capture:true,passive:false});
+  document.addEventListener('pointermove',onPointerMove,{capture:true,passive:false});
+  document.addEventListener('pointerup',finishGesture,true);
+  document.addEventListener('pointercancel',finishGesture,true);
+
+  // Empêche le click synthétique après un geste tactile déjà traité.
+  document.addEventListener('click',event=>{
+    const btn=event.target?.closest?.('#global-view-container .rh-status-quick-btn');
+    if(btn&&Date.now()<suppressClickUntil){
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      event.stopPropagation();
+      return;
+    }
+
+    const th=event.target?.closest?.('#global-thead th[data-rh-day]');
+    if(th&&selectionIsActive()){
+      event.preventDefault();
+      event.stopPropagation();
+      toggleWholeDay(th.dataset.rhDay);
+    }
+
+    if(event.target?.closest?.('#rh-v200-fastbar .rh-v200-select-mode')){
+      setTimeout(syncTouchMode,0);
+    }
+  },true);
+
+  /* La sélection peut être changée par le code V200 : synchroniser les headers. */
+  const global=document.getElementById('global-view-container');
+  if(global){
+    new MutationObserver(()=>{
+      ensureLegend();
+      decorateDayHeaders();
+      paintDynamicStatusControls(global);
+      syncTouchMode();
+      updateDayHeaderSelection();
+    }).observe(global,{childList:true,subtree:true,attributes:true,attributeFilter:['class']});
+  }
+
+  document.addEventListener('change',event=>{
+    if(event.target?.id==='rh-v200-toolbar-status'){
+      paintDynamicStatusControls();
+    }
+  });
+
+  function boot(){
+    ensureLegend();
+    decorateDayHeaders();
+    paintDynamicStatusControls();
+    syncTouchMode();
+    updateDayHeaderSelection();
+  }
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',boot,{once:true});
+  }else{
+    boot();
+  }
+  setTimeout(boot,120);
+  setTimeout(boot,700);
+
+  window.__ICHEF_RH_BUILD__='RH-V201-COLOR-TOUCH-FASTSAVE';
+  console.info('[iCHEF RH V201] code couleur global + sauvegarde immédiate + sélection tactile multi-jours');
+})();
+</script>
+
+<script id="ichef-rh-v201-marker">
+window.__ICHEF_RH_BUILD__='RH-V201-COLOR-TOUCH-FASTSAVE';
+</script>
+
+
+<style id="ichef-rh-v202-client-categories-style">
+/* =========================================================
+   iCHEF RH V202 · CATÉGORIES & COULEURS CLIENT
+   ========================================================= */
+
+#rh-v202-category-modal{
+  display:none;
+  position:fixed;
+  inset:0;
+  z-index:420000;
+  align-items:center;
+  justify-content:center;
+  padding:18px;
+  background:rgba(0,0,0,.22);
+}
+
+#rh-v202-category-modal.show{display:flex;}
+
+.rh-v202-category-panel{
+  width:min(1040px,calc(100vw - 32px));
+  max-height:calc(100dvh - 32px);
+  overflow:hidden;
+  display:flex;
+  flex-direction:column;
+  background:#fff;
+  color:#111;
+  border:1px solid #111;
+  border-radius:14px;
+  box-shadow:0 24px 70px rgba(0,0,0,.18);
+}
+
+.rh-v202-category-head{
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-start;
+  gap:14px;
+  padding:15px 17px;
+  background:#f3f3f3;
+  border-bottom:1px solid #111;
+}
+
+.rh-v202-category-head h3{
+  margin:0;
+  font-size:1rem;
+  letter-spacing:.3px;
+}
+
+.rh-v202-category-head p{
+  margin:5px 0 0;
+  color:#555;
+  font-size:.65rem;
+  line-height:1.45;
+}
+
+.rh-v202-category-close{
+  width:36px;height:36px;
+  border:1px solid #111;
+  border-radius:8px;
+  background:#fff;
+  color:#111;
+  font-size:1.1rem;
+  font-weight:900;
+  cursor:pointer;
+}
+
+.rh-v202-category-body{
+  overflow:auto;
+  padding:14px 16px;
+}
+
+.rh-v202-category-note{
+  margin-bottom:11px;
+  padding:10px 12px;
+  background:#f3f3f3;
+  border:1px solid #111;
+  border-radius:8px;
+  color:#111;
+  font-size:.64rem;
+  line-height:1.5;
+}
+
+.rh-v202-category-note strong{font-weight:900;}
+
+#rh-v202-category-list{
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+}
+
+.rh-v202-category-row{
+  display:grid;
+  grid-template-columns:52px 54px minmax(125px,1fr) 90px minmax(160px,1.4fr) minmax(160px,1.15fr) 86px;
+  gap:8px;
+  align-items:center;
+  padding:9px;
+  border:1px solid #111;
+  border-radius:9px;
+  background:#fff;
+}
+
+.rh-v202-category-row.inactive{
+  opacity:.58;
+  background:#f4f4f4;
+}
+
+.rh-v202-category-row input[type="text"],
+.rh-v202-category-row select{
+  width:100%;
+  min-width:0;
+  min-height:36px;
+  padding:6px 8px;
+  border:1px solid #111;
+  border-radius:6px;
+  background:#fff;
+  color:#111;
+  font-size:.62rem;
+}
+
+.rh-v202-category-row input[type="color"]{
+  width:42px;
+  height:36px;
+  padding:2px;
+  border:1px solid #111;
+  border-radius:6px;
+  background:#fff;
+  cursor:pointer;
+}
+
+.rh-v202-active{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:3px;
+  color:#444;
+  font-size:.49rem;
+  font-weight:900;
+  text-transform:uppercase;
+}
+
+.rh-v202-active input{
+  width:20px;height:20px;
+  accent-color:#111;
+}
+
+.rh-v202-preview{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  min-height:36px;
+  padding:4px;
+  border:1px solid #111;
+  border-radius:6px;
+  color:#111;
+  font-size:.54rem;
+  font-weight:900;
+  text-align:center;
+}
+
+.rh-v202-remove{
+  min-height:36px;
+  border:1px solid #111;
+  border-radius:6px;
+  background:#fff;
+  color:#111;
+  font-size:.54rem;
+  font-weight:900;
+  cursor:pointer;
+}
+
+.rh-v202-remove:hover{background:#e7e7e7;}
+
+.rh-v202-category-actions{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  padding:12px 16px;
+  background:#f3f3f3;
+  border-top:1px solid #111;
+}
+
+.rh-v202-category-actions-left,
+.rh-v202-category-actions-right{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+}
+
+.rh-v202-category-actions button{
+  min-height:38px;
+  padding:0 12px;
+  border:1px solid #111;
+  border-radius:7px;
+  background:#fff;
+  color:#111;
+  font-size:.59rem;
+  font-weight:900;
+  cursor:pointer;
+}
+
+.rh-v202-category-actions .primary{
+  background:#ddd;
+}
+
+.rh-v202-category-actions button:hover{background:#e7e7e7;}
+
+.rh-v202-category-labels{
+  display:grid;
+  grid-template-columns:52px 54px minmax(125px,1fr) 90px minmax(160px,1.4fr) minmax(160px,1.15fr) 86px;
+  gap:8px;
+  margin:0 9px 5px;
+  color:#555;
+  font-size:.49rem;
+  font-weight:900;
+  text-transform:uppercase;
+  letter-spacing:.35px;
+}
+
+#rh-v200-fastbar .rh-v202-categories-btn{
+  background:#fff;
+  border:1px solid #111;
+}
+
+#rh-v200-fastbar .rh-v202-categories-btn::before{
+  content:"●";
+  color:var(--rh-v202-current-color,#777);
+  margin-right:5px;
+}
+
+/* L'ancien statut légal reste dans le DOM pour le moteur, mais
+   l'utilisateur choisit maintenant la catégorie métier. */
+#rh-cockpit-shift-editor .rh-v202-legal-status-field,
+#rh-cockpit-shift-editor .rh-cse-status-actions{
+  display:none !important;
+}
+
+.rh-v202-category-meaning{
+  display:block;
+  margin-top:4px;
+  color:#555 !important;
+  font-size:.58rem;
+  line-height:1.35;
+}
+
+/* Couleur custom appliquée directement par data-rh-category */
+[data-rh-category]{
+  transition:background-color .12s ease,border-color .12s ease;
+}
+
+@media(max-width:900px){
+  .rh-v202-category-row,
+  .rh-v202-category-labels{
+    grid-template-columns:46px 48px 1fr 76px;
+  }
+  .rh-v202-category-row .rh-v202-meaning,
+  .rh-v202-category-row .rh-v202-legal,
+  .rh-v202-category-labels .meaning-label,
+  .rh-v202-category-labels .legal-label{
+    grid-column:span 2;
+  }
+}
+
+@media(max-width:620px){
+  #rh-v202-category-modal{padding:0;}
+  .rh-v202-category-panel{
+    width:100vw;
+    max-height:100dvh;
+    min-height:100dvh;
+    border-radius:0;
+    border-left:0;
+    border-right:0;
+  }
+  .rh-v202-category-labels{display:none;}
+  .rh-v202-category-row{
+    grid-template-columns:44px 48px 1fr 76px;
+  }
+  .rh-v202-category-row .rh-v202-meaning,
+  .rh-v202-category-row .rh-v202-legal{
+    grid-column:1/-1;
+  }
+}
+</style>
+
+<script id="ichef-rh-v202-client-categories">
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V202_CLIENT_CATEGORIES__) return;
+  window.__ICHEF_RH_V202_CLIENT_CATEGORIES__=true;
+
+  const VERSION='RH-V202-CLIENT-CATEGORIES';
+
+  const LEGAL_TYPES=[
+    ['present','Travail / service travaillé'],
+    ['off_soir','Travail matin uniquement'],
+    ['off_matin','Travail soir uniquement'],
+    ['off','Repos / OFF'],
+    ['conge','Congé payé / vacances'],
+    ['recup','Récupération'],
+    ['maladie','Maladie'],
+    ['accident_travail','Accident du travail'],
+    ['maternite','Maternité'],
+    ['paternite','Paternité'],
+    ['parental','Congé parental'],
+    ['enfant_malade','Enfant / proche malade'],
+    ['evenement_familial','Événement familial'],
+    ['deces','Décès / deuil'],
+    ['formation','Formation'],
+    ['sans_solde','Sans solde'],
+    ['absence_autorisee','Absence autorisée'],
+    ['absence_injustifiee','Absence injustifiée'],
+    ['ferie','Jour férié']
+  ];
+
+  const DEFAULTS=[
+    ['present','TRAVAIL','TRAV','#dff6e7','present','Temps de travail planifié et comptabilisé.'],
+    ['off_soir','MATIN SEUL','MATIN','#e4f1ff','off_soir','Travail uniquement sur le service du matin.'],
+    ['off_matin','SOIR SEUL','SOIR','#eee8ff','off_matin','Travail uniquement sur le service du soir.'],
+    ['off','REPOS / OFF','REPOS','#eeeeee','off','Repos planifié. Ne consomme pas les vacances.'],
+    ['conge','CONGÉ PAYÉ','CP','#fff1bd','conge','Vacances / congé payé. Consomme le compteur de congés selon le référentiel applicable.'],
+    ['recup','RÉCUPÉRATION','RÉCUP','#dff4fb','recup','Repos ou récupération issu du compteur prévu par l’établissement.'],
+    ['maladie','MALADIE','MAL','#fde1e1','maladie','Absence pour maladie.'],
+    ['accident_travail','ACCIDENT TRAVAIL','AT','#ffd6d6','accident_travail','Absence liée à un accident du travail.'],
+    ['maternite','MATERNITÉ','MAT.','#f8e2f0','maternite','Congé maternité.'],
+    ['paternite','PATERNITÉ','PAT.','#f8e2f0','paternite','Congé paternité.'],
+    ['parental','CONGÉ PARENTAL','PAR.','#f8e2f0','parental','Congé parental.'],
+    ['enfant_malade','ENFANT / PROCHE MALADE','PROCHE','#f8e2f0','enfant_malade','Absence liée à un enfant ou proche malade.'],
+    ['evenement_familial','ÉVÉNEMENT FAMILIAL','ÉVÉN.','#f8e2f0','evenement_familial','Absence pour événement familial.'],
+    ['deces','DÉCÈS / DEUIL','DEUIL','#f8e2f0','deces','Absence liée à un décès / deuil.'],
+    ['formation','FORMATION','FORM.','#eee6ff','formation','Temps ou absence consacrée à une formation.'],
+    ['sans_solde','SANS SOLDE','S/SOLDE','#f2e7da','sans_solde','Absence sans solde.'],
+    ['absence_autorisee','ABSENCE AUTORISÉE','ABS.','#ffe6cf','absence_autorisee','Absence autorisée par l’employeur.'],
+    ['absence_injustifiee','ABSENCE INJUSTIFIÉE','ABS !','#ffe6cf','absence_injustifiee','Absence non justifiée.'],
+    ['ferie','JOUR FÉRIÉ','FÉRIÉ','#ffe9c9','ferie','Jour férié, traité selon le pays et la convention.']
+  ].map((r,i)=>({
+    id:r[0],label:r[1],short:r[2],color:r[3],legalType:r[4],
+    meaning:r[5],active:true,builtin:true,order:i
+  }));
+
+  const legalSet=new Set(LEGAL_TYPES.map(x=>x[0]));
+
+  const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+
+  const normHex=v=>/^#[0-9a-f]{6}$/i.test(String(v||''))?String(v).toLowerCase():'#eeeeee';
+
+  function darken(hex,amount=.28){
+    const h=normHex(hex).slice(1);
+    const n=parseInt(h,16);
+    const r=Math.max(0,Math.round(((n>>16)&255)*(1-amount)));
+    const g=Math.max(0,Math.round(((n>>8)&255)*(1-amount)));
+    const b=Math.max(0,Math.round((n&255)*(1-amount)));
+    return '#'+[r,g,b].map(x=>x.toString(16).padStart(2,'0')).join('');
+  }
+
+  function cleanId(v,fallback){
+    return String(v||fallback||'categorie')
+      .toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+      .replace(/[^a-z0-9_-]+/g,'_')
+      .replace(/^_+|_+$/g,'')
+      .slice(0,48)||fallback||'categorie';
+  }
+
+  function normalize(input){
+    const source=Array.isArray(input)?input:[];
+    const byId=new Map(source.map(c=>[String(c?.id||''),c]));
+    const out=[];
+
+    DEFAULTS.forEach(def=>{
+      const custom=byId.get(def.id);
+      out.push({
+        ...def,
+        ...(custom||{}),
+        id:def.id,
+        legalType:def.legalType,
+        builtin:true,
+        color:normHex(custom?.color||def.color),
+        active:custom?.active!==false,
+        order:Number.isFinite(Number(custom?.order))?Number(custom.order):def.order
+      });
+      byId.delete(def.id);
+    });
+
+    let nextOrder=DEFAULTS.length;
+    for(const raw of byId.values()){
+      if(out.length>=40) break;
+      const id=cleanId(raw?.id,`custom_${nextOrder}`);
+      if(out.some(x=>x.id===id)) continue;
+      out.push({
+        id,
+        label:String(raw?.label||'Catégorie personnalisée').trim().slice(0,42)||'Catégorie personnalisée',
+        short:String(raw?.short||raw?.label||'CAT').trim().slice(0,12)||'CAT',
+        color:normHex(raw?.color),
+        legalType:legalSet.has(String(raw?.legalType||''))?String(raw.legalType):'off',
+        meaning:String(raw?.meaning||'').trim().slice(0,180),
+        active:raw?.active!==false,
+        builtin:false,
+        order:Number.isFinite(Number(raw?.order))?Number(raw.order):nextOrder++
+      });
+    }
+    return out.sort((a,b)=>Number(a.order||0)-Number(b.order||0));
+  }
+
+  function settings(){
+    try{return typeof getRhSettings==='function'?(getRhSettings()||{}):{}}
+    catch(_){return{}}
+  }
+
+  function getCatalog(){
+    return normalize(settings().planningStatusCatalogV202);
+  }
+
+  function saveCatalog(catalog){
+    const normalized=normalize(catalog);
+    const active=normalized.filter(x=>x.active!==false);
+    if(!active.some(x=>['present','off_soir','off_matin'].includes(x.legalType))){
+      alert('Il faut conserver au moins une catégorie active qui correspond à du TRAVAIL.');
+      return false;
+    }
+    if(!active.some(x=>x.legalType==='off')){
+      alert('Il faut conserver au moins une catégorie active qui correspond à du REPOS / OFF.');
+      return false;
+    }
+
+    try{
+      if(typeof saveRhSettings==='function'){
+        saveRhSettings({...settings(),planningStatusCatalogV202:normalized});
+      }else{
+        const s=settings();
+        localStorage.setItem('ichef_rh_settings',JSON.stringify({...s,planningStatusCatalogV202:normalized}));
+      }
+      try{
+        recordRhChange?.({
+          type:'PLANNING_CATEGORY_SETTINGS',
+          source:'DIRECTION_RH',
+          by:typeof window.rhAuditActorV94==='function'?window.rhAuditActorV94():'Direction / RH',
+          count:normalized.length,
+          activeCount:active.length,
+          message:'Catégories et couleurs du planning mises à jour'
+        });
+      }catch(_){}
+      applyCatalogEverywhere();
+      return true;
+    }catch(error){
+      console.error('[iCHEF RH V202] sauvegarde catalogue',error);
+      alert('Impossible d’enregistrer les catégories.');
+      return false;
+    }
+  }
+
+  function byId(id){
+    return getCatalog().find(x=>x.id===String(id||''))||null;
+  }
+
+  function categoryForPlan(plan){
+    const status=String(plan?.status||'off');
+    const wanted=String(plan?.categoryId||status);
+    return byId(wanted) || byId(status) || {
+      id:status,label:status.toUpperCase(),short:status.slice(0,8).toUpperCase(),
+      color:'#eeeeee',legalType:status,meaning:'',active:true,builtin:true
+    };
+  }
+
+  window.iChefPlanningCategoryCatalogV202=getCatalog;
+  window.iChefPlanningCategoryByIdV202=byId;
+  window.iChefPlanningMetaV202=categoryForPlan;
+  window.iChefLegalTypeLabelV202=type=>LEGAL_TYPES.find(x=>x[0]===String(type||''))?.[1]||String(type||'');
+
+  window.iChefPlanningCategoryOptionsV202=function(selected){
+    const catalog=getCatalog().filter(x=>x.active!==false || x.id===String(selected||''));
+    return catalog.map(c=>`<option value="${esc(c.id)}" ${c.id===String(selected||'')?'selected':''}>${esc(c.label)}</option>`).join('');
+  };
+
+  window.iChefPlanningCategoryButtonsV202=function(selected){
+    const catalog=getCatalog().filter(x=>x.active!==false || x.id===String(selected||''));
+    return catalog.map(c=>`
+      <button
+        type="button"
+        data-status="${esc(c.legalType)}"
+        data-category-id="${esc(c.id)}"
+        title="${esc(c.meaning||window.iChefLegalTypeLabelV202(c.legalType))}"
+        style="background:${esc(c.color)};border-color:${esc(darken(c.color))}"
+        class="${c.id===String(selected||'')?'active':''}">
+        ${esc(c.short||c.label)}
+      </button>`).join('');
+  };
+
+  function ensureDefaultsSaved(){
+    const s=settings();
+    if(Array.isArray(s.planningStatusCatalogV202)&&s.planningStatusCatalogV202.length) return;
+    saveCatalog(DEFAULTS);
+  }
+
+  function dynamicCss(){
+    const styleId='rh-v202-dynamic-category-css';
+    let style=document.getElementById(styleId);
+    if(!style){
+      style=document.createElement('style');
+      style.id=styleId;
+      document.head.appendChild(style);
+    }
+
+    style.textContent=getCatalog().map(c=>{
+      const id=CSS.escape(c.id);
+      const bg=normHex(c.color);
+      const border=darken(bg);
+      return `
+        [data-rh-category="${id}"],
+        [data-category-id="${id}"]{
+          --rh-v202-category-color:${bg};
+          background-color:${bg}!important;
+          border-color:${border}!important;
+          color:#111!important;
+        }`;
+    }).join('\n');
+  }
+
+  function updateToolbar(){
+    const bar=document.getElementById('rh-v200-fastbar');
+    if(!bar) return;
+    const select=document.getElementById('rh-v200-toolbar-status');
+    if(select){
+      const old=String(select.value||'present');
+      const catalog=getCatalog().filter(x=>x.active!==false);
+      select.innerHTML=catalog.map(c=>`<option value="${esc(c.id)}">${esc(c.short||c.label)}</option>`).join('');
+      select.value=catalog.some(c=>c.id===old)?old:(catalog.find(c=>c.legalType==='present')?.id||catalog[0]?.id||'present');
+      const current=byId(select.value);
+      if(current){
+        select.style.background=current.color;
+        select.style.borderColor=darken(current.color);
+      }
+    }
+
+    if(!bar.querySelector('.rh-v202-categories-btn')){
+      const btn=document.createElement('button');
+      btn.type='button';
+      btn.className='rh-v202-categories-btn';
+      btn.textContent='CATÉGORIES / COULEURS';
+      btn.title='Choisir les couleurs, noms, sens et catégories du planning';
+      btn.addEventListener('click',openManager);
+      const tools=bar.querySelector('.rh-v200-tools-toggle');
+      if(tools) tools.insertAdjacentElement('beforebegin',btn);
+      else bar.appendChild(btn);
+    }
+
+    const selected=byId(select?.value);
+    bar.style.setProperty('--rh-v202-current-color',selected?.color||'#777777');
+  }
+
+  function updateLegend(){
+    const legend=document.getElementById('rh-v201-legend');
+    if(!legend) return;
+    const active=getCatalog().filter(x=>x.active!==false);
+    legend.innerHTML=active.map(c=>`
+      <span class="rh-v201-legend-chip"
+            data-rh-category="${esc(c.id)}"
+            title="${esc(c.meaning||window.iChefLegalTypeLabelV202(c.legalType))}">
+        <i style="background:${esc(darken(c.color))}"></i>${esc(c.short||c.label)}
+      </span>`).join('');
+  }
+
+  function planFromEditChip(chip){
+    const sid=String(chip?.dataset?.rhEditStaff||'');
+    const dateStr=String(chip?.dataset?.rhEditDate||'');
+    if(!sid||!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return null;
+    const [y,m,d]=dateStr.split('-').map(Number);
+    const mk=`${y}-${String(m).padStart(2,'0')}`;
+    try{
+      const ts=typeof getTs==='function'?getTs():{};
+      return ts?.[mk]?.[sid]?.[d] || ts?.[mk]?.[sid]?.[String(d)] || {status:'off'};
+    }catch(_){return null}
+  }
+
+  function colorRenderedPlanning(){
+    document.querySelectorAll('#global-view-container .rh-status-quick-btn').forEach(btn=>{
+      const sid=String(btn.dataset.rhStaff||'');
+      const day=Number(btn.dataset.rhDay||0);
+      const month=String(document.getElementById('month-selector')?.value||'');
+      if(!sid||!day||!/^\d{4}-\d{2}$/.test(month)) return;
+      let p=null;
+      try{
+        const ts=typeof getTs==='function'?getTs():{};
+        p=ts?.[month]?.[sid]?.[day] || ts?.[month]?.[sid]?.[String(day)] || {status:'off'};
+      }catch(_){p={status:'off'}}
+      const cat=categoryForPlan(p);
+      btn.dataset.rhCategory=cat.id;
+      btn.style.backgroundColor=cat.color;
+      btn.style.borderColor=darken(cat.color);
+      btn.title=[cat.label,cat.meaning,btn.closest('td')?.title].filter(Boolean).join(' · ');
+      const statusEl=btn.querySelector('.rh-cell-status');
+      if(statusEl) statusEl.textContent=cat.short||cat.label;
+    });
+
+    document.querySelectorAll('.rh-cockpit-edit-chip[data-rh-edit-staff][data-rh-edit-date]').forEach(chip=>{
+      const p=planFromEditChip(chip);
+      if(!p) return;
+      const cat=categoryForPlan(p);
+      chip.dataset.rhCategory=cat.id;
+      chip.style.backgroundColor=cat.color;
+      chip.style.borderColor=darken(cat.color);
+      chip.title=[cat.label,cat.meaning,chip.title].filter(Boolean).join(' · ');
+      if(chip.classList.contains('rh-month-mini')){
+        chip.textContent=cat.short||cat.label;
+      }
+    });
+
+    const categorySelect=document.getElementById('rh-cse-category');
+    if(categorySelect){
+      const cat=byId(categorySelect.value);
+      if(cat){
+        categorySelect.style.background=cat.color;
+        categorySelect.style.borderColor=darken(cat.color);
+      }
+    }
+
+    document.querySelectorAll('#rh-v200-quick-drawer [data-category-id]').forEach(btn=>{
+      const cat=byId(btn.dataset.categoryId);
+      if(cat){
+        btn.style.background=cat.color;
+        btn.style.borderColor=darken(cat.color);
+      }
+    });
+  }
+
+  function applyCatalogEverywhere(){
+    dynamicCss();
+    updateToolbar();
+    updateLegend();
+    colorRenderedPlanning();
+    try{loadMonthData?.();}catch(_){}
+    try{renderRhCockpit?.();}catch(_){}
+    setTimeout(colorRenderedPlanning,30);
+    window.dispatchEvent(new CustomEvent('ichef:planning-categories-updated',{
+      detail:{version:VERSION,count:getCatalog().length,at:new Date().toISOString()}
+    }));
+  }
+
+  function ensureModal(){
+    let modal=document.getElementById('rh-v202-category-modal');
+    if(modal) return modal;
+    modal=document.createElement('div');
+    modal.id='rh-v202-category-modal';
+    modal.setAttribute('role','dialog');
+    modal.setAttribute('aria-modal','true');
+    modal.innerHTML=`
+      <div class="rh-v202-category-panel">
+        <div class="rh-v202-category-head">
+          <div>
+            <h3>Catégories & couleurs du planning</h3>
+            <p>Chaque client peut choisir son vocabulaire et ses couleurs. Le « comportement légal » reste séparé afin que les calculs RH, les compteurs et les contrôles continuent de fonctionner correctement.</p>
+          </div>
+          <button type="button" class="rh-v202-category-close" aria-label="Fermer">×</button>
+        </div>
+        <div class="rh-v202-category-body">
+          <div class="rh-v202-category-note">
+            <strong>Exemple :</strong> vous pouvez créer « ÉCOLE » en violet et lui donner le comportement légal « Formation », ou « REPOS COMP. » en bleu avec le comportement « Récupération ». Masquer une catégorie standard ne supprime jamais les anciennes données du planning.
+          </div>
+          <div class="rh-v202-category-labels">
+            <span>Actif</span><span>Couleur</span><span>Nom</span><span>Court</span>
+            <span class="meaning-label">Signification pour votre équipe</span>
+            <span class="legal-label">Comportement légal iCHEF</span><span>Action</span>
+          </div>
+          <div id="rh-v202-category-list"></div>
+        </div>
+        <div class="rh-v202-category-actions">
+          <div class="rh-v202-category-actions-left">
+            <button type="button" id="rh-v202-add-category">+ AJOUTER UNE CATÉGORIE</button>
+            <button type="button" id="rh-v202-reset-categories">RÉINITIALISER</button>
+          </div>
+          <div class="rh-v202-category-actions-right">
+            <button type="button" class="rh-v202-category-cancel">ANNULER</button>
+            <button type="button" class="primary" id="rh-v202-save-categories">ENREGISTRER</button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+
+    modal.addEventListener('click',e=>{
+      if(e.target===modal) closeManager();
+    });
+    modal.querySelector('.rh-v202-category-close').addEventListener('click',closeManager);
+    modal.querySelector('.rh-v202-category-cancel').addEventListener('click',closeManager);
+    modal.querySelector('#rh-v202-add-category').addEventListener('click',addRow);
+    modal.querySelector('#rh-v202-reset-categories').addEventListener('click',()=>{
+      if(confirm('Réinitialiser toutes les catégories et couleurs par défaut ?')){
+        renderRows(DEFAULTS);
+      }
+    });
+    modal.querySelector('#rh-v202-save-categories').addEventListener('click',saveManager);
+    return modal;
+  }
+
+  function legalOptions(selected,builtin=false){
+    return LEGAL_TYPES.map(([v,l])=>`<option value="${esc(v)}" ${v===selected?'selected':''}>${esc(l)}</option>`).join('');
+  }
+
+  function rowHtml(c,index){
+    const border=darken(c.color);
+    return `
+      <div class="rh-v202-category-row ${c.active===false?'inactive':''}" data-id="${esc(c.id)}" data-builtin="${c.builtin?'1':'0'}">
+        <label class="rh-v202-active"><input type="checkbox" class="rh-v202-enabled" ${c.active!==false?'checked':''}><span>Actif</span></label>
+        <input type="color" class="rh-v202-color" value="${esc(normHex(c.color))}" title="Couleur">
+        <input type="text" class="rh-v202-label" maxlength="42" value="${esc(c.label)}" placeholder="Nom">
+        <input type="text" class="rh-v202-short" maxlength="12" value="${esc(c.short)}" placeholder="Court">
+        <input type="text" class="rh-v202-meaning rh-v202-meaning" maxlength="180" value="${esc(c.meaning||'')}" placeholder="Ex. Jour école / présence non opérationnelle">
+        <select class="rh-v202-legal" ${c.builtin?'disabled title="Le comportement légal d’une catégorie standard est protégé."':''}>${legalOptions(c.legalType,c.builtin)}</select>
+        <button type="button" class="rh-v202-remove">${c.builtin?'MASQUER':'SUPPRIMER'}</button>
+        <div class="rh-v202-preview" style="display:none;background:${esc(c.color)};border-color:${esc(border)}">${esc(c.short||c.label)}</div>
+      </div>`;
+  }
+
+  function renderRows(catalog){
+    const list=document.getElementById('rh-v202-category-list');
+    if(!list) return;
+    list.innerHTML=normalize(catalog).map(rowHtml).join('');
+
+    list.querySelectorAll('.rh-v202-category-row').forEach(row=>{
+      const enabled=row.querySelector('.rh-v202-enabled');
+      const color=row.querySelector('.rh-v202-color');
+      const label=row.querySelector('.rh-v202-label');
+      const short=row.querySelector('.rh-v202-short');
+      const remove=row.querySelector('.rh-v202-remove');
+
+      enabled?.addEventListener('change',()=>row.classList.toggle('inactive',!enabled.checked));
+      color?.addEventListener('input',()=>{
+        row.style.borderColor=darken(color.value);
+        const preview=row.querySelector('.rh-v202-preview');
+        if(preview) preview.style.background=color.value;
+      });
+      label?.addEventListener('input',()=>{
+        if(!short?.dataset?.manual){
+          short.value=String(label.value||'CAT').slice(0,10).toUpperCase();
+        }
+      });
+      short?.addEventListener('input',()=>{short.dataset.manual='1';});
+      remove?.addEventListener('click',()=>{
+        const builtin=row.dataset.builtin==='1';
+        if(builtin){
+          enabled.checked=false;
+          row.classList.add('inactive');
+        }else{
+          row.remove();
+        }
+      });
+    });
+  }
+
+  function collectRows(){
+    const rows=[...document.querySelectorAll('#rh-v202-category-list .rh-v202-category-row')];
+    const used=new Set();
+    return rows.map((row,index)=>{
+      const builtin=row.dataset.builtin==='1';
+      let id=cleanId(row.dataset.id,builtin?row.dataset.id:`custom_${index+1}`);
+      while(used.has(id)) id=`${id}_${index+1}`;
+      used.add(id);
+      const legal=builtin
+        ? (DEFAULTS.find(x=>x.id===id)?.legalType||'off')
+        : String(row.querySelector('.rh-v202-legal')?.value||'off');
+      return {
+        id,
+        label:String(row.querySelector('.rh-v202-label')?.value||'Catégorie').trim().slice(0,42)||'Catégorie',
+        short:String(row.querySelector('.rh-v202-short')?.value||'CAT').trim().slice(0,12)||'CAT',
+        color:normHex(row.querySelector('.rh-v202-color')?.value),
+        legalType:legalSet.has(legal)?legal:'off',
+        meaning:String(row.querySelector('.rh-v202-meaning')?.value||'').trim().slice(0,180),
+        active:row.querySelector('.rh-v202-enabled')?.checked!==false,
+        builtin,
+        order:index
+      };
+    });
+  }
+
+  function addRow(){
+    const list=document.getElementById('rh-v202-category-list');
+    if(!list) return;
+    const n=[...list.children].filter(x=>x.dataset.builtin!=='1').length+1;
+    const cat={
+      id:`custom_${Date.now()}_${n}`,
+      label:'NOUVELLE CATÉGORIE',
+      short:'NOUV.',
+      color:'#e6f0ff',
+      legalType:'off',
+      meaning:'Décrivez ce que cette catégorie signifie pour votre équipe.',
+      active:true,builtin:false,order:list.children.length
+    };
+    list.insertAdjacentHTML('beforeend',rowHtml(cat,list.children.length));
+    renderRows(collectRows());
+    list.lastElementChild?.scrollIntoView({block:'nearest'});
+  }
+
+  function openManager(){
+    const modal=ensureModal();
+    renderRows(getCatalog());
+    modal.classList.add('show');
+  }
+
+  function closeManager(){
+    document.getElementById('rh-v202-category-modal')?.classList.remove('show');
+  }
+
+  function saveManager(){
+    const catalog=collectRows();
+    if(saveCatalog(catalog)){
+      closeManager();
+      try{showToast?.('Catégories planning enregistrées');}catch(_){}
+    }
+  }
+
+  window.openPlanningCategoryManagerV202=openManager;
+
+  /* Bouton et select peuvent être recréés par V200. */
+  document.addEventListener('change',e=>{
+    if(e.target?.id==='rh-v200-toolbar-status'){
+      const c=byId(e.target.value);
+      if(c){
+        e.target.style.background=c.color;
+        e.target.style.borderColor=darken(c.color);
+        document.getElementById('rh-v200-fastbar')?.style.setProperty('--rh-v202-current-color',c.color);
+      }
+    }
+    if(e.target?.id==='rh-cse-category'){
+      setTimeout(colorRenderedPlanning,0);
+    }
+  },true);
+
+  const observer=new MutationObserver(()=>{
+    updateToolbar();
+    updateLegend();
+    colorRenderedPlanning();
+  });
+
+  function boot(){
+    ensureDefaultsSaved();
+    dynamicCss();
+    updateToolbar();
+    updateLegend();
+    colorRenderedPlanning();
+    if(document.body){
+      observer.observe(document.body,{childList:true,subtree:true});
+    }
+  }
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',boot,{once:true});
+  }else{
+    boot();
+  }
+
+  window.__ICHEF_RH_BUILD__=VERSION;
+  console.info('[iCHEF RH V202] catégories/couleurs client · sens personnalisé · comportement légal séparé');
+})();
+</script>
+
+<script id="ichef-rh-v202-marker">
+window.__ICHEF_RH_BUILD__='RH-V202-CLIENT-CATEGORIES';
 </script>
 
