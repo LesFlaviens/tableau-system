@@ -11671,30 +11671,139 @@ const urlParamsJS = new URLSearchParams(window.location.search);
         function renderStaffList() {
             const dir = getDir();
             const container = document.getElementById('staff-list-render');
+            if (!container) return;
+
             let html = '';
             dir.forEach(s => {
-                let statusBadge = s.active === false ? '<span style="color:#ef4444; font-size:0.6rem; float:right;">DÉSACTIVÉ</span>' : '<span style="color:#10b981; font-size:0.6rem; float:right;">ACTIF</span>';
-                const sid = JSON.stringify(s.id);
-                html += `<div class="staff-card ${String(currentStaffId) === String(s.id) ? 'active' : ''}"
-                              onpointerdown="staffPointerDown(event, ${sid})"
-                              onpointerup="staffPointerUp(event)"
-                              onpointercancel="staffPointerUp(event)"
-                              onpointerleave="staffPointerUp(event)"
-                              onclick="staffCardClick(event, ${sid})"
-                              style="${s.active === false ? 'opacity:0.5;' : ''}">
-                    <div class="staff-name">${escapeRhHtml(s.name)} ${statusBadge}</div>
-                    <div class="staff-role">${escapeRhHtml(s.role)} - ${Number(s.contract || 0)}h/sem · ${String(s.dept || '').toUpperCase()}</div>
-                    <div class="staff-hint">1 clic : dossier complet · appui 0,9 s : solde heures</div>
-                    <div style="margin-top:10px; display:flex; gap:5px;">
-                        <button onclick="event.stopPropagation(); toggleStaffStatus(${sid})" style="background:#222; border:none; color:#fff; padding:4px 8px; font-size:0.6rem; border-radius:4px; cursor:pointer;">${s.active === false ? 'RÉACTIVER' : 'DÉSACTIVER'}</button>
-                        <button onclick="event.stopPropagation(); openStaffModal('${s.pin}')" style="background:#222; border:none; color:#fff; padding:4px 8px; font-size:0.6rem; border-radius:4px; cursor:pointer;">ÉDITER</button>
-                        <button onclick="event.stopPropagation(); openStaffDocumentsV103(${sid})" style="background:rgba(16,185,129,.08); border:1px solid rgba(16,185,129,.30); color:#8fd5b9; padding:4px 8px; font-size:0.6rem; border-radius:4px; cursor:pointer;">DOCUMENTS</button>
-                        <button onclick="event.stopPropagation(); openRhStaffHistoryV138(${sid})" class="v138-history-btn">HISTORIQUE 360°</button>
-                    </div>
-                </div>`;
+                const selected = String(currentStaffId) === String(s.id);
+                const sid = escapeRhHtml(String(s.id));
+                const statusLabel = s.active === false ? 'DÉSACTIVÉ' : 'ACTIF';
+
+                html += `
+                    <div class="staff-card rh-v220-staff-card ${selected ? 'active' : ''}"
+                         data-staff-id="${sid}"
+                         tabindex="0"
+                         role="button"
+                         aria-pressed="${selected ? 'true' : 'false'}"
+                         aria-label="Ouvrir le planning de ${escapeRhHtml(s.name || 'ce collaborateur')}"
+                         style="${s.active === false ? 'opacity:0.62;' : ''}">
+                        <div class="rh-v220-staff-main">
+                            <div class="staff-name">
+                                <span>${escapeRhHtml(s.name)}</span>
+                                <span class="rh-v220-staff-state ${s.active === false ? 'off' : 'on'}">${statusLabel}</span>
+                            </div>
+                            <div class="staff-role">${escapeRhHtml(s.role)} · ${Number(s.contract || 0)} h/sem · ${escapeRhHtml(String(s.dept || '').toUpperCase())}</div>
+                            <div class="rh-v220-open-hint">Touchez / cliquez ici pour ouvrir le planning</div>
+                        </div>
+                        <div class="rh-v220-staff-actions" aria-label="Actions collaborateur">
+                            <button type="button" data-staff-action="planning" data-staff-id="${sid}">PLANNING</button>
+                            <button type="button" data-staff-action="edit" data-staff-id="${sid}">ÉDITER</button>
+                            <button type="button" data-staff-action="documents" data-staff-id="${sid}">DOCUMENTS</button>
+                            <button type="button" data-staff-action="toggle" data-staff-id="${sid}">${s.active === false ? 'RÉACTIVER' : 'DÉSACTIVER'}</button>
+                            <button type="button" class="wide" data-staff-action="history" data-staff-id="${sid}">HISTORIQUE 360°</button>
+                        </div>
+                    </div>`;
             });
-            container.innerHTML = html || '<div style="color:var(--sub); text-align:center; padding:20px;">Aucun collaborateur dans ce département.</div>';
+
+            container.innerHTML =
+                html ||
+                '<div class="rh-v220-staff-empty">Aucun collaborateur dans ce département.</div>';
+
+            ensureStaffSidebarInteractionsV220();
             updateDashboardStats();
+        }
+
+        function ensureStaffSidebarInteractionsV220() {
+            const container = document.getElementById('staff-list-render');
+            if (!container || container.dataset.v220Bound === '1') return;
+            container.dataset.v220Bound = '1';
+
+            let pressTimer = null;
+            let longPressed = false;
+            let pressedCard = null;
+
+            function cancelPress() {
+                clearTimeout(pressTimer);
+                pressTimer = null;
+                pressedCard?.classList.remove('staff-pressing');
+                pressedCard = null;
+            }
+
+            container.addEventListener('pointerdown', event => {
+                if (event.target?.closest?.('[data-staff-action]')) return;
+                const card = event.target?.closest?.('.rh-v220-staff-card[data-staff-id]');
+                if (!card) return;
+
+                longPressed = false;
+                cancelPress();
+                pressedCard = card;
+                card.classList.add('staff-pressing');
+
+                pressTimer = setTimeout(() => {
+                    longPressed = true;
+                    card.classList.remove('staff-pressing');
+                    openStaffBalanceQuick(card.dataset.staffId);
+                    try { navigator.vibrate?.(16); } catch (_) {}
+                }, 900);
+            }, { passive:true });
+
+            ['pointerup','pointercancel','pointerleave'].forEach(type => {
+                container.addEventListener(type, event => {
+                    if (!event.target?.closest?.('.rh-v220-staff-card')) return;
+                    cancelPress();
+                }, true);
+            });
+
+            container.addEventListener('click', async event => {
+                const actionButton = event.target?.closest?.('[data-staff-action][data-staff-id]');
+                if (actionButton) {
+                    event.preventDefault();
+                    event.stopPropagation();
+
+                    const id = actionButton.dataset.staffId;
+                    const staff = getDir().find(s => String(s.id) === String(id));
+                    if (!staff) {
+                        showToast?.('Collaborateur introuvable');
+                        return;
+                    }
+
+                    const action = actionButton.dataset.staffAction;
+                    if (action === 'planning') {
+                        selectStaff(staff.id);
+                    } else if (action === 'edit') {
+                        openStaffModal(staff.pin);
+                    } else if (action === 'documents') {
+                        window.openStaffDocumentsV103?.(staff.id);
+                    } else if (action === 'toggle') {
+                        await toggleStaffStatus(staff.id);
+                        renderStaffList();
+                    } else if (action === 'history') {
+                        window.openRhStaffHistoryV138?.(staff.id);
+                    }
+                    return;
+                }
+
+                const card = event.target?.closest?.('.rh-v220-staff-card[data-staff-id]');
+                if (!card) return;
+
+                if (longPressed) {
+                    longPressed = false;
+                    event.preventDefault();
+                    return;
+                }
+
+                selectStaff(card.dataset.staffId);
+            });
+
+            container.addEventListener('keydown', event => {
+                if (!['Enter',' '].includes(event.key)) return;
+                if (event.target?.closest?.('[data-staff-action]')) return;
+
+                const card = event.target?.closest?.('.rh-v220-staff-card[data-staff-id]');
+                if (!card) return;
+                event.preventDefault();
+                selectStaff(card.dataset.staffId);
+            });
         }
         let staffPressTimer = null;
         let staffPressTriggered = false;
@@ -11742,23 +11851,55 @@ const urlParamsJS = new URLSearchParams(window.location.search);
             openStaffDetail(staffId);
         }
         function selectStaff(id) {
-            currentStaffId = id;
+            const staff = getDir().find(s => String(s.id) === String(id));
+            if (!staff) {
+                currentStaffId = null;
+                isGlobalView = false;
+                isAnnualView = false;
+                renderStaffList();
+                toggleViewDisplay();
+                showToast?.('Collaborateur introuvable');
+                return false;
+            }
+
+            currentStaffId = staff.id;
             isGlobalView = false;
             isAnnualView = false;
-            refreshViews();
+
+            // V220 : afficher immédiatement la bonne vue sans attendre
+            // un bus asynchrone ou une synchronisation serveur.
+            renderStaffList();
             toggleViewDisplay();
+            loadMonthData();
+
+            try {
+                window.iChefPlanningMasterSyncV217?.({
+                    source:'staff-selection-v220',
+                    snapshot:getTs(),
+                    renderOnly:true,
+                    forceRender:true
+                });
+            } catch (_) {}
+
+            try {
+                window.syncPlanningLayoutV198?.();
+            } catch (_) {}
+
+            window.dispatchEvent(new CustomEvent('ichef:staff-selected',{
+                detail:{
+                    staffId:staff.id,
+                    name:staff.name,
+                    at:new Date().toISOString()
+                }
+            }));
+
+            return true;
         }
+        window.selectStaff = selectStaff;
+
         function openStaffPlanning(staffId) {
             closeModals();
-            currentStaffId =
-                getDir().find(
-                    s =>
-                        String(s.id) === String(staffId)
-                )?.id ?? staffId;
-            isGlobalView = false;
-            isAnnualView = false;
-            refreshViews();
-            toggleViewDisplay();
+            return selectStaff(staffId);
         }
         function buildStaffMonthDetail(staffId) {
             const staff =
@@ -12101,12 +12242,10 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                 };
             const modal =
                 document.getElementById('staff-detail-modal');
-            modal.style.display = 'flex';
-            setTimeout(
-                () =>
-                    modal.classList.add('show'),
-                10
-            );
+            if (modal) {
+                modal.classList.add('show');
+                modal.style.display = 'flex';
+            }
         }
         function openStaffBalanceQuick(staffId) {
             const detail =
@@ -12163,12 +12302,10 @@ const urlParamsJS = new URLSearchParams(window.location.search);
             `).join('');
             const modal =
                 document.getElementById('staff-balance-modal');
-            modal.style.display = 'flex';
-            setTimeout(
-                () =>
-                    modal.classList.add('show'),
-                10
-            );
+            if (modal) {
+                modal.classList.add('show');
+                modal.style.display = 'flex';
+            }
         }
         function loadMonthData() {
             const monthStr = document.getElementById('month-selector').value;
