@@ -10903,28 +10903,144 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                 }
             };
         }
-        function assistantPreviewCode(p) {
-            if (!p) return 'OFF';
-            if (p.__restaurantClosed === true || p.obs === 'Établissement fermé') return 'FER';
-            if (p.status === 'history') return '—';
-            if (isRhLeaveStatus(p.status) || p.status === 'ferie') return rhStatusMeta(p.status).label.slice(0, 5);
-            if (p.s1 && p.s2) return 'M+S';
-            if (p.s1) return 'M';
-            if (p.s2) return 'S';
-            return 'OFF';
+        function assistantCategoryIdV223(p) {
+            if (!p) return 'off';
+            if (p.__restaurantClosed === true || p.obs === 'Établissement fermé') return 'off';
+            if (p.status === 'history') return 'history';
+
+            const explicit = String(p.categoryId || '').trim();
+            if (explicit && window.iChefPlanningCategoryByIdV202?.(explicit)) {
+                return explicit;
+            }
+
+            const status = String(p.status || '').trim();
+
+            // Même lecture que la matrice principale :
+            // travail complet / matin / soir sont déterminés par les services.
+            if (status === 'present' || (!status && (p.s1 || p.s2))) {
+                if (p.s1 && p.s2) return 'present';
+                if (p.s1) return 'off_soir';
+                if (p.s2) return 'off_matin';
+                return 'present';
+            }
+
+            if (status === 'off' && (p.s1 || p.s2)) {
+                if (p.s1 && p.s2) return 'present';
+                if (p.s1) return 'off_soir';
+                if (p.s2) return 'off_matin';
+            }
+
+            const direct = window.iChefPlanningCategoryByIdV202?.(status);
+            if (direct) return direct.id;
+
+            // Compatibilité avec quelques anciens statuts.
+            if (status === 'absence' || status === 'absent') return 'absence_autorisee';
+            if (status === 'cp' || status === 'vacation') return 'conge';
+
+            return status || 'off';
         }
+
+        function assistantCategoryMetaV223(p) {
+            const id = assistantCategoryIdV223(p);
+            const exact = window.iChefPlanningCategoryByIdV202?.(id);
+            if (exact) return exact;
+
+            try {
+                const fromPlan = window.iChefPlanningMetaV202?.({
+                    ...(p || {}),
+                    categoryId: id
+                });
+                if (fromPlan) return fromPlan;
+            } catch (_) {}
+
+            const fallbacks = {
+                present: {id:'present',short:'TRAV',color:'#dff6e7',legalType:'present'},
+                off_soir: {id:'off_soir',short:'MATIN',color:'#e4f1ff',legalType:'off_soir'},
+                off_matin: {id:'off_matin',short:'SOIR',color:'#eee8ff',legalType:'off_matin'},
+                off: {id:'off',short:'REPOS',color:'#eeeeee',legalType:'off'},
+                conge: {id:'conge',short:'CP',color:'#fff1bd',legalType:'conge'},
+                recup: {id:'recup',short:'RÉCUP',color:'#dff4fb',legalType:'recup'},
+                maladie: {id:'maladie',short:'MAL',color:'#fde1e1',legalType:'maladie'},
+                formation: {id:'formation',short:'FORM.',color:'#eee6ff',legalType:'formation'},
+                ferie: {id:'ferie',short:'FÉRIÉ',color:'#ffe9c9',legalType:'ferie'}
+            };
+            return fallbacks[id] || {
+                id,
+                short:String(id || 'OFF').slice(0,8).toUpperCase(),
+                color:'#eeeeee',
+                legalType:id || 'off'
+            };
+        }
+
+        function assistantDarkenColorV223(hex, amount = 0.28) {
+            const safe = /^#[0-9a-f]{6}$/i.test(String(hex || ''))
+                ? String(hex)
+                : '#eeeeee';
+            const n = parseInt(safe.slice(1), 16);
+            const r = Math.max(0, Math.round(((n >> 16) & 255) * (1 - amount)));
+            const g = Math.max(0, Math.round(((n >> 8) & 255) * (1 - amount)));
+            const b = Math.max(0, Math.round((n & 255) * (1 - amount)));
+            return '#' + [r,g,b].map(v => v.toString(16).padStart(2,'0')).join('');
+        }
+
+        function assistantPreviewCode(p) {
+            if (!p) return assistantCategoryMetaV223(null).short || 'REPOS';
+            if (p.__restaurantClosed === true || p.obs === 'Établissement fermé') return 'FERMÉ';
+            if (p.status === 'history') return '—';
+            const meta = assistantCategoryMetaV223(p);
+            return String(meta?.short || meta?.label || assistantCategoryIdV223(p) || 'OFF').toUpperCase();
+        }
+
         function assistantPreviewClass(p) {
             if (!p) return 'v117-off';
             if (p.__restaurantClosed === true || p.obs === 'Établissement fermé') return 'v135-closed';
             if (p.status === 'history') return 'v117-history';
-            if (p.status === 'off' || p.status === 'recup') return 'v117-off';
-            if (p.status === 'absence' || p.status === 'absent' || p.status === 'maladie') return 'v117-abs';
-            if (isRhLeaveStatus(p.status)) return 'v117-cp';
-            if (p.s1 && p.s2) return 'v117-ms';
-            if (p.s1) return 'v117-m';
-            if (p.s2) return 'v117-s';
-            return 'v117-off';
+            const legalType = String(assistantCategoryMetaV223(p)?.legalType || '');
+            if (legalType === 'present') return 'v117-ms';
+            if (legalType === 'off_soir') return 'v117-m';
+            if (legalType === 'off_matin') return 'v117-s';
+            if (legalType === 'off') return 'v117-off';
+            if (legalType === 'recup') return 'v117-off';
+            if (legalType === 'maladie' || legalType.startsWith('absence')) return 'v117-abs';
+            if (legalType === 'conge') return 'v117-cp';
+            return 'v117-status';
         }
+
+        function assistantPreviewStyleV223(p, dayOfWeek = null) {
+            if (p?.__restaurantClosed === true || p?.obs === 'Établissement fermé') {
+                return 'background:#fff1bd!important;border-color:#b58e22!important;color:#111!important;';
+            }
+            if (p?.status === 'history') {
+                return 'background:#f2f2f2!important;border-color:#999!important;color:#777!important;';
+            }
+
+            const meta = assistantCategoryMetaV223(p);
+            const color = /^#[0-9a-f]{6}$/i.test(String(meta?.color || ''))
+                ? String(meta.color)
+                : '#eeeeee';
+            const border = assistantDarkenColorV223(color);
+
+            let weekend = '';
+            if (dayOfWeek === 6) weekend = 'box-shadow:inset 4px 0 0 #6f9ed8!important;';
+            if (dayOfWeek === 0) weekend = 'box-shadow:inset 4px 0 0 #d47b7b!important;';
+
+            return `background:${color}!important;border-color:${border}!important;color:#111!important;${weekend}`;
+        }
+        window.iChefAssistantCategoryMetaV223 = assistantCategoryMetaV223;
+        window.iChefAssistantRefreshColorsV223 = function() {
+            try {
+                if (
+                    document.getElementById('ia-predictions-modal')?.classList.contains('show')
+                ) {
+                    if (window.__ICHEF_ASSISTANT_VIEW_V221 === 'official') {
+                        window.iChefAssistantShowOfficialV221?.();
+                    } else if (typeof planningAssistantDraft !== 'undefined' && planningAssistantDraft) {
+                        renderAutomaticPlanningDraft(planningAssistantDraft);
+                    }
+                }
+            } catch (_) {}
+        };
+
         function assistantStaffWarningsV149(draft, staffList) {
             const byStaff = {};
             const global = [];
@@ -11143,8 +11259,12 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                 let head = '<tr><th class="sticky-col" style="min-width:150px;">COLLABORATEUR</th>';
                 for (let day = 1; day <= daysInMonth; day++) {
                     const dateObj = new Date(year, month - 1, day);
-                    const dayInitial = daysOfWeek[dateObj.getDay()].charAt(0);
-                    head += `<th style="min-width:48px;"><span class="v167-day-date">${dayInitial} ${String(day).padStart(2, '0')}</span></th>`;
+                    const dow = dateObj.getDay();
+                    const dayInitial = daysOfWeek[dow].charAt(0);
+                    const weekendClass =
+                        dow === 6 ? ' v223-ai-saturday' :
+                        dow === 0 ? ' v223-ai-sunday' : '';
+                    head += `<th class="${weekendClass.trim()}" data-v223-dow="${dow}" style="min-width:48px;"><span class="v167-day-date">${dayInitial} ${String(day).padStart(2, '0')}</span></th>`;
                 }
                 head += '<th style="min-width:80px;">H.</th></tr>';
                 let body = '';
@@ -11202,7 +11322,18 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                         const title = p
                             ? `${p.s1 || ''}${p.s1 && p.s2 ? ' / ' : ''}${p.s2 || ''}${p.obs ? ' · ' + p.obs : ''}`
                             : '';
-                        body += `<td class="${assistantPreviewClass(p)}" title="${escapeRhHtml(title)}" style="text-align:center;font-size:.66rem;font-weight:900;">${escapeRhHtml(code)}</td>`;
+                        const dateObjV223 = new Date(year, month - 1, day);
+                        const dowV223 = dateObjV223.getDay();
+                        const categoryV223 = assistantCategoryMetaV223(p);
+                        const weekendClassV223 =
+                            dowV223 === 6 ? ' v223-ai-saturday-cell' :
+                            dowV223 === 0 ? ' v223-ai-sunday-cell' : '';
+                        body += `<td
+                            class="${assistantPreviewClass(p)}${weekendClassV223}"
+                            data-rh-category="${escapeRhHtml(String(categoryV223?.id || assistantCategoryIdV223(p)))}"
+                            title="${escapeRhHtml(title)}"
+                            style="${assistantPreviewStyleV223(p,dowV223)}text-align:center;font-size:.66rem;font-weight:900;"
+                        >${escapeRhHtml(code)}</td>`;
                     }
                     body += `<td style="font-weight:900;color:var(--hr);">${Number(state?.hours || 0).toFixed(1)}</td></tr>`;
                 });
