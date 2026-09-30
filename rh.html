@@ -25,7 +25,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>iCHEF RH · Legal Command Center · France / Suisse</title>
-<meta name="ichef-build" content="RH-V231-CLIC-COLLABORATEUR-STABLE">
+<meta name="ichef-build" content="RH-V232-CLIC-COLLABORATEUR-REPARE">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800;900&display=swap" rel="stylesheet">
 <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 <script>        // 🛡️ SÉCURITÉ ET IDENTIFICATION
@@ -21794,74 +21794,181 @@ html body #director-hub #rh-v226-plan-table-wrap td.v229-staff-cell.v231-opening
 }
 </style>
 
-<script id="ichef-rh-v231-staff-click-stable">
+<style id="ichef-rh-v232-staff-click-style">
+/* V232 : la première colonne est réellement cliquable/tactile */
+html body #director-hub #rh-v226-plan-table-wrap td.v232-staff-cell{
+  cursor:pointer!important;
+  position:relative!important;
+  touch-action:manipulation!important;
+  user-select:none!important;
+  -webkit-user-select:none!important;
+  -webkit-tap-highlight-color:rgba(55,120,212,.16)!important;
+}
+html body #director-hub #rh-v226-plan-table-wrap td.v232-staff-cell:hover,
+html body #director-hub #rh-v226-plan-table-wrap td.v232-staff-cell:focus-visible{
+  background:#eef5ff!important;
+  box-shadow:inset 4px 0 0 #3778d4!important;
+  outline:none!important;
+}
+html body #director-hub #rh-v226-plan-table-wrap td.v232-staff-cell::after{
+  content:"›";
+  position:absolute;
+  right:7px;
+  top:50%;
+  transform:translateY(-50%);
+  color:#3778d4!important;
+  font-size:17px!important;
+  font-weight:950!important;
+  opacity:.8;
+  pointer-events:none;
+}
+html body #director-hub #rh-v226-plan-table-wrap td.v232-staff-cell.v232-opening{
+  background:#dfeeff!important;
+  box-shadow:inset 4px 0 0 #3778d4!important;
+}
+html body #director-hub #rh-v226-plan-table-wrap td.v232-staff-cell .v232-open-hint{
+  display:block!important;
+  margin-top:3px!important;
+  padding-right:14px!important;
+  color:#3778d4!important;
+  font-size:6px!important;
+  font-weight:900!important;
+  line-height:1!important;
+  white-space:nowrap!important;
+}
+</style>
+
+<script id="ichef-rh-v232-staff-click-repaired">
 (() => {
   'use strict';
-  if(window.__ICHEF_RH_V231_STAFF_CLICK__) return;
-  window.__ICHEF_RH_V231_STAFF_CLICK__=true;
+  if(window.__ICHEF_RH_V232_STAFF_CLICK__) return;
+  window.__ICHEF_RH_V232_STAFF_CLICK__=true;
 
   const wrap=document.getElementById('rh-v226-plan-table-wrap');
   if(!wrap) return;
 
+  let frame=0;
   let busy=false;
+  let lastOpenAt=0;
+  let lastStaffId='';
 
-  function cellFrom(target){
-    return target?.closest?.(
-      '#rh-v226-plan-table-wrap td.v229-staff-cell[data-v229-staff-id]'
-    ) || null;
-  }
+  function q(sel,root=document){ return root.querySelector(sel); }
+  function qa(sel,root=document){ return [...root.querySelectorAll(sel)]; }
 
   function resolveStaffId(raw){
-    const id=String(raw||'').trim();
-    if(!id) return null;
-
+    const key=String(raw||'').trim();
+    if(!key) return null;
     try{
       const dir=typeof getDir==='function' ? getDir() : [];
       const staff=(Array.isArray(dir)?dir:[])
-        .find(s=>String(s.id)===id);
-      return staff?.id ?? id;
+        .find(s=>String(s.id)===key);
+      return staff?.id ?? key;
     }catch(_){
-      return id;
+      return key;
     }
   }
 
-  function showRealPlanning(staffId, cell){
-    if(busy) return false;
-    const id=resolveStaffId(staffId);
+  // IMPORTANT V232:
+  // V231 avait supprimé le script V229 qui faisait cette décoration.
+  // Sans data-v229-staff-id / classe sur la première cellule,
+  // aucun clic ne pouvait être reconnu.
+  function decorateStaffCells(){
+    const table=q('table',wrap);
+    if(!table) return;
+
+    qa('tbody tr',table).forEach(row=>{
+      const first=row.querySelector('td:first-child');
+      const anyPlanningCell=row.querySelector('[data-rh-edit-staff]');
+      if(!first || !anyPlanningCell) return;
+
+      const staffId=String(anyPlanningCell.dataset.rhEditStaff||'').trim();
+      if(!staffId) return;
+
+      first.dataset.v232StaffId=staffId;
+      first.classList.add('v232-staff-cell');
+      first.setAttribute('role','button');
+      first.setAttribute('tabindex','0');
+
+      const name=
+        first.querySelector('.rh-plan-person strong')?.textContent?.trim() ||
+        first.querySelector('strong')?.textContent?.trim() ||
+        'ce collaborateur';
+
+      first.setAttribute('aria-label',`Ouvrir le planning de ${name}`);
+      first.setAttribute('title',`Ouvrir le planning de ${name}`);
+
+      const content=
+        first.querySelector('.rh-plan-person > div') ||
+        first.querySelector('.rh-plan-person') ||
+        first;
+
+      if(content && !content.querySelector('.v232-open-hint')){
+        const hint=document.createElement('small');
+        hint.className='v232-open-hint';
+        hint.textContent='OUVRIR LE PLANNING';
+        content.appendChild(hint);
+      }
+    });
+  }
+
+  function cellFrom(target){
+    return target?.closest?.(
+      '#rh-v226-plan-table-wrap td.v232-staff-cell[data-v232-staff-id]'
+    ) || null;
+  }
+
+  function openStaffPlanning(rawId,cell=null){
+    const id=resolveStaffId(rawId);
     if(id===null || id===undefined || id==='') return false;
 
+    const now=Date.now();
+    if(busy || (String(id)===String(lastStaffId) && now-lastOpenAt<650)){
+      return true;
+    }
     busy=true;
-    cell?.classList.add('v231-opening');
+    lastOpenAt=now;
+    lastStaffId=String(id);
+    cell?.classList.add('v232-opening');
 
     try{
-      // 1. Ouvrir l'interface Planning officielle.
-      if(typeof openInterface==='function'){
-        openInterface('hr');
-      }else if(typeof window.openInterface==='function'){
+      // Utilise directement le vrai moteur RH.
+      if(typeof window.openInterface==='function'){
         window.openInterface('hr');
+      }else if(typeof openInterface==='function'){
+        openInterface('hr');
       }else{
-        throw new Error("Interface Planning indisponible");
+        throw new Error("openInterface('hr') indisponible");
       }
 
-      // 2. Sélectionner le collaborateur après que l'interface a basculé.
+      // Laisser une frame à openInterface pour afficher le vrai écran,
+      // puis sélectionner le collaborateur dans ce même moteur.
       requestAnimationFrame(()=>{
         requestAnimationFrame(()=>{
           try{
-            if(typeof selectStaff==='function'){
-              selectStaff(id);
-            }else if(typeof window.selectStaff==='function'){
+            if(typeof window.selectStaff==='function'){
               window.selectStaff(id);
+            }else if(typeof selectStaff==='function'){
+              selectStaff(id);
+            }else if(typeof window.openStaffPlanning==='function'){
+              window.openStaffPlanning(id);
             }else{
-              throw new Error("Sélection collaborateur indisponible");
+              throw new Error('selectStaff indisponible');
             }
 
             const hub=document.getElementById('director-hub');
             const hr=document.getElementById('hr-interface');
-            if(hub) hub.style.display='none';
-            if(hr) hr.style.display='flex';
 
-            // Vue individuelle, pas matrice globale.
+            if(hub) hub.style.display='none';
+            if(hr){
+              hr.style.display='flex';
+              hr.style.visibility='visible';
+              hr.style.opacity='1';
+            }
+
+            // Renforcer la vue individuelle si une ancienne vue globale
+            // était encore mémorisée.
             try{
+              if(typeof currentStaffId!=='undefined') currentStaffId=id;
               if(typeof isGlobalView!=='undefined') isGlobalView=false;
               if(typeof isAnnualView!=='undefined') isAnnualView=false;
               if(typeof toggleViewDisplay==='function') toggleViewDisplay();
@@ -21876,13 +21983,13 @@ html body #director-hub #rh-v226-plan-table-wrap td.v229-staff-cell.v231-opening
 
             window.dispatchEvent(new CustomEvent(
               'ichef:dashboard-staff-planning-open',
-              {detail:{staffId:id,source:'V231',at:new Date().toISOString()}}
+              {detail:{staffId:id,source:'V232',at:new Date().toISOString()}}
             ));
           }catch(error){
-            console.warn('[iCHEF RH V231] sélection planning collaborateur',error);
+            console.warn('[iCHEF RH V232] sélection collaborateur',error);
           }finally{
             busy=false;
-            cell?.classList.remove('v231-opening');
+            cell?.classList.remove('v232-opening');
           }
         });
       });
@@ -21890,15 +21997,13 @@ html body #director-hub #rh-v226-plan-table-wrap td.v229-staff-cell.v231-opening
       return true;
     }catch(error){
       busy=false;
-      cell?.classList.remove('v231-opening');
-      console.warn('[iCHEF RH V231] ouverture planning collaborateur',error);
+      cell?.classList.remove('v232-opening');
+      console.warn('[iCHEF RH V232] ouverture planning',error);
       return false;
     }
   }
 
-  // Un seul gestionnaire click suffit pour souris + tactile.
-  // Capture + stopImmediatePropagation neutralisent tout ancien listener
-  // historique qui pourrait encore recevoir le même clic.
+  // UN seul listener pour souris + tactile.
   wrap.addEventListener('click',event=>{
     const cell=cellFrom(event.target);
     if(!cell) return;
@@ -21906,10 +22011,10 @@ html body #director-hub #rh-v226-plan-table-wrap td.v229-staff-cell.v231-opening
     event.preventDefault();
     event.stopImmediatePropagation();
 
-    showRealPlanning(cell.dataset.v229StaffId,cell);
+    openStaffPlanning(cell.dataset.v232StaffId,cell);
   },true);
 
-  // Accessibilité clavier.
+  // Clavier.
   wrap.addEventListener('keydown',event=>{
     if(!['Enter',' '].includes(event.key)) return;
     const cell=cellFrom(event.target);
@@ -21918,22 +22023,52 @@ html body #director-hub #rh-v226-plan-table-wrap td.v229-staff-cell.v231-opening
     event.preventDefault();
     event.stopImmediatePropagation();
 
-    showRealPlanning(cell.dataset.v229StaffId,cell);
+    openStaffPlanning(cell.dataset.v232StaffId,cell);
   },true);
 
-  window.iChefOpenStaffPlanningFromDashboardV231=(staffId)=>
-    showRealPlanning(staffId,null);
+  // V226 reconstruit le tableau à chaque synchronisation :
+  // on remet donc les zones cliquables après chaque reconstruction.
+  new MutationObserver(mutations=>{
+    const useful=mutations.some(m =>
+      [...(m.addedNodes||[])].some(n =>
+        n?.nodeType===1 &&
+        (
+          n.matches?.('table,tbody,tr,td,[data-rh-edit-staff]') ||
+          n.querySelector?.('[data-rh-edit-staff]')
+        )
+      )
+    );
+    if(!useful || frame) return;
+    frame=requestAnimationFrame(()=>{
+      frame=0;
+      decorateStaffCells();
+    });
+  }).observe(wrap,{childList:true,subtree:true});
 
-  window.ICHEF_RH_V231={
-    openStaffPlanning:window.iChefOpenStaffPlanningFromDashboardV231,
-    version:'RH-V231-CLIC-COLLABORATEUR-STABLE'
+  [
+    'ichef:planning-symbiosis',
+    'ichef:planning-views-refreshed',
+    'ichef:planning-categories-updated'
+  ].forEach(name=>window.addEventListener(name,()=>{
+    requestAnimationFrame(decorateStaffCells);
+  }));
+
+  decorateStaffCells();
+  setTimeout(decorateStaffCells,120);
+  setTimeout(decorateStaffCells,550);
+
+  window.iChefOpenStaffPlanningFromDashboardV232=openStaffPlanning;
+  window.ICHEF_RH_V232={
+    decorate:decorateStaffCells,
+    openStaffPlanning,
+    version:'RH-V232-CLIC-COLLABORATEUR-REPARE'
   };
 
-  window.__ICHEF_RH_BUILD__='RH-V231-CLIC-COLLABORATEUR-STABLE';
-  console.info('[iCHEF RH V231] contrôleur collaborateur unique · clic/touch -> planning individuel');
+  window.__ICHEF_RH_BUILD__='RH-V232-CLIC-COLLABORATEUR-REPARE';
+  console.info('[iCHEF RH V232] première colonne décorée + clic/tactile -> planning individuel');
 })();
 </script>
 
-<script id="ichef-rh-v231-marker">
-window.__ICHEF_RH_BUILD__='RH-V231-CLIC-COLLABORATEUR-STABLE';
+<script id="ichef-rh-v232-marker">
+window.__ICHEF_RH_BUILD__='RH-V232-CLIC-COLLABORATEUR-REPARE';
 </script>
