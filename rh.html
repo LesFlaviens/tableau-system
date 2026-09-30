@@ -38532,10 +38532,21 @@ window.__ICHEF_RH_BUILD__='RH-V201-COLOR-TOUCH-FASTSAVE';
     document.body.appendChild(modal);
 
     modal.addEventListener('click',e=>{
-      if(e.target===modal) closeManager();
+      if(e.target!==modal) return;
+      const handler=window.iChefCategoryManagerCloseV209;
+      if(typeof handler==='function') handler('cancel');
+      else closeManager();
     });
-    modal.querySelector('.rh-v202-category-close').addEventListener('click',closeManager);
-    modal.querySelector('.rh-v202-category-cancel').addEventListener('click',closeManager);
+    modal.querySelector('.rh-v202-category-close').addEventListener('click',()=>{
+      const handler=window.iChefCategoryManagerCloseV209;
+      if(typeof handler==='function') handler('save');
+      else saveManager();
+    });
+    modal.querySelector('.rh-v202-category-cancel').addEventListener('click',()=>{
+      const handler=window.iChefCategoryManagerCloseV209;
+      if(typeof handler==='function') handler('cancel');
+      else closeManager();
+    });
     modal.querySelector('#rh-v202-add-category').addEventListener('click',addRow);
     modal.querySelector('#rh-v202-reset-categories').addEventListener('click',()=>{
       if(confirm('Réinitialiser toutes les catégories et couleurs par défaut ?')){
@@ -38648,6 +38659,7 @@ window.__ICHEF_RH_BUILD__='RH-V201-COLOR-TOUCH-FASTSAVE';
     const modal=ensureModal();
     renderRows(getCatalog());
     modal.classList.add('show');
+    window.iChefCategoryManagerOpenedV209?.();
   }
 
   function closeManager(){
@@ -38657,6 +38669,7 @@ window.__ICHEF_RH_BUILD__='RH-V201-COLOR-TOUCH-FASTSAVE';
   function saveManager(){
     const catalog=collectRows();
     if(saveCatalog(catalog)){
+      window.iChefCategoryManagerSavedV209?.();
       closeManager();
       try{showToast?.('Catégories planning enregistrées');}catch(_){}
     }
@@ -41451,5 +41464,417 @@ window.__ICHEF_RH_BUILD__='RH-V207-PLANNING-FOCUS-TOUCH';
 
 <script id="ichef-rh-v208-marker">
 window.__ICHEF_RH_BUILD__='RH-V208-HOLIDAY-SYMBIOSIS';
+</script>
+
+
+<style id="ichef-rh-v209-category-bugfix-style">
+/* =========================================================
+   iCHEF RH V209 · BUGFIX CATÉGORIES / COULEURS
+   Correctifs vus dans la vidéo :
+   - la couleur choisie est prévisualisée immédiatement
+   - le X enregistre au lieu de perdre les changements
+   - ANNULER restaure réellement l'état précédent
+   - footer toujours visible
+   - pas de sélection planning accidentelle derrière la modale
+   ========================================================= */
+
+#rh-v202-category-modal{
+  overflow:hidden !important;
+}
+
+.rh-v202-category-panel{
+  max-height:calc(100dvh - 20px) !important;
+  min-height:min(720px,calc(100dvh - 20px)) !important;
+}
+
+.rh-v202-category-body{
+  flex:1 1 auto !important;
+  min-height:0 !important;
+  overflow:auto !important;
+  overscroll-behavior:contain !important;
+  padding-bottom:18px !important;
+}
+
+.rh-v202-category-actions{
+  position:sticky !important;
+  bottom:0 !important;
+  z-index:20 !important;
+  flex:0 0 auto !important;
+  box-shadow:0 -8px 18px rgba(0,0,0,.06) !important;
+}
+
+#rh-v209-category-state{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  min-height:30px;
+  padding:5px 9px;
+  border:1px solid #111;
+  border-radius:999px;
+  background:#fff;
+  color:#111!important;
+  font-size:.52rem;
+  font-weight:900;
+  white-space:nowrap;
+}
+
+#rh-v209-category-state::before{
+  content:"";
+  width:8px;
+  height:8px;
+  border-radius:50%;
+  background:#777;
+}
+
+#rh-v209-category-state.dirty{
+  background:#fff3d8;
+  border-color:#b48200;
+}
+#rh-v209-category-state.dirty::before{background:#b48200;}
+
+#rh-v209-category-state.saved{
+  background:#e7f5eb;
+  border-color:#278a52;
+}
+#rh-v209-category-state.saved::before{background:#278a52;}
+
+#rh-v209-category-state.preview{
+  background:#e8f1fb;
+  border-color:#4d82b8;
+}
+#rh-v209-category-state.preview::before{background:#4d82b8;}
+
+.rh-v202-category-row{
+  position:relative;
+}
+
+/* La pastille de couleur devient plus facile à toucher. */
+.rh-v202-category-row input[type="color"]{
+  width:46px !important;
+  min-width:46px !important;
+  height:40px !important;
+  cursor:pointer !important;
+}
+
+/* Aperçu visuel direct de la ligne modifiée */
+.rh-v202-category-row.rh-v209-dirty{
+  outline:2px solid #4d82b8;
+  outline-offset:-2px;
+  background:#f7fbff;
+}
+
+/* Pendant la modale, aucun geste ne doit passer au planning derrière. */
+body.rh-v209-category-open #global-view-container{
+  pointer-events:none !important;
+}
+
+/* Le X indique maintenant clairement le comportement. */
+.rh-v202-category-close{
+  position:relative;
+}
+
+.rh-v202-category-close::after{
+  content:"Enregistrer et fermer";
+  position:absolute;
+  right:0;
+  top:calc(100% + 5px);
+  display:none;
+  padding:4px 7px;
+  border:1px solid #111;
+  border-radius:6px;
+  background:#fff;
+  color:#111;
+  font-size:.48rem;
+  font-weight:800;
+  white-space:nowrap;
+  z-index:30;
+}
+
+@media (hover:hover) and (pointer:fine){
+  .rh-v202-category-close:hover::after{display:block;}
+}
+
+@media(max-width:700px){
+  .rh-v202-category-panel{
+    min-height:100dvh !important;
+    max-height:100dvh !important;
+  }
+
+  .rh-v202-category-actions{
+    padding:9px 10px !important;
+  }
+
+  .rh-v202-category-actions-left,
+  .rh-v202-category-actions-right{
+    width:100%;
+  }
+
+  .rh-v202-category-actions button{
+    flex:1 1 auto;
+  }
+}
+</style>
+
+<script id="ichef-rh-v209-category-bugfix">
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V209_CATEGORY_FIX__) return;
+  window.__ICHEF_RH_V209_CATEGORY_FIX__=true;
+
+  let snapshot=null;
+  let dirty=false;
+  let previewStyle=null;
+  let previewFrame=0;
+
+  const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+
+  function darken(hex,amount=.28){
+    const h=/^#[0-9a-f]{6}$/i.test(String(hex||''))?String(hex).slice(1):'eeeeee';
+    const n=parseInt(h,16);
+    const r=Math.max(0,Math.round(((n>>16)&255)*(1-amount)));
+    const g=Math.max(0,Math.round(((n>>8)&255)*(1-amount)));
+    const b=Math.max(0,Math.round((n&255)*(1-amount)));
+    return '#'+[r,g,b].map(x=>x.toString(16).padStart(2,'0')).join('');
+  }
+
+  function ensureStateBadge(){
+    const actions=document.querySelector('.rh-v202-category-actions-left');
+    if(!actions) return null;
+
+    let badge=document.getElementById('rh-v209-category-state');
+    if(!badge){
+      badge=document.createElement('span');
+      badge.id='rh-v209-category-state';
+      badge.textContent='Aucun changement';
+      actions.appendChild(badge);
+    }
+    return badge;
+  }
+
+  function setState(type,message){
+    const badge=ensureStateBadge();
+    if(!badge) return;
+    badge.className=String(type||'');
+    badge.textContent=String(message||'');
+  }
+
+  function getSavedCatalog(){
+    try{
+      return JSON.parse(JSON.stringify(
+        window.iChefPlanningCategoryCatalogV202?.() || []
+      ));
+    }catch(_){
+      return [];
+    }
+  }
+
+  function collectPreviewCatalog(){
+    const rows=[...document.querySelectorAll('#rh-v202-category-list .rh-v202-category-row')];
+    return rows.map((row,index)=>{
+      const current=window.iChefPlanningCategoryByIdV202?.(row.dataset.id)||{};
+      const builtin=row.dataset.builtin==='1';
+      const color=String(row.querySelector('.rh-v202-color')?.value||current.color||'#eeeeee');
+      return {
+        ...current,
+        id:String(row.dataset.id||current.id||`cat_${index}`),
+        label:String(row.querySelector('.rh-v202-label')?.value||current.label||'Catégorie').trim(),
+        short:String(row.querySelector('.rh-v202-short')?.value||current.short||'CAT').trim(),
+        color:/^#[0-9a-f]{6}$/i.test(color)?color:'#eeeeee',
+        meaning:String(row.querySelector('.rh-v202-meaning')?.value||current.meaning||'').trim(),
+        legalType:String(row.querySelector('.rh-v202-legal')?.value||current.legalType||'off'),
+        active:row.querySelector('.rh-v202-enabled')?.checked!==false,
+        builtin,
+        order:index
+      };
+    });
+  }
+
+  function applyPreviewCatalog(catalog){
+    if(!previewStyle){
+      previewStyle=document.createElement('style');
+      previewStyle.id='rh-v209-category-preview-css';
+      document.head.appendChild(previewStyle);
+    }
+
+    previewStyle.textContent=catalog.map(c=>{
+      const id=CSS.escape(String(c.id||''));
+      const bg=/^#[0-9a-f]{6}$/i.test(String(c.color||''))?c.color:'#eeeeee';
+      return `
+        [data-rh-category="${id}"],
+        [data-category-id="${id}"]{
+          background-color:${bg}!important;
+          border-color:${darken(bg)}!important;
+          color:#111!important;
+        }`;
+    }).join('\n');
+
+    // Appliquer aussi directement aux cases déjà rendues.
+    document.querySelectorAll('#global-view-container [data-rh-category]').forEach(el=>{
+      const c=catalog.find(x=>String(x.id)===String(el.dataset.rhCategory||''));
+      if(!c) return;
+      el.style.setProperty('background-color',c.color,'important');
+      el.style.setProperty('border-color',darken(c.color),'important');
+    });
+
+    // Légende
+    document.querySelectorAll('#rh-v201-legend [data-rh-category]').forEach(el=>{
+      const c=catalog.find(x=>String(x.id)===String(el.dataset.rhCategory||''));
+      if(!c) return;
+      el.style.setProperty('background-color',c.color,'important');
+      el.style.setProperty('border-color',darken(c.color),'important');
+    });
+  }
+
+  function schedulePreview(){
+    if(previewFrame) return;
+    previewFrame=requestAnimationFrame(()=>{
+      previewFrame=0;
+      applyPreviewCatalog(collectPreviewCatalog());
+      setState('preview','Aperçu en direct · fermeture = enregistrement');
+    });
+  }
+
+  function markDirty(row){
+    dirty=true;
+    row?.classList.add('rh-v209-dirty');
+    setState('dirty','Modifications non encore enregistrées');
+    schedulePreview();
+  }
+
+  function clearPreview(){
+    previewStyle?.remove();
+    previewStyle=null;
+    document.getElementById('rh-v209-category-preview-css')?.remove();
+  }
+
+  function restoreSavedView(){
+    clearPreview();
+    try{
+      const catalog=getSavedCatalog();
+      // Redonner la couleur réellement enregistrée.
+      document.querySelectorAll('#global-view-container [data-rh-category]').forEach(el=>{
+        const c=catalog.find(x=>String(x.id)===String(el.dataset.rhCategory||''));
+        if(!c) return;
+        el.style.setProperty('background-color',c.color,'important');
+        el.style.setProperty('border-color',darken(c.color),'important');
+      });
+    }catch(_){}
+  }
+
+  function clickSaveButton(){
+    const btn=document.getElementById('rh-v202-save-categories');
+    if(!btn) return false;
+    btn.click();
+    return true;
+  }
+
+  window.iChefCategoryManagerOpenedV209=function(){
+    snapshot=getSavedCatalog();
+    dirty=false;
+    clearPreview();
+    document.body.classList.add('rh-v209-category-open');
+    document.querySelectorAll('.rh-v202-category-row').forEach(r=>r.classList.remove('rh-v209-dirty'));
+    setState('saved','Couleurs enregistrées · aperçu en direct');
+  };
+
+  window.iChefCategoryManagerSavedV209=function(){
+    snapshot=getSavedCatalog();
+    dirty=false;
+    clearPreview();
+    document.body.classList.remove('rh-v209-category-open');
+    setState('saved','✓ Enregistré');
+  };
+
+  window.iChefCategoryManagerCloseV209=function(mode='save'){
+    const modal=document.getElementById('rh-v202-category-modal');
+    if(!modal) return;
+
+    if(mode==='cancel'){
+      dirty=false;
+      clearPreview();
+      document.body.classList.remove('rh-v209-category-open');
+      modal.classList.remove('show');
+      restoreSavedView();
+      try{showToast?.('Modifications annulées');}catch(_){}
+      return;
+    }
+
+    if(!dirty){
+      document.body.classList.remove('rh-v209-category-open');
+      modal.classList.remove('show');
+      return;
+    }
+
+    // Le X = enregistrer + fermer.
+    // Le vrai saveManager V202 continue à faire toutes les validations,
+    // la synchro RH et la mise à jour du planning.
+    clickSaveButton();
+  };
+
+  // Toutes les modifications sont prévisualisées immédiatement.
+  document.addEventListener('input',event=>{
+    if(!event.target?.closest?.('#rh-v202-category-modal')) return;
+    if(!event.target.matches(
+      '.rh-v202-color,.rh-v202-label,.rh-v202-short,.rh-v202-meaning'
+    )) return;
+
+    markDirty(event.target.closest('.rh-v202-category-row'));
+  },true);
+
+  document.addEventListener('change',event=>{
+    if(!event.target?.closest?.('#rh-v202-category-modal')) return;
+    if(!event.target.matches(
+      '.rh-v202-color,.rh-v202-label,.rh-v202-short,.rh-v202-meaning,.rh-v202-enabled,.rh-v202-legal'
+    )) return;
+
+    markDirty(event.target.closest('.rh-v202-category-row'));
+  },true);
+
+  // MASQUER / SUPPRIMER / AJOUTER / RESET doivent aussi marquer dirty.
+  document.addEventListener('click',event=>{
+    if(!event.target?.closest?.('#rh-v202-category-modal')) return;
+    if(
+      event.target.closest('.rh-v202-remove') ||
+      event.target.closest('#rh-v202-add-category') ||
+      event.target.closest('#rh-v202-reset-categories')
+    ){
+      setTimeout(()=>{
+        dirty=true;
+        setState('dirty','Modifications non encore enregistrées');
+        schedulePreview();
+      },0);
+    }
+  },true);
+
+  // Echap = annuler, car c'est le comportement le moins risqué.
+  document.addEventListener('keydown',event=>{
+    if(event.key!=='Escape') return;
+    const modal=document.getElementById('rh-v202-category-modal');
+    if(!modal?.classList.contains('show')) return;
+
+    event.preventDefault();
+    window.iChefCategoryManagerCloseV209('cancel');
+  },true);
+
+  // Si le modal est fermé autrement, ne jamais laisser le planning
+  // bloqué par pointer-events:none.
+  const modal=document.getElementById('rh-v202-category-modal');
+  if(modal){
+    new MutationObserver(()=>{
+      if(!modal.classList.contains('show')){
+        document.body.classList.remove('rh-v209-category-open');
+      }
+    }).observe(modal,{attributes:true,attributeFilter:['class']});
+  }
+
+  window.__ICHEF_RH_BUILD__='RH-V209-CATEGORY-BUGFIX';
+  console.info('[iCHEF RH V209] couleurs catégorie : aperçu live + X=enregistrer + annuler réel');
+})();
+</script>
+
+<script id="ichef-rh-v209-marker">
+window.__ICHEF_RH_BUILD__='RH-V209-CATEGORY-BUGFIX';
 </script>
 
