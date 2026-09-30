@@ -25,7 +25,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>iCHEF RH · Legal Command Center · France / Suisse</title>
-<meta name="ichef-build" content="RH-V221-PLANNING-MASTER-SYNC">
+<meta name="ichef-build" content="RH-V222-PIN-ACTIF-SECURISE">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800;900&display=swap" rel="stylesheet">
 <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 <script>        // 🛡️ SÉCURITÉ ET IDENTIFICATION
@@ -45,7 +45,7 @@
         let tenantID = urlParams.get('tenantID') || localStorage.getItem('ichef_tenant_id');
         if(!tenantID) window.location.href = 'connexionpartenaire.html';
         const SERVER_URL = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") ? "http://localhost:10000" : "https://tableau-system.onrender.com";</script>
-<link rel="stylesheet" href="rh.css?v=221">
+<link rel="stylesheet" href="rh.css?v=222">
 <!-- =========================================================
          iCHEF RH — RESPONSIVE UNIVERSEL
          Fiche employé + modales + interfaces
@@ -884,6 +884,7 @@
     <div class="rh-v203-pin-row">
       <input type="password" id="staff-pin" class="input-full" placeholder="4 à 12 chiffres" autocomplete="new-password" inputmode="numeric" pattern="[0-9]*" minlength="4" maxlength="12">
       <button type="button" id="rh-v203-test-pin" class="btn-outline" onclick="testStaffPinV203()">TESTER LE PIN</button>
+      <button type="button" id="rh-v222-activate-pin" class="btn-outline" onclick="activateStaffPinV222()">ACTIVER LE PIN</button>
     </div>
     <div id="rh-v203-pin-status" class="rh-v203-pin-status neutral">PIN non testé</div>
     <small class="staff-pro-help">Le PIN sert à l’accès opérationnel. Après enregistrement, iCHEF vérifie aussi qu’il est bien reconnu par le serveur.</small>
@@ -1885,7 +1886,7 @@
 </div>
 </div>
 <div id="toast" class="toast" style="display:none;">Action Confirmée</div>
-<script src="rh-core.js?v=221"></script>
+<script src="rh-core.js?v=222"></script>
 
 <!-- =========================================================
      iCHEF RH & PAIE — FRANCE / SUISSE
@@ -16372,17 +16373,6 @@ window.__ICHEF_RH_BUILD__='RH-V202-CLIENT-CATEGORIES';
     }
   };
 
-  // Autoriser Entrée sur le pad officiel.
-  const submitOfficial=window.submitOfficialGatewayPin;
-  document.addEventListener('keydown',event=>{
-    const landing=document.getElementById('landing-portal');
-    if(!landing || landing.style.display==='none') return;
-    if(event.key==='Enter' && typeof window.submitOfficialGatewayPin==='function'){
-      event.preventDefault();
-      window.submitOfficialGatewayPin();
-    }
-  },true);
-
   // Nettoyage automatique : uniquement des chiffres dans la fiche employé.
   document.addEventListener('input',event=>{
     if(event.target?.id!=='staff-pin') return;
@@ -19406,7 +19396,267 @@ window.__ICHEF_RH_BUILD__='RH-V209-CATEGORY-BUGFIX';
   console.info('[iCHEF RH V218] stabilité globale · observers filtrés · vues coalescées · modales sans flash');
 })();
 </script>
-<script id="ichef-rh-v221-marker">
-window.__ICHEF_RH_BUILD__='RH-V221-PLANNING-MASTER-SYNC';
-console.info('[iCHEF RH V221] planning officiel unique + proposition IA séparée + assistant synchronisé');
+
+<script id="ichef-rh-v222-pin-active">
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V222_PIN_ACTIVE__) return;
+  window.__ICHEF_RH_V222_PIN_ACTIVE__=true;
+
+  const state={
+    version:'RH-V222-PIN-ACTIF-SECURISE',
+    lastAction:'',
+    lastError:'',
+    lastOkAt:'',
+    endpoint:''
+  };
+
+  function cleanPin(value){
+    return String(value||'').replace(/\D+/g,'').slice(0,12);
+  }
+
+  function validPin(value){
+    return /^\d{4,12}$/.test(cleanPin(value));
+  }
+
+  function setGatewayStatusSafe(message,type='ok'){
+    try{
+      if(typeof window.setOfficialGatewayStatus==='function'){
+        window.setOfficialGatewayStatus(message,type);
+        return;
+      }
+    }catch(_){}
+    const text=document.getElementById('official-gateway-status-text');
+    if(text) text.textContent=String(message||'');
+  }
+
+  // Exposer explicitement les fonctions du gateway qui étaient auparavant
+  // seulement des déclarations globales historiques.
+  [
+    'appendOfficialGatewayPin',
+    'deleteOfficialGatewayPin',
+    'clearOfficialGatewayPin',
+    'submitOfficialGatewayPin',
+    'openOfficialAccessCenter',
+    'closeOfficialAccessCenter'
+  ].forEach(name=>{
+    try{
+      if(typeof globalThis[name]==='function') window[name]=globalThis[name];
+    }catch(_){}
+  });
+
+  // Contrôleur délégué : le PIN continue de fonctionner même si un ancien
+  // onclick inline est neutralisé par le navigateur ou par une couche UI.
+  document.addEventListener('click',event=>{
+    const target=event.target?.closest?.('button');
+    if(!target) return;
+
+    // Porte d'entrée officielle
+    if(target.closest('#landing-portal')){
+      if(target.classList.contains('gateway-key')){
+        event.preventDefault();
+        event.stopImmediatePropagation();
+
+        const txt=String(target.textContent||'').trim();
+        if(/^\d$/.test(txt)){
+          window.appendOfficialGatewayPin?.(txt);
+        }else if(/EFFACER/i.test(txt)){
+          window.clearOfficialGatewayPin?.();
+        }else{
+          window.deleteOfficialGatewayPin?.();
+        }
+        return;
+      }
+
+      if(target.id==='official-gateway-submit'){
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        window.submitOfficialGatewayPin?.();
+        return;
+      }
+    }
+
+    // Ancien pad Direction / RH
+    if(target.closest('#pin-modal') && target.classList.contains('pin-btn')){
+      event.preventDefault();
+      event.stopImmediatePropagation();
+
+      const txt=String(target.textContent||'').trim();
+      if(/^\d$/.test(txt)){
+        window.appendPin?.(txt);
+      }else if(/^X$/i.test(txt)){
+        window.cancelPin?.();
+      }else if(/^OK$/i.test(txt)){
+        window.submitPin?.();
+      }
+    }
+  },true);
+
+  // Clavier physique pour le pad Direction secondaire.
+  document.addEventListener('keydown',event=>{
+    const modal=document.getElementById('pin-modal');
+    if(!modal || getComputedStyle(modal).display==='none') return;
+
+    if(/^\d$/.test(event.key)){
+      event.preventDefault();
+      window.appendPin?.(event.key);
+    }else if(event.key==='Backspace'){
+      event.preventDefault();
+      try{
+        currentPin=String(currentPin||'').slice(0,-1);
+        const d=document.getElementById('pin-display');
+        if(d) d.innerText='●'.repeat(currentPin.length);
+      }catch(_){}
+    }else if(event.key==='Enter'){
+      event.preventDefault();
+      window.submitPin?.();
+    }else if(event.key==='Escape'){
+      event.preventDefault();
+      window.cancelPin?.();
+    }
+  },true);
+
+  window.activateStaffPinV222=async function(){
+    const input=document.getElementById('staff-pin');
+    const button=document.getElementById('rh-v222-activate-pin');
+    const pin=cleanPin(input?.value);
+    if(input) input.value=pin;
+
+    if(!validPin(pin)){
+      window.setStaffPinStatusV203?.('error','PIN invalide · 4 à 12 chiffres');
+      input?.focus?.();
+      return false;
+    }
+
+    if(typeof window.saveStaff!=='function' && typeof saveStaff!=='function'){
+      window.setStaffPinStatusV203?.('error','Fonction d’enregistrement indisponible');
+      return false;
+    }
+
+    if(button){
+      button.disabled=true;
+      button.textContent='ACTIVATION…';
+    }
+    window.setStaffPinStatusV203?.('syncing','Enregistrement et activation du PIN…');
+
+    try{
+      const saver=typeof window.saveStaff==='function' ? window.saveStaff : saveStaff;
+      const ok=await saver();
+      if(ok){
+        state.lastOkAt=new Date().toISOString();
+        window.setStaffPinStatusV203?.('ok','✓ PIN actif et reconnu par le serveur');
+        return true;
+      }
+      return false;
+    }catch(error){
+      state.lastError=String(error?.message||error||'Erreur activation PIN');
+      window.setStaffPinStatusV203?.('error',state.lastError);
+      return false;
+    }finally{
+      if(button){
+        button.disabled=false;
+        button.textContent='ACTIVER LE PIN';
+      }
+    }
+  };
+
+  // Test serveur direct avec diagnostic lisible.
+  const previousTest=window.testStaffPinV203;
+  window.testStaffPinV203=async function(){
+    const input=document.getElementById('staff-pin');
+    const btn=document.getElementById('rh-v203-test-pin');
+    const pin=cleanPin(input?.value);
+    if(input) input.value=pin;
+
+    if(!validPin(pin)){
+      window.setStaffPinStatusV203?.('error','PIN invalide · 4 à 12 chiffres');
+      return false;
+    }
+
+    const original=String(document.getElementById('staff-edit-original-pin')?.value||'').trim();
+    let savedStaff=null;
+    try{
+      savedStaff=(typeof getDir==='function'?getDir():[])
+        .find(s=>String(s.pin||'')===String(original||pin))||null;
+    }catch(_){}
+
+    if(!savedStaff || pin!==String(savedStaff.pin||'')){
+      window.setStaffPinStatusV203?.(
+        'warn',
+        'PIN pas encore synchronisé · cliquez ACTIVER LE PIN'
+      );
+      return false;
+    }
+
+    if(btn){
+      btn.disabled=true;
+      btn.textContent='TEST…';
+    }
+    window.setStaffPinStatusV203?.('syncing','Vérification sécurisée avec le serveur…');
+
+    try{
+      const verifier=window.verifyPinWithServer;
+      if(typeof verifier!=='function') throw new Error('Moteur PIN non chargé');
+
+      const auth=await verifier(pin);
+      state.endpoint=String(auth?.endpoint||'');
+      if(auth?.success){
+        state.lastOkAt=new Date().toISOString();
+        const role=String(auth.role||auth.dept||'accès').trim();
+        window.setStaffPinStatusV203?.(
+          'ok',
+          `✓ PIN actif${role?` · ${role}`:''}`
+        );
+        return true;
+      }
+
+      state.lastError=String(auth?.error||'PIN non reconnu');
+      window.setStaffPinStatusV203?.('error',state.lastError);
+      return false;
+    }catch(error){
+      state.lastError=String(error?.message||'Serveur PIN indisponible');
+      window.setStaffPinStatusV203?.('error',state.lastError);
+      return false;
+    }finally{
+      if(btn){
+        btn.disabled=false;
+        btn.textContent='TESTER LE PIN';
+      }
+    }
+  };
+
+  // Input PIN : toujours interactif.
+  document.addEventListener('input',event=>{
+    if(event.target?.id!=='staff-pin') return;
+    const cleaned=cleanPin(event.target.value);
+    if(event.target.value!==cleaned) event.target.value=cleaned;
+
+    const original=String(document.getElementById('staff-edit-original-pin')?.value||'');
+    if(validPin(cleaned)){
+      window.setStaffPinStatusV203?.(
+        cleaned===original ? 'neutral' : 'warn',
+        cleaned===original
+          ? 'PIN enregistré · vous pouvez le tester'
+          : 'PIN modifié · cliquez ACTIVER LE PIN'
+      );
+    }else{
+      window.setStaffPinStatusV203?.('warn','4 chiffres minimum');
+    }
+  },true);
+
+  window.ICHEF_RH_PIN_V222={
+    state,
+    verify:pin=>window.verifyPinWithServer?.(pin),
+    activate:()=>window.activateStaffPinV222(),
+    test:()=>window.testStaffPinV203(),
+    valid:validPin
+  };
+
+  window.__ICHEF_RH_BUILD__='RH-V222-PIN-ACTIF-SECURISE';
+  console.info('[iCHEF RH V222] PIN actif · clavier/tactile · activation serveur · aucun fallback local');
+})();
+</script>
+
+<script id="ichef-rh-v222-marker">
+window.__ICHEF_RH_BUILD__='RH-V222-PIN-ACTIF-SECURISE';
 </script>
