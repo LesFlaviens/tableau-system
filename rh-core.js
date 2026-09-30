@@ -501,21 +501,58 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                 return '';
             }
         }
-        function refreshPlanningScreensAfterSync() {
+        function refreshPlanningScreensAfterSync(source = 'sync') {
+            // V218 · un seul master, mais on ne redessine que les surfaces visibles.
+            // Les surfaces cachées liront le même master à leur ouverture.
             try {
-                if (document.getElementById('hr-interface')?.style.display === 'flex') {
+                const hrVisible =
+                    document.getElementById('hr-interface')?.style.display === 'flex';
+                const hubVisible =
+                    document.getElementById('director-hub')?.style.display === 'flex';
+                const staffVisible =
+                    document.getElementById('employee-portal')?.style.display === 'flex';
+                const timesheetsVisible =
+                    document.getElementById('timesheets-interface')?.style.display === 'flex';
+                const assistantVisible =
+                    document.getElementById('ia-predictions-modal')?.classList.contains('show');
+
+                if (hrVisible && typeof loadMonthData === 'function') {
                     loadMonthData();
                 }
-                if (
-                    document.getElementById('employee-portal')?.style.display === 'flex' &&
-                    loggedInStaffId !== null
-                ) {
-                    renderEmployeePortal();
+
+                if (hubVisible && typeof window.renderRhCockpit === 'function') {
+                    window.renderRhCockpit();
                 }
+
+                if (assistantVisible && typeof renderPlanningAssistantLocal === 'function') {
+                    renderPlanningAssistantLocal();
+                }
+
+                if (timesheetsVisible && typeof renderRealTimesheets === 'function') {
+                    renderRealTimesheets();
+                }
+
+                if (staffVisible && loggedInStaffId !== null) {
+                    if (typeof renderEmployeePortal === 'function') {
+                        renderEmployeePortal();
+                    } else if (typeof loadPublicPlanning === 'function') {
+                        loadPublicPlanning();
+                    }
+                }
+
+                window.dispatchEvent(
+                    new CustomEvent('ichef:planning-views-refreshed', {
+                        detail: {
+                            source: String(source || 'sync'),
+                            at: new Date().toISOString()
+                        }
+                    })
+                );
             } catch (error) {
                 console.warn('Rafraîchissement planning après synchronisation impossible', error);
             }
         }
+        window.refreshPlanningScreensAfterSync = refreshPlanningScreensAfterSync;
         function applyRemoteTimesheets(remoteData, source = 'server') {
             const safe = remoteData && typeof remoteData === 'object'
                 ? remoteData
@@ -539,7 +576,15 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                 'empire_hr_timesheets',
                 JSON.stringify(safe)
             );
-            refreshPlanningScreensAfterSync();
+            if (typeof window.iChefPlanningMasterSyncV217 === 'function') {
+                window.iChefPlanningMasterSyncV217({
+                    source: String(source || 'server'),
+                    snapshot: safe,
+                    remote: true
+                });
+            } else {
+                refreshPlanningScreensAfterSync(source);
+            }
             return true;
         }
         function saveTs(ts) {
@@ -555,6 +600,13 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                 'empire_hr_timesheets',
                 JSON.stringify(snapshot)
             );
+            if (typeof window.iChefPlanningMasterSyncV217 === 'function') {
+                window.iChefPlanningMasterSyncV217({
+                    source: 'saveTs-local',
+                    snapshot,
+                    local: true
+                });
+            }
             rhPlanningLocalSignature = rhPlanningSignature(snapshot);
             rhPlanningPendingUntil = Date.now() + 15000;
             // Sérialise les sauvegardes pour empêcher deux clics rapides d'arriver
@@ -6509,23 +6561,28 @@ const urlParamsJS = new URLSearchParams(window.location.search);
         // GESTION VUES
         // ==========================================
         function openInterface(type) {
-            document.getElementById('director-hub').style.display = 'none';
-            document.querySelectorAll('.full-interface').forEach(el => el.style.display = 'none');
+            const targetMap = {
+                hr: 'hr-interface',
+                logs: 'logs-interface',
+                requests: 'requests-interface',
+                timesheets: 'timesheets-interface'
+            };
+            const target = document.getElementById(targetMap[type] || '');
+            if (!target) return;
+
+            // Préparer les données AVANT le basculement visuel.
+            // Cela évite l'écran vide/noir d'une frame.
             if(type === 'hr') {
-                document.getElementById('hr-interface').style.display = 'flex';
                 currentStaffId = null;
                 isGlobalView = true;
                 isAnnualView = false;
                 refreshViews();
                 toggleViewDisplay();
             } else if(type === 'logs') {
-                document.getElementById('logs-interface').style.display = 'flex';
                 renderLogs();
             } else if(type === 'requests') {
-                document.getElementById('requests-interface').style.display = 'flex';
                 renderDirectorRequests();
             } else if(type === 'timesheets') {
-                document.getElementById('timesheets-interface').style.display = 'flex';
                 const monthInput = document.getElementById('real-timesheet-month');
                 if (monthInput && !monthInput.value) {
                     monthInput.value =
@@ -6534,13 +6591,28 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                 }
                 renderRealTimesheets();
             }
+
+            document.documentElement.classList.add('rh-v218-view-switching');
+            document.querySelectorAll('.full-interface').forEach(el => {
+                el.style.display = el === target ? 'flex' : 'none';
+            });
+            document.getElementById('director-hub').style.display = 'none';
+            requestAnimationFrame(() =>
+                document.documentElement.classList.remove('rh-v218-view-switching')
+            );
         }
         function backToHub() {
-            document.querySelectorAll('.full-interface').forEach(el => el.style.display = 'none');
-            document.getElementById('director-hub').style.display = 'flex';
+            // Préparer le hub avant de masquer l'écran courant.
             updateDashboardStats();
             updateReqBadge();
             if (typeof renderRhCockpit === 'function') renderRhCockpit();
+
+            document.documentElement.classList.add('rh-v218-view-switching');
+            document.querySelectorAll('.full-interface').forEach(el => el.style.display = 'none');
+            document.getElementById('director-hub').style.display = 'flex';
+            requestAnimationFrame(() =>
+                document.documentElement.classList.remove('rh-v218-view-switching')
+            );
         }
         function fullLogout() {
             loggedInStaffId = null;
@@ -6860,8 +6932,8 @@ const urlParamsJS = new URLSearchParams(window.location.search);
             }
             let modal = document.getElementById('staff-modal');
             modal.style.opacity = '1';
+            modal.classList.add('show');
             modal.style.display = 'flex';
-            setTimeout(() => modal.classList.add('show'), 10);
         }
         function closeModals() {
             document.querySelectorAll('.modal').forEach(m => {
@@ -11045,6 +11117,13 @@ const urlParamsJS = new URLSearchParams(window.location.search);
             planningAssistantMultiIndex = Math.max(0, Math.min(planningAssistantMultiMonths.length - 1, Number(index)||0));
             const rec = planningAssistantMultiMonths[planningAssistantMultiIndex];
             planningAssistantDraft = assistantClone(rec.draft);
+            window.__ICHEF_PLANNING_DRAFT_STALE_V217 = false;
+            try {
+                window.__ICHEF_PLANNING_DRAFT_MASTER_SIG_V217 =
+                    typeof rhPlanningSignature === 'function'
+                        ? rhPlanningSignature(getTs())
+                        : JSON.stringify(getTs());
+            } catch (_) {}
             renderAutomaticPlanningDraft(planningAssistantDraft);
             window.__ICHEF_MULTI_MONTH_PUBLIC__ = {
                 horizon: planningAssistantHorizon,
@@ -11120,6 +11199,10 @@ const urlParamsJS = new URLSearchParams(window.location.search);
             }
         }
         async function applyAutomaticPlanning() {
+            if (window.__ICHEF_PLANNING_DRAFT_STALE_V217 === true) {
+                alert('Le planning officiel a changé depuis la génération de cette proposition. Régénérez le planning IA avant de l’appliquer.');
+                return;
+            }
             if (!planningAssistantDraft) {
                 alert('Générez d’abord une proposition de planning.');
                 return;
@@ -11167,7 +11250,10 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                     ts[monthStr][staffId][day] = clean;
                 });
             });
-            const cloudSaved = await saveTs(ts);
+            const cloudSaved = await saveTs(ts, {
+                source: 'ASSISTANCE_PLANNING',
+                reason: applyReason
+            });
             Object.keys(planningAssistantDraft.proposal || {}).forEach(staffId => {
                 const staffRow = getDir().find(s => String(s.id) === String(staffId));
                 recordRhChange({
@@ -11557,7 +11643,16 @@ const urlParamsJS = new URLSearchParams(window.location.search);
             }
         }
         function refreshViews() {
-            renderStaffList(); loadMonthData(); loadPublicPlanning();
+            renderStaffList();
+            if (typeof window.iChefPlanningMasterSyncV217 === 'function') {
+                window.iChefPlanningMasterSyncV217({
+                    source:'refreshViews',
+                    snapshot:getTs(),
+                    renderOnly:true
+                });
+            } else {
+                refreshPlanningScreensAfterSync('refreshViews');
+            }
         }
         function handleMonthChange() {
             enforceRhPlanningMonthHorizon(true);
@@ -13762,8 +13857,8 @@ async function correctRealTimesheetDay(staffId, date) {
     if (photos) photos.innerHTML = renderCorrectionProofsV97(staffId, date);
     const modal = document.getElementById('timesheet-correction-modal-v97');
     if (modal) {
+        modal.classList.add('show');
         modal.style.display = 'flex';
-        setTimeout(() => modal.classList.add('show'), 10);
     }
     setTimeout(() => hours?.focus(), 60);
 }
