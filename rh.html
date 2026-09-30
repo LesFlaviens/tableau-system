@@ -25,7 +25,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>iCHEF RH · Legal Command Center · France / Suisse</title>
-<meta name="ichef-build" content="RH-V229-COLLABORATEUR-PLANNING-DIRECT">
+<meta name="ichef-build" content="RH-V230-COLLABORATEUR-PLANNING-FIX">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800;900&display=swap" rel="stylesheet">
 <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 <script>        // 🛡️ SÉCURITÉ ET IDENTIFICATION
@@ -21929,6 +21929,156 @@ html.rh-v229-opening-staff-planning body{
 })();
 </script>
 
-<script id="ichef-rh-v229-marker">
-window.__ICHEF_RH_BUILD__='RH-V229-COLLABORATEUR-PLANNING-DIRECT';
+<style id="ichef-rh-v230-staff-direct-fix-style">
+/* V230 · le collaborateur est une vraie zone d'action tactile/clic */
+html body #director-hub #rh-v226-plan-table-wrap td.v229-staff-cell{
+  cursor:pointer!important;
+  touch-action:manipulation!important;
+  -webkit-tap-highlight-color:rgba(55,120,212,.14)!important;
+}
+html body #director-hub #rh-v226-plan-table-wrap td.v229-staff-cell.v230-pressed{
+  background:#e7f1ff!important;
+  box-shadow:inset 4px 0 0 #3778d4!important;
+}
+</style>
+
+<script id="ichef-rh-v230-staff-direct-fix">
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V230_STAFF_DIRECT_FIX__) return;
+  window.__ICHEF_RH_V230_STAFF_DIRECT_FIX__=true;
+
+  const wrap=document.getElementById('rh-v226-plan-table-wrap');
+  if(!wrap) return;
+
+  let lastOpenAt=0;
+  let lastStaffId='';
+  let pointerDownCell=null;
+
+  function cellFrom(target){
+    return target?.closest?.(
+      '#rh-v226-plan-table-wrap td.v229-staff-cell[data-v229-staff-id]'
+    ) || null;
+  }
+
+  function openDirect(staffId){
+    const id=String(staffId||'').trim();
+    if(!id) return false;
+
+    const now=Date.now();
+    if(lastStaffId===id && now-lastOpenAt<700) return true;
+    lastStaffId=id;
+    lastOpenAt=now;
+
+    try{
+      // V230 : appel DIRECT du vrai moteur, sans passer par un bouton caché.
+      if(typeof window.openInterface==='function'){
+        window.openInterface('hr');
+      }else if(typeof openInterface==='function'){
+        openInterface('hr');
+      }else{
+        throw new Error('openInterface indisponible');
+      }
+
+      if(typeof window.selectStaff==='function'){
+        window.selectStaff(id);
+      }else if(typeof selectStaff==='function'){
+        selectStaff(id);
+      }else if(typeof window.openStaffPlanning==='function'){
+        window.openStaffPlanning(id);
+      }else{
+        throw new Error('selectStaff indisponible');
+      }
+
+      // Sécurité visuelle : le dashboard doit réellement disparaître.
+      const hub=document.getElementById('director-hub');
+      const hr=document.getElementById('hr-interface');
+      if(hub) hub.style.display='none';
+      if(hr) hr.style.display='flex';
+
+      requestAnimationFrame(()=>{
+        try{
+          document.getElementById('hr-interface')?.scrollTo?.({top:0,left:0,behavior:'auto'});
+        }catch(_){}
+      });
+
+      window.dispatchEvent(new CustomEvent('ichef:dashboard-staff-planning-open',{
+        detail:{staffId:id,source:'V230-direct',at:new Date().toISOString()}
+      }));
+
+      return true;
+    }catch(error){
+      console.warn('[iCHEF RH V230] ouverture directe impossible',error);
+
+      // Fallback ultime : ancien mécanisme V229.
+      try{
+        return window.iChefOpenStaffPlanningFromDashboardV229?.(id) !== false;
+      }catch(_){
+        return false;
+      }
+    }
+  }
+
+  wrap.addEventListener('pointerdown',event=>{
+    const cell=cellFrom(event.target);
+    if(!cell) return;
+    pointerDownCell=cell;
+    cell.classList.add('v230-pressed');
+  },true);
+
+  wrap.addEventListener('pointercancel',()=>{
+    pointerDownCell?.classList.remove('v230-pressed');
+    pointerDownCell=null;
+  },true);
+
+  wrap.addEventListener('pointerleave',event=>{
+    const cell=cellFrom(event.target);
+    cell?.classList.remove('v230-pressed');
+  },true);
+
+  // Tactile / souris : pointerup ouvre immédiatement.
+  wrap.addEventListener('pointerup',event=>{
+    const cell=cellFrom(event.target);
+    pointerDownCell?.classList.remove('v230-pressed');
+    pointerDownCell=null;
+    if(!cell) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    openDirect(cell.dataset.v229StaffId);
+  },true);
+
+  // Fallback clavier + navigateurs qui ne génèrent pas correctement pointerup.
+  wrap.addEventListener('click',event=>{
+    const cell=cellFrom(event.target);
+    if(!cell) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    openDirect(cell.dataset.v229StaffId);
+  },true);
+
+  wrap.addEventListener('keydown',event=>{
+    if(!['Enter',' '].includes(event.key)) return;
+    const cell=cellFrom(event.target);
+    if(!cell) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    openDirect(cell.dataset.v229StaffId);
+  },true);
+
+  window.iChefOpenStaffPlanningFromDashboardV230=openDirect;
+  window.ICHEF_RH_V230={
+    openStaffPlanning:openDirect,
+    version:'RH-V230-COLLABORATEUR-PLANNING-FIX'
+  };
+
+  window.__ICHEF_RH_BUILD__='RH-V230-COLLABORATEUR-PLANNING-FIX';
+  console.info('[iCHEF RH V230] clic/tactile collaborateur -> openInterface(hr) + selectStaff(id) direct');
+})();
+</script>
+
+<script id="ichef-rh-v230-marker">
+window.__ICHEF_RH_BUILD__='RH-V230-COLLABORATEUR-PLANNING-FIX';
 </script>
