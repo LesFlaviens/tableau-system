@@ -1233,7 +1233,7 @@
         <div class="header-actions">
             <button class="nav-btn" style="color: var(--text-muted); border-color: var(--border-strong); margin-right: 5px;" onclick="window.location.href='administration.html?tenantID=' + tenantID"> RETOUR ADMIN</button>
             <button id="btn-kiosk" class="nav-btn" onclick="activerModeKiosque()">KIOSQUE</button>
-            <button class="nav-btn active" id="tab-home" onclick="switchTab('home')"> ACCUEIL</button>
+            <button class="nav-btn active" id="tab-home" onclick="openChefQuickAccess()"> RACCOURCIS</button>
             <button class="nav-btn" id="tab-menu" onclick="switchTab('menu')"> CARTE</button>
             <button class="nav-btn" id="tab-market" onclick="switchTab('market')"> LABO</button>
             <button class="nav-btn" id="tab-inventaire" onclick="switchTab('inventaire')"> STOCKS</button>
@@ -1273,6 +1273,44 @@
         }
     </style>
 
+
+
+    <div id="chef-desktop-shortcuts-modal" class="chef-desktop-shortcuts-modal" hidden aria-hidden="true">
+        <button type="button" class="chef-desktop-shortcuts-backdrop" aria-label="Fermer les raccourcis" onclick="closeChefDesktopShortcuts()"></button>
+        <section class="chef-desktop-shortcuts-card" role="dialog" aria-modal="true" aria-labelledby="chef-desktop-shortcuts-title">
+            <div class="chef-desktop-shortcuts-head">
+                <div class="chef-desktop-shortcuts-brand">
+                    <img src="logo-ichef.png" alt="iCHEF">
+                    <div>
+                        <strong id="chef-desktop-shortcuts-title">Raccourcis Cuisine</strong>
+                        <small>Accès rapide sans quitter votre écran</small>
+                    </div>
+                </div>
+                <button type="button" class="chef-desktop-shortcuts-close" onclick="closeChefDesktopShortcuts()" aria-label="Fermer">×</button>
+            </div>
+
+            <div class="chef-desktop-shortcuts-grid">
+                <button type="button" onclick="closeChefDesktopShortcuts();openHaccpFromChef()">
+                    <span class="shortcut-icon">✓</span><span><b>HACCP</b><small>Faire un relevé</small></span>
+                </button>
+                <button type="button" onclick="closeChefDesktopShortcuts();openDeliveryReceptionFromChef()">
+                    <span class="shortcut-icon">▣</span><span><b>Réception</b><small>Contrôler une livraison</small></span>
+                </button>
+                <button type="button" onclick="closeChefDesktopShortcuts();openSupplierOrdersFromChef()">
+                    <span class="shortcut-icon">≡</span><span><b>Commandes</b><small>Fournisseurs</small></span>
+                </button>
+                <button type="button" onclick="closeChefDesktopShortcuts();openChefTaskModal()">
+                    <span class="shortcut-icon">↗</span><span><b>Équipe</b><small>Attribuer une tâche</small></span>
+                </button>
+                <button type="button" onclick="closeChefDesktopShortcuts();openEconomatFromChef()">
+                    <span class="shortcut-icon">□</span><span><b>Économat</b><small>Stock & inventaire</small></span>
+                </button>
+                <button type="button" onclick="closeChefDesktopShortcuts();openChefLab()">
+                    <span class="shortcut-icon">＋</span><span><b>Créer un plat</b><small>Ouvrir le Labo</small></span>
+                </button>
+            </div>
+        </section>
+    </div>
 
     <div id="mod-home" class="module active">
         <div class="chef-home-shell">
@@ -2003,6 +2041,67 @@
             window.location.href = target;
         }
 
+
+        // ==============================================================
+        //  CHEF — ADAPTATION AUTOMATIQUE TÉLÉPHONE / ORDINATEUR
+        // ==============================================================
+        function isChefPhoneMode() {
+            const narrowPhone = window.matchMedia('(max-width: 820px)').matches;
+            const compactTouch = window.matchMedia('(pointer: coarse)').matches
+                && window.matchMedia('(max-width: 1100px)').matches;
+            return narrowPhone || compactTouch;
+        }
+
+        function openChefDesktopShortcuts() {
+            const modal = document.getElementById('chef-desktop-shortcuts-modal');
+            if (!modal) return;
+            modal.hidden = false;
+            modal.setAttribute('aria-hidden', 'false');
+            document.body.classList.add('chef-shortcuts-open');
+            const first = modal.querySelector('.chef-desktop-shortcuts-grid button');
+            if (first) setTimeout(() => first.focus({preventScroll:true}), 0);
+        }
+
+        function closeChefDesktopShortcuts() {
+            const modal = document.getElementById('chef-desktop-shortcuts-modal');
+            if (!modal) return;
+            modal.hidden = true;
+            modal.setAttribute('aria-hidden', 'true');
+            document.body.classList.remove('chef-shortcuts-open');
+        }
+
+        function openChefQuickAccess() {
+            if (isChefPhoneMode()) {
+                closeChefDesktopShortcuts();
+                switchTab('home');
+                try { loadChefHomeIndicators(); } catch (_) {}
+                return;
+            }
+            openChefDesktopShortcuts();
+        }
+
+        function enterChefAfterPin() {
+            closeChefDesktopShortcuts();
+
+            if (isChefPhoneMode()) {
+                // Téléphone : les 6 actions sont l'écran principal.
+                switchTab('home');
+                try { loadChefHomeIndicators(); } catch (_) {}
+                return;
+            }
+
+            // Ordinateur : on entre immédiatement dans le système complet.
+            // On restaure le dernier onglet utilisé pendant la session.
+            const allowedDesktopTabs = new Set(['menu', 'market', 'inventaire', 'stats']);
+            const remembered = sessionStorage.getItem('ichef_chef_desktop_tab') || '';
+            const target = allowedDesktopTabs.has(remembered) ? remembered : 'menu';
+            switchTab(target);
+        }
+
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') closeChefDesktopShortcuts();
+        });
+
         async function checkPin() {
             const input = document.getElementById('pin-input');
             const submit = document.getElementById('pin-submit-btn');
@@ -2085,7 +2184,7 @@
                 }
 
                 await bootSystem();
-                switchTab('home');
+                enterChefAfterPin();
                 try { await loadChefHomeIndicators(); } catch (_) {}
                 startChefSharedPolling();
             } catch (e) {
@@ -3786,6 +3885,11 @@
                 if (arrow) arrow.style.transform = 'none';
             }
 
+            // Sur ordinateur, mémorise le dernier véritable module utilisé.
+            if (!isChefPhoneMode() && ['menu','market','inventaire','stats'].includes(t)) {
+                try { sessionStorage.setItem('ichef_chef_desktop_tab', t); } catch (_) {}
+            }
+
             // Remet immédiatement le haut de l'écran sans animation.
             if (next.scrollTop) next.scrollTop = 0;
         }
@@ -4873,6 +4977,226 @@ html {
     text-shadow:0 2px 16px rgba(0,0,0,.78) !important;
 }
 </style>
+
+
+<style id="ichef-device-aware-shortcuts-v1">
+/* ==========================================================
+   iCHEF CHEF — TÉLÉPHONE = 6 BOUTONS / ORDINATEUR = SYSTÈME
+   ========================================================== */
+
+.chef-desktop-shortcuts-modal[hidden] { display:none !important; }
+
+.chef-desktop-shortcuts-modal {
+    position:fixed;
+    inset:0;
+    z-index:10000020;
+    display:grid;
+    place-items:center;
+    padding:24px;
+    box-sizing:border-box;
+}
+
+.chef-desktop-shortcuts-backdrop {
+    position:absolute;
+    inset:0;
+    width:100%;
+    height:100%;
+    padding:0;
+    border:0;
+    border-radius:0;
+    background:rgba(5,9,12,.54);
+    cursor:default;
+}
+
+.chef-desktop-shortcuts-card {
+    position:relative;
+    z-index:1;
+    width:min(680px,calc(100vw - 48px));
+    box-sizing:border-box;
+    border:1px solid #d8dde0;
+    border-radius:20px;
+    background:rgba(255,255,255,.985);
+    box-shadow:0 28px 80px rgba(10,25,30,.22);
+    padding:20px;
+    color:#111719;
+}
+
+.chef-desktop-shortcuts-head {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:18px;
+    margin-bottom:16px;
+}
+
+.chef-desktop-shortcuts-brand {
+    display:flex;
+    align-items:center;
+    gap:13px;
+    min-width:0;
+}
+
+.chef-desktop-shortcuts-brand img {
+    display:block;
+    width:92px;
+    max-height:52px;
+    object-fit:contain;
+}
+
+.chef-desktop-shortcuts-brand strong {
+    display:block;
+    color:#111719;
+    font-size:1rem;
+    letter-spacing:.2px;
+}
+
+.chef-desktop-shortcuts-brand small {
+    display:block;
+    margin-top:3px;
+    color:#748085;
+    font-size:.68rem;
+}
+
+.chef-desktop-shortcuts-close {
+    width:42px;
+    height:42px;
+    min-height:42px;
+    padding:0;
+    flex:0 0 42px;
+    border:1px solid #d7dddf;
+    border-radius:11px;
+    background:#f6f8f8;
+    color:#4a565a;
+    font-size:1.45rem;
+    cursor:pointer;
+}
+
+.chef-desktop-shortcuts-grid {
+    display:grid;
+    grid-template-columns:repeat(3,minmax(0,1fr));
+    gap:10px;
+}
+
+.chef-desktop-shortcuts-grid > button {
+    min-width:0;
+    min-height:104px;
+    padding:14px;
+    display:flex;
+    align-items:center;
+    gap:12px;
+    text-align:left;
+    border:1px solid #dce1e3;
+    border-radius:14px;
+    background:#f8f9f9;
+    color:#192326;
+    cursor:pointer;
+}
+
+.chef-desktop-shortcuts-grid > button:hover {
+    background:#fff;
+    border-color:#bfc8cb;
+}
+
+.chef-desktop-shortcuts-grid .shortcut-icon {
+    width:42px;
+    height:42px;
+    flex:0 0 42px;
+    display:grid;
+    place-items:center;
+    border:1px solid #d0d7d9;
+    border-radius:11px;
+    background:#fff;
+    font-size:1.12rem;
+    font-weight:900;
+}
+
+.chef-desktop-shortcuts-grid b {
+    display:block;
+    color:#141d20;
+    font-size:.78rem;
+    text-transform:uppercase;
+    letter-spacing:.45px;
+}
+
+.chef-desktop-shortcuts-grid small {
+    display:block;
+    margin-top:4px;
+    color:#768286;
+    font-size:.65rem;
+    line-height:1.3;
+}
+
+body.chef-shortcuts-open {
+    overflow:hidden !important;
+}
+
+/* Ordinateur : la page complète des 6 boutons n'est pas utilisée comme accueil.
+   Le bouton RACCOURCIS ouvre la fenêtre compacte ci-dessus. */
+@media (min-width:821px) and (pointer:fine) {
+    #tab-home {
+        color:#8a6d32 !important;
+        border-color:rgba(138,109,50,.45) !important;
+    }
+}
+
+/* Téléphone / tablette tactile : la modale desktop ne sert jamais. */
+@media (max-width:820px), (pointer:coarse) and (max-width:1100px) {
+    .chef-desktop-shortcuts-modal {
+        display:none !important;
+    }
+}
+
+/* Sécurité de reflow si la fenêtre desktop devient étroite. */
+@media (max-width:720px) {
+    .chef-desktop-shortcuts-grid {
+        grid-template-columns:repeat(2,minmax(0,1fr));
+    }
+}
+</style>
+
+
+<script id="ichef-device-mode-sync-v1">
+(() => {
+    'use strict';
+    let lastPhoneMode = null;
+    let timer = null;
+
+    function syncDeviceModeAfterResize() {
+        if (typeof isChefPhoneMode !== 'function') return;
+        const phone = isChefPhoneMode();
+
+        if (lastPhoneMode === null) {
+            lastPhoneMode = phone;
+            return;
+        }
+        if (phone === lastPhoneMode) return;
+        lastPhoneMode = phone;
+
+        // Ne change d'écran que si le PIN a déjà été validé.
+        if (!window.ICHEF_SECURITY?.ready) return;
+
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+            if (phone) {
+                closeChefDesktopShortcuts?.();
+                switchTab?.('home');
+            } else {
+                closeChefDesktopShortcuts?.();
+                const currentHome = document.getElementById('mod-home')?.classList.contains('active');
+                if (currentHome) {
+                    const remembered = sessionStorage.getItem('ichef_chef_desktop_tab') || 'menu';
+                    const target = ['menu','market','inventaire','stats'].includes(remembered) ? remembered : 'menu';
+                    switchTab?.(target);
+                }
+            }
+        }, 80);
+    }
+
+    lastPhoneMode = typeof isChefPhoneMode === 'function' ? isChefPhoneMode() : null;
+    window.addEventListener('resize', syncDeviceModeAfterResize, {passive:true});
+    window.addEventListener('orientationchange', syncDeviceModeAfterResize, {passive:true});
+})();
+</script>
 
 </body>
 </html>
