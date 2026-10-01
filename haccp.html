@@ -3082,6 +3082,159 @@ function retourAccueilApp() {
         function addPin(n) { pin += n; document.getElementById('pin-display').innerText = '*'.repeat(pin.length); }
         function clearPin() { pin = ""; document.getElementById('pin-display').innerText = ""; }
 
+
+        // ============================================================
+        // iCHEF HACCP — SESSION UNIQUE PORTAIL STAFF
+        // Le PIN n'est jamais relu ni stocké.
+        // Un jeton signé par le serveur est revalidé via /api/ops/context.
+        // ============================================================
+        function normalizeHaccpDepartment(value = "") {
+            const raw = String(value || "")
+                .normalize("NFD")
+                .replace(/[\u0300-\u036f]/g, "")
+                .trim()
+                .toUpperCase()
+                .replace(/[\s_-]+/g, " ");
+
+            if (/(CUISINE|KITCHEN|CHEF CUISINE|CUISINIER|COMMIS)/.test(raw)) return "CUISINE";
+            if (/(PATISSERIE|PATISSIER|PASTRY)/.test(raw)) return "PATISSERIE";
+            if (/(BAR|BARMAN|BARMAID)/.test(raw)) return "BAR";
+            if (/(SERVICE|SALLE|SERVEUR|SERVEUSE|RESTAURANT|WAITER)/.test(raw)) return "SERVICE";
+            return "";
+        }
+
+        function haccpStaffSessionHeaders(token) {
+            return {
+                "Accept": "application/json",
+                "Authorization": "Bearer " + token,
+                "X-iCHEF-Tenant": tenantID,
+                "X-iCHEF-Device": deviceId
+            };
+        }
+
+        function clearExpiredHaccpStaffSession() {
+            sessionStorage.removeItem("ichef_haccp_authenticated");
+            sessionStorage.removeItem("ichef_haccp_role");
+            // Le token Staff n'est supprimé que lorsqu'il est effectivement refusé
+            // par le serveur, jamais simplement parce que HACCP n'arrive pas à charger.
+        }
+
+        async function activateHaccpFromValidatedStaffContext(context) {
+            const self = context?.self || {};
+            const roleText = String(self.role || "").trim();
+            const dept = normalizeHaccpDepartment(self.deptKey || self.dept || roleText);
+
+            // Un collaborateur doit avoir un secteur HACCP exploitable.
+            // Direction / management sans secteur explicite conserve l'écran de choix/PIN.
+            if (!dept) return false;
+
+            currentDept = dept;
+            currentUser = {
+                name: String(self.name || "Collaborateur").trim(),
+                role: roleText || "STAFF",
+                permissions: Array.isArray(context?.permissions) ? context.permissions : []
+            };
+
+            window.ICHEF_HACCP.authenticated = true;
+            window.ICHEF_HACCP.role = currentUser.role;
+            window.ICHEF_HACCP.userName = currentUser.name;
+            window.ICHEF_HACCP.authSource = "PORTAIL_STAFF_SESSION";
+            window.ICHEF_HACCP.staffId = String(self.id || "");
+            window.ICHEF_HACCP.department = currentDept;
+
+            sessionStorage.setItem("ichef_haccp_authenticated", "1");
+            sessionStorage.setItem("ichef_haccp_role", currentUser.role);
+            sessionStorage.setItem("ichef_haccp_department", currentDept);
+            sessionStorage.setItem("ichef_haccp_auth_source", "PORTAIL_STAFF_SESSION");
+
+            document.querySelectorAll(".display-dept").forEach(el => el.innerText = currentDept);
+            document.querySelectorAll(".pad-link").forEach(el => el.style.display = "none");
+
+            let linkId = "link-" + currentDept.toLowerCase();
+            if (currentDept === "PATISSERIE") linkId = "link-patisserie";
+            const btnLink = document.getElementById(linkId);
+            if (btnLink) btnLink.style.display = "block";
+
+            const login = document.getElementById("login-screen");
+            if (login) login.style.display = "none";
+
+            populateSelects();
+
+            const traceOpen = document.getElementById("trace-open");
+            if (traceOpen) traceOpen.valueAsDate = new Date();
+
+            connectHaccpRealtime();
+            startHaccpSharedPolling();
+
+            await loadData();
+            flushPendingInventoryAudits().catch(() => {});
+            flushPendingHaccpMovements().catch(() => {});
+            generateArchiveFolders();
+
+            setSyncStatus(
+                "online",
+                `SYSTÈME · ${currentUser.name.toUpperCase()} · ${currentDept}`
+            );
+
+            return true;
+        }
+
+        async function tryResumeHaccpStaffSession() {
+            const token =
+                sessionStorage.getItem("ichef_auth_token") ||
+                sessionStorage.getItem("ichef_access_token") ||
+                "";
+
+            if (!token || token.length < 20 || !tenantID) return false;
+
+            try {
+                setSyncStatus("degraded", "SYSTÈME · SESSION PORTAIL STAFF…");
+
+                const response = await fetch(`${SERVER_URL}/api/ops/context`, {
+                    method: "GET",
+                    cache: "no-store",
+                    credentials: "omit",
+                    headers: haccpStaffSessionHeaders(token)
+                });
+
+                const data = await response.json().catch(() => ({}));
+
+                if (!response.ok || data.success !== true || !data.self?.id) {
+                    if (response.status === 401 || response.status === 403) {
+                        clearExpiredHaccpStaffSession();
+                        sessionStorage.removeItem("ichef_auth_token");
+                        sessionStorage.removeItem("ichef_access_token");
+                        sessionStorage.removeItem("ichef_staff_profile");
+                        sessionStorage.removeItem("ichef_user_role");
+                    }
+                    return false;
+                }
+
+                const ok = await activateHaccpFromValidatedStaffContext(data);
+                return ok === true;
+            } catch (error) {
+                // En cas de panne réseau, on ne détruit pas une session potentiellement valide.
+                console.warn("[iCHEF HACCP] Validation session Staff indisponible :", error);
+                setSyncStatus("degraded", "SYSTÈME · SESSION À VÉRIFIER");
+                return false;
+            }
+        }
+
+        function scheduleHaccpStaffSessionResume() {
+            const run = async () => {
+                const login = document.getElementById("login-screen");
+                if (!login || login.style.display === "none") return;
+
+                const resumed = await tryResumeHaccpStaffSession();
+                if (!resumed) {
+                    setSyncStatus("degraded", "SYSTÈME · PIN REQUIS");
+                }
+            };
+
+            // Très court délai : le DOM est prêt, sans ralentir l'entrée.
+            setTimeout(run, 30);
+        }
+
         async function submitPin() {
             if (!/^\d{4,12}$/.test(pin)) {
                 alert("CODE PIN INVALIDE.");
@@ -3149,6 +3302,8 @@ function retourAccueilApp() {
                 window.ICHEF_HACCP.authenticated = true;
                 window.ICHEF_HACCP.role = currentUser.role;
                 window.ICHEF_HACCP.userName = currentUser.name;
+                window.ICHEF_HACCP.authSource = "HACCP_PIN";
+                window.ICHEF_HACCP.department = currentDept;
 
                 document.querySelectorAll(".display-dept").forEach(el => el.innerText = currentDept);
                 document.querySelectorAll(".pad-link").forEach(el => el.style.display = "none");
@@ -5449,6 +5604,37 @@ tbody tr:hover td{
     }
   }
   if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",bootDesktopTempHub,{once:true});else bootDesktopTempHub();
+})();
+</script>
+
+
+<script id="ichef-haccp-staff-sso-boot-v1">
+(() => {
+    "use strict";
+    const start = () => {
+        try {
+            if (typeof scheduleHaccpStaffSessionResume === "function") {
+                scheduleHaccpStaffSessionResume();
+            }
+        } catch (error) {
+            console.warn("[iCHEF HACCP] Staff session boot", error);
+        }
+    };
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", start, { once:true });
+    } else {
+        start();
+    }
+
+    window.addEventListener("pageshow", () => {
+        try {
+            if (!window.ICHEF_HACCP?.authenticated &&
+                typeof scheduleHaccpStaffSessionResume === "function") {
+                scheduleHaccpStaffSessionResume();
+            }
+        } catch (_) {}
+    });
 })();
 </script>
 
