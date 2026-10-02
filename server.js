@@ -956,6 +956,107 @@ return res.status(error?.statusCode || 404).end();
 }
 app.get('/favicon.ico', ichefSendGlobalFavicon);
 app.get('/favicon.png', ichefSendGlobalFavicon);
+
+// ============================================================================
+// 📱 iCHEF STAFF PWA — FICHIERS RÉELS DU DÉPÔT
+// ============================================================================
+// Fichiers attendus au même niveau que server.js :
+//   portail-staff.html
+//   sw-staff.js
+//   manifest-staff.json
+//   ichef-staff-512.png
+//
+// Ces routes sont volontairement déclarées avant express.static() afin de
+// garantir le bon MIME type, le bon scope du Service Worker et l'absence
+// de cache obsolète pendant les mises à jour PWA.
+
+const ICHEF_STAFF_PWA_SW_FILE =
+    path.join(__dirname, 'sw-staff.js');
+
+const ICHEF_STAFF_PWA_MANIFEST_FILE =
+    path.join(__dirname, 'manifest-staff.json');
+
+const ICHEF_STAFF_PWA_ICON_FILE =
+    path.join(__dirname, 'ichef-staff-512.png');
+
+app.get('/manifest-staff.json', (req, res) => {
+    res.setHeader(
+        'Cache-Control',
+        'no-store, no-cache, must-revalidate, proxy-revalidate'
+    );
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('Surrogate-Control', 'no-store');
+    res.type('application/manifest+json');
+
+    return res.sendFile(
+        ICHEF_STAFF_PWA_MANIFEST_FILE,
+        error => {
+            if (!error) return;
+
+            console.error(
+                '[iCHEF STAFF PWA] manifest-staff.json introuvable :',
+                error?.message || error
+            );
+
+            if (!res.headersSent) {
+                return res.status(error?.statusCode || 404).end();
+            }
+        }
+    );
+});
+
+app.get('/sw-staff.js', (req, res) => {
+    res.setHeader(
+        'Cache-Control',
+        'no-store, no-cache, must-revalidate, proxy-revalidate'
+    );
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('Surrogate-Control', 'no-store');
+
+    // sw-staff.js est à la racine et peut donc contrôler portail-staff.html.
+    res.setHeader('Service-Worker-Allowed', '/');
+    res.type('application/javascript; charset=utf-8');
+
+    return res.sendFile(
+        ICHEF_STAFF_PWA_SW_FILE,
+        error => {
+            if (!error) return;
+
+            console.error(
+                '[iCHEF STAFF PWA] sw-staff.js introuvable :',
+                error?.message || error
+            );
+
+            if (!res.headersSent) {
+                return res.status(error?.statusCode || 404).end();
+            }
+        }
+    );
+});
+
+app.get('/ichef-staff-512.png', (req, res) => {
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.type('png');
+
+    return res.sendFile(
+        ICHEF_STAFF_PWA_ICON_FILE,
+        error => {
+            if (!error) return;
+
+            console.error(
+                '[iCHEF STAFF PWA] ichef-staff-512.png introuvable :',
+                error?.message || error
+            );
+
+            if (!res.headersSent) {
+                return res.status(error?.statusCode || 404).end();
+            }
+        }
+    );
+});
+
 app.use(express.static(__dirname, {
 etag: true,
 lastModified: true,
@@ -1087,6 +1188,7 @@ staffActivationRequired: ICHEF_STAFF_ACTIVATION_REQUIRED,
 staffActivationWhatsappRequired: ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED,
 staffActivationQr: true,
 pwaRequired: ICHEF_STAFF_PWA_REQUIRED,
+pwaMobileBrowserAllowed: true,
 operationsApi: true,
 timestamp: new Date().toISOString()
 });
@@ -1096,7 +1198,7 @@ app.get('/api/staff/build', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.json({
         success: true,
-        build: 'V160-CURRENT-STAFF-ACTIVATION-SECURE',
+        build: 'V165-STAFF-PWA-MOBILE-SECURE',
         staffPortal: true,
         signedSession: true,
         ichefConnect: true,
@@ -1113,6 +1215,7 @@ app.get('/api/staff/build', (req, res) => {
         activationWhatsappRequired: ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED,
         activationQr: true,
         pwaRequired: ICHEF_STAFF_PWA_REQUIRED,
+        pwaMobileBrowserAllowed: true,
         timestamp: new Date().toISOString()
     });
 });
@@ -16108,6 +16211,41 @@ function ichefStaffRequestIsPwa(req={}){
         .toLowerCase()==='standalone';
 }
 
+function ichefStaffRequestIsMobile(req={}){
+    // Signal navigateur natif prioritaire. On ne se fie pas uniquement
+    // à un header applicatif pour décider qu'un appareil est mobile.
+    const clientHint =
+        String(req.headers?.['sec-ch-ua-mobile'] || '')
+            .trim()
+            .toLowerCase();
+
+    if(
+        clientHint === '?1' ||
+        clientHint === '1' ||
+        clientHint === 'true'
+    ){
+        return true;
+    }
+
+    const userAgent =
+        String(req.headers?.['user-agent'] || '');
+
+    return /Android|iPhone|iPad|iPod|Mobile|IEMobile|Opera Mini/i
+        .test(userAgent);
+}
+
+function ichefStaffRequestRequiresInstalledPwa(req={}){
+    // L'installation PWA améliore l'expérience mais ne remplace jamais
+    // PIN, session signée, activation, appareil de confiance ou WhatsApp.
+    //
+    // Sur mobile, on ne bloque donc pas l'authentification si le navigateur
+    // n'a pas encore proposé l'installation PWA.
+    return (
+        ICHEF_STAFF_PWA_REQUIRED === true &&
+        !ichefStaffRequestIsMobile(req)
+    );
+}
+
 function ichefStaffNormalizePhone(value=''){
     let phone=String(value||'').trim().replace(/[()\s.-]/g,'');
     if(phone.startsWith('00')) phone='+'+phone.slice(2);
@@ -17442,7 +17580,7 @@ app.post(
     '/api/staff/login',
     async (req, res) => {
         if(
-            ICHEF_STAFF_PWA_REQUIRED &&
+            ichefStaffRequestRequiresInstalledPwa(req) &&
             !ichefStaffRequestIsPwa(req)
         ){
             return res.status(428).json({
@@ -18855,7 +18993,7 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
         res.setHeader('Cache-Control','no-store');
 
         if(
-            ICHEF_STAFF_PWA_REQUIRED &&
+            ichefStaffRequestRequiresInstalledPwa(req) &&
             !ichefStaffRequestIsPwa(req)
         ){
             return res.status(428).json({
