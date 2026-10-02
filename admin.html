@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
+<!-- ICHEF ADMIN V39 — BRIGADE & ACCÈS : ACTIVATION APPAREIL iCHEF STAFF QR/CODE SÉCURISÉE -->
 <!-- ICHEF ADMIN V38 — BRIGADE & ACCÈS : ACTIVATION iCHEF STAFF QR/PWA SÉCURISÉE -->
 <!-- ICHEF ADMIN V37 — PILOTAGE STAFF : SOUHAITS, CONGÉS, JOURS OFF, HORAIRES, POSTES & ZONES -->
 <!-- ICHEF ADMIN V36 — iCHEF CALL : PERSONNALISATION VOCALE PAR ÉTABLISSEMENT -->
@@ -4130,10 +4131,11 @@ html, body {
                         <div class="staff-activation-v38-head">
                             <div>
                                 <div class="staff-activation-v38-kicker">ACCÈS iCHEF STAFF</div>
-                                <h3>Activation de l’application Staff</h3>
+                                <h3>Activer les appareils iCHEF Staff</h3>
                                 <p>
-                                    Le collaborateur reçoit un QR temporaire à usage unique.
-                                    Il installe la PWA iCHEF Staff, vérifie son WhatsApp puis choisit son PIN personnel.
+                                    Le responsable génère ici l’accès d’un collaborateur.
+                                    iCHEF crée un QR et un code d’activation temporaires, puis le collaborateur
+                                    vérifie son WhatsApp et choisit son PIN personnel.
                                 </p>
                             </div>
                             <button class="btn-outline" type="button" id="staff-activation-refresh"
@@ -4143,7 +4145,7 @@ html, body {
                         </div>
 
                         <div class="staff-activation-v38-flow" aria-label="Parcours d’activation Staff">
-                            <span><b>1</b> Générer QR</span>
+                            <span><b>1</b> Activer appareil</span>
                             <i>→</i>
                             <span><b>2</b> Installer iCHEF Staff</span>
                             <i>→</i>
@@ -6792,6 +6794,25 @@ function renderStaffList() {
                             ? `<button class="btn-outline success" onclick="toggleDuty('${pin}')">🟢 En service</button>`
                             : `<button class="btn-outline" onclick="toggleDuty('${pin}')">⏱️ Pointer</button>`;
 
+                    const staffActivationId =
+                        String(
+                            s.id ||
+                            s.staffId ||
+                            s.employeeId ||
+                            ''
+                        ).trim();
+
+                    const staffAppBtn =
+                        isActive && staffActivationId
+                            ? `<button class="btn-outline staff-app-access-btn"
+                                       type="button"
+                                       title="Activer un appareil iCHEF Staff"
+                                       aria-label="Activer un appareil iCHEF Staff"
+                                       onclick="openStaffActivationFromBrigade(decodeURIComponent('${encodeURIComponent(staffActivationId)}'))">
+                                   APP STAFF
+                               </button>`
+                            : '';
+
                     const activationBtn = isActive
                         ? `<button class="btn-outline square-action-btn deactivate-sign" title="Désactiver ce collaborateur" aria-label="Désactiver ce collaborateur" onclick="setStaffActive('${pin}', false)">
                             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
@@ -6813,6 +6834,7 @@ function renderStaffList() {
                         </div>
                         <div class="staff-action-group">
                             ${dutyBtn}
+                            ${staffAppBtn}
                             <button class="btn-outline square-action-btn edit-sign" title="Modifier ce collaborateur" aria-label="Modifier ce collaborateur" onclick="openStaffModal('${pin}')">
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
                             </button>
@@ -13029,6 +13051,27 @@ body.ichef-admin-locked {
         margin-top:7px !important;
     }
 }
+
+.staff-app-access-btn{
+    min-width:92px;
+    color:var(--gold)!important;
+    border-color:rgba(212,175,55,.45)!important;
+    background:rgba(212,175,55,.06)!important;
+    font-size:.68rem!important;
+    font-weight:900!important;
+    letter-spacing:.6px;
+}
+.staff-app-access-btn:hover{
+    background:rgba(212,175,55,.14)!important;
+    border-color:var(--gold)!important;
+}
+@media(max-width:700px){
+    .staff-app-access-btn{
+        width:100%;
+        min-height:42px;
+    }
+}
+
 </style>
 
 
@@ -13047,9 +13090,9 @@ body.ichef-admin-locked {
             <div id="staff-activation-modal-qr" class="staff-activation-v38-qr"></div>
 
             <div class="staff-activation-v38-codebox">
-                <small>CODE DE SECOURS</small>
+                <small>CODE D’ACTIVATION</small>
                 <strong id="staff-activation-modal-code">—</strong>
-                <span>À saisir dans iCHEF Staff si le QR n’est pas repris automatiquement.</span>
+                <span>À saisir dans iCHEF Staff si le collaborateur ne scanne pas le QR.</span>
             </div>
 
             <div class="staff-activation-v38-modal-info">
@@ -13085,7 +13128,16 @@ const STAFF_ACTIVATION_V38 = {
 
 function staffActivationV38Token() {
     const sec = window.ICHEF_SECURITY || {};
-    return String(sec.operationsToken || '').trim();
+
+    // Le serveur reste l'autorité finale :
+    // OPS_MASTER pour Direction/Master, ou session Staff privilégiée/RH.
+    // Le fallback accessToken améliore seulement la compatibilité des sessions
+    // Manager déjà validées par /api/verify-pin.
+    return String(
+        sec.operationsToken ||
+        sec.accessToken ||
+        ''
+    ).trim();
 }
 
 function staffActivationV38Headers(json = false) {
@@ -13104,6 +13156,10 @@ function staffActivationV38Headers(json = false) {
         'X-iCHEF-Tenant': String(sec.tenantID || window.tenantID || '').trim(),
         'X-iCHEF-Device': String(sec.deviceId || getDeviceFingerprint()).trim()
     };
+
+    if (sec.csrfToken) {
+        headers['X-CSRF-Token'] = String(sec.csrfToken);
+    }
 
     if (json) headers['Content-Type'] = 'application/json';
     return headers;
@@ -13215,10 +13271,10 @@ function renderStaffActivationAdmin() {
         const status = String(row.status || 'NON_ACTIVÉ');
         const buttonLabel =
             status === 'ACTIVÉ'
-                ? 'NOUVEL APPAREIL'
+                ? 'AJOUTER UN APPAREIL'
                 : status === 'EN_ATTENTE'
-                    ? 'RÉGÉNÉRER QR'
-                    : 'GÉNÉRER QR';
+                    ? 'RÉGÉNÉRER L’ACCÈS'
+                    : 'ACTIVER UN APPAREIL';
 
         const phoneLine = row.whatsappReady
             ? `WhatsApp ${staffActivationV38Escape(row.maskedPhone || 'configuré')}`
@@ -13248,7 +13304,7 @@ function renderStaffActivationAdmin() {
                 </span>
                 <button type="button"
                         class="${status === 'NON_ACTIVÉ' ? 'btn-save' : 'btn-outline'}"
-                        onclick='generateStaffActivationQr(${JSON.stringify(String(row.id || ""))})'>
+                        onclick="generateStaffActivationQr(decodeURIComponent('${encodeURIComponent(String(row.id || ""))}'))">
                     ${buttonLabel}
                 </button>
             </div>
@@ -13296,6 +13352,28 @@ async function loadStaffActivationAdmin({ silent = false } = {}) {
     } finally {
         STAFF_ACTIVATION_V38.loading = false;
         if (refresh) refresh.disabled = false;
+    }
+}
+
+
+async function openStaffActivationFromBrigade(staffId) {
+    const id = String(staffId || '').trim();
+    if (!id) return;
+
+    try {
+        // Recharge la liste si elle n'a jamais été récupérée ou si elle date.
+        if (
+            !Array.isArray(STAFF_ACTIVATION_V38.rows) ||
+            !STAFF_ACTIVATION_V38.rows.length ||
+            (Date.now() - Number(STAFF_ACTIVATION_V38.lastLoadedAt || 0)) > 30000
+        ) {
+            await loadStaffActivationAdmin({ silent:true });
+        }
+
+        await generateStaffActivationQr(id);
+    } catch (error) {
+        console.error('[iCHEF ADMIN V39 activation brigade]', error);
+        alert(error?.message || 'Activation de l’appareil impossible.');
     }
 }
 
@@ -13359,6 +13437,13 @@ async function generateStaffActivationQr(staffId) {
         modal?.classList.add('show');
         modal?.setAttribute('aria-hidden','false');
 
+        auditEvent('STAFF_DEVICE_ACTIVATION_CREATED', {
+            staffId:id,
+            activationId:String(data.activation?.activationId || ''),
+            expiresAt:data.activation?.expiresAt || null,
+            oneTime:data.activation?.oneTime === true
+        }).catch(() => {});
+
         await loadStaffActivationAdmin({ silent:true });
     } catch (error) {
         console.error('[iCHEF ADMIN V38 generate QR]', error);
@@ -13370,6 +13455,14 @@ function closeStaffActivationModal() {
     const modal = document.getElementById('staff-activation-modal-v38');
     modal?.classList.remove('show');
     modal?.setAttribute('aria-hidden','true');
+
+    // Le code et le lien sont temporaires : on les retire du DOM et de la mémoire
+    // dès que la fenêtre est fermée.
+    const code = document.getElementById('staff-activation-modal-code');
+    const qr = document.getElementById('staff-activation-modal-qr');
+    if (code) code.textContent = '—';
+    if (qr) qr.innerHTML = '';
+    STAFF_ACTIVATION_V38.current = null;
 }
 
 async function copyStaffActivationCode() {
@@ -13415,6 +13508,11 @@ async function revokeCurrentStaffActivation() {
             }
         );
 
+        auditEvent('STAFF_DEVICE_ACTIVATION_REVOKED', {
+            activationId:String(current.activationId || ''),
+            staffId:String(current.staff?.id || '')
+        }).catch(() => {});
+
         STAFF_ACTIVATION_V38.current = null;
         closeStaffActivationModal();
         await loadStaffActivationAdmin();
@@ -13445,6 +13543,7 @@ function printCurrentStaffActivation() {
 window.loadStaffActivationAdmin = loadStaffActivationAdmin;
 window.renderStaffActivationAdmin = renderStaffActivationAdmin;
 window.generateStaffActivationQr = generateStaffActivationQr;
+window.openStaffActivationFromBrigade = openStaffActivationFromBrigade;
 window.closeStaffActivationModal = closeStaffActivationModal;
 window.copyStaffActivationCode = copyStaffActivationCode;
 window.copyStaffActivationLink = copyStaffActivationLink;
