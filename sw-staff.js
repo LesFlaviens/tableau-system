@@ -958,84 +958,35 @@ app.get('/favicon.ico', ichefSendGlobalFavicon);
 app.get('/favicon.png', ichefSendGlobalFavicon);
 
 // ============================================================================
-// 📱 iCHEF STAFF PWA V163 — ROUTES CANONIQUES
+ // 📱 iCHEF STAFF PWA — FICHIERS RÉELS DU DÉPÔT
 // ============================================================================
-// Le dépôt conserve le vrai fichier sous "sw-staff.js".
-// Le portail peut demander /sw-staff-v163.js : le serveur crée l'alias.
-// Le manifest est généré ici pour éviter tout 404 de fichier manquant.
+// Fichiers attendus dans le même dossier que server.js :
+//   portail-staff.html
+//   sw-staff.js
+//   manifest-staff.json
+//   ichef-staff-512.png
 
-const ICHEF_STAFF_PWA_SW_FILE = path.join(__dirname, 'sw-staff.js');
-const ICHEF_STAFF_PWA_ICON_512_FILE = path.join(__dirname, 'ichef-staff-512.png');
-
-app.get('/manifest-staff-v163.webmanifest', (req, res) => {
+app.get('/manifest-staff.json', (req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
     res.type('application/manifest+json');
-
-    return res.status(200).json({
-        id: '/portail-staff.html',
-        name: 'iCHEF Staff',
-        short_name: 'iCHEF Staff',
-        description: 'Portail collaborateur sécurisé iCHEF OS',
-        lang: 'fr',
-        start_url: '/portail-staff.html?source=pwa&v=163',
-        scope: '/',
-        display: 'standalone',
-        display_override: ['standalone', 'minimal-ui'],
-        background_color: '#030303',
-        theme_color: '#090d10',
-        orientation: 'any',
-        icons: [
-            {
-                src: '/ichef-staff-512.png?v=163',
-                sizes: '512x512',
-                type: 'image/png',
-                purpose: 'any maskable'
-            }
-        ]
-    });
+    return res.sendFile(path.join(__dirname, 'manifest-staff.json'));
 });
 
-app.get('/sw-staff-v163.js', (req, res) => {
+app.get('/sw-staff.js', (req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
     res.setHeader('Service-Worker-Allowed', '/');
     res.type('application/javascript; charset=utf-8');
-
-    return res.sendFile(ICHEF_STAFF_PWA_SW_FILE, error => {
-        if (!error) return;
-
-        console.error(
-            '[iCHEF STAFF PWA V163] sw-staff.js introuvable :',
-            ICHEF_STAFF_PWA_SW_FILE,
-            error?.message || error
-        );
-
-        if (!res.headersSent) {
-            return res.status(error?.statusCode || 404).end();
-        }
-    });
+    return res.sendFile(path.join(__dirname, 'sw-staff.js'));
 });
 
 app.get('/ichef-staff-512.png', (req, res) => {
     res.setHeader('Cache-Control', 'public, max-age=86400');
     res.type('png');
-
-    return res.sendFile(ICHEF_STAFF_PWA_ICON_512_FILE, error => {
-        if (!error) return;
-
-        console.error(
-            '[iCHEF STAFF PWA V163] icône introuvable :',
-            ICHEF_STAFF_PWA_ICON_512_FILE,
-            error?.message || error
-        );
-
-        if (!res.headersSent) {
-            return res.status(error?.statusCode || 404).end();
-        }
-    });
+    return res.sendFile(path.join(__dirname, 'ichef-staff-512.png'));
 });
 
 app.use(express.static(__dirname, {
