@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>iCHEF OS — Mon espace collaborateur</title>
-<meta name="ichef-build" content="V159-STAFF-ACTIVATION-QR-PWA-SECURE">
+<meta name="ichef-build" content="V160-STAFF-PWA-AUTO-SECURE">
 
 <meta name="theme-color" content="#090d10">
 <meta name="mobile-web-app-capable" content="yes">
@@ -15,8 +15,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="iCHEF Staff">
-<link rel="manifest" href="/manifest-staff.webmanifest?v=159">
-<link rel="apple-touch-icon" sizes="192x192" href="/ichef-staff-192.png?v=159">
+<link rel="manifest" href="/manifest-staff.webmanifest?v=160">
+<link rel="apple-touch-icon" sizes="192x192" href="/ichef-staff-192.png?v=160">
 
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -4322,12 +4322,12 @@ body.staff-pwa-browser-blocked #staffIdentityGate{visibility:hidden!important}
     <div class="staff-activation-brand">iCHEF <span>STAFF</span></div>
     <div class="staff-activation-kicker">APPLICATION SÉCURISÉE</div>
     <h1>Installez iCHEF Staff</h1>
-    <p id="staffPwaRequiredText">Le Portail Staff est accessible uniquement depuis l’application iCHEF Staff installée sur votre appareil.</p>
+    <p id="staffPwaRequiredText">iCHEF prépare automatiquement l’application. Une validation système est nécessaire uniquement au moment de l’installation.</p>
     <div class="staff-activation-person" id="staffPwaActivationPerson" hidden>
       <strong id="staffPwaActivationName">Nouveau collaborateur</strong>
       <small id="staffPwaActivationRole"></small>
     </div>
-    <button type="button" class="staff-activation-primary" id="staffPwaRequiredInstall">INSTALLER iCHEF STAFF</button>
+    <button type="button" class="staff-activation-primary" id="staffPwaRequiredInstall">INSTALLER / CONTINUER</button>
     <button type="button" class="staff-activation-secondary" id="staffPwaAlreadyInstalled">J’AI DÉJÀ INSTALLÉ L’APP</button>
     <div class="staff-activation-help" id="staffPwaRequiredHelp">Sur iPhone/iPad : Safari → Partager → Sur l’écran d’accueil.</div>
     <div class="staff-activation-security">Le QR ne contient pas vos données personnelles. Il utilise un jeton temporaire à usage unique.</div>
@@ -5120,7 +5120,7 @@ body.staff-pwa-browser-blocked #staffIdentityGate{visibility:hidden!important}
 // Serveur iCHEF : localhost uniquement si la page est réellement servie
 // depuis localhost. Un fichier HTML ouvert directement utilise iCHEF Cloud.
 // iCHEF Portail Staff V76 — mobile first + connexion rapide + synchronisation stable
-const STAFF_PORTAL_BUILD = 'V159-STAFF-ACTIVATION-QR-PWA-SECURE';
+const STAFF_PORTAL_BUILD = 'V160-STAFF-PWA-AUTO-SECURE';
 
 const SERVER_URL =
   location.hostname === 'localhost' ||
@@ -5437,7 +5437,7 @@ async function finishStaffLogin(data,staffId){
   sessionStorage.setItem('ichef_authenticated_at',String(Date.now()));
   sessionStorage.setItem('ichef_staff_identity_mode',String(data.identityProtection?.mode||'SIGNED_SESSION'));
 
-  if(location.protocol!=='file:')history.replaceState(null,'','portail-staff.html?source=pwa&v=159');
+  if(location.protocol!=='file:')history.replaceState(null,'','portail-staff.html?source=pwa&v=160');
 
   hideStaffIdentityGate();
   hideStaffLogin();
@@ -5626,8 +5626,7 @@ document.getElementById('staffIdentityCode')?.addEventListener('keydown',e=>{
 
 function ichefIsStandalonePwa(){
   return window.matchMedia?.('(display-mode: standalone)').matches===true ||
-    window.navigator.standalone===true ||
-    new URLSearchParams(location.search).get('source')==='pwa';
+    window.navigator.standalone===true;
 }
 
 function ichefPwaHeaders(extra={}){
@@ -5900,31 +5899,32 @@ async function inspectActivationForInstallGate(){
   }catch(_){}
 }
 
-window.addEventListener('beforeinstallprompt',event=>{
-  event.preventDefault();
-  ICHEF_INSTALL_PROMPT_V159=event;
-});
 
 document.getElementById('staffPwaRequiredInstall')?.addEventListener('click',async()=>{
-  if(ICHEF_INSTALL_PROMPT_V159){
-    const prompt=ICHEF_INSTALL_PROMPT_V159;
-    ICHEF_INSTALL_PROMPT_V159=null;
-    try{
-      await prompt.prompt();
-      await prompt.userChoice;
-    }catch(_){}
-    return;
+  try{
+    const manager=window.ICHEF_PWA_MANAGER;
+    if(manager){
+      await manager.install();
+      return;
+    }
+  }catch(error){
+    console.warn('[iCHEF Staff PWA] installation',error);
   }
 
   if(/iphone|ipad|ipod/i.test(navigator.userAgent||'')){
-    alert('Sur iPhone/iPad : ouvrez dans Safari → Partager → “Sur l’écran d’accueil”, puis ouvrez iCHEF Staff.');
+    alert('Sur iPhone/iPad : Safari → Partager → “Sur l’écran d’accueil”, puis ouvrez iCHEF Staff.');
   }else{
-    alert('Dans le menu du navigateur, choisissez “Installer l’application” ou “Ajouter à l’écran d’accueil”.');
+    alert('L’installation est en préparation. Rechargez la page si le bouton système n’apparaît pas.');
   }
 });
 
 document.getElementById('staffPwaAlreadyInstalled')?.addEventListener('click',()=>{
-  alert('Ouvrez l’icône iCHEF Staff installée sur votre téléphone, tablette ou ordinateur. Le Portail Staff reste bloqué dans le navigateur.');
+  if(ichefIsStandalonePwa()){
+    hideStaffPwaRequiredGate();
+    try{ bootstrapCollaboratorPortal(); }catch(_){}
+    return;
+  }
+  alert('Ouvrez l’icône iCHEF Staff installée sur votre appareil. Le navigateur ne peut pas lancer automatiquement une PWA déjà installée.');
 });
 
 document.getElementById('staffLoginActivationButton')?.addEventListener('click',()=>{
@@ -7614,63 +7614,7 @@ document.addEventListener('visibilitychange',()=>{
 
 bootstrapCollaboratorPortal();
 </script>
-  <script>
-// =========================================================
-// iCHEF STAFF V158 — PWA INSTALLABLE SÉCURISÉE
-// Le Service Worker ne met JAMAIS en cache les API, Socket.IO,
-// sessions, messages, planning, tâches, livraisons ou réponses RH.
-// =========================================================
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', async () => {
-    try {
-      const swAllowed =
-        location.protocol === 'https:' ||
-        location.hostname === 'localhost' ||
-        location.hostname === '127.0.0.1';
-
-      if (!swAllowed) {
-        console.info('[iCHEF Staff V159] PWA non activée : HTTPS requis.');
-        return;
-      }
-
-      const registration = await navigator.serviceWorker.register(
-        '/sw-rh.js?v=159',
-        {
-          scope:'/',
-          updateViaCache:'none'
-        }
-      );
-
-      try { await registration.update(); } catch (_) {}
-
-      if (registration.waiting) {
-        registration.waiting.postMessage({type:'SKIP_WAITING'});
-      }
-
-      registration.addEventListener('updatefound',()=>{
-        const worker=registration.installing;
-        if(!worker)return;
-        worker.addEventListener('statechange',()=>{
-          if(worker.state==='installed' && navigator.serviceWorker.controller){
-            worker.postMessage({type:'SKIP_WAITING'});
-          }
-        });
-      });
-
-      let reloading=false;
-      navigator.serviceWorker.addEventListener('controllerchange',()=>{
-        if(reloading)return;
-        reloading=true;
-        console.info('[iCHEF Staff V159] PWA mise à jour.');
-      });
-
-      console.info('[iCHEF Staff V159] PWA active', registration.scope);
-    } catch (error) {
-      console.warn('[iCHEF Staff V159] Service Worker indisponible :',error);
-    }
-  });
-}
-</script>
+  
 
 <style id="ichef-staff-v70-planning-archive-style">
 .staff-plan-note{display:block!important;margin-top:4px!important;color:#d7ad5c!important;font-size:8px!important;font-weight:700;line-height:1.35}.staff-plan-archive{border-top:1px solid rgba(255,255,255,.07);background:rgba(0,0,0,.22)}.staff-plan-archive-head{padding:12px 14px;display:flex;gap:8px;align-items:end;flex-wrap:wrap;border-bottom:1px solid rgba(255,255,255,.06)}.staff-plan-archive-head label{display:flex;flex-direction:column;gap:5px;color:var(--muted);font-size:8px;text-transform:uppercase;letter-spacing:.6px}.staff-plan-archive-head input{height:36px;border:1px solid rgba(255,255,255,.13);border-radius:8px;background:#070707;color:#fff;padding:0 9px}.staff-plan-archive-head button{height:36px;border:1px solid rgba(215,173,92,.28);border-radius:8px;background:rgba(215,173,92,.05);color:var(--gold);padding:0 11px;font-size:8px;font-weight:850}.staff-plan-archive-head small{color:var(--muted);font-size:8px}.staff-plan-archive .spacer{flex:1}.staff-archive-table{width:100%;border-collapse:collapse}.staff-archive-table th,.staff-archive-table td{padding:9px 10px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9px;text-align:left;vertical-align:top}.staff-archive-table th{color:var(--muted);font-size:8px;text-transform:uppercase;background:rgba(255,255,255,.02)}.staff-archive-table .note{color:var(--gold)}.staff-archive-table .why{color:#b7b0a5;font-size:8px;line-height:1.4}.staff-plan-loading{padding:22px;text-align:center;color:var(--muted);font-size:9px}@media(max-width:720px){.staff-plan-archive-head{align-items:stretch}.staff-plan-archive-head label,.staff-plan-archive-head button{width:100%}.staff-plan-archive{overflow-x:auto}.staff-archive-table{min-width:720px}}
@@ -7728,7 +7672,7 @@ if ('serviceWorker' in navigator) {
     document.getElementById('rh-history-print-btn')?.addEventListener('click',printHistory);
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',connect,{once:true});else connect();
-  window.__ICHEF_STAFF_BUILD__='V159-STAFF-ACTIVATION-QR-PWA-SECURE';
+  window.__ICHEF_STAFF_BUILD__='V160-STAFF-PWA-AUTO-SECURE';
   console.info('[iCHEF Staff V71] Compteurs RH synchronisés + archives 5 ans');
 })();
 </script>
@@ -7841,7 +7785,7 @@ if ('serviceWorker' in navigator) {
     return refresh({force,reason});
   };
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bind,{once:true});else bind();
-  window.__ICHEF_STAFF_BUILD__='V159-STAFF-ACTIVATION-QR-PWA-SECURE';
+  window.__ICHEF_STAFF_BUILD__='V160-STAFF-PWA-AUTO-SECURE';
   console.info('[iCHEF Staff V88] Mobile App UI robuste · ≤1100px · Connexion rapide · Planning stable · Jour / Semaine / Mois · +6 mois');
 })();
 </script>
@@ -8378,7 +8322,7 @@ body.staff-force-mobile .app{display:block!important}
   window.addEventListener('orientationchange',()=>setTimeout(applyMode,140));
   applyMode();
   window.showStaffMobileScreenV82=showMobileScreen;
-  window.__ICHEF_STAFF_BUILD__='V159-STAFF-ACTIVATION-QR-PWA-SECURE';
+  window.__ICHEF_STAFF_BUILD__='V160-STAFF-PWA-AUTO-SECURE';
   console.info('[iCHEF Staff V88] navigation mobile pratique active');
 })();
 </script>
@@ -8628,7 +8572,7 @@ body.staff-app-v82 #staff-mobile-more-btn.active{color:#f1b941!important;backgro
   document.getElementById('staff-mobile-drawer-close')?.addEventListener('click',closeDrawer,true);
   document.getElementById('staff-mobile-drawer-backdrop')?.addEventListener('click',closeDrawer,true);
 
-  window.__ICHEF_STAFF_BUILD__='V159-STAFF-ACTIVATION-QR-PWA-SECURE';
+  window.__ICHEF_STAFF_BUILD__='V160-STAFF-PWA-AUTO-SECURE';
   console.info('[iCHEF Staff V88] menu latéral uniquement via PLUS');
 })();
 </script>
@@ -10065,7 +10009,7 @@ document.addEventListener('DOMContentLoaded',()=>setTimeout(initStaffWorkspace,7
   const previous=renderDashboard;
   renderDashboard=function(data){const out=previous.apply(this,arguments);notices=Array.isArray(data?.planningNotices)?data.planningNotices:[];render();return out;};
   window.renderStaffPlanningNoticesV87=render;
-  window.__ICHEF_STAFF_BUILD__='V159-STAFF-ACTIVATION-QR-PWA-SECURE';
+  window.__ICHEF_STAFF_BUILD__='V160-STAFF-PWA-AUTO-SECURE';
   console.info('[iCHEF Staff V88] planning : modifications reçues + motif urgent + preuve « Vu »');
 })();
 </script>
@@ -10802,98 +10746,191 @@ window.ichefOpenOpsMobileScreenV150=ichefOpenOpsMobileScreen;
 })();
 </script>
 
-<script id="ichef-staff-pwa-install-v158">
+
+<script id="ichef-staff-pwa-auto-v160">
 (()=>{
 'use strict';
 
-let deferredInstallPrompt=null;
+const BUILD='160';
+const SW_URL='/sw-rh.js?v='+BUILD;
+const INSTALL_MARK='ichef_staff_pwa_installed_v160';
+let deferredPrompt=null;
+let installing=false;
+let registration=null;
+let hadController=false;
+let reloading=false;
 
-const installBtn=()=>document.getElementById('staff-pwa-install-btn');
-const installStatus=()=>document.getElementById('staff-pwa-install-status');
+const isiOS=()=>/iphone|ipad|ipod/i.test(navigator.userAgent||'');
+const standalone=()=>window.matchMedia?.('(display-mode: standalone)').matches===true || window.navigator.standalone===true;
+const installButtons=()=>[
+  document.getElementById('staffPwaRequiredInstall'),
+  document.getElementById('staff-pwa-install-btn')
+].filter(Boolean);
+const statusNodes=()=>[
+  document.getElementById('staff-pwa-install-status'),
+  document.getElementById('staffPwaRequiredHelp')
+].filter(Boolean);
 
-function isStandalone(){
-  return window.matchMedia?.('(display-mode: standalone)').matches ||
-    window.navigator.standalone===true;
-}
+function setStatus(text){ statusNodes().forEach(el=>el.textContent=text); }
 
-function isiOS(){
-  return /iphone|ipad|ipod/i.test(navigator.userAgent||'');
-}
+function refreshUi(){
+  const buttons=installButtons();
 
-function refreshInstallUi(){
-  const btn=installBtn();
-  const status=installStatus();
-  if(!btn||!status)return;
-
-  if(isStandalone()){
-    btn.hidden=true;
-    status.textContent='iCHEF Staff est installée sur cet appareil.';
+  if(standalone()){
+    localStorage.setItem(INSTALL_MARK,'1');
+    buttons.forEach(btn=>{btn.hidden=true;btn.disabled=true;});
+    setStatus('iCHEF Staff est ouverte comme application.');
     return;
   }
 
-  btn.hidden=false;
+  buttons.forEach(btn=>{btn.hidden=false;btn.disabled=false;});
 
-  if(deferredInstallPrompt){
-    btn.disabled=false;
-    btn.textContent='Installer';
-    status.textContent='Installation disponible en un clic.';
+  if(deferredPrompt){
+    buttons.forEach(btn=>btn.textContent='INSTALLER / CONTINUER');
+    setStatus('Installation prête. Touchez une fois pour confirmer avec le système.');
     return;
   }
 
   if(isiOS()){
-    btn.disabled=false;
-    btn.textContent='Comment installer';
-    status.textContent='Sur iPhone/iPad : Safari → Partager → Sur l’écran d’accueil.';
+    buttons.forEach(btn=>btn.textContent='COMMENT INSTALLER');
+    setStatus('iPhone/iPad : Safari → Partager → Sur l’écran d’accueil.');
     return;
   }
 
-  btn.disabled=false;
-  btn.textContent='Installer';
-  status.textContent='Si l’installation directe n’apparaît pas, utilisez le menu du navigateur → Installer l’application.';
+  buttons.forEach(btn=>btn.textContent='INSTALLER / CONTINUER');
+  setStatus('iCHEF prépare automatiquement l’installation…');
+}
+
+async function install(){
+  if(standalone()){
+    refreshUi();
+    return {installed:true,standalone:true};
+  }
+  if(installing) return {busy:true};
+
+  if(!deferredPrompt){
+    refreshUi();
+    if(isiOS()){
+      alert('Sur iPhone/iPad : ouvrez dans Safari → Partager → “Sur l’écran d’accueil”. Apple impose cette validation manuelle.');
+      return {ios:true};
+    }
+
+    for(let i=0;i<12 && !deferredPrompt;i++){
+      await new Promise(resolve=>setTimeout(resolve,250));
+    }
+
+    if(!deferredPrompt){
+      alert('L’application est prête mais le navigateur n’a pas encore proposé son installation. Utilisez le menu du navigateur → “Installer l’application”, ou rechargez cette page une fois.');
+      return {promptUnavailable:true};
+    }
+  }
+
+  installing=true;
+  const prompt=deferredPrompt;
+  deferredPrompt=null;
+
+  try{
+    await prompt.prompt();
+    const choice=await prompt.userChoice;
+    if(choice?.outcome==='accepted'){
+      localStorage.setItem(INSTALL_MARK,'1');
+      setStatus('Installation acceptée. Ouvrez ensuite l’icône iCHEF Staff.');
+    }else{
+      setStatus('Installation non confirmée. Vous pourrez recommencer.');
+    }
+    return choice||{};
+  }catch(error){
+    console.warn('[iCHEF Staff V160] prompt installation',error);
+    setStatus('Installation à relancer.');
+    throw error;
+  }finally{
+    installing=false;
+    refreshUi();
+  }
+}
+
+function armFirstGestureInstall(){
+  const gate=document.getElementById('staffPwaRequiredGate');
+  if(!gate || gate.dataset.pwaAutoGesture==='1') return;
+  gate.dataset.pwaAutoGesture='1';
+
+  gate.addEventListener('pointerdown',()=>{
+    if(standalone() || isiOS() || !deferredPrompt || installing) return;
+    install().catch(()=>{});
+  },{capture:true,passive:true});
+}
+
+async function registerServiceWorker(){
+  if(!('serviceWorker' in navigator)){
+    setStatus('Ce navigateur ne prend pas en charge l’installation PWA.');
+    return null;
+  }
+
+  const allowed=location.protocol==='https:' || location.hostname==='localhost' || location.hostname==='127.0.0.1';
+  if(!allowed){
+    setStatus('HTTPS est obligatoire pour installer iCHEF Staff.');
+    return null;
+  }
+
+  hadController=!!navigator.serviceWorker.controller;
+
+  try{
+    registration=await navigator.serviceWorker.register(SW_URL,{scope:'/',updateViaCache:'none'});
+    try{await registration.update();}catch(_){}
+
+    if(registration.waiting) registration.waiting.postMessage({type:'SKIP_WAITING'});
+
+    registration.addEventListener('updatefound',()=>{
+      const worker=registration.installing;
+      if(!worker)return;
+      worker.addEventListener('statechange',()=>{
+        if(worker.state==='installed' && navigator.serviceWorker.controller){
+          worker.postMessage({type:'SKIP_WAITING'});
+        }
+      });
+    });
+
+    navigator.serviceWorker.addEventListener('controllerchange',()=>{
+      if(!hadController || reloading)return;
+      reloading=true;
+      setTimeout(()=>location.reload(),120);
+    });
+
+    console.info('[iCHEF Staff V160] Service Worker actif',registration.scope);
+    setStatus(standalone() ? 'iCHEF Staff est ouverte comme application.' : 'Application préparée. Installation disponible dès autorisation du navigateur.');
+    return registration;
+  }catch(error){
+    console.warn('[iCHEF Staff V160] Service Worker indisponible',error);
+    setStatus('Service Worker indisponible. Vérifiez /sw-rh.js et HTTPS.');
+    return null;
+  }
 }
 
 window.addEventListener('beforeinstallprompt',event=>{
   event.preventDefault();
-  deferredInstallPrompt=event;
-  refreshInstallUi();
+  deferredPrompt=event;
+  refreshUi();
+  armFirstGestureInstall();
 });
 
 window.addEventListener('appinstalled',()=>{
-  deferredInstallPrompt=null;
-  refreshInstallUi();
+  deferredPrompt=null;
+  localStorage.setItem(INSTALL_MARK,'1');
+  setStatus('iCHEF Staff est installée. Ouvrez l’icône de l’application.');
+  refreshUi();
 });
 
-document.addEventListener('click',async event=>{
-  const btn=event.target.closest('#staff-pwa-install-btn');
-  if(!btn)return;
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden) refreshUi(); });
+window.matchMedia?.('(display-mode: standalone)')?.addEventListener?.('change',refreshUi);
 
-  if(isStandalone()){
-    refreshInstallUi();
-    return;
-  }
+window.ICHEF_PWA_MANAGER={install,refresh:refreshUi,standalone,registration:()=>registration};
 
-  if(deferredInstallPrompt){
-    const prompt=deferredInstallPrompt;
-    deferredInstallPrompt=null;
-    try{
-      await prompt.prompt();
-      await prompt.userChoice;
-    }catch(error){
-      console.warn('[iCHEF Staff PWA install]',error);
-    }
-    refreshInstallUi();
-    return;
-  }
-
-  if(isiOS()){
-    alert('Pour installer iCHEF Staff : ouvrez ce portail dans Safari, touchez Partager, puis “Sur l’écran d’accueil”.');
-    return;
-  }
-
-  alert('Dans le menu de votre navigateur, choisissez “Installer l’application” ou “Ajouter à l’écran d’accueil”.');
+registerServiceWorker().finally(()=>{
+  refreshUi();
+  armFirstGestureInstall();
 });
-
-refreshInstallUi();
+refreshUi();
+armFirstGestureInstall();
 })();
 </script>
 </body>
