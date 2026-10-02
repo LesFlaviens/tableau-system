@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>iCHEF OS — Mon espace collaborateur</title>
-<meta name="ichef-build" content="V163-STAFF-PWA-AUTO-SECURE">
+<meta name="ichef-build" content="V165-STAFF-PWA-MOBILE-NON-BLOQUANT">
 
 <meta name="theme-color" content="#090d10">
 <meta name="mobile-web-app-capable" content="yes">
@@ -15,9 +15,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="iCHEF Staff">
-<link rel="manifest" href="./manifest-staff.json?v=164">
-<link rel="apple-touch-icon" href="./ichef-staff-512.png?v=164">
-<link rel="icon" type="image/png" sizes="512x512" href="./ichef-staff-512.png?v=164">
+<link rel="manifest" href="./manifest-staff.json?v=165">
+<link rel="apple-touch-icon" href="./ichef-staff-512.png?v=165">
+<link rel="icon" type="image/png" sizes="512x512" href="./ichef-staff-512.png?v=165">
 
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -5413,7 +5413,7 @@ function hideStaffIdentityGate(){
 }
 
 async function finishStaffLogin(data,staffId){
-  if(!ichefIsStandalonePwa()){
+  if(!ichefIsStandalonePwa() && ichefStandaloneRequiredForThisDevice()){
     clearStaffAuth();
     showStaffPwaRequiredGate();
     throw new Error('Ouvrez iCHEF Staff depuis l’application installée.');
@@ -5444,7 +5444,7 @@ async function finishStaffLogin(data,staffId){
   hideStaffLogin();
   setInitialProfile(profile);
   connectStaffRealtime();
-  loadStaffDashboard({reason:'login'}).catch(error=>console.warn('[iCHEF Staff V164] dashboard post-login',error));
+  loadStaffDashboard({reason:'login'}).catch(error=>console.warn('[iCHEF Staff V165] dashboard post-login',error));
   setTimeout(loadStaffSecurityDevices,250);
 }
 
@@ -5475,7 +5475,7 @@ async function verifyStaffWhatsappIdentity(){
         'Accept':'application/json',
         'X-iCHEF-Tenant':String(STAFF_IDENTITY_PENDING.safeTenantID||currentTenant()),
         'X-iCHEF-Device':staffDeviceId(),
-        'X-iCHEF-PWA':ichefIsStandalonePwa()?'standalone':'browser'
+        'X-iCHEF-PWA':ichefIsStandalonePwa()?'standalone':(ichefIsPhoneLike()?'mobile-browser':'browser')
       },
       body:JSON.stringify({
         tenantID:String(STAFF_IDENTITY_PENDING.safeTenantID||currentTenant()),
@@ -5519,7 +5519,7 @@ async function tryStaffAppUnlock(){
         'Accept':'application/json',
         'X-iCHEF-Tenant':tenant,
         'X-iCHEF-Device':staffDeviceId(),
-        'X-iCHEF-PWA':ichefIsStandalonePwa()?'standalone':'browser'
+        'X-iCHEF-PWA':ichefIsStandalonePwa()?'standalone':(ichefIsPhoneLike()?'mobile-browser':'browser')
       },
       body:JSON.stringify({tenantID:tenant,staffId,deviceId:staffDeviceId()})
     });
@@ -5541,7 +5541,7 @@ async function tryStaffAppUnlock(){
         'Accept':'application/json',
         'X-iCHEF-Tenant':tenant,
         'X-iCHEF-Device':staffDeviceId(),
-        'X-iCHEF-PWA':ichefIsStandalonePwa()?'standalone':'browser'
+        'X-iCHEF-PWA':ichefIsStandalonePwa()?'standalone':(ichefIsPhoneLike()?'mobile-browser':'browser')
       },
       body:JSON.stringify({
         tenantID:tenant,
@@ -5630,10 +5630,31 @@ function ichefIsStandalonePwa(){
     window.navigator.standalone===true;
 }
 
+function ichefIsPhoneLike(){
+  try{
+    if(navigator.userAgentData?.mobile===true)return true;
+  }catch(_){}
+
+  const ua=String(navigator.userAgent||'');
+  if(/Android|iPhone|iPad|iPod|Mobile|IEMobile|Opera Mini/i.test(ua))return true;
+
+  const touch=Number(navigator.maxTouchPoints||0)>0;
+  const compact=window.matchMedia?.('(max-width:1100px)').matches===true;
+  const coarse=window.matchMedia?.('(pointer:coarse)').matches===true;
+
+  return touch && (compact || coarse);
+}
+
+function ichefStandaloneRequiredForThisDevice(){
+  // Sur téléphone/tablette, l'installation PWA reste recommandée
+  // mais ne bloque jamais l'accès au Portail Staff.
+  return !ichefIsPhoneLike();
+}
+
 function ichefPwaHeaders(extra={}){
   return {
     ...extra,
-    'X-iCHEF-PWA':ichefIsStandalonePwa()?'standalone':'browser'
+    'X-iCHEF-PWA':ichefIsStandalonePwa()?'standalone':(ichefIsPhoneLike()?'mobile-browser':'browser')
   };
 }
 
@@ -5685,8 +5706,16 @@ function ichefClearPendingActivation(){
 }
 
 function showStaffPwaRequiredGate(){
-  document.body.classList.add('staff-pwa-browser-blocked');
   const gate=document.getElementById('staffPwaRequiredGate');
+
+  if(typeof ichefIsPhoneLike==='function' && ichefIsPhoneLike()){
+    document.body.classList.remove('staff-pwa-browser-blocked');
+    if(gate)gate.hidden=true;
+    try{ window.ICHEF_PWA_MANAGER?.refresh?.(); }catch(_){}
+    return;
+  }
+
+  document.body.classList.add('staff-pwa-browser-blocked');
   if(gate)gate.hidden=false;
 }
 
@@ -5697,11 +5726,12 @@ function hideStaffPwaRequiredGate(){
 }
 
 function showStaffActivationGate(prefill={}){
-  if(!ichefIsStandalonePwa()){
+  if(!ichefIsStandalonePwa() && ichefStandaloneRequiredForThisDevice()){
     showStaffPwaRequiredGate();
     return;
   }
 
+  hideStaffPwaRequiredGate();
   hideStaffLogin();
   document.getElementById('staffActivationGate').hidden=false;
   const tenant=document.getElementById('staffActivationTenant');
@@ -6166,7 +6196,7 @@ function authHeaders(){
   const headers = {
     'Accept':'application/json',
     'X-iCHEF-Tenant':currentTenant(),
-    'X-iCHEF-PWA':ichefIsStandalonePwa()?'standalone':'browser'
+    'X-iCHEF-PWA':ichefIsStandalonePwa()?'standalone':(ichefIsPhoneLike()?'mobile-browser':'browser')
   };
 
   if(token){
@@ -7261,7 +7291,7 @@ async function checkStaffServerHealth(){
 }
 
 async function bootstrapCollaboratorPortal(){
-  if(!ichefIsStandalonePwa()){
+  if(!ichefIsStandalonePwa() && ichefStandaloneRequiredForThisDevice()){
     clearStaffAuth();
     showStaffPwaRequiredGate();
     inspectActivationForInstallGate().catch(()=>{});
@@ -7399,7 +7429,7 @@ async function bootstrapCollaboratorPortal(){
     connectStaffRealtime();
     loadStaffDashboard({reason:'bootstrap'})
       .catch(error => {
-        console.warn('[iCHEF Staff V164] dashboard bootstrap', error);
+        console.warn('[iCHEF Staff V165] dashboard bootstrap', error);
       });
     setTimeout(loadStaffSecurityDevices,250);
   }else{
@@ -7674,7 +7704,7 @@ bootstrapCollaboratorPortal();
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',connect,{once:true});else connect();
   window.__ICHEF_STAFF_BUILD__='V162-STAFF-PWA-AUTO-SECURE';
-  console.info('[iCHEF Staff V164] Compteurs RH synchronisés + archives 5 ans');
+  console.info('[iCHEF Staff V165] Compteurs RH synchronisés + archives 5 ans');
 })();
 </script>
 
@@ -7787,7 +7817,7 @@ bootstrapCollaboratorPortal();
   };
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bind,{once:true});else bind();
   window.__ICHEF_STAFF_BUILD__='V162-STAFF-PWA-AUTO-SECURE';
-  console.info('[iCHEF Staff V164] Mobile App UI robuste · ≤1100px · Connexion rapide · Planning stable · Jour / Semaine / Mois · +6 mois');
+  console.info('[iCHEF Staff V165] Mobile App UI robuste · ≤1100px · Connexion rapide · Planning stable · Jour / Semaine / Mois · +6 mois');
 })();
 </script>
 
@@ -8324,7 +8354,7 @@ body.staff-force-mobile .app{display:block!important}
   applyMode();
   window.showStaffMobileScreenV82=showMobileScreen;
   window.__ICHEF_STAFF_BUILD__='V162-STAFF-PWA-AUTO-SECURE';
-  console.info('[iCHEF Staff V164] navigation mobile pratique active');
+  console.info('[iCHEF Staff V165] navigation mobile pratique active');
 })();
 </script>
 
@@ -8574,7 +8604,7 @@ body.staff-app-v82 #staff-mobile-more-btn.active{color:#f1b941!important;backgro
   document.getElementById('staff-mobile-drawer-backdrop')?.addEventListener('click',closeDrawer,true);
 
   window.__ICHEF_STAFF_BUILD__='V162-STAFF-PWA-AUTO-SECURE';
-  console.info('[iCHEF Staff V164] menu latéral uniquement via PLUS');
+  console.info('[iCHEF Staff V165] menu latéral uniquement via PLUS');
 })();
 </script>
 
@@ -10011,7 +10041,7 @@ document.addEventListener('DOMContentLoaded',()=>setTimeout(initStaffWorkspace,7
   renderDashboard=function(data){const out=previous.apply(this,arguments);notices=Array.isArray(data?.planningNotices)?data.planningNotices:[];render();return out;};
   window.renderStaffPlanningNoticesV87=render;
   window.__ICHEF_STAFF_BUILD__='V162-STAFF-PWA-AUTO-SECURE';
-  console.info('[iCHEF Staff V164] planning : modifications reçues + motif urgent + preuve « Vu »');
+  console.info('[iCHEF Staff V165] planning : modifications reçues + motif urgent + preuve « Vu »');
 })();
 </script>
 
@@ -10104,7 +10134,7 @@ document.addEventListener('DOMContentLoaded',()=>setTimeout(initStaffWorkspace,7
   setTimeout(()=>{bindDocumentSocket();if(requireStaffSession())loadSecureStaffDocumentsV89({silent:true});},120);
   window.loadSecureStaffDocumentsV89=loadSecureStaffDocumentsV89;
   window.__ICHEF_STAFF_BUILD__='V146-IDENTITY-WHATSAPP-APP-SECURE';
-  console.info('[iCHEF Staff V164] documents RH : lecture GridFS dédiée + push temps réel + session Staff sécurisée');
+  console.info('[iCHEF Staff V165] documents RH : lecture GridFS dédiée + push temps réel + session Staff sécurisée');
 })();
 </script>
 
@@ -10752,9 +10782,9 @@ window.ichefOpenOpsMobileScreenV150=ichefOpenOpsMobileScreen;
 (()=>{
 'use strict';
 
-const BUILD='164';
+const BUILD='165';
 const SW_URL='./sw-staff.js?v='+BUILD;
-const INSTALL_MARK='ichef_staff_pwa_installed_v164';
+const INSTALL_MARK='ichef_staff_pwa_installed_v165';
 let deferredPrompt=null;
 let installing=false;
 let registration=null;
@@ -10844,7 +10874,7 @@ async function install(){
     }
     return choice||{};
   }catch(error){
-    console.warn('[iCHEF Staff V164] prompt installation',error);
+    console.warn('[iCHEF Staff V165] prompt installation',error);
     setStatus('Installation à relancer.');
     throw error;
   }finally{
@@ -10900,12 +10930,12 @@ async function registerServiceWorker(){
       setTimeout(()=>location.reload(),120);
     });
 
-    console.info('[iCHEF Staff V164] Service Worker actif',registration.scope);
+    console.info('[iCHEF Staff V165] Service Worker actif',registration.scope);
 
     try{
       await navigator.serviceWorker.ready;
 
-      const firstControlKey='ichef_staff_sw_controlled_reload_v164';
+      const firstControlKey='ichef_staff_sw_controlled_reload_v165';
       if(!navigator.serviceWorker.controller && sessionStorage.getItem(firstControlKey)!=='1'){
         sessionStorage.setItem(firstControlKey,'1');
         setStatus('Finalisation automatique de l’application…');
@@ -10923,7 +10953,7 @@ async function registerServiceWorker(){
     );
     return registration;
   }catch(error){
-    console.warn('[iCHEF Staff V164] Service Worker indisponible',error);
+    console.warn('[iCHEF Staff V165] Service Worker indisponible',error);
     setStatus('Service Worker indisponible. Vérifiez ./sw-staff.js et HTTPS.');
     return null;
   }
