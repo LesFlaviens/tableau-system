@@ -896,6 +896,45 @@ res.setHeader('Cache-Control', 'no-cache, must-revalidate');
 }
 next();
 });
+
+// ============================================================================
+// 📱 iCHEF PAD PWA V26 — ROUTES CANONIQUES
+// ============================================================================
+// Le PAD est exposé sous /pad/ afin que le manifest ne relance jamais
+// la vitrine (GET /). Le service worker ne contrôle que le périmètre /pad/.
+const ICHEF_PAD_PWA_HTML_FILE = path.join(__dirname, 'ichef-pad-pwa.html');
+const ICHEF_PAD_PWA_MANIFEST_FILE = path.join(__dirname, 'pad-manifest.webmanifest');
+const ICHEF_PAD_PWA_SW_FILE = path.join(__dirname, 'pad-service-worker.js');
+
+app.get('/pad', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    return res.redirect(302, '/pad/');
+});
+
+app.get('/pad/', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    return res.sendFile(ICHEF_PAD_PWA_HTML_FILE);
+});
+
+app.get('/pad-manifest.webmanifest', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.type('application/manifest+json');
+    return res.sendFile(ICHEF_PAD_PWA_MANIFEST_FILE);
+});
+
+app.get('/pad-service-worker.js', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('Service-Worker-Allowed', '/pad/');
+    res.type('application/javascript; charset=utf-8');
+    return res.sendFile(ICHEF_PAD_PWA_SW_FILE);
+});
+
 const ICHEF_GLOBAL_FAVICON_FILENAME = 'Gemini_Generated_Image_q748ueq748ueq748-Photoroom(1)(1)(1).png';
 const ICHEF_GLOBAL_FAVICON_FILE = path.join(__dirname, ICHEF_GLOBAL_FAVICON_FILENAME);
 function ichefSendGlobalFavicon(req, res) {
