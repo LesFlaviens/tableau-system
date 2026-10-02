@@ -1749,7 +1749,7 @@
                         body: JSON.stringify({
                             tableId:k,
                             order:{data:d},
-                            terminal:'CHEF_DESKTOP',
+                            terminal:'CHEF',
                             deviceId:CHEF_DEVICE_ID,
                             operator:
                                 window.ICHEF_CHEF_CONTEXT?.self?.name ||
@@ -2209,7 +2209,9 @@
                         tenantID: tenantID,
                         pin: pin,
                         deviceId: getDeviceFingerprint(),
-                        terminal: 'CHEF_DESKTOP',
+                        // Compatibilité production : 'CHEF' fonctionne avec l'ancien
+                        // serveur et le nouveau serveur CHEF_DESKTOP.
+                        terminal: 'CHEF',
                         module: 'CHEF_CUISINE',
                         source: 'chef.html'
                     })
@@ -2219,23 +2221,44 @@
                 if (!pinRes.ok || pinData.success !== true) {
                     throw new Error(pinData.error || 'Code PIN incorrect ou licence indisponible.');
                 }
-                if (pinData.chefDomainAccess !== true) {
+                // V201 — compatibilité ancienne + nouvelle API Chef.
+                // Nouveau serveur : chefDomainAccess=true.
+                // Ancien serveur : cette propriété n'existe pas encore, mais /api/verify-pin
+                // renvoie le rôle / isManager / isMaster après validation du PIN.
+                const roleProbe = String(
+                    pinData.staff?.role ||
+                    pinData.staff?.dept ||
+                    pinData.role ||
+                    ''
+                )
+                    .normalize('NFD')
+                    .replace(/[\u0300-\u036f]/g, '')
+                    .toUpperCase()
+                    .replace(/[\s\-/]+/g, '_');
+
+                const legacyChefAllowed =
+                    pinData.isMaster === true ||
+                    pinData.isManager === true ||
+                    /(^|_)(MASTER|SUPER_ADMIN|SUPERADMIN|ADMIN|DIRECTEUR|DIRECTION|GERANT|MANAGER|PROPRIETAIRE|OWNER|CHEF|CHEF_DE_CUISINE|CHEF_EXECUTIF|CHEF_EXECUTIVE|RESPONSABLE)(_|$)/.test(roleProbe);
+
+                if (pinData.chefDomainAccess !== true && !legacyChefAllowed) {
                     throw new Error('Ce profil ne possède pas l’accès Chef Cuisine.');
                 }
 
                 const signedChefToken = String(
                     pinData.accessToken ||
                     pinData.operationsToken ||
+                    pinData.token ||
                     ''
                 ).trim();
 
-                if (!signedChefToken) {
-                    throw new Error('Session Chef sécurisée indisponible.');
-                }
+                // L'ancien serveur peut valider le PIN Chef sans encore émettre de jeton
+                // CHEF_DESKTOP. Dans ce cas on ouvre chef.html, mais on ne fabrique jamais
+                // de faux jeton côté navigateur. Les écritures restent contrôlées par le serveur.
 
                 ichefPinFailures = 0;
                 window.ICHEF_RUNTIME_PIN = ''; // Le PIN n'est jamais conservé après validation serveur.
-                window.ICHEF_CHEF_ACCESS_TOKEN = signedChefToken;
+                window.ICHEF_CHEF_ACCESS_TOKEN = signedChefToken || '';
                 window.ICHEF_CHEF_CONTEXT = {
                     success: true,
                     tenantID: tenantID,
@@ -2258,7 +2281,7 @@
                 window.ICHEF_SECURITY = Object.assign(window.ICHEF_SECURITY || {}, {
                     tenantID: tenantID,
                     deviceId: CHEF_DEVICE_ID,
-                    accessToken: signedChefToken,
+                    accessToken: signedChefToken || null,
                     csrfToken: pinData.csrfToken || window.ICHEF_SECURITY?.csrfToken || '',
                     sessionId: pinData.sessionId || null,
                     sessionExpiresAt: pinData.sessionExpiresAt || null,
@@ -2272,7 +2295,11 @@
                 if (window.ICHEF_SECURITY.csrfToken) {
                     sessionStorage.setItem('ichef_csrf_token', window.ICHEF_SECURITY.csrfToken);
                 }
-                sessionStorage.setItem(CHEF_SESSION_KEY, signedChefToken);
+                if (signedChefToken) {
+                    sessionStorage.setItem(CHEF_SESSION_KEY, signedChefToken);
+                } else {
+                    sessionStorage.removeItem(CHEF_SESSION_KEY);
+                }
                 persistChefAccessTokenForModules();
                 localStorage.setItem('ichef_tenant_id', tenantID);
                 localStorage.removeItem('ichef_master_pin');
