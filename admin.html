@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
+<!-- ICHEF ADMIN V44 — APP STAFF : SYNCHRONISATION BRIGADE / ACCÈS SANS COURSE ASYNC -->
 <!-- ICHEF ADMIN V43 — APP STAFF INTELLIGENT : CONNECTÉ / EN ATTENTE / ACTIVATION DIRECTE -->
 <!-- ICHEF ADMIN V42 — ACTIVATION STAFF : RÉVEIL SERVEUR + TIMEOUT ROBUSTE + RETRY GET -->
 <!-- ICHEF ADMIN V41 — COLLABORATEURS : PLANNING RH + MÉMO SERVEUR + SÉCURITÉ PIN/EMAIL -->
@@ -4151,7 +4152,7 @@ html, body {
                                 </p>
                             </div>
                             <button class="btn-outline" type="button" id="staff-activation-refresh"
-                                    onclick="loadStaffActivationAdmin()">
+                                    onclick="loadStaffActivationAdmin({ force:true })">
                                 Actualiser
                             </button>
                         </div>
@@ -13364,6 +13365,7 @@ const STAFF_ACTIVATION_V38 = {
     current: null,
     selectedStaff: null,
     loading: false,
+    loadPromise: null,
     lastLoadedAt: 0
 };
 
@@ -13693,68 +13695,143 @@ function renderStaffActivationAdmin() {
     }).join('');
 }
 
-async function loadStaffActivationAdmin({ silent = false } = {}) {
-    if (STAFF_ACTIVATION_V38.loading) return;
+async function loadStaffActivationAdmin({ silent = false, force = false } = {}) {
+    // V44 : si une synchronisation est déjà en cours, tous les consommateurs
+    // attendent LA MÊME promesse au lieu de continuer avec rows=[].
+    if (
+        STAFF_ACTIVATION_V38.loading &&
+        STAFF_ACTIVATION_V38.loadPromise
+    ) {
+        return STAFF_ACTIVATION_V38.loadPromise;
+    }
 
-    const root = document.getElementById('staff-activation-admin-list');
-    const message = document.getElementById('staff-activation-admin-message');
-    if (!root || !message) return;
-
-    STAFF_ACTIVATION_V38.loading = true;
-    message.hidden = false;
-    message.classList.remove('error');
-    if (!silent) message.textContent = 'Synchronisation des accès iCHEF Staff…';
-
-    const refresh = document.getElementById('staff-activation-refresh');
-    if (refresh) refresh.disabled = true;
-
-    try {
-        const data = await staffActivationV38Api(
-            '/api/staff/activation/admin/staff'
+    const root =
+        document.getElementById(
+            'staff-activation-admin-list'
         );
 
-        STAFF_ACTIVATION_V38.rows =
-            Array.isArray(data.staff) ? data.staff : [];
-        STAFF_ACTIVATION_V38.lastLoadedAt = Date.now();
+    const message =
+        document.getElementById(
+            'staff-activation-admin-message'
+        );
 
-        renderStaffActivationAdmin();
-    } catch (error) {
-        console.error('[iCHEF ADMIN V42 activation list]', error);
-
-        // On conserve la dernière liste déjà affichée au lieu de vider
-        // l'écran si Render/Mongo est momentanément lent.
-        if (!Array.isArray(STAFF_ACTIVATION_V38.rows)) {
-            STAFF_ACTIVATION_V38.rows = [];
-        }
-
-        renderStaffActivationAdmin();
-
-        message.hidden = false;
-        message.classList.add('error');
-
-        if (error?.status === 404) {
-            message.textContent =
-                'Le module d’activation Staff n’est pas encore disponible sur ce serveur.';
-        } else if (error?.code === 'ICHEF_SERVER_TIMEOUT') {
-            message.textContent =
-                'Serveur iCHEF en réveil… cliquez sur Actualiser dans quelques secondes.';
-        } else {
-            message.textContent =
-                error?.message ||
-                'Accès Staff momentanément indisponible.';
-        }
-
-        // Aucun alert() lors du chargement automatique de l’onglet.
-        if (!silent && error?.code !== 'ICHEF_SERVER_TIMEOUT') {
-            console.warn(
-                '[iCHEF ADMIN V42 activation]',
-                message.textContent
-            );
-        }
-    } finally {
-        STAFF_ACTIVATION_V38.loading = false;
-        if (refresh) refresh.disabled = false;
+    if (!root || !message) {
+        return [];
     }
+
+    // Cache très court uniquement pour éviter les doubles GET déclenchés
+    // simultanément par l'ouverture de l'onglet et le clic APP STAFF.
+    if (
+        force !== true &&
+        Array.isArray(STAFF_ACTIVATION_V38.rows) &&
+        STAFF_ACTIVATION_V38.rows.length &&
+        Date.now() -
+            Number(
+                STAFF_ACTIVATION_V38.lastLoadedAt ||
+                0
+            ) < 5000
+    ) {
+        return STAFF_ACTIVATION_V38.rows;
+    }
+
+    STAFF_ACTIVATION_V38.loading = true;
+
+    message.hidden = false;
+    message.classList.remove('error');
+
+    if (!silent) {
+        message.textContent =
+            'Synchronisation des accès iCHEF Staff…';
+    }
+
+    const refresh =
+        document.getElementById(
+            'staff-activation-refresh'
+        );
+
+    if (refresh) {
+        refresh.disabled = true;
+    }
+
+    const promise = (async () => {
+        try {
+            const data =
+                await staffActivationV38Api(
+                    '/api/staff/activation/admin/staff'
+                );
+
+            STAFF_ACTIVATION_V38.rows =
+                Array.isArray(data.staff)
+                    ? data.staff
+                    : [];
+
+            STAFF_ACTIVATION_V38.lastLoadedAt =
+                Date.now();
+
+            renderStaffActivationAdmin();
+
+            return STAFF_ACTIVATION_V38.rows;
+
+        } catch (error) {
+            console.error(
+                '[iCHEF ADMIN V44 activation list]',
+                error
+            );
+
+            if (
+                !Array.isArray(
+                    STAFF_ACTIVATION_V38.rows
+                )
+            ) {
+                STAFF_ACTIVATION_V38.rows = [];
+            }
+
+            renderStaffActivationAdmin();
+
+            message.hidden = false;
+            message.classList.add('error');
+
+            if (error?.status === 404) {
+                message.textContent =
+                    'Le module d’activation Staff n’est pas encore disponible sur ce serveur.';
+            } else if (
+                error?.code ===
+                'ICHEF_SERVER_TIMEOUT'
+            ) {
+                message.textContent =
+                    'Serveur iCHEF en réveil… cliquez sur Actualiser dans quelques secondes.';
+            } else {
+                message.textContent =
+                    error?.message ||
+                    'Accès Staff momentanément indisponible.';
+            }
+
+            if (
+                !silent &&
+                error?.code !==
+                    'ICHEF_SERVER_TIMEOUT'
+            ) {
+                console.warn(
+                    '[iCHEF ADMIN V44 activation]',
+                    message.textContent
+                );
+            }
+
+            throw error;
+
+        } finally {
+            STAFF_ACTIVATION_V38.loading = false;
+            STAFF_ACTIVATION_V38.loadPromise = null;
+
+            if (refresh) {
+                refresh.disabled = false;
+            }
+        }
+    })();
+
+    STAFF_ACTIVATION_V38.loadPromise = promise;
+
+    return promise;
 }
 
 
@@ -13949,41 +14026,149 @@ async function staffAppStatusResetPinV43() {
 }
 
 async function openStaffActivationFromBrigade(staffId) {
-    const id =
+    const requestedId =
         String(staffId || '')
             .trim();
 
-    if (!id) return;
+    if (!requestedId) return;
 
     try {
-        // Recharge l'état réel du collaborateur avant toute décision.
-        if (
-            !Array.isArray(STAFF_ACTIVATION_V38.rows) ||
-            !STAFF_ACTIVATION_V38.rows.length ||
-            (
-                Date.now() -
-                Number(
-                    STAFF_ACTIVATION_V38.lastLoadedAt ||
-                    0
-                )
-            ) > 15000
-        ) {
+        // V44 : APP STAFF ne prend aucune décision tant que la liste
+        // d'activation n'a pas réellement fini de se synchroniser.
+        const rows =
             await loadStaffActivationAdmin({
-                silent:true
+                silent:true,
+                force:
+                    !Number(
+                        STAFF_ACTIVATION_V38.lastLoadedAt ||
+                        0
+                    ) ||
+                    (
+                        Date.now() -
+                        Number(
+                            STAFF_ACTIVATION_V38.lastLoadedAt ||
+                            0
+                        )
+                    ) > 15000
             });
-        }
 
-        const row =
-            STAFF_ACTIVATION_V38.rows.find(
-                item=>
-                    String(item.id)===id
+        const normalized =
+            value =>
+                String(value || '')
+                    .trim()
+                    .toLocaleLowerCase('fr');
+
+        // Correspondance principale : identifiant technique.
+        let row =
+            (rows || []).find(
+                item =>
+                    String(item?.id || '') ===
+                    requestedId
             );
+
+        // Compatibilité anciens enregistrements Brigade :
+        // si l'identifiant historique n'est pas le même, on tente les
+        // identifiants alternatifs présents dans STAFF_ACCESS, puis le nom.
+        const brigadeMember =
+            (Array.isArray(staffAccess)
+                ? staffAccess
+                : []
+            ).find(item => {
+                const ids = [
+                    item?.id,
+                    item?.staffId,
+                    item?.employeeId,
+                    item?.rhId,
+                    item?.matricule,
+                    item?.employeeNo,
+                    item?.employeeNumber,
+                    item?.internalId
+                ]
+                .filter(
+                    value =>
+                        value !== undefined &&
+                        value !== null &&
+                        String(value).trim()
+                )
+                .map(String);
+
+                return ids.includes(
+                    requestedId
+                );
+            });
+
+        if (!row && brigadeMember) {
+            const candidateIds = [
+                brigadeMember.id,
+                brigadeMember.staffId,
+                brigadeMember.employeeId,
+                brigadeMember.rhId,
+                brigadeMember.matricule,
+                brigadeMember.employeeNo,
+                brigadeMember.employeeNumber,
+                brigadeMember.internalId
+            ]
+            .filter(
+                value =>
+                    value !== undefined &&
+                    value !== null &&
+                    String(value).trim()
+            )
+            .map(String);
+
+            row =
+                (rows || []).find(
+                    item =>
+                        candidateIds.includes(
+                            String(item?.id || '')
+                        )
+                );
+
+            if (!row) {
+                const brigadeName =
+                    normalized(
+                        brigadeMember.name ||
+                        brigadeMember.displayName ||
+                        [
+                            brigadeMember.firstName,
+                            brigadeMember.lastName
+                        ]
+                        .filter(Boolean)
+                        .join(' ') ||
+                        [
+                            brigadeMember.prenom,
+                            brigadeMember.nom
+                        ]
+                        .filter(Boolean)
+                        .join(' ')
+                    );
+
+                if (brigadeName) {
+                    const sameName =
+                        (rows || []).filter(
+                            item =>
+                                normalized(
+                                    item?.name
+                                ) === brigadeName
+                        );
+
+                    // On n'utilise le nom que s'il est unique.
+                    if (sameName.length === 1) {
+                        row = sameName[0];
+                    }
+                }
+            }
+        }
 
         if (!row) {
             throw new Error(
-                'Collaborateur introuvable dans les accès iCHEF Staff.'
+                'Ce membre de la Brigade n’est pas encore synchronisé avec les accès iCHEF Staff. Cliquez sur ENREGISTRER puis réessayez.'
             );
         }
+
+        const realStaffId =
+            String(row.id || '')
+                .trim();
 
         const status =
             String(
@@ -13991,11 +14176,9 @@ async function openStaffActivationFromBrigade(staffId) {
                 'NON_ACTIVÉ'
             );
 
-        // NON ACTIVÉ : aucune étape inutile.
-        // Le QR + code sont générés directement.
         if (status === 'NON_ACTIVÉ') {
             await generateStaffActivationQr(
-                id,
+                realStaffId,
                 {
                     skipPendingConfirm:true
                 }
@@ -14004,12 +14187,11 @@ async function openStaffActivationFromBrigade(staffId) {
             return;
         }
 
-        // ACTIVÉ / EN ATTENTE : affiche d'abord l'état réel.
         openStaffAppStatusV43(row);
 
     } catch (error) {
         console.error(
-            '[iCHEF ADMIN V43 APP STAFF]',
+            '[iCHEF ADMIN V44 APP STAFF]',
             error
         );
 
