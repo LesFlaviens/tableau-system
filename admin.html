@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
+<!-- ICHEF ADMIN V42 — ACTIVATION STAFF : RÉVEIL SERVEUR + TIMEOUT ROBUSTE + RETRY GET -->
 <!-- ICHEF ADMIN V41 — COLLABORATEURS : PLANNING RH + MÉMO SERVEUR + SÉCURITÉ PIN/EMAIL -->
 <!-- ICHEF ADMIN V40 — COLLABORATEURS : PLANNING, HEURES, RETARDS, MALADIE, MÉMO & PIN EMAIL -->
 <!-- ICHEF ADMIN V39 — BRIGADE & ACCÈS : ACTIVATION APPAREIL iCHEF STAFF QR/CODE SÉCURISÉE -->
@@ -13257,47 +13258,188 @@ function staffActivationV38Headers(json = false) {
     return headers;
 }
 
+let ICHEF_STAFF_ACTIVATION_WAKE_PROMISE = null;
+
+async function staffActivationV42WakeServer() {
+    const sec = window.ICHEF_SECURITY || {};
+
+    if (!sec.serverURL) return false;
+
+    if (ICHEF_STAFF_ACTIVATION_WAKE_PROMISE) {
+        return ICHEF_STAFF_ACTIVATION_WAKE_PROMISE;
+    }
+
+    ICHEF_STAFF_ACTIVATION_WAKE_PROMISE = (async () => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 30000);
+
+        try {
+            const response = await fetch(
+                `${sec.serverURL}/healthz`,
+                {
+                    method: 'GET',
+                    credentials: 'omit',
+                    cache: 'no-store',
+                    headers: {
+                        'Accept': 'application/json'
+                    },
+                    signal: controller.signal
+                }
+            );
+
+            if (response.ok) {
+                STAFF_ACTIVATION_V38.lastServerOkAt = Date.now();
+                return true;
+            }
+
+            return false;
+        } catch (_) {
+            return false;
+        } finally {
+            clearTimeout(timer);
+            ICHEF_STAFF_ACTIVATION_WAKE_PROMISE = null;
+        }
+    })();
+
+    return ICHEF_STAFF_ACTIVATION_WAKE_PROMISE;
+}
+
 async function staffActivationV38Api(pathname, options = {}) {
     const sec = window.ICHEF_SECURITY || {};
+
     if (!sec.ready) {
         throw new Error('Session Admin non prête.');
     }
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 14000);
+    const method =
+        String(options.method || 'GET').toUpperCase();
 
-    try {
-        const response = await fetch(
-            `${sec.serverURL}${pathname}`,
-            {
-                method: options.method || 'GET',
-                credentials: 'omit',
-                cache: 'no-store',
-                headers: staffActivationV38Headers(Boolean(options.body)),
-                body: options.body ? JSON.stringify(options.body) : undefined,
-                signal: controller.signal
-            }
+    const isRead =
+        method === 'GET' || method === 'HEAD';
+
+    // Si aucune réponse serveur récente n'a été obtenue, on réveille
+    // Render/Mongo avant une opération d'écriture. Cela évite de lancer
+    // directement une génération QR pendant un cold start.
+    if (
+        !isRead &&
+        (
+            !Number(STAFF_ACTIVATION_V38.lastServerOkAt || 0) ||
+            Date.now() - Number(STAFF_ACTIVATION_V38.lastServerOkAt || 0) > 90000
+        )
+    ) {
+        await staffActivationV42WakeServer();
+    }
+
+    const requestOnce = async (timeoutMs) => {
+        const controller = new AbortController();
+        const timer = setTimeout(
+            () => controller.abort(),
+            timeoutMs
         );
 
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok || data.success !== true) {
-            const error = new Error(
-                data.error ||
-                `Activation Staff refusée (HTTP ${response.status}).`
+        try {
+            const response = await fetch(
+                `${sec.serverURL}${pathname}`,
+                {
+                    method,
+                    credentials: 'omit',
+                    cache: 'no-store',
+                    headers: staffActivationV38Headers(Boolean(options.body)),
+                    body: options.body
+                        ? JSON.stringify(options.body)
+                        : undefined,
+                    signal: controller.signal
+                }
             );
-            error.status = response.status;
-            error.code = data.code || '';
-            throw error;
+
+            const data =
+                await response.json().catch(() => ({}));
+
+            if (
+                !response.ok ||
+                data.success !== true
+            ) {
+                const error = new Error(
+                    data.error ||
+                    `Activation Staff refusée (HTTP ${response.status}).`
+                );
+
+                error.status = response.status;
+                error.code = data.code || '';
+
+                throw error;
+            }
+
+            STAFF_ACTIVATION_V38.lastServerOkAt =
+                Date.now();
+
+            return data;
+
+        } finally {
+            clearTimeout(timer);
+        }
+    };
+
+    try {
+        // Lecture : 35 s puis une seule relance après préchauffage.
+        // Écriture : 55 s sans retry automatique pour éviter de dupliquer
+        // une création/révocation si la première requête a déjà été reçue.
+        return await requestOnce(
+            Number(
+                options.timeoutMs ||
+                (isRead ? 35000 : 55000)
+            )
+        );
+
+    } catch (error) {
+        const timeoutOrNetwork =
+            error?.name === 'AbortError' ||
+            error?.message === 'Failed to fetch' ||
+            /network|fetch|timeout/i.test(
+                String(error?.message || '')
+            );
+
+        if (
+            isRead &&
+            options.retry !== false &&
+            timeoutOrNetwork
+        ) {
+            await staffActivationV42WakeServer();
+
+            try {
+                return await requestOnce(35000);
+            } catch (retryError) {
+                if (
+                    retryError?.name === 'AbortError'
+                ) {
+                    const finalError =
+                        new Error(
+                            'Le serveur iCHEF se réveille encore. Réessayez dans quelques secondes.'
+                        );
+
+                    finalError.code =
+                        'ICHEF_SERVER_TIMEOUT';
+
+                    throw finalError;
+                }
+
+                throw retryError;
+            }
         }
 
-        return data;
-    } catch (error) {
         if (error?.name === 'AbortError') {
-            throw new Error('Le serveur iCHEF met trop de temps à répondre.');
+            const finalError =
+                new Error(
+                    'Le serveur iCHEF met plus de temps que prévu à répondre. Aucune opération n’a été relancée automatiquement.'
+                );
+
+            finalError.code =
+                'ICHEF_SERVER_TIMEOUT';
+
+            throw finalError;
         }
+
         throw error;
-    } finally {
-        clearTimeout(timer);
     }
 }
 
@@ -13429,17 +13571,38 @@ async function loadStaffActivationAdmin({ silent = false } = {}) {
 
         renderStaffActivationAdmin();
     } catch (error) {
-        console.error('[iCHEF ADMIN V38 activation list]', error);
+        console.error('[iCHEF ADMIN V42 activation list]', error);
 
-        STAFF_ACTIVATION_V38.rows = [];
+        // On conserve la dernière liste déjà affichée au lieu de vider
+        // l'écran si Render/Mongo est momentanément lent.
+        if (!Array.isArray(STAFF_ACTIVATION_V38.rows)) {
+            STAFF_ACTIVATION_V38.rows = [];
+        }
+
         renderStaffActivationAdmin();
 
         message.hidden = false;
         message.classList.add('error');
-        message.textContent =
-            error?.status === 404
-                ? 'Le serveur d’activation Staff V159 n’est pas encore déployé.'
-                : (error?.message || 'Accès Staff momentanément indisponible.');
+
+        if (error?.status === 404) {
+            message.textContent =
+                'Le module d’activation Staff n’est pas encore disponible sur ce serveur.';
+        } else if (error?.code === 'ICHEF_SERVER_TIMEOUT') {
+            message.textContent =
+                'Serveur iCHEF en réveil… cliquez sur Actualiser dans quelques secondes.';
+        } else {
+            message.textContent =
+                error?.message ||
+                'Accès Staff momentanément indisponible.';
+        }
+
+        // Aucun alert() lors du chargement automatique de l’onglet.
+        if (!silent && error?.code !== 'ICHEF_SERVER_TIMEOUT') {
+            console.warn(
+                '[iCHEF ADMIN V42 activation]',
+                message.textContent
+            );
+        }
     } finally {
         STAFF_ACTIVATION_V38.loading = false;
         if (refresh) refresh.disabled = false;
@@ -14337,6 +14500,9 @@ window.revokeCurrentStaffActivation = revokeCurrentStaffActivation;
 window.printCurrentStaffActivation = printCurrentStaffActivation;
 
 window.addEventListener('ichef:security-ready', () => {
+    // Prépare le backend Staff en arrière-plan sans bloquer l’interface Admin.
+    staffActivationV42WakeServer().catch(() => {});
+
     const active = document.getElementById('tab-staff')?.classList.contains('active');
     if (active) {
         loadStaffActivationAdmin({ silent:true }).catch(() => {});
