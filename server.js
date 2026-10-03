@@ -514,7 +514,10 @@ const ichefStaffPinResetSchema = new mongoose.Schema({
     resetId:{type:String,required:true,index:true,unique:true},
     tenantID:{type:String,required:true,index:true},
     staffId:{type:String,required:true,index:true},
-    tokenHash:{type:String,required:true},
+    tokenHash:{type:String,default:''},
+    codeHash:{type:String,default:''},
+    mode:{type:String,default:'LINK',index:true},
+    attempts:{type:Number,default:0},
     emailMasked:{type:String,default:''},
     createdAt:{type:Date,default:Date.now,index:true},
     expiresAt:{type:Date,required:true,index:true},
@@ -1251,7 +1254,7 @@ app.get('/api/staff/build', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.json({
         success: true,
-        build: 'V172-STAFF-PIN-RESET-FIX',
+        build: 'V173-STAFF-PIN-RESET-CODE-EMAIL',
         staffPortal: true,
         signedSession: true,
         ichefConnect: true,
@@ -17776,7 +17779,7 @@ app.get(
         res.setHeader('Cache-Control','no-store');
         return res.json({
             success:true,
-            build:'V172-STAFF-PIN-RESET-FIX',
+            build:'V173-STAFF-PIN-RESET-CODE-EMAIL',
             staffLoginRoute:'/api/staff/login',
             authentication:'STAFF_ID_RH_PLUS_PIN',
             signedSession:true,
@@ -19236,6 +19239,155 @@ function ichefStaffResetMailer(){
     const secure=/^(1|true|yes|on)$/i.test(String(process.env.SMTP_SECURE ?? (port===465?'true':'false')));
     return {user,transporter:nodemailer.createTransport({host,port,secure,auth:{user,pass},connectionTimeout:15000,greetingTimeout:15000,socketTimeout:20000})};
 }
+
+async function ichefStaffCreatePinResetCode({
+    req,
+    profile,
+    requestedFrom='SELF_CODE'
+}){
+    const tenantID=
+        cleanString(
+            profile?.tenant?.tenantID ||
+            profile?.state?.tenantID ||
+            req?.body?.tenantID ||
+            req?.headers?.['x-ichef-tenant'] ||
+            ''
+        );
+
+    const staffId=
+        ichefStaffResetCanonicalId(profile);
+
+    const email=
+        ichefStaffProfileEmail(profile);
+
+    if(!tenantID || !staffId){
+        return {
+            ok:false,
+            code:'STAFF_PIN_RESET_PROFILE_INVALID'
+        };
+    }
+
+    if(!email){
+        return {
+            ok:false,
+            code:'STAFF_PIN_RESET_EMAIL_MISSING'
+        };
+    }
+
+    const mail=
+        ichefStaffResetMailer();
+
+    if(!mail){
+        return {
+            ok:false,
+            code:'STAFF_PIN_RESET_MAIL_UNAVAILABLE'
+        };
+    }
+
+    const resetId=
+        nodeCrypto
+            .randomBytes(18)
+            .toString('base64url');
+
+    const code=
+        String(
+            nodeCrypto.randomInt(
+                100000,
+                1000000
+            )
+        );
+
+    const now=
+        new Date();
+
+    const expiresAt=
+        new Date(
+            now.getTime() +
+            10*60*1000
+        );
+
+    await IchefStaffPinReset.updateMany(
+        {
+            tenantID,
+            staffId,
+            usedAt:null,
+            expiresAt:{$gt:now}
+        },
+        {
+            $set:{
+                usedAt:now
+            }
+        }
+    );
+
+    await IchefStaffPinReset.create({
+        resetId,
+        tenantID,
+        staffId,
+        tokenHash:'',
+        codeHash:
+            ichefStaffPinResetHmac(
+                `${resetId}|${code}`
+            ),
+        mode:'EMAIL_CODE',
+        attempts:0,
+        emailMasked:
+            ichefStaffMaskEmail(email),
+        createdAt:now,
+        expiresAt,
+        requestedFrom:
+            String(
+                requestedFrom ||
+                'SELF_CODE'
+            ).slice(0,80)
+    });
+
+    const rawName=
+        String(
+            profile?.member?.name ||
+            profile?.directoryEntry?.name ||
+            'Collaborateur'
+        );
+
+    const safeName=
+        rawName.replace(
+            /[<>&\"]/g,
+            ch=>({
+                '<':'&lt;',
+                '>':'&gt;',
+                '&':'&amp;',
+                '"':'&quot;'
+            }[ch]||ch)
+        );
+
+    await mail.transporter.sendMail({
+        from:`iCHEF OS <${mail.user}>`,
+        to:email,
+        subject:'iCHEF Staff — Code pour choisir un nouveau PIN',
+        text:
+            `Bonjour ${rawName},\n\n` +
+            `Votre code iCHEF Staff est : ${code}\n\n` +
+            `Ce code est valable 10 minutes et ne peut être utilisé qu’une seule fois.\n\n` +
+            `Si vous n’êtes pas à l’origine de cette demande, ignorez cet email.`,
+        html:
+            `<div style="font-family:Arial,sans-serif;background:#0b0f19;color:#f8fafc;padding:28px;border-radius:16px">` +
+            `<div style="font-size:22px;font-weight:800;color:#d4af37;margin-bottom:18px">iCHEF Staff</div>` +
+            `<p>Bonjour <b>${safeName}</b>,</p>` +
+            `<p>Utilisez ce code pour choisir votre nouveau PIN :</p>` +
+            `<div style="margin:24px 0;padding:18px;text-align:center;background:#111827;border:1px solid #d4af37;border-radius:12px;font-size:30px;font-weight:900;letter-spacing:8px;color:#fff">${code}</div>` +
+            `<p style="color:#94a3b8;font-size:13px">Code à usage unique · expiration 10 minutes.</p>` +
+            `</div>`
+    });
+
+    return {
+        ok:true,
+        resetId,
+        expiresAt,
+        maskedEmail:
+            ichefStaffMaskEmail(email)
+    };
+}
+
 async function ichefStaffCreatePinReset({req,profile,requestedFrom='SELF'}){
     const tenantID=
         cleanString(
@@ -19302,59 +19454,148 @@ async function ichefStaffCreatePinReset({req,profile,requestedFrom='SELF'}){
 }
 app.post('/api/staff/pin-reset/request',async(req,res)=>{
     try{
-        res.setHeader('Cache-Control','no-store');
-        const tenantID=cleanString(req.body?.tenantID||req.headers?.['x-ichef-tenant']||''),staffId=String(req.body?.staffId||'').trim().slice(0,160);
-        const generic=()=>res.json({success:true,message:'Si le compte et son email sont configurés, un lien sécurisé vient d’être envoyé.'});
-        if(!tenantID||!staffId)return generic();
-        const ip=String(req.headers?.['x-forwarded-for']||req.socket?.remoteAddress||'').split(',')[0].trim().slice(0,120),key=`${tenantID}|${staffId.toLowerCase()}|${ip}`;
-        const last=Number(ichefStaffPinResetBuckets.get(key)||0); if(Date.now()-last<60000)return generic(); ichefStaffPinResetBuckets.set(key,Date.now());
+        res.setHeader(
+            'Cache-Control',
+            'no-store'
+        );
+
+        const tenantID=
+            cleanString(
+                req.body?.tenantID ||
+                req.headers?.['x-ichef-tenant'] ||
+                ''
+            );
+
+        const staffId=
+            String(
+                req.body?.staffId ||
+                ''
+            )
+            .trim()
+            .slice(0,160);
+
+        const fakeChallenge=
+            ()=>nodeCrypto
+                .randomBytes(18)
+                .toString('base64url');
+
+        const generic=
+            challengeId=>
+                res.json({
+                    success:true,
+                    challengeId:
+                        String(
+                            challengeId ||
+                            fakeChallenge()
+                        ),
+                    expiresInSeconds:600,
+                    message:
+                        'Si le compte et son email sont configurés, un code à 6 chiffres vient d’être envoyé.'
+                });
+
+        if(!tenantID || !staffId){
+            return generic();
+        }
+
+        const ip=
+            String(
+                req.headers?.['x-forwarded-for'] ||
+                req.socket?.remoteAddress ||
+                ''
+            )
+            .split(',')[0]
+            .trim()
+            .slice(0,120);
+
+        const key=
+            `${tenantID}|${staffId.toLowerCase()}|${ip}`;
+
+        const last=
+            Number(
+                ichefStaffPinResetBuckets.get(key) ||
+                0
+            );
+
+        if(Date.now()-last<60000){
+            return generic();
+        }
+
+        ichefStaffPinResetBuckets.set(
+            key,
+            Date.now()
+        );
+
         const profile=
             await ichefStaffResolveProfileForReset(
                 tenantID,
                 staffId
             );
 
-        if(profile){
-            try{
-                const result=
-                    await ichefStaffCreatePinReset({
-                        req,
-                        profile,
-                        requestedFrom:'SELF'
-                    });
-
-                if(!result?.ok){
-                    console.warn(
-                        '[iCHEF STAFF PIN RESET SELF]',
-                        {
-                            tenantID,
-                            code:
-                                result?.code ||
-                                'UNKNOWN'
-                        }
-                    );
-                }
-            }catch(error){
-                console.warn(
-                    '[iCHEF STAFF PIN RESET mail]',
-                    error?.message ||
-                    error
-                );
-            }
-        }else{
+        if(!profile){
             console.warn(
-                '[iCHEF STAFF PIN RESET SELF]',
+                '[iCHEF STAFF PIN RESET CODE V173]',
                 {
                     tenantID,
                     code:'PROFILE_NOT_RESOLVED'
                 }
             );
+
+            return generic();
         }
 
-        // Réponse volontairement générique : ne révèle jamais
-        // si un identifiant ou un email existe.
-        return generic();
-    }catch(error){console.error('[iCHEF STAFF PIN RESET request V172]',error);return res.json({success:true,message:'Si le compte et son email sont configurés, un lien sécurisé vient d’être envoyé.'});}
+        try{
+            const result=
+                await ichefStaffCreatePinResetCode({
+                    req,
+                    profile,
+                    requestedFrom:'SELF_CODE'
+                });
+
+            if(result?.ok){
+                return generic(
+                    result.resetId
+                );
+            }
+
+            console.warn(
+                '[iCHEF STAFF PIN RESET CODE V173]',
+                {
+                    tenantID,
+                    code:
+                        result?.code ||
+                        'UNKNOWN'
+                }
+            );
+
+            return generic();
+
+        }catch(error){
+            console.warn(
+                '[iCHEF STAFF PIN RESET CODE mail]',
+                error?.message ||
+                error
+            );
+
+            return generic();
+        }
+
+    }catch(error){
+        console.error(
+            '[iCHEF STAFF PIN RESET request V173]',
+            error
+        );
+
+        return res.json({
+            success:true,
+            challengeId:
+                nodeCrypto
+                    .randomBytes(18)
+                    .toString('base64url'),
+            expiresInSeconds:600,
+            message:
+                'Si le compte et son email sont configurés, un code à 6 chiffres vient d’être envoyé.'
+        });
+    }
 });
 app.post('/api/staff/pin-reset/admin/request',async(req,res)=>{
     try{
@@ -19366,6 +19607,258 @@ app.post('/api/staff/pin-reset/admin/request',async(req,res)=>{
         return res.json({success:true,maskedEmail:result.maskedEmail,expiresAt:result.expiresAt});
     }catch(error){console.error('[iCHEF STAFF PIN RESET admin V166]',error);return res.status(500).json({success:false,error:'Réinitialisation PIN momentanément indisponible.'});}
 });
+
+app.post('/api/staff/pin-reset/confirm',async(req,res)=>{
+    try{
+        res.setHeader(
+            'Cache-Control',
+            'no-store'
+        );
+
+        const challengeId=
+            String(
+                req.body?.challengeId ||
+                ''
+            )
+            .trim()
+            .slice(0,100);
+
+        const emailCode=
+            String(
+                req.body?.code ||
+                ''
+            )
+            .replace(/\D/g,'')
+            .slice(0,6);
+
+        const newPin=
+            String(
+                req.body?.newPin ||
+                ''
+            )
+            .replace(/\D/g,'')
+            .slice(0,12);
+
+        if(
+            !/^[A-Za-z0-9_-]{16,80}$/.test(
+                challengeId
+            ) ||
+            !/^\d{6}$/.test(
+                emailCode
+            ) ||
+            !/^\d{4,12}$/.test(
+                newPin
+            )
+        ){
+            return res
+                .status(400)
+                .json({
+                    success:false,
+                    error:
+                        'Code email ou nouveau PIN invalide.'
+                });
+        }
+
+        const row=
+            await IchefStaffPinReset.findOne({
+                resetId:challengeId,
+                mode:'EMAIL_CODE'
+            });
+
+        if(
+            !row ||
+            row.usedAt ||
+            !row.expiresAt ||
+            new Date(row.expiresAt).getTime()<=Date.now()
+        ){
+            return res
+                .status(401)
+                .json({
+                    success:false,
+                    error:
+                        'Ce code est invalide ou a expiré.'
+                });
+        }
+
+        const attempts=
+            Number(
+                row.attempts ||
+                0
+            );
+
+        if(attempts>=5){
+            row.usedAt=
+                new Date();
+
+            await row.save();
+
+            return res
+                .status(429)
+                .json({
+                    success:false,
+                    error:
+                        'Trop de tentatives. Demandez un nouveau code.'
+                });
+        }
+
+        const expected=
+            ichefStaffPinResetHmac(
+                `${challengeId}|${emailCode}`
+            );
+
+        if(
+            !ichefStaffActivationSafeEqual(
+                expected,
+                row.codeHash
+            )
+        ){
+            row.attempts=
+                attempts+1;
+
+            await row.save();
+
+            return res
+                .status(401)
+                .json({
+                    success:false,
+                    error:
+                        'Code email incorrect.'
+                });
+        }
+
+        const state=
+            await AppState.findOne(
+                {
+                    tenantID:
+                        row.tenantID
+                },
+                {
+                    'activeOrders.STAFF_ACCESS.data':1,
+                    'activeOrders.DIRECTORY_MASTER.data':1
+                }
+            )
+            .lean();
+
+        if(!state){
+            return res
+                .status(404)
+                .json({
+                    success:false,
+                    error:
+                        'Établissement introuvable.'
+                });
+        }
+
+        const matchStaff=
+            item=>
+                ichefStaffResetIdentityValues(item)
+                    .includes(
+                        String(row.staffId)
+                    );
+
+        let changed=false;
+
+        const access=
+            ichefStaffPortalArray(
+                state?.activeOrders?.STAFF_ACCESS
+            )
+            .map(item=>{
+                if(!matchStaff(item)){
+                    return item;
+                }
+
+                changed=true;
+
+                return {
+                    ...item,
+                    pin:newPin,
+                    pinUpdatedAt:
+                        new Date().toISOString()
+                };
+            });
+
+        const directory=
+            ichefStaffPortalArray(
+                state?.activeOrders?.DIRECTORY_MASTER
+            )
+            .map(item=>{
+                if(!matchStaff(item)){
+                    return item;
+                }
+
+                changed=true;
+
+                return {
+                    ...item,
+                    pin:newPin,
+                    pinUpdatedAt:
+                        new Date().toISOString()
+                };
+            });
+
+        if(!changed){
+            return res
+                .status(404)
+                .json({
+                    success:false,
+                    error:
+                        'Profil collaborateur introuvable.'
+                });
+        }
+
+        await AppState.updateOne(
+            {
+                tenantID:
+                    row.tenantID
+            },
+            {
+                $set:{
+                    'activeOrders.STAFF_ACCESS.data':
+                        access,
+                    'activeOrders.STAFF_ACCESS.updatedAt':
+                        new Date().toISOString(),
+                    'activeOrders.DIRECTORY_MASTER.data':
+                        directory,
+                    'activeOrders.DIRECTORY_MASTER.updatedAt':
+                        new Date().toISOString()
+                }
+            }
+        );
+
+        row.usedAt=
+            new Date();
+
+        row.attempts=
+            attempts;
+
+        await row.save();
+
+        return res.json({
+            success:true,
+            safeTenantID:
+                row.tenantID,
+            staffId:
+                row.staffId,
+            message:
+                'Votre nouveau PIN est actif.'
+        });
+
+    }catch(error){
+        console.error(
+            '[iCHEF STAFF PIN RESET confirm V173]',
+            error
+        );
+
+        return res
+            .status(500)
+            .json({
+                success:false,
+                error:
+                    'Réinitialisation PIN impossible.'
+            });
+    }
+});
+
 app.post('/api/staff/pin-reset/complete',async(req,res)=>{
     try{
         res.setHeader('Cache-Control','no-store'); const token=String(req.body?.token||'').trim(),newPin=String(req.body?.newPin||'').replace(/\D/g,'').slice(0,12);
@@ -22193,7 +22686,7 @@ app.get('/api/staff/chat/status', async (req,res) => {
             staffId:self.id,
             rhChannelId:channelId,
             realtime:true,
-            build:'V172-STAFF-PIN-RESET-FIX'
+            build:'V173-STAFF-PIN-RESET-CODE-EMAIL'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT status V117]',error?.message || error);
@@ -22354,7 +22847,7 @@ app.post('/api/staff/chat/channels/direct', async (req,res) => {
                 participants
             },
             durationMs:Date.now()-startedAt,
-            build:'V172-STAFF-PIN-RESET-FIX'
+            build:'V173-STAFF-PIN-RESET-CODE-EMAIL'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT direct V123]',{
@@ -22403,7 +22896,7 @@ app.get('/api/staff/chat/messages', async (req,res) => {
             },
             messages:rows.reverse().map(ichefStaffChatPublicMessage),
             durationMs:Date.now()-startedAt,
-            build:'V172-STAFF-PIN-RESET-FIX'
+            build:'V173-STAFF-PIN-RESET-CODE-EMAIL'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT messages V126]',{
@@ -22489,7 +22982,7 @@ app.post('/api/staff/chat/message', async (req,res) => {
         return res.json({
             success:true,
             message:ichefStaffChatPublicMessage(row.toObject()),
-            build:'V172-STAFF-PIN-RESET-FIX'
+            build:'V173-STAFF-PIN-RESET-CODE-EMAIL'
         });
     } catch (error) {
         if (storedAttachment?.attachmentId) await ichefStaffChatDeleteAttachment(storedAttachment.attachmentId);
@@ -22577,7 +23070,7 @@ app.post('/api/staff/chat/read', async (req,res) => {
         res.json({
             success:true,
             accepted:true,
-            build:'V172-STAFF-PIN-RESET-FIX'
+            build:'V173-STAFF-PIN-RESET-CODE-EMAIL'
         });
 
         StaffChatMessage.updateMany(
@@ -22648,7 +23141,7 @@ app.get('/api/staff/video/config', async (req,res) => {
                 process.env.ICHEF_WEBRTC_TURN_USERNAME &&
                 process.env.ICHEF_WEBRTC_TURN_CREDENTIAL
             ),
-            build:'V172-STAFF-PIN-RESET-FIX'
+            build:'V173-STAFF-PIN-RESET-CODE-EMAIL'
         });
     } catch (error) {
         console.error('[iCHEF STAFF VIDEO config V128]',error?.message || error);
@@ -22779,7 +23272,7 @@ app.post('/api/staff/video/signal', async (req,res) => {
             signalId:publicSignal.signalId,
             deliveredSockets:onlineSockets,
             targetOnline:onlineSockets > 0,
-            build:'V172-STAFF-PIN-RESET-FIX'
+            build:'V173-STAFF-PIN-RESET-CODE-EMAIL'
         });
     } catch (error) {
         console.error('[iCHEF STAFF VIDEO http signal V131]',error?.message || error);
@@ -22843,7 +23336,7 @@ app.get('/api/staff/video/signals', async (req,res) => {
             success:true,
             signals:rows.map(ichefStaffVideoPublicSignalV131),
             serverTime:new Date().toISOString(),
-            build:'V172-STAFF-PIN-RESET-FIX'
+            build:'V173-STAFF-PIN-RESET-CODE-EMAIL'
         });
     } catch (error) {
         console.error('[iCHEF STAFF VIDEO poll V131]',error?.message || error);
@@ -23024,7 +23517,7 @@ app.get('/api/rh/chat/status', async (req,res) => {
             staffCount:Array.isArray(directory) ? directory.length : 0,
             realtime:true,
             privateChannels:true,
-            build:'V172-STAFF-PIN-RESET-FIX'
+            build:'V173-STAFF-PIN-RESET-CODE-EMAIL'
         });
     } catch (error) {
         console.error('[iCHEF RH CHAT status V117]',error?.message || error);
