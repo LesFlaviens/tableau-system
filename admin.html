@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
+<!-- ICHEF ADMIN V45 — STAFF RAPIDE + SW STAFF ISOLÉ + CSP CORRIGÉE -->
 <!-- ICHEF ADMIN V44 — APP STAFF : SYNCHRONISATION BRIGADE / ACCÈS SANS COURSE ASYNC -->
 <!-- ICHEF ADMIN V43 — APP STAFF INTELLIGENT : CONNECTÉ / EN ATTENTE / ACTIVATION DIRECTE -->
 <!-- ICHEF ADMIN V42 — ACTIVATION STAFF : RÉVEIL SERVEUR + TIMEOUT ROBUSTE + RETRY GET -->
@@ -23,13 +24,89 @@
     <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, private">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://tableau-system.onrender.com wss://tableau-system.onrender.com https://cdn.socket.io https://cdn.jsdelivr.net; script-src 'self' 'unsafe-inline' https://tableau-system.onrender.com https://cdn.socket.io https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://tableau-system.onrender.com wss://tableau-system.onrender.com https://cdn.socket.io https://cdn.jsdelivr.net; script-src 'self' 'unsafe-inline' https://tableau-system.onrender.com https://cdn.socket.io https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
     <title>iCHEF - Configuration Générale Sécurisée</title>
     
     <link href="https://fonts.googleapis.com/css2?family=Abril+Fatface&family=Amatic+SC&family=Anton&family=Arvo&family=Bebas+Neue&family=Bitter&family=Bodoni+Moda&family=Caveat&family=Cinzel&family=Cormorant+Garamond&family=Crimson+Text&family=Dancing+Script&family=EB+Garamond&family=Fira+Sans&family=Great+Vibes&family=Inter:wght@300;400;500;600;700;800&family=Jost&family=Lato&family=Libre+Baskerville&family=Lobster&family=Lora&family=Merriweather&family=Montserrat:wght@400;600&family=Noto+Serif&family=Nunito&family=Open+Sans&family=Oswald&family=PT+Serif&family=Pacifico&family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&family=Poppins:wght@400;600&family=Quicksand&family=Raleway&family=Righteous&family=Roboto&family=Rubik&family=Satisfy&family=Ubuntu&family=Work+Sans&family=Zilla+Slab&display=swap" rel="stylesheet">
 
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<script>
+(() => {
+  'use strict';
+
+  if (!('serviceWorker' in navigator)) return;
+
+  window.addEventListener('load', async () => {
+    try {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      let removedLegacy = false;
+
+      for (const reg of regs) {
+        const scriptURL =
+          reg.active?.scriptURL ||
+          reg.waiting?.scriptURL ||
+          reg.installing?.scriptURL ||
+          '';
+
+        let scopePath = '';
+
+        try {
+          scopePath = new URL(reg.scope).pathname;
+        } catch (_) {}
+
+        // Supprime seulement l'ancien Staff SW à scope racine.
+        if (
+          scriptURL.includes('/sw-staff.js') &&
+          scopePath === '/'
+        ) {
+          await reg.unregister();
+          removedLegacy = true;
+        }
+      }
+
+      if ('caches' in window) {
+        const keys = await caches.keys();
+
+        await Promise.all(
+          keys
+            .filter(key =>
+              key.startsWith('ichef-staff-shell-v') &&
+              key !== 'ichef-staff-shell-v170'
+            )
+            .map(key => caches.delete(key))
+        );
+      }
+
+      const controlledByLegacy =
+        Boolean(
+          navigator.serviceWorker.controller?.scriptURL
+            ?.includes('/sw-staff.js')
+        );
+
+      const reloadKey =
+        'ichef_admin_legacy_staff_sw_cleanup_v170';
+
+      if (
+        removedLegacy &&
+        controlledByLegacy &&
+        sessionStorage.getItem(reloadKey) !== '1'
+      ) {
+        sessionStorage.setItem(reloadKey, '1');
+        location.reload();
+      } else if (!controlledByLegacy) {
+        sessionStorage.removeItem(reloadKey);
+      }
+    } catch (error) {
+      console.warn(
+        '[iCHEF ADMIN V45] nettoyage ancien SW Staff :',
+        error?.message || error
+      );
+    }
+  }, { once:true });
+})();
+</script>
 
 <script>
     "use strict";
@@ -6871,6 +6948,12 @@ function renderStaffList() {
 
             const container = document.getElementById('admin-staff-list');
             if (container) container.innerHTML = html;
+
+            if (
+                typeof window.staffActivationV45SeedFromBrigade === 'function'
+            ) {
+                window.staffActivationV45SeedFromBrigade();
+            }
         }
 
 
@@ -13613,6 +13696,72 @@ function staffActivationV38EscapeAttr(value) {
     return staffActivationV38Escape(value);
 }
 
+function staffActivationV45SeedFromBrigade() {
+    if (!Array.isArray(staffAccess) || !staffAccess.length) {
+        return false;
+    }
+
+    const previous =
+        new Map(
+            (
+                Array.isArray(STAFF_ACTIVATION_V38.rows)
+                    ? STAFF_ACTIVATION_V38.rows
+                    : []
+            ).map(row => [
+                String(row?.id || ''),
+                row
+            ])
+        );
+
+    const rows = [];
+
+    for (const member of staffAccess) {
+        if (!member || member.active === false) continue;
+
+        const id = String(
+            member.id ||
+            member.staffId ||
+            member.employeeId ||
+            member.rhId ||
+            member.matricule ||
+            member.employeeNo ||
+            member.employeeNumber ||
+            member.internalId ||
+            ''
+        ).trim();
+
+        if (!id) continue;
+
+        rows.push(
+            previous.get(id) || {
+                id,
+                name:
+                    member.name ||
+                    member.displayName ||
+                    [member.firstName, member.lastName].filter(Boolean).join(' ') ||
+                    [member.prenom, member.nom].filter(Boolean).join(' ') ||
+                    'Collaborateur',
+                role:
+                    member.role ||
+                    member.dept ||
+                    'STAFF',
+                whatsappReady:false,
+                maskedPhone:'',
+                status:'SYNCHRO',
+                lastDeviceAt:null,
+                activationExpiresAt:null
+            }
+        );
+    }
+
+    if (!rows.length) return false;
+
+    STAFF_ACTIVATION_V38.rows = rows;
+    renderStaffActivationAdmin();
+
+    return true;
+}
+
 function renderStaffActivationAdmin() {
     const root = document.getElementById('staff-activation-admin-list');
     const message = document.getElementById('staff-activation-admin-message');
@@ -13658,7 +13807,9 @@ function renderStaffActivationAdmin() {
                 ? 'AJOUTER UN APPAREIL'
                 : status === 'EN_ATTENTE'
                     ? 'RÉGÉNÉRER L’ACCÈS'
-                    : 'ACTIVER UN APPAREIL';
+                    : status === 'SYNCHRO'
+                        ? 'VÉRIFICATION…'
+                        : 'ACTIVER UN APPAREIL';
 
         const phoneLine = row.whatsappReady
             ? `WhatsApp ${staffActivationV38Escape(row.maskedPhone || 'configuré')}`
@@ -13687,7 +13838,7 @@ function renderStaffActivationAdmin() {
                     ${staffActivationV38Escape(status.replace('_',' '))}
                 </span>
                 <div class="staff-activation-v40-actions">
-                    <button type="button" class="${status === 'NON_ACTIVÉ' ? 'btn-save' : 'btn-outline'}" onclick="openStaffActivationFromBrigade(decodeURIComponent('${encodeURIComponent(String(row.id || ""))}'))">${buttonLabel}</button>
+                    <button type="button" class="${status === 'NON_ACTIVÉ' ? 'btn-save' : 'btn-outline'}" ${status === 'SYNCHRO' ? 'disabled' : ''} onclick="openStaffActivationFromBrigade(decodeURIComponent('${encodeURIComponent(String(row.id || ""))}'))">${buttonLabel}</button>
                     <button class="btn-outline" type="button" onclick="requestStaffPinResetAdminV40(decodeURIComponent('${encodeURIComponent(String(row.id || ""))}'))">RÉINITIALISER PIN</button>
                 </div>
             </div>
@@ -13703,6 +13854,13 @@ async function loadStaffActivationAdmin({ silent = false, force = false } = {}) 
         STAFF_ACTIVATION_V38.loadPromise
     ) {
         return STAFF_ACTIVATION_V38.loadPromise;
+    }
+
+    if (
+        !Array.isArray(STAFF_ACTIVATION_V38.rows) ||
+        !STAFF_ACTIVATION_V38.rows.length
+    ) {
+        staffActivationV45SeedFromBrigade();
     }
 
     const root =
@@ -14368,6 +14526,7 @@ function printCurrentStaffActivation() {
 
 window.loadStaffActivationAdmin = loadStaffActivationAdmin;
 window.renderStaffActivationAdmin = renderStaffActivationAdmin;
+window.staffActivationV45SeedFromBrigade = staffActivationV45SeedFromBrigade;
 
 const STAFF_RH_V40={
     rows:[],
