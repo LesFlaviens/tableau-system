@@ -1242,7 +1242,7 @@ app.get('/api/staff/build', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.json({
         success: true,
-        build: 'V167-COLLABORATEURS-RH-PIN-EMAIL-SECURE',
+        build: 'V168-STAFF-ACTIVATION-PERF-TIMEOUT',
         staffPortal: true,
         signedSession: true,
         ichefConnect: true,
@@ -16222,6 +16222,9 @@ ichefStaffTrustedDeviceSchema.index(
     {tenantID:1,staffId:1,deviceHash:1},
     {unique:true}
 );
+ichefStaffTrustedDeviceSchema.index(
+    {tenantID:1,staffId:1,revokedAt:1,lastUsedAt:-1}
+);
 
 const IchefStaffTrustedDevice =
     mongoose.models.IchefStaffTrustedDevice ||
@@ -16556,6 +16559,16 @@ const ichefStaffActivationSchema = new mongoose.Schema({
 
 ichefStaffActivationSchema.index(
     {tenantID:1,staffId:1,createdAt:-1}
+);
+ichefStaffActivationSchema.index(
+    {
+        tenantID:1,
+        staffId:1,
+        usedAt:1,
+        revokedAt:1,
+        expiresAt:1,
+        createdAt:-1
+    }
 );
 
 const IchefStaffActivation =
@@ -17596,7 +17609,7 @@ app.get(
         res.setHeader('Cache-Control','no-store');
         return res.json({
             success:true,
-            build:'V167-COLLABORATEURS-RH-PIN-EMAIL-SECURE',
+            build:'V168-STAFF-ACTIVATION-PERF-TIMEOUT',
             staffLoginRoute:'/api/staff/login',
             authentication:'STAFF_ID_RH_PLUS_PIN',
             signedSession:true,
@@ -18407,36 +18420,59 @@ app.get('/api/staff/activation/admin/staff',async(req,res)=>{
 
         const ids=[...map.keys()];
 
-        const devices=ids.length
-            ? await IchefStaffTrustedDevice.find(
-                {
-                    tenantID:auth.tenantID,
-                    staffId:{$in:ids},
-                    revokedAt:null
-                },
-                {staffId:1,lastUsedAt:1}
-            ).lean()
-            : [];
+        const activationListDbStartedAt =
+            Date.now();
 
-        const activeRows=ids.length
-            ? await IchefStaffActivation.find(
-                {
-                    tenantID:auth.tenantID,
-                    staffId:{$in:ids},
-                    usedAt:null,
-                    revokedAt:null,
-                    expiresAt:{$gt:new Date()}
-                },
-                {
-                    staffId:1,
-                    activationId:1,
-                    expiresAt:1,
-                    createdAt:1
-                }
-            )
-            .sort({createdAt:-1})
-            .lean()
-            : [];
+        const [
+            devices,
+            activeRows
+        ] = ids.length
+            ? await Promise.all([
+                IchefStaffTrustedDevice.find(
+                    {
+                        tenantID:auth.tenantID,
+                        staffId:{$in:ids},
+                        revokedAt:null
+                    },
+                    {
+                        staffId:1,
+                        lastUsedAt:1
+                    }
+                )
+                .lean(),
+
+                IchefStaffActivation.find(
+                    {
+                        tenantID:auth.tenantID,
+                        staffId:{$in:ids},
+                        usedAt:null,
+                        revokedAt:null,
+                        expiresAt:{$gt:new Date()}
+                    },
+                    {
+                        staffId:1,
+                        activationId:1,
+                        expiresAt:1,
+                        createdAt:1
+                    }
+                )
+                .sort({createdAt:-1})
+                .lean()
+            ])
+            : [[],[]];
+
+        res.setHeader(
+            'Server-Timing',
+            `staff-activation-db;dur=${Math.max(
+                0,
+                Date.now()-activationListDbStartedAt
+            )}`
+        );
+
+        res.setHeader(
+            'X-iCHEF-Staff-Activation-Build',
+            'V168'
+        );
 
         const trustedMap=new Map();
 
@@ -21733,7 +21769,7 @@ app.get('/api/staff/chat/status', async (req,res) => {
             staffId:self.id,
             rhChannelId:channelId,
             realtime:true,
-            build:'V167-COLLABORATEURS-RH-PIN-EMAIL-SECURE'
+            build:'V168-STAFF-ACTIVATION-PERF-TIMEOUT'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT status V117]',error?.message || error);
@@ -21894,7 +21930,7 @@ app.post('/api/staff/chat/channels/direct', async (req,res) => {
                 participants
             },
             durationMs:Date.now()-startedAt,
-            build:'V167-COLLABORATEURS-RH-PIN-EMAIL-SECURE'
+            build:'V168-STAFF-ACTIVATION-PERF-TIMEOUT'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT direct V123]',{
@@ -21943,7 +21979,7 @@ app.get('/api/staff/chat/messages', async (req,res) => {
             },
             messages:rows.reverse().map(ichefStaffChatPublicMessage),
             durationMs:Date.now()-startedAt,
-            build:'V167-COLLABORATEURS-RH-PIN-EMAIL-SECURE'
+            build:'V168-STAFF-ACTIVATION-PERF-TIMEOUT'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT messages V126]',{
@@ -22029,7 +22065,7 @@ app.post('/api/staff/chat/message', async (req,res) => {
         return res.json({
             success:true,
             message:ichefStaffChatPublicMessage(row.toObject()),
-            build:'V167-COLLABORATEURS-RH-PIN-EMAIL-SECURE'
+            build:'V168-STAFF-ACTIVATION-PERF-TIMEOUT'
         });
     } catch (error) {
         if (storedAttachment?.attachmentId) await ichefStaffChatDeleteAttachment(storedAttachment.attachmentId);
@@ -22117,7 +22153,7 @@ app.post('/api/staff/chat/read', async (req,res) => {
         res.json({
             success:true,
             accepted:true,
-            build:'V167-COLLABORATEURS-RH-PIN-EMAIL-SECURE'
+            build:'V168-STAFF-ACTIVATION-PERF-TIMEOUT'
         });
 
         StaffChatMessage.updateMany(
@@ -22188,7 +22224,7 @@ app.get('/api/staff/video/config', async (req,res) => {
                 process.env.ICHEF_WEBRTC_TURN_USERNAME &&
                 process.env.ICHEF_WEBRTC_TURN_CREDENTIAL
             ),
-            build:'V167-COLLABORATEURS-RH-PIN-EMAIL-SECURE'
+            build:'V168-STAFF-ACTIVATION-PERF-TIMEOUT'
         });
     } catch (error) {
         console.error('[iCHEF STAFF VIDEO config V128]',error?.message || error);
@@ -22319,7 +22355,7 @@ app.post('/api/staff/video/signal', async (req,res) => {
             signalId:publicSignal.signalId,
             deliveredSockets:onlineSockets,
             targetOnline:onlineSockets > 0,
-            build:'V167-COLLABORATEURS-RH-PIN-EMAIL-SECURE'
+            build:'V168-STAFF-ACTIVATION-PERF-TIMEOUT'
         });
     } catch (error) {
         console.error('[iCHEF STAFF VIDEO http signal V131]',error?.message || error);
@@ -22383,7 +22419,7 @@ app.get('/api/staff/video/signals', async (req,res) => {
             success:true,
             signals:rows.map(ichefStaffVideoPublicSignalV131),
             serverTime:new Date().toISOString(),
-            build:'V167-COLLABORATEURS-RH-PIN-EMAIL-SECURE'
+            build:'V168-STAFF-ACTIVATION-PERF-TIMEOUT'
         });
     } catch (error) {
         console.error('[iCHEF STAFF VIDEO poll V131]',error?.message || error);
@@ -22564,7 +22600,7 @@ app.get('/api/rh/chat/status', async (req,res) => {
             staffCount:Array.isArray(directory) ? directory.length : 0,
             realtime:true,
             privateChannels:true,
-            build:'V167-COLLABORATEURS-RH-PIN-EMAIL-SECURE'
+            build:'V168-STAFF-ACTIVATION-PERF-TIMEOUT'
         });
     } catch (error) {
         console.error('[iCHEF RH CHAT status V117]',error?.message || error);
