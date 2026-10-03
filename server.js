@@ -1059,7 +1059,7 @@ app.get('/sw-staff.js', (req, res) => {
     res.setHeader('Surrogate-Control', 'no-store');
 
     // sw-staff.js est à la racine et peut donc contrôler portail-staff.html.
-    res.setHeader('Service-Worker-Allowed', '/');
+    res.setHeader('Service-Worker-Allowed', '/portail-staff.html');
     res.type('application/javascript; charset=utf-8');
 
     return res.sendFile(
@@ -1105,6 +1105,15 @@ etag: true,
 lastModified: true,
 setHeaders: (res, filePath) => {
 const lower = String(filePath || '').toLowerCase();
+
+if (lower.endsWith('admin.html')) {
+res.setHeader(
+'Content-Security-Policy',
+"frame-ancestors 'none'"
+);
+res.setHeader('X-Frame-Options', 'DENY');
+}
+
 if (
 lower.endsWith('.html') ||
 lower.endsWith('.htm') ||
@@ -1242,7 +1251,7 @@ app.get('/api/staff/build', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.json({
         success: true,
-        build: 'V168-STAFF-ACTIVATION-PERF-TIMEOUT',
+        build: 'V172-STAFF-PIN-RESET-FIX',
         staffPortal: true,
         signedSession: true,
         ichefConnect: true,
@@ -16350,57 +16359,172 @@ function ichefStaffPlatform(req={},body={}){
 }
 
 async function ichefStaffFindActiveSecurityProfile(tenantID,staffId){
-    const safeTenant=cleanString(tenantID),id=String(staffId||'').trim();
-    if(!safeTenant||!id)return null;
+    const safeTenant=
+        cleanString(tenantID);
 
-    const tenant=await Tenant.findOne(
-        {tenantID:safeTenant},
-        {tenantID:1,status:1,archivedAt:1,demoExpiration:1}
-    ).lean();
+    const requestedId=
+        String(staffId||'').trim();
+
+    if(!safeTenant || !requestedId){
+        return null;
+    }
+
+    const tenant=
+        await Tenant.findOne(
+            {tenantID:safeTenant},
+            {
+                tenantID:1,
+                status:1,
+                archivedAt:1,
+                demoExpiration:1
+            }
+        ).lean();
 
     if(
         !tenant ||
         tenant.archivedAt ||
-        String(tenant.status||'').toUpperCase()==='SUSPENDU' ||
-        (tenant.demoExpiration && new Date()>new Date(tenant.demoExpiration))
-    ) return null;
+        String(tenant.status||'')
+            .toUpperCase()==='SUSPENDU' ||
+        (
+            tenant.demoExpiration &&
+            new Date()>new Date(tenant.demoExpiration)
+        )
+    ){
+        return null;
+    }
 
-    const state=await AppState.findOne(
-        {tenantID:safeTenant},
-        {'activeOrders.STAFF_ACCESS.data':1,'activeOrders.DIRECTORY_MASTER.data':1}
-    ).lean();
+    const state=
+        await AppState.findOne(
+            {tenantID:safeTenant},
+            {
+                'activeOrders.STAFF_ACCESS.data':1,
+                'activeOrders.DIRECTORY_MASTER.data':1
+            }
+        ).lean();
 
-    const access=Array.isArray(state?.activeOrders?.STAFF_ACCESS?.data)
-        ? state.activeOrders.STAFF_ACCESS.data : [];
-    const directory=Array.isArray(state?.activeOrders?.DIRECTORY_MASTER?.data)
-        ? state.activeOrders.DIRECTORY_MASTER.data : [];
+    const access=
+        Array.isArray(
+            state?.activeOrders?.STAFF_ACCESS?.data
+        )
+            ? state.activeOrders.STAFF_ACCESS.data
+            : [];
 
-    let member=access.find(x=>x?.active!==false && String(x?.id||'')===id) || null;
+    const directory=
+        Array.isArray(
+            state?.activeOrders?.DIRECTORY_MASTER?.data
+        )
+            ? state.activeOrders.DIRECTORY_MASTER.data
+            : [];
+
+    const aliasesOf =
+        item=>
+            ichefStaffActivationAliases(item);
+
+    let member=
+        access.find(item=>
+            item?.active!==false &&
+            aliasesOf(item).includes(requestedId)
+        ) || null;
+
     let directoryEntry=null;
 
-    const idsOf=x=>[
-        x?.id,x?.staffId,x?.employeeId,x?.rhId,x?.matricule,x?.employeeNo,x?.employeeNumber,x?.internalId
-    ].filter(v=>v!==undefined&&v!==null&&String(v).trim()!=='').map(String);
-
     if(member){
-        const memberIds=idsOf(member);
-        directoryEntry=directory.find(x=>x?.active!==false && idsOf(x).some(v=>memberIds.includes(v))) || null;
+        const memberAliases=
+            aliasesOf(member);
+
+        directoryEntry=
+            directory.find(item=>
+                item?.active!==false &&
+                aliasesOf(item).some(alias=>
+                    memberAliases.includes(alias)
+                )
+            ) || null;
+
     }else{
-        directoryEntry=directory.find(x=>x?.active!==false && idsOf(x).includes(id)) || null;
+        directoryEntry=
+            directory.find(item=>
+                item?.active!==false &&
+                aliasesOf(item).includes(requestedId)
+            ) || null;
+
         if(directoryEntry){
-            member={
-                ...directoryEntry,
-                id,
-                name:directoryEntry.name ||
-                    [directoryEntry.firstName,directoryEntry.lastName].filter(Boolean).join(' ') ||
-                    [directoryEntry.prenom,directoryEntry.nom].filter(Boolean).join(' ') ||
-                    'Collaborateur'
-            };
+            const directoryAliases=
+                aliasesOf(directoryEntry);
+
+            // Si DIRECTORY_MASTER est relié à STAFF_ACCESS par n'importe quel
+            // identifiant technique, STAFF_ACCESS reste la fiche canonique.
+            member=
+                access.find(item=>
+                    item?.active!==false &&
+                    aliasesOf(item).some(alias=>
+                        directoryAliases.includes(alias)
+                    )
+                ) || null;
+
+            if(!member){
+                const canonicalDirectoryId=
+                    ichefStaffActivationTechnicalId(
+                        directoryEntry
+                    ) ||
+                    requestedId;
+
+                member={
+                    ...directoryEntry,
+                    id:canonicalDirectoryId,
+                    name:
+                        directoryEntry.name ||
+                        [
+                            directoryEntry.firstName,
+                            directoryEntry.lastName
+                        ]
+                        .filter(Boolean)
+                        .join(' ') ||
+                        [
+                            directoryEntry.prenom,
+                            directoryEntry.nom
+                        ]
+                        .filter(Boolean)
+                        .join(' ') ||
+                        'Collaborateur'
+                };
+            }
         }
     }
 
-    if(!member)return null;
-    return {tenant,state,member,directoryEntry:directoryEntry||{}};
+    if(!member){
+        return null;
+    }
+
+    const canonicalStaffId=
+        ichefStaffActivationTechnicalId(member) ||
+        requestedId;
+
+    const aliases=
+        [
+            ...aliasesOf(member),
+            ...aliasesOf(directoryEntry||{})
+        ]
+        .filter(Boolean)
+        .filter(
+            (value,index,array)=>
+                array.indexOf(value)===index
+        );
+
+    if(
+        canonicalStaffId &&
+        !aliases.includes(canonicalStaffId)
+    ){
+        aliases.unshift(canonicalStaffId);
+    }
+
+    return {
+        tenant,
+        state,
+        member,
+        directoryEntry:directoryEntry||{},
+        canonicalStaffId,
+        aliases
+    };
 }
 
 function ichefStaffBuildLoginPayload({
@@ -16622,6 +16746,29 @@ function ichefStaffActivationTechnicalId(item={}){
     return String(value||'').trim();
 }
 
+function ichefStaffActivationAliases(item={}){
+    return [
+        item?.id,
+        item?.staffId,
+        item?.employeeId,
+        item?.rhId,
+        item?.matricule,
+        item?.employeeNo,
+        item?.employeeNumber,
+        item?.internalId
+    ]
+    .filter(value=>
+        value!==undefined &&
+        value!==null &&
+        String(value).trim()!==''
+    )
+    .map(value=>String(value).trim())
+    .filter(
+        (value,index,array)=>
+            array.indexOf(value)===index
+    );
+}
+
 function ichefStaffActivationDisplayName(item={}){
     return String(
         item?.name ||
@@ -16717,21 +16864,41 @@ async function ichefStaffActivationLoadCredential(input={}){
             return {ok:false,error:'Activation invalide ou expirée.'};
         }
 
-        const rows=await IchefStaffActivation.find({
-            tenantID,
-            staffId,
-            usedAt:null,
-            revokedAt:null,
-            expiresAt:{$gt:new Date()}
-        }).sort({createdAt:-1}).limit(4);
+        const profile=
+            await ichefStaffFindActiveSecurityProfile(
+                tenantID,
+                staffId
+            ).catch(()=>null);
 
-        const codeHash=ichefStaffActivationHmac(
-            `${tenantID}|${staffId}|${code}`
-        );
+        const aliases=
+            Array.isArray(profile?.aliases) &&
+            profile.aliases.length
+                ? profile.aliases
+                : [staffId];
 
-        row=rows.find(candidate=>
-            ichefStaffActivationSafeEqual(codeHash,candidate.shortCodeHash)
-        ) || null;
+        const rows=
+            await IchefStaffActivation.find({
+                tenantID,
+                staffId:{$in:aliases},
+                usedAt:null,
+                revokedAt:null,
+                expiresAt:{$gt:new Date()}
+            })
+            .sort({createdAt:-1})
+            .limit(12);
+
+        row=
+            rows.find(candidate=>{
+                const candidateHash=
+                    ichefStaffActivationHmac(
+                        `${tenantID}|${String(candidate.staffId||'')}|${code}`
+                    );
+
+                return ichefStaffActivationSafeEqual(
+                    candidateHash,
+                    candidate.shortCodeHash
+                );
+            }) || null;
 
         if(!row)return {ok:false,error:'Activation invalide ou expirée.'};
     }
@@ -17609,7 +17776,7 @@ app.get(
         res.setHeader('Cache-Control','no-store');
         return res.json({
             success:true,
-            build:'V168-STAFF-ACTIVATION-PERF-TIMEOUT',
+            build:'V172-STAFF-PIN-RESET-FIX',
             staffLoginRoute:'/api/staff/login',
             authentication:'STAFF_ID_RH_PLUS_PIN',
             signedSession:true,
@@ -18390,35 +18557,154 @@ app.get('/api/staff/activation/admin/staff',async(req,res)=>{
             state?.activeOrders?.DIRECTORY_MASTER?.data
         ) ? state.activeOrders.DIRECTORY_MASTER.data : [];
 
-        const map=new Map();
+        const records=[];
+        const aliasToRecord=new Map();
 
-        for(const item of [...access,...directory]){
-            if(!item || item.active===false)continue;
+        const mergeActivationIdentity=(item,source)=>{
+            if(!item || item.active===false){
+                return;
+            }
 
-            const id=ichefStaffActivationTechnicalId(item);
-            if(!id)continue;
+            const aliases=
+                ichefStaffActivationAliases(item);
 
-            const existing=map.get(id)||{};
+            if(!aliases.length){
+                return;
+            }
 
-            map.set(id,{
-                id,
-                name:
-                    ichefStaffActivationDisplayName(item) ||
-                    existing.name ||
-                    'Collaborateur',
-                role:
-                    ichefStaffActivationRole(item) ||
-                    existing.role ||
-                    'STAFF',
-                phone:ichefStaffPhoneFromRecords(
+            let record=null;
+
+            for(const alias of aliases){
+                const existing=
+                    aliasToRecord.get(alias);
+
+                if(existing){
+                    record=existing;
+                    break;
+                }
+            }
+
+            if(!record){
+                const id=
+                    ichefStaffActivationTechnicalId(item) ||
+                    aliases[0];
+
+                record={
+                    id,
+                    aliases:new Set(),
+                    name:'',
+                    role:'',
+                    phone:'',
+                    raw:{},
+                    hasStaffAccess:false
+                };
+
+                records.push(record);
+            }
+
+            // STAFF_ACCESS est la référence canonique lorsque les deux
+            // systèmes possèdent des identifiants reliés.
+            if(
+                source==='STAFF_ACCESS' &&
+                !record.hasStaffAccess
+            ){
+                const staffAccessId=
+                    ichefStaffActivationTechnicalId(item);
+
+                if(staffAccessId){
+                    record.id=staffAccessId;
+                }
+
+                record.hasStaffAccess=true;
+            }
+
+            for(const alias of aliases){
+                record.aliases.add(alias);
+                aliasToRecord.set(alias,record);
+            }
+
+            const displayName=
+                ichefStaffActivationDisplayName(item);
+
+            const displayRole=
+                ichefStaffActivationRole(item);
+
+            const phone=
+                ichefStaffPhoneFromRecords(
                     item,
-                    existing.raw||{}
-                ),
-                raw:{...existing.raw,...item}
-            });
+                    record.raw||{}
+                );
+
+            if(
+                source==='STAFF_ACCESS' ||
+                !record.name
+            ){
+                record.name=
+                    displayName ||
+                    record.name ||
+                    'Collaborateur';
+            }
+
+            if(
+                source==='STAFF_ACCESS' ||
+                !record.role
+            ){
+                record.role=
+                    displayRole ||
+                    record.role ||
+                    'STAFF';
+            }
+
+            if(phone){
+                record.phone=phone;
+            }
+
+            record.raw={
+                ...record.raw,
+                ...item
+            };
+        };
+
+        // Ordre volontaire : STAFF_ACCESS d'abord, DIRECTORY_MASTER ensuite.
+        for(const item of access){
+            mergeActivationIdentity(
+                item,
+                'STAFF_ACCESS'
+            );
         }
 
-        const ids=[...map.keys()];
+        for(const item of directory){
+            mergeActivationIdentity(
+                item,
+                'DIRECTORY_MASTER'
+            );
+        }
+
+        const allAliases=
+            [
+                ...new Set(
+                    records.flatMap(record=>
+                        [...record.aliases]
+                    )
+                )
+            ];
+
+        const aliasToCanonical=
+            new Map();
+
+        for(const record of records){
+            for(const alias of record.aliases){
+                aliasToCanonical.set(
+                    alias,
+                    record.id
+                );
+            }
+
+            aliasToCanonical.set(
+                record.id,
+                record.id
+            );
+        }
 
         const activationListDbStartedAt =
             Date.now();
@@ -18426,12 +18712,12 @@ app.get('/api/staff/activation/admin/staff',async(req,res)=>{
         const [
             devices,
             activeRows
-        ] = ids.length
+        ] = allAliases.length
             ? await Promise.all([
                 IchefStaffTrustedDevice.find(
                     {
                         tenantID:auth.tenantID,
-                        staffId:{$in:ids},
+                        staffId:{$in:allAliases},
                         revokedAt:null
                     },
                     {
@@ -18444,7 +18730,7 @@ app.get('/api/staff/activation/admin/staff',async(req,res)=>{
                 IchefStaffActivation.find(
                     {
                         tenantID:auth.tenantID,
-                        staffId:{$in:ids},
+                        staffId:{$in:allAliases},
                         usedAt:null,
                         revokedAt:null,
                         expiresAt:{$gt:new Date()}
@@ -18471,13 +18757,19 @@ app.get('/api/staff/activation/admin/staff',async(req,res)=>{
 
         res.setHeader(
             'X-iCHEF-Staff-Activation-Build',
-            'V168'
+            'V170'
         );
 
         const trustedMap=new Map();
 
         for(const d of devices){
-            const id=String(d.staffId||'');
+            const rawId=
+                String(d.staffId||'');
+
+            const id=
+                aliasToCanonical.get(rawId) ||
+                rawId;
+
             const previous=trustedMap.get(id);
 
             if(
@@ -18492,19 +18784,28 @@ app.get('/api/staff/activation/admin/staff',async(req,res)=>{
         const pendingMap=new Map();
 
         for(const row of activeRows){
-            const id=String(row.staffId||'');
+            const rawId=
+                String(row.staffId||'');
+
+            const id=
+                aliasToCanonical.get(rawId) ||
+                rawId;
+
             if(!pendingMap.has(id)){
                 pendingMap.set(id,row);
             }
         }
 
-        const staff=[...map.values()]
+        const staff=records
             .map(item=>{
                 const trusted=trustedMap.get(item.id);
                 const pending=pendingMap.get(item.id);
 
                 return {
                     id:item.id,
+                    aliases:[
+                        ...item.aliases
+                    ],
                     name:item.name,
                     role:item.role,
                     whatsappReady:Boolean(item.phone),
@@ -18570,12 +18871,12 @@ app.post('/api/staff/activation/admin/create',async(req,res)=>{
             });
         }
 
-        const staffId=
+        const requestedStaffId=
             String(req.body?.staffId||'')
                 .trim()
                 .slice(0,160);
 
-        if(!staffId){
+        if(!requestedStaffId){
             return res.status(400).json({
                 success:false,
                 error:'Collaborateur manquant.'
@@ -18585,7 +18886,7 @@ app.post('/api/staff/activation/admin/create',async(req,res)=>{
         const profile=
             await ichefStaffFindActiveSecurityProfile(
                 auth.tenantID,
-                staffId
+                requestedStaffId
             );
 
         if(!profile){
@@ -18594,6 +18895,17 @@ app.post('/api/staff/activation/admin/create',async(req,res)=>{
                 error:'Collaborateur introuvable ou désactivé.'
             });
         }
+
+        const staffId=
+            String(
+                profile.canonicalStaffId ||
+                ichefStaffActivationTechnicalId(
+                    profile.member
+                ) ||
+                requestedStaffId
+            )
+            .trim()
+            .slice(0,160);
 
         const phone=
             ichefStaffPhoneFromRecords(
@@ -18800,7 +19112,19 @@ app.post('/api/staff/activation/admin/revoke',async(req,res)=>{
         if(activationId){
             filter.activationId=activationId;
         }else if(staffId){
-            filter.staffId=staffId;
+            const profile=
+                await ichefStaffFindActiveSecurityProfile(
+                    auth.tenantID,
+                    staffId
+                ).catch(()=>null);
+
+            const aliases=
+                Array.isArray(profile?.aliases) &&
+                profile.aliases.length
+                    ? profile.aliases
+                    : [staffId];
+
+            filter.staffId={$in:aliases};
         }else{
             return res.status(400).json({
                 success:false,
@@ -18848,7 +19172,20 @@ function ichefStaffMaskEmail(value=''){
 }
 function ichefStaffProfileEmail(profile={}){
     for(const row of [profile?.member,profile?.directoryEntry].filter(Boolean)){
-        for(const value of [row?.email,row?.mail,row?.workEmail,row?.personalEmail,row?.emailPro,row?.contact?.email]){
+        for(const value of [
+            row?.email,
+            row?.mail,
+            row?.workEmail,
+            row?.personalEmail,
+            row?.emailPro,
+            row?.contactEmail,
+            row?.emailPersonal,
+            row?.emailPersonnel,
+            row?.emailProfessional,
+            row?.emailProfessionnel,
+            row?.contact?.email,
+            row?.contact?.mail
+        ]){
             const email=String(value||'').trim().toLowerCase();
             if(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))return email;
         }
@@ -18858,6 +19195,24 @@ function ichefStaffProfileEmail(profile={}){
 function ichefStaffResetIdentityValues(item={}){
     return [item?.id,item?.staffId,item?.employeeId,item?.rhId,item?.matricule,item?.payrollEmployeeNo,item?.employeeNo,item?.employeeNumber,item?.internalId,item?.code,item?.badgeId,item?.loginId,item?.username]
       .filter(v=>v!==undefined&&v!==null&&String(v).trim()!=='').map(v=>String(v).trim());
+}
+
+function ichefStaffResetCanonicalId(profile={}){
+    const candidates=[
+        profile?.member,
+        profile?.directoryEntry
+    ].filter(Boolean);
+
+    for(const item of candidates){
+        const values=
+            ichefStaffResetIdentityValues(item);
+
+        if(values.length){
+            return String(values[0]||'').trim();
+        }
+    }
+
+    return '';
 }
 async function ichefStaffResolveProfileForReset(tenantID,loginId){
     const safeTenant=cleanString(tenantID),wanted=String(loginId||'').trim();
@@ -18882,9 +19237,34 @@ function ichefStaffResetMailer(){
     return {user,transporter:nodemailer.createTransport({host,port,secure,auth:{user,pass},connectionTimeout:15000,greetingTimeout:15000,socketTimeout:20000})};
 }
 async function ichefStaffCreatePinReset({req,profile,requestedFrom='SELF'}){
-    const tenantID=cleanString(profile?.tenant?.tenantID||profile?.state?.tenantID||req?.body?.tenantID||req?.headers?.['x-ichef-tenant']||'');
-    const staffId=String(profile?.member?.id||'').trim(),email=ichefStaffProfileEmail(profile);
-    if(!tenantID||!staffId||!email)return {ok:false,code:'STAFF_PIN_RESET_EMAIL_MISSING'};
+    const tenantID=
+        cleanString(
+            profile?.tenant?.tenantID ||
+            profile?.state?.tenantID ||
+            req?.body?.tenantID ||
+            req?.headers?.['x-ichef-tenant'] ||
+            ''
+        );
+
+    const staffId=
+        ichefStaffResetCanonicalId(profile);
+
+    const email=
+        ichefStaffProfileEmail(profile);
+
+    if(!tenantID || !staffId){
+        return {
+            ok:false,
+            code:'STAFF_PIN_RESET_PROFILE_INVALID'
+        };
+    }
+
+    if(!email){
+        return {
+            ok:false,
+            code:'STAFF_PIN_RESET_EMAIL_MISSING'
+        };
+    }
     const mail=ichefStaffResetMailer(); if(!mail)return {ok:false,code:'STAFF_PIN_RESET_MAIL_UNAVAILABLE'};
     const resetId=nodeCrypto.randomBytes(18).toString('base64url'),secret=nodeCrypto.randomBytes(32).toString('base64url'),token=`pr1.${resetId}.${secret}`;
     const now=new Date(),expiresAt=new Date(now.getTime()+20*60*1000);
@@ -18928,9 +19308,53 @@ app.post('/api/staff/pin-reset/request',async(req,res)=>{
         if(!tenantID||!staffId)return generic();
         const ip=String(req.headers?.['x-forwarded-for']||req.socket?.remoteAddress||'').split(',')[0].trim().slice(0,120),key=`${tenantID}|${staffId.toLowerCase()}|${ip}`;
         const last=Number(ichefStaffPinResetBuckets.get(key)||0); if(Date.now()-last<60000)return generic(); ichefStaffPinResetBuckets.set(key,Date.now());
-        const profile=await ichefStaffResolveProfileForReset(tenantID,staffId); if(profile)await ichefStaffCreatePinReset({req,profile,requestedFrom:'SELF'}).catch(e=>console.warn('[iCHEF STAFF PIN RESET mail]',e?.message||e));
+        const profile=
+            await ichefStaffResolveProfileForReset(
+                tenantID,
+                staffId
+            );
+
+        if(profile){
+            try{
+                const result=
+                    await ichefStaffCreatePinReset({
+                        req,
+                        profile,
+                        requestedFrom:'SELF'
+                    });
+
+                if(!result?.ok){
+                    console.warn(
+                        '[iCHEF STAFF PIN RESET SELF]',
+                        {
+                            tenantID,
+                            code:
+                                result?.code ||
+                                'UNKNOWN'
+                        }
+                    );
+                }
+            }catch(error){
+                console.warn(
+                    '[iCHEF STAFF PIN RESET mail]',
+                    error?.message ||
+                    error
+                );
+            }
+        }else{
+            console.warn(
+                '[iCHEF STAFF PIN RESET SELF]',
+                {
+                    tenantID,
+                    code:'PROFILE_NOT_RESOLVED'
+                }
+            );
+        }
+
+        // Réponse volontairement générique : ne révèle jamais
+        // si un identifiant ou un email existe.
         return generic();
-    }catch(error){console.error('[iCHEF STAFF PIN RESET request V166]',error);return res.json({success:true,message:'Si le compte et son email sont configurés, un lien sécurisé vient d’être envoyé.'});}
+    }catch(error){console.error('[iCHEF STAFF PIN RESET request V172]',error);return res.json({success:true,message:'Si le compte et son email sont configurés, un lien sécurisé vient d’être envoyé.'});}
 });
 app.post('/api/staff/pin-reset/admin/request',async(req,res)=>{
     try{
@@ -21769,7 +22193,7 @@ app.get('/api/staff/chat/status', async (req,res) => {
             staffId:self.id,
             rhChannelId:channelId,
             realtime:true,
-            build:'V168-STAFF-ACTIVATION-PERF-TIMEOUT'
+            build:'V172-STAFF-PIN-RESET-FIX'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT status V117]',error?.message || error);
@@ -21930,7 +22354,7 @@ app.post('/api/staff/chat/channels/direct', async (req,res) => {
                 participants
             },
             durationMs:Date.now()-startedAt,
-            build:'V168-STAFF-ACTIVATION-PERF-TIMEOUT'
+            build:'V172-STAFF-PIN-RESET-FIX'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT direct V123]',{
@@ -21979,7 +22403,7 @@ app.get('/api/staff/chat/messages', async (req,res) => {
             },
             messages:rows.reverse().map(ichefStaffChatPublicMessage),
             durationMs:Date.now()-startedAt,
-            build:'V168-STAFF-ACTIVATION-PERF-TIMEOUT'
+            build:'V172-STAFF-PIN-RESET-FIX'
         });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT messages V126]',{
@@ -22065,7 +22489,7 @@ app.post('/api/staff/chat/message', async (req,res) => {
         return res.json({
             success:true,
             message:ichefStaffChatPublicMessage(row.toObject()),
-            build:'V168-STAFF-ACTIVATION-PERF-TIMEOUT'
+            build:'V172-STAFF-PIN-RESET-FIX'
         });
     } catch (error) {
         if (storedAttachment?.attachmentId) await ichefStaffChatDeleteAttachment(storedAttachment.attachmentId);
@@ -22153,7 +22577,7 @@ app.post('/api/staff/chat/read', async (req,res) => {
         res.json({
             success:true,
             accepted:true,
-            build:'V168-STAFF-ACTIVATION-PERF-TIMEOUT'
+            build:'V172-STAFF-PIN-RESET-FIX'
         });
 
         StaffChatMessage.updateMany(
@@ -22224,7 +22648,7 @@ app.get('/api/staff/video/config', async (req,res) => {
                 process.env.ICHEF_WEBRTC_TURN_USERNAME &&
                 process.env.ICHEF_WEBRTC_TURN_CREDENTIAL
             ),
-            build:'V168-STAFF-ACTIVATION-PERF-TIMEOUT'
+            build:'V172-STAFF-PIN-RESET-FIX'
         });
     } catch (error) {
         console.error('[iCHEF STAFF VIDEO config V128]',error?.message || error);
@@ -22355,7 +22779,7 @@ app.post('/api/staff/video/signal', async (req,res) => {
             signalId:publicSignal.signalId,
             deliveredSockets:onlineSockets,
             targetOnline:onlineSockets > 0,
-            build:'V168-STAFF-ACTIVATION-PERF-TIMEOUT'
+            build:'V172-STAFF-PIN-RESET-FIX'
         });
     } catch (error) {
         console.error('[iCHEF STAFF VIDEO http signal V131]',error?.message || error);
@@ -22419,7 +22843,7 @@ app.get('/api/staff/video/signals', async (req,res) => {
             success:true,
             signals:rows.map(ichefStaffVideoPublicSignalV131),
             serverTime:new Date().toISOString(),
-            build:'V168-STAFF-ACTIVATION-PERF-TIMEOUT'
+            build:'V172-STAFF-PIN-RESET-FIX'
         });
     } catch (error) {
         console.error('[iCHEF STAFF VIDEO poll V131]',error?.message || error);
@@ -22600,7 +23024,7 @@ app.get('/api/rh/chat/status', async (req,res) => {
             staffCount:Array.isArray(directory) ? directory.length : 0,
             realtime:true,
             privateChannels:true,
-            build:'V168-STAFF-ACTIVATION-PERF-TIMEOUT'
+            build:'V172-STAFF-PIN-RESET-FIX'
         });
     } catch (error) {
         console.error('[iCHEF RH CHAT status V117]',error?.message || error);
