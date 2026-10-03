@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>iCHEF OS — Mon espace collaborateur</title>
-<meta name="ichef-build" content="V171-STAFF-ENTRY-CLEAN">
+<meta name="ichef-build" content="V172-STAFF-PIN-RESET-FIX">
 
 <meta name="theme-color" content="#090d10">
 <meta name="mobile-web-app-capable" content="yes">
@@ -15,9 +15,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="iCHEF Staff">
-<link rel="manifest" href="./manifest-staff.json?v=171">
-<link rel="apple-touch-icon" href="./ichef-staff-512.png?v=171">
-<link rel="icon" type="image/png" sizes="512x512" href="./ichef-staff-512.png?v=171">
+<link rel="manifest" href="./manifest-staff.json?v=172">
+<link rel="apple-touch-icon" href="./ichef-staff-512.png?v=172">
+<link rel="icon" type="image/png" sizes="512x512" href="./ichef-staff-512.png?v=172">
 
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -4494,7 +4494,7 @@ html body .staff-pwa-required-gate:not([hidden]){
 
 </head>
 
-<body class="staff-entry-open staff-login-open" data-ichef-staff-build="V171">
+<body class="staff-entry-open staff-login-open" data-ichef-staff-build="V172">
 
 <!-- =========================================================
      🔘 BOUTON ACCUEIL UNIVERSEL iCHEF (À coller juste après <body>)
@@ -4686,7 +4686,13 @@ html body .staff-pwa-required-gate:not([hidden]){
       PREMIÈRE CONNEXION / J’AI UN CODE D’ACTIVATION
     </button>
 
-    <button type="button" class="staff-login-activation-btn" id="staffLoginForgotPinButton" style="margin-top:8px;border-color:rgba(255,255,255,.12);color:#d8ad55">
+    <button
+      type="button"
+      class="staff-login-activation-btn"
+      id="staffLoginForgotPinButton"
+      aria-controls="staffForgotPinGate"
+      onclick="return openStaffForgotPinGate(event)"
+      style="margin-top:8px;border-color:rgba(255,255,255,.12);color:#d8ad55">
       PIN OUBLIÉ / RECEVOIR UN EMAIL
     </button>
 
@@ -5748,7 +5754,7 @@ async function finishStaffLogin(data,staffId){
   staffEntryRefreshBodyV171();
   setInitialProfile(profile);
   connectStaffRealtime();
-  loadStaffDashboard({reason:'login'}).catch(error=>console.warn('[iCHEF Staff V171] dashboard post-login',error));
+  loadStaffDashboard({reason:'login'}).catch(error=>console.warn('[iCHEF Staff V172] dashboard post-login',error));
   setTimeout(loadStaffSecurityDevices,250);
 }
 
@@ -6255,43 +6261,233 @@ document.getElementById('staffPwaAlreadyInstalled')?.addEventListener('click',()
 
 
 let STAFF_PIN_RESET_TOKEN='';
-function openStaffForgotPinGate(){
+function openStaffForgotPinGate(event){
+  try{
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+  }catch(_){}
+
+  const loginGate=
+    document.getElementById('staffLoginGate');
+
+  const gate=
+    document.getElementById('staffForgotPinGate');
+
+  if(!gate){
+    console.error(
+      '[iCHEF Staff V172] staffForgotPinGate introuvable'
+    );
+    return false;
+  }
+
   const tenant=
     String(
       document.getElementById('staffLoginTenant')?.value ||
-      currentTenant() ||
+      currentTenant?.() ||
+      localStorage.getItem('ichef_tenant_id') ||
       ''
-    ).trim();
+    )
+    .trim()
+    .toUpperCase();
 
   const staffId=
     String(
       document.getElementById('staffLoginId')?.value ||
+      localStorage.getItem('ichef_staff_last_login_id') ||
       ''
-    ).trim();
+    )
+    .trim();
 
-  const tenantField=document.getElementById('staffForgotTenant');
-  const staffField=document.getElementById('staffForgotId');
-  const message=document.getElementById('staffForgotMessage');
+  const tenantField=
+    document.getElementById('staffForgotTenant');
 
-  if(tenantField)tenantField.value=tenant;
-  if(staffField)staffField.value=staffId;
-  if(message)message.textContent='';
+  const staffField=
+    document.getElementById('staffForgotId');
 
-  staffEntryShowV171('staffForgotPinGate');
+  const message=
+    document.getElementById('staffForgotMessage');
+
+  if(tenantField) tenantField.value=tenant;
+  if(staffField) staffField.value=staffId;
+  if(message) message.textContent='';
+
+  // Double protection : gestionnaire V171/V172 + bascule DOM directe.
+  try{
+    if(typeof staffEntryShowV171==='function'){
+      staffEntryShowV171('staffForgotPinGate');
+    }else{
+      if(loginGate) loginGate.hidden=true;
+      gate.hidden=false;
+      document.body.classList.add('staff-entry-open');
+      document.body.classList.remove('staff-login-open');
+    }
+  }catch(error){
+    console.warn(
+      '[iCHEF Staff V172] ouverture PIN oublié fallback',
+      error
+    );
+
+    if(loginGate) loginGate.hidden=true;
+    gate.hidden=false;
+    document.body.classList.add('staff-entry-open');
+    document.body.classList.remove('staff-login-open');
+  }
+
+  // Garantit l'affichage même si un ancien CSS/PWA est encore en mémoire.
+  gate.hidden=false;
+  gate.style.removeProperty('display');
 
   setTimeout(()=>{
-    if(staffField?.value){
-      staffField.focus();
+    if(staffId){
+      staffField?.focus();
+    }else if(tenant){
+      staffField?.focus();
     }else{
       tenantField?.focus();
     }
   },60);
+
+  return false;
 }
 
-function closeStaffForgotPinGate(){
+function closeStaffForgotPinGate(event){
+  try{
+    event?.preventDefault?.();
+  }catch(_){}
+
   showStaffLogin();
+  return false;
 }
-async function requestStaffForgotPin(){const tenantID=String(document.getElementById('staffForgotTenant')?.value||'').trim(),staffId=String(document.getElementById('staffForgotId')?.value||'').trim(),m=document.getElementById('staffForgotMessage'),b=document.getElementById('staffForgotSend');if(!tenantID||!staffId){if(m)m.textContent='Renseignez l’établissement et votre identifiant.';return;}if(b)b.disabled=true;if(m)m.textContent='Envoi sécurisé…';try{const r=await fetch(`${SERVER_URL}/api/staff/pin-reset/request`,{method:'POST',cache:'no-store',credentials:'omit',headers:{'Content-Type':'application/json','Accept':'application/json','X-iCHEF-Tenant':tenantID,'X-iCHEF-Device':staffDeviceId()},body:JSON.stringify({tenantID,staffId})}),d=await r.json().catch(()=>({}));if(m)m.textContent=d.message||'Si votre email est configuré, le lien a été envoyé.';}catch(_){if(m)m.textContent='Connexion momentanément indisponible. Réessayez.';}finally{if(b)b.disabled=false;}}
+
+async function requestStaffForgotPin(event){
+  try{
+    event?.preventDefault?.();
+  }catch(_){}
+
+  const tenantID=
+    String(
+      document.getElementById('staffForgotTenant')?.value ||
+      ''
+    )
+    .trim()
+    .toUpperCase();
+
+  const staffId=
+    String(
+      document.getElementById('staffForgotId')?.value ||
+      ''
+    )
+    .trim();
+
+  const message=
+    document.getElementById('staffForgotMessage');
+
+  const button=
+    document.getElementById('staffForgotSend');
+
+  if(!tenantID || !staffId){
+    if(message){
+      message.textContent=
+        'Renseignez l’établissement et votre identifiant collaborateur.';
+    }
+    return false;
+  }
+
+  if(button){
+    button.disabled=true;
+    button.dataset.previousText=
+      button.textContent || 'ENVOYER LE LIEN';
+    button.textContent='ENVOI…';
+  }
+
+  if(message){
+    message.textContent=
+      'Vérification du compte et envoi sécurisé…';
+  }
+
+  const controller=
+    new AbortController();
+
+  const timer=
+    setTimeout(
+      ()=>controller.abort(),
+      30000
+    );
+
+  try{
+    const response=
+      await fetch(
+        `${SERVER_URL}/api/staff/pin-reset/request`,
+        {
+          method:'POST',
+          cache:'no-store',
+          credentials:'omit',
+          headers:{
+            'Content-Type':'application/json',
+            'Accept':'application/json',
+            'X-iCHEF-Tenant':tenantID,
+            'X-iCHEF-Device':staffDeviceId()
+          },
+          body:JSON.stringify({
+            tenantID,
+            staffId
+          }),
+          signal:controller.signal
+        }
+      );
+
+    const data=
+      await response
+        .json()
+        .catch(()=>({}));
+
+    if(!response.ok){
+      throw new Error(
+        data.error ||
+        'Demande de réinitialisation momentanément indisponible.'
+      );
+    }
+
+    localStorage.setItem(
+      'ichef_tenant_id',
+      tenantID
+    );
+
+    localStorage.setItem(
+      'ichef_staff_last_login_id',
+      staffId
+    );
+
+    if(message){
+      message.textContent=
+        data.message ||
+        'Si le compte et son email sont configurés, un lien sécurisé vient d’être envoyé. Vérifiez aussi les courriers indésirables.';
+    }
+
+  }catch(error){
+    if(message){
+      message.textContent=
+        error?.name==='AbortError'
+          ? 'Le serveur met trop de temps à répondre. Réessayez dans quelques secondes.'
+          : (
+              error?.message ||
+              'Connexion momentanément indisponible. Réessayez.'
+            );
+    }
+  }finally{
+    clearTimeout(timer);
+
+    if(button){
+      button.disabled=false;
+      button.textContent=
+        button.dataset.previousText ||
+        'ENVOYER LE LIEN';
+    }
+  }
+
+  return false;
+}
+
 function openStaffPinResetGate(token){
   STAFF_PIN_RESET_TOKEN=String(token||'').trim();
   if(!STAFF_PIN_RESET_TOKEN)return;
@@ -6318,7 +6514,41 @@ async function completeStaffPinReset(){const p1=String(document.getElementById('
   if(d.staffId)document.getElementById('staffLoginId').value=d.staffId;
   document.getElementById('staffLoginPin')?.focus();
 },900);}catch(e){if(m)m.textContent=e?.message||'Réinitialisation impossible.';}finally{if(b)b.disabled=false;}}
-document.getElementById('staffLoginForgotPinButton')?.addEventListener('click',openStaffForgotPinGate);document.getElementById('staffForgotCancel')?.addEventListener('click',closeStaffForgotPinGate);document.getElementById('staffForgotSend')?.addEventListener('click',requestStaffForgotPin);document.getElementById('staffPinResetSubmit')?.addEventListener('click',completeStaffPinReset);try{const h=String(location.hash||''),m='#pin-reset=';if(h.startsWith(m))openStaffPinResetGate(decodeURIComponent(h.slice(m.length)));}catch(_){}
+function bindStaffPinResetV172(){
+  const cancel=document.getElementById('staffForgotCancel');
+  const send=document.getElementById('staffForgotSend');
+  const reset=document.getElementById('staffPinResetSubmit');
+
+  if(cancel && cancel.dataset.pinResetBound!=='1'){
+    cancel.dataset.pinResetBound='1';
+    cancel.addEventListener('click',closeStaffForgotPinGate);
+  }
+
+  if(send && send.dataset.pinResetBound!=='1'){
+    send.dataset.pinResetBound='1';
+    send.addEventListener('click',requestStaffForgotPin);
+  }
+
+  if(reset && reset.dataset.pinResetBound!=='1'){
+    reset.dataset.pinResetBound='1';
+    reset.addEventListener('click',completeStaffPinReset);
+  }
+}
+
+window.openStaffForgotPinGate=openStaffForgotPinGate;
+window.closeStaffForgotPinGate=closeStaffForgotPinGate;
+window.requestStaffForgotPin=requestStaffForgotPin;
+
+if(document.readyState==='loading'){
+  document.addEventListener(
+    'DOMContentLoaded',
+    bindStaffPinResetV172,
+    {once:true}
+  );
+}else{
+  bindStaffPinResetV172();
+}
+try{const h=String(location.hash||''),m='#pin-reset=';if(h.startsWith(m))openStaffPinResetGate(decodeURIComponent(h.slice(m.length)));}catch(_){}
 
 document.getElementById('staffLoginActivationButton')?.addEventListener('click',()=>{
   showStaffActivationGate({
@@ -7791,7 +8021,7 @@ async function bootstrapCollaboratorPortal(){
     connectStaffRealtime();
     loadStaffDashboard({reason:'bootstrap'})
       .catch(error => {
-        console.warn('[iCHEF Staff V171] dashboard bootstrap', error);
+        console.warn('[iCHEF Staff V172] dashboard bootstrap', error);
       });
     setTimeout(loadStaffSecurityDevices,250);
   }else{
@@ -8066,7 +8296,7 @@ bootstrapCollaboratorPortal();
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',connect,{once:true});else connect();
   window.__ICHEF_STAFF_BUILD__='V162-STAFF-PWA-AUTO-SECURE';
-  console.info('[iCHEF Staff V171] Compteurs RH synchronisés + archives 5 ans');
+  console.info('[iCHEF Staff V172] Compteurs RH synchronisés + archives 5 ans');
 })();
 </script>
 
@@ -8179,7 +8409,7 @@ bootstrapCollaboratorPortal();
   };
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bind,{once:true});else bind();
   window.__ICHEF_STAFF_BUILD__='V162-STAFF-PWA-AUTO-SECURE';
-  console.info('[iCHEF Staff V171] Mobile App UI robuste · ≤1100px · Connexion rapide · Planning stable · Jour / Semaine / Mois · +6 mois');
+  console.info('[iCHEF Staff V172] Mobile App UI robuste · ≤1100px · Connexion rapide · Planning stable · Jour / Semaine / Mois · +6 mois');
 })();
 </script>
 
@@ -8716,7 +8946,7 @@ body.staff-force-mobile .app{display:block!important}
   applyMode();
   window.showStaffMobileScreenV82=showMobileScreen;
   window.__ICHEF_STAFF_BUILD__='V162-STAFF-PWA-AUTO-SECURE';
-  console.info('[iCHEF Staff V171] navigation mobile pratique active');
+  console.info('[iCHEF Staff V172] navigation mobile pratique active');
 })();
 </script>
 
@@ -8966,7 +9196,7 @@ body.staff-app-v82 #staff-mobile-more-btn.active{color:#f1b941!important;backgro
   document.getElementById('staff-mobile-drawer-backdrop')?.addEventListener('click',closeDrawer,true);
 
   window.__ICHEF_STAFF_BUILD__='V162-STAFF-PWA-AUTO-SECURE';
-  console.info('[iCHEF Staff V171] menu latéral uniquement via PLUS');
+  console.info('[iCHEF Staff V172] menu latéral uniquement via PLUS');
 })();
 </script>
 
@@ -10403,7 +10633,7 @@ document.addEventListener('DOMContentLoaded',()=>setTimeout(initStaffWorkspace,7
   renderDashboard=function(data){const out=previous.apply(this,arguments);notices=Array.isArray(data?.planningNotices)?data.planningNotices:[];render();return out;};
   window.renderStaffPlanningNoticesV87=render;
   window.__ICHEF_STAFF_BUILD__='V162-STAFF-PWA-AUTO-SECURE';
-  console.info('[iCHEF Staff V171] planning : modifications reçues + motif urgent + preuve « Vu »');
+  console.info('[iCHEF Staff V172] planning : modifications reçues + motif urgent + preuve « Vu »');
 })();
 </script>
 
@@ -10496,7 +10726,7 @@ document.addEventListener('DOMContentLoaded',()=>setTimeout(initStaffWorkspace,7
   setTimeout(()=>{bindDocumentSocket();if(requireStaffSession())loadSecureStaffDocumentsV89({silent:true});},120);
   window.loadSecureStaffDocumentsV89=loadSecureStaffDocumentsV89;
   window.__ICHEF_STAFF_BUILD__='V146-IDENTITY-WHATSAPP-APP-SECURE';
-  console.info('[iCHEF Staff V171] documents RH : lecture GridFS dédiée + push temps réel + session Staff sécurisée');
+  console.info('[iCHEF Staff V172] documents RH : lecture GridFS dédiée + push temps réel + session Staff sécurisée');
 })();
 </script>
 
@@ -11144,7 +11374,7 @@ window.ichefOpenOpsMobileScreenV150=ichefOpenOpsMobileScreen;
 (()=>{
 'use strict';
 
-const BUILD='171';
+const BUILD='172';
 const SW_URL='./sw-staff.js?v='+BUILD;
 const INSTALL_MARK='ichef_staff_pwa_installed_v165';
 let deferredPrompt=null;
@@ -11236,7 +11466,7 @@ async function install(){
     }
     return choice||{};
   }catch(error){
-    console.warn('[iCHEF Staff V171] prompt installation',error);
+    console.warn('[iCHEF Staff V172] prompt installation',error);
     setStatus('Installation à relancer.');
     throw error;
   }finally{
@@ -11323,7 +11553,7 @@ async function registerServiceWorker(){
       setTimeout(()=>location.reload(),120);
     });
 
-    console.info('[iCHEF Staff V171] Service Worker actif',registration.scope);
+    console.info('[iCHEF Staff V172] Service Worker actif',registration.scope);
 
     try{
       await navigator.serviceWorker.ready;
@@ -11346,7 +11576,7 @@ async function registerServiceWorker(){
     );
     return registration;
   }catch(error){
-    console.warn('[iCHEF Staff V171] Service Worker indisponible',error);
+    console.warn('[iCHEF Staff V172] Service Worker indisponible',error);
     setStatus('Service Worker indisponible. Vérifiez ./sw-staff.js et HTTPS.');
     return null;
   }
