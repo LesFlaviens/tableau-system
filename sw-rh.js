@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION='174';
+const VERSION='172';
 const CACHE=`ichef-staff-shell-v${VERSION}`;
 const ORIGIN=self.location.origin;
 
@@ -13,6 +13,15 @@ const SHELL=[
   new URL(MANIFEST,ORIGIN).href,
   new URL(ICON,ORIGIN).href
 ];
+
+function sensitive(url){
+  return (
+    url.pathname.startsWith('/api/') ||
+    url.pathname.startsWith('/socket.io/') ||
+    url.pathname==='/get-current-state' ||
+    url.pathname==='/update-order'
+  );
+}
 
 self.addEventListener('install',event=>{
   event.waitUntil((async()=>{
@@ -64,29 +73,31 @@ self.addEventListener('message',event=>{
 
 self.addEventListener('fetch',event=>{
   const request=event.request;
+
   if(request.method!=='GET')return;
 
   const url=new URL(request.url);
-  if(url.origin!==ORIGIN)return;
 
   if(
-    url.pathname.startsWith('/api/') ||
-    url.pathname.startsWith('/socket.io/')
+    url.origin!==ORIGIN ||
+    sensitive(url)
   ){
     return;
   }
 
-  const portalNav=
+  const isPortalNav=
     request.mode==='navigate' &&
     url.pathname===APP;
 
-  const shell=
+  const isShell=
     [APP,MANIFEST,ICON]
       .includes(url.pathname);
 
-  if(!portalNav && !shell)return;
+  if(!isPortalNav && !isShell){
+    return;
+  }
 
-  if(portalNav){
+  if(isPortalNav){
     event.respondWith((async()=>{
       try{
         const fresh=
@@ -106,6 +117,7 @@ self.addEventListener('fetch',event=>{
         }
 
         return fresh;
+
       }catch(_){
         return (
           await caches.match(SHELL[0])
