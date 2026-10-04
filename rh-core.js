@@ -332,6 +332,78 @@ const urlParamsJS = new URLSearchParams(window.location.search);
             }
             return 'salle';
         }
+
+        // ==========================================================
+        // iCHEF RH V241 — CONTACT STAFF CANONIQUE
+        // Email = récupération PIN
+        // WhatsApp = vérification nouvel appareil / appareil révoqué
+        // ==========================================================
+        function normalizeRhEmailV241(value) {
+            const email = String(value || '').trim().toLowerCase();
+            if (!email) return '';
+            return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+                ? email
+                : '';
+        }
+
+        function normalizeRhWhatsappPhoneV241(value) {
+            let phone = String(value || '').trim();
+
+            if (!phone) return '';
+
+            phone = phone
+                .replace(/[().\s-]+/g, '');
+
+            if (phone.startsWith('00')) {
+                phone = '+' + phone.slice(2);
+            }
+
+            return /^\+[1-9]\d{7,14}$/.test(phone)
+                ? phone
+                : '';
+        }
+
+        function rhContactEmailFromRecordV241(...records) {
+            for (const row of records.filter(Boolean)) {
+                for (const value of [
+                    row?.email,
+                    row?.mail,
+                    row?.workEmail,
+                    row?.personalEmail,
+                    row?.emailPro,
+                    row?.contactEmail,
+                    row?.contact?.email
+                ]) {
+                    const email = normalizeRhEmailV241(value);
+                    if (email) return email;
+                }
+            }
+
+            return '';
+        }
+
+        function rhContactPhoneFromRecordV241(...records) {
+            for (const row of records.filter(Boolean)) {
+                for (const value of [
+                    row?.whatsappPhone,
+                    row?.whatsapp,
+                    row?.whatsApp,
+                    row?.mobile,
+                    row?.mobilePhone,
+                    row?.phone,
+                    row?.telephone,
+                    row?.tel,
+                    row?.contact?.phone,
+                    row?.contact?.mobile
+                ]) {
+                    const phone = normalizeRhWhatsappPhoneV241(value);
+                    if (phone) return phone;
+                }
+            }
+
+            return '';
+        }
+
         function buildRhDirectoryFromServer(serverStaff, rhDirectory) {
             const local = Array.isArray(rhDirectory) ? rhDirectory : [];
             const remote = Array.isArray(serverStaff) ? serverStaff : [];
@@ -350,6 +422,19 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                         String(d?.id ?? '') === String(s.id)
                     )
                 );
+
+                const email =
+                    rhContactEmailFromRecordV241(
+                        s,
+                        existing
+                    );
+
+                const whatsappPhone =
+                    rhContactPhoneFromRecordV241(
+                        s,
+                        existing
+                    );
+
                 return {
                     ...(existing || {}),
                     id:
@@ -372,6 +457,23 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                             s?.dept ||
                             existing?.dept
                         ),
+
+                    // Coordonnées de sécurité iCHEF Staff.
+                    email,
+                    whatsappPhone,
+                    mobile: whatsappPhone,
+                    phone: whatsappPhone,
+                    contact: {
+                        ...(
+                            existing?.contact &&
+                            typeof existing.contact === 'object'
+                                ? existing.contact
+                                : {}
+                        ),
+                        email,
+                        phone: whatsappPhone
+                    },
+
                     contract:
                         Number(
                             s?.contract ??
@@ -439,6 +541,19 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                             6
                         ),
                     pin,
+
+                    // V242 — après activation, le PIN personnel appartient
+                    // au Portail Staff. RH conserve seulement son statut.
+                    pinUpdatedAt:
+                        s?.pinUpdatedAt ??
+                        existing?.pinUpdatedAt ??
+                        null,
+
+                    staffActivatedAt:
+                        s?.staffActivatedAt ??
+                        existing?.staffActivatedAt ??
+                        null,
+
                     active:
                         s?.active !== false,
                     onDuty:
@@ -6736,6 +6851,37 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                         role: s.role,
                         dept: s.dept,
                         pin: String(s.pin).trim(),
+
+                        // V241 — données requises par iCHEF Staff.
+                        email:
+                            normalizeRhEmailV241(
+                                s.email
+                            ),
+
+                        whatsappPhone:
+                            normalizeRhWhatsappPhoneV241(
+                                s.whatsappPhone ||
+                                s.mobile ||
+                                s.phone ||
+                                s.telephone
+                            ),
+
+                        mobile:
+                            normalizeRhWhatsappPhoneV241(
+                                s.whatsappPhone ||
+                                s.mobile ||
+                                s.phone ||
+                                s.telephone
+                            ),
+
+                        phone:
+                            normalizeRhWhatsappPhoneV241(
+                                s.whatsappPhone ||
+                                s.mobile ||
+                                s.phone ||
+                                s.telephone
+                            ),
+
                         contract: Number(s.contract) || 39,
                         annualLeaveDays: Number(s.annualLeaveDays ?? 25),
                         leaveCarryover: Number(s.leaveCarryover ?? 0),
@@ -6958,6 +7104,23 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                 document.getElementById('staff-name').value = s.name;
                 document.getElementById('staff-title').value = s.role || "";
                 document.getElementById('staff-pin').value = s.pin;
+
+                const staffEmailV241 =
+                    document.getElementById('staff-email');
+
+                const staffWhatsappV241 =
+                    document.getElementById('staff-whatsapp-phone');
+
+                if (staffEmailV241) {
+                    staffEmailV241.value =
+                        rhContactEmailFromRecordV241(s);
+                }
+
+                if (staffWhatsappV241) {
+                    staffWhatsappV241.value =
+                        rhContactPhoneFromRecordV241(s);
+                }
+
                 document.getElementById('staff-role').value = s.dept;
                 document.getElementById('staff-contract').value = Number(s.contract) || 39;
                 const staffPayrollProfileV193 = (() => {
@@ -6987,6 +7150,21 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                 document.getElementById('staff-name').value = "";
                 document.getElementById('staff-title').value = "";
                 document.getElementById('staff-pin').value = "";
+
+                const staffEmailV241 =
+                    document.getElementById('staff-email');
+
+                const staffWhatsappV241 =
+                    document.getElementById('staff-whatsapp-phone');
+
+                if (staffEmailV241) {
+                    staffEmailV241.value = '';
+                }
+
+                if (staffWhatsappV241) {
+                    staffWhatsappV241.value = '';
+                }
+
                 document.getElementById('staff-role').value = "salle";
                 document.getElementById('staff-contract').value = 39;
                 document.getElementById('staff-contract-type').value = '';
@@ -7021,9 +7199,33 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                     );
                 });
             }
+            const editedStaffV242 =
+                pin
+                    ? getDir().find(
+                        item =>
+                            String(item?.pin || '') ===
+                            String(pin)
+                    )
+                    : null;
+
+            const staffPinOwnedByPortalV242 =
+                Boolean(
+                    editedStaffV242?.staffActivatedAt ||
+                    editedStaffV242?.pinUpdatedAt
+                );
+
             setStaffPinStatusV203(
-                pin ? 'neutral' : 'warn',
-                pin ? 'PIN chargé · vous pouvez le tester' : 'Créez un PIN de 4 à 12 chiffres'
+                staffPinOwnedByPortalV242
+                    ? 'ok'
+                    : (pin ? 'neutral' : 'warn'),
+
+                staffPinOwnedByPortalV242
+                    ? 'PIN personnel géré par iCHEF Staff · RH ne l’écrase plus'
+                    : (
+                        pin
+                            ? 'PIN provisoire chargé · remplacé lors de la première activation Staff'
+                            : 'Créez un PIN provisoire de 4 à 12 chiffres'
+                    )
             );
             updateStaffGrossHourlyCost();
             if (typeof updateStaffProfessionalLegalUIV193 === 'function') {
@@ -7043,7 +7245,7 @@ const urlParamsJS = new URLSearchParams(window.location.search);
         }
         async function persistRhStaffDirectory(dir, successMessage) {
             saveDir(dir);
-            setStaffPinStatusV203('syncing','Synchronisation du PIN et du dossier…');
+            setStaffPinStatusV203('syncing','Synchronisation PIN · email · WhatsApp · dossier RH…');
 
             // STAFF_ACCESS est prioritaire : c'est ce qui rend le PIN utilisable
             // par les portails et la pointeuse.
@@ -7056,7 +7258,7 @@ const urlParamsJS = new URLSearchParams(window.location.search);
 
             refreshViews();
             if (directoryOk && accessOk) {
-                setStaffPinStatusV203('ok','Dossier et accès PIN synchronisés');
+                setStaffPinStatusV203('ok','✓ PIN · email · WhatsApp · dossier RH synchronisés');
                 if (successMessage) showToast(successMessage);
                 return true;
             }
@@ -7078,6 +7280,41 @@ const urlParamsJS = new URLSearchParams(window.location.search);
             let name = document.getElementById('staff-name').value.trim();
             let title = document.getElementById('staff-title').value.trim();
             let pin = document.getElementById('staff-pin').value.trim();
+
+            const rawEmailV241 =
+                String(
+                    document.getElementById('staff-email')?.value ||
+                    ''
+                ).trim();
+
+            const rawWhatsappV241 =
+                String(
+                    document.getElementById('staff-whatsapp-phone')?.value ||
+                    ''
+                ).trim();
+
+            const email =
+                normalizeRhEmailV241(
+                    rawEmailV241
+                );
+
+            const whatsappPhone =
+                normalizeRhWhatsappPhoneV241(
+                    rawWhatsappV241
+                );
+
+            if (rawEmailV241 && !email) {
+                return alert(
+                    "L’adresse email n’est pas valide."
+                );
+            }
+
+            if (rawWhatsappV241 && !whatsappPhone) {
+                return alert(
+                    "Le numéro WhatsApp doit être au format international, par exemple +33612345678 ou +41791234567."
+                );
+            }
+
             let contract = Number(document.getElementById('staff-contract').value);
             let contractType = document.getElementById('staff-contract-type').value.trim();
             let startDate = document.getElementById('staff-start-date').value;
@@ -7147,6 +7384,25 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                 pin,
                 role: title,
                 dept: document.getElementById('staff-role').value,
+
+                // V241 — source RH des coordonnées de sécurité Staff.
+                email,
+                whatsappPhone,
+                mobile: whatsappPhone,
+                phone: whatsappPhone,
+                contact: {
+                    email,
+                    phone: whatsappPhone
+                },
+
+                pinUpdatedAt:
+                    existing?.pinUpdatedAt ||
+                    null,
+
+                staffActivatedAt:
+                    existing?.staffActivatedAt ||
+                    null,
+
                 contract,
                 contractType,
                 startDate,
@@ -7214,22 +7470,62 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                 return false;
             }
 
-            setStaffPinStatusV203('syncing','Vérification du PIN sur le serveur…');
-            const pinCheck = await verifyPinWithServer(pin);
+            if (
+                newStaff.staffActivatedAt ||
+                newStaff.pinUpdatedAt
+            ) {
+                setStaffPinStatusV203(
+                    'ok',
+                    '✓ Dossier RH synchronisé · PIN personnel protégé par iCHEF Staff'
+                );
+
+                showToast(
+                    'RH synchronisé · PIN personnel Staff conservé'
+                );
+
+                setTimeout(
+                    closeModals,
+                    350
+                );
+
+                return true;
+            }
+
+            setStaffPinStatusV203(
+                'syncing',
+                'Vérification du PIN provisoire sur le serveur…'
+            );
+
+            const pinCheck =
+                await verifyPinWithServer(pin);
+
             if (!pinCheck?.success) {
                 setStaffPinStatusV203(
                     'error',
-                    `PIN enregistré mais non reconnu : ${pinCheck?.error || 'réessayez dans quelques secondes'}`
+                    `PIN provisoire non reconnu : ${pinCheck?.error || 'réessayez dans quelques secondes'}`
                 );
+
                 alert(
-                    "Le collaborateur a été enregistré, mais le serveur d’authentification ne reconnaît pas encore ce PIN. La fiche reste ouverte : cliquez sur « TESTER LE PIN » pour réessayer."
+                    "Le collaborateur est enregistré, mais son PIN provisoire n’est pas encore reconnu. Après la première activation iCHEF Staff, le collaborateur choisira son propre PIN personnel."
                 );
+
                 return false;
             }
 
-            setStaffPinStatusV203('ok','✓ PIN reconnu par le serveur');
-            showToast('PIN vérifié · collaborateur synchronisé');
-            setTimeout(closeModals, 350);
+            setStaffPinStatusV203(
+                'ok',
+                '✓ PIN provisoire reconnu · prêt pour l’activation Staff'
+            );
+
+            showToast(
+                'Collaborateur prêt pour l’activation iCHEF Staff'
+            );
+
+            setTimeout(
+                closeModals,
+                350
+            );
+
             return true;
         }
         window.saveStaff = saveStaff;
