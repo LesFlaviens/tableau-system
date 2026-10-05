@@ -2266,7 +2266,7 @@ pwaRequired: ICHEF_STAFF_PWA_REQUIRED,
 pwaMobileBrowserAllowed: true,
 operationsApi: true,
 securityShield: true,
-securityBuild: 'V177-SECURITY-ONBOARDING',
+securityBuild: 'V178-CAPACITY-EXPLOITATION',
 builtInFileScanner: true,
 externalAntivirusConfigured:
 Boolean(
@@ -2741,10 +2741,376 @@ return res.status(500).json({ success: false, error: 'Analyse momentanément ind
 const rhAiPredictionCacheV150 = new Map();
 const rhAiCooldownV150 = new Map();
 
+// ============================================================================
+// 📊 iCHEF V178 — MOTEUR LOCAL DE CAPACITÉ D'EXPLOITATION
+// ============================================================================
+function buildRhCapacityAnalysisV178({
+    staffList = [],
+    planningSettings = {}
+} = {}) {
+    const settings =
+        planningSettings &&
+        typeof planningSettings === 'object'
+            ? planningSettings
+            : {};
+
+    const num = (value, fallback, min = -Infinity, max = Infinity) => {
+        let n = Number(value);
+        if (!Number.isFinite(n)) n = Number(fallback) || 0;
+        return Math.max(min, Math.min(max, n));
+    };
+
+    const activeStaff =
+        Array.isArray(staffList)
+            ? staffList.filter(
+                staff =>
+                    staff &&
+                    staff.active !== false
+            )
+            : [];
+
+    let currentKitchen = 0;
+    let currentService = 0;
+    let currentSupport = 0;
+    let currentOther = 0;
+
+    for (const staff of activeStaff) {
+        const label =
+            `${staff?.dept || ''} ${staff?.role || ''} ${staff?.poste || ''} ${staff?.job || ''}`
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '')
+                .toLowerCase();
+
+        if (/plonge|dish|vaisselle|aide cuisine|aide-cuisine/.test(label)) {
+            currentSupport++;
+        } else if (/cuis|chef|kitchen|patiss|boulanger|commis cuisine/.test(label)) {
+            currentKitchen++;
+        } else if (/salle|serveur|serveuse|service|runner|bar|barman|restaurant|maitre d|maitre/.test(label)) {
+            currentService++;
+        } else {
+            currentOther++;
+        }
+    }
+
+    const coversLunch =
+        num(settings.capacityCoversLunch, 75, 0, 2000);
+
+    const coversDinner =
+        num(settings.capacityCoversDinner, 50, 0, 2000);
+
+    const openDays =
+        num(settings.capacityOpenDaysPerWeek, 7, 1, 7);
+
+    const minKitchenPerService =
+        num(settings.capacityMinKitchenPerService, 3, 1, 30);
+
+    const minServicePerService =
+        num(settings.capacityMinServicePerService, 3, 1, 30);
+
+    const supportStaff =
+        num(settings.capacitySupportStaff, 2, 0, 30);
+
+    const absenceBuffer =
+        num(settings.capacityAbsenceBufferPerDepartment, 1, 0, 10);
+
+    const ticketAverage =
+        num(settings.capacityTicketAverage, 60, 0, 1000);
+
+    const salaryKitchen =
+        num(settings.capacitySalaryKitchenGross, 4528, 0, 30000);
+
+    const salaryService =
+        num(settings.capacitySalaryServiceGross, 4100, 0, 30000);
+
+    const salarySupport =
+        num(settings.capacitySalarySupportGross, 3713, 0, 30000);
+
+    const chargesPct =
+        num(settings.capacityEmployerChargesPct, 16, 0, 100);
+
+    const foodCostPct =
+        num(settings.capacityFoodCostPct, 30, 0, 100);
+
+    const targetLaborPct =
+        num(settings.capacityTargetLaborPct, 30, 1, 100);
+
+    const fixedCosts =
+        num(settings.capacityFixedOperatingCosts, 38000, 0, 1000000);
+
+    const thirteenth =
+        settings.capacityThirteenthSalary !== false;
+
+    const daysOff =
+        num(settings.planningDaysOffPerWeek, 2, 0, 6.5);
+
+    const workDays =
+        Math.max(0.5, 7 - daysOff);
+
+    const servicesPerDay =
+        Math.max(
+            1,
+            (coversLunch > 0 ? 1 : 0) +
+            (coversDinner > 0 ? 1 : 0)
+        );
+
+    const servicesPerWeek =
+        openDays * servicesPerDay;
+
+    const coversPerDay =
+        coversLunch + coversDinner;
+
+    const coversPerWeek =
+        coversPerDay * openDays;
+
+    const coversPerMonth =
+        coversPerWeek * 52 / 12;
+
+    const kitchenPresences =
+        servicesPerWeek *
+        minKitchenPerService;
+
+    const servicePresences =
+        servicesPerWeek *
+        minServicePerService;
+
+    const minimumKitchen =
+        Math.max(
+            minKitchenPerService,
+            Math.ceil(
+                kitchenPresences /
+                (workDays * servicesPerDay)
+            )
+        );
+
+    const minimumService =
+        Math.max(
+            minServicePerService,
+            Math.ceil(
+                servicePresences /
+                (workDays * servicesPerDay)
+            )
+        );
+
+    const robustKitchen =
+        minimumKitchen + absenceBuffer;
+
+    const robustService =
+        minimumService + absenceBuffer;
+
+    const minimumTotal =
+        minimumKitchen +
+        minimumService +
+        supportStaff;
+
+    const robustTotal =
+        robustKitchen +
+        robustService +
+        supportStaff;
+
+    const payroll = (kitchen, service, support) => {
+        const gross =
+            kitchen * salaryKitchen +
+            service * salaryService +
+            support * salarySupport;
+
+        const loaded =
+            gross *
+            (thirteenth ? 13 / 12 : 1) *
+            (1 + chargesPct / 100);
+
+        return {
+            grossMonthly: gross,
+            loadedMonthly: loaded
+        };
+    };
+
+    const minimumPayroll =
+        payroll(
+            minimumKitchen,
+            minimumService,
+            supportStaff
+        );
+
+    const robustPayroll =
+        payroll(
+            robustKitchen,
+            robustService,
+            supportStaff
+        );
+
+    const currentPayroll =
+        payroll(
+            currentKitchen,
+            currentService,
+            currentSupport
+        );
+
+    const revenueMonthly =
+        coversPerMonth * ticketAverage;
+
+    const robustTargetRevenue =
+        robustPayroll.loadedMonthly /
+        (targetLaborPct / 100);
+
+    const robustTicketNeeded =
+        coversPerMonth > 0
+            ? robustTargetRevenue / coversPerMonth
+            : 0;
+
+    const splitRatio = (required, team) => {
+        const oneServiceDays =
+            Math.max(0, team * workDays);
+
+        if (!oneServiceDays) return required > 0 ? 100 : 0;
+
+        return Math.max(
+            0,
+            Math.min(
+                100,
+                (
+                    Math.max(0, required - oneServiceDays) /
+                    oneServiceDays
+                ) * 100
+            )
+        );
+    };
+
+    const currentRisk =
+        currentKitchen < minimumKitchen ||
+        currentService < minimumService
+            ? 'CRITICAL'
+            : (
+                currentKitchen < robustKitchen ||
+                currentService < robustService
+                    ? 'HIGH'
+                    : 'CONTROLLED'
+            );
+
+    return {
+        coversLunch,
+        coversDinner,
+        coversPerDay,
+        coversPerWeek,
+        coversPerMonth: Math.round(coversPerMonth),
+
+        openDaysPerWeek: openDays,
+        servicesPerWeek,
+        daysOffPerWeek: daysOff,
+
+        requiredPresences: {
+            kitchen: kitchenPresences,
+            service: servicePresences
+        },
+
+        currentTeam: {
+            kitchen: currentKitchen,
+            service: currentService,
+            support: currentSupport,
+            other: currentOther,
+            total: activeStaff.length,
+            splitShiftPct: Math.round(
+                Math.max(
+                    splitRatio(kitchenPresences, currentKitchen),
+                    splitRatio(servicePresences, currentService)
+                )
+            ),
+            risk: currentRisk
+        },
+
+        minimumTeam: {
+            kitchen: minimumKitchen,
+            service: minimumService,
+            support: supportStaff,
+            total: minimumTotal,
+            splitShiftPct: Math.round(
+                Math.max(
+                    splitRatio(kitchenPresences, minimumKitchen),
+                    splitRatio(servicePresences, minimumService)
+                )
+            ),
+            loadedPayrollMonthly:
+                Math.round(
+                    minimumPayroll.loadedMonthly
+                )
+        },
+
+        robustTeam: {
+            kitchen: robustKitchen,
+            service: robustService,
+            support: supportStaff,
+            total: robustTotal,
+            splitShiftPct: Math.round(
+                Math.max(
+                    splitRatio(kitchenPresences, robustKitchen),
+                    splitRatio(servicePresences, robustService)
+                )
+            ),
+            loadedPayrollMonthly:
+                Math.round(
+                    robustPayroll.loadedMonthly
+                )
+        },
+
+        economics: {
+            ticketAverage,
+            revenueMonthly:
+                Math.round(revenueMonthly),
+
+            currentLoadedPayrollMonthly:
+                Math.round(
+                    currentPayroll.loadedMonthly
+                ),
+
+            minimumLoadedPayrollMonthly:
+                Math.round(
+                    minimumPayroll.loadedMonthly
+                ),
+
+            robustLoadedPayrollMonthly:
+                Math.round(
+                    robustPayroll.loadedMonthly
+                ),
+
+            robustTargetRevenueMonthly:
+                Math.round(
+                    robustTargetRevenue
+                ),
+
+            robustTicketNeeded:
+                Number(
+                    robustTicketNeeded.toFixed(2)
+                ),
+
+            targetLaborPct,
+            foodCostPct,
+            fixedOperatingCosts:
+                Math.round(fixedCosts),
+
+            robustOperatingResultIndicative:
+                Math.round(
+                    revenueMonthly -
+                    revenueMonthly * foodCostPct / 100 -
+                    robustPayroll.loadedMonthly -
+                    fixedCosts
+                )
+        },
+
+        assumptions: {
+            minKitchenPerService,
+            minServicePerService,
+            supportStaff,
+            absenceBufferPerDepartment: absenceBuffer,
+            thirteenthSalaryProvisioned: thirteenth,
+            employerChargesPct: chargesPct
+        }
+    };
+}
+
 function buildRhFallbackPredictionV150({
     staffList = [],
     reservations = [],
     financialHistory = [],
+    planningSettings = {},
     reason = 'AI_UNAVAILABLE'
 } = {}) {
     const activeStaff = Array.isArray(staffList)
@@ -2804,7 +3170,13 @@ function buildRhFallbackPredictionV150({
         staffRecommendations: [],
 
         hiringAdvice:
-            'La recommandation recrutement reste basée sur les contrôles locaux de couverture et de compétences tant que l’IA externe est indisponible.'
+            'La recommandation recrutement reste basée sur les contrôles locaux de couverture et de compétences tant que l’IA externe est indisponible.',
+
+        capacityAnalysis:
+            buildRhCapacityAnalysisV178({
+                staffList,
+                planningSettings
+            })
     };
 }
 
@@ -2885,6 +3257,7 @@ app.post('/api/predict-hr-schedule', async (req, res) => {
                 staffList,
                 reservations,
                 financialHistory,
+                planningSettings,
                 reason: 'AI_QUOTA_429'
             });
 
@@ -2914,6 +3287,12 @@ app.post('/api/predict-hr-schedule', async (req, res) => {
                 ?.FINANCIAL_HISTORY
                 ?.data || [];
 
+        const capacityAnalysis =
+            buildRhCapacityAnalysisV178({
+                staffList,
+                planningSettings
+            });
+
         const prompt = `Tu es l'IA "Directeur des Ressources Humaines" d'iCHEF OS.
 Analyse les effectifs et l'historique du restaurant pour prédire la charge de travail.
 
@@ -2922,10 +3301,14 @@ Analyse les effectifs et l'historique du restaurant pour prédire la charge de t
 - Analyse locale iCHEF : ${JSON.stringify(staffAnalysis || {})}
 - Demandes RH : ${JSON.stringify(Array.isArray(requests) ? requests.slice(-50) : [])}
 - Paramètres planning : ${JSON.stringify(planningSettings || {})}
+- Analyse capacité locale iCHEF : ${JSON.stringify(capacityAnalysis)}
 - Réservations récentes : ${JSON.stringify(Array.isArray(reservations) ? reservations.slice(-20) : [])}
 - Transactions récentes : ${JSON.stringify(Array.isArray(financialHistory) ? financialHistory.slice(-20) : [])}
 
-Ta mission est d'aider le moteur local iCHEF à identifier les périodes de forte ou faible demande.
+Ta mission est d'aider le moteur local iCHEF à identifier les périodes de forte ou faible demande,
+mais aussi à commenter la capacité d'exploitation : effectif minimum, équipe robuste, coupures,
+résilience aux absences, masse salariale et cohérence avec le chiffre d'affaires.
+L'analyse capacité locale fournie par iCHEF est la base chiffrée : ne remplace pas ses calculs par des chiffres inventés.
 Ne modifie jamais les règles juridiques, contrats, congés, repos ou contraintes RH.
 
 RÉPONDS UNIQUEMENT AVEC CE JSON STRICT :
@@ -2941,7 +3324,8 @@ RÉPONDS UNIQUEMENT AVEC CE JSON STRICT :
   "vacationSuggestions": "",
   "warnings": [],
   "staffRecommendations": [],
-  "hiringAdvice": ""
+  "hiringAdvice": "",
+  "capacityComment": ""
 }`;
 
         const model =
@@ -2990,6 +3374,10 @@ RÉPONDS UNIQUEMENT AVEC CE JSON STRICT :
             JSON.parse(
                 responseText
             );
+
+        // V178 — les chiffres de capacité restent toujours ceux du moteur local.
+        prediction.capacityAnalysis =
+            capacityAnalysis;
 
         rhAiPredictionCacheV150.set(
             safeID,
@@ -3072,6 +3460,7 @@ RÉPONDS UNIQUEMENT AVEC CE JSON STRICT :
                 staffList,
                 reservations,
                 financialHistory,
+                planningSettings,
                 reason:
                     quota429
                         ? 'AI_QUOTA_429'
@@ -10347,7 +10736,7 @@ app.post('/api/master/security/status', async (req,res) => {
         return res.json({
             success:true,
             build:
-                'V177-SECURITY-ONBOARDING',
+                'V178-CAPACITY-EXPLOITATION',
             generatedAt:
                 new Date()
                     .toISOString(),
