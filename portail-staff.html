@@ -15,9 +15,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="iCHEF Staff">
-<link rel="manifest" href="./manifest-staff.json?v=176">
-<link rel="apple-touch-icon" href="./ichef-staff-512.png?v=176">
-<link rel="icon" type="image/png" sizes="512x512" href="./ichef-staff-512.png?v=176">
+<link rel="manifest" href="./manifest-staff.json?v=177">
+<link rel="apple-touch-icon" href="./ichef-staff-512.png?v=177">
+<link rel="icon" type="image/png" sizes="512x512" href="./ichef-staff-512.png?v=177">
 
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -4969,13 +4969,13 @@ html body .staff-pwa-required-gate:not([hidden]){
   <div class="staff-identity-card">
     <div class="staff-identity-lock">iCHEF SECURITY</div>
     <h2>Vérification de votre identité</h2>
-    <p id="staffIdentityMessage">Un code de sécurité a été envoyé sur votre WhatsApp.</p>
-    <label for="staffIdentityCode">Code WhatsApp</label>
-    <input id="staffIdentityCode" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="10" placeholder="••••••">
+    <p id="staffIdentityMessage">Un code de sécurité a été envoyé à votre adresse email.</p>
+    <label for="staffIdentityCode" id="staffIdentityCodeLabel">Code reçu par email</label>
+    <input id="staffIdentityCode" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="••••••">
     <button id="staffIdentityVerify" type="button">VÉRIFIER MON IDENTITÉ</button>
     <button id="staffIdentityCancel" type="button" class="staff-identity-cancel">ANNULER</button>
     <div id="staffIdentityError" class="staff-login-error" role="alert"></div>
-    <small>Ce contrôle est demandé uniquement pour un nouvel appareil ou après une révocation.</small>
+    <small id="staffIdentityHelp">Ce contrôle protège votre compte sur un nouvel appareil. Le code expire après quelques minutes.</small>
   </div>
 </div>
 
@@ -5958,8 +5958,78 @@ async function nativeBiometricApproval(){
 function showStaffIdentityGate(data,loginId){
   staffEntryShowV171('staffIdentityGate');
   STAFF_IDENTITY_PENDING={...data,loginId};
-  document.getElementById('staffIdentityMessage').textContent=
-    `Un code de sécurité a été envoyé sur WhatsApp ${data.maskedPhone||''}.`;
+
+  const method=
+    String(
+      data?.method ||
+      'EMAIL'
+    )
+    .trim()
+    .toUpperCase();
+
+  const message=
+    document.getElementById(
+      'staffIdentityMessage'
+    );
+
+  const label=
+    document.getElementById(
+      'staffIdentityCodeLabel'
+    );
+
+  const help=
+    document.getElementById(
+      'staffIdentityHelp'
+    );
+
+  const input=
+    document.getElementById(
+      'staffIdentityCode'
+    );
+
+  if(method==='EMAIL'){
+    if(message){
+      message.textContent=
+        `Un code de sécurité à 6 chiffres a été envoyé à votre email ${data.maskedEmail||''}.`;
+    }
+
+    if(label){
+      label.textContent=
+        'Code reçu par email';
+    }
+
+    if(help){
+      help.textContent=
+        'Consultez la boîte email du collaborateur. Le code est valable 10 minutes et protège ce nouvel appareil.';
+    }
+
+    if(input){
+      input.maxLength=6;
+      input.placeholder='••••••';
+    }
+
+  }else{
+    if(message){
+      message.textContent=
+        `Un code de sécurité a été envoyé sur WhatsApp ${data.maskedPhone||''}.`;
+    }
+
+    if(label){
+      label.textContent=
+        'Code WhatsApp';
+    }
+
+    if(help){
+      help.textContent=
+        'Ce contrôle est demandé uniquement pour un nouvel appareil ou après une révocation.';
+    }
+
+    if(input){
+      input.maxLength=10;
+      input.placeholder='••••••';
+    }
+  }
+
   document.getElementById('staffIdentityError').textContent='';
   document.getElementById('staffIdentityCode').value='';
   setTimeout(()=>document.getElementById('staffIdentityCode')?.focus(),60);
@@ -6011,51 +6081,153 @@ async function finishStaffLogin(data,staffId){
   setTimeout(loadStaffSecurityDevices,250);
 }
 
-async function verifyStaffWhatsappIdentity(){
-  const button=document.getElementById('staffIdentityVerify');
-  const error=document.getElementById('staffIdentityError');
-  const code=String(document.getElementById('staffIdentityCode')?.value||'').replace(/\D/g,'').slice(0,10);
+async function verifyStaffIdentity(){
+  const button=
+    document.getElementById(
+      'staffIdentityVerify'
+    );
+
+  const error=
+    document.getElementById(
+      'staffIdentityError'
+    );
+
+  const method=
+    String(
+      STAFF_IDENTITY_PENDING?.method ||
+      'EMAIL'
+    )
+    .trim()
+    .toUpperCase();
+
+  const code=
+    String(
+      document.getElementById(
+        'staffIdentityCode'
+      )?.value ||
+      ''
+    )
+    .replace(/\D/g,'')
+    .slice(
+      0,
+      method==='EMAIL'
+        ? 6
+        : 10
+    );
 
   if(!STAFF_IDENTITY_PENDING?.pendingToken){
     hideStaffIdentityGate();
     return;
   }
-  if(!/^\d{4,10}$/.test(code)){
-    error.textContent='Saisissez le code reçu sur WhatsApp.';
+
+  if(
+    method==='EMAIL'
+      ? !/^\d{6}$/.test(code)
+      : !/^\d{4,10}$/.test(code)
+  ){
+    error.textContent=
+      method==='EMAIL'
+        ? 'Saisissez le code à 6 chiffres reçu par email.'
+        : 'Saisissez le code reçu sur WhatsApp.';
+
     return;
   }
 
   button.disabled=true;
   error.textContent='';
+
   try{
-    const key=await staffDeviceKeyRecord();
-    const response=await fetch(`${SERVER_URL}/api/staff/security/whatsapp/check`,{
-      method:'POST',
-      cache:'no-store',
-      credentials:'omit',
-      headers:{
-        'Content-Type':'application/json',
-        'Accept':'application/json',
-        'X-iCHEF-Tenant':String(STAFF_IDENTITY_PENDING.safeTenantID||currentTenant()),
-        'X-iCHEF-Device':staffDeviceId(),
-        'X-iCHEF-PWA':ichefIsStandalonePwa()?'standalone':(ichefIsPhoneLike()?'mobile-browser':'browser')
-      },
-      body:JSON.stringify({
-        tenantID:String(STAFF_IDENTITY_PENDING.safeTenantID||currentTenant()),
-        deviceId:staffDeviceId(),
-        pendingToken:STAFF_IDENTITY_PENDING.pendingToken,
-        code,
-        publicKeyJwk:key.publicKeyJwk,
-        deviceLabel:navigator.userAgentData?.platform||navigator.platform||'Appareil Staff',
-        platform:navigator.userAgentData?.platform||navigator.platform||''
-      })
-    });
-    const data=await response.json().catch(()=>({}));
-    if(!response.ok||data.success!==true)throw new Error(data.error||'Code WhatsApp refusé.');
-    const loginId=STAFF_IDENTITY_PENDING.loginId||data.staffId;
-    await finishStaffLogin(data,loginId);
+    const key=
+      await staffDeviceKeyRecord();
+
+    const endpoint=
+      method==='EMAIL'
+        ? '/api/staff/security/email/check'
+        : '/api/staff/security/whatsapp/check';
+
+    const response=
+      await fetch(
+        `${SERVER_URL}${endpoint}`,
+        {
+          method:'POST',
+          cache:'no-store',
+          credentials:'omit',
+          headers:{
+            'Content-Type':'application/json',
+            'Accept':'application/json',
+            'X-iCHEF-Tenant':
+              String(
+                STAFF_IDENTITY_PENDING.safeTenantID ||
+                currentTenant()
+              ),
+            'X-iCHEF-Device':
+              staffDeviceId(),
+            'X-iCHEF-PWA':
+              ichefIsStandalonePwa()
+                ? 'standalone'
+                : (
+                    ichefIsPhoneLike()
+                      ? 'mobile-browser'
+                      : 'browser'
+                  )
+          },
+          body:JSON.stringify({
+            tenantID:
+              String(
+                STAFF_IDENTITY_PENDING.safeTenantID ||
+                currentTenant()
+              ),
+            deviceId:
+              staffDeviceId(),
+            pendingToken:
+              STAFF_IDENTITY_PENDING.pendingToken,
+            code,
+            publicKeyJwk:
+              key.publicKeyJwk,
+            deviceLabel:
+              navigator.userAgentData?.platform ||
+              navigator.platform ||
+              'Appareil Staff',
+            platform:
+              navigator.userAgentData?.platform ||
+              navigator.platform ||
+              ''
+          })
+        }
+      );
+
+    const data=
+      await response.json()
+        .catch(()=>({}));
+
+    if(
+      !response.ok ||
+      data.success!==true
+    ){
+      throw new Error(
+        data.error ||
+        (
+          method==='EMAIL'
+            ? 'Code email refusé.'
+            : 'Code WhatsApp refusé.'
+        )
+      );
+    }
+
+    const loginId=
+      STAFF_IDENTITY_PENDING.loginId ||
+      data.staffId;
+
+    await finishStaffLogin(
+      data,
+      loginId
+    );
+
   }catch(e){
-    error.textContent=e.message||'Vérification impossible.';
+    error.textContent=
+      e.message ||
+      'Vérification impossible.';
+
   }finally{
     button.disabled=false;
   }
@@ -6178,13 +6350,13 @@ document.getElementById('staff-security-devices')?.addEventListener('click',asyn
   }
 });
 
-document.getElementById('staffIdentityVerify')?.addEventListener('click',verifyStaffWhatsappIdentity);
+document.getElementById('staffIdentityVerify')?.addEventListener('click',verifyStaffIdentity);
 document.getElementById('staffIdentityCancel')?.addEventListener('click',()=>{
   hideStaffIdentityGate();
   showStaffLogin('Vérification annulée.');
 });
 document.getElementById('staffIdentityCode')?.addEventListener('keydown',e=>{
-  if(e.key==='Enter')verifyStaffWhatsappIdentity();
+  if(e.key==='Enter')verifyStaffIdentity();
 });
 
 
@@ -11312,7 +11484,7 @@ document.addEventListener('DOMContentLoaded',()=>setTimeout(initStaffWorkspace,7
 
   setTimeout(()=>{bindDocumentSocket();if(requireStaffSession())loadSecureStaffDocumentsV89({silent:true});},120);
   window.loadSecureStaffDocumentsV89=loadSecureStaffDocumentsV89;
-  window.__ICHEF_STAFF_BUILD__='V146-IDENTITY-WHATSAPP-APP-SECURE';
+  window.__ICHEF_STAFF_BUILD__='V177-IDENTITY-EMAIL-APP-SECURE';
   console.info('[iCHEF Staff V176] documents RH : lecture GridFS dédiée + push temps réel + session Staff sécurisée');
 })();
 </script>
@@ -11961,7 +12133,7 @@ window.ichefOpenOpsMobileScreenV150=ichefOpenOpsMobileScreen;
 (()=>{
 'use strict';
 
-const BUILD='176';
+const BUILD='177';
 const SW_URL='./sw-staff.js?v='+BUILD;
 const INSTALL_MARK='ichef_staff_pwa_installed_v165';
 let deferredPrompt=null;
