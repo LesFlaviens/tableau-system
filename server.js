@@ -2266,7 +2266,7 @@ pwaRequired: ICHEF_STAFF_PWA_REQUIRED,
 pwaMobileBrowserAllowed: true,
 operationsApi: true,
 securityShield: true,
-securityBuild: 'V176-SECURITY-SHIELD',
+securityBuild: 'V177-SECURITY-ONBOARDING',
 builtInFileScanner: true,
 externalAntivirusConfigured:
 Boolean(
@@ -5182,6 +5182,57 @@ registeredDevices: {
 type: [String],
 default: []
 },
+
+// V177 — parcours de mise en service fournisseur iCHEF.
+// Les étapes sont contrôlées depuis la Tour de Contrôle.
+// Aucun PIN collaborateur n'est stocké ici.
+onboarding: {
+contractConfigured: {
+type: Boolean,
+default: false
+},
+establishmentConfigured: {
+type: Boolean,
+default: false
+},
+modulesConfigured: {
+type: Boolean,
+default: false
+},
+managerAccessReady: {
+type: Boolean,
+default: false
+},
+rhConfigured: {
+type: Boolean,
+default: false
+},
+staffActivated: {
+type: Boolean,
+default: false
+},
+trainingDone: {
+type: Boolean,
+default: false
+},
+goLive: {
+type: Boolean,
+default: false
+},
+notes: {
+type: String,
+default: ''
+},
+updatedAt: {
+type: Date,
+default: null
+},
+goLiveAt: {
+type: Date,
+default: null
+}
+},
+
 // V57.0 — statistiques de connexions client.
 // Incrémentées uniquement après une authentification PAD/TÉLÉPHONE réussie.
 // Les reconnexions Socket.IO ne sont jamais comptées.
@@ -5276,6 +5327,121 @@ default: null
 }
 });
 const Tenant = mongoose.model('Tenant', tenantSchema);
+
+// ============================================================================
+// 🚀 iCHEF V177 — MISE EN SERVICE CLIENT
+// ============================================================================
+const ICHEF_ONBOARDING_BOOLEAN_KEYS = Object.freeze([
+'contractConfigured',
+'establishmentConfigured',
+'modulesConfigured',
+'managerAccessReady',
+'rhConfigured',
+'staffActivated',
+'trainingDone',
+'goLive'
+]);
+
+function ichefNormalizeOnboarding(raw = {}) {
+const source =
+raw && typeof raw === 'object'
+? raw
+: {};
+
+const normalized = {};
+
+for (const key of ICHEF_ONBOARDING_BOOLEAN_KEYS) {
+normalized[key] =
+source[key] === true;
+}
+
+normalized.notes =
+String(source.notes || '')
+.trim()
+.slice(0,1200);
+
+normalized.updatedAt =
+source.updatedAt || null;
+
+normalized.goLiveAt =
+source.goLiveAt || null;
+
+return normalized;
+}
+
+function ichefOnboardingSummary(raw = {}) {
+const onboarding =
+ichefNormalizeOnboarding(raw);
+
+// "Établissement créé" est automatiquement acquis dès que le Tenant existe.
+const totalSteps = 9;
+
+const completedSteps =
+1 +
+[
+'contractConfigured',
+'establishmentConfigured',
+'modulesConfigured',
+'managerAccessReady',
+'rhConfigured',
+'staffActivated',
+'trainingDone',
+'goLive'
+]
+.filter(key => onboarding[key] === true)
+.length;
+
+const prerequisiteKeys = [
+'contractConfigured',
+'establishmentConfigured',
+'modulesConfigured',
+'managerAccessReady',
+'rhConfigured',
+'staffActivated',
+'trainingDone'
+];
+
+const missing =
+prerequisiteKeys
+.filter(key =>
+onboarding[key] !== true
+);
+
+const readyForGoLive =
+missing.length === 0;
+
+const progress =
+Math.max(
+0,
+Math.min(
+100,
+Math.round(
+(completedSteps / totalSteps) *
+100
+)
+)
+);
+
+const status =
+onboarding.goLive
+? 'LIVE'
+: (
+readyForGoLive
+? 'READY'
+: 'SETUP'
+);
+
+return {
+...onboarding,
+progress,
+completedSteps,
+totalSteps,
+readyForGoLive,
+missing,
+status
+};
+}
+
 function getPlanScreenLimit(plan) {
 const normalizedPlan =
 String(plan || 'BUSINESS')
@@ -9273,13 +9439,82 @@ error:'Accès refusé.'
 }
 try {
 await ichefResetExpiredDemos();
-const tenantsData = await Tenant.find({});
+const [tenantsData, onboardingStaffStates] =
+await Promise.all([
+Tenant.find({}),
+AppState.find(
+{},
+{
+tenantID:1,
+'activeOrders.STAFF_ACCESS.data':1,
+'activeOrders.DIRECTORY_MASTER.data':1
+}
+).lean()
+]);
+
+const onboardingStaffByTenant =
+new Map(
+onboardingStaffStates.map(state => [
+String(state?.tenantID || ''),
+state
+])
+);
+
 for (const tenant of tenantsData) {
 if (tenant?.demoExpiration) {
 await syncTenantScreenLimit(tenant);
 }
 }
-const formattedTenants = tenantsData.map(t => ({
+const formattedTenants = tenantsData.map(t => {
+const staffState =
+onboardingStaffByTenant.get(
+String(t.tenantID || '')
+) || {};
+
+const staffAccess =
+Array.isArray(
+staffState?.activeOrders?.STAFF_ACCESS?.data
+)
+? staffState.activeOrders.STAFF_ACCESS.data
+: [];
+
+const directory =
+Array.isArray(
+staffState?.activeOrders?.DIRECTORY_MASTER?.data
+)
+? staffState.activeOrders.DIRECTORY_MASTER.data
+: [];
+
+const staffSource =
+staffAccess.length
+? staffAccess
+: directory;
+
+const activeStaff =
+staffSource.filter(
+member =>
+member &&
+member.active !== false
+);
+
+const staffCount =
+activeStaff.length;
+
+const staffActivatedCount =
+activeStaff.filter(
+member =>
+Boolean(
+member?.staffActivatedAt ||
+member?.pinUpdatedAt
+)
+).length;
+
+const onboarding =
+ichefOnboardingSummary(
+t.onboarding || {}
+);
+
+return ({
 id: t.tenantID,
 name: t.clientName || "Sans Nom",
 email: t.email || "Non renseigné",
@@ -9324,8 +9559,22 @@ demoTemporaryScreensUntil: (
 t.demoTemporaryScreensUntil &&
 new Date(t.demoTemporaryScreensUntil).getTime() > Date.now()
 ) ? t.demoTemporaryScreensUntil : null,
-stripeCustomerId: String(t?.config?.stripeCustomerId || '')
-}));
+stripeCustomerId: String(t?.config?.stripeCustomerId || ''),
+
+// V177 — visibilité fournisseur sans exposer les PIN.
+staffCount,
+staffActivatedCount,
+staffActivationPercent:
+staffCount > 0
+? Math.round(
+(staffActivatedCount / staffCount) *
+100
+)
+: 0,
+
+onboarding
+});
+});
 res.json({ success: true, tenants: formattedTenants });
 } catch(err) { res.status(500).json({ success: false }); }
 });
@@ -9405,6 +9654,7 @@ clientName,
 email,
 phone,
 specialite,
+onboarding,
 confirmDelete,
 reason
 } = req.body;
@@ -9554,6 +9804,100 @@ tenantID: safeID,
 paymentConfig: normalizedPaymentConfig,
 timestamp: new Date().toISOString()
 });
+}
+else if (action === 'set_onboarding') {
+const current =
+await Tenant.findOne({
+tenantID:safeID
+});
+
+if (!current) {
+return res.status(404).json({
+success:false,
+error:'Restaurant introuvable.'
+});
+}
+
+const previous =
+ichefNormalizeOnboarding(
+current.onboarding || {}
+);
+
+const incoming =
+onboarding &&
+typeof onboarding === 'object'
+? onboarding
+: {};
+
+const next = {
+...previous
+};
+
+for (
+const key of
+ICHEF_ONBOARDING_BOOLEAN_KEYS
+) {
+if (
+Object.prototype.hasOwnProperty.call(
+incoming,
+key
+)
+) {
+next[key] =
+incoming[key] === true;
+}
+}
+
+if (
+Object.prototype.hasOwnProperty.call(
+incoming,
+'notes'
+)
+) {
+next.notes =
+String(
+incoming.notes || ''
+)
+.trim()
+.slice(0,1200);
+}
+
+next.updatedAt =
+new Date();
+
+if (
+next.goLive === true &&
+previous.goLive !== true
+) {
+next.goLiveAt =
+new Date();
+}
+
+if (
+next.goLive !== true
+) {
+next.goLiveAt =
+null;
+}
+
+current.onboarding =
+next;
+
+await current.save();
+
+io.to(safeID).emit(
+'onboardingUpdated',
+{
+tenantID:safeID,
+onboarding:
+ichefOnboardingSummary(
+next
+),
+timestamp:
+new Date()
+.toISOString()
+}
+);
 }
 else if (action === 'set_plan' && newPlan) {
 const upperPlan =
@@ -9851,7 +10195,20 @@ maxStaff: manualMaxStaff || undefined,
 clientName: clientName || undefined,
 email: email || undefined,
 phone: phone || undefined,
-specialite: specialite || undefined
+specialite: specialite || undefined,
+onboarding:
+action === 'set_onboarding'
+? {
+status:
+ichefOnboardingSummary(
+onboarding || {}
+).status,
+progress:
+ichefOnboardingSummary(
+onboarding || {}
+).progress
+}
+: undefined
 }
 });
 res.json({ success: true });
@@ -9990,7 +10347,7 @@ app.post('/api/master/security/status', async (req,res) => {
         return res.json({
             success:true,
             build:
-                'V176-SECURITY-SHIELD',
+                'V177-SECURITY-ONBOARDING',
             generatedAt:
                 new Date()
                     .toISOString(),
