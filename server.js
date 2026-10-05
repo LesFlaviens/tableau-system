@@ -9,6 +9,7 @@ const twilio = require('twilio');
 const nodemailer = require('nodemailer');
 const http = require('http');
 const https = require('https');
+const net = require('node:net');
 const { Server } = require('socket.io');
 const app = express();
 const server = http.createServer(app);
@@ -198,6 +199,1024 @@ app.use('/webhook', express.raw({ type: 'application/json' }));
 const ICHEF_HTTP_BODY_LIMIT = process.env.ICHEF_HTTP_BODY_LIMIT || '24mb';
 app.use(express.json({ limit: ICHEF_HTTP_BODY_LIMIT }));
 app.use(express.urlencoded({ extended: true, limit: ICHEF_HTTP_BODY_LIMIT }));
+
+// ============================================================================
+// 🛡️ iCHEF SERVER V176 — SECURITY SHIELD FOURNISSEUR
+// Protection ajoutée SANS modifier les connexions métier existantes.
+// ============================================================================
+
+const ICHEF_SECURITY_EVENT_RETENTION_SECONDS = 90 * 24 * 60 * 60;
+
+const ichefSecurityEventSchema = new mongoose.Schema({
+    at:{type:Date,default:Date.now,index:true},
+    severity:{
+        type:String,
+        enum:['INFO','WARN','HIGH','CRITICAL'],
+        default:'INFO',
+        index:true
+    },
+    type:{type:String,default:'SECURITY_EVENT',index:true},
+    tenantID:{type:String,default:'',index:true},
+    route:{type:String,default:''},
+    method:{type:String,default:''},
+    ipHash:{type:String,default:'',index:true},
+    deviceHash:{type:String,default:''},
+    detail:{type:String,default:''},
+    blocked:{type:Boolean,default:false,index:true}
+},{minimize:false});
+
+ichefSecurityEventSchema.index(
+    {at:1},
+    {expireAfterSeconds:ICHEF_SECURITY_EVENT_RETENTION_SECONDS}
+);
+
+const IchefSecurityEvent =
+    mongoose.models.IchefSecurityEvent ||
+    mongoose.model('IchefSecurityEvent', ichefSecurityEventSchema);
+
+const ichefSecurityMemoryEvents = [];
+const ichefSecurityBuckets = new Map();
+
+function ichefSecuritySecretEqual(a,b){
+    const left = Buffer.from(String(a ?? ''),'utf8');
+    const right = Buffer.from(String(b ?? ''),'utf8');
+
+    if(!left.length || left.length !== right.length){
+        return false;
+    }
+
+    try{
+        return nodeCrypto.timingSafeEqual(left,right);
+    }catch(_){
+        return false;
+    }
+}
+
+function ichefSecurityHash(value){
+    const salt =
+        String(
+            process.env.ICHEF_SECURITY_HASH_SALT ||
+            process.env.MASTER_KEY ||
+            'ichef-security-v176'
+        );
+
+    return nodeCrypto
+        .createHash('sha256')
+        .update(`${salt}|${String(value || '')}`)
+        .digest('hex')
+        .slice(0,24);
+}
+
+function ichefSecurityClientIp(req){
+    const forwarded =
+        String(req?.headers?.['x-forwarded-for'] || '')
+            .split(',')[0]
+            .trim();
+
+    return (
+        forwarded ||
+        String(req?.ip || '') ||
+        String(req?.socket?.remoteAddress || '') ||
+        'unknown'
+    );
+}
+
+function ichefSecurityTenant(req){
+    return String(
+        req?.body?.tenantID ||
+        req?.query?.tenantID ||
+        req?.headers?.['x-ichef-tenant'] ||
+        ''
+    )
+    .trim()
+    .toLowerCase()
+    .slice(0,120);
+}
+
+function ichefSecurityRedactDetail(value){
+    return String(value || '')
+        .replace(
+            /(pin|password|mot de passe|masterkey|master_key|token|secret|authorization)\s*[:=]\s*[^\s,;]+/ig,
+            '$1=[REDACTED]'
+        )
+        .slice(0,700);
+}
+
+async function ichefWriteSecurityEvent({
+    req=null,
+    severity='INFO',
+    type='SECURITY_EVENT',
+    tenantID='',
+    route='',
+    method='',
+    detail='',
+    blocked=false
+}={}){
+    try{
+        const device =
+            req
+                ? String(
+                    req.headers?.['x-ichef-device'] ||
+                    req.headers?.['x-ichef-master-device'] ||
+                    ''
+                )
+                : '';
+
+        const event = {
+            at:new Date(),
+            severity:
+                ['INFO','WARN','HIGH','CRITICAL']
+                    .includes(String(severity).toUpperCase())
+                    ? String(severity).toUpperCase()
+                    : 'INFO',
+            type:String(type || 'SECURITY_EVENT').slice(0,80),
+            tenantID:
+                String(
+                    tenantID ||
+                    (req ? ichefSecurityTenant(req) : '')
+                ).slice(0,120),
+            route:
+                String(
+                    route ||
+                    req?.path ||
+                    ''
+                ).slice(0,220),
+            method:
+                String(
+                    method ||
+                    req?.method ||
+                    ''
+                ).toUpperCase().slice(0,12),
+
+            // Jamais d'IP brute dans la Tour : uniquement empreinte.
+            ipHash:
+                ichefSecurityHash(
+                    req
+                        ? ichefSecurityClientIp(req)
+                        : ''
+                ),
+
+            deviceHash:
+                device
+                    ? ichefSecurityHash(device)
+                    : '',
+
+            detail:
+                ichefSecurityRedactDetail(detail),
+
+            blocked:Boolean(blocked)
+        };
+
+        ichefSecurityMemoryEvents.unshift({
+            ...event,
+            at:event.at.toISOString()
+        });
+
+        if(ichefSecurityMemoryEvents.length > 500){
+            ichefSecurityMemoryEvents.length = 500;
+        }
+
+        if(mongoose.connection.readyState === 1){
+            await IchefSecurityEvent.create(event);
+        }
+
+    }catch(error){
+        console.warn(
+            '[iCHEF SECURITY EVENT]',
+            error?.message || error
+        );
+    }
+}
+
+/*
+ * V176 — quotas raisonnables :
+ * ils protègent les routes sensibles sans limiter les échanges normaux
+ * de Socket.IO / commandes / planning.
+ */
+function ichefSecurityRateLimitForPath(pathname){
+    const p =
+        String(pathname || '')
+            .trim()
+            .toLowerCase();
+
+    if(p === '/panel-ichef'){
+        return {
+            limit:12,
+            windowMs:60_000,
+            blockMs:15 * 60_000
+        };
+    }
+
+    if(
+        p === '/api/staff/pin-reset/request' ||
+        p === '/api/staff/pin-reset/complete'
+    ){
+        return {
+            limit:8,
+            windowMs:60_000,
+            blockMs:10 * 60_000
+        };
+    }
+
+    if(
+        p === '/api/staff/login' ||
+        p === '/api/verify-pin' ||
+        p === '/api/staff/activation/complete'
+    ){
+        return {
+            limit:90,
+            windowMs:60_000,
+            blockMs:5 * 60_000
+        };
+    }
+
+    if(
+        p === '/api/client-space/admin/upload' ||
+        p === '/api/rh/documents/upload' ||
+        p === '/api/rh/documents/upload-binary'
+    ){
+        return {
+            limit:20,
+            windowMs:60_000,
+            blockMs:10 * 60_000
+        };
+    }
+
+    if(
+        p === '/api/staff/chat/message' ||
+        p === '/api/rh/chat/message' ||
+        p === '/api/support/client/send' ||
+        p === '/api/support/admin/send' ||
+        p === '/api/client-space/admin/message'
+    ){
+        return {
+            limit:60,
+            windowMs:60_000,
+            blockMs:5 * 60_000
+        };
+    }
+
+    if(
+        p === '/api/admin-action' ||
+        p === '/api/master/clients/create' ||
+        p === '/api/master/module-access-url' ||
+        p === '/api/master/security/status'
+    ){
+        return {
+            limit:50,
+            windowMs:60_000,
+            blockMs:10 * 60_000
+        };
+    }
+
+    return null;
+}
+
+function ichefSecurityBucketCheck(req){
+    const policy =
+        ichefSecurityRateLimitForPath(
+            req?.path
+        );
+
+    if(!policy){
+        return {ok:true};
+    }
+
+    const key = [
+        ichefSecurityHash(
+            ichefSecurityClientIp(req)
+        ),
+        ichefSecurityTenant(req),
+        String(req.path || '')
+    ].join('|');
+
+    const now = Date.now();
+
+    let bucket =
+        ichefSecurityBuckets.get(key);
+
+    if(
+        !bucket ||
+        now - Number(bucket.startedAt || 0) >=
+            policy.windowMs
+    ){
+        bucket = {
+            startedAt:now,
+            count:0,
+            blockedUntil:0
+        };
+    }
+
+    if(
+        bucket.blockedUntil &&
+        bucket.blockedUntil > now
+    ){
+        ichefSecurityBuckets.set(
+            key,
+            bucket
+        );
+
+        return {
+            ok:false,
+            retryAfterMs:
+                bucket.blockedUntil - now,
+            count:bucket.count,
+            policy
+        };
+    }
+
+    bucket.count += 1;
+
+    if(bucket.count > policy.limit){
+        bucket.blockedUntil =
+            now + policy.blockMs;
+
+        ichefSecurityBuckets.set(
+            key,
+            bucket
+        );
+
+        return {
+            ok:false,
+            retryAfterMs:
+                policy.blockMs,
+            count:bucket.count,
+            policy
+        };
+    }
+
+    ichefSecurityBuckets.set(
+        key,
+        bucket
+    );
+
+    // Nettoyage mémoire.
+    if(ichefSecurityBuckets.size > 6000){
+        for(const [bucketKey,value] of ichefSecurityBuckets){
+            if(
+                now -
+                Number(value?.startedAt || 0) >
+                15 * 60_000
+            ){
+                ichefSecurityBuckets.delete(
+                    bucketKey
+                );
+            }
+        }
+    }
+
+    return {
+        ok:true,
+        count:bucket.count,
+        policy
+    };
+}
+
+/*
+ * Protection des fichiers qui ne doivent JAMAIS être servis publiquement.
+ * Important car express.static(__dirname) existe plus bas dans ce serveur.
+ */
+const ICHEF_SOURCE_PROBE_PATTERNS = [
+    '/.env',
+    '/.git',
+    '/server.js',
+    '/server_',
+    '/package.json',
+    '/package-lock.json',
+    '/yarn.lock',
+    '/pnpm-lock.yaml',
+    '/node_modules/',
+    '/etc/passwd',
+    '/proc/self',
+    '/.ssh/',
+    '/.aws/',
+    '/.npmrc',
+    '/wp-admin',
+    '/phpmyadmin'
+];
+
+function ichefSecuritySourceProbe(req){
+    let raw =
+        String(
+            req?.originalUrl ||
+            req?.url ||
+            ''
+        ).toLowerCase();
+
+    try{
+        raw = decodeURIComponent(raw);
+    }catch(_){}
+
+    if(
+        raw.includes('../') ||
+        raw.includes('..\\') ||
+        raw.includes('%2e%2e')
+    ){
+        return 'PATH_TRAVERSAL';
+    }
+
+    for(const pattern of ICHEF_SOURCE_PROBE_PATTERNS){
+        if(raw.includes(pattern)){
+            return pattern;
+        }
+    }
+
+    return '';
+}
+
+/*
+ * Middleware de protection.
+ * Il ne touche pas aux sockets métier, commandes, planning ou synchronisations
+ * ordinaires : uniquement sondes sensibles + routes explicitement limitées.
+ */
+app.use(async(req,res,next)=>{
+    const probe =
+        ichefSecuritySourceProbe(req);
+
+    if(probe){
+        void ichefWriteSecurityEvent({
+            req,
+            severity:'CRITICAL',
+            type:'SOURCE_CODE_OR_DATA_PROBE',
+            detail:
+                `Tentative d’accès bloquée vers une ressource sensible (${probe}).`,
+            blocked:true
+        });
+
+        return res
+            .status(403)
+            .json({
+                success:false,
+                error:'Accès interdit.'
+            });
+    }
+
+    const rate =
+        ichefSecurityBucketCheck(req);
+
+    if(!rate.ok){
+        const retry =
+            Math.max(
+                1,
+                Math.ceil(
+                    Number(
+                        rate.retryAfterMs || 0
+                    ) / 1000
+                )
+            );
+
+        res.setHeader(
+            'Retry-After',
+            String(retry)
+        );
+
+        void ichefWriteSecurityEvent({
+            req,
+            severity:'HIGH',
+            type:'SPAM_OR_BRUTE_FORCE',
+            detail:
+                `Rafale de requêtes bloquée sur ${req.path}.`,
+            blocked:true
+        });
+
+        return res
+            .status(429)
+            .json({
+                success:false,
+                code:'SECURITY_RATE_LIMIT',
+                error:
+                    'Trop de tentatives. Réessayez plus tard.'
+            });
+    }
+
+    const monitored =
+        Boolean(
+            ichefSecurityRateLimitForPath(
+                req.path
+            )
+        );
+
+    if(monitored){
+        res.once(
+            'finish',
+            ()=>{
+                const status =
+                    Number(
+                        res.statusCode || 0
+                    );
+
+                if(
+                    status === 401 ||
+                    status === 403 ||
+                    status === 429
+                ){
+                    void ichefWriteSecurityEvent({
+                        req,
+                        severity:
+                            status === 429
+                                ? 'HIGH'
+                                : 'WARN',
+                        type:
+                            status === 429
+                                ? 'RATE_LIMIT'
+                                : 'AUTHENTICATION_FAILURE',
+                        detail:
+                            `Réponse ${status} sur une route sensible.`,
+                        blocked:
+                            status === 429 ||
+                            status === 403
+                    });
+                }
+            }
+        );
+    }
+
+    return next();
+});
+
+/*
+ * Scanner natif :
+ * - bloque signatures exécutables ;
+ * - bloque extensions exécutables ;
+ * - bloque PDF avec actions actives risquées ;
+ * - ClamAV réel peut être ajouté sans dépendance npm.
+ */
+function ichefBuiltInFileSafetyScan(
+    buffer,
+    {
+        name='fichier',
+        mime='application/octet-stream'
+    }={}
+){
+    if(
+        !Buffer.isBuffer(buffer) ||
+        !buffer.length
+    ){
+        return {
+            clean:false,
+            reason:'Fichier vide.'
+        };
+    }
+
+    const safeName =
+        String(name || 'fichier')
+            .trim()
+            .toLowerCase();
+
+    const safeMime =
+        String(mime || '')
+            .trim()
+            .toLowerCase();
+
+    const deniedExtensions = [
+        '.exe','.dll','.com','.scr','.msi',
+        '.bat','.cmd','.ps1','.vbs','.wsf',
+        '.jar','.apk','.app',
+        '.php','.phtml','.cgi'
+    ];
+
+    const deniedExt =
+        deniedExtensions.find(
+            ext =>
+                safeName.endsWith(ext)
+        );
+
+    if(deniedExt){
+        return {
+            clean:false,
+            reason:
+                `Extension exécutable interdite (${deniedExt}).`
+        };
+    }
+
+    // PE Windows
+    if(
+        buffer.length >= 2 &&
+        buffer[0] === 0x4D &&
+        buffer[1] === 0x5A
+    ){
+        return {
+            clean:false,
+            reason:
+                'Signature exécutable Windows détectée.'
+        };
+    }
+
+    // ELF Linux
+    if(
+        buffer.length >= 4 &&
+        buffer[0] === 0x7F &&
+        buffer[1] === 0x45 &&
+        buffer[2] === 0x4C &&
+        buffer[3] === 0x46
+    ){
+        return {
+            clean:false,
+            reason:
+                'Signature exécutable ELF détectée.'
+        };
+    }
+
+    // Mach-O
+    if(buffer.length >= 4){
+        const magic =
+            buffer.readUInt32BE(0);
+
+        if([
+            0xFEEDFACE,
+            0xFEEDFACF,
+            0xCAFEBABE,
+            0xCEFAEDFE,
+            0xCFFAEDFE
+        ].includes(magic)){
+            return {
+                clean:false,
+                reason:
+                    'Signature exécutable Mach-O détectée.'
+            };
+        }
+    }
+
+    const isPdf =
+        safeMime === 'application/pdf' ||
+        safeName.endsWith('.pdf') ||
+        (
+            buffer.length >= 4 &&
+            buffer
+                .slice(0,4)
+                .toString('ascii') === '%PDF'
+        );
+
+    if(isPdf){
+        const pdfText =
+            buffer
+                .toString('latin1')
+                .slice(
+                    0,
+                    Math.min(
+                        buffer.length,
+                        14 * 1024 * 1024
+                    )
+                );
+
+        const dangerousPdfMarkers = [
+            '/JavaScript',
+            '/Launch',
+            '/EmbeddedFile',
+            '/RichMedia',
+            '/SubmitForm',
+            '/ImportData'
+        ];
+
+        const marker =
+            dangerousPdfMarkers.find(
+                value =>
+                    pdfText
+                        .toLowerCase()
+                        .includes(
+                            value.toLowerCase()
+                        )
+            );
+
+        if(marker){
+            return {
+                clean:false,
+                reason:
+                    `PDF actif / contenu dangereux détecté (${marker}).`
+            };
+        }
+    }
+
+    return {
+        clean:true,
+        reason:
+            'Contrôle de sécurité natif OK.'
+    };
+}
+
+function ichefClamAvScanBuffer(buffer){
+    const host =
+        String(
+            process.env.ICHEF_CLAMAV_HOST ||
+            ''
+        ).trim();
+
+    const port =
+        Math.max(
+            1,
+            Math.min(
+                65535,
+                parseInt(
+                    process.env.ICHEF_CLAMAV_PORT ||
+                    '3310',
+                    10
+                ) || 3310
+            )
+        );
+
+    if(!host){
+        return Promise.resolve({
+            configured:false,
+            clean:null,
+            detail:
+                'ClamAV externe non configuré.'
+        });
+    }
+
+    return new Promise(resolve=>{
+        let settled = false;
+        let response = '';
+        let socket = null;
+
+        const finish = result=>{
+            if(settled){
+                return;
+            }
+
+            settled = true;
+
+            try{
+                socket?.destroy();
+            }catch(_){}
+
+            resolve(result);
+        };
+
+        socket =
+            net.createConnection({
+                host,
+                port
+            });
+
+        socket.setTimeout(
+            10_000,
+            ()=>finish({
+                configured:true,
+                clean:null,
+                error:
+                    'Timeout antivirus ClamAV.'
+            })
+        );
+
+        socket.on(
+            'connect',
+            ()=>{
+                try{
+                    // protocole clamd INSTREAM
+                    socket.write(
+                        Buffer.from(
+                            'zINSTREAM\0',
+                            'utf8'
+                        )
+                    );
+
+                    const chunkSize =
+                        64 * 1024;
+
+                    for(
+                        let offset = 0;
+                        offset < buffer.length;
+                        offset += chunkSize
+                    ){
+                        const chunk =
+                            buffer.subarray(
+                                offset,
+                                Math.min(
+                                    buffer.length,
+                                    offset + chunkSize
+                                )
+                            );
+
+                        const lengthBuffer =
+                            Buffer.alloc(4);
+
+                        lengthBuffer.writeUInt32BE(
+                            chunk.length,
+                            0
+                        );
+
+                        socket.write(
+                            lengthBuffer
+                        );
+
+                        socket.write(
+                            chunk
+                        );
+                    }
+
+                    socket.write(
+                        Buffer.alloc(4)
+                    );
+
+                }catch(error){
+                    finish({
+                        configured:true,
+                        clean:null,
+                        error:
+                            error?.message ||
+                            'Erreur flux antivirus.'
+                    });
+                }
+            }
+        );
+
+        socket.on(
+            'data',
+            data=>{
+                response +=
+                    data.toString('utf8');
+
+                if(response.includes('\0')){
+                    const result =
+                        response.replace(/\0/g,'')
+                            .trim();
+
+                    if(/FOUND/i.test(result)){
+                        return finish({
+                            configured:true,
+                            clean:false,
+                            detail:
+                                result.slice(0,240)
+                        });
+                    }
+
+                    if(/OK/i.test(result)){
+                        return finish({
+                            configured:true,
+                            clean:true,
+                            detail:'ClamAV OK.'
+                        });
+                    }
+                }
+            }
+        );
+
+        socket.on(
+            'end',
+            ()=>{
+                const result =
+                    String(response || '')
+                        .replace(/\0/g,'')
+                        .trim();
+
+                if(/FOUND/i.test(result)){
+                    return finish({
+                        configured:true,
+                        clean:false,
+                        detail:
+                            result.slice(0,240)
+                    });
+                }
+
+                if(/OK/i.test(result)){
+                    return finish({
+                        configured:true,
+                        clean:true,
+                        detail:'ClamAV OK.'
+                    });
+                }
+
+                return finish({
+                    configured:true,
+                    clean:null,
+                    error:
+                        result ||
+                        'Réponse antivirus inconnue.'
+                });
+            }
+        );
+
+        socket.on(
+            'error',
+            error=>finish({
+                configured:true,
+                clean:null,
+                error:
+                    error?.message ||
+                    'Antivirus ClamAV inaccessible.'
+            })
+        );
+    });
+}
+
+async function ichefSecurityScanUploadBuffer(
+    buffer,
+    {
+        name='fichier',
+        mime='application/octet-stream',
+        context='UPLOAD',
+        tenantID=''
+    }={},
+    req=null
+){
+    const builtIn =
+        ichefBuiltInFileSafetyScan(
+            buffer,
+            {
+                name,
+                mime
+            }
+        );
+
+    if(!builtIn.clean){
+        await ichefWriteSecurityEvent({
+            req,
+            severity:'CRITICAL',
+            type:'FILE_THREAT_BLOCKED',
+            tenantID,
+            detail:
+                `${context} · ${builtIn.reason}`,
+            blocked:true
+        });
+
+        return {
+            ok:false,
+            status:422,
+            error:
+                'Fichier bloqué par le contrôle de sécurité.'
+        };
+    }
+
+    const clam =
+        await ichefClamAvScanBuffer(
+            buffer
+        );
+
+    if(
+        clam.configured &&
+        clam.clean === false
+    ){
+        await ichefWriteSecurityEvent({
+            req,
+            severity:'CRITICAL',
+            type:'ANTIVIRUS_THREAT_BLOCKED',
+            tenantID,
+            detail:
+                `${context} · ${clam.detail || 'Menace antivirus détectée.'}`,
+            blocked:true
+        });
+
+        return {
+            ok:false,
+            status:422,
+            error:
+                'Fichier bloqué par l’antivirus.'
+        };
+    }
+
+    /*
+     * Quand ClamAV est explicitement configuré, on travaille en fail-closed :
+     * si le scanner tombe, aucun fichier n'est stocké sans analyse.
+     */
+    if(
+        clam.configured &&
+        clam.clean === null
+    ){
+        await ichefWriteSecurityEvent({
+            req,
+            severity:'HIGH',
+            type:'ANTIVIRUS_UNAVAILABLE',
+            tenantID,
+            detail:
+                `${context} · ${clam.error || 'Antivirus externe indisponible.'}`,
+            blocked:true
+        });
+
+        return {
+            ok:false,
+            status:503,
+            error:
+                'Analyse antivirus temporairement indisponible. Réessayez plus tard.'
+        };
+    }
+
+    return {
+        ok:true,
+        builtIn,
+        clam
+    };
+}
+
+// En-têtes de sécurité qui ne modifient pas les API / sockets.
+app.use((req,res,next)=>{
+    res.setHeader(
+        'X-Content-Type-Options',
+        'nosniff'
+    );
+
+    res.setHeader(
+        'Referrer-Policy',
+        'strict-origin-when-cross-origin'
+    );
+
+    res.setHeader(
+        'Permissions-Policy',
+        'camera=(self), microphone=(self), geolocation=()'
+    );
+
+    next();
+});
+
 const fiscalRecordSchema = new mongoose.Schema({
 tenantID: {
 type: String,
@@ -1246,6 +2265,16 @@ staffActivationQr: true,
 pwaRequired: ICHEF_STAFF_PWA_REQUIRED,
 pwaMobileBrowserAllowed: true,
 operationsApi: true,
+securityShield: true,
+securityBuild: 'V176-SECURITY-SHIELD',
+builtInFileScanner: true,
+externalAntivirusConfigured:
+Boolean(
+String(
+process.env.ICHEF_CLAMAV_HOST ||
+''
+).trim()
+),
 timestamp: new Date().toISOString()
 });
 });
@@ -1294,11 +2323,43 @@ res.setHeader('Expires', '0');
 res.sendFile(path.join(__dirname, 'vitrine.html'));
 });
 app.get('/panel-ichef', (req, res) => {
-if (req.query.pass === ADMIN_PASS) {
-res.sendFile(path.join(__dirname, 'empire.html'));
-} else {
-res.status(403).send('🛑 Accès Refusé. Sécurité Empire iCHEF.');
+res.setHeader('Cache-Control','no-store');
+res.setHeader('Referrer-Policy','no-referrer');
+
+const supplied =
+String(
+req.query?.pass ||
+req.headers?.['x-ichef-admin-pass'] ||
+''
+);
+
+if (
+ichefSecuritySecretEqual(
+supplied,
+ADMIN_PASS
+)
+) {
+return res.sendFile(
+path.join(
+__dirname,
+'empire.html'
+)
+);
 }
+
+void ichefWriteSecurityEvent({
+req,
+severity:'HIGH',
+type:'SUPERADMIN_PANEL_ACCESS_DENIED',
+detail:'Tentative refusée sur /panel-ichef.',
+blocked:true
+});
+
+return res
+.status(403)
+.send(
+'🛑 Accès Refusé. Sécurité Empire iCHEF.'
+);
 });
 const ichefAntiRushReleaseTimers = new Map();
 function ichefAntiRushIsLiveOrderKey(key) {
@@ -8495,28 +9556,193 @@ timestamp: new Date().toISOString()
 });
 }
 else if (action === 'set_plan' && newPlan) {
-let limit = 1; let staffLimit = 1;
-const upperPlan = newPlan.toUpperCase();
-if (['CHEF', 'PATISSIER', 'BAR', 'CHEF_CUISINE', 'CHEF_PATISSERIE', 'CHEF_BAR'].includes(upperPlan)) { limit = 1; staffLimit = 1; }
-else if (['BUSINESS', 'RENTABILITE', 'ECO', 'PACK_A'].includes(upperPlan)) { limit = 5; staffLimit = 999; }
-else if (['BRIGADE', 'EMPIRE', 'BRIGADES', 'PREMIUM'].includes(upperPlan)) { limit = 50; staffLimit = 999; }
-await Tenant.findOneAndUpdate(
-{ tenantID: safeID },
-{ $set: { plan: upperPlan, maxScreens: limit, stripeConnectionBaseScreens: limit, maxStaff: staffLimit } },
-{ new: true }
+const upperPlan =
+String(newPlan || '')
+.trim()
+.toUpperCase();
+
+const allowedPlans =
+Tenant.schema
+.path('plan')
+.enumValues;
+
+if (
+!allowedPlans.includes(
+upperPlan
+)
+) {
+return res.status(400).json({
+success:false,
+error:'Forfait inconnu.'
+});
+}
+
+const currentTenant =
+await Tenant.findOne({
+tenantID:safeID
+});
+
+if (!currentTenant) {
+return res.status(404).json({
+success:false,
+error:'Restaurant introuvable.'
+});
+}
+
+const planLimit =
+Math.max(
+1,
+Number(
+getPlanScreenLimit(
+upperPlan
+)
+) || 1
 );
-await ichefRecomputeStripeScreenLimit(safeID, 'tour-set-plan');
+
+const staffLimit =
+[
+'CHEF',
+'PATISSIER',
+'BAR',
+'CHEF_CUISINE',
+'CHEF_PATISSERIE',
+'CHEF_BAR'
+].includes(upperPlan)
+? 1
+: 999;
+
+const activeConnections =
+Array.isArray(
+currentTenant.registeredDevices
+)
+? currentTenant.registeredDevices.length
+: 0;
+
+const currentBase =
+Math.max(
+1,
+Number(
+currentTenant.stripeConnectionBaseScreens ??
+currentTenant.maxScreens ??
+1
+) || 1
+);
+
+/*
+ * V176 :
+ * un changement de forfait ne coupe JAMAIS un appareil déjà actif.
+ * La baisse de connexions se fait séparément dans le contrat fournisseur.
+ */
+const protectedBase =
+Math.min(
+100,
+Math.max(
+planLimit,
+currentBase,
+activeConnections
+)
+);
+
+const protectedStaffLimit =
+Math.max(
+staffLimit,
+Number(
+currentTenant.maxStaff ||
+staffLimit
+) || staffLimit
+);
+
+currentTenant.plan =
+upperPlan;
+
+currentTenant.maxScreens =
+protectedBase;
+
+currentTenant.stripeConnectionBaseScreens =
+protectedBase;
+
+currentTenant.maxStaff =
+protectedStaffLimit;
+
+await currentTenant.save();
+
+await ichefRecomputeStripeScreenLimit(
+safeID,
+'tour-set-plan-v176-safe'
+);
 }
 else if (action === 'set_max_screens') {
-if (!maxScreens || isNaN(maxScreens) || maxScreens < 1) {
-return res.status(400).json({ success: false, error: "Nombre invalide." });
+if (
+!maxScreens ||
+isNaN(maxScreens) ||
+maxScreens < 1
+) {
+return res.status(400).json({
+success:false,
+error:'Nombre invalide.'
+});
 }
-const baseScreens = Math.max(1, Math.min(100, parseInt(maxScreens, 10) || 1));
-await Tenant.findOneAndUpdate(
-{ tenantID: safeID },
-{ $set: { maxScreens: baseScreens, stripeConnectionBaseScreens: baseScreens } }
+
+const baseScreens =
+Math.max(
+1,
+Math.min(
+100,
+parseInt(
+maxScreens,
+10
+) || 1
+)
 );
-await ichefRecomputeStripeScreenLimit(safeID, 'tour-set-max-screens');
+
+const currentTenant =
+await Tenant.findOne({
+tenantID:safeID
+}).lean();
+
+if (!currentTenant) {
+return res.status(404).json({
+success:false,
+error:'Restaurant introuvable.'
+});
+}
+
+const activeConnections =
+Array.isArray(
+currentTenant.registeredDevices
+)
+? currentTenant.registeredDevices.length
+: 0;
+
+if (
+baseScreens <
+activeConnections
+) {
+return res.status(409).json({
+success:false,
+code:'CONNECTION_LIMIT_BELOW_ACTIVE',
+error:
+`Impossible de fixer le contrat à ${baseScreens} connexion(s) : ` +
+`${activeConnections} appareil(s) sont actuellement enregistrés.`,
+activeConnections,
+requestedLimit:baseScreens
+});
+}
+
+await Tenant.findOneAndUpdate(
+{tenantID:safeID},
+{
+$set:{
+maxScreens:baseScreens,
+stripeConnectionBaseScreens:baseScreens
+}
+}
+);
+
+await ichefRecomputeStripeScreenLimit(
+safeID,
+'tour-set-max-screens-v176'
+);
 }
 else if (action === 'reset_devices') {
 await Tenant.findOneAndUpdate(
@@ -8631,6 +9857,259 @@ specialite: specialite || undefined
 res.json({ success: true });
 } catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
+
+// ============================================================================
+// 🛡️ TOUR DE CONTRÔLE — CENTRE SÉCURITÉ V176
+// ============================================================================
+app.post('/api/master/security/status', async (req,res) => {
+    if(!process.env.MASTER_KEY){
+        return res.status(503).json({
+            success:false,
+            error:'MASTER_KEY non configurée.'
+        });
+    }
+
+    if(
+        !ichefMasterKeyIsValid(
+            req.body?.masterKey
+        )
+    ){
+        void ichefWriteSecurityEvent({
+            req,
+            severity:'HIGH',
+            type:'SUPERADMIN_SECURITY_ACCESS_DENIED',
+            detail:
+                'Tentative d’accès au Centre Sécurité avec clé invalide.',
+            blocked:true
+        });
+
+        return res.status(401).json({
+            success:false,
+            error:'Accès refusé.'
+        });
+    }
+
+    try{
+        const now = Date.now();
+
+        const since24 =
+            new Date(
+                now -
+                24 * 60 * 60 * 1000
+            );
+
+        let events = [];
+
+        if(
+            mongoose.connection.readyState === 1
+        ){
+            events =
+                await IchefSecurityEvent
+                    .find({
+                        at:{
+                            $gte:since24
+                        }
+                    })
+                    .sort({
+                        at:-1
+                    })
+                    .limit(300)
+                    .lean();
+        }else{
+            events =
+                ichefSecurityMemoryEvents
+                    .filter(
+                        event =>
+                            Date.parse(
+                                event.at || 0
+                            ) >=
+                            since24.getTime()
+                    )
+                    .slice(0,300);
+        }
+
+        const oneHourAgo =
+            now - 60 * 60 * 1000;
+
+        const count =
+            predicate =>
+                events.filter(
+                    predicate
+                ).length;
+
+        const recent =
+            events
+                .slice(0,100)
+                .map(event => ({
+                    at:event.at,
+                    severity:
+                        String(
+                            event.severity ||
+                            'INFO'
+                        ),
+                    type:
+                        String(
+                            event.type ||
+                            'SECURITY_EVENT'
+                        ),
+                    tenantID:
+                        String(
+                            event.tenantID ||
+                            ''
+                        ),
+                    route:
+                        String(
+                            event.route ||
+                            ''
+                        ),
+                    method:
+                        String(
+                            event.method ||
+                            ''
+                        ),
+                    // uniquement empreintes partielles
+                    ipHash:
+                        String(
+                            event.ipHash ||
+                            ''
+                        ).slice(0,12),
+                    deviceHash:
+                        String(
+                            event.deviceHash ||
+                            ''
+                        ).slice(0,12),
+                    detail:
+                        ichefSecurityRedactDetail(
+                            event.detail ||
+                            ''
+                        ),
+                    blocked:
+                        event.blocked === true
+                }));
+
+        return res.json({
+            success:true,
+            build:
+                'V176-SECURITY-SHIELD',
+            generatedAt:
+                new Date()
+                    .toISOString(),
+
+            protection:{
+                bruteForceGuard:true,
+                spamGuard:true,
+                sourceCodeShield:true,
+                authFailureMonitoring:true,
+                fileScanner:true,
+                externalAntivirusConfigured:
+                    Boolean(
+                        String(
+                            process.env.ICHEF_CLAMAV_HOST ||
+                            ''
+                        ).trim()
+                    ),
+                eventRetentionDays:90
+            },
+
+            counts:{
+                total24h:
+                    events.length,
+
+                total1h:
+                    events.filter(
+                        event =>
+                            Date.parse(
+                                event.at || 0
+                            ) >=
+                            oneHourAgo
+                    ).length,
+
+                blocked24h:
+                    count(
+                        event =>
+                            event.blocked === true
+                    ),
+
+                critical24h:
+                    count(
+                        event =>
+                            String(
+                                event.severity
+                            ).toUpperCase() ===
+                            'CRITICAL'
+                    ),
+
+                high24h:
+                    count(
+                        event =>
+                            String(
+                                event.severity
+                            ).toUpperCase() ===
+                            'HIGH'
+                    ),
+
+                authFailures24h:
+                    count(
+                        event =>
+                            String(
+                                event.type
+                            ) ===
+                            'AUTHENTICATION_FAILURE'
+                    ),
+
+                spam24h:
+                    count(
+                        event =>
+                            [
+                                'SPAM_OR_BRUTE_FORCE',
+                                'RATE_LIMIT'
+                            ].includes(
+                                String(
+                                    event.type
+                                )
+                            )
+                    ),
+
+                sourceProbes24h:
+                    count(
+                        event =>
+                            String(
+                                event.type
+                            ) ===
+                            'SOURCE_CODE_OR_DATA_PROBE'
+                    ),
+
+                fileThreats24h:
+                    count(
+                        event =>
+                            [
+                                'FILE_THREAT_BLOCKED',
+                                'ANTIVIRUS_THREAT_BLOCKED'
+                            ].includes(
+                                String(
+                                    event.type
+                                )
+                            )
+                    )
+            },
+
+            recent
+        });
+
+    }catch(error){
+        console.error(
+            '[iCHEF SECURITY STATUS]',
+            error?.message || error
+        );
+
+        return res.status(500).json({
+            success:false,
+            error:
+                'Centre de sécurité indisponible.'
+        });
+    }
+});
+
 const ICHEF_DEMO_MASTER_TENANT_ID = cleanString(
 process.env.ICHEF_DEMO_MASTER_TENANT_ID || 'testenfc'
 );
@@ -23170,6 +24649,33 @@ app.post('/api/staff/chat/message', async (req,res) => {
         const messageId = `MSG_${Date.now()}_${nodeCrypto.randomBytes(6).toString('hex')}`;
 
         if (incomingAttachment) {
+            const securityScan =
+                await ichefSecurityScanUploadBuffer(
+                    incomingAttachment.buffer,
+                    {
+                        name:incomingAttachment.name,
+                        mime:incomingAttachment.mime,
+                        context:'STAFF_CHAT_ATTACHMENT',
+                        tenantID:access.tenantID
+                    },
+                    req
+                );
+
+            if(!securityScan.ok){
+                return res
+                    .status(
+                        securityScan.status ||
+                        422
+                    )
+                    .json({
+                        success:false,
+                        code:'SECURITY_FILE_BLOCKED',
+                        error:
+                            securityScan.error ||
+                            'Pièce jointe bloquée par la sécurité.'
+                    });
+            }
+
             storedAttachment = await ichefStaffChatStoreAttachment({
                 tenantID:access.tenantID,
                 channelId,
@@ -23878,6 +25384,33 @@ app.post('/api/rh/chat/message', async (req,res) => {
         const messageId = `RHMSG_${Date.now()}_${nodeCrypto.randomBytes(6).toString('hex')}`;
 
         if (incomingAttachment) {
+            const securityScan =
+                await ichefSecurityScanUploadBuffer(
+                    incomingAttachment.buffer,
+                    {
+                        name:incomingAttachment.name,
+                        mime:incomingAttachment.mime,
+                        context:'RH_CHAT_ATTACHMENT',
+                        tenantID:auth.tenantID
+                    },
+                    req
+                );
+
+            if(!securityScan.ok){
+                return res
+                    .status(
+                        securityScan.status ||
+                        422
+                    )
+                    .json({
+                        success:false,
+                        code:'SECURITY_FILE_BLOCKED',
+                        error:
+                            securityScan.error ||
+                            'Pièce jointe bloquée par la sécurité.'
+                    });
+            }
+
             storedAttachment = await ichefStaffChatStoreAttachment({
                 tenantID:auth.tenantID,
                 channelId,
@@ -24701,6 +26234,34 @@ app.post('/api/rh/documents/upload-binary', express.raw({type:'application/octet
         if(mimeType==='application/pdf'&&buffer.slice(0,4).toString('ascii')!=='%PDF')return res.status(400).json({success:false,error:'PDF invalide.'});
         if(mimeType==='image/png'&&buffer.slice(1,4).toString('ascii')!=='PNG')return res.status(400).json({success:false,error:'Image PNG invalide.'});
         if(mimeType==='image/jpeg'&&!(buffer[0]===0xFF&&buffer[1]===0xD8))return res.status(400).json({success:false,error:'Image JPEG invalide.'});
+
+        const securityScan=
+            await ichefSecurityScanUploadBuffer(
+                buffer,
+                {
+                    name:filename,
+                    mime:mimeType,
+                    context:'RH_DOCUMENT',
+                    tenantID:auth.tenantID
+                },
+                req
+            );
+
+        if(!securityScan.ok){
+            return res
+                .status(
+                    securityScan.status ||
+                    422
+                )
+                .json({
+                    success:false,
+                    code:'SECURITY_FILE_BLOCKED',
+                    error:
+                        securityScan.error ||
+                        'Document bloqué par la sécurité.'
+                });
+        }
+
         const uploadedAt=new Date();
         const issuedAt=issuedRaw&&Number.isFinite(Date.parse(issuedRaw))?new Date(issuedRaw):uploadedAt;
         const sha256=nodeCrypto.createHash('sha256').update(buffer).digest('hex');
@@ -24783,6 +26344,34 @@ app.post('/api/rh/documents/upload', async (req,res) => {
         if(mimeType==='application/pdf'&&buffer.slice(0,4).toString('ascii')!=='%PDF')return res.status(400).json({success:false,error:'PDF invalide.'});
         if(mimeType==='image/png'&&buffer.slice(1,4).toString('ascii')!=='PNG')return res.status(400).json({success:false,error:'Image PNG invalide.'});
         if(mimeType==='image/jpeg'&&!(buffer[0]===0xFF&&buffer[1]===0xD8))return res.status(400).json({success:false,error:'Image JPEG invalide.'});
+
+        const securityScan=
+            await ichefSecurityScanUploadBuffer(
+                buffer,
+                {
+                    name:filename,
+                    mime:mimeType,
+                    context:'RH_DOCUMENT',
+                    tenantID:auth.tenantID
+                },
+                req
+            );
+
+        if(!securityScan.ok){
+            return res
+                .status(
+                    securityScan.status ||
+                    422
+                )
+                .json({
+                    success:false,
+                    code:'SECURITY_FILE_BLOCKED',
+                    error:
+                        securityScan.error ||
+                        'Document bloqué par la sécurité.'
+                });
+        }
+
         const uploadedAt=new Date();
         const issuedAt=issuedRaw&&Number.isFinite(Date.parse(issuedRaw))?new Date(issuedRaw):uploadedAt;
         const sha256=nodeCrypto.createHash('sha256').update(buffer).digest('hex');
@@ -29627,6 +31216,34 @@ let buffer;
 try { buffer = Buffer.from(base64, 'base64'); } catch (_) { buffer = null; }
 if (!buffer || !buffer.length || buffer.slice(0, 4).toString('ascii') !== '%PDF') return res.status(400).json({ success: false, error: 'PDF illisible ou vide.' });
 if (buffer.length > 12 * 1024 * 1024) return res.status(413).json({ success: false, error: 'PDF trop volumineux (12 Mo maximum).' });
+
+const securityScan =
+await ichefSecurityScanUploadBuffer(
+buffer,
+{
+name:filename,
+mime:'application/pdf',
+context:'CLIENT_SPACE_PDF',
+tenantID
+},
+req
+);
+
+if (!securityScan.ok) {
+return res
+.status(
+securityScan.status ||
+422
+)
+.json({
+success:false,
+code:'SECURITY_FILE_BLOCKED',
+error:
+securityScan.error ||
+'Document bloqué par la sécurité.'
+});
+}
+
 const bucket = ichefClientDocsBucket();
 const uploadedAt = new Date();
 const sha256 = nodeCrypto.createHash('sha256').update(buffer).digest('hex');
