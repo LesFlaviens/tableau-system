@@ -3912,6 +3912,29 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                 // V133 · couverture critique
                 kitchenCriticalCoverageEnabled: true,
                 kitchenMinQualifiedPerOpenService: 1,
+
+                // V243 · capacité d'exploitation réellement utilisée
+                // par le générateur de planning.
+                capacityCoversLunch: 75,
+                capacityCoversDinner: 50,
+                capacityOpenDaysPerWeek: 7,
+                capacityMinKitchenPerService: 3,
+                capacityMinServicePerService: 3,
+                capacitySupportStaff: 2,
+                capacityAbsenceBufferPerDepartment: 1,
+                capacityTicketAverage: 60,
+                capacitySalaryKitchenGross: 4528,
+                capacitySalaryServiceGross: 4100,
+                capacitySalarySupportGross: 3713,
+                capacityEmployerChargesPct: 16,
+                capacityFoodCostPct: 30,
+                capacityTargetLaborPct: 30,
+                capacityFixedOperatingCosts: 38000,
+                capacityThirteenthSalary: true,
+                capacityAvoidSplitShifts: true,
+                capacitySplitShiftPenalty: 42,
+                capacityUseAsPlanningFloor: true,
+
                 // V135 · jours de fermeture établissement
                 planningClosedWeekdays: [],
                 planningExceptionalClosedDates: [],
@@ -4161,6 +4184,50 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                             Number(source.kitchenMinQualifiedPerOpenService) || 1
                         )
                     ),
+
+                // V243 · capacité conservée dans RH_SETTINGS.
+                capacityCoversLunch:
+                    Math.max(0, Math.min(2000, Number(source.capacityCoversLunch) || 0)),
+                capacityCoversDinner:
+                    Math.max(0, Math.min(2000, Number(source.capacityCoversDinner) || 0)),
+                capacityOpenDaysPerWeek:
+                    Math.max(1, Math.min(7, Number(source.capacityOpenDaysPerWeek) || 7)),
+                capacityMinKitchenPerService:
+                    Math.max(1, Math.min(30, Number(source.capacityMinKitchenPerService) || 3)),
+                capacityMinServicePerService:
+                    Math.max(1, Math.min(30, Number(source.capacityMinServicePerService) || 3)),
+                capacitySupportStaff:
+                    Math.max(0, Math.min(30, Number(source.capacitySupportStaff) || 0)),
+                capacityAbsenceBufferPerDepartment:
+                    Math.max(0, Math.min(10, Number(source.capacityAbsenceBufferPerDepartment) || 0)),
+                capacityTicketAverage:
+                    Math.max(0, Math.min(1000, Number(source.capacityTicketAverage) || 0)),
+                capacitySalaryKitchenGross:
+                    Math.max(0, Math.min(30000, Number(source.capacitySalaryKitchenGross) || 0)),
+                capacitySalaryServiceGross:
+                    Math.max(0, Math.min(30000, Number(source.capacitySalaryServiceGross) || 0)),
+                capacitySalarySupportGross:
+                    Math.max(0, Math.min(30000, Number(source.capacitySalarySupportGross) || 0)),
+                capacityEmployerChargesPct:
+                    Math.max(0, Math.min(100, Number(source.capacityEmployerChargesPct) || 0)),
+                capacityFoodCostPct:
+                    Math.max(0, Math.min(100, Number(source.capacityFoodCostPct) || 0)),
+                capacityTargetLaborPct:
+                    Math.max(1, Math.min(100, Number(source.capacityTargetLaborPct) || 30)),
+                capacityFixedOperatingCosts:
+                    Math.max(0, Math.min(1000000, Number(source.capacityFixedOperatingCosts) || 0)),
+                capacityThirteenthSalary:
+                    source.capacityThirteenthSalary !== false &&
+                    String(source.capacityThirteenthSalary) !== 'false',
+                capacityAvoidSplitShifts:
+                    source.capacityAvoidSplitShifts !== false &&
+                    String(source.capacityAvoidSplitShifts) !== 'false',
+                capacitySplitShiftPenalty:
+                    Math.max(0, Math.min(200, Number(source.capacitySplitShiftPenalty) || 42)),
+                capacityUseAsPlanningFloor:
+                    source.capacityUseAsPlanningFloor !== false &&
+                    String(source.capacityUseAsPlanningFloor) !== 'false',
+
                 planningClosedWeekdays:
                     Array.from(
                         new Set(
@@ -7964,6 +8031,8 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                     day,
                     score: closed ? 0 : (weekend ? 1.22 : 1),
                     covers: 0,
+                    coversLunch: 0,
+                    coversDinner: 0,
                     reason: closed
                         ? 'Établissement fermé'
                         : (weekend ? 'Fin de semaine' : 'Activité standard'),
@@ -8129,6 +8198,126 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                     rows[day].isPeak = true;
                 }
             }
+            // V243 · le volume "capacité" alimente le planning.
+            for (let day = 1; day <= daysInMonth; day++) {
+                const row = rows[day];
+
+                if (!row || row.closed === true) {
+                    if (row) {
+                        row.covers = 0;
+                        row.coversLunch = 0;
+                        row.coversDinner = 0;
+                    }
+                    continue;
+                }
+
+                const dateObj =
+                    new Date(year, month - 1, day);
+
+                const lunchOpen =
+                    assistantIsServiceOpenV168(
+                        dateObj,
+                        'lunch',
+                        settings
+                    );
+
+                const dinnerOpen =
+                    assistantIsServiceOpenV168(
+                        dateObj,
+                        'dinner',
+                        settings
+                    );
+
+                const configuredLunch =
+                    lunchOpen
+                        ? Math.max(
+                            0,
+                            Number(settings?.capacityCoversLunch || 0)
+                          )
+                        : 0;
+
+                const configuredDinner =
+                    dinnerOpen
+                        ? Math.max(
+                            0,
+                            Number(settings?.capacityCoversDinner || 0)
+                          )
+                        : 0;
+
+                const configuredTotal =
+                    configuredLunch +
+                    configuredDinner;
+
+                const observedTotal =
+                    Math.max(
+                        0,
+                        Number(row.covers || 0)
+                    );
+
+                const finalTotal =
+                    settings?.capacityUseAsPlanningFloor !== false
+                        ? Math.max(observedTotal, configuredTotal)
+                        : observedTotal;
+
+                let lunchCovers = 0;
+                let dinnerCovers = 0;
+
+                if (configuredTotal > 0) {
+                    const scale =
+                        finalTotal > 0
+                            ? finalTotal / configuredTotal
+                            : 0;
+
+                    lunchCovers =
+                        Math.round(
+                            configuredLunch * scale
+                        );
+
+                    dinnerCovers =
+                        Math.max(
+                            0,
+                            Math.round(
+                                finalTotal - lunchCovers
+                            )
+                        );
+
+                } else if (finalTotal > 0) {
+                    if (lunchOpen && dinnerOpen) {
+                        lunchCovers =
+                            Math.ceil(finalTotal / 2);
+
+                        dinnerCovers =
+                            finalTotal - lunchCovers;
+
+                    } else if (lunchOpen) {
+                        lunchCovers = finalTotal;
+
+                    } else if (dinnerOpen) {
+                        dinnerCovers = finalTotal;
+                    }
+                }
+
+                row.covers =
+                    finalTotal;
+
+                row.coversLunch =
+                    lunchCovers;
+
+                row.coversDinner =
+                    dinnerCovers;
+
+                if (
+                    configuredTotal > 0 &&
+                    (
+                        row.reason === 'Activité standard' ||
+                        row.reason === 'Fin de semaine'
+                    )
+                ) {
+                    row.reason =
+                        `Capacité iCHEF · ${lunchCovers} midi · ${dinnerCovers} soir`;
+                }
+            }
+
             return rows;
         }
         function assistantProtectedWeekday(dateObj, settings) {
@@ -8311,9 +8500,92 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                 )
             );
         }
-        function assistantRequiredCount(dept, demand, settings, activeCount) {
-            if (activeCount <= 0) return 0;
-            if (demand?.closed === true) return 0;
+        function assistantCapacityMinimumForDeptV243(
+            dept,
+            settings
+        ) {
+            const key =
+                String(dept || '')
+                    .toLowerCase();
+
+            if (key === 'cuisine') {
+                return Math.max(
+                    0,
+                    Number(
+                        settings?.capacityMinKitchenPerService || 0
+                    )
+                );
+            }
+
+            if (key === 'salle') {
+                return Math.max(
+                    0,
+                    Number(
+                        settings?.capacityMinServicePerService || 0
+                    )
+                );
+            }
+
+            return 0;
+        }
+
+        function assistantDemandCoversForServiceV243(
+            demand,
+            service
+        ) {
+            if (service === 'lunch') {
+                return Math.max(
+                    0,
+                    Number(
+                        demand?.coversLunch ??
+                        demand?.covers ??
+                        0
+                    )
+                );
+            }
+
+            if (service === 'dinner') {
+                return Math.max(
+                    0,
+                    Number(
+                        demand?.coversDinner ??
+                        demand?.covers ??
+                        0
+                    )
+                );
+            }
+
+            return Math.max(
+                0,
+                Number(
+                    demand?.covers || 0
+                )
+            );
+        }
+
+        function assistantRequiredCount(
+            dept,
+            demand,
+            settings,
+            activeCount,
+            service = ''
+        ) {
+            if (demand?.closed === true) {
+                return 0;
+            }
+
+            const capacityFloor =
+                assistantCapacityMinimumForDeptV243(
+                    dept,
+                    settings
+                );
+
+            if (activeCount <= 0) {
+                return capacityFloor > 0
+                    ? Math.ceil(capacityFloor)
+                    : 0;
+            }
+
             const roleBasedRequired =
                 assistantRoleRatioRequiredCountV179(
                     dept,
@@ -8321,60 +8593,159 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                     settings,
                     activeCount
                 );
-            if (
-                Number.isFinite(
-                    roleBasedRequired
-                ) &&
-                roleBasedRequired > 0
-            ) {
-                return roleBasedRequired;
-            }
-            const covers = Number(demand?.covers || 0);
+
+            const covers =
+                assistantDemandCoversForServiceV243(
+                    demand,
+                    service
+                );
+
             let ratio = 0;
-            if (dept === 'salle') ratio = Number(settings.serverCoversRatio || 25);
-            if (dept === 'cuisine') ratio = Number(settings.kitchenCoversRatio || 35);
-            if (dept === 'bar') ratio = Number(settings.barCoversRatio || 50);
-            // V169 · départements F&B dérivés des ratios existants
-            if (dept === 'patisserie') ratio = Number(settings.kitchenCoversRatio || 35);
-            if (dept === 'roomservice') ratio = Number(settings.serverCoversRatio || 25);
-            if (dept === 'petit_dejeuner') ratio = Number(settings.serverCoversRatio || 25);
-            if (dept === 'banquet') ratio = Number(settings.serverCoversRatio || 25);
-            // V170 · le niveau de service agit sur la couverture,
-            // mais jamais au détriment des règles légales / compétences.
+
+            if (dept === 'salle') {
+                ratio =
+                    Number(
+                        settings.serverCoversRatio || 25
+                    );
+            }
+
+            if (dept === 'cuisine') {
+                ratio =
+                    Number(
+                        settings.kitchenCoversRatio || 35
+                    );
+            }
+
+            if (dept === 'bar') {
+                ratio =
+                    Number(
+                        settings.barCoversRatio || 50
+                    );
+            }
+
+            if (dept === 'patisserie') {
+                ratio =
+                    Number(
+                        settings.kitchenCoversRatio || 35
+                    );
+            }
+
+            if (
+                dept === 'roomservice' ||
+                dept === 'petit_dejeuner' ||
+                dept === 'banquet'
+            ) {
+                ratio =
+                    Number(
+                        settings.serverCoversRatio || 25
+                    );
+            }
+
             const serviceLevel =
                 String(
                     settings?.planningServiceLevel ||
                     'standard'
                 );
+
             const ratioFactor = {
                 standard: 1,
                 reinforced: 0.90,
                 premium: 0.80,
                 excellence: 0.70
             }[serviceLevel] || 1;
+
             if (ratio > 0) {
                 ratio *= ratioFactor;
             }
-            if (covers > 0 && ratio > 0) {
-                return Math.max(1, Math.min(activeCount, Math.ceil(covers / ratio)));
+
+            let calculated = 0;
+
+            if (
+                Number.isFinite(roleBasedRequired) &&
+                roleBasedRequired > 0
+            ) {
+                calculated =
+                    Math.max(
+                        calculated,
+                        roleBasedRequired
+                    );
             }
-            const score = Number(demand?.score || 1);
-            const factor = score >= 1.6
-                ? 0.85
-                : score >= 1.2
-                    ? 0.68
-                    : score <= 0.75
-                        ? 0.38
-                        : 0.52;
-            return Math.max(1, Math.min(activeCount, Math.ceil(activeCount * factor)));
+
+            if (
+                covers > 0 &&
+                ratio > 0
+            ) {
+                calculated =
+                    Math.max(
+                        calculated,
+                        Math.ceil(
+                            covers / ratio
+                        )
+                    );
+            }
+
+            if (calculated <= 0) {
+                const score =
+                    Number(
+                        demand?.score || 1
+                    );
+
+                const factor =
+                    score >= 1.6
+                        ? 0.85
+                        : (
+                            score >= 1.2
+                                ? 0.68
+                                : (
+                                    score <= 0.75
+                                        ? 0.38
+                                        : 0.52
+                                  )
+                          );
+
+                calculated =
+                    Math.max(
+                        1,
+                        Math.ceil(
+                            activeCount * factor
+                        )
+                    );
+            }
+
+            if (
+                dept === 'cuisine' ||
+                dept === 'salle'
+            ) {
+                // V243 : ne pas masquer un sous-effectif.
+                // Ex.: besoin 3, seulement 2 disponibles => planning 2/3.
+                return Math.max(
+                    1,
+                    Math.ceil(
+                        Math.max(
+                            capacityFloor,
+                            calculated
+                        )
+                    )
+                );
+            }
+
+            return Math.max(
+                1,
+                Math.min(
+                    activeCount,
+                    Math.ceil(calculated)
+                )
+            );
         }
+
         function assistantCriticalKitchenIssues(proposal, staffList, monthStr, settings) {
             if (settings?.kitchenCriticalCoverageEnabled === false) return [];
             const [year, month] = String(monthStr).split('-').map(Number);
             const daysInMonth = new Date(year, month, 0).getDate();
             const minKitchen = Math.max(
                 1,
-                Number(settings?.kitchenMinQualifiedPerOpenService || 1)
+                Number(settings?.kitchenMinQualifiedPerOpenService || 1),
+                Number(settings?.capacityMinKitchenPerService || 0)
             );
             const kitchenQualified = (staffList || []).filter(staff =>
                 staff?.active !== false &&
@@ -10054,6 +10425,33 @@ const urlParamsJS = new URLSearchParams(window.location.search);
             if (!legalService.ok) return -99999;
             let score = (deficit / target) * 100;
             score += String(staff.dept || '') === dept ? 32 : 9;
+
+            // V243 · réduire les coupures midi/soir si l'effectif le permet.
+            if (settings?.capacityAvoidSplitShifts !== false) {
+                const currentDayPlan =
+                    proposal?.[staff.id]?.[day];
+
+                const createsSplitShift =
+                    service === 'dinner'
+                        ? Boolean(
+                            currentDayPlan?.s1 &&
+                            !currentDayPlan?.s2
+                          )
+                        : Boolean(
+                            currentDayPlan?.s2 &&
+                            !currentDayPlan?.s1
+                          );
+
+                if (createsSplitShift) {
+                    score -=
+                        Math.max(
+                            0,
+                            Number(
+                                settings?.capacitySplitShiftPenalty || 42
+                            )
+                        );
+                }
+            }
             if (criticalKitchen) {
                 // Priorité forte : mieux vaut signaler une éventuelle heure sup.
                 // que produire un planning avec cuisine fermée involontairement.
@@ -10160,15 +10558,24 @@ const urlParamsJS = new URLSearchParams(window.location.search);
             const dept = String(plan.poste || staff.dept || 'salle').toLowerCase();
             const eligible = getDir().filter(s => s.active !== false && assistantStaffCanCoverDept(s, dept));
             if (!eligible.length) return false;
-            const required = assistantRequiredCount(dept, demand?.[day], settings, eligible.length);
             const services = [];
             if (plan.s1) services.push('lunch');
             if (plan.s2) services.push('dinner');
             return services.every(service => {
+                const required =
+                    assistantRequiredCount(
+                        dept,
+                        demand?.[day],
+                        settings,
+                        eligible.length,
+                        service
+                    );
+
                 const currentCoverage = eligible.filter(other => {
                     const otherPlan = assistantStaffDayPlan(tsMonth, other.id, day);
                     return assistantDayWorksService(otherPlan, service);
                 }).length;
+
                 return (currentCoverage - 1) >= required;
             });
         }
@@ -10721,6 +11128,59 @@ const urlParamsJS = new URLSearchParams(window.location.search);
             const states = {};
             const warnings = [];
             const uncovered = [];
+
+            const capacityKitchenAvailable =
+                staffList.filter(
+                    staff =>
+                        assistantStaffCanCoverDept(
+                            staff,
+                            'cuisine'
+                        )
+                ).length;
+
+            const capacityServiceAvailable =
+                staffList.filter(
+                    staff =>
+                        assistantStaffCanCoverDept(
+                            staff,
+                            'salle'
+                        )
+                ).length;
+
+            const capacityKitchenRequired =
+                Math.max(
+                    0,
+                    Number(
+                        settings?.capacityMinKitchenPerService || 0
+                    )
+                );
+
+            const capacityServiceRequired =
+                Math.max(
+                    0,
+                    Number(
+                        settings?.capacityMinServicePerService || 0
+                    )
+                );
+
+            if (
+                capacityKitchenRequired > 0 &&
+                capacityKitchenAvailable < capacityKitchenRequired
+            ) {
+                warnings.push(
+                    `CAPACITÉ iCHEF · cuisine : ${capacityKitchenAvailable} disponible(s) pour ${capacityKitchenRequired} minimum par service.`
+                );
+            }
+
+            if (
+                capacityServiceRequired > 0 &&
+                capacityServiceAvailable < capacityServiceRequired
+            ) {
+                warnings.push(
+                    `CAPACITÉ iCHEF · salle : ${capacityServiceAvailable} disponible(s) pour ${capacityServiceRequired} minimum par service.`
+                );
+            }
+
             const now = new Date();
             const isCurrentMonth =
                 now.getFullYear() === year &&
@@ -10914,10 +11374,42 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                         continue;
                     }
                     for (const dept of departments) {
-                        const eligible = staffList.filter(staff => assistantStaffCanCoverDept(staff, dept));
-                        if (!eligible.length) continue;
-                        const required = assistantRequiredCount(dept, demand[day], settings, eligible.length);
-                        let covered = eligible.filter(staff => assistantDayWorksService(proposal[staff.id][day], service)).length;
+                        const eligible =
+                            staffList.filter(
+                                staff =>
+                                    assistantStaffCanCoverDept(
+                                        staff,
+                                        dept
+                                    )
+                            );
+
+                        const required =
+                            assistantRequiredCount(
+                                dept,
+                                demand[day],
+                                settings,
+                                eligible.length,
+                                service
+                            );
+
+                        if (!eligible.length) {
+                            if (required > 0) {
+                                uncovered.push(
+                                    `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')} · ` +
+                                    `${dept.toUpperCase()} · ${service === 'lunch' ? 'MIDI' : 'SOIR'} : 0/${required} · CAPACITÉ iCHEF`
+                                );
+                            }
+                            continue;
+                        }
+
+                        let covered =
+                            eligible.filter(
+                                staff =>
+                                    assistantDayWorksService(
+                                        proposal[staff.id][day],
+                                        service
+                                    )
+                            ).length;
                         while (covered < required) {
                             const candidates = eligible
                                 .filter(staff => {
