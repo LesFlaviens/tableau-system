@@ -2315,7 +2315,7 @@ app.get('/api/staff/build', (req, res) => {
         activationQr: true,
         activationEmailConfigured:
             ichefStaffActivationEmailConfigured(),
-        activationEmailBuild:'V179',
+        activationEmailBuild:'V180',
         pwaRequired: ICHEF_STAFF_PWA_REQUIRED,
         pwaMobileBrowserAllowed: true,
         timestamp: new Date().toISOString()
@@ -20455,7 +20455,7 @@ app.get(
             activationQr:true,
             activationEmailConfigured:
                 ichefStaffActivationEmailConfigured(),
-            activationEmailBuild:'V179',
+            activationEmailBuild:'V180',
             pwaRequired:ICHEF_STAFF_PWA_REQUIRED,
             timestamp:new Date().toISOString()
         });
@@ -21602,27 +21602,15 @@ app.post('/api/staff/activation/admin/create',async(req,res)=>{
                 ICHEF_TWILIO_VERIFY_SERVICE_SID
             );
 
-        if(
-            ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED &&
-            !phone
-        ){
-            return res.status(428).json({
-                success:false,
-                code:'STAFF_ACTIVATION_PHONE_REQUIRED',
-                error:'Renseignez d’abord le numéro WhatsApp du collaborateur au format +33… / +41…'
-            });
-        }
-
-        if(
-            ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED &&
-            !whatsappConfigured
-        ){
-            return res.status(503).json({
-                success:false,
-                code:'STAFF_ACTIVATION_WHATSAPP_NOT_CONFIGURED',
-                error:'Twilio Verify WhatsApp doit être configuré avant de générer une activation.'
-            });
-        }
+        // V180 : la création de l'INVITATION (QR/code/e-mail) ne dépend pas
+        // encore de WhatsApp. Cela permet au responsable d'envoyer l'accès
+        // au collaborateur même si son numéro RH n'a pas encore été renseigné.
+        //
+        // IMPORTANT : la sécurité n'est pas assouplie à l'activation finale :
+        // /api/staff/activation/whatsapp/request et /complete continuent
+        // d'exiger WhatsApp lorsque ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED=true.
+        const activationWhatsappReady =
+            Boolean(phone && whatsappConfigured);
 
         const hours=
             Math.max(
@@ -21738,6 +21726,11 @@ app.post('/api/staff/activation/admin/create',async(req,res)=>{
                     phone
                         ? ichefStaffMaskedPhone(phone)
                         : '',
+                whatsappReady:Boolean(phone),
+                whatsappConfigured,
+                activationWhatsappReady,
+                activationWhatsappRequired:
+                    ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED,
                 emailReady:Boolean(email),
                 maskedEmail:
                     email
@@ -21846,7 +21839,7 @@ app.post('/api/staff/activation/admin/revoke',async(req,res)=>{
 
 
 // ============================================================================
-// ✉️ iCHEF V179 — ENVOI EMAIL DU CODE D’ACTIVATION STAFF
+// ✉️ iCHEF V180 — INVITATION STAFF EMAIL + WHATSAPP À L’ACTIVATION FINALE
 // ============================================================================
 
 app.post('/api/staff/activation/admin/email',async(req,res)=>{
@@ -23247,14 +23240,24 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
             );
 
         if(ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED){
+            if(!phone){
+                return res.status(428).json({
+                    success:false,
+                    code:'STAFF_ACTIVATION_PHONE_REQUIRED',
+                    error:
+                        'Votre numéro WhatsApp doit être renseigné dans votre fiche RH avant de finaliser l’activation.'
+                });
+            }
+
             if(
-                !phone ||
                 !twilioClient ||
                 !ICHEF_TWILIO_VERIFY_SERVICE_SID
             ){
                 return res.status(503).json({
                     success:false,
-                    error:'Vérification WhatsApp indisponible pour ce collaborateur.'
+                    code:'STAFF_ACTIVATION_WHATSAPP_NOT_CONFIGURED',
+                    error:
+                        'La vérification WhatsApp iCHEF est momentanément indisponible. Réessayez plus tard.'
                 });
             }
 
