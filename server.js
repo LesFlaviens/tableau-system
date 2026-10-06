@@ -419,6 +419,16 @@ function ichefSecurityRateLimitForPath(pathname){
     }
 
     if(
+        p === '/api/staff/activation/admin/email'
+    ){
+        return {
+            limit:20,
+            windowMs:60_000,
+            blockMs:10 * 60_000
+        };
+    }
+
+    if(
         p === '/api/staff/login' ||
         p === '/api/verify-pin' ||
         p === '/api/staff/activation/complete'
@@ -2262,6 +2272,10 @@ whatsappVerifyConfigured: Boolean(twilioClient && ICHEF_TWILIO_VERIFY_SERVICE_SI
 staffActivationRequired: ICHEF_STAFF_ACTIVATION_REQUIRED,
 staffActivationWhatsappRequired: ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED,
 staffActivationQr: true,
+staffActivationEmailConfigured:
+Boolean(
+ichefStaffActivationEmailConfigured()
+),
 pwaRequired: ICHEF_STAFF_PWA_REQUIRED,
 pwaMobileBrowserAllowed: true,
 operationsApi: true,
@@ -2299,6 +2313,9 @@ app.get('/api/staff/build', (req, res) => {
         activationRequired: ICHEF_STAFF_ACTIVATION_REQUIRED,
         activationWhatsappRequired: ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED,
         activationQr: true,
+        activationEmailConfigured:
+            ichefStaffActivationEmailConfigured(),
+        activationEmailBuild:'V179',
         pwaRequired: ICHEF_STAFF_PWA_REQUIRED,
         pwaMobileBrowserAllowed: true,
         timestamp: new Date().toISOString()
@@ -19045,6 +19062,11 @@ const ichefStaffActivationSchema = new mongoose.Schema({
     lockedAt:{type:Date,default:null},
     lockedBy:{type:String,default:'',maxlength:80},
     lastWhatsappSentAt:{type:Date,default:null},
+    lastEmailSentAt:{type:Date,default:null},
+    emailSentCount:{type:Number,default:0,min:0},
+    lastEmailHash:{type:String,default:'',maxlength:80},
+    emailSendLockedAt:{type:Date,default:null},
+    emailSendLockedBy:{type:String,default:'',maxlength:80},
     activatedDeviceHash:{type:String,default:'',maxlength:80},
     whatsappVerifiedAt:{type:Date,default:null}
 },{minimize:false});
@@ -19157,6 +19179,213 @@ function ichefStaffActivationRole(item={}){
         item?.title ||
         'STAFF'
     ).trim().slice(0,120);
+}
+
+function ichefStaffActivationEmailConfigured(){
+    const user=String(
+        process.env.GMAIL_USER ||
+        process.env.EMAIL_USER ||
+        process.env.SMTP_USER ||
+        ''
+    ).trim();
+
+    const pass=String(
+        process.env.GMAIL_APP_PASSWORD ||
+        process.env.EMAIL_APP_PASSWORD ||
+        process.env.SMTP_PASS ||
+        ''
+    ).trim();
+
+    return Boolean(user && pass);
+}
+
+function ichefStaffActivationEmailEscape(value=''){
+    return String(value||'').replace(/[&<>"']/g,ch=>({
+        '&':'&amp;',
+        '<':'&lt;',
+        '>':'&gt;',
+        '"':'&quot;',
+        "'":'&#39;'
+    }[ch]));
+}
+
+function ichefStaffActivationTokenFromUrl(rawUrl=''){
+    try{
+        const url=new URL(String(rawUrl||''));
+        const hash=String(url.hash||'');
+        const match=/^#activate=(.+)$/.exec(hash);
+
+        if(!match)return '';
+
+        return decodeURIComponent(
+            match[1]||''
+        ).trim();
+    }catch(_){
+        return '';
+    }
+}
+
+async function ichefStaffSendActivationEmail({
+    profile,
+    activationCode,
+    activationUrl,
+    expiresAt
+}={}){
+    // Réutilise exactement la configuration SMTP déjà utilisée
+    // par le reset PIN Staff actuel.
+    const mail=ichefStaffResetMailer();
+
+    if(!mail){
+        const error=new Error(
+            'Service e-mail iCHEF non configuré.'
+        );
+        error.code='STAFF_ACTIVATION_EMAIL_NOT_CONFIGURED';
+        throw error;
+    }
+
+    // Adresse exclusivement relue depuis la fiche RH côté serveur.
+    const email=ichefStaffProfileEmail(profile);
+
+    if(!email){
+        const error=new Error(
+            'Aucune adresse e-mail valide n’est enregistrée dans la fiche RH de ce collaborateur.'
+        );
+        error.code='STAFF_ACTIVATION_EMAIL_REQUIRED';
+        throw error;
+    }
+
+    const name=String(
+        ichefStaffActivationDisplayName(
+            profile?.member || {}
+        ) || 'Collaborateur'
+    ).trim().slice(0,160);
+
+    const code=String(
+        activationCode||''
+    )
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g,'')
+    .slice(0,16);
+
+    const link=String(
+        activationUrl||''
+    ).trim().slice(0,2000);
+
+    const expiryLabel=
+        expiresAt
+            ? new Date(expiresAt).toLocaleString(
+                'fr-FR',
+                {
+                    timeZone:'Europe/Paris',
+                    dateStyle:'short',
+                    timeStyle:'short'
+                }
+              )
+            : '24 heures';
+
+    const subject=
+        'Votre accès iCHEF Staff – Activation de votre compte';
+
+    const text=
+`Bonjour ${name},
+
+Votre responsable vous invite à activer votre accès iCHEF Staff.
+
+Code d’activation : ${code}
+Valable jusqu’au ${expiryLabel} et utilisable une seule fois.
+
+Lien d’activation :
+${link}
+
+Installez iCHEF Staff puis suivez les étapes pour confirmer votre numéro WhatsApp et choisir votre PIN personnel.
+
+Pour votre sécurité, ne transmettez pas ce code à une autre personne.
+
+iCHEF Staff`;
+
+    const safeName=
+        ichefStaffActivationEmailEscape(name);
+
+    const safeCode=
+        ichefStaffActivationEmailEscape(code);
+
+    const safeLink=
+        ichefStaffActivationEmailEscape(link);
+
+    const safeExpiry=
+        ichefStaffActivationEmailEscape(
+            expiryLabel
+        );
+
+    const html=`
+<div style="margin:0;background:#080c0f;padding:28px 12px;font-family:Arial,sans-serif;color:#edf0f1">
+  <div style="max-width:620px;margin:0 auto;background:#11181c;border:1px solid #2d3235;border-radius:18px;overflow:hidden">
+    <div style="padding:24px 26px;border-bottom:1px solid #262d31">
+      <div style="font-size:20px;font-weight:800;letter-spacing:.04em">
+        iCHEF <span style="color:#d8ad55">STAFF</span>
+      </div>
+      <div style="margin-top:8px;color:#d8ad55;font-size:11px;font-weight:800;letter-spacing:.12em">
+        ACTIVATION DE VOTRE ACCÈS
+      </div>
+    </div>
+
+    <div style="padding:26px">
+      <p style="margin:0 0 16px;color:#edf0f1;font-size:15px">
+        Bonjour ${safeName},
+      </p>
+
+      <p style="margin:0 0 18px;color:#aeb8bd;font-size:14px;line-height:1.55">
+        Votre responsable vous invite à activer votre accès
+        <strong style="color:#fff">iCHEF Staff</strong>.
+      </p>
+
+      <div style="padding:18px;border:1px solid #5f512e;border-radius:12px;background:#17160f;text-align:center">
+        <div style="color:#9fa8ad;font-size:11px;font-weight:700;letter-spacing:.08em">
+          CODE D’ACTIVATION
+        </div>
+        <div style="margin-top:7px;color:#efc96a;font-size:26px;font-weight:900;letter-spacing:.18em">
+          ${safeCode}
+        </div>
+        <div style="margin-top:8px;color:#8f999f;font-size:11px">
+          Usage unique · valable jusqu’au ${safeExpiry}
+        </div>
+      </div>
+
+      <div style="text-align:center;margin:24px 0">
+        <a href="${safeLink}"
+           style="display:inline-block;padding:13px 20px;border-radius:10px;background:#d8ad55;color:#111;text-decoration:none;font-size:13px;font-weight:900">
+          ACTIVER iCHEF STAFF
+        </a>
+      </div>
+
+      <p style="margin:0;color:#9da8ad;font-size:13px;line-height:1.55">
+        Installez iCHEF Staff puis confirmez votre numéro WhatsApp
+        et choisissez votre PIN personnel.
+      </p>
+
+      <div style="margin-top:20px;padding-top:16px;border-top:1px solid #262d31;color:#77838a;font-size:11px;line-height:1.5">
+        Ne transmettez pas ce code. L’e-mail seul ne permet pas de finaliser
+        l’accès sans les contrôles d’identité iCHEF.
+      </div>
+    </div>
+  </div>
+</div>`;
+
+    const info=
+        await mail.transporter.sendMail({
+            from:`iCHEF Staff <${mail.user}>`,
+            to:email,
+            subject,
+            text,
+            html
+        });
+
+    return {
+        info,
+        email,
+        maskedEmail:
+            ichefStaffMaskEmail(email)
+    };
 }
 
 function ichefStaffActivationPublicBase(req){
@@ -20224,6 +20453,9 @@ app.get(
             activationRequired:ICHEF_STAFF_ACTIVATION_REQUIRED,
             activationWhatsappRequired:ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED,
             activationQr:true,
+            activationEmailConfigured:
+                ichefStaffActivationEmailConfigured(),
+            activationEmailBuild:'V179',
             pwaRequired:ICHEF_STAFF_PWA_REQUIRED,
             timestamp:new Date().toISOString()
         });
@@ -20956,7 +21188,7 @@ app.post(
 
 
 // ============================================================================
-// 🔑 V160 — ACTIVATION STAFF QR + CODE + PWA
+// 🔑 V179 — ACTIVATION STAFF QR + CODE + PWA + EMAIL
 // ============================================================================
 
 app.get('/api/staff/activation/admin/staff',async(req,res)=>{
@@ -21025,6 +21257,7 @@ app.get('/api/staff/activation/admin/staff',async(req,res)=>{
                     name:'',
                     role:'',
                     phone:'',
+                    email:'',
                     raw:{},
                     hasStaffAccess:false
                 };
@@ -21093,6 +21326,16 @@ app.get('/api/staff/activation/admin/staff',async(req,res)=>{
                 ...record.raw,
                 ...item
             };
+
+            const email=
+                ichefStaffProfileEmail({
+                    member:record.raw,
+                    directoryEntry:{}
+                });
+
+            if(email){
+                record.email=email;
+            }
         };
 
         // Ordre volontaire : STAFF_ACCESS d'abord, DIRECTORY_MASTER ensuite.
@@ -21243,6 +21486,11 @@ app.get('/api/staff/activation/admin/staff',async(req,res)=>{
                         item.phone
                             ? ichefStaffMaskedPhone(item.phone)
                             : '',
+                    emailReady:Boolean(item.email),
+                    maskedEmail:
+                        item.email
+                            ? ichefStaffMaskEmail(item.email)
+                            : '',
                     status:
                         trusted
                             ? 'ACTIVÉ'
@@ -21271,6 +21519,8 @@ app.get('/api/staff/activation/admin/staff',async(req,res)=>{
                 ),
             pwaRequired:
                 ICHEF_STAFF_PWA_REQUIRED,
+            activationEmailConfigured:
+                ichefStaffActivationEmailConfigured(),
             staff
         });
 
@@ -21342,6 +21592,9 @@ app.post('/api/staff/activation/admin/create',async(req,res)=>{
                 profile.member,
                 profile.directoryEntry
             );
+
+        const email=
+            ichefStaffProfileEmail(profile);
 
         const whatsappConfigured=
             Boolean(
@@ -21484,6 +21737,11 @@ app.post('/api/staff/activation/admin/create',async(req,res)=>{
                 maskedPhone:
                     phone
                         ? ichefStaffMaskedPhone(phone)
+                        : '',
+                emailReady:Boolean(email),
+                maskedEmail:
+                    email
+                        ? ichefStaffMaskEmail(email)
                         : ''
             },
             activation:{
@@ -21582,6 +21840,370 @@ app.post('/api/staff/activation/admin/revoke',async(req,res)=>{
         return res.status(500).json({
             success:false,
             error:'Révocation impossible.'
+        });
+    }
+});
+
+
+// ============================================================================
+// ✉️ iCHEF V179 — ENVOI EMAIL DU CODE D’ACTIVATION STAFF
+// ============================================================================
+
+app.post('/api/staff/activation/admin/email',async(req,res)=>{
+    let lockedRow=null;
+
+    try{
+        res.setHeader(
+            'Cache-Control',
+            'no-store'
+        );
+
+        const auth=
+            await ichefLoadStaffActivationManagerSession(
+                req
+            );
+
+        if(!auth.ok){
+            return res
+                .status(auth.status||401)
+                .json({
+                    success:false,
+                    error:auth.error
+                });
+        }
+
+        const activationId=
+            String(
+                req.body?.activationId ||
+                ''
+            )
+            .trim()
+            .slice(0,100);
+
+        const activationCode=
+            String(
+                req.body?.activationCode ||
+                ''
+            )
+            .toUpperCase()
+            .replace(
+                /[^A-Z0-9]/g,
+                ''
+            )
+            .slice(0,16);
+
+        const activationUrl=
+            String(
+                req.body?.activationUrl ||
+                ''
+            )
+            .trim()
+            .slice(0,2000);
+
+        if(
+            !activationId ||
+            activationCode.length<6 ||
+            !activationUrl
+        ){
+            return res.status(400).json({
+                success:false,
+                error:'Activation incomplète.'
+            });
+        }
+
+        const row=
+            await IchefStaffActivation
+                .findOne({
+                    activationId,
+                    tenantID:auth.tenantID,
+                    usedAt:null,
+                    revokedAt:null,
+                    expiresAt:{$gt:new Date()}
+                });
+
+        if(!row){
+            return res.status(404).json({
+                success:false,
+                error:'Activation introuvable ou expirée.'
+            });
+        }
+
+        // Le code n'est jamais stocké en clair :
+        // on vérifie le code présenté contre son HMAC en base.
+        const expectedCodeHash=
+            ichefStaffActivationHmac(
+                `${row.tenantID}|${row.staffId}|${activationCode}`
+            );
+
+        if(
+            !ichefStaffActivationSafeEqual(
+                expectedCodeHash,
+                row.shortCodeHash
+            )
+        ){
+            return res.status(401).json({
+                success:false,
+                error:'Code d’activation invalide.'
+            });
+        }
+
+        // Même contrôle pour le lien/token.
+        const activationToken=
+            ichefStaffActivationTokenFromUrl(
+                activationUrl
+            );
+
+        const parsed=
+            ichefStaffActivationParseToken(
+                activationToken
+            );
+
+        if(
+            !parsed ||
+            parsed.activationId !== row.activationId
+        ){
+            return res.status(401).json({
+                success:false,
+                error:'Lien d’activation invalide.'
+            });
+        }
+
+        const expectedTokenHash=
+            ichefStaffActivationHmac(
+                `${parsed.activationId}|${parsed.secret}`
+            );
+
+        if(
+            !ichefStaffActivationSafeEqual(
+                expectedTokenHash,
+                row.tokenHash
+            )
+        ){
+            return res.status(401).json({
+                success:false,
+                error:'Lien d’activation invalide.'
+            });
+        }
+
+        const profile=
+            await ichefStaffFindActiveSecurityProfile(
+                row.tenantID,
+                row.staffId
+            );
+
+        if(!profile){
+            return res.status(404).json({
+                success:false,
+                error:'Profil collaborateur indisponible.'
+            });
+        }
+
+        // Ne fait confiance à AUCUNE adresse reçue du navigateur.
+        const email=
+            ichefStaffProfileEmail(
+                profile
+            );
+
+        if(!email){
+            return res.status(428).json({
+                success:false,
+                code:'STAFF_ACTIVATION_EMAIL_REQUIRED',
+                error:
+                    'Aucune adresse e-mail valide n’est enregistrée dans la fiche RH de ce collaborateur.'
+            });
+        }
+
+        if(
+            !ichefStaffActivationEmailConfigured()
+        ){
+            return res.status(503).json({
+                success:false,
+                code:'STAFF_ACTIVATION_EMAIL_NOT_CONFIGURED',
+                error:
+                    'Service e-mail iCHEF non configuré.'
+            });
+        }
+
+        const now=new Date();
+        const cooldownSince=
+            new Date(
+                now.getTime() -
+                60_000
+            );
+
+        const staleLock=
+            new Date(
+                now.getTime() -
+                2*60_000
+            );
+
+        const lockId=
+            ichefSecurityHash(
+                `${auth.tenantID}|${activationId}|${Date.now()}`
+            );
+
+        // Verrou Mongo atomique : évite deux emails si deux requêtes
+        // arrivent au même instant ou depuis deux onglets.
+        lockedRow=
+            await IchefStaffActivation
+                .findOneAndUpdate(
+                    {
+                        _id:row._id,
+                        usedAt:null,
+                        revokedAt:null,
+                        expiresAt:{$gt:now},
+                        $and:[
+                            {
+                                $or:[
+                                    {lastEmailSentAt:null},
+                                    {
+                                        lastEmailSentAt:{
+                                            $lt:cooldownSince
+                                        }
+                                    }
+                                ]
+                            },
+                            {
+                                $or:[
+                                    {emailSendLockedAt:null},
+                                    {
+                                        emailSendLockedAt:{
+                                            $lt:staleLock
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    {
+                        $set:{
+                            emailSendLockedAt:now,
+                            emailSendLockedBy:lockId
+                        }
+                    },
+                    {
+                        new:true
+                    }
+                );
+
+        if(!lockedRow){
+            res.setHeader(
+                'Retry-After',
+                '60'
+            );
+
+            return res.status(429).json({
+                success:false,
+                code:'STAFF_ACTIVATION_EMAIL_COOLDOWN',
+                error:
+                    'L’e-mail vient d’être envoyé ou un envoi est déjà en cours. Réessayez dans une minute.'
+            });
+        }
+
+        const sent=
+            await ichefStaffSendActivationEmail({
+                profile,
+                activationCode,
+                activationUrl,
+                expiresAt:
+                    lockedRow.expiresAt
+            });
+
+        const sentAt=
+            new Date();
+
+        await IchefStaffActivation.updateOne(
+            {
+                _id:lockedRow._id,
+                emailSendLockedBy:lockId
+            },
+            {
+                $set:{
+                    lastEmailSentAt:sentAt,
+                    lastEmailHash:
+                        ichefSecurityHash(email),
+                    emailSendLockedAt:null,
+                    emailSendLockedBy:''
+                },
+                $inc:{
+                    emailSentCount:1
+                }
+            }
+        );
+
+        lockedRow=null;
+
+        void ichefWriteSecurityEvent({
+            req,
+            severity:'INFO',
+            type:'STAFF_ACTIVATION_EMAIL_SENT',
+            tenantID:auth.tenantID,
+            detail:
+                `Activation ${activationId} envoyée au collaborateur ${row.staffId}.`,
+            blocked:false
+        });
+
+        return res.json({
+            success:true,
+            sent:true,
+            maskedEmail:
+                sent.maskedEmail,
+            sentAt:
+                sentAt.toISOString()
+        });
+
+    }catch(error){
+        if(lockedRow?._id){
+            try{
+                await IchefStaffActivation.updateOne(
+                    {
+                        _id:lockedRow._id,
+                        emailSendLockedBy:
+                            lockedRow.emailSendLockedBy
+                    },
+                    {
+                        $set:{
+                            emailSendLockedAt:null,
+                            emailSendLockedBy:''
+                        }
+                    }
+                );
+            }catch(_){}
+        }
+
+        console.error(
+            '[iCHEF Staff activation email V179]',
+            error?.code ||
+            error?.message ||
+            error
+        );
+
+        if(
+            error?.code ===
+            'STAFF_ACTIVATION_EMAIL_REQUIRED'
+        ){
+            return res.status(428).json({
+                success:false,
+                code:error.code,
+                error:error.message
+            });
+        }
+
+        if(
+            error?.code ===
+            'STAFF_ACTIVATION_EMAIL_NOT_CONFIGURED'
+        ){
+            return res.status(503).json({
+                success:false,
+                code:error.code,
+                error:error.message
+            });
+        }
+
+        return res.status(500).json({
+            success:false,
+            error:
+                'Envoi de l’e-mail d’activation impossible.'
         });
     }
 });
