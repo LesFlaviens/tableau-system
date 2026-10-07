@@ -7878,8 +7878,16 @@ portalTerminalKey === 'ADMIN' &&
 staffMember &&
 ichefTerminalStaffIsManager(staffMember);
 
+// V183 — ADMIN et RH sont des espaces de gestion, pas des terminaux
+// opérationnels facturés/limités comme PAD, téléphone ou caisse.
+// Ils conservent leur deviceId pour la sécurité, les sessions et l'audit,
+// mais ne consomment aucune place dans registeredDevices.
+const isScreenQuotaExemptTerminal =
+portalTerminalKey === 'ADMIN' ||
+portalTerminalKey === 'RH';
+
 /*
- * V63/V109/V182 — RÈGLE D'ACCÈS HORS TRAVAIL
+ * V63/V109/V182/V183 — RÈGLE D'ACCÈS HORS TRAVAIL
  *
  * - Le Portail Collaborateur reste accessible 24h/24, même hors service.
  * - Le RH reste accessible hors service uniquement aux profils Direction/Manager.
@@ -7908,22 +7916,46 @@ staffMember.id ?? null
 
 const screenLimit =
 await syncTenantScreenLimit(tenant, { deferSave: true });
+
 if (!Array.isArray(tenant.registeredDevices)) {
 tenant.registeredDevices = [];
 }
+
 const uniqueDevices = [...new Set(
 tenant.registeredDevices
 .map(value => String(value || '').trim())
 .filter(Boolean)
 )];
+
 if (
 uniqueDevices.length !==
 tenant.registeredDevices.length
 ) {
 tenant.registeredDevices = uniqueDevices;
+tenant.markModified('registeredDevices');
 }
+
+// V183 — migration douce :
+// si l'appareil courant a été compté autrefois via ADMIN ou RH,
+// on le retire du quota opérationnel dès sa prochaine connexion.
+// Le deviceId continue d'être utilisé par la session et l'audit.
+if (
+isScreenQuotaExemptTerminal &&
+deviceId &&
+tenant.registeredDevices.includes(deviceId)
+) {
+tenant.registeredDevices =
+tenant.registeredDevices.filter(
+value => String(value || '').trim() !== deviceId
+);
+tenant.markModified('registeredDevices');
+}
+
+// Seuls les terminaux opérationnels consomment le quota.
+// STAFF_PORTAL reste hors quota comme auparavant.
 if (
 !isStaffPortalLogin &&
+!isScreenQuotaExemptTerminal &&
 deviceId &&
 !tenant.registeredDevices.includes(deviceId)
 ) {
@@ -7934,6 +7966,7 @@ screenLimit
 if (tenant.isModified()) {
 await tenant.save();
 }
+
 return res.status(403).json({
 success: false,
 code:'SCREEN_LIMIT_REACHED',
@@ -7946,9 +7979,11 @@ tenant.registeredDevices.length,
 availableScreens: 0
 });
 }
+
 tenant.registeredDevices.push(deviceId);
 tenant.markModified('registeredDevices');
 }
+
 if (tenant.isModified()) {
 await tenant.save();
 }
@@ -8125,6 +8160,8 @@ Math.max(
 screenLimit -
 tenant.registeredDevices.length
 ),
+screenQuotaExempt:
+isScreenQuotaExemptTerminal,
 moduleAccess:
 ichefNormalizeModuleAccess(
 tenant.moduleAccess || {}
@@ -22211,6 +22248,7 @@ app.post('/api/staff/activation/admin/email',async(req,res)=>{
 
 
 // ============================================================================
+// 🔐 iCHEF V183 — ADMIN/RH HORS QUOTA ÉCRANS + DEVICE SÉCURISÉ
 // 🔐 iCHEF V182 — ADMIN AUTH 403 EXPLICITES + MANAGER HORS SERVICE
 // 🔐 iCHEF STAFF PIN RESET V166 — EMAIL SÉCURISÉ
 // ============================================================================
