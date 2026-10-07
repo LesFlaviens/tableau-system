@@ -2272,6 +2272,7 @@ whatsappVerifyConfigured: Boolean(twilioClient && ICHEF_TWILIO_VERIFY_SERVICE_SI
 staffActivationRequired: ICHEF_STAFF_ACTIVATION_REQUIRED,
 staffActivationWhatsappRequired: ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED,
 staffActivationQr: true,
+staffActivationIdentityMode:'EMAIL_CODE_ONLY',
 staffActivationEmailConfigured:
 Boolean(
 ichefStaffActivationEmailConfigured()
@@ -2313,9 +2314,11 @@ app.get('/api/staff/build', (req, res) => {
         activationRequired: ICHEF_STAFF_ACTIVATION_REQUIRED,
         activationWhatsappRequired: ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED,
         activationQr: true,
-        activationEmailConfigured:
+        activationIdentityMode:'EMAIL_CODE_ONLY',
+        activationIdentityMode:'EMAIL_CODE_ONLY',
+            activationEmailConfigured:
             ichefStaffActivationEmailConfigured(),
-        activationEmailBuild:'V180',
+        activationEmailBuild:'V181',
         pwaRequired: ICHEF_STAFF_PWA_REQUIRED,
         pwaMobileBrowserAllowed: true,
         timestamp: new Date().toISOString()
@@ -7752,12 +7755,14 @@ new Date() > new Date(tenant.demoExpiration)
 ) {
 return res.status(403).json({
 success: false,
+code:'DEMO_EXPIRED',
 error: 'Démonstration expirée (limite de 24h atteinte).'
 });
 }
 if (tenant.status === 'SUSPENDU') {
 return res.status(403).json({
 success: false,
+code:'LICENSE_SUSPENDED',
 error: 'Licence suspendue ou en attente d’approbation manuelle.'
 });
 }
@@ -7864,8 +7869,17 @@ portalTerminalKey === 'RH' &&
 staffMember &&
 ichefTerminalStaffIsManager(staffMember);
 
+// V182 — cohérence Admin/RH :
+// le frontend Admin accepte MANAGER / DIRECTION / GÉRANT.
+// Le serveur doit donc permettre à ces profils privilégiés d'administrer
+// hors service, exactement comme pour le module RH.
+const isAdminManagerLogin =
+portalTerminalKey === 'ADMIN' &&
+staffMember &&
+ichefTerminalStaffIsManager(staffMember);
+
 /*
- * V63/V109 — RÈGLE D'ACCÈS HORS TRAVAIL
+ * V63/V109/V182 — RÈGLE D'ACCÈS HORS TRAVAIL
  *
  * - Le Portail Collaborateur reste accessible 24h/24, même hors service.
  * - Le RH reste accessible hors service uniquement aux profils Direction/Manager.
@@ -7876,6 +7890,7 @@ if (
 !isMaster &&
 !isStaffPortalLogin &&
 !isRhManagerLogin &&
+!isAdminManagerLogin &&
 staffMember &&
 staffMember.onDuty !== true
 ) {
@@ -7921,6 +7936,7 @@ await tenant.save();
 }
 return res.status(403).json({
 success: false,
+code:'SCREEN_LIMIT_REACHED',
 error:
 `Limite écrans atteinte ` +
 `(${tenant.registeredDevices.length}/${screenLimit}).`,
@@ -8088,9 +8104,13 @@ isMaster
 isManager:
 isMaster ||
 terminalAccess.isManager === true ||
-isRhManagerLogin === true,
+isRhManagerLogin === true ||
+isAdminManagerLogin === true,
 requiresDuty:
-isRhManagerLogin === true
+(
+isRhManagerLogin === true ||
+isAdminManagerLogin === true
+)
 ? false
 : terminalAccess.requiresDuty === true,
 onDuty:
@@ -19067,6 +19087,7 @@ const ichefStaffActivationSchema = new mongoose.Schema({
     lastEmailHash:{type:String,default:'',maxlength:80},
     emailSendLockedAt:{type:Date,default:null},
     emailSendLockedBy:{type:String,default:'',maxlength:80},
+    emailVerifiedAt:{type:Date,default:null,index:true},
     activatedDeviceHash:{type:String,default:'',maxlength:80},
     whatsappVerifiedAt:{type:Date,default:null}
 },{minimize:false});
@@ -19292,12 +19313,10 @@ async function ichefStaffSendActivationEmail({
 Votre responsable vous invite à activer votre accès iCHEF Staff.
 
 Code d’activation : ${code}
-Valable jusqu’au ${expiryLabel} et utilisable une seule fois.
 
-Lien d’activation :
-${link}
+Ce code est valable jusqu’au ${expiryLabel} et utilisable une seule fois.
 
-Installez iCHEF Staff puis suivez les étapes pour confirmer votre numéro WhatsApp et choisir votre PIN personnel.
+Ouvrez iCHEF Staff, saisissez votre ID collaborateur et ce code, puis choisissez votre PIN personnel.
 
 Pour votre sécurité, ne transmettez pas ce code à une autre personne.
 
@@ -19308,9 +19327,6 @@ iCHEF Staff`;
 
     const safeCode=
         ichefStaffActivationEmailEscape(code);
-
-    const safeLink=
-        ichefStaffActivationEmailEscape(link);
 
     const safeExpiry=
         ichefStaffActivationEmailEscape(
@@ -19351,21 +19367,13 @@ iCHEF Staff`;
         </div>
       </div>
 
-      <div style="text-align:center;margin:24px 0">
-        <a href="${safeLink}"
-           style="display:inline-block;padding:13px 20px;border-radius:10px;background:#d8ad55;color:#111;text-decoration:none;font-size:13px;font-weight:900">
-          ACTIVER iCHEF STAFF
-        </a>
-      </div>
-
-      <p style="margin:0;color:#9da8ad;font-size:13px;line-height:1.55">
-        Installez iCHEF Staff puis confirmez votre numéro WhatsApp
-        et choisissez votre PIN personnel.
+      <p style="margin:24px 0 0;color:#9da8ad;font-size:13px;line-height:1.55;text-align:center">
+        Ouvrez <strong style="color:#fff">iCHEF Staff</strong>, saisissez votre ID collaborateur
+        et le code ci-dessus, puis choisissez votre PIN personnel.
       </p>
 
-      <div style="margin-top:20px;padding-top:16px;border-top:1px solid #262d31;color:#77838a;font-size:11px;line-height:1.5">
-        Ne transmettez pas ce code. L’e-mail seul ne permet pas de finaliser
-        l’accès sans les contrôles d’identité iCHEF.
+      <div style="margin-top:20px;padding-top:16px;border-top:1px solid #262d31;color:#77838a;font-size:11px;line-height:1.5;text-align:center">
+        Code personnel, temporaire et à usage unique. Ne le transmettez à personne.
       </div>
     </div>
   </div>
@@ -20455,7 +20463,7 @@ app.get(
             activationQr:true,
             activationEmailConfigured:
                 ichefStaffActivationEmailConfigured(),
-            activationEmailBuild:'V180',
+            activationEmailBuild:'V181',
             pwaRequired:ICHEF_STAFF_PWA_REQUIRED,
             timestamp:new Date().toISOString()
         });
@@ -21839,7 +21847,7 @@ app.post('/api/staff/activation/admin/revoke',async(req,res)=>{
 
 
 // ============================================================================
-// ✉️ iCHEF V180 — INVITATION STAFF EMAIL + WHATSAPP À L’ACTIVATION FINALE
+// ✉️ iCHEF V181 — CODE D’ACTIVATION STAFF PAR EMAIL UNIQUEMENT
 // ============================================================================
 
 app.post('/api/staff/activation/admin/email',async(req,res)=>{
@@ -22203,6 +22211,7 @@ app.post('/api/staff/activation/admin/email',async(req,res)=>{
 
 
 // ============================================================================
+// 🔐 iCHEF V182 — ADMIN AUTH 403 EXPLICITES + MANAGER HORS SERVICE
 // 🔐 iCHEF STAFF PIN RESET V166 — EMAIL SÉCURISÉ
 // ============================================================================
 function ichefStaffPinResetHmac(value=''){
@@ -23206,25 +23215,32 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
                 .replace(/\D/g,'')
                 .slice(0,12);
 
-        const code=
-            String(req.body?.whatsappCode||'')
-                .replace(/\D/g,'')
-                .slice(0,10);
+        const activationCode=
+            String(req.body?.activationCode||'')
+                .toUpperCase()
+                .replace(/[^A-Z0-9]/g,'')
+                .slice(0,16);
 
         if(
             !deviceId ||
-            !/^\d{4,12}$/.test(newPin)
+            !/^\d{4,12}$/.test(newPin) ||
+            activationCode.length<6
         ){
             return res.status(400).json({
                 success:false,
-                error:'Choisissez un PIN personnel de 4 à 12 chiffres.'
+                error:
+                    activationCode.length<6
+                        ? 'Saisissez le code d’activation reçu par e-mail.'
+                        : 'Choisissez un PIN personnel de 4 à 12 chiffres.'
             });
         }
 
         const credential=
-            await ichefStaffActivationLoadCredential(
-                req.body||{}
-            );
+            await ichefStaffActivationLoadCredential({
+                tenantID:req.body?.tenantID,
+                staffId:req.body?.staffId,
+                activationCode
+            });
 
         if(!credential.ok){
             return res.status(401).json({
@@ -23233,86 +23249,17 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
             });
         }
 
-        const phone=
-            ichefStaffPhoneFromRecords(
-                credential.profile.member,
-                credential.profile.directoryEntry
-            );
-
-        if(ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED){
-            if(!phone){
-                return res.status(428).json({
-                    success:false,
-                    code:'STAFF_ACTIVATION_PHONE_REQUIRED',
-                    error:
-                        'Votre numéro WhatsApp doit être renseigné dans votre fiche RH avant de finaliser l’activation.'
-                });
-            }
-
-            if(
-                !twilioClient ||
-                !ICHEF_TWILIO_VERIFY_SERVICE_SID
-            ){
-                return res.status(503).json({
-                    success:false,
-                    code:'STAFF_ACTIVATION_WHATSAPP_NOT_CONFIGURED',
-                    error:
-                        'La vérification WhatsApp iCHEF est momentanément indisponible. Réessayez plus tard.'
-                });
-            }
-
-            if(!/^\d{4,10}$/.test(code)){
-                return res.status(400).json({
-                    success:false,
-                    error:'Saisissez le code reçu sur WhatsApp.'
-                });
-            }
-
-            const attemptKey=
-                `staff-activation-wa-` +
-                credential.row.activationId;
-
-            const attempt=
-                ichefPinAttemptCheck(
-                    req,
-                    attemptKey,
-                    deviceId
-                );
-
-            if(!attempt.ok){
-                return res.status(429).json({
-                    success:false,
-                    error:'Trop de codes incorrects. Réessayez dans quelques minutes.'
-                });
-            }
-
-            const check=
-                await ichefStaffCheckWhatsappVerify(
-                    phone,
-                    code
-                );
-
-            if(
-                String(check?.status||'')
-                    .toLowerCase()!=='approved'
-            ){
-                ichefPinAttemptFailure(
-                    req,
-                    attemptKey,
-                    deviceId
-                );
-
-                return res.status(401).json({
-                    success:false,
-                    error:'Code WhatsApp incorrect ou expiré.'
-                });
-            }
-
-            ichefPinAttemptSuccess(
-                req,
-                attemptKey,
-                deviceId
-            );
+        // V181 : l'identité de première activation est validée par
+        // le code temporaire envoyé à l'adresse e-mail RH.
+        // Le code seul n'est pas suffisant : le serveur exige aussi la preuve
+        // qu'un e-mail a réellement été envoyé pour cette activation.
+        if(!credential.row.lastEmailSentAt){
+            return res.status(428).json({
+                success:false,
+                code:'STAFF_ACTIVATION_EMAIL_NOT_SENT',
+                error:
+                    'Le code d’activation doit d’abord être envoyé à votre adresse e-mail enregistrée.'
+            });
         }
 
         const publicKeyJwk=
@@ -23417,9 +23364,7 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
                             ),
                         publicKeyJwk,
                         verifiedVia:
-                            ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED
-                                ? 'WHATSAPP'
-                                : 'ADMIN',
+                            'EMAIL_ACTIVATION_CODE',
                         lastVerifiedAt:now,
                         lastUsedAt:now,
                         revokedAt:null,
@@ -23438,10 +23383,8 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
 
         lockedRow.usedAt=now;
         lockedRow.activatedDeviceHash=deviceHash;
-        lockedRow.whatsappVerifiedAt=
-            ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED
-                ? now
-                : null;
+        lockedRow.emailVerifiedAt=now;
+        lockedRow.whatsappVerifiedAt=null;
         lockedRow.lockedAt=null;
         lockedRow.lockedBy='';
 
@@ -23474,9 +23417,7 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
                     ),
                 deviceTrusted:true,
                 identityMode:
-                    ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED
-                        ? 'QR_ACTIVATION_WHATSAPP'
-                        : 'QR_ACTIVATION'
+                    'EMAIL_ACTIVATION_CODE'
             });
 
         return res.json({
