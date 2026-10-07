@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
+<!-- ICHEF ADMIN V41 — PIN ADMIN : CONNEXION STABLE + TIMEOUT + ANTI DOUBLE TENTATIVE -->
 <!-- ICHEF ADMIN V39 — BRIGADE & ACCÈS : ACTIVATION STAFF + ENVOI E-MAIL SÉCURISÉ -->
 <!-- ICHEF ADMIN V38 — BRIGADE & ACCÈS : ACTIVATION iCHEF STAFF QR/PWA SÉCURISÉE -->
 <!-- ICHEF ADMIN V37 — PILOTAGE STAFF : SOUHAITS, CONGÉS, JOURS OFF, HORAIRES, POSTES & ZONES -->
@@ -69,7 +70,8 @@
         permissions: [],
         deviceId: null,
         ready: false,
-        connectionState: "initializing"
+        connectionState: "initializing",
+        pinVerifyInFlight: false
     };
 
     function getDeviceFingerprint() {
@@ -211,75 +213,186 @@ async function verifyAdminPin() {
         const sec = window.ICHEF_SECURITY;
         const input = document.getElementById('ichef-admin-pin-input');
         const button = document.getElementById('ichef-admin-pin-submit');
+        const stateWrap = document.getElementById('ichef-admin-server-state');
+        const stateText = document.getElementById('ichef-admin-server-state-text');
         const pin = String(input?.value || '').trim();
+
+        if (sec.pinVerifyInFlight) {
+            return;
+        }
 
         if (!sec.tenantID) {
             setAdminPinMessage('Établissement non identifié.', true);
             return;
         }
+
         if (!/^\d{4,12}$/.test(pin)) {
             setAdminPinMessage('Saisissez votre PIN iCHEF de 4 à 12 chiffres.', true);
             input?.focus();
             return;
         }
 
-        if (button) button.disabled = true;
-        setAdminPinMessage('Vérification auprès du système iCHEF…');
+        sec.pinVerifyInFlight = true;
+        if (button) {
+            button.disabled = true;
+            button.setAttribute('aria-busy', 'true');
+        }
+
+        setAdminPinMessage('Vérification sécurisée auprès du serveur iCHEF…');
+
+        if (stateWrap) stateWrap.classList.remove('offline');
+        if (stateText) stateText.textContent = 'VÉRIFICATION EN COURS…';
+
+        const verifyPayload = JSON.stringify({
+            tenantID: sec.tenantID,
+            pin,
+            deviceId: sec.deviceId || getDeviceFingerprint(),
+            terminal: 'ADMIN',
+            module: 'ADMIN',
+            source: 'admin.html-v41'
+        });
+
+        const verifyHeaders = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-iCHEF-Device': sec.deviceId || getDeviceFingerprint(),
+            'X-iCHEF-Tenant': sec.tenantID
+        };
+
+        const verifyOnce = async (timeoutMs = 12000) => {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+            try {
+                return await window.fetch(
+                    `${sec.serverURL}/api/verify-pin`,
+                    {
+                        method: 'POST',
+                        credentials: 'omit',
+                        cache: 'no-store',
+                        headers: verifyHeaders,
+                        body: verifyPayload,
+                        signal: controller.signal
+                    }
+                );
+            } finally {
+                clearTimeout(timer);
+            }
+        };
+
+        const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 
         try {
-            const verifyPayload = JSON.stringify({
-                tenantID: sec.tenantID,
-                pin,
-                deviceId: sec.deviceId || getDeviceFingerprint(),
-                terminal: 'ADMIN',
-                module: 'ADMIN',
-                source: 'admin.html'
-            });
+            let response;
 
-            const verifyHeaders = {
-                'Content-Type': 'application/json',
-                'Accept': 'application/json',
-                'X-iCHEF-Device': sec.deviceId || getDeviceFingerprint(),
-                'X-iCHEF-Tenant': sec.tenantID
-            };
-
-            const verifyOnce = (credentials) => window.fetch(`${sec.serverURL}/api/verify-pin`, {
-                method: 'POST',
-                credentials,
-                cache: 'no-store',
-                headers: verifyHeaders,
-                body: verifyPayload
-            });
-
-            let response = null;
             try {
-                response = await verifyOnce('omit');
-            } catch (_) {
-                response = null;
+                response = await verifyOnce(12000);
+            } catch (networkError) {
+                if (networkError?.name === 'AbortError') {
+                    const timeoutError = new Error(
+                        'Le serveur iCHEF met trop de temps à répondre. Réessayez dans quelques secondes.'
+                    );
+                    timeoutError.code = 'ADMIN_PIN_TIMEOUT';
+                    throw timeoutError;
+                }
+
+                const connectionError = new Error(
+                    'Serveur iCHEF injoignable. Vérifiez la connexion puis réessayez.'
+                );
+                connectionError.code = 'ADMIN_PIN_NETWORK';
+                throw connectionError;
             }
 
-            // Compatibilité avec un backend plus ancien qui établirait encore une session cookie.
-            if (!response || response.status === 401 || response.status === 403) {
-                response = await verifyOnce('include');
+            let data = await response.json().catch(() => ({}));
+
+            // V41 : on ne rejoue JAMAIS un 401/403.
+            // Un PIN refusé ne doit compter qu'une seule tentative.
+            //
+            // Seul un 503 Mongo temporaire peut être rejoué une fois, car
+            // le serveur indique explicitement que la base n'était pas prête.
+            if (
+                response.status === 503 &&
+                (
+                    data.code === 'MONGO_NOT_READY' ||
+                    data.code === 'DATABASE_UNAVAILABLE'
+                )
+            ) {
+                const retryAfterHeader =
+                    Number(response.headers.get('Retry-After') || 0);
+
+                const retryDelay =
+                    Math.max(
+                        700,
+                        Math.min(
+                            2500,
+                            retryAfterHeader > 0
+                                ? retryAfterHeader * 1000
+                                : Number(data.retryAfterMs || 1200)
+                        )
+                    );
+
+                setAdminPinMessage(
+                    'Connexion à la base iCHEF en cours… nouvelle tentative sécurisée.'
+                );
+
+                await wait(retryDelay);
+
+                try {
+                    response = await verifyOnce(14000);
+                } catch (retryError) {
+                    if (retryError?.name === 'AbortError') {
+                        throw new Error(
+                            'La base iCHEF ne répond pas encore. Réessayez dans quelques secondes.'
+                        );
+                    }
+                    throw new Error(
+                        'Connexion iCHEF Cloud impossible. Réessayez dans quelques secondes.'
+                    );
+                }
+
+                data = await response.json().catch(() => ({}));
             }
 
-            const data = await response.json().catch(() => ({}));
             if (!response.ok || data.success !== true) {
-                throw new Error(data.error || 'Code PIN refusé par le serveur.');
-            }
-            if (!adminRoleAllowed(data)) {
-                throw new Error('Ce PIN est valide, mais ne possède pas les droits Admin/Manager.');
+                let message =
+                    data.error ||
+                    `Accès refusé par le serveur iCHEF (HTTP ${response.status}).`;
+
+                if (response.status === 429) {
+                    const retrySeconds = Math.max(
+                        1,
+                        Math.ceil(
+                            Number(
+                                data.retryAfterMs ||
+                                (Number(response.headers.get('Retry-After') || 0) * 1000)
+                            ) / 1000
+                        )
+                    );
+
+                    message =
+                        retrySeconds > 1
+                            ? `Trop de tentatives. Réessayez dans environ ${retrySeconds} seconde(s).`
+                            : 'Trop de tentatives. Réessayez dans quelques instants.';
+                }
+
+                const error = new Error(message);
+                error.status = response.status;
+                error.code = data.code || '';
+                throw error;
             }
 
-            // Compatibilité avec le server.js actuellement déployé :
-            // /api/verify-pin renvoie success/role/safeTenantID mais les jetons
-            // accessToken/csrfToken peuvent être absents. Un succès serveur ne doit
-            // donc jamais être transformé en faux refus de PIN.
+            if (!adminRoleAllowed(data)) {
+                throw new Error(
+                    'Ce PIN est valide, mais ne possède pas les droits Admin/Manager.'
+                );
+            }
+
             sec.accessToken = data.accessToken || null;
-            // V38 : jeton activation Staff gardé uniquement en mémoire.
-            // Il n'est pas injecté dans secureFetch pour ne pas modifier les
-            // autorisations des autres modules Admin.
+
+            // Le jeton Operations sert uniquement aux fonctions Activation Staff.
+            // Il reste en mémoire et n'est jamais stocké dans localStorage.
             sec.operationsToken = data.operationsToken || null;
+
             sec.csrfToken = data.csrfToken || null;
             sec.sessionId = data.sessionId || null;
             sec.sessionExpiresAt = data.sessionExpiresAt || null;
@@ -287,30 +400,44 @@ async function verifyAdminPin() {
                 name: data.staffName || 'Direction',
                 role: data.role || (data.isManager ? 'MANAGER' : 'MASTER')
             };
-            sec.permissions = Array.isArray(data.permissions) && data.permissions.length
-                ? data.permissions
-                : (adminRoleAllowed(data) ? ['*'] : []);
+
+            sec.permissions =
+                Array.isArray(data.permissions) && data.permissions.length
+                    ? data.permissions
+                    : (adminRoleAllowed(data) ? ['*'] : []);
+
             sec.ready = true;
             sec.connectionState = 'online';
 
-            // Le PIN reste uniquement en mémoire pour les fonctions qui exigent encore
-            // une revalidation Manager (registre/audit). Il n'est jamais stocké localement.
+            // Le PIN reste uniquement en mémoire pour les fonctions existantes
+            // qui demandent une revalidation Manager.
             window.__ICHEF_AUDIT_PIN = pin;
+
             localStorage.removeItem('ichef_master_pin');
             localStorage.removeItem('pin');
-            if (sec.csrfToken) sessionStorage.setItem('ichef_csrf_token', sec.csrfToken);
-            else sessionStorage.removeItem('ichef_csrf_token');
-            if (sec.sessionId) sessionStorage.setItem('ichef_session_hint', sec.sessionId);
-            else sessionStorage.removeItem('ichef_session_hint');
+
+            if (sec.csrfToken) {
+                sessionStorage.setItem('ichef_csrf_token', sec.csrfToken);
+            } else {
+                sessionStorage.removeItem('ichef_csrf_token');
+            }
+
+            if (sec.sessionId) {
+                sessionStorage.setItem('ichef_session_hint', sec.sessionId);
+            } else {
+                sessionStorage.removeItem('ichef_session_hint');
+            }
 
             window.tenantID = sec.tenantID;
             window.SERVER_URL = sec.serverURL;
 
+            if (stateText) stateText.textContent = 'SERVEUR iCHEF CONNECTÉ';
+            if (stateWrap) stateWrap.classList.remove('offline');
+
+            setAdminPinMessage('Accès autorisé.');
+
             const overlay = document.getElementById('ichef-admin-pin-overlay');
             if (overlay) {
-                // V34 : le CSS premium V32 impose display:flex !important.
-                // Un simple style.display='none' ne peut donc pas fermer l'écran PIN.
-                // On applique le masquage avec la même priorité CSS.
                 overlay.style.setProperty('display', 'none', 'important');
                 overlay.setAttribute('aria-hidden', 'true');
                 overlay.style.setProperty('pointer-events', 'none', 'important');
@@ -318,31 +445,40 @@ async function verifyAdminPin() {
 
             document.body?.classList.remove('ichef-admin-locked');
 
-            // Garantit l'affichage immédiat de l'interface Admin après PIN valide.
             const app = document.querySelector('.app-container');
             if (app) {
                 app.style.setProperty('visibility', 'visible', 'important');
                 app.style.setProperty('display', 'flex', 'important');
             }
 
-            const activeTab = document.querySelector('.main-scroll.active') ||
-                              document.getElementById('tab-general');
-            if (activeTab) activeTab.style.removeProperty('display');
+            const activeTab =
+                document.querySelector('.main-scroll.active') ||
+                document.getElementById('tab-general');
+
+            if (activeTab) {
+                activeTab.style.removeProperty('display');
+            }
 
             if (input) input.value = '';
 
-            window.dispatchEvent(new CustomEvent('ichef:security-ready', {
-                detail: {
-                    tenantID: sec.tenantID,
-                    user: sec.user,
-                    permissions: sec.permissions
-                }
-            }));
+            window.dispatchEvent(
+                new CustomEvent(
+                    'ichef:security-ready',
+                    {
+                        detail: {
+                            tenantID: sec.tenantID,
+                            user: sec.user,
+                            permissions: sec.permissions
+                        }
+                    }
+                )
+            );
 
             if (!ichefSecurityResolved) {
                 ichefSecurityResolved = true;
                 ichefSecurityResolve(sec);
             }
+
         } catch (error) {
             sec.ready = false;
             sec.connectionState = 'unauthenticated';
@@ -352,18 +488,54 @@ async function verifyAdminPin() {
             sec.sessionId = null;
             sec.user = null;
             sec.permissions = [];
+
             sessionStorage.removeItem('ichef_csrf_token');
             sessionStorage.removeItem('ichef_session_hint');
+
             if (input) {
                 input.value = '';
-                input.focus();
             }
-            const message = error?.message === 'Failed to fetch'
-                ? 'Serveur iCHEF injoignable. Vérifiez la connexion puis réessayez.'
-                : (error?.message || 'Accès refusé par le système iCHEF.');
-            setAdminPinMessage(message, true);
+
+            // Synchronise aussi les points du clavier visuel après une erreur.
+            try {
+                const dots = document.getElementById('ichef-admin-pin-dots');
+                if (dots) {
+                    dots.innerHTML = Array.from(
+                        { length:6 },
+                        () => '<i></i>'
+                    ).join('');
+                }
+            } catch (_) {}
+
+            if (stateText) {
+                stateText.textContent =
+                    navigator.onLine
+                        ? 'SERVEUR iCHEF — ACCÈS NON VALIDÉ'
+                        : 'SERVEUR iCHEF HORS CONNEXION';
+            }
+
+            if (stateWrap) {
+                stateWrap.classList.toggle(
+                    'offline',
+                    !navigator.onLine ||
+                    error?.code === 'ADMIN_PIN_NETWORK' ||
+                    error?.code === 'ADMIN_PIN_TIMEOUT'
+                );
+            }
+
+            setAdminPinMessage(
+                error?.message ||
+                'Accès refusé par le système iCHEF.',
+                true
+            );
+
         } finally {
-            if (button) button.disabled = false;
+            sec.pinVerifyInFlight = false;
+
+            if (button) {
+                button.disabled = false;
+                button.removeAttribute('aria-busy');
+            }
         }
     }
 
@@ -3636,7 +3808,7 @@ html, body {
             <span id="ichef-admin-server-state-text">SERVEUR iCHEF CONNECTÉ</span>
         </div>
 
-        <div id="ichef-admin-pin-message">PIN Admin / Manager requis</div>
+        <div id="ichef-admin-pin-message" role="status" aria-live="polite">PIN Admin / Manager requis</div>
 
         <button class="ichef-admin-pin-back" type="button"
                 onclick="location.href='connexionpartenaire.html?tenantID='+encodeURIComponent(window.ICHEF_SECURITY?.tenantID||'')">
@@ -12402,7 +12574,22 @@ function addDigit(digit){
     if(current.length>=12)return;
     el.value=current+String(digit);
     renderDots();
-    try{setAdminPinMessage("PIN Admin / Manager requis",false)}catch(_){}
+
+    try{
+        const length=String(el.value||"").length;
+
+        if(length>=4){
+            setAdminPinMessage(
+                "PIN saisi — appuyez sur VALIDER LE PIN",
+                false
+            );
+        }else{
+            setAdminPinMessage(
+                "PIN Admin / Manager requis",
+                false
+            );
+        }
+    }catch(_){}
 }
 
 function clearPin(){
@@ -12449,6 +12636,16 @@ window.addEventListener("offline",setNetworkVisual,{passive:true});
 document.addEventListener("DOMContentLoaded",()=>{
     renderDots();
     setNetworkVisual();
+
+    const submit=
+        document.getElementById("ichef-admin-pin-submit");
+
+    if(submit && submit.dataset.v41Bound!=="1"){
+        submit.dataset.v41Bound="1";
+        submit.addEventListener("click",()=>{
+            window.verifyAdminPin?.();
+        });
+    }
 },{once:true});
 
 window.__ICHEF_ADMIN_PREMIUM_PIN__="V32";
@@ -12457,8 +12654,8 @@ window.__ICHEF_ADMIN_PREMIUM_PIN__="V32";
 
 
 <script id="ichef-admin-v33-connexion-stable-marker">
-window.__ICHEF_ADMIN_VERSION__ = "ADMIN-V34-PIN-DEBLOCAGE-CORRIGE";
-console.info("[iCHEF ADMIN V34] PIN valide → fermeture overlay garantie + connexion Cloud stable");
+window.__ICHEF_ADMIN_VERSION__ = "ADMIN-V41-PIN-CONNEXION-STABLE";
+console.info("[iCHEF ADMIN V41] PIN : timeout, anti-double tentative, connexion Cloud stable");
 </script>
 
 
