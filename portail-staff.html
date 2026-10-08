@@ -7,8 +7,25 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>iCHEF OS — Mon espace collaborateur</title>
-<meta name="ichef-build" content="V193-ACTIVATION-EMAIL-MOBILE">
+<meta name="ichef-build" content="V194-PWA-SEULEMENT-MOBILE">
 
+<!-- V194 : masquer les données métier avant l'initialisation de la porte PWA. -->
+<script id="ichef-pwa-only-early-guard">
+try {
+  if (!window.matchMedia?.('(display-mode: standalone)')?.matches && navigator.standalone !== true) {
+    document.documentElement.classList.add('ichef-staff-not-standalone');
+  }
+} catch (_) { document.documentElement.classList.add('ichef-staff-not-standalone'); }
+</script>
+<style id="ichef-pwa-only-early-guard-css">
+html.ichef-staff-not-standalone body .app,
+html.ichef-staff-not-standalone body .bottom-nav,
+html.ichef-staff-not-standalone body #staffIdentityGate,
+html.ichef-staff-not-standalone body #ichef-universal-home-btn {
+  visibility:hidden!important;
+  pointer-events:none!important;
+}
+</style>
 <meta name="theme-color" content="#090d10">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="application-name" content="iCHEF Staff">
@@ -4697,15 +4714,15 @@ html body .staff-pwa-required-gate:not([hidden]){
     <div class="staff-activation-brand">iCHEF <span>STAFF</span></div>
     <div class="staff-activation-kicker">APPLICATION SÉCURISÉE</div>
     <h1>Installez iCHEF Staff</h1>
-    <p id="staffPwaRequiredText">iCHEF prépare automatiquement l’application. Une validation système est nécessaire uniquement au moment de l’installation.</p>
+    <p id="staffPwaRequiredText">Pour votre sécurité, l’accès Staff est réservé à l’application installée. Installez-la et ouvrez l’icône iCHEF Staff sur votre écran d’accueil.</p>
     <div class="staff-activation-person" id="staffPwaActivationPerson" hidden>
       <strong id="staffPwaActivationName">Nouveau collaborateur</strong>
       <small id="staffPwaActivationRole"></small>
     </div>
     <button type="button" class="staff-activation-primary" id="staffPwaRequiredInstall">INSTALLER / CONTINUER</button>
     <button type="button" class="staff-activation-secondary" id="staffPwaAlreadyInstalled">J’AI DÉJÀ INSTALLÉ L’APP</button>
-    <div class="staff-activation-help" id="staffPwaRequiredHelp">Sur iPhone/iPad : Safari → Partager → Sur l’écran d’accueil.</div>
-    <div class="staff-activation-security">Le code d’activation est envoyé uniquement à l’adresse e-mail enregistrée dans votre fiche RH.</div>
+    <div class="staff-activation-help" id="staffPwaRequiredHelp">Android : Installer l'application depuis Chrome. iPhone : Safari → Partager → Sur l’écran d’accueil. Puis ouvrez l’icône iCHEF Staff.</div>
+    <div class="staff-activation-security">Pour les invitations et liens de réinitialisation reçus par e-mail, ouvrez ensuite l’application installée. Si le lien reste dans le navigateur, saisissez votre code d’invitation dans l’app ou demandez un nouveau lien de réinitialisation depuis celle-ci.</div>
   </div>
 </div>
 
@@ -5839,6 +5856,11 @@ function staffEntryRefreshBodyV171(){
 }
 
 function staffEntryShowV171(gateId){
+  // V194 : aucune fenêtre de connexion / activation / réinitialisation ne
+  // peut remplacer l'écran d'installation hors du mode PWA autonome.
+  if (gateId!=='staffPwaRequiredGate' && !ichefIsStandalonePwa()) {
+    gateId='staffPwaRequiredGate';
+  }
   ICHEF_STAFF_ENTRY_GATE_IDS.forEach(id=>{
     const el=document.getElementById(id);
     if(!el)return;
@@ -6404,9 +6426,10 @@ function ichefIsPhoneLike(){
 }
 
 function ichefStandaloneRequiredForThisDevice(){
-  // Sur téléphone/tablette, l'installation PWA reste recommandée
-  // mais ne bloque jamais l'accès au Portail Staff.
-  return !ichefIsPhoneLike();
+  // V194 : obligation sur TOUS les supports, y compris Android / iPhone.
+  // Une PWA n'est pas une preuve cryptographique : les contrôles d'identité
+  // et de session serveur restent obligatoires.
+  return true;
 }
 
 function ichefPwaHeaders(extra={}){
@@ -6464,13 +6487,18 @@ function ichefClearPendingActivation(){
 }
 
 function showStaffPwaRequiredGate(){
-  if(typeof ichefIsPhoneLike==='function' && ichefIsPhoneLike()){
+  if(ichefIsStandalonePwa()){
     staffEntryHideV171('staffPwaRequiredGate');
-    try{ window.ICHEF_PWA_MANAGER?.refresh?.(); }catch(_){}
     return;
   }
-
+  // En navigateur, l'utilisateur installe la PWA mais ne peut ni se
+  // connecter, ni finaliser une activation, ni modifier son PIN ici.
   staffEntryShowV171('staffPwaRequiredGate');
+  const notice=document.getElementById('staffPwaRequiredText');
+  if(notice){
+    notice.textContent='Pour votre sécurité, l’accès Staff est réservé à l’application iCHEF Staff installée. Installez-la, puis ouvrez-la depuis son icône sur l’écran d’accueil. Pour une invitation reçue par e-mail, utilisez le code d’activation dans l’application si le lien reste ouvert dans le navigateur.';
+  }
+  try{window.ICHEF_PWA_MANAGER?.refresh?.();}catch(_){}
 }
 
 function hideStaffPwaRequiredGate(){
@@ -6691,17 +6719,35 @@ async function completeStaffActivation(){
       pwaStandalone:ichefIsStandalonePwa()
     });
 
-    const staffId=
-      data.staffId ||
-      ICHEF_STAFF_ACTIVATION_CONTEXT?.staffId ||
-      '';
+    if(data.activationCompleted!==true || data.pinSaved!==true){
+      throw new Error('Le serveur n’a pas confirmé l’enregistrement du PIN. Réessayez.');
+    }
+
+    const staffId=String(
+      data.staffId || ICHEF_STAFF_ACTIVATION_CONTEXT?.staffId || ''
+    ).trim();
+    const tenant=String(data.safeTenantID || ICHEF_STAFF_ACTIVATION_CONTEXT?.tenantID || '').trim();
 
     ichefClearPendingActivation();
     hideStaffActivationGate();
-
-    // V179 : dès que l'activation sécurisée est terminée,
-    // entrer automatiquement dans l'espace personnel du collaborateur.
-    await finishStaffLogin(data,staffId);
+    // Le PIN est enregistré en base. La création de la session PWA est
+    // une opération distincte et ne doit pas faire croire à un échec d'activation.
+    try{
+      await finishStaffLogin(data,staffId);
+      const banner=document.createElement('div');
+      banner.setAttribute('role','status');
+      banner.setAttribute('aria-live','polite');
+      banner.textContent='✓ PIN personnel enregistré. Votre compte iCHEF Staff est activé.';
+      banner.style.cssText='position:fixed;z-index:2147483647;left:12px;right:12px;bottom:calc(18px + env(safe-area-inset-bottom,0px));max-width:520px;margin:0 auto;padding:16px 20px;border-radius:14px;background:#143426;color:#e4fce9;border:1px solid #4c9b6b;box-shadow:0 12px 30px rgba(0,0,0,.3);font:600 15px/1.4 system-ui,sans-serif;text-align:center';
+      document.body.appendChild(banner);
+      setTimeout(()=>banner.remove(),6500);
+    }catch(loginError){
+      const idInput=document.getElementById('staffLoginId');
+      const tenantInput=document.getElementById('staffLoginTenant');
+      if(idInput)idInput.value=staffId;
+      if(tenantInput && tenant)tenantInput.value=tenant;
+      showStaffLogin('✓ Votre PIN personnel est enregistré et votre compte est activé. Connectez-vous avec votre nouveau PIN.');
+    }
   }catch(e){
     if(error)error.textContent=e.message||'Activation impossible.';
   }finally{
@@ -7011,6 +7057,10 @@ async function requestStaffForgotPin(event){
 function openStaffPinResetGate(token){
   STAFF_PIN_RESET_TOKEN=
     String(token||'').trim();
+  if(!ichefIsStandalonePwa()){
+    showStaffPwaRequiredGate();
+    return false;
+  }
 
   if(!STAFF_PIN_RESET_TOKEN){
     return false;
@@ -7600,6 +7650,7 @@ function authHeaders(){
 }
 
 function requireStaffSession(){
+  if(!ichefIsStandalonePwa())return false;
   const tenant = currentTenant();
 
   const token =
@@ -8704,23 +8755,23 @@ async function bootstrapCollaboratorPortal(){
     ichefStaffPinResetTokenFromLocationV175() ||
     String(STAFF_PIN_RESET_TOKEN||'').trim();
 
-  // V175 : le lien reçu par email ouvre DIRECTEMENT
-  // Nouveau PIN / Confirmer. Aucun ancien PIN, aucune porte PWA.
-  if(resetToken){
-    connectStaffPortalButtons();
-    hideStaffPwaRequiredGate();
-    openStaffPinResetGate(resetToken);
-    return;
-  }
-
+  // V194 : la porte PWA passe avant toute connexion, activation ou reset PIN.
+  // Ne pas consommer les liens e-mail dans un navigateur classique.
   if(!ichefIsStandalonePwa() && ichefStandaloneRequiredForThisDevice()){
     clearStaffAuth();
+    // Conserver l'invitation localement sans déclencher d'appel API sensible.
+    ichefReadPendingActivation();
     showStaffPwaRequiredGate();
-    inspectActivationForInstallGate().catch(()=>{});
     return;
   }
 
   hideStaffPwaRequiredGate();
+
+  if(resetToken){
+    connectStaffPortalButtons();
+    openStaffPinResetGate(resetToken);
+    return;
+  }
   connectStaffPortalButtons();
 
   // V179 : un QR d'activation ouvre directement le parcours du
