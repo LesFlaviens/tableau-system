@@ -24652,26 +24652,43 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
                 .replace(/[^A-Z0-9]/g,'')
                 .slice(0,16);
 
+        const qrToken=
+            String(req.body?.token||'')
+                .trim()
+                .slice(0,600);
+
+        const whatsappCode=
+            String(req.body?.whatsappCode||'')
+                .replace(/\D/g,'')
+                .slice(0,10);
+
+        const qrMode=
+            Boolean(qrToken);
+
         if(
             !deviceId ||
             !/^\d{4,12}$/.test(newPin) ||
-            activationCode.length<6
+            (!qrMode && activationCode.length<6)
         ){
             return res.status(400).json({
                 success:false,
                 error:
-                    activationCode.length<6
-                        ? 'Saisissez le code d’activation reçu par e-mail.'
-                        : 'Choisissez un PIN personnel de 4 à 12 chiffres.'
+                    !/^\d{4,12}$/.test(newPin)
+                        ? 'Choisissez un PIN personnel de 4 à 12 chiffres.'
+                        : 'Saisissez le code d’activation reçu par e-mail.'
             });
         }
 
         const credential=
-            await ichefStaffActivationLoadCredential({
-                tenantID:req.body?.tenantID,
-                staffId:req.body?.staffId,
-                activationCode
-            });
+            qrMode
+                ? await ichefStaffActivationLoadCredential({
+                    token:qrToken
+                  })
+                : await ichefStaffActivationLoadCredential({
+                    tenantID:req.body?.tenantID,
+                    staffId:req.body?.staffId,
+                    activationCode
+                  });
 
         if(!credential.ok){
             return res.status(401).json({
@@ -24680,17 +24697,125 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
             });
         }
 
-        // V181 : l'identité de première activation est validée par
-        // le code temporaire envoyé à l'adresse e-mail RH.
-        // Le code seul n'est pas suffisant : le serveur exige aussi la preuve
-        // qu'un e-mail a réellement été envoyé pour cette activation.
-        if(!credential.row.lastEmailSentAt){
-            return res.status(428).json({
-                success:false,
-                code:'STAFF_ACTIVATION_EMAIL_NOT_SENT',
-                error:
-                    'Le code d’activation doit d’abord être envoyé à votre adresse e-mail enregistrée.'
-            });
+        let identityMode='EMAIL_ACTIVATION_CODE';
+        let verifiedVia='EMAIL_ACTIVATION_CODE';
+        let whatsappVerified=false;
+
+        if(qrMode){
+            // V186 : possession du QR identifie l'activation,
+            // mais ne suffit jamais à ouvrir le compte.
+            // Quand la politique WhatsApp est active, le code reçu
+            // sur le numéro RH doit être validé avant le nouveau PIN.
+            if(ICHEF_STAFF_ACTIVATION_WHATSAPP_REQUIRED){
+                if(
+                    !twilioClient ||
+                    !ICHEF_TWILIO_VERIFY_SERVICE_SID
+                ){
+                    return res.status(503).json({
+                        success:false,
+                        code:'STAFF_ACTIVATION_WHATSAPP_NOT_CONFIGURED',
+                        error:'Vérification WhatsApp momentanément indisponible.'
+                    });
+                }
+
+                const phone=
+                    ichefStaffPhoneFromRecords(
+                        credential.profile.member,
+                        credential.profile.directoryEntry
+                    );
+
+                if(!phone){
+                    return res.status(428).json({
+                        success:false,
+                        code:'STAFF_ACTIVATION_PHONE_REQUIRED',
+                        error:'Numéro WhatsApp RH manquant.'
+                    });
+                }
+
+                if(!/^\d{4,10}$/.test(whatsappCode)){
+                    return res.status(400).json({
+                        success:false,
+                        code:'STAFF_ACTIVATION_WHATSAPP_CODE_REQUIRED',
+                        error:'Saisissez le code reçu sur WhatsApp.'
+                    });
+                }
+
+                const attemptKey=
+                    `staff-activation-complete-${credential.row.tenantID}-${credential.row.staffId}`;
+
+                const attempt=
+                    ichefPinAttemptCheck(
+                        req,
+                        attemptKey,
+                        deviceId
+                    );
+
+                if(!attempt.ok){
+                    res.setHeader(
+                        'Retry-After',
+                        String(
+                            Math.max(
+                                1,
+                                Math.ceil(
+                                    Number(attempt.retryAfterMs||0)/1000
+                                )
+                            )
+                        )
+                    );
+
+                    return res.status(429).json({
+                        success:false,
+                        code:'STAFF_ACTIVATION_WHATSAPP_RATE_LIMITED',
+                        error:'Trop de codes incorrects. Réessayez dans quelques minutes.'
+                    });
+                }
+
+                const check=
+                    await ichefStaffCheckWhatsappVerify(
+                        phone,
+                        whatsappCode
+                    );
+
+                if(
+                    String(check?.status||'')
+                        .toLowerCase()!=='approved'
+                ){
+                    ichefPinAttemptFailure(
+                        req,
+                        attemptKey,
+                        deviceId
+                    );
+
+                    return res.status(401).json({
+                        success:false,
+                        code:'STAFF_ACTIVATION_WHATSAPP_CODE_INVALID',
+                        error:'Code WhatsApp incorrect ou expiré.'
+                    });
+                }
+
+                ichefPinAttemptSuccess(
+                    req,
+                    attemptKey,
+                    deviceId
+                );
+
+                whatsappVerified=true;
+                identityMode='QR_WHATSAPP_ACTIVATION';
+                verifiedVia='QR_WHATSAPP_ACTIVATION';
+            }else{
+                identityMode='QR_ACTIVATION';
+                verifiedVia='QR_ACTIVATION';
+            }
+        }else{
+            // Parcours e-mail V181 conservé sans modification de sécurité.
+            if(!credential.row.lastEmailSentAt){
+                return res.status(428).json({
+                    success:false,
+                    code:'STAFF_ACTIVATION_EMAIL_NOT_SENT',
+                    error:
+                        'Le code d’activation doit d’abord être envoyé à votre adresse e-mail enregistrée.'
+                });
+            }
         }
 
         const publicKeyJwk=
@@ -24794,8 +24919,7 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
                                 req.body
                             ),
                         publicKeyJwk,
-                        verifiedVia:
-                            'EMAIL_ACTIVATION_CODE',
+                        verifiedVia,
                         lastVerifiedAt:now,
                         lastUsedAt:now,
                         revokedAt:null,
@@ -24814,8 +24938,14 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
 
         lockedRow.usedAt=now;
         lockedRow.activatedDeviceHash=deviceHash;
-        lockedRow.emailVerifiedAt=now;
-        lockedRow.whatsappVerifiedAt=null;
+        lockedRow.emailVerifiedAt=
+            qrMode
+                ? null
+                : now;
+        lockedRow.whatsappVerifiedAt=
+            whatsappVerified
+                ? now
+                : null;
         lockedRow.lockedAt=null;
         lockedRow.lockedBy='';
 
@@ -24847,13 +24977,16 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
                         lockedRow.staffId
                     ),
                 deviceTrusted:true,
-                identityMode:
-                    'EMAIL_ACTIVATION_CODE'
+                identityMode
             });
 
         return res.json({
             ...payload,
             activationCompleted:true,
+            activationMethod:
+                qrMode
+                    ? identityMode
+                    : 'EMAIL_ACTIVATION_CODE',
             pwaRequired:true
         });
 
@@ -24879,7 +25012,7 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
         }
 
         console.error(
-            '[iCHEF Staff activation complete V160]',
+            '[iCHEF Staff activation complete V186]',
             error
         );
 
@@ -24889,7 +25022,6 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
         });
     }
 });
-
 
 // ============================================================================
 // 🔐 V146 — ROUTES SÉCURITÉ APP / WHATSAPP / APPAREILS
