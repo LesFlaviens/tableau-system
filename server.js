@@ -19300,148 +19300,131 @@ async function ichefStaffSendActivationEmail({
     activationUrl,
     expiresAt
 }={}){
-    // Réutilise exactement la configuration SMTP déjà utilisée
-    // par le reset PIN Staff actuel.
+    // V191 : aucune modification des connexions, du PIN ou des permissions.
+    // SMTP identique au reset PIN; destinataire exclusivement lu côté serveur.
     const mail=ichefStaffResetMailer();
-
     if(!mail){
-        const error=new Error(
-            'Service e-mail iCHEF non configuré.'
-        );
+        const error=new Error('Service e-mail iCHEF non configuré.');
         error.code='STAFF_ACTIVATION_EMAIL_NOT_CONFIGURED';
         throw error;
     }
 
-    // Adresse exclusivement relue depuis la fiche RH côté serveur.
     const email=ichefStaffProfileEmail(profile);
-
     if(!email){
-        const error=new Error(
-            'Aucune adresse e-mail valide n’est enregistrée dans la fiche RH de ce collaborateur.'
-        );
+        const error=new Error('Aucune adresse e-mail valide n’est enregistrée dans la fiche RH de ce collaborateur.');
         error.code='STAFF_ACTIVATION_EMAIL_REQUIRED';
         throw error;
     }
 
     const name=String(
-        ichefStaffActivationDisplayName(
-            profile?.member || {}
-        ) || 'Collaborateur'
+        ichefStaffActivationDisplayName(profile?.member || {}) || 'Collaborateur'
     ).trim().slice(0,160);
 
-    const code=String(
-        activationCode||''
-    )
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g,'')
-    .slice(0,16);
+    const code=String(activationCode||'')
+        .toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,16);
 
-    const link=String(
-        activationUrl||''
-    ).trim().slice(0,2000);
+    // L'URL contenue dans la requête Admin ne détermine JAMAIS le domaine
+    // d'un lien envoyé à l'utilisateur (protection Host-header / phishing).
+    // Son jeton a déjà été validé contre son HMAC en base par la route Admin.
+    const token=ichefStaffActivationTokenFromUrl(activationUrl);
+    if(!ichefStaffActivationParseToken(token)){
+        const error=new Error('Lien d’activation invalide.');
+        error.code='STAFF_ACTIVATION_LINK_INVALID';
+        throw error;
+    }
 
-    const expiryLabel=
-        expiresAt
-            ? new Date(expiresAt).toLocaleString(
-                'fr-FR',
-                {
-                    timeZone:'Europe/Paris',
-                    dateStyle:'short',
-                    timeStyle:'short'
-                }
-              )
-            : '24 heures';
+    // Domaine public fiable ; sur mobile le fragment #activate est pris en
+    // charge automatiquement par portail-staff.html, sans exposer le jeton
+    // dans la requête HTTP. Ne PAS rediriger vers un domaine arbitraire.
+    let publicStaffOrigin='https://os.ichef.ch';
+    try{
+        const candidate=new URL(String(
+            process.env.ICHEF_PUBLIC_STAFF_URL || 'https://os.ichef.ch'
+        ).trim());
+        const allowedHost=(
+            candidate.hostname==='ichef.ch' ||
+            candidate.hostname.endsWith('.ichef.ch') ||
+            candidate.hostname==='tableau-system.onrender.com'
+        );
+        if(candidate.protocol==='https:' && allowedHost && !candidate.username && !candidate.password){
+            publicStaffOrigin=candidate.origin;
+        }
+    }catch(_){}
 
-    const subject=
-        'Votre accès iCHEF Staff – Activation de votre compte';
+    const link=`${publicStaffOrigin}/portail-staff.html#activate=${encodeURIComponent(token)}`;
+    const expiryLabel=expiresAt
+        ? new Date(expiresAt).toLocaleString('fr-FR',{
+            timeZone:'Europe/Paris',dateStyle:'short',timeStyle:'short'
+          })
+        : '24 heures';
 
-    const text=
-`Bonjour ${name},
+    const subject='iCHEF Staff — Activez votre accès personnel';
+    const text=`Bonjour ${name},
 
 Votre responsable vous invite à activer votre accès iCHEF Staff.
 
-Code d’activation : ${code}
+1. Ouvrez ce lien sur votre téléphone :
+${link}
 
-Ce code est valable jusqu’au ${expiryLabel} et utilisable une seule fois.
+2. Dans iCHEF Staff, appuyez sur « RECEVOIR LE CODE PAR E-MAIL ».
+3. Saisissez le code de sécurité à 6 chiffres reçu dans un deuxième e-mail.
+4. Choisissez et confirmez votre PIN personnel pour terminer l'activation.
 
-Ouvrez iCHEF Staff, saisissez votre ID collaborateur et ce code, puis choisissez votre PIN personnel.
+Si le lien ne s'ouvre pas, allez sur ${publicStaffOrigin}/portail-staff.html et entrez manuellement l'identifiant établissement, votre ID collaborateur et ce code d'invitation : ${code}.
 
-Pour votre sécurité, ne transmettez pas ce code à une autre personne.
+Invitation valable jusqu'au ${expiryLabel}, à usage unique. Ne partagez jamais ce lien ni ces codes.
+Si vous n'avez pas demandé cette activation, ignorez cet e-mail.
 
 iCHEF Staff`;
 
-    const safeName=
-        ichefStaffActivationEmailEscape(name);
-
-    const safeCode=
-        ichefStaffActivationEmailEscape(code);
-
-    const safeExpiry=
-        ichefStaffActivationEmailEscape(
-            expiryLabel
-        );
+    const safeName=ichefStaffActivationEmailEscape(name);
+    const safeCode=ichefStaffActivationEmailEscape(code);
+    const safeExpiry=ichefStaffActivationEmailEscape(expiryLabel);
+    const safeLink=ichefStaffActivationEmailEscape(link);
+    const safePortal=ichefStaffActivationEmailEscape(`${publicStaffOrigin}/portail-staff.html`);
 
     const html=`
 <div style="margin:0;background:#080c0f;padding:28px 12px;font-family:Arial,sans-serif;color:#edf0f1">
   <div style="max-width:620px;margin:0 auto;background:#11181c;border:1px solid #2d3235;border-radius:18px;overflow:hidden">
     <div style="padding:24px 26px;border-bottom:1px solid #262d31">
-      <div style="font-size:20px;font-weight:800;letter-spacing:.04em">
-        iCHEF <span style="color:#d8ad55">STAFF</span>
-      </div>
-      <div style="margin-top:8px;color:#d8ad55;font-size:11px;font-weight:800;letter-spacing:.12em">
-        ACTIVATION DE VOTRE ACCÈS
-      </div>
+      <div style="font-size:20px;font-weight:800;letter-spacing:.04em">iCHEF <span style="color:#d8ad55">STAFF</span></div>
+      <div style="margin-top:8px;color:#d8ad55;font-size:11px;font-weight:800;letter-spacing:.12em">ACTIVATION DE VOTRE ACCÈS</div>
     </div>
-
     <div style="padding:26px">
-      <p style="margin:0 0 16px;color:#edf0f1;font-size:15px">
-        Bonjour ${safeName},
-      </p>
-
-      <p style="margin:0 0 18px;color:#aeb8bd;font-size:14px;line-height:1.55">
-        Votre responsable vous invite à activer votre accès
-        <strong style="color:#fff">iCHEF Staff</strong>.
-      </p>
-
-      <div style="padding:18px;border:1px solid #5f512e;border-radius:12px;background:#17160f;text-align:center">
-        <div style="color:#9fa8ad;font-size:11px;font-weight:700;letter-spacing:.08em">
-          CODE D’ACTIVATION
-        </div>
-        <div style="margin-top:7px;color:#efc96a;font-size:26px;font-weight:900;letter-spacing:.18em">
-          ${safeCode}
-        </div>
-        <div style="margin-top:8px;color:#8f999f;font-size:11px">
-          Usage unique · valable jusqu’au ${safeExpiry}
-        </div>
+      <p style="margin:0 0 16px;color:#edf0f1;font-size:15px">Bonjour ${safeName},</p>
+      <p style="margin:0 0 18px;color:#aeb8bd;font-size:14px;line-height:1.55">Votre responsable vous invite à activer votre accès personnel <b style="color:#fff">iCHEF Staff</b>.</p>
+      <p style="margin:0 0 20px;color:#aeb8bd;font-size:13px;line-height:1.55">Ouvrez cette invitation sur votre téléphone :</p>
+      <div style="text-align:center;margin:24px 0">
+        <a href="${safeLink}" style="display:inline-block;background:#e5bb55;color:#11181c;text-decoration:none;padding:16px 25px;border-radius:11px;font-size:15px;font-weight:800">ACTIVER MON ACCÈS STAFF</a>
       </div>
-
-      <p style="margin:24px 0 0;color:#9da8ad;font-size:13px;line-height:1.55;text-align:center">
-        Ouvrez <strong style="color:#fff">iCHEF Staff</strong>, saisissez votre ID collaborateur
-        et le code ci-dessus, puis choisissez votre PIN personnel.
-      </p>
-
-      <div style="margin-top:20px;padding-top:16px;border-top:1px solid #262d31;color:#77838a;font-size:11px;line-height:1.5;text-align:center">
-        Code personnel, temporaire et à usage unique. Ne le transmettez à personne.
+      <p style="margin:0 0 12px;color:#aeb8bd;font-size:13px;line-height:1.65">Dans iCHEF Staff, appuyez sur <b>RECEVOIR LE CODE PAR E-MAIL</b>, entrez le code à 6 chiffres du second e-mail, puis choisissez votre PIN personnel.</p>
+      <p style="margin:16px 0 6px;color:#9fa8ad;font-size:11px">Si le bouton ne fonctionne pas, copiez le lien suivant dans votre navigateur :</p>
+      <p style="margin:0 0 18px;overflow-wrap:anywhere;font-size:11px"><a href="${safeLink}" style="color:#8fd5fa;text-decoration:underline">${safeLink}</a></p>
+      <div style="padding:15px;border:1px solid #5f512e;border-radius:12px;background:#17160f;text-align:center">
+        <div style="color:#9fa8ad;font-size:11px;font-weight:700">CODE D’INVITATION (SECOURS)</div>
+        <div style="margin-top:7px;color:#efc96a;font-size:23px;font-weight:900;letter-spacing:.14em">${safeCode}</div>
+        <div style="margin-top:8px;color:#8f999f;font-size:11px">Si nécessaire, ouvrez <a style="color:#8fd5fa" href="${safePortal}">iCHEF Staff</a> et saisissez votre établissement, votre ID collaborateur et ce code.</div>
       </div>
+      <div style="margin-top:20px;padding-top:16px;border-top:1px solid #262d31;color:#77838a;font-size:11px;line-height:1.5;text-align:center">Invitation valable jusqu’au ${safeExpiry} · usage unique. Ne transmettez ni lien ni codes.</div>
     </div>
   </div>
 </div>`;
 
-    const info=
-        await mail.transporter.sendMail({
-            from:`iCHEF Staff <${mail.user}>`,
-            to:email,
-            subject,
-            text,
-            html
-        });
+    const info=await mail.transporter.sendMail({
+        from:`iCHEF Staff <${mail.user}>`,
+        to:email,
+        subject,
+        text,
+        html
+    });
 
-    return {
-        info,
-        email,
-        maskedEmail:
-            ichefStaffMaskEmail(email)
-    };
+    if(info?.rejected?.includes(email)){
+        const error=new Error('Adresse refusée par la messagerie SMTP.');
+        error.code='STAFF_ACTIVATION_EMAIL_REJECTED';
+        throw error;
+    }
+
+    return {info,email,maskedEmail:ichefStaffMaskEmail(email)};
 }
 
 function ichefStaffActivationPublicBase(req){
