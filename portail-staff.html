@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>iCHEF OS — Mon espace collaborateur</title>
-<meta name="ichef-build" content="V206-PWA-ICONES-V205-CONFIRMATION-INSTALLATION">
+<meta name="ichef-build" content="V202-PWA-ICONE-ICHEF-STAFF">
 
 <!-- V194 : masquer les données métier avant l'initialisation de la porte PWA. -->
 <script id="ichef-pwa-only-early-guard">
@@ -32,9 +32,9 @@ html.ichef-staff-not-standalone body #ichef-universal-home-btn {
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="iCHEF Staff">
-<link rel="manifest" href="./manifest-staff.json?v=205">
-<link rel="apple-touch-icon" sizes="180x180" href="./ichef-staff-ios-v205-180.png">
-<link rel="icon" type="image/png" sizes="512x512" href="./ichef-staff-icon-v205-512.png">
+<link rel="manifest" href="./manifest-staff.json?v=202">
+<link rel="apple-touch-icon" href="./ichef-staff.png?v=202">
+<link rel="icon" type="image/png" sizes="512x512" href="./ichef-staff.png?v=202">
 
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -4726,7 +4726,7 @@ html body .staff-pwa-required-gate:not([hidden]){
     <div class="staff-activation-brand">iCHEF <span>STAFF</span></div>
     <div class="staff-activation-kicker">APPLICATION SÉCURISÉE</div>
     <h1>Bienvenue sur iCHEF Staff</h1>
-    <p id="staffPwaRequiredText">Installez iCHEF Staff depuis ce téléphone, puis ouvrez son icône. Android : INSTALLER, puis confirmer. iPhone : Safari → Partager → Sur l’écran d’accueil.</p>
+    <p id="staffPwaRequiredText">iCHEF prépare automatiquement votre application. Sur Android, touchez INSTALLER puis confirmez la demande du téléphone. Sur iPhone, ajoutez iCHEF Staff à l’écran d’accueil depuis Safari.</p>
     <div class="staff-activation-person" id="staffPwaActivationPerson" hidden>
       <strong id="staffPwaActivationName">Nouveau collaborateur</strong>
       <small id="staffPwaActivationRole"></small>
@@ -6509,7 +6509,7 @@ function showStaffPwaRequiredGate(){
   staffEntryShowV171('staffPwaRequiredGate');
   const notice=document.getElementById('staffPwaRequiredText');
   if(notice){
-    notice.textContent='L’installation nécessite votre confirmation. Android : touchez INSTALLER puis ouvrez l’icône iCHEF Staff. iPhone : Safari → Partager → Sur l’écran d’accueil. Si votre invitation ne s’ouvre pas dans l’application, utilisez le code d’invitation reçu par e-mail.';
+    notice.textContent='iCHEF prépare automatiquement l’application sécurisée. Touchez INSTALLER pour confirmer la demande du téléphone, puis ouvrez l’icône iCHEF Staff. Sur iPhone, l’ajout se fait depuis le menu Partager de Safari. L’accès Staff reste réservé à l’application installée.';
   }
   try{window.ICHEF_PWA_MANAGER?.refresh?.();}catch(_){}
 }
@@ -6837,7 +6837,7 @@ async function inspectActivationForInstallGate(){
     document.getElementById('staffPwaActivationName').textContent=data.staff?.name||'Nouveau collaborateur';
     document.getElementById('staffPwaActivationRole').textContent=data.staff?.role||'Staff';
     document.getElementById('staffPwaRequiredText').textContent=
-      'Invitation reconnue. Installez puis ouvrez iCHEF Staff. Si le lien ne suit pas dans l’application, saisissez votre code d’invitation e-mail.';
+      'QR reconnu. Installez iCHEF Staff puis ouvrez l’application : l’activation reprendra automatiquement.';
   }catch(_){}
 }
 
@@ -12349,25 +12349,22 @@ window.ichefOpenOpsMobileScreenV150=ichefOpenOpsMobileScreen;
 </script>
 
 
-<script id="ichef-staff-pwa-auto-v203">
+<script id="ichef-staff-pwa-auto-v164">
 (()=>{
 'use strict';
-// V203 : installation guidée fiable, SANS effacer les autres Service Workers,
-// SANS rechargement forcé, SANS modifier PIN, invitations ou sessions.
-const SW_URL='./sw-staff.js?v=203';
-const SW_SCOPE='/portail-staff.html'; // Scope historique attendu par server.js
-let deferredPrompt=null;
-let registration=null;
-let installing=false;
-let installationConfirmedInThisPage=false;
-let lastStatus='';
-let freezeStatusUntil=0;
 
-const standalone=()=>{
-  try{return window.matchMedia?.('(display-mode: standalone)')?.matches===true || navigator.standalone===true;}
-  catch(_){return navigator.standalone===true;}
-};
-const isiOS=()=>/iphone|ipad|ipod/i.test(String(navigator.userAgent||''));
+const BUILD='199';
+const SW_URL='./sw-staff.js?v='+BUILD;
+const INSTALL_MARK='ichef_staff_pwa_installed_v196';
+const CONFIRMED_MARK='ichef_staff_pwa_install_confirmed_v198';
+let deferredPrompt=null;
+let installing=false;
+let registration=null;
+let hadController=false;
+let reloading=false;
+
+const isiOS=()=>/iphone|ipad|ipod/i.test(navigator.userAgent||'');
+const standalone=()=>window.matchMedia?.('(display-mode: standalone)').matches===true || window.navigator.standalone===true;
 const installButtons=()=>[
   document.getElementById('staffPwaRequiredInstall'),
   document.getElementById('staff-pwa-install-btn')
@@ -12376,141 +12373,233 @@ const statusNodes=()=>[
   document.getElementById('staff-pwa-install-status'),
   document.getElementById('staffPwaRequiredHelp')
 ].filter(Boolean);
-function setStatus(message,holdMs=0){
-  lastStatus=String(message||'');
-  freezeStatusUntil=holdMs?Date.now()+holdMs:0;
-  statusNodes().forEach(el=>{el.textContent=lastStatus;});
-}
-function updateButtonVisibility(hidden){
-  installButtons().forEach(btn=>{
-    btn.hidden=Boolean(hidden);
-    btn.disabled=Boolean(hidden)||installing;
-  });
-}
+
+function setStatus(text){ statusNodes().forEach(el=>el.textContent=text); }
+
 function refreshUi(){
-  // Ne pas utiliser un drapeau localStorage comme preuve d'installation :
-  // il subsiste après une désinstallation et masquait définitivement INSTALLER.
+  const buttons=installButtons();
+
   if(standalone()){
-    updateButtonVisibility(true);
-    setStatus('✓ iCHEF Staff est ouverte en mode application.');
-    try{
-      document.documentElement.classList.remove('ichef-staff-not-standalone');
-    }catch(_){}
+    try {
+      localStorage.setItem(INSTALL_MARK,'1');
+      localStorage.setItem(CONFIRMED_MARK,'1');
+    } catch (_) {}
+    buttons.forEach(btn=>{btn.hidden=true;btn.disabled=true;});
+    setStatus('✓ Application iCHEF Staff installée et ouverte.');
     return;
   }
-  if(installationConfirmedInThisPage){
-    updateButtonVisibility(true);
-    setStatus('✓ Installation confirmée. Ouvrez maintenant l’icône iCHEF Staff sur l’écran d’accueil.');
+
+  // Ne déclarer « installée » qu'après l'événement natif appinstalled
+  // ou un lancement effectivement constaté en mode PWA autonome.
+  let confirmed=false;
+  try { confirmed=localStorage.getItem(CONFIRMED_MARK)==='1'; } catch (_) {}
+  if(confirmed){
+    buttons.forEach(btn=>{btn.hidden=true;btn.disabled=true;});
+    setStatus('✓ Application iCHEF Staff installée. Ouvrez son icône sur votre écran d’accueil.');
     return;
   }
-  updateButtonVisibility(false);
-  if(Date.now()<freezeStatusUntil){
-    statusNodes().forEach(el=>{el.textContent=lastStatus;});
-    return;
-  }
-  if(installing){setStatus('Installation en cours de confirmation sur votre téléphone…');return;}
+
+  buttons.forEach(btn=>{btn.hidden=false;btn.disabled=false;});
+
   if(deferredPrompt){
-    installButtons().forEach(btn=>btn.textContent='INSTALLER iCHEF STAFF');
-    setStatus('iCHEF Staff est prête. Touchez INSTALLER puis confirmez dans Android.');
-  }else if(isiOS()){
-    installButtons().forEach(btn=>btn.textContent='COMMENT INSTALLER SUR IPHONE');
-    setStatus('Sur iPhone : ouvrez Safari → Partager → Sur l’écran d’accueil → Ajouter, puis ouvrez l’icône.');
-  }else{
-    installButtons().forEach(btn=>btn.textContent='INSTALLER iCHEF STAFF');
-    setStatus('Si Android ne propose pas l’installation : Chrome ⋮ → Installer l’application ou Ajouter à l’écran d’accueil.');
+    buttons.forEach(btn=>btn.textContent='INSTALLER iCHEF STAFF');
+    setStatus('Application prête : touchez INSTALLER et confirmez la demande Android.');
+    return;
   }
-}
-async function install(){
-  if(standalone()) {refreshUi();return {installed:true,standalone:true};}
-  if(installing)return {busy:true};
+
   if(isiOS()){
-    setStatus('Safari → Partager → Sur l’écran d’accueil → Ajouter. Ouvrez ensuite l’icône iCHEF Staff.',12000);
+    buttons.forEach(btn=>btn.textContent='INSTRUCTIONS POUR IPHONE');
+    setStatus('Sur iPhone : ouvrez dans Safari, touchez Partager, puis « Sur l’écran d’accueil » et Ajouter. Apple demande cette confirmation.');
+    return;
+  }
+
+  buttons.forEach(btn=>btn.textContent='INSTALLER iCHEF STAFF');
+  setStatus('Préparation automatique en cours. Si le téléphone ne propose pas l’installation : Chrome ⋮ → Installer l’application / Ajouter à l’écran d’accueil.');
+}
+
+// Les navigateurs ne permettent pas l’installation silencieuse d’une PWA.
+// On prépare automatiquement SW + manifest, puis le clic sur INSTALLER
+// lance immédiatement la confirmation Android pendant le geste utilisateur.
+async function install(){
+  if(standalone()){
+    refreshUi();
+    return {installed:true,standalone:true};
+  }
+  if(installing) return {busy:true};
+
+  if(isiOS()){
+    setStatus('Apple impose une confirmation : ouvrez cette page dans Safari → Partager → Sur l’écran d’accueil → Ajouter. Ensuite, ouvrez l’icône iCHEF Staff.');
     return {ios:true,manualConfirmation:true};
   }
-  // L'invite doit être appelée directement depuis un clic ; pas d'attente
-  // réseau ou SW avant prompt() (perte du geste utilisateur sur Android).
-  const currentPrompt=deferredPrompt;
-  if(!currentPrompt){
-    setStatus('Ouvrez le menu ⋮ de Chrome et choisissez « Installer l’application ». Si cette option manque, vérifiez le manifest et le service worker.',12000);
+
+  // Prompt Android uniquement si fourni par le navigateur. Aucun délai
+  // asynchrone avant prompt(), car la permission dépend du clic lui-même.
+  const prompt=deferredPrompt;
+  if(!prompt){
+    setStatus('La demande d’installation automatique n’est pas proposée par ce navigateur. Dans Chrome : menu ⋮ → Installer l’application ou Ajouter à l’écran d’accueil. Vérifiez aussi HTTPS, manifest-staff.json et sw-staff.js.');
     return {promptUnavailable:true,manualConfirmation:true};
   }
-  deferredPrompt=null;
+
   installing=true;
-  updateButtonVisibility(false);
+  deferredPrompt=null;
   try{
-    await currentPrompt.prompt();
-    const choice=await currentPrompt.userChoice;
+    await prompt.prompt();
+    const choice=await prompt.userChoice;
     if(choice?.outcome==='accepted'){
-      setStatus('Demande acceptée. Attendez la fin de l’installation et ouvrez l’icône iCHEF Staff.',10000);
+      // La confirmation de l'utilisateur n'est PAS une preuve d'installation.
+      // Attendre appinstalled ou le premier lancement en mode standalone.
+      setStatus('Installation acceptée : finalisation en cours. Dès que l’application est installée, ouvrez son icône pour poursuivre.');
     }else{
-      setStatus('Installation annulée. Vous pouvez réessayer depuis le menu ⋮ du navigateur.',9000);
+      setStatus('Installation non confirmée. Vous pourrez relancer depuis le navigateur.');
     }
     return choice||{};
   }catch(error){
-    console.warn('[iCHEF STAFF PWA V203] prompt',error?.message||error);
-    setStatus('Installation non disponible. Essayez Chrome ⋮ → Installer l’application.',10000);
+    console.warn('[iCHEF Staff V196] confirmation d’installation',error);
+    setStatus('Installation impossible actuellement. Vérifiez le menu d’installation de votre navigateur.');
     return {error:true};
   }finally{
     installing=false;
-    updateButtonVisibility(false);
+    // Ne pas masquer immédiatement le résultat en cas de refus ou acceptation.
+    installButtons().forEach(btn=>btn.textContent='INSTALLER iCHEF STAFF');
   }
+}
+
+// Une installation silencieuse n’est pas autorisée ; ne pas intercepter
+// arbitrairement les touchers sur l’écran. Le clic explicitement demandé
+// sur INSTALLER est traité par le gestionnaire déjà associé au bouton.
+function armFirstGestureInstall(){
+  return;
 }
 
 async function registerServiceWorker(){
   if(!('serviceWorker' in navigator)){
-    setStatus('Ce navigateur ne prend pas en charge les applications PWA.',12000);
+    setStatus('Ce navigateur ne prend pas en charge l’installation PWA.');
     return null;
   }
-  if(!(location.protocol==='https:' || ['localhost','127.0.0.1'].includes(location.hostname))){
-    setStatus('La connexion HTTPS est indispensable pour installer iCHEF Staff.',12000);
+
+  const allowed=location.protocol==='https:' || location.hostname==='localhost' || location.hostname==='127.0.0.1';
+  if(!allowed){
+    setStatus('HTTPS est obligatoire pour installer iCHEF Staff.');
     return null;
   }
+
+  hadController=!!navigator.serviceWorker.controller;
+
   try{
-    // Un SW RH/Admin peut partager l'origine. Ne JAMAIS désenregistrer
-    // automatiquement d'autres registrations, même celles d'anciennes PWA.
-    registration=await navigator.serviceWorker.register(SW_URL,{
-      scope:SW_SCOPE,
-      updateViaCache:'none'
+    try{
+      const oldRegs=await navigator.serviceWorker.getRegistrations();
+
+      for(const oldReg of oldRegs){
+        const scriptURL=
+          oldReg.active?.scriptURL ||
+          oldReg.waiting?.scriptURL ||
+          oldReg.installing?.scriptURL ||
+          '';
+
+        let scopePath='';
+
+        try{
+          scopePath=new URL(oldReg.scope).pathname;
+        }catch(_){}
+
+        if(
+          scriptURL.includes('/sw-staff.js') &&
+          scopePath !== '/portail-staff.html'
+        ){
+          await oldReg.unregister();
+        }
+      }
+    }catch(_){}
+
+    registration=await navigator.serviceWorker.register(
+      SW_URL,
+      {
+        scope:'/portail-staff.html',
+        updateViaCache:'none'
+      }
+    );
+    try{await registration.update();}catch(_){}
+
+    if(registration.waiting) registration.waiting.postMessage({type:'SKIP_WAITING'});
+
+    registration.addEventListener('updatefound',()=>{
+      const worker=registration.installing;
+      if(!worker)return;
+      worker.addEventListener('statechange',()=>{
+        if(worker.state==='installed' && navigator.serviceWorker.controller){
+          worker.postMessage({type:'SKIP_WAITING'});
+        }
+      });
     });
-    console.info('[iCHEF STAFF PWA V203] SW enregistré',registration.scope);
-    // Pas de location.reload() ni d'appel automatique à SKIP_WAITING :
-    // ces opérations pouvaient couper le parcours e-mail / QR / PIN.
-    // Les nouvelles versions s'appliquent à la prochaine navigation normale.
-    if(!standalone() && !deferredPrompt){refreshUi();}
+
+    navigator.serviceWorker.addEventListener('controllerchange',()=>{
+      if(!hadController || reloading)return;
+      reloading=true;
+      setTimeout(()=>location.reload(),120);
+    });
+
+    console.info('[iCHEF Staff V196] Service Worker actif',registration.scope);
+
+    try{
+      await navigator.serviceWorker.ready;
+
+      const firstControlKey='ichef_staff_sw_controlled_reload_v165';
+      if(!navigator.serviceWorker.controller && sessionStorage.getItem(firstControlKey)!=='1'){
+        sessionStorage.setItem(firstControlKey,'1');
+        setStatus('Finalisation automatique de l’application…');
+        setTimeout(()=>location.reload(),180);
+        return registration;
+      }
+    }catch(_){}
+
+    setStatus(
+      standalone()
+        ? 'iCHEF Staff est ouverte comme application.'
+        : (deferredPrompt
+            ? 'Installation prête.'
+            : 'Application prête. iCHEF attend automatiquement l’autorisation du navigateur.')
+    );
     return registration;
   }catch(error){
-    console.warn('[iCHEF STAFF PWA V203] SW indisponible',error?.message||error);
-    setStatus('Installation bloquée : vérifiez que sw-staff.js est disponible et servi en JavaScript sur ce domaine.',12000);
+    console.warn('[iCHEF Staff V176] Service Worker indisponible',error);
+    setStatus('Service Worker indisponible. Vérifiez ./sw-staff.js et HTTPS.');
     return null;
   }
 }
+
 window.addEventListener('beforeinstallprompt',event=>{
   event.preventDefault();
   deferredPrompt=event;
-  freezeStatusUntil=0;
-  refreshUi();
+  setStatus('Installation prête : touchez INSTALLER iCHEF STAFF puis confirmez.');
+  installButtons().forEach(btn=>{
+    btn.hidden=false;
+    btn.disabled=false;
+    btn.textContent='INSTALLER iCHEF STAFF';
+  });
+  armFirstGestureInstall();
 });
+
 window.addEventListener('appinstalled',()=>{
   deferredPrompt=null;
-  installationConfirmedInThisPage=true;
+  try {
+    localStorage.setItem(INSTALL_MARK,'1');
+    localStorage.setItem(CONFIRMED_MARK,'1');
+  } catch (_) {}
   refreshUi();
+  setStatus('✓ Installation confirmée ! Ouvrez iCHEF Staff depuis votre écran d’accueil pour activer votre compte.');
 });
-// Bouton secondaire du tableau de bord (le bouton d'entrée est déjà lié
-// à ICHEF_PWA_MANAGER.install() dans le parcours existant).
-document.getElementById('staff-pwa-install-btn')?.addEventListener('click',()=>{
-  install().catch(error=>console.warn('[iCHEF PWA V203] install',error));
-});
-document.addEventListener('visibilitychange',()=>{
-  if(!document.hidden)refreshUi();
-});
+
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden) refreshUi(); });
 window.matchMedia?.('(display-mode: standalone)')?.addEventListener?.('change',refreshUi);
-window.ICHEF_PWA_MANAGER={
-  install,refresh:refreshUi,standalone,registration:()=>registration
-};
+
+window.ICHEF_PWA_MANAGER={install,refresh:refreshUi,standalone,registration:()=>registration};
+
+registerServiceWorker().finally(()=>{
+  refreshUi();
+  armFirstGestureInstall();
+});
 refreshUi();
-// Préparer l'installation en arrière-plan, sans forcer de rechargement
-// et sans bloquer les formulaires d'authentification.
-registerServiceWorker().catch(error=>console.warn('[iCHEF PWA V203]',error));
+armFirstGestureInstall();
 })();
 </script>
 <!-- iCHEF STAFF V197 — RECUPERATION INVITATION EXPIREE + MOBILE -->
@@ -12756,14 +12845,6 @@ registerServiceWorker().catch(error=>console.warn('[iCHEF PWA V203]',error));
   font:600 22px/1 Arial,sans-serif;touch-action:manipulation;
 }
 #ichefPwaInstallConfirmed button:focus-visible{outline:2px solid #90f8c3;outline-offset:2px}
-@media(max-width:700px){
-  body:not(.staff-entry-open) #ichefPwaInstallConfirmed{
-    bottom:calc(94px + env(safe-area-inset-bottom, 0px));
-  }
-  body.staff-entry-open #ichefPwaInstallConfirmed{
-    bottom:calc(16px + env(safe-area-inset-bottom, 0px));
-  }
-}
 </style>
 <div id="ichefPwaInstallConfirmed" role="status" aria-live="polite" aria-atomic="true" hidden>
   <span class="ichef-pwa-ok-icon" aria-hidden="true">✓</span>
@@ -12773,54 +12854,44 @@ registerServiceWorker().catch(error=>console.warn('[iCHEF PWA V203]',error));
   </div>
   <button type="button" id="ichefPwaInstallClose" aria-label="Fermer la confirmation">×</button>
 </div>
-<script id="ichef-staff-v206-install-confirm-js">
+<script id="ichef-staff-v198-install-confirm-js">
 (()=>{
   'use strict';
-  // Le navigateur peut demander/autoriser l'installation sans que la PWA soit
-  // réellement installée. Seuls appinstalled et le lancement autonome prouvent
-  // une installation / ouverture de la PWA. Aucun stockage du PIN ou token.
+  const firstOpenKey='ichef_staff_pwa_first_open_message_v198';
   const box=document.getElementById('ichefPwaInstallConfirmed');
   const title=document.getElementById('ichefPwaInstallTitle');
   const message=document.getElementById('ichefPwaInstallMessage');
   const close=document.getElementById('ichefPwaInstallClose');
   if(!box||!title||!message||!close)return;
-  let dismissTimer=null;
-
-  function standalone(){
-    try {
-      return window.matchMedia?.('(display-mode: standalone)')?.matches===true ||
-        navigator.standalone===true;
-    } catch(_){return navigator.standalone===true;}
-  }
-  function confirm(titleText,bodyText){
-    title.textContent=titleText;
-    message.textContent=bodyText;
+  let timer=null;
+  const standalone=()=>{
+    try {return window.matchMedia?.('(display-mode: standalone)').matches===true || navigator.standalone===true;}
+    catch(_){return false;}
+  };
+  function show(text){
+    title.textContent='✓ iCHEF Staff est bien installée !';
+    message.textContent=text;
     box.hidden=false;
-    if(dismissTimer!==null)clearTimeout(dismissTimer);
-    dismissTimer=setTimeout(()=>{
-      box.hidden=true;
-      dismissTimer=null;
-    },9500);
+    if(timer)clearTimeout(timer);
+    timer=setTimeout(()=>{box.hidden=true;},11000);
   }
   close.addEventListener('click',()=>{
-    if(dismissTimer!==null)clearTimeout(dismissTimer);
-    dismissTimer=null;
+    if(timer)clearTimeout(timer);
     box.hidden=true;
   });
-
-  // Confirmation explicite d'Android/Chrome après installation effective.
+  // Android/Chrome : l'événement appinstalled confirme la fin de l'installation.
   window.addEventListener('appinstalled',()=>{
-    confirm('✓ Installation d’iCHEF Staff réussie !',
-      'L’application est installée sur votre appareil. Touchez son icône pour la lancer.');
+    show('L’application est sur votre téléphone. Ouvrez son icône pour vous connecter ou activer votre accès.');
   });
-
-  // iOS Safari et Android : aucune API fiable ne donne la date d'installation.
-  // L'ouverture en mode application confirme néanmoins son lancement depuis
-  // l'icône. Afficher le succès sur CHAQUE lancement, et non uniquement la
-  // première fois de la vie du téléphone (ancien marqueur localStorage V198).
+  // iPhone/iPad et Android : le lancement en standalone prouve que la PWA est ouverte.
+  // Un seul message par installation/version, pour ne pas gêner les connexions suivantes.
   if(standalone()){
-    confirm('✓ iCHEF Staff est bien installée !',
-      'Application ouverte avec succès. Vous pouvez vous connecter ou activer votre compte.');
+    let alreadyShown=false;
+    try {alreadyShown=localStorage.getItem(firstOpenKey)==='1';} catch(_) {}
+    if(!alreadyShown){
+      show('L’application est prête. Vous pouvez maintenant activer votre compte ou vous connecter avec votre PIN.');
+      try {localStorage.setItem(firstOpenKey,'1');} catch(_) {}
+    }
   }
 })();
 </script>
