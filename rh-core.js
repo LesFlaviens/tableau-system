@@ -3935,6 +3935,22 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                 capacitySplitShiftPenalty: 42,
                 capacityUseAsPlanningFloor: true,
 
+                // V244 · POLITIQUE "ÉQUIPE DURABLE"
+                // Le moteur préfère laisser apparaître un besoin de recrutement
+                // plutôt que créer artificiellement des heures supplémentaires.
+                wellbeingModeEnabled: true,
+                wellbeingStrictNoOvertime: true,
+                wellbeingOvertimeToleranceHours: 0,
+                wellbeingPreferContinuousShifts: true,
+                wellbeingMaxSplitShiftsPerWeek: 2,
+                wellbeingMaxConsecutiveDays: 5,
+                wellbeingFairEvenings: true,
+                wellbeingFairWeekends: true,
+                wellbeingFairnessWeight: 1.4,
+                wellbeingStableTeams: true,
+                wellbeingBurnoutProtection: true,
+                wellbeingProtectServiceQuality: true,
+
                 // V135 · jours de fermeture établissement
                 planningClosedWeekdays: [],
                 planningExceptionalClosedDates: [],
@@ -4227,6 +4243,64 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                 capacityUseAsPlanningFloor:
                     source.capacityUseAsPlanningFloor !== false &&
                     String(source.capacityUseAsPlanningFloor) !== 'false',
+
+                // V244 · politique équipe durable persistante.
+                wellbeingModeEnabled:
+                    source.wellbeingModeEnabled !== false &&
+                    String(source.wellbeingModeEnabled) !== 'false',
+                wellbeingStrictNoOvertime:
+                    source.wellbeingStrictNoOvertime !== false &&
+                    String(source.wellbeingStrictNoOvertime) !== 'false',
+                wellbeingOvertimeToleranceHours:
+                    Math.max(
+                        0,
+                        Math.min(
+                            10,
+                            Number(source.wellbeingOvertimeToleranceHours) || 0
+                        )
+                    ),
+                wellbeingPreferContinuousShifts:
+                    source.wellbeingPreferContinuousShifts !== false &&
+                    String(source.wellbeingPreferContinuousShifts) !== 'false',
+                wellbeingMaxSplitShiftsPerWeek:
+                    Math.max(
+                        0,
+                        Math.min(
+                            7,
+                            Number(source.wellbeingMaxSplitShiftsPerWeek) || 2
+                        )
+                    ),
+                wellbeingMaxConsecutiveDays:
+                    Math.max(
+                        3,
+                        Math.min(
+                            6,
+                            Number(source.wellbeingMaxConsecutiveDays) || 5
+                        )
+                    ),
+                wellbeingFairEvenings:
+                    source.wellbeingFairEvenings !== false &&
+                    String(source.wellbeingFairEvenings) !== 'false',
+                wellbeingFairWeekends:
+                    source.wellbeingFairWeekends !== false &&
+                    String(source.wellbeingFairWeekends) !== 'false',
+                wellbeingFairnessWeight:
+                    Math.max(
+                        0.5,
+                        Math.min(
+                            3,
+                            Number(source.wellbeingFairnessWeight) || 1.4
+                        )
+                    ),
+                wellbeingStableTeams:
+                    source.wellbeingStableTeams !== false &&
+                    String(source.wellbeingStableTeams) !== 'false',
+                wellbeingBurnoutProtection:
+                    source.wellbeingBurnoutProtection !== false &&
+                    String(source.wellbeingBurnoutProtection) !== 'false',
+                wellbeingProtectServiceQuality:
+                    source.wellbeingProtectServiceQuality !== false &&
+                    String(source.wellbeingProtectServiceQuality) !== 'false',
 
                 planningClosedWeekdays:
                     Array.from(
@@ -10373,6 +10447,296 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                     );
             return rest + 0.01 >= requiredRest;
         }
+
+        function assistantServiceDeltaPreviewV244(
+            dayPlan,
+            service,
+            dept,
+            settings
+        ) {
+            if (!dayPlan) return 0;
+
+            const simulated =
+                assistantClone(dayPlan);
+
+            return assistantSetService(
+                simulated,
+                service,
+                dept,
+                settings,
+                simulated.obs || ''
+            );
+        }
+
+        function assistantWeekBoundsInMonthV244(
+            day,
+            year,
+            month
+        ) {
+            const dateObj =
+                new Date(year, month - 1, day);
+
+            const mondayOffset =
+                (dateObj.getDay() + 6) % 7;
+
+            const rawStart =
+                day - mondayOffset;
+
+            const daysInMonth =
+                new Date(year, month, 0).getDate();
+
+            return {
+                startDay:
+                    Math.max(1, rawStart),
+
+                endDay:
+                    Math.min(
+                        daysInMonth,
+                        rawStart + 6
+                    )
+            };
+        }
+
+        function assistantWeeklyHoursV244(
+            proposal,
+            staffId,
+            day,
+            year,
+            month
+        ) {
+            const bounds =
+                assistantWeekBoundsInMonthV244(
+                    day,
+                    year,
+                    month
+                );
+
+            let hours = 0;
+
+            for (
+                let d = bounds.startDay;
+                d <= bounds.endDay;
+                d++
+            ) {
+                hours +=
+                    Number(
+                        calculateNet(
+                            proposal?.[staffId]?.[d] ||
+                            proposal?.[String(staffId)]?.[d]
+                        ) || 0
+                    );
+            }
+
+            return hours;
+        }
+
+        function assistantWeeklySplitCountV244(
+            proposal,
+            staffId,
+            day,
+            year,
+            month
+        ) {
+            const bounds =
+                assistantWeekBoundsInMonthV244(
+                    day,
+                    year,
+                    month
+                );
+
+            let count = 0;
+
+            for (
+                let d = bounds.startDay;
+                d <= bounds.endDay;
+                d++
+            ) {
+                const p =
+                    proposal?.[staffId]?.[d] ||
+                    proposal?.[String(staffId)]?.[d];
+
+                if (p?.s1 && p?.s2) {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        function assistantProspectiveCreatesSplitV244(
+            dayPlan,
+            service
+        ) {
+            if (!dayPlan) return false;
+
+            if (service === 'lunch') {
+                return Boolean(
+                    dayPlan.s2 &&
+                    !dayPlan.s1
+                );
+            }
+
+            if (service === 'dinner') {
+                return Boolean(
+                    dayPlan.s1 &&
+                    !dayPlan.s2
+                );
+            }
+
+            return false;
+        }
+
+        function assistantOvertimeAllowedV244(
+            staff,
+            state,
+            day,
+            service,
+            dept,
+            settings,
+            proposal
+        ) {
+            if (
+                settings?.wellbeingModeEnabled === false ||
+                settings?.wellbeingStrictNoOvertime === false
+            ) {
+                return {
+                    ok:true,
+                    reason:'MODE_NON_STRICT'
+                };
+            }
+
+            const dayPlan =
+                proposal?.[staff.id]?.[day];
+
+            const delta =
+                assistantServiceDeltaPreviewV244(
+                    dayPlan,
+                    service,
+                    dept,
+                    settings
+                );
+
+            if (delta <= 0) {
+                return {
+                    ok:true,
+                    delta:0
+                };
+            }
+
+            const tolerance =
+                Math.max(
+                    0,
+                    Number(
+                        settings?.wellbeingOvertimeToleranceHours || 0
+                    )
+                );
+
+            const monthlyAfter =
+                Number(state?.hours || 0) +
+                delta;
+
+            const monthlyTarget =
+                Math.max(
+                    0,
+                    Number(state?.target || 0)
+                );
+
+            if (
+                monthlyAfter >
+                monthlyTarget +
+                tolerance +
+                0.01
+            ) {
+                return {
+                    ok:false,
+                    reason:'MONTHLY_OVERTIME',
+                    delta,
+                    after:monthlyAfter,
+                    limit:
+                        monthlyTarget +
+                        tolerance
+                };
+            }
+
+            const weeklyReference =
+                Math.max(
+                    0,
+                    Number(
+                        assistantLegalWeeklyReferenceV142(
+                            settings,
+                            staff
+                        )
+                    ) || 0
+                );
+
+            if (weeklyReference > 0) {
+                const weeklyCurrent =
+                    assistantWeeklyHoursV244(
+                        proposal,
+                        staff.id,
+                        day,
+                        state.year,
+                        state.month
+                    );
+
+                const weeklyAfter =
+                    weeklyCurrent +
+                    delta;
+
+                if (
+                    weeklyAfter >
+                    weeklyReference +
+                    tolerance +
+                    0.01
+                ) {
+                    return {
+                        ok:false,
+                        reason:'WEEKLY_OVERTIME',
+                        delta,
+                        after:weeklyAfter,
+                        limit:
+                            weeklyReference +
+                            tolerance
+                    };
+                }
+            }
+
+            return {
+                ok:true,
+                delta
+            };
+        }
+
+        function assistantMaxConsecutiveV244(
+            staff,
+            settings,
+            legalProfile
+        ) {
+            const legalMax =
+                Math.min(
+                    6,
+                    Number(staff.maxConsecutiveDays ?? 6),
+                    Number(legalProfile.maxConsecutiveDays ?? 6)
+                );
+
+            if (
+                settings?.wellbeingModeEnabled !== false &&
+                settings?.wellbeingBurnoutProtection !== false
+            ) {
+                return Math.min(
+                    legalMax,
+                    Math.max(
+                        3,
+                        Number(
+                            settings?.wellbeingMaxConsecutiveDays || 5
+                        )
+                    )
+                );
+            }
+
+            return legalMax;
+        }
+
         function assistantCandidateScore(staff, state, dept, day, service, demand, settings, proposal) {
             const target = Math.max(1, Number(state.target || 0));
             const deficit = Number(state.target || 0) - Number(state.hours || 0);
@@ -10402,10 +10766,10 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                     staff
                 );
             const maxConsecutive =
-                Math.min(
-                    6,
-                    Number(staff.maxConsecutiveDays ?? 6),
-                    Number(legalProfile.maxConsecutiveDays ?? 6)
+                assistantMaxConsecutiveV244(
+                    staff,
+                    settings,
+                    legalProfile
                 );
             // V146 : après 6 jours réellement travaillés, aucun 7e jour
             // de travail n'est généré automatiquement.
@@ -10423,33 +10787,120 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                     state.month
                 );
             if (!legalService.ok) return -99999;
+
+            // V244 · zéro heure supplémentaire évitable.
+            // S'il n'existe pas assez de personnel dans les limites normales,
+            // le service reste signalé comme sous-couvert au lieu de surcharger
+            // automatiquement un collaborateur.
+            const overtimeCheck =
+                assistantOvertimeAllowedV244(
+                    staff,
+                    state,
+                    day,
+                    service,
+                    dept,
+                    settings,
+                    proposal
+                );
+
+            if (!overtimeCheck.ok) {
+                return -99999;
+            }
+
+            const currentDayPlan =
+                proposal?.[staff.id]?.[day];
+
+            const createsSplit =
+                assistantProspectiveCreatesSplitV244(
+                    currentDayPlan,
+                    service
+                );
+
+            if (
+                createsSplit &&
+                settings?.wellbeingModeEnabled !== false &&
+                settings?.wellbeingPreferContinuousShifts !== false
+            ) {
+                const currentWeekSplits =
+                    assistantWeeklySplitCountV244(
+                        proposal,
+                        staff.id,
+                        day,
+                        state.year,
+                        state.month
+                    );
+
+                const maxSplits =
+                    Math.max(
+                        0,
+                        Number(
+                            settings?.wellbeingMaxSplitShiftsPerWeek ?? 2
+                        )
+                    );
+
+                if (
+                    currentWeekSplits >= maxSplits
+                ) {
+                    return -99999;
+                }
+            }
+
             let score = (deficit / target) * 100;
             score += String(staff.dept || '') === dept ? 32 : 9;
 
-            // V243 · réduire les coupures midi/soir si l'effectif le permet.
-            if (settings?.capacityAvoidSplitShifts !== false) {
-                const currentDayPlan =
-                    proposal?.[staff.id]?.[day];
-
-                const createsSplitShift =
-                    service === 'dinner'
-                        ? Boolean(
-                            currentDayPlan?.s1 &&
-                            !currentDayPlan?.s2
-                          )
-                        : Boolean(
-                            currentDayPlan?.s2 &&
-                            !currentDayPlan?.s1
-                          );
-
-                if (createsSplitShift) {
-                    score -=
+            // V244 · horaires continus avant coupures.
+            if (
+                settings?.capacityAvoidSplitShifts !== false ||
+                settings?.wellbeingPreferContinuousShifts !== false
+            ) {
+                if (createsSplit) {
+                    const basePenalty =
                         Math.max(
                             0,
                             Number(
                                 settings?.capacitySplitShiftPenalty || 42
                             )
                         );
+
+                    const wellbeingPenalty =
+                        settings?.wellbeingModeEnabled !== false
+                            ? 78
+                            : 0;
+
+                    score -=
+                        Math.max(
+                            basePenalty,
+                            wellbeingPenalty
+                        );
+
+                    score -=
+                        assistantWeeklySplitCountV244(
+                            proposal,
+                            staff.id,
+                            day,
+                            state.year,
+                            state.month
+                        ) * 12;
+                } else if (
+                    settings?.wellbeingModeEnabled !== false &&
+                    settings?.wellbeingPreferContinuousShifts !== false
+                ) {
+                    score += 12;
+                }
+            }
+
+            // Coordination stable : le métier principal est favorisé.
+            if (
+                settings?.wellbeingModeEnabled !== false &&
+                settings?.wellbeingStableTeams !== false
+            ) {
+                if (
+                    String(staff.dept || '') ===
+                    String(dept || '')
+                ) {
+                    score += 18;
+                } else {
+                    score -= 12;
                 }
             }
             if (criticalKitchen) {
@@ -10461,8 +10912,38 @@ const urlParamsJS = new URLSearchParams(window.location.search);
             score += assistantSkillScore(staff) * (rush >= 1.5 ? 9 : 4);
             if (assistantProtectedWeekday(dateObj, settings)) score += 28;
             if (demand?.isPeak === true || rush >= Number(settings?.planningPeakProtectionMinScore || 1.5)) score += 36;
-            if (service === 'dinner') score -= Number(state.evenings || 0) * 2.5;
-            if (dateObj.getDay() === 5 || dateObj.getDay() === 6) score -= Number(state.weekends || 0) * 3;
+            const fairnessWeight =
+                settings?.wellbeingModeEnabled !== false
+                    ? Math.max(
+                        0.5,
+                        Number(
+                            settings?.wellbeingFairnessWeight || 1.4
+                        )
+                      )
+                    : 1;
+
+            if (service === 'dinner') {
+                score -=
+                    Number(state.evenings || 0) *
+                    (
+                        settings?.wellbeingFairEvenings !== false
+                            ? 4.5 * fairnessWeight
+                            : 2.5
+                    );
+            }
+
+            if (
+                dateObj.getDay() === 5 ||
+                dateObj.getDay() === 6
+            ) {
+                score -=
+                    Number(state.weekends || 0) *
+                    (
+                        settings?.wellbeingFairWeekends !== false
+                            ? 5 * fairnessWeight
+                            : 3
+                    );
+            }
             score -= consecutive * 2.3;
             if (settings.planningPreferConsecutiveOff !== false) {
                 const prev = proposal?.[staff.id]?.[day - 1];
@@ -11504,14 +11985,75 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                             if (assistantDayWorksService(p, service)) continue;
                             if (!assistantAvailabilityAllows(staff, dateObj, service)) continue;
                             if (!assistantRestAllows(proposal, staff, day, service, settings)) continue;
+                            const legalProfile =
+                                assistantLegalProfileV142(
+                                    settings,
+                                    staff
+                                );
+
                             if (
                                 assistantCountConsecutiveDays(
                                     proposal,
                                     staff.id,
                                     day
-                                ) >= 6
+                                ) >=
+                                assistantMaxConsecutiveV244(
+                                    staff,
+                                    settings,
+                                    legalProfile
+                                )
                             ) continue;
+
                             if (!assistantWeekQuotaAllows(proposal, staff.id, day, settings, year, month, service)) continue;
+
+                            const overtimeCheck =
+                                assistantOvertimeAllowedV244(
+                                    staff,
+                                    state,
+                                    day,
+                                    service,
+                                    staff.dept || 'salle',
+                                    settings,
+                                    proposal
+                                );
+
+                            if (!overtimeCheck.ok) {
+                                continue;
+                            }
+
+                            const createsSplit =
+                                assistantProspectiveCreatesSplitV244(
+                                    p,
+                                    service
+                                );
+
+                            if (
+                                createsSplit &&
+                                settings?.wellbeingModeEnabled !== false &&
+                                settings?.wellbeingPreferContinuousShifts !== false
+                            ) {
+                                const splitCount =
+                                    assistantWeeklySplitCountV244(
+                                        proposal,
+                                        staff.id,
+                                        day,
+                                        year,
+                                        month
+                                    );
+
+                                if (
+                                    splitCount >=
+                                    Math.max(
+                                        0,
+                                        Number(
+                                            settings?.wellbeingMaxSplitShiftsPerWeek ?? 2
+                                        )
+                                    )
+                                ) {
+                                    continue;
+                                }
+                            }
+
                             const delta = assistantSetService(
                                 p,
                                 service,
@@ -11573,6 +12115,197 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                     `${correctedClosedCells} affectation(s) supprimée(s) automatiquement car l’établissement est fermé.`
                 );
             }
+
+            function workforceHealthV244() {
+                let overtimeHours = 0;
+                let splitShifts = 0;
+                let maxConsecutiveObserved = 0;
+                let eveningMin = Infinity;
+                let eveningMax = 0;
+                let weekendMin = Infinity;
+                let weekendMax = 0;
+
+                const perStaff = [];
+
+                for (const staff of staffList) {
+                    const reference =
+                        Math.max(
+                            0,
+                            Number(
+                                assistantLegalWeeklyReferenceV142(
+                                    settings,
+                                    staff
+                                )
+                            ) || 0
+                        );
+
+                    let staffOvertime = 0;
+                    let staffSplits = 0;
+                    let staffMaxConsecutive = 0;
+                    let streak = 0;
+                    let evenings = 0;
+                    let weekends = 0;
+
+                    const weekSeen =
+                        new Set();
+
+                    for (
+                        let day = 1;
+                        day <= daysInMonth;
+                        day++
+                    ) {
+                        const p =
+                            proposal?.[staff.id]?.[day];
+
+                        if (
+                            p &&
+                            isRhWorkStatus(p.status) &&
+                            (p.s1 || p.s2)
+                        ) {
+                            streak++;
+                            staffMaxConsecutive =
+                                Math.max(
+                                    staffMaxConsecutive,
+                                    streak
+                                );
+
+                            if (p.s1 && p.s2) {
+                                staffSplits++;
+                            }
+
+                            if (p.s2) {
+                                evenings++;
+                            }
+
+                            const dateObj =
+                                new Date(
+                                    year,
+                                    month - 1,
+                                    day
+                                );
+
+                            if (
+                                dateObj.getDay() === 5 ||
+                                dateObj.getDay() === 6
+                            ) {
+                                weekends++;
+                            }
+                        } else {
+                            streak = 0;
+                        }
+
+                        const bounds =
+                            assistantWeekBoundsInMonthV244(
+                                day,
+                                year,
+                                month
+                            );
+
+                        const weekKey =
+                            `${bounds.startDay}-${bounds.endDay}`;
+
+                        if (
+                            !weekSeen.has(weekKey) &&
+                            reference > 0
+                        ) {
+                            weekSeen.add(weekKey);
+
+                            const hours =
+                                assistantWeeklyHoursV244(
+                                    proposal,
+                                    staff.id,
+                                    day,
+                                    year,
+                                    month
+                                );
+
+                            staffOvertime +=
+                                Math.max(
+                                    0,
+                                    hours - reference
+                                );
+                        }
+                    }
+
+                    overtimeHours += staffOvertime;
+                    splitShifts += staffSplits;
+                    maxConsecutiveObserved =
+                        Math.max(
+                            maxConsecutiveObserved,
+                            staffMaxConsecutive
+                        );
+
+                    eveningMin =
+                        Math.min(
+                            eveningMin,
+                            evenings
+                        );
+                    eveningMax =
+                        Math.max(
+                            eveningMax,
+                            evenings
+                        );
+
+                    weekendMin =
+                        Math.min(
+                            weekendMin,
+                            weekends
+                        );
+                    weekendMax =
+                        Math.max(
+                            weekendMax,
+                            weekends
+                        );
+
+                    perStaff.push({
+                        staffId:String(staff.id),
+                        name:String(staff.name || ''),
+                        overtimeHours:
+                            Number(
+                                staffOvertime.toFixed(2)
+                            ),
+                        splitShifts:staffSplits,
+                        maxConsecutiveDays:
+                            staffMaxConsecutive,
+                        evenings,
+                        weekends
+                    });
+                }
+
+                if (!Number.isFinite(eveningMin)) {
+                    eveningMin = 0;
+                }
+
+                if (!Number.isFinite(weekendMin)) {
+                    weekendMin = 0;
+                }
+
+                const eveningSpread =
+                    Math.max(
+                        0,
+                        eveningMax - eveningMin
+                    );
+
+                const weekendSpread =
+                    Math.max(
+                        0,
+                        weekendMax - weekendMin
+                    );
+
+                return {
+                    overtimeHours:
+                        Number(
+                            overtimeHours.toFixed(2)
+                        ),
+                    splitShifts,
+                    maxConsecutiveDays:
+                        maxConsecutiveObserved,
+                    eveningSpread,
+                    weekendSpread,
+                    perStaff
+                };
+            }
+
             let totalTarget = 0;
             let totalPlanned = 0;
             let estimatedCost = 0;
@@ -11631,6 +12364,9 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                     )
                 )
                 : 100;
+            const health =
+                workforceHealthV244();
+
             const legalAudit =
                 assistantLegalAuditDraftV142(
                     {
@@ -11656,6 +12392,70 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                         `JURIDIQUE · ${message}`
                     );
                 });
+
+            if (health.overtimeHours > 0.01) {
+                warnings.unshift(
+                    `ÉQUIPE DURABLE · ${health.overtimeHours.toFixed(1)} h supplémentaire(s) détectée(s), principalement issues d’un planning déjà protégé ou d’une contrainte existante.`
+                );
+            }
+
+            if (
+                health.maxConsecutiveDays >
+                Number(
+                    settings?.wellbeingMaxConsecutiveDays || 5
+                )
+            ) {
+                warnings.push(
+                    `ÉQUIPE DURABLE · séquence de ${health.maxConsecutiveDays} jours consécutifs détectée.`
+                );
+            }
+
+            const workConditionsScore =
+                Math.max(
+                    0,
+                    Math.min(
+                        100,
+                        Math.round(
+                            100
+                            - health.overtimeHours * 4
+                            - health.splitShifts * 1.2
+                            - Math.max(
+                                0,
+                                health.maxConsecutiveDays -
+                                Number(
+                                    settings?.wellbeingMaxConsecutiveDays || 5
+                                )
+                              ) * 8
+                            - health.eveningSpread * 2
+                            - health.weekendSpread * 2
+                            - uncoveredOpen.length * 1.5
+                            - legalAudit.blockers.length * 12
+                        )
+                    )
+                );
+
+            const serviceStabilityScore =
+                Math.max(
+                    0,
+                    Math.min(
+                        100,
+                        Math.round(
+                            coveragePct
+                            - criticalIssues.length * 8
+                            - uncoveredOpen.length * 1.2
+                        )
+                    )
+                );
+
+            const wearRisk =
+                workConditionsScore >= 88
+                    ? 'FAIBLE'
+                    : (
+                        workConditionsScore >= 72
+                            ? 'MODÉRÉ'
+                            : 'ÉLEVÉ'
+                      );
+
             return {
                 month: monthStr,
                 createdAt: Date.now(),
@@ -11687,7 +12487,24 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                     estimatedCost,
                     coveragePct,
                     staffBalanced,
-                    staffCount: staffList.length
+                    staffCount: staffList.length,
+
+                    // V244 · qualité des conditions de travail.
+                    overtimeHours:
+                        health.overtimeHours,
+                    splitShifts:
+                        health.splitShifts,
+                    maxConsecutiveDays:
+                        health.maxConsecutiveDays,
+                    eveningSpread:
+                        health.eveningSpread,
+                    weekendSpread:
+                        health.weekendSpread,
+                    workConditionsScore,
+                    serviceStabilityScore,
+                    wearRisk,
+                    workforceHealth:
+                        health
                 }
             };
         }
@@ -13128,12 +13945,22 @@ const urlParamsJS = new URLSearchParams(window.location.search);
             currentStaffId = staff.id;
             isGlobalView = false;
             isAnnualView = false;
+            window.__ICHEF_V239_SELECTED_STAFF_ID__ = String(staff.id);
 
-            // V220 : afficher immédiatement la bonne vue sans attendre
-            // un bus asynchrone ou une synchronisation serveur.
+            // V247 : afficher immédiatement ET durablement le planning individuel.
+            // Le tableau est parfois déplacé dans le shell moderne après le premier
+            // toggleViewDisplay(); on le remonte donc explicitement avant/après rendu.
+            ensureIndividualPlanningSurfaceV247(staff.id);
             renderStaffList();
             toggleViewDisplay();
             loadMonthData();
+            ensureIndividualPlanningSurfaceV247(staff.id);
+            requestAnimationFrame(() => {
+                ensureIndividualPlanningSurfaceV247(staff.id);
+                if (!document.querySelector('#timesheet-body tr')) {
+                    try { loadMonthData(); } catch (_) {}
+                }
+            });
 
             try {
                 window.iChefPlanningMasterSyncV217?.({
@@ -13289,12 +14116,26 @@ const urlParamsJS = new URLSearchParams(window.location.search);
             return t || 'POINTAGE';
         }
         function openProofPhotoV97(src) {
-            if (!src || !String(src).startsWith('data:image/')) return;
-            const w = window.open('', '_blank', 'noopener,noreferrer');
-            if (!w) return;
-            w.document.write(`<title>Preuve de pointage</title><body style="margin:0;background:#050505;display:grid;place-items:center;min-height:100vh"><img src="${src}" style="max-width:96vw;max-height:96vh;object-fit:contain"></body>`);
-            w.document.close();
+            if (!src || !String(src).startsWith('data:image/')) {
+                alert('Aucune photo disponible pour cette preuve.');
+                return false;
+            }
+            if (typeof window.openRhProofPhotoV249 === 'function') {
+                return window.openRhProofPhotoV249(src);
+            }
+            // Compatibilité si rh.html n'est pas encore V249.
+            const img = document.createElement('img');
+            img.src = src;
+            img.alt = 'Preuve photo de pointage';
+            img.style.cssText = 'max-width:96vw;max-height:92vh;object-fit:contain;border-radius:8px;';
+            const overlay = document.createElement('div');
+            overlay.style.cssText = 'position:fixed;inset:0;z-index:100280;background:rgba(0,0,0,.92);display:grid;place-items:center;padding:20px;cursor:pointer;';
+            overlay.appendChild(img);
+            overlay.addEventListener('click', () => overlay.remove(), { once:true });
+            document.body.appendChild(overlay);
+            return true;
         }
+        window.openProofPhotoV97 = openProofPhotoV97;
         function renderStaffDayProofsV97(staffId, date, limit = 2) {
             const punches = getStaffDayPunchesV97(staffId, date);
             if (!punches.length) return '<span class="proof-chip">AUCUNE<br>PHOTO</span>';
@@ -13430,7 +14271,7 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                                                 ${controlLabel}
                                             </span>
                                             ${correction && anomalies.length ? `<span style="color:var(--text-muted);font-size:.55rem;">Anomalie d’origine conservée dans la preuve</span>` : ''}
-                                            <button class="btn-outline"
+                                            <button type="button" class="btn-outline rh-v249-active-action"
                                                     style="padding:5px 7px;font-size:.62rem;${locked ? 'border-color:rgba(245,158,11,.42);color:#e7c47b;' : ''}"
                                                     onclick="correctRealTimesheetDay(${JSON.stringify(staff.id)}, '${date}')">
                                                 ${correction ? 'MODIFIER CORRECTION' : (locked ? 'CORRIGER · CLÔTURÉ' : 'CORRIGER')}
@@ -13570,14 +14411,48 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                 modal.style.display = 'flex';
             }
         }
+        function ensureIndividualPlanningSurfaceV247(staffId = currentStaffId) {
+            const host = document.getElementById('rh-v236-table-host');
+            const individual = document.getElementById('table-container-individual');
+            const annual = document.getElementById('annual-view-container');
+
+            if (host && individual && individual.parentElement !== host) {
+                host.appendChild(individual);
+            }
+            if (host && annual && annual.parentElement !== host) {
+                host.appendChild(annual);
+            }
+
+            if (staffId && !isGlobalView) {
+                if (individual) {
+                    individual.style.display = isAnnualView ? 'none' : 'block';
+                    individual.style.visibility = 'visible';
+                    individual.style.opacity = '1';
+                }
+                if (annual) {
+                    annual.style.display = isAnnualView ? 'block' : 'none';
+                    annual.style.visibility = 'visible';
+                    annual.style.opacity = '1';
+                }
+            }
+
+            return Boolean(individual && document.getElementById('timesheet-body'));
+        }
+        window.iChefEnsureIndividualPlanningV247 = ensureIndividualPlanningSurfaceV247;
+
         function loadMonthData() {
             const monthStr = document.getElementById('month-selector').value;
             const [year, month] = monthStr.split('-').map(Number);
             const daysInMonth = new Date(year, month, 0).getDate();
             const tsMonth = getTs()[monthStr] || {};
             renderPlanningProSummary(year, month, daysInMonth, tsMonth);
-            if(isGlobalView) renderGlobalView(year, month, daysInMonth, tsMonth);
-            else if(currentStaffId) renderIndividualView(currentStaffId, year, month, daysInMonth, tsMonth);
+            if(isGlobalView) {
+                renderGlobalView(year, month, daysInMonth, tsMonth);
+            } else if(currentStaffId) {
+                ensureIndividualPlanningSurfaceV247(currentStaffId);
+                renderIndividualView(currentStaffId, year, month, daysInMonth, tsMonth);
+                ensureIndividualPlanningSurfaceV247(currentStaffId);
+            }
         }
         function toggleViewMode() {
             isGlobalView = !isGlobalView; isAnnualView = false; currentStaffId = null;
@@ -13659,7 +14534,20 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                     <td><input type="text" class="obs-inp" value="${p.obs}" placeholder="Observation..." onchange='updateData(${sid}, ${d}, "obs", this.value)'></td>
                 </tr>`;
             }
-            document.getElementById('timesheet-body').innerHTML = html;
+            const body = document.getElementById('timesheet-body');
+            if (body) body.innerHTML = html;
+
+            ensureIndividualPlanningSurfaceV247(staff.id);
+
+            window.dispatchEvent(new CustomEvent('ichef:individual-planning-rendered',{
+                detail:{
+                    staffId:String(staff.id),
+                    month:`${year}-${String(month).padStart(2,'0')}`,
+                    rows:daysInMonth,
+                    editable:true,
+                    at:new Date().toISOString()
+                }
+            }));
         }
         async function updateData(staffId, day, key, val) {
             const settings = getRhSettings();
@@ -15152,7 +16040,8 @@ function renderRealTimesheets() {
 
 
                                 <button
-                                    class="btn-outline"
+                                    type="button"
+                                    class="btn-outline rh-v249-active-action"
                                     onclick='validateRealTimesheet(${JSON.stringify(
                                         row.staff.id
                                     )})'
@@ -15280,7 +16169,11 @@ async function saveTimesheetCorrectionV97() {
         reasonInput?.focus();
         return;
     }
-    if (!String(currentPin || '').trim()) {
+    const directionPin =
+        typeof getRhDirectionAuthPin === 'function'
+            ? String(getRhDirectionAuthPin() || '').trim()
+            : String(currentPin || '').trim();
+    if (!/^\d{4,12}$/.test(directionPin)) {
         alert('Connexion Direction / Responsable RH requise.');
         return;
     }
@@ -15295,11 +16188,17 @@ async function saveTimesheetCorrectionV97() {
         }
         const response = await fetch(`${SERVER_URL_JS}/api/rh/timesheet/correct`, {
             method:'POST',
-            headers:{'Content-Type':'application/json','Accept':'application/json'},
+            credentials:'include',
+            headers:{
+                'Content-Type':'application/json',
+                'Accept':'application/json',
+                'X-iCHEF-Tenant':tenantID_JS,
+                'X-iCHEF-Device':String(window.RH_DEVICE_ID || (typeof RH_DEVICE_ID!=='undefined' ? RH_DEVICE_ID : '') || '')
+            },
             cache:'no-store',
             body:JSON.stringify({
                 tenantID:tenantID_JS,
-                managerPin:String(currentPin || '').trim(),
+                managerPin:directionPin,
                 staffId:ctx.staffId,
                 staffName:ctx.staffName,
                 date:ctx.date,
@@ -15359,7 +16258,11 @@ async function saveTimesheetCorrectionV97() {
     }
 })();
 async function resetAllRhHoursCountersV99() {
-    if (!String(currentPin || '').trim()) {
+    const directionPin =
+        typeof getRhDirectionAuthPin === 'function'
+            ? String(getRhDirectionAuthPin() || '').trim()
+            : String(currentPin || '').trim();
+    if (!/^\d{4,12}$/.test(directionPin)) {
         alert('Connexion Direction / Responsable RH requise.');
         return;
     }
@@ -15384,7 +16287,7 @@ async function resetAllRhHoursCountersV99() {
             cache:'no-store',
             body:JSON.stringify({
                 tenantID:tenantID_JS,
-                managerPin:String(currentPin || '').trim(),
+                managerPin:directionPin,
                 reason
             })
         });
@@ -15405,6 +16308,10 @@ async function resetAllRhHoursCountersV99() {
     }
 }
 window.resetAllRhHoursCountersV99 = resetAllRhHoursCountersV99;
+window.correctRealTimesheetDay = correctRealTimesheetDay;
+window.saveTimesheetCorrectionV97 = saveTimesheetCorrectionV97;
+window.alignTimesheetCorrectionToPlanningV98 = alignTimesheetCorrectionToPlanningV98;
+window.closeTimesheetCorrectionV97 = closeTimesheetCorrectionV97;
 // ============================================================
 // VALIDATION FEUILLE
 // ============================================================
@@ -15421,6 +16328,18 @@ async function validateRealTimesheet(
     if (!month) {
         return;
     }
+    const directionPin =
+        typeof getRhDirectionAuthPin === 'function'
+            ? String(getRhDirectionAuthPin() || '').trim()
+            : String(currentPin || '').trim();
+    if (!/^\d{4,12}$/.test(directionPin)) {
+        alert('Connexion Direction / Responsable RH requise pour valider les heures.');
+        return;
+    }
+    const staff = getDir().find(s => String(s?.id) === String(staffId));
+    if (!confirm(`Valider la feuille d'heures de ${staff?.name || 'ce collaborateur'} pour ${month} ?`)) {
+        return;
+    }
     try {
         const response =
             await fetch(
@@ -15428,11 +16347,17 @@ async function validateRealTimesheet(
                 {
                     method:
                         'POST',
+                    credentials:
+                        'include',
                     headers: {
                         'Content-Type':
                             'application/json',
                         'Accept':
-                            'application/json'
+                            'application/json',
+                        'X-iCHEF-Tenant':
+                            tenantID_JS,
+                        'X-iCHEF-Device':
+                            String(window.RH_DEVICE_ID || (typeof RH_DEVICE_ID!=='undefined' ? RH_DEVICE_ID : '') || '')
                     },
                     cache:
                         'no-store',
@@ -15441,9 +16366,7 @@ async function validateRealTimesheet(
                             tenantID:
                                 tenantID_JS,
                             managerPin:
-                                String(
-                                    currentPin || ''
-                                ).trim(),
+                                directionPin,
                             month,
                             staffId,
                             action:
@@ -15485,6 +16408,7 @@ async function validateRealTimesheet(
         );
     }
 }
+window.validateRealTimesheet = validateRealTimesheet;
 // ============================================================
 // CLÔTURE DU MOIS
 // ============================================================
@@ -15494,6 +16418,14 @@ async function lockRealTimesheetMonth() {
             'real-timesheet-month'
         )?.value;
     if (!month) {
+        return;
+    }
+    const directionPin =
+        typeof getRhDirectionAuthPin === 'function'
+            ? String(getRhDirectionAuthPin() || '').trim()
+            : String(currentPin || '').trim();
+    if (!/^\d{4,12}$/.test(directionPin)) {
+        alert('Connexion Direction / Responsable RH requise pour clôturer le mois.');
         return;
     }
     if (
@@ -15523,9 +16455,7 @@ async function lockRealTimesheetMonth() {
                             tenantID:
                                 tenantID_JS,
                             managerPin:
-                                String(
-                                    currentPin || ''
-                                ).trim(),
+                                directionPin,
                             month,
                             action:
                                 'LOCK_MONTH'
@@ -16328,3 +17258,11 @@ function renderDirectorRequests() {
             })
             .join('');
 }
+
+
+// iCHEF RH CORE V247 · planning individuel visible / synchronisé / modifiable
+window.__ICHEF_RH_CORE_BUILD__='RH-CORE-V247-PLANNING-INDIVIDUEL-SYNC-MODIFIABLE';
+
+
+// iCHEF RH CORE V249 · actions feuilles d'heures + correction motivée + photo interne
+window.__ICHEF_RH_CORE_BUILD__='RH-CORE-V249-HEURES-ACTIONS-PHOTO-ACTIVE-SECURE';
