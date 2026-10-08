@@ -4239,6 +4239,26 @@ input,select,textarea,button{max-width:100%}
 .staff-activation-person strong{display:block;color:#fff;font-size:.88rem}
 .staff-activation-person small{display:block;margin-top:3px;color:#98a3aa;font-size:.62rem}
 .staff-activation-phone{margin:0 0 8px;color:#b9c3c8;font-size:.68rem}
+/* V192 — statut explicite après demande du code e-mail ; aucun secret affiché. */
+#staffActivationEmailFeedback[hidden]{display:none!important}
+#staffActivationEmailFeedback{
+  margin-top:11px;padding:12px 13px;border-radius:11px;
+  font-size:.76rem;font-weight:700;line-height:1.55;
+  overflow-wrap:anywhere;
+}
+#staffActivationEmailFeedback[data-state="loading"]{
+  border:1px solid rgba(216,173,85,.3);
+  background:rgba(216,173,85,.07);color:#e9c777;
+}
+#staffActivationEmailFeedback[data-state="success"]{
+  border:1px solid rgba(52,211,153,.42);
+  background:rgba(16,185,129,.12);color:#a5f3d0;
+}
+#staffActivationEmailFeedback[data-state="error"]{
+  border:1px solid rgba(248,113,113,.38);
+  background:rgba(248,113,113,.09);color:#ffb4b4;
+}
+
 .staff-activation-help,.staff-activation-security{margin-top:13px;color:#7f8b91;font-size:.59rem;line-height:1.5;text-align:center}
 .staff-activation-security{padding-top:11px;border-top:1px solid rgba(255,255,255,.055)}
 body.staff-pwa-browser-blocked .staff-login-gate,
@@ -4718,6 +4738,7 @@ html body .staff-pwa-required-gate:not([hidden]){
 
       <div id="staffActivationTwilioEmailWrap">
         <button type="button" class="staff-activation-primary" id="staffActivationEmailSend">RECEVOIR LE CODE PAR E-MAIL</button>
+        <div id="staffActivationEmailFeedback" role="status" aria-live="polite" aria-atomic="true" hidden></div>
         <label for="staffActivationVerificationCode">Code de vérification reçu par e-mail</label>
         <input id="staffActivationVerificationCode" type="text" inputmode="numeric" maxlength="10" autocomplete="one-time-code" placeholder="Code e-mail (6 chiffres)">
       </div>
@@ -6494,6 +6515,7 @@ function showStaffActivationGate(prefill={}){
 function hideStaffActivationGate(){
   staffEntryHideV171('staffActivationGate');
   ICHEF_STAFF_ACTIVATION_CONTEXT=null;
+  setStaffActivationEmailFeedback('','');
 }
 
 function activationCredentialPayload(){
@@ -6539,6 +6561,7 @@ async function staffActivationApi(path,body,options={}){
 async function inspectStaffActivation({automatic=false}={}){
   const error=document.getElementById('staffActivationError');
   const button=document.getElementById('staffActivationInspect');
+  setStaffActivationEmailFeedback('',''); // nouvelle invitation : effacer le statut précédent
   if(error)error.textContent='';
   if(button)button.disabled=true;
 
@@ -6585,24 +6608,46 @@ async function inspectStaffActivation({automatic=false}={}){
   }
 }
 
+// V192 — confirmation visible uniquement après succès de l'API d'envoi.
+// On n'affirme jamais que le message est arrivé dans la boîte de réception.
+function setStaffActivationEmailFeedback(state,message){
+  const feedback=document.getElementById('staffActivationEmailFeedback');
+  if(!feedback)return;
+  feedback.textContent=String(message||''); // textContent : aucune injection HTML
+  feedback.hidden=!message;
+  if(message)feedback.dataset.state=state;
+  else feedback.removeAttribute('data-state');
+}
+
 async function requestStaffActivationEmail(){
   const error=document.getElementById('staffActivationError');
   const button=document.getElementById('staffActivationEmailSend');
-  if(button){button.disabled=true;button.textContent='ENVOI E-MAIL…';}
+  if(button?.disabled)return; // empêche les double-clics pendant l'envoi
+  if(error)error.textContent='';
+  setStaffActivationEmailFeedback('loading','Envoi du code de vérification en cours…');
+  if(button){button.disabled=true;button.textContent='ENVOI EN COURS…';}
   try{
     const data=await staffActivationApi('/api/staff/activation/email/request',{
       ...activationCredentialPayload(),deviceId:staffDeviceId()
     });
-    if(button)button.textContent='CODE E-MAIL ENVOYÉ ✓';
+    const destination=String(data.maskedEmail||'votre adresse e-mail RH');
+    if(button)button.textContent='RENVOYER LE CODE PAR E-MAIL';
     const hint=document.getElementById('staffActivationPhone');
-    if(hint)hint.textContent=`Code demandé pour ${data.maskedEmail||'votre adresse e-mail RH'} (vérifiez aussi les indésirables).`;
+    if(hint)hint.textContent=`Vérification de votre adresse e-mail (${destination}).`;
+    setStaffActivationEmailFeedback('success',
+      `✓ ENVOI CONFIRMÉ — Un code de vérification à 6 chiffres a été envoyé à ${destination}. `+
+      'Saisissez-le ci-dessous. Il est valable 10 minutes. Vérifiez également les courriers indésirables.');
     if(error)error.textContent='';
     return data;
   }catch(e){
-    if(error)error.textContent=e.message||'Envoi e-mail impossible.';
-    if(button)button.textContent='RECEVOIR LE CODE PAR E-MAIL';
+    setStaffActivationEmailFeedback('error',
+      `✕ E-MAIL NON ENVOYÉ — ${e?.message||'Envoi e-mail impossible. Veuillez réessayer.'}`);
+    if(error)error.textContent=''; // message à proximité immédiate du bouton
+    if(button)button.textContent='RÉESSAYER L’ENVOI PAR E-MAIL';
     throw e;
-  }finally{if(button)button.disabled=false;}
+  }finally{
+    if(button)button.disabled=false;
+  }
 }
 
 async function completeStaffActivation(){
