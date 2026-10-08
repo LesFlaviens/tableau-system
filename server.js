@@ -19121,7 +19121,9 @@ const ichefStaffActivationSchema = new mongoose.Schema({
     lockedBy:{type:String,default:'',maxlength:80},
     lastWhatsappSentAt:{type:Date,default:null},
     lastEmailSentAt:{type:Date,default:null},
-    // V188 : preuve d'identité e-mail Twilio Verify, liée à cet appareil.
+    // V190 : OTP e-mail par SMTP iCHEF, lie au device et a l'invitation.
+    emailOtpCodeHash:{type:String,default:'',maxlength:100},
+    emailOtpSentCount:{type:Number,default:0,min:0},
     emailOtpSentAt:{type:Date,default:null},
     emailOtpExpiresAt:{type:Date,default:null},
     emailOtpDeviceHash:{type:String,default:'',maxlength:80},
@@ -24500,7 +24502,7 @@ app.post('/api/staff/activation/inspect',async(req,res)=>{
             },
             whatsappRequired:false,
             emailCodeRequired:true,
-            emailVerificationProvider:'TWILIO_VERIFY_EMAIL',
+            emailVerificationProvider:'ICHEF_SMTP_OTP',
             maskedEmail:email ? ichefStaffMaskEmail(email) : '',
             expiresAt:
                 credential.row.expiresAt
@@ -24519,80 +24521,76 @@ app.post('/api/staff/activation/inspect',async(req,res)=>{
     }
 });
 
-// ============================================================================
-// ✉️ V188 — Vérification e-mail Twilio Verify pour QR ET code manuel.
-// Le destinataire vient uniquement de la fiche RH, jamais du navigateur.
-// ============================================================================
+// V190 : OTP activation par SMTP iCHEF existant, sans Twilio Verify.
+// Le destinataire vient de la fiche RH, jamais de la requete cliente.
 app.post('/api/staff/activation/email/request',async(req,res)=>{
-    let otpLock=null;
-    let lockId='';
+    let locked=null,lockId='';
     try{
         res.setHeader('Cache-Control','no-store');
-        const deviceId=String(req.body?.deviceId||req.headers?.['x-ichef-device']||'')
-            .trim().slice(0,180);
+        const deviceId=String(req.body?.deviceId||req.headers?.['x-ichef-device']||'').trim().slice(0,180);
         if(!deviceId)return res.status(400).json({success:false,error:'Appareil non identifié.'});
-
         const attemptKey=`staff-activation-email-request-${ichefStaffDeviceHash(deviceId).slice(0,20)}`;
         const attempt=ichefPinAttemptCheck(req,attemptKey,deviceId);
-        if(!attempt.ok){
-            return res.status(429).json({success:false,code:'STAFF_ACTIVATION_EMAIL_RATE_LIMITED',error:'Trop de tentatives. Réessayez plus tard.'});
-        }
+        if(!attempt.ok)return res.status(429).json({success:false,error:'Trop de demandes. Réessayez plus tard.'});
         const credential=await ichefStaffActivationLoadCredential(req.body||{});
         if(!credential.ok){
             ichefPinAttemptFailure(req,attemptKey,deviceId);
             return res.status(401).json({success:false,error:'Activation invalide ou expirée.'});
         }
         ichefPinAttemptSuccess(req,attemptKey,deviceId);
-
         const email=ichefStaffProfileEmail(credential.profile);
-        if(!email){
-            return res.status(428).json({success:false,code:'STAFF_ACTIVATION_EMAIL_REQUIRED',error:'Aucune adresse e-mail enregistrée pour ce collaborateur dans iCHEF RH.'});
+        if(!email)return res.status(428).json({success:false,code:'STAFF_ACTIVATION_EMAIL_REQUIRED',error:'Adresse e-mail absente de la fiche RH.'});
+        const mail=ichefStaffResetMailer();
+        if(!mail)return res.status(503).json({success:false,code:'STAFF_ACTIVATION_SMTP_NOT_CONFIGURED',error:'Messagerie iCHEF SMTP non configurée.'});
+        if(Number(credential.row.emailOtpSentCount||0)>=8){
+            return res.status(429).json({success:false,code:'STAFF_ACTIVATION_EMAIL_LIMIT',error:'Nombre maximal d’envois atteint. Demandez une nouvelle invitation.'});
         }
-        if(!twilioClient||!ICHEF_TWILIO_VERIFY_SERVICE_SID){
-            return res.status(503).json({success:false,code:'STAFF_ACTIVATION_TWILIO_EMAIL_NOT_CONFIGURED',error:'Vérification e-mail Twilio momentanément indisponible.'});
-        }
-
-        const now=new Date(),cooldown=new Date(now.getTime()-60_000);
-        const stale=new Date(now.getTime()-120_000);
+        const now=new Date(),cooldown=new Date(now.getTime()-60_000),stale=new Date(now.getTime()-120_000);
         lockId=nodeCrypto.randomBytes(16).toString('hex');
         const deviceHash=ichefStaffDeviceHash(deviceId);
-        otpLock=await IchefStaffActivation.findOneAndUpdate({
-            _id:credential.row._id,
-            usedAt:null,revokedAt:null,expiresAt:{$gt:now},
+        locked=await IchefStaffActivation.findOneAndUpdate({
+            _id:credential.row._id,usedAt:null,revokedAt:null,expiresAt:{$gt:now},
             $and:[
                 {$or:[{emailOtpSentAt:null},{emailOtpSentAt:{$lt:cooldown}}]},
-                {$or:[{emailOtpLockAt:null},{emailOtpLockAt:{$lt:stale}}]}
+                {$or:[{emailOtpLockAt:null},{emailOtpLockAt:{$lt:stale}}]},
+                {$or:[{emailOtpSentCount:{$lt:8}},{emailOtpSentCount:{$exists:false}}]}
             ]
         },{$set:{emailOtpLockAt:now,emailOtpLockBy:lockId}},{new:true});
-        if(!otpLock){
+        if(!locked){
             res.setHeader('Retry-After','60');
-            return res.status(429).json({success:false,code:'STAFF_ACTIVATION_EMAIL_COOLDOWN',error:'Un code a déjà été envoyé. Patientez une minute avant un nouvel envoi.'});
+            return res.status(429).json({success:false,code:'STAFF_ACTIVATION_EMAIL_COOLDOWN',error:'Un code a déjà été demandé. Patientez une minute avant un nouvel envoi.'});
         }
-
-        await twilioClient.verify.v2.services(ICHEF_TWILIO_VERIFY_SERVICE_SID)
-            .verifications.create({to:email,channel:'email'});
-
-        const expiresAt=new Date(Math.min(now.getTime()+10*60*1000,new Date(otpLock.expiresAt).getTime()));
+        const code=String(nodeCrypto.randomInt(0,1000000)).padStart(6,'0');
+        const hash=ichefStaffActivationHmac(`EMAIL_OTP_V190|${locked.activationId}|${deviceHash}|${email.toLowerCase()}|${code}`);
+        const expiresAt=new Date(Math.min(Date.now()+600000,new Date(locked.expiresAt).getTime()));
+        if(expiresAt.getTime()<=Date.now())return res.status(410).json({success:false,error:'Invitation expirée. Demandez-en une nouvelle.'});
+        const rawName=String(ichefStaffActivationDisplayName(credential.profile.member)||'Collaborateur').slice(0,160);
+        const safeName=rawName.replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+        const info=await mail.transporter.sendMail({
+            from:`iCHEF Staff <${mail.user}>`,to:email,
+            subject:'iCHEF Staff — Code de vérification',
+            text:`Bonjour ${rawName},\n\nVotre code de vérification iCHEF Staff : ${code}\n\nCe code est valable 10 minutes sur cet appareil. Ne le partagez pas. Si vous n'avez rien demandé, ignorez cet e-mail.`,
+            html:`<div style="font-family:Arial,sans-serif;background:#11181c;color:#fff;padding:24px;border-radius:12px"><h2 style="color:#e9bc54">iCHEF STAFF</h2><p>Bonjour ${safeName},</p><p>Voici votre code de vérification :</p><div style="font-size:30px;letter-spacing:8px;text-align:center;padding:18px;background:#20282e;border-radius:10px">${code}</div><p style="color:#aeb8bd;font-size:13px">Expire dans 10 minutes. À utiliser sur cet appareil uniquement.</p></div>`
+        });
+        if(info?.rejected?.includes(email))throw new Error('Adresse refusée par SMTP.');
         const saved=await IchefStaffActivation.updateOne({
-            _id:otpLock._id,emailOtpLockBy:lockId,
-            usedAt:null,revokedAt:null,expiresAt:{$gt:new Date()}
-        },{$set:{
-            emailOtpSentAt:new Date(),emailOtpExpiresAt:expiresAt,
-            emailOtpDeviceHash:deviceHash,
-            emailOtpAddressHash:ichefSecurityHash(email.toLowerCase()),
-            emailOtpFailures:0,emailOtpLockAt:null,emailOtpLockBy:''
-        }});
-        if(saved.matchedCount!==1){
-            throw new Error('Activation expirée pendant l’envoi du code e-mail.');
-        }
-        otpLock=null;
+            _id:locked._id,emailOtpLockBy:lockId,usedAt:null,revokedAt:null,expiresAt:{$gt:new Date()}
+        },{
+            $set:{emailOtpCodeHash:hash,emailOtpSentAt:new Date(),emailOtpExpiresAt:expiresAt,
+                emailOtpDeviceHash:deviceHash,emailOtpAddressHash:ichefSecurityHash(email.toLowerCase()),
+                emailOtpFailures:0,emailOtpLockAt:null,emailOtpLockBy:''},
+            $inc:{emailOtpSentCount:1}
+        });
+        if(saved.matchedCount!==1)throw new Error('Invitation expirée pendant l’envoi.');
+        locked=null;
         return res.json({success:true,sent:true,maskedEmail:ichefStaffMaskEmail(email),expiresAt});
     }catch(error){
-        if(otpLock?._id){
-            try{await IchefStaffActivation.updateOne({_id:otpLock._id,emailOtpLockBy:lockId},{$set:{emailOtpLockAt:null,emailOtpLockBy:''}});}catch(_){}
+        console.error('[iCHEF Staff activation SMTP V190]',error?.code||error?.message||error);
+        return res.status(503).json({success:false,code:'STAFF_ACTIVATION_EMAIL_SEND_FAILED',error:'Envoi e-mail indisponible. Vérifiez la messagerie iCHEF ou réessayez.'});
+    }finally{
+        if(locked?._id){
+            try{await IchefStaffActivation.updateOne({_id:locked._id,emailOtpLockBy:lockId},{$set:{emailOtpLockAt:null,emailOtpLockBy:''}});}catch(_){}
         }
-        console.error('[iCHEF Staff activation email Twilio V188]',error?.code||error?.message||error);
-        return res.status(503).json({success:false,code:'STAFF_ACTIVATION_EMAIL_SEND_FAILED',error:'Impossible d’envoyer le code e-mail avec Twilio Verify. Vérifiez que le canal Email est activé sur votre service Verify.'});
     }
 });
 
@@ -24799,62 +24797,37 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
             });
         }
 
-        // V188 : QR ou invitation manuelle => preuve d'accès à l'adresse RH.
-        // Le QR et le code d'activation ne sont jamais suffisants à eux seuls.
-        if(!/^\d{4,10}$/.test(emailCode)){
-            return res.status(400).json({
-                success:false,code:'STAFF_ACTIVATION_EMAIL_CODE_REQUIRED',
-                error:'Saisissez le code de vérification reçu par e-mail.'
-            });
+        // V190 : preuve d'acces a l'e-mail RH avec OTP sur cet appareil.
+        if(!/^\d{6}$/.test(emailCode)){
+            return res.status(400).json({success:false,code:'STAFF_ACTIVATION_EMAIL_CODE_REQUIRED',error:'Saisissez le code e-mail à 6 chiffres.'});
         }
-
         const verifiedEmail=ichefStaffProfileEmail(credential.profile);
         const expectedDeviceHash=ichefStaffDeviceHash(deviceId);
-        if(!verifiedEmail||
-           !credential.row.emailOtpSentAt||
+        if(!verifiedEmail||!credential.row.emailOtpCodeHash||!credential.row.emailOtpSentAt||
            !credential.row.emailOtpExpiresAt||
            new Date(credential.row.emailOtpExpiresAt).getTime()<=Date.now()||
            credential.row.emailOtpDeviceHash!==expectedDeviceHash||
            credential.row.emailOtpAddressHash!==ichefSecurityHash(verifiedEmail.toLowerCase())||
            Number(credential.row.emailOtpFailures||0)>=8){
-            return res.status(428).json({
-                success:false,code:'STAFF_ACTIVATION_EMAIL_VERIFICATION_REQUIRED',
-                error:'Demandez un nouveau code de vérification par e-mail sur cet appareil.'
-            });
+            return res.status(428).json({success:false,code:'STAFF_ACTIVATION_EMAIL_VERIFICATION_REQUIRED',error:'Demandez un nouveau code par e-mail depuis cet appareil.'});
         }
-        if(!twilioClient||!ICHEF_TWILIO_VERIFY_SERVICE_SID){
-            return res.status(503).json({
-                success:false,code:'STAFF_ACTIVATION_TWILIO_EMAIL_NOT_CONFIGURED',
-                error:'Vérification e-mail Twilio momentanément indisponible.'
-            });
-        }
-
         const attemptKey=`staff-activation-email-check-${credential.row.activationId}`;
         const attempt=ichefPinAttemptCheck(req,attemptKey,deviceId);
         if(!attempt.ok){
             res.setHeader('Retry-After',String(Math.max(1,Math.ceil(Number(attempt.retryAfterMs||0)/1000))));
-            return res.status(429).json({
-                success:false,code:'STAFF_ACTIVATION_EMAIL_RATE_LIMITED',
-                error:'Trop de tentatives. Réessayez plus tard.'
-            });
+            return res.status(429).json({success:false,code:'STAFF_ACTIVATION_EMAIL_RATE_LIMITED',error:'Trop de tentatives. Réessayez plus tard.'});
         }
-        let approved=false;
-        try{
-            const result=await twilioClient.verify.v2
-                .services(ICHEF_TWILIO_VERIFY_SERVICE_SID)
-                .verificationChecks.create({to:verifiedEmail,code:emailCode});
-            approved=String(result?.status||'').toLowerCase()==='approved';
-        }catch(error){
-            // Verify répond parfois en HTTP 404 quand le code a expiré.
-            console.warn('[iCHEF Staff activation email check V188]',error?.code||error?.status||'UNAVAILABLE');
-        }
-        if(!approved){
+        const expectedCodeHash=ichefStaffActivationHmac(
+            `EMAIL_OTP_V190|${credential.row.activationId}|${expectedDeviceHash}|${verifiedEmail.toLowerCase()}|${emailCode}`
+        );
+        if(!ichefStaffActivationSafeEqual(expectedCodeHash,credential.row.emailOtpCodeHash)){
             ichefPinAttemptFailure(req,attemptKey,deviceId);
-            await IchefStaffActivation.updateOne({_id:credential.row._id,usedAt:null},{$inc:{emailOtpFailures:1}});
-            return res.status(401).json({
-                success:false,code:'STAFF_ACTIVATION_EMAIL_CODE_INVALID',
-                error:'Code de vérification e-mail incorrect ou expiré.'
-            });
+            await IchefStaffActivation.updateOne({
+                _id:credential.row._id,usedAt:null,
+                emailOtpCodeHash:credential.row.emailOtpCodeHash,
+                emailOtpFailures:{$lt:8}
+            },{$inc:{emailOtpFailures:1}});
+            return res.status(401).json({success:false,code:'STAFF_ACTIVATION_EMAIL_CODE_INVALID',error:'Code de vérification e-mail incorrect ou expiré.'});
         }
         ichefPinAttemptSuccess(req,attemptKey,deviceId);
         const identityMode=qrMode?'QR_EMAIL_VERIFIED':'EMAIL_ACTIVATION_VERIFIED';
@@ -24981,6 +24954,7 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
         lockedRow.usedAt=now;
         lockedRow.activatedDeviceHash=deviceHash;
         lockedRow.emailVerifiedAt=now;
+        lockedRow.emailOtpCodeHash='';
         lockedRow.whatsappVerifiedAt=null;
         lockedRow.lockedAt=null;
         lockedRow.lockedBy='';
