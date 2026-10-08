@@ -19446,12 +19446,82 @@ function ichefStaffActivationPublicBase(req){
     ).replace(/\/$/,'');
 }
 
-function ichefStaffActivationQrSvg(value=''){
-    // QR généré localement : aucun jeton n'est envoyé à un service tiers.
-    const QRCode=require(path.join(__dirname,'ichef-qr','QRCode'));
-    const QRErrorCorrectLevel=require(
-        path.join(__dirname,'ichef-qr','QRCode','QRErrorCorrectLevel')
+function ichefStaffActivationResolveQrModule(){
+    // V184 — Render/GitHub peuvent démarrer Node avec un cwd différent.
+    // On ne dépend donc plus d'un seul chemin relatif.
+    const fs=require('fs');
+
+    const roots=[
+        __dirname,
+        process.cwd(),
+        path.join(__dirname,'tableau-system'),
+        path.join(process.cwd(),'tableau-system')
+    ];
+
+    const folderNames=['QRCode','Qrcode','qrcode'];
+    const candidates=[];
+
+    for(const root of roots){
+        for(const folderName of folderNames){
+            candidates.push(
+                path.join(root,'ichef-qr',folderName)
+            );
+        }
+    }
+
+    const unique=[...new Set(candidates)];
+
+    let lastError=null;
+
+    for(const folder of unique){
+        try{
+            const indexFile=path.join(folder,'index.js');
+            const levelFile=path.join(folder,'QRErrorCorrectLevel.js');
+
+            if(
+                !fs.existsSync(indexFile) ||
+                !fs.existsSync(levelFile)
+            ){
+                continue;
+            }
+
+            const QRCode=require(folder);
+            const QRErrorCorrectLevel=require(
+                path.join(folder,'QRErrorCorrectLevel')
+            );
+
+            if(
+                typeof QRCode!=='function' ||
+                !QRErrorCorrectLevel ||
+                typeof QRErrorCorrectLevel.M==='undefined'
+            ){
+                throw new Error('Module QR local invalide.');
+            }
+
+            return {
+                QRCode,
+                QRErrorCorrectLevel,
+                source:folder
+            };
+        }catch(error){
+            lastError=error;
+        }
+    }
+
+    const error=new Error(
+        lastError?.message ||
+        'Moteur QR local introuvable.'
     );
+    error.code='ICHEF_QR_LOCAL_UNAVAILABLE';
+    throw error;
+}
+
+function ichefStaffActivationQrSvg(value=''){
+    // QR 100 % local : aucun jeton d'activation n'est envoyé à un tiers.
+    const {
+        QRCode,
+        QRErrorCorrectLevel
+    }=ichefStaffActivationResolveQrModule();
 
     const qr=new QRCode(-1,QRErrorCorrectLevel.M);
     qr.addData(String(value||''));
@@ -21736,6 +21806,7 @@ app.post('/api/staff/activation/admin/create',async(req,res)=>{
             `${encodeURIComponent(token)}`;
 
         let qrSvg='';
+        let qrAvailable=true;
 
         try{
             qrSvg=
@@ -21743,16 +21814,16 @@ app.post('/api/staff/activation/admin/create',async(req,res)=>{
                     activationUrl
                 );
         }catch(qrError){
+            qrAvailable=false;
+
+            // V184 : le QR est un moyen de transmission, pas la preuve
+            // d'identité. On conserve donc le code + lien d'activation
+            // au lieu de rendre l'invitation inutilisable.
             console.error(
-                '[iCHEF QR activation]',
+                '[iCHEF QR activation V184]',
+                qrError?.code || 'QR_ERROR',
                 qrError?.message || qrError
             );
-
-            return res.status(500).json({
-                success:false,
-                code:'STAFF_ACTIVATION_QR_UNAVAILABLE',
-                error:'QR local indisponible. Vérifiez que le dossier ichef-qr est déployé avec server.js.'
-            });
         }
 
         return res.json({
@@ -21787,6 +21858,11 @@ app.post('/api/staff/activation/admin/create',async(req,res)=>{
                 activationCode,
                 activationUrl,
                 qrSvg,
+                qrAvailable,
+                qrStatus:
+                    qrAvailable
+                        ? 'READY'
+                        : 'CODE_LINK_ONLY',
                 expiresAt,
                 oneTime:true
             }
