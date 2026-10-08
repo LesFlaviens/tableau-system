@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>iCHEF OS — Mon espace collaborateur</title>
-<meta name="ichef-build" content="V178-ACTIVATION-EMAIL-CODE-ONLY">
+<meta name="ichef-build" content="V179-ACTIVATION-EMAIL-CODE-ONLY">
 
 <meta name="theme-color" content="#090d10">
 <meta name="mobile-web-app-capable" content="yes">
@@ -4602,7 +4602,7 @@ html body .staff-pwa-required-gate:not([hidden]){
 
 </head>
 
-<body class="staff-entry-open staff-login-open" data-ichef-staff-build="V178">
+<body class="staff-entry-open staff-login-open" data-ichef-staff-build="V179">
 
 <!-- =========================================================
      🔘 BOUTON ACCUEIL UNIVERSEL iCHEF (À coller juste après <body>)
@@ -4714,6 +4714,12 @@ html body .staff-pwa-required-gate:not([hidden]){
       </div>
       <div class="staff-activation-phone" id="staffActivationPhone">
         Code e-mail vérifié. Choisissez maintenant votre PIN personnel.
+      </div>
+
+      <div id="staffActivationQrWhatsappWrap" hidden>
+        <button type="button" class="staff-activation-primary" id="staffActivationWhatsapp">ENVOYER LE CODE WHATSAPP</button>
+        <label>Code reçu sur WhatsApp</label>
+        <input id="staffActivationWhatsappCode" type="text" inputmode="numeric" maxlength="10" autocomplete="one-time-code" placeholder="Code WhatsApp">
       </div>
 
       <label>Nouveau PIN personnel</label>
@@ -6073,7 +6079,7 @@ async function finishStaffLogin(data,staffId){
   staffEntryRefreshBodyV171();
   setInitialProfile(profile);
   connectStaffRealtime();
-  loadStaffDashboard({reason:'login'}).catch(error=>console.warn('[iCHEF Staff V178] dashboard post-login',error));
+  loadStaffDashboard({reason:'login'}).catch(error=>console.warn('[iCHEF Staff V179] dashboard post-login',error));
   setTimeout(loadStaffSecurityDevices,250);
 }
 
@@ -6459,19 +6465,31 @@ function showStaffActivationGate(prefill={}){
   staffEntryShowV171('staffActivationGate');
   const tenant=document.getElementById('staffActivationTenant');
   const staffId=document.getElementById('staffActivationStaffId');
+  const activationCode=document.getElementById('staffActivationCode');
+
+  const token=String(prefill.token||'').trim();
 
   if(tenant&&!tenant.value)tenant.value=String(prefill.tenantID||currentTenant()||'').toUpperCase();
   if(staffId&&!staffId.value)staffId.value=String(prefill.staffId||'').trim();
 
-  // V178 : première activation = code reçu par e-mail.
-  // Aucun lien/QR ne court-circuite la saisie du code.
-  ichefClearPendingActivation();
   ICHEF_STAFF_ACTIVATION_CONTEXT={
-    token:'',
+    token,
     tenantID:String(prefill.tenantID||tenant?.value||'').trim().toUpperCase(),
     staffId:String(prefill.staffId||staffId?.value||'').trim(),
-    activationCode:''
+    activationCode:String(prefill.activationCode||activationCode?.value||'')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g,'')
+      .slice(0,16),
+    qrMode:Boolean(token)
   };
+
+  // QR : aucune saisie établissement / ID / code nécessaire.
+  // Le token ne donne cependant pas l'accès : WhatsApp + PIN restent requis.
+  if(token){
+    const lookup=document.getElementById('staffActivationLookup');
+    if(lookup)lookup.hidden=true;
+    ichefSavePendingActivation(token);
+  }
 }
 
 function hideStaffActivationGate(){
@@ -6480,6 +6498,14 @@ function hideStaffActivationGate(){
 }
 
 function activationCredentialPayload(){
+  const token=String(ICHEF_STAFF_ACTIVATION_CONTEXT?.token||'').trim();
+
+  if(token){
+    return {
+      token
+    };
+  }
+
   return {
     tenantID:String(document.getElementById('staffActivationTenant')?.value||'').trim().toUpperCase(),
     staffId:String(document.getElementById('staffActivationStaffId')?.value||'').trim(),
@@ -6525,22 +6551,49 @@ async function inspectStaffActivation({automatic=false}={}){
     });
 
     ICHEF_STAFF_ACTIVATION_CONTEXT={
+      ...ICHEF_STAFF_ACTIVATION_CONTEXT,
       ...credential,
-      tenantID:String(data.tenantID||credential.tenantID||'').toUpperCase(),
-      staffId:String(data.staff?.id||credential.staffId||''),
-      expiresAt:data.expiresAt||''
+      tenantID:String(data.tenantID||ICHEF_STAFF_ACTIVATION_CONTEXT?.tenantID||'').toUpperCase(),
+      staffId:String(data.staff?.id||ICHEF_STAFF_ACTIVATION_CONTEXT?.staffId||''),
+      expiresAt:data.expiresAt||'',
+      whatsappRequired:Boolean(data.whatsappRequired),
+      qrMode:Boolean(credential.token)
     };
 
     document.getElementById('staffActivationName').textContent=data.staff?.name||'Collaborateur';
     document.getElementById('staffActivationRole').textContent=data.staff?.role||'Staff';
-    document.getElementById('staffActivationPhone').textContent=
-      'Code reçu par e-mail vérifié ✓';
+
+    const phone=document.getElementById('staffActivationPhone');
+    const qrWrap=document.getElementById('staffActivationQrWhatsappWrap');
+
+    if(ICHEF_STAFF_ACTIVATION_CONTEXT.qrMode){
+      if(phone){
+        phone.textContent=
+          data.whatsappRequired
+            ? `QR reconnu ✓ · Vérification WhatsApp ${data.maskedPhone||''}`
+            : 'QR reconnu ✓ · Choisissez maintenant votre PIN personnel.';
+      }
+      if(qrWrap)qrWrap.hidden=!data.whatsappRequired;
+    }else{
+      if(phone)phone.textContent='Code reçu par e-mail vérifié ✓';
+      if(qrWrap)qrWrap.hidden=true;
+    }
 
     document.getElementById('staffActivationLookup').hidden=true;
     document.getElementById('staffActivationVerified').hidden=false;
 
     localStorage.setItem('ichef_tenant_id',ICHEF_STAFF_ACTIVATION_CONTEXT.tenantID);
     localStorage.setItem('ichef_staff_last_login_id',ICHEF_STAFF_ACTIVATION_CONTEXT.staffId);
+
+    // Après scan du QR, déclencher immédiatement l'envoi WhatsApp.
+    // Une relance/rechargement peut tomber sur le cooldown serveur : ce n'est pas bloquant.
+    if(
+      automatic &&
+      ICHEF_STAFF_ACTIVATION_CONTEXT.qrMode &&
+      data.whatsappRequired
+    ){
+      requestStaffActivationWhatsapp().catch(()=>{});
+    }
 
     return data;
   }catch(e){
@@ -6578,6 +6631,8 @@ async function completeStaffActivation(){
   const button=document.getElementById('staffActivationComplete');
   const pin=String(document.getElementById('staffActivationPin')?.value||'').replace(/\D/g,'').slice(0,12);
   const pin2=String(document.getElementById('staffActivationPin2')?.value||'').replace(/\D/g,'').slice(0,12);
+  const whatsappCode=String(document.getElementById('staffActivationWhatsappCode')?.value||'').replace(/\D/g,'').slice(0,10);
+
   if(error)error.textContent='';
   if(!/^\d{4,12}$/.test(pin)){
     if(error)error.textContent='Choisissez un PIN personnel de 4 à 12 chiffres.';
@@ -6585,6 +6640,15 @@ async function completeStaffActivation(){
   }
   if(pin!==pin2){
     if(error)error.textContent='Les deux PIN ne correspondent pas.';
+    return;
+  }
+
+  if(
+    ICHEF_STAFF_ACTIVATION_CONTEXT?.qrMode &&
+    ICHEF_STAFF_ACTIVATION_CONTEXT?.whatsappRequired &&
+    !/^\d{4,10}$/.test(whatsappCode)
+  ){
+    if(error)error.textContent='Saisissez le code reçu sur WhatsApp.';
     return;
   }
 
@@ -6599,15 +6663,24 @@ async function completeStaffActivation(){
       ...credential,
       deviceId:staffDeviceId(),
       newPin:pin,
+      whatsappCode,
       publicKeyJwk:key.publicKeyJwk,
       deviceLabel:navigator.userAgentData?.platform||navigator.platform||'Appareil iCHEF Staff',
       platform:navigator.userAgentData?.platform||navigator.platform||'',
-      pwaStandalone:true
+      pwaStandalone:ichefIsStandalonePwa()
     });
+
+    const staffId=
+      data.staffId ||
+      ICHEF_STAFF_ACTIVATION_CONTEXT?.staffId ||
+      '';
 
     ichefClearPendingActivation();
     hideStaffActivationGate();
-    await finishStaffLogin(data,data.staffId||ICHEF_STAFF_ACTIVATION_CONTEXT?.staffId||'');
+
+    // V179 : dès que l'activation sécurisée est terminée,
+    // entrer automatiquement dans l'espace personnel du collaborateur.
+    await finishStaffLogin(data,staffId);
   }catch(e){
     if(error)error.textContent=e.message||'Activation impossible.';
   }finally{
@@ -6629,7 +6702,7 @@ async function inspectActivationForInstallGate(){
     document.getElementById('staffPwaActivationName').textContent=data.staff?.name||'Nouveau collaborateur';
     document.getElementById('staffPwaActivationRole').textContent=data.staff?.role||'Staff';
     document.getElementById('staffPwaRequiredText').textContent=
-      'Votre activation est prête. Installez iCHEF Staff puis ouvrez l’application pour terminer.';
+      'QR reconnu. Installez iCHEF Staff puis ouvrez l’application : l’activation reprendra automatiquement.';
   }catch(_){}
 }
 
@@ -8629,8 +8702,29 @@ async function bootstrapCollaboratorPortal(){
   hideStaffPwaRequiredGate();
   connectStaffPortalButtons();
 
-  // V178 : l'activation se fait uniquement avec le code reçu par e-mail.
-  ichefClearPendingActivation();
+  // V179 : un QR d'activation ouvre directement le parcours du
+  // collaborateur identifié. Aucune saisie établissement / ID / code.
+  const activationToken=ichefReadPendingActivation();
+
+  if(activationToken){
+    clearStaffAuth();
+    showStaffActivationGate({
+      token:activationToken
+    });
+
+    try{
+      await inspectStaffActivation({
+        automatic:true
+      });
+    }catch(error){
+      console.warn(
+        '[iCHEF Staff V179 QR activation]',
+        error
+      );
+    }
+
+    return;
+  }
 
   const tenantInput = document.getElementById('staffLoginTenant');
   if(tenantInput && !tenantInput.value){
@@ -11458,7 +11552,7 @@ document.addEventListener('DOMContentLoaded',()=>setTimeout(initStaffWorkspace,7
 
   setTimeout(()=>{bindDocumentSocket();if(requireStaffSession())loadSecureStaffDocumentsV89({silent:true});},120);
   window.loadSecureStaffDocumentsV89=loadSecureStaffDocumentsV89;
-  window.__ICHEF_STAFF_BUILD__='V178-ACTIVATION-EMAIL-CODE-ONLY';
+  window.__ICHEF_STAFF_BUILD__='V179-ACTIVATION-EMAIL-CODE-ONLY';
   console.info('[iCHEF Staff V176] documents RH : lecture GridFS dédiée + push temps réel + session Staff sécurisée');
 })();
 </script>
