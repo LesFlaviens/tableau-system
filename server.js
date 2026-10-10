@@ -1548,6 +1548,7 @@ const ichefStaffPinResetSchema = new mongoose.Schema({
     staffId:{type:String,required:true,index:true},
     tokenHash:{type:String,default:''},
     codeHash:{type:String,default:''},
+    emailHash:{type:String,default:''},
     mode:{type:String,default:'LINK',index:true},
     attempts:{type:Number,default:0},
     emailMasked:{type:String,default:''},
@@ -18736,41 +18737,16 @@ function ichefStaffRequestIsMobile(req={}){
 }
 
 function ichefStaffRequestRequiresInstalledPwa(req={}){
-    // V192 : mode application obligatoire même sur smartphone/tablette.
-    // Ne remplace JAMAIS PIN, codes temporaires et sessions signées.
-    // X-iCHEF-PWA est déclaratif et peut être falsifié : il ne constitue
-    // pas une attestation matérielle de l'installation.
-    return ICHEF_STAFF_PWA_REQUIRED === true;
+    // L'installation PWA améliore l'expérience mais ne remplace jamais
+    // PIN, session signée, activation, appareil de confiance ou WhatsApp.
+    //
+    // Sur mobile, on ne bloque donc pas l'authentification si le navigateur
+    // n'a pas encore proposé l'installation PWA.
+    return (
+        ICHEF_STAFF_PWA_REQUIRED === true &&
+        !ichefStaffRequestIsMobile(req)
+    );
 }
-
-// V192 : limiter UNIQUEMENT les endpoints d'identification propres au
-// Portail Staff. Ne pas toucher aux routes /api/staff utilisées par Admin/RH.
-const ICHEF_STAFF_PWA_ONLY_ENDPOINTS_V192 = new Set([
-    '/api/staff/login',
-    '/api/staff/activation/inspect',
-    '/api/staff/activation/email/request',
-    '/api/staff/activation/whatsapp/request',
-    '/api/staff/activation/complete',
-    '/api/staff/pin-reset/code/request',
-    '/api/staff/pin-reset/complete',
-    '/api/staff/pin-reset/confirm',
-    '/api/staff/security/email/check',
-    '/api/staff/security/whatsapp/check',
-    '/api/staff/security/app-challenge',
-    '/api/staff/security/app-unlock'
-]);
-app.use((req,res,next)=>{
-    if(req.method === 'OPTIONS') return next();
-    if(!ICHEF_STAFF_PWA_ONLY_ENDPOINTS_V192.has(req.path.toLowerCase())) return next();
-    if(!ichefStaffRequestRequiresInstalledPwa(req) || ichefStaffRequestIsPwa(req)) return next();
-    res.setHeader('Cache-Control','no-store');
-    return res.status(428).json({
-        success:false,
-        code:'STAFF_PWA_REQUIRED',
-        pwaRequired:true,
-        error:'Ouvrez iCHEF Staff depuis l’application installée sur votre appareil.'
-    });
-});
 
 function ichefStaffNormalizePhone(value=''){
     let phone=String(value||'').trim().replace(/[()\s.-]/g,'');
@@ -19323,8 +19299,6 @@ function ichefStaffActivationTokenFromUrl(rawUrl=''){
 
 async function ichefStaffSendActivationEmail({
     profile,
-    tenantID,
-    staffId,
     activationCode,
     activationUrl,
     expiresAt
@@ -19351,10 +19325,6 @@ async function ichefStaffSendActivationEmail({
 
     const code=String(activationCode||'')
         .toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,16);
-    // Identifiants non secrets : utiles pour reprendre l'activation
-    // dans une PWA dont le stockage est isolé du navigateur mobile.
-    const inviteTenantID=String(tenantID||'').trim().slice(0,80);
-    const inviteStaffId=String(staffId||'').trim().slice(0,160);
 
     // L'URL contenue dans la requête Admin ne détermine JAMAIS le domaine
     // d'un lien envoyé à l'utilisateur (protection Host-header / phishing).
@@ -19396,15 +19366,14 @@ async function ichefStaffSendActivationEmail({
 
 Votre responsable vous invite à activer votre accès iCHEF Staff.
 
-1. Installez iCHEF Staff depuis le navigateur de votre téléphone (Android : Installer l'application ; iPhone : Safari > Partager > Sur l’écran d’accueil), puis lancez l’icône iCHEF Staff.
-2. Ouvrez ce lien d’invitation si votre appareil le propose :
+1. Ouvrez ce lien sur votre téléphone :
 ${link}
 
-3. Dans l'application iCHEF Staff, appuyez sur « RECEVOIR LE CODE PAR E-MAIL ».
-4. Saisissez le code de sécurité à 6 chiffres reçu dans un deuxième e-mail.
-5. Choisissez et confirmez votre PIN personnel pour terminer l'activation.
+2. Dans iCHEF Staff, appuyez sur « RECEVOIR LE CODE PAR E-MAIL ».
+3. Saisissez le code de sécurité à 6 chiffres reçu dans un deuxième e-mail.
+4. Choisissez et confirmez votre PIN personnel pour terminer l'activation.
 
-Si le lien s’ouvre dans un navigateur classique, revenez dans l’application iCHEF Staff installée, puis saisissez : établissement ${inviteTenantID}, ID collaborateur ${inviteStaffId}, code d’invitation ${code}.
+Si le lien ne s'ouvre pas, allez sur ${publicStaffOrigin}/portail-staff.html et entrez manuellement l'identifiant établissement, votre ID collaborateur et ce code d'invitation : ${code}.
 
 Invitation valable jusqu'au ${expiryLabel}, à usage unique. Ne partagez jamais ce lien ni ces codes.
 Si vous n'avez pas demandé cette activation, ignorez cet e-mail.
@@ -19413,8 +19382,6 @@ iCHEF Staff`;
 
     const safeName=ichefStaffActivationEmailEscape(name);
     const safeCode=ichefStaffActivationEmailEscape(code);
-    const safeTenant=ichefStaffActivationEmailEscape(inviteTenantID);
-    const safeStaffId=ichefStaffActivationEmailEscape(inviteStaffId);
     const safeExpiry=ichefStaffActivationEmailEscape(expiryLabel);
     const safeLink=ichefStaffActivationEmailEscape(link);
     const safePortal=ichefStaffActivationEmailEscape(`${publicStaffOrigin}/portail-staff.html`);
@@ -19429,17 +19396,17 @@ iCHEF Staff`;
     <div style="padding:26px">
       <p style="margin:0 0 16px;color:#edf0f1;font-size:15px">Bonjour ${safeName},</p>
       <p style="margin:0 0 18px;color:#aeb8bd;font-size:14px;line-height:1.55">Votre responsable vous invite à activer votre accès personnel <b style="color:#fff">iCHEF Staff</b>.</p>
-      <p style="margin:0 0 20px;color:#aeb8bd;font-size:13px;line-height:1.55">Installez d’abord iCHEF Staff sur votre téléphone et lancez l’application depuis son icône. Pour activer votre compte, ouvrez ensuite cette invitation :</p>
+      <p style="margin:0 0 20px;color:#aeb8bd;font-size:13px;line-height:1.55">Ouvrez cette invitation sur votre téléphone :</p>
       <div style="text-align:center;margin:24px 0">
         <a href="${safeLink}" style="display:inline-block;background:#e5bb55;color:#11181c;text-decoration:none;padding:16px 25px;border-radius:11px;font-size:15px;font-weight:800">ACTIVER MON ACCÈS STAFF</a>
       </div>
       <p style="margin:0 0 12px;color:#aeb8bd;font-size:13px;line-height:1.65">Dans iCHEF Staff, appuyez sur <b>RECEVOIR LE CODE PAR E-MAIL</b>, entrez le code à 6 chiffres du second e-mail, puis choisissez votre PIN personnel.</p>
-      <p style="margin:16px 0 6px;color:#9fa8ad;font-size:11px">Si le lien s’ouvre dans un navigateur classique, revenez dans l’application installée et utilisez le code de secours ci-dessous :</p>
+      <p style="margin:16px 0 6px;color:#9fa8ad;font-size:11px">Si le bouton ne fonctionne pas, copiez le lien suivant dans votre navigateur :</p>
       <p style="margin:0 0 18px;overflow-wrap:anywhere;font-size:11px"><a href="${safeLink}" style="color:#8fd5fa;text-decoration:underline">${safeLink}</a></p>
       <div style="padding:15px;border:1px solid #5f512e;border-radius:12px;background:#17160f;text-align:center">
         <div style="color:#9fa8ad;font-size:11px;font-weight:700">CODE D’INVITATION (SECOURS)</div>
         <div style="margin-top:7px;color:#efc96a;font-size:23px;font-weight:900;letter-spacing:.14em">${safeCode}</div>
-        <div style="margin-top:8px;color:#8f999f;font-size:11px">Ouvrez l’application iCHEF Staff depuis votre écran d’accueil.<br>Établissement : <b>${safeTenant}</b><br>ID collaborateur : <b>${safeStaffId}</b><br>Saisissez ensuite le code ci-dessus.</div>
+        <div style="margin-top:8px;color:#8f999f;font-size:11px">Si nécessaire, ouvrez <a style="color:#8fd5fa" href="${safePortal}">iCHEF Staff</a> et saisissez votre établissement, votre ID collaborateur et ce code.</div>
       </div>
       <div style="margin-top:20px;padding-top:16px;border-top:1px solid #262d31;color:#77838a;font-size:11px;line-height:1.5;text-align:center">Invitation valable jusqu’au ${safeExpiry} · usage unique. Ne transmettez ni lien ni codes.</div>
     </div>
@@ -21098,9 +21065,6 @@ async function ichefLoadStaffActivationManagerSession(req){
     };
 }
 
-// V193 — écriture ciblée et confirmation du PIN dans MongoDB.
-// Ne remplace plus les tableaux RH/STAFF entiers : une écriture concurrente
-// ne peut pas effacer les autres données de planning ou des collègues.
 async function ichefStaffActivationUpdatePin(
     tenantID,
     staffId,
@@ -22216,7 +22180,7 @@ app.post(
                          * membre STAFF_ACCESS afin que dashboard / demandes
                          * utilisent le même staffId technique que le reste d'iCHEF.
                          */
-                        // Après activation, seul le PIN de la fiche Staff canonique est accepté.
+                        // Dès l'activation, seul le PIN de STAFF_ACCESS prévaut.
                         const staffPinIsActivated=Boolean(
                             member?.staffActivatedAt || member?.pinUpdatedAt
                         );
@@ -23546,8 +23510,6 @@ app.post('/api/staff/activation/admin/email',async(req,res)=>{
         const sent=
             await ichefStaffSendActivationEmail({
                 profile,
-                tenantID:row.tenantID,
-                staffId:row.staffId,
                 activationCode,
                 activationUrl,
                 expiresAt:
@@ -23825,6 +23787,7 @@ async function ichefStaffCreatePinResetCode({
             ichefStaffPinResetHmac(
                 `${resetId}|${code}`
             ),
+        emailHash:ichefStaffPinResetHmac(`RECIPIENT|${email.toLowerCase()}`),
         mode:'EMAIL_CODE',
         attempts:0,
         emailMasked:
@@ -23856,7 +23819,7 @@ async function ichefStaffCreatePinResetCode({
             }[ch]||ch)
         );
 
-    await mail.transporter.sendMail({
+    try { await mail.transporter.sendMail({
         from:`iCHEF OS <${mail.user}>`,
         to:email,
         subject:'iCHEF Staff — Code pour choisir un nouveau PIN',
@@ -23873,7 +23836,11 @@ async function ichefStaffCreatePinResetCode({
             `<div style="margin:24px 0;padding:18px;text-align:center;background:#111827;border:1px solid #d4af37;border-radius:12px;font-size:30px;font-weight:900;letter-spacing:8px;color:#fff">${code}</div>` +
             `<p style="color:#94a3b8;font-size:13px">Code à usage unique · expiration 10 minutes.</p>` +
             `</div>`
-    });
+    }); } catch (error) {
+        await IchefStaffPinReset.updateOne({resetId,mode:'EMAIL_CODE',usedAt:null},
+            {$set:{usedAt:new Date()}}).catch(()=>{});
+        throw error;
+    }
 
     return {
         ok:true,
@@ -24089,50 +24056,51 @@ app.post('/api/staff/pin-reset/request',async(req,res)=>{
         });
     }
 });
-
-// V195 : code e-mail personnel pour le PIN oublié, option A.
-// La réponse ne permet pas de deviner si un identifiant existe.
-// Elle préserve les anciennes routes à lien sécurisé pour les demandes en cours.
+// V214 — récupération sécurisée par code e-mail personnel (Option A).
+// Ne divulgue pas si le collaborateur est présent dans le système.
 app.post('/api/staff/pin-reset/code/request',async(req,res)=>{
     res.setHeader('Cache-Control','no-store');
-    const fakeId=()=>nodeCrypto.randomBytes(18).toString('base64url');
-    const reply=(id)=>res.json({
+    const newFakeId=()=>nodeCrypto.randomBytes(18).toString('base64url');
+    const generic=id=>res.json({
         success:true,
         challengeId:id,
-        message:'Si ce compte possède un e-mail RH, un code de vérification lui sera envoyé.'
+        message:'Si le compte possède une adresse e-mail RH, un code de vérification lui sera envoyé.'
     });
     try{
         const tenantID=cleanString(req.body?.tenantID||req.headers?.['x-ichef-tenant']||'');
         const staffId=String(req.body?.staffId||'').trim().slice(0,160);
-        if(!tenantID||!staffId)return reply(fakeId());
-        // Une panne de configuration SMTP, indépendante de l'existence du compte,
-        // peut être indiquée sans dévoiler l'identité d'un collaborateur.
-        if(!ichefStaffResetMailer()){
-            return res.status(503).json({success:false,code:'STAFF_SMTP_NOT_CONFIGURED',
-                error:'Envoi e-mail indisponible. Vérifiez la configuration SMTP sur Render.'});
+        if(!tenantID||!staffId)return generic(newFakeId());
+        // Erreur technique commune à tous les comptes (pas d'énumération des utilisateurs).
+        if(!ichefStaffResetMailer())return res.status(503).json({
+            success:false,code:'STAFF_SMTP_NOT_CONFIGURED',
+            error:'L’envoi d’e-mail est temporairement indisponible.'
+        });
+        const ip=ichefSecurityHash(ichefSecurityClientIp(req));
+        const key=`PIN_RESET_OTP_V214|${tenantID}|${staffId.toLowerCase()}|${ip}`;
+        const last=Number(ichefStaffPinResetBuckets.get(key)||0);
+        if(Date.now()-last<60000)return generic(newFakeId());
+        ichefStaffPinResetBuckets.set(key,Date.now());
+        // Limitation en mémoire bornée, en plus du quota middleware.
+        if(ichefStaffPinResetBuckets.size>10000){
+            for(const [k,ts] of ichefStaffPinResetBuckets){
+                if(Date.now()-Number(ts||0)>600000)ichefStaffPinResetBuckets.delete(k);
+            }
         }
-        const ip=String(req.headers?.['x-forwarded-for']||req.socket?.remoteAddress||'')
-            .split(',')[0].trim().slice(0,120);
-        const bucketKey=`OTP|${tenantID}|${staffId.toLowerCase()}|${ip}`;
-        const last=Number(ichefStaffPinResetBuckets.get(bucketKey)||0);
-        if(Date.now()-last<60000){
-            // Même forme de réponse, que le compte existe ou non.
-            return reply(fakeId());
-        }
-        ichefStaffPinResetBuckets.set(bucketKey,Date.now());
         const profile=await ichefStaffResolveProfileForReset(tenantID,staffId);
-        if(!profile)return reply(fakeId());
+        if(!profile)return generic(newFakeId());
         try{
-            const result=await ichefStaffCreatePinResetCode({req,profile,requestedFrom:'SELF_EMAIL_CODE_V195'});
-            if(result?.ok && result.resetId)return reply(result.resetId);
-            console.warn('[iCHEF STAFF PIN RESET OTP V195]',{code:result?.code||'CREATE_FAILED'});
+            const result=await ichefStaffCreatePinResetCode({
+                req,profile,requestedFrom:'SELF_EMAIL_CODE_V214'
+            });
+            if(result?.ok && result.resetId)return generic(result.resetId);
+            console.warn('[iCHEF RESET CODE]',result?.code||'SEND_FAILED');
         }catch(error){
-            console.error('[iCHEF STAFF PIN RESET OTP V195]',error?.code||error?.message||'SMTP_FAILURE');
+            console.warn('[iCHEF RESET CODE] Envoi impossible',error?.code||'SMTP_ERROR');
         }
-        return reply(fakeId());
+        return generic(newFakeId());
     }catch(error){
-        console.error('[iCHEF STAFF PIN RESET OTP V195 request]',error?.code||error?.message||'ERROR');
-        return reply(fakeId());
+        console.error('[iCHEF RESET CODE] Requête indisponible',error?.code||'ERROR');
+        return generic(newFakeId());
     }
 });
 
@@ -24147,298 +24115,101 @@ app.post('/api/staff/pin-reset/admin/request',async(req,res)=>{
     }catch(error){console.error('[iCHEF STAFF PIN RESET admin V166]',error);return res.status(500).json({success:false,error:'Réinitialisation PIN momentanément indisponible.'});}
 });
 
+// V214 — Vérification du code e-mail / écriture ciblée du PIN / usage unique atomique.
 app.post('/api/staff/pin-reset/confirm',async(req,res)=>{
+    res.setHeader('Cache-Control','no-store');
     try{
-        res.setHeader(
-            'Cache-Control',
-            'no-store'
+        const challengeId=String(req.body?.challengeId||'').trim();
+        const code=String(req.body?.code||'').trim();
+        const newPin=String(req.body?.newPin||'').trim();
+        if(!/^[A-Za-z0-9_-]{16,80}$/.test(challengeId)||
+           !/^\d{6}$/.test(code)||!/^\d{4,12}$/.test(newPin)){
+            return res.status(400).json({success:false,error:'Code e-mail ou nouveau PIN invalide.'});
+        }
+        const now=new Date();
+        const validFilter={
+            resetId:challengeId,mode:'EMAIL_CODE',usedAt:null,
+            expiresAt:{$gt:now},attempts:{$lt:5}
+        };
+        const row=await IchefStaffPinReset.findOne(validFilter).lean();
+        if(!row)return res.status(401).json({success:false,error:'Code invalide, expiré ou trop de tentatives.'});
+        const expected=ichefStaffPinResetHmac(`${challengeId}|${code}`);
+        if(!ichefStaffActivationSafeEqual(expected,String(row.codeHash||''))){
+            await IchefStaffPinReset.updateOne(validFilter,{$inc:{attempts:1}});
+            return res.status(401).json({success:false,error:'Code invalide, expiré ou trop de tentatives.'});
+        }
+        // Verrouillage atomique : un OTP validé ne peut être réutilisé simultanément.
+        const claim=await IchefStaffPinReset.findOneAndUpdate(
+            {...validFilter,codeHash:expected,emailHash:{$ne:''}},
+            {$set:{usedAt:now}}, {new:true}
         );
-
-        const challengeId=
-            String(
-                req.body?.challengeId ||
-                ''
-            )
-            .trim()
-            .slice(0,100);
-
-        const emailCode=
-            String(
-                req.body?.code ||
-                ''
-            )
-            .replace(/\D/g,'')
-            .slice(0,6);
-
-        const newPin=
-            String(
-                req.body?.newPin ||
-                ''
-            )
-            .replace(/\D/g,'')
-            .slice(0,12);
-
-        if(
-            !/^[A-Za-z0-9_-]{16,80}$/.test(
-                challengeId
-            ) ||
-            !/^\d{6}$/.test(
-                emailCode
-            ) ||
-            !/^\d{4,12}$/.test(
-                newPin
-            )
-        ){
-            return res
-                .status(400)
-                .json({
-                    success:false,
-                    error:
-                        'Code email ou nouveau PIN invalide.'
-                });
+        if(!claim)return res.status(401).json({success:false,error:'Code déjà utilisé ou expiré.'});
+        // Le profil doit être toujours actif et l'adresse e-mail inchangée.
+        const profile=await ichefStaffResolveProfileForReset(claim.tenantID,claim.staffId);
+        if(!profile || !ichefStaffActivationSafeEqual(
+            String(claim.emailHash||''),
+            ichefStaffPinResetHmac(`RECIPIENT|${ichefStaffProfileEmail(profile).toLowerCase()}`)
+        )){
+            return res.status(401).json({success:false,error:'Profil modifié. Demandez un nouveau code.'});
         }
-
-        const row=
-            await IchefStaffPinReset.findOne({
-                resetId:challengeId,
-                mode:'EMAIL_CODE'
-            });
-
-        if(
-            !row ||
-            row.usedAt ||
-            !row.expiresAt ||
-            new Date(row.expiresAt).getTime()<=Date.now()
-        ){
-            return res
-                .status(401)
-                .json({
-                    success:false,
-                    error:
-                        'Ce code est invalide ou a expiré.'
-                });
-        }
-
-        const attempts=
-            Number(
-                row.attempts ||
-                0
-            );
-
-        if(attempts>=5){
-            row.usedAt=
-                new Date();
-
-            await row.save();
-
-            return res
-                .status(429)
-                .json({
-                    success:false,
-                    error:
-                        'Trop de tentatives. Demandez un nouveau code.'
-                });
-        }
-
-        const expected=
-            ichefStaffPinResetHmac(
-                `${challengeId}|${emailCode}`
-            );
-
-        if(
-            !ichefStaffActivationSafeEqual(
-                expected,
-                row.codeHash
-            )
-        ){
-            row.attempts=
-                attempts+1;
-
-            await row.save();
-
-            return res
-                .status(401)
-                .json({
-                    success:false,
-                    error:
-                        'Code email incorrect.'
-                });
-        }
-
-        const state=
-            await AppState.findOne(
-                {
-                    tenantID:
-                        row.tenantID
-                },
-                {
-                    'activeOrders.STAFF_ACCESS.data':1,
-                    'activeOrders.DIRECTORY_MASTER.data':1
-                }
-            )
-            .lean();
-
-        if(!state){
-            return res
-                .status(404)
-                .json({
-                    success:false,
-                    error:
-                        'Établissement introuvable.'
-                });
-        }
-
-        const matchStaff=
-            item=>
-                ichefStaffResetIdentityValues(item)
-                    .includes(
-                        String(row.staffId)
-                    );
-
-        let changed=false;
-
-        const access=
-            ichefStaffPortalArray(
-                state?.activeOrders?.STAFF_ACCESS
-            )
-            .map(item=>{
-                if(!matchStaff(item)){
-                    return item;
-                }
-
-                changed=true;
-
-                return {
-                    ...item,
-                    pin:newPin,
-                    pinUpdatedAt:
-                        new Date().toISOString()
-                };
-            });
-
-        const directory=
-            ichefStaffPortalArray(
-                state?.activeOrders?.DIRECTORY_MASTER
-            )
-            .map(item=>{
-                if(!matchStaff(item)){
-                    return item;
-                }
-
-                changed=true;
-
-                return {
-                    ...item,
-                    pin:newPin,
-                    pinUpdatedAt:
-                        new Date().toISOString()
-                };
-            });
-
-        if(!changed){
-            return res
-                .status(404)
-                .json({
-                    success:false,
-                    error:
-                        'Profil collaborateur introuvable.'
-                });
-        }
-
-        await AppState.updateOne(
-            {
-                tenantID:
-                    row.tenantID
-            },
-            {
-                $set:{
-                    'activeOrders.STAFF_ACCESS.data':
-                        access,
-                    'activeOrders.STAFF_ACCESS.updatedAt':
-                        new Date().toISOString(),
-                    'activeOrders.DIRECTORY_MASTER.data':
-                        directory,
-                    'activeOrders.DIRECTORY_MASTER.updatedAt':
-                        new Date().toISOString()
-                }
-            }
+        const aliases=[
+            ...ichefStaffActivationAliases(profile.member||{}),
+            ...ichefStaffActivationAliases(profile.directoryEntry||{})
+        ];
+        const pinSaved=await ichefStaffActivationUpdatePin(
+            claim.tenantID,claim.staffId,newPin,aliases
         );
-
-        row.usedAt=
-            new Date();
-
-        row.attempts=
-            attempts;
-
-        await row.save();
-
+        if(!pinSaved){
+            return res.status(409).json({success:false,
+                error:'Le PIN n’a pas pu être confirmé. Demandez un nouveau code ou contactez votre responsable.'});
+        }
+        await IchefStaffPinReset.updateMany({
+            tenantID:claim.tenantID,staffId:claim.staffId,usedAt:null
+        },{$set:{usedAt:new Date()}});
         return res.json({
-            success:true,
-            safeTenantID:
-                row.tenantID,
-            staffId:
-                row.staffId,
-            message:
-                'Votre nouveau PIN est actif.'
+            success:true,safeTenantID:claim.tenantID,staffId:claim.staffId,
+            message:'Votre nouveau PIN est actif. Reconnectez-vous.'
         });
-
     }catch(error){
-        console.error(
-            '[iCHEF STAFF PIN RESET confirm V173]',
-            error
-        );
-
-        return res
-            .status(500)
-            .json({
-                success:false,
-                error:
-                    'Réinitialisation PIN impossible.'
-            });
+        console.error('[iCHEF PIN RESET V214]',error?.code||'RESET_FAILED');
+        return res.status(500).json({success:false,error:'Réinitialisation temporairement indisponible.'});
     }
 });
 
+// V214 — ancien lien e-mail conservé, usage unique et mise à jour ciblée du PIN.
 app.post('/api/staff/pin-reset/complete',async(req,res)=>{
+    res.setHeader('Cache-Control','no-store');
     try{
-        res.setHeader('Cache-Control','no-store'); const token=String(req.body?.token||'').trim(),newPin=String(req.body?.newPin||'').replace(/\D/g,'').slice(0,12);
-        const match=/^pr1\.([A-Za-z0-9_-]{16,80})\.([A-Za-z0-9_-]{30,160})$/.exec(token); if(!match||!/^\d{4,12}$/.test(newPin))return res.status(400).json({success:false,error:'Lien ou nouveau PIN invalide.'});
-        const resetId=match[1],secret=match[2],row=await IchefStaffPinReset.findOne({
-            resetId,
-            mode:'LINK'
-        });
-        if(!row||row.usedAt||!row.expiresAt||new Date(row.expiresAt).getTime()<=Date.now()||!ichefStaffActivationSafeEqual(ichefStaffPinResetHmac(`${resetId}|${secret}`),row.tokenHash))return res.status(401).json({success:false,error:'Ce lien est invalide ou a expiré.'});
-        const state=await AppState.findOne({tenantID:row.tenantID},{'activeOrders.STAFF_ACCESS.data':1,'activeOrders.DIRECTORY_MASTER.data':1}).lean(); if(!state)return res.status(404).json({success:false,error:'Établissement introuvable.'});
-        const matchStaff=item=>ichefStaffResetIdentityValues(item).includes(String(row.staffId)); let changed=false;
-        const access=ichefStaffPortalArray(state?.activeOrders?.STAFF_ACCESS).map(item=>{if(!matchStaff(item))return item;changed=true;return {...item,pin:newPin,pinUpdatedAt:new Date().toISOString()};});
-        const directory=ichefStaffPortalArray(state?.activeOrders?.DIRECTORY_MASTER).map(item=>{if(!matchStaff(item))return item;changed=true;return {...item,pin:newPin,pinUpdatedAt:new Date().toISOString()};});
-        if(!changed)return res.status(404).json({success:false,error:'Profil collaborateur introuvable.'});
-        await AppState.updateOne({tenantID:row.tenantID},{$set:{'activeOrders.STAFF_ACCESS.data':access,'activeOrders.STAFF_ACCESS.updatedAt':new Date().toISOString(),'activeOrders.DIRECTORY_MASTER.data':directory,'activeOrders.DIRECTORY_MASTER.updatedAt':new Date().toISOString()}});
-        row.usedAt=new Date();
-        await row.save();
-
-        // Invalide également toute autre demande de reset encore ouverte
-        // pour ce collaborateur.
-        await IchefStaffPinReset.updateMany(
-            {
-                tenantID:row.tenantID,
-                staffId:row.staffId,
-                resetId:{$ne:row.resetId},
-                usedAt:null
-            },
-            {
-                $set:{
-                    usedAt:new Date()
-                }
-            }
+        const token=String(req.body?.token||'').trim();
+        const newPin=String(req.body?.newPin||'').trim();
+        const match=/^pr1\.([A-Za-z0-9_-]{16,80})\.([A-Za-z0-9_-]{30,160})$/.exec(token);
+        if(!match || !/^\d{4,12}$/.test(newPin)){
+            return res.status(400).json({success:false,error:'Lien ou nouveau PIN invalide.'});
+        }
+        const resetId=match[1],secret=match[2],now=new Date();
+        const expected=ichefStaffPinResetHmac(`${resetId}|${secret}`);
+        const filter={resetId,mode:'LINK',tokenHash:expected,usedAt:null,expiresAt:{$gt:now}};
+        const claim=await IchefStaffPinReset.findOneAndUpdate(
+            filter,{$set:{usedAt:now}},{new:true}
         );
-
-        return res.json({
-            success:true,
-            safeTenantID:row.tenantID,
-            staffId:row.staffId,
-            message:'Votre nouveau PIN est actif. Reconnectez-vous avec ce nouveau PIN.'
-        });
-    }catch(error){console.error('[iCHEF STAFF PIN RESET complete V166]',error);return res.status(500).json({success:false,error:'Réinitialisation PIN impossible.'});}
+        if(!claim)return res.status(401).json({success:false,error:'Ce lien est invalide ou a expiré.'});
+        const profile=await ichefStaffResolveProfileForReset(claim.tenantID,claim.staffId);
+        if(!profile)return res.status(401).json({success:false,error:'Profil collaborateur non disponible.'});
+        const aliases=[...ichefStaffActivationAliases(profile.member||{}),
+            ...ichefStaffActivationAliases(profile.directoryEntry||{})];
+        const pinSaved=await ichefStaffActivationUpdatePin(
+            claim.tenantID,claim.staffId,newPin,aliases
+        );
+        if(!pinSaved)return res.status(409).json({success:false,
+            error:'PIN non confirmé. Demandez un nouveau lien.'});
+        await IchefStaffPinReset.updateMany({tenantID:claim.tenantID,
+            staffId:claim.staffId,usedAt:null},{$set:{usedAt:new Date()}});
+        return res.json({success:true,safeTenantID:claim.tenantID,
+            staffId:claim.staffId,message:'Votre nouveau PIN est actif. Reconnectez-vous.'});
+    }catch(error){
+        console.error('[iCHEF PIN RESET LINK V214]',error?.code||'RESET_FAILED');
+        return res.status(500).json({success:false,error:'Réinitialisation momentanément indisponible.'});
+    }
 });
 
 app.post('/api/staff/activation/inspect',async(req,res)=>{
@@ -24855,7 +24626,7 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
         }
         ichefPinAttemptSuccess(req,attemptKey,deviceId);
         const identityMode=qrMode?'QR_EMAIL_VERIFIED':'EMAIL_ACTIVATION_VERIFIED';
-        const verifiedVia='EMAIL'; // Preuve OTP e-mail valide, distincte du mode de parcours UI.
+        const verifiedVia='EMAIL'; // OTP e-mail prouvé, quel que soit le parcours
 
         const publicKeyJwk=
             ichefStaffPublicJwkSafe(
@@ -24934,17 +24705,11 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
                 'Profil Staff non modifiable.'
             );
         }
-
-        // Ne pas consommer l'invitation avant que la fiche utilisée pour
-        // les connexions renvoie réellement le PIN nouvellement enregistré.
-        const confirmedLoginProfile=
-            await ichefStaffFindActiveSecurityProfile(
-                lockedRow.tenantID,lockedRow.staffId
-            );
-        if(
-            !confirmedLoginProfile ||
-            String(confirmedLoginProfile.member?.pin||'')!==newPin
-        ){
+        // Vérification avant de consommer l'invitation / de créer un appareil de confiance.
+        const confirmedLoginProfile=await ichefStaffFindActiveSecurityProfile(
+            lockedRow.tenantID,lockedRow.staffId
+        );
+        if(!confirmedLoginProfile || String(confirmedLoginProfile.member?.pin||'')!==newPin){
             throw new Error('Enregistrement du PIN non confirmé pour le login Staff.');
         }
 
@@ -25030,7 +24795,6 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
         return res.json({
             ...payload,
             activationCompleted:true,
-            pinSaved:true,
             activationMethod:identityMode,
             pwaRequired:true
         });
@@ -25063,8 +24827,7 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
 
         return res.status(500).json({
             success:false,
-            code:'STAFF_ACTIVATION_SAVE_FAILED',
-            error:'Activation non confirmée. Vérifiez le PIN enregistré et réessayez, ou contactez votre responsable.'
+            error:'Activation momentanément impossible. Aucun accès n’a été ouvert.'
         });
     }
 });
