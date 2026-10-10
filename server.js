@@ -409,6 +409,8 @@ function ichefSecurityRateLimitForPath(pathname){
 
     if(
         p === '/api/staff/pin-reset/request' ||
+        p === '/api/staff/pin-reset/code/request' ||
+        p === '/api/staff/pin-reset/confirm' ||
         p === '/api/staff/pin-reset/complete'
     ){
         return {
@@ -18663,7 +18665,7 @@ const ichefStaffTrustedDeviceSchema = new mongoose.Schema({
     deviceLabel:{type:String,default:'',maxlength:180},
     platform:{type:String,default:'',maxlength:160},
     publicKeyJwk:{type:mongoose.Schema.Types.Mixed,default:null},
-    verifiedVia:{type:String,enum:['WHATSAPP','ADMIN','LEGACY'],default:'WHATSAPP'},
+    verifiedVia:{type:String,enum:['WHATSAPP','ADMIN','LEGACY','EMAIL','QR_EMAIL_VERIFIED','EMAIL_ACTIVATION_VERIFIED'],default:'WHATSAPP'},
     createdAt:{type:Date,default:Date.now},
     lastVerifiedAt:{type:Date,default:Date.now},
     lastUsedAt:{type:Date,default:Date.now},
@@ -18734,16 +18736,41 @@ function ichefStaffRequestIsMobile(req={}){
 }
 
 function ichefStaffRequestRequiresInstalledPwa(req={}){
-    // L'installation PWA améliore l'expérience mais ne remplace jamais
-    // PIN, session signée, activation, appareil de confiance ou WhatsApp.
-    //
-    // Sur mobile, on ne bloque donc pas l'authentification si le navigateur
-    // n'a pas encore proposé l'installation PWA.
-    return (
-        ICHEF_STAFF_PWA_REQUIRED === true &&
-        !ichefStaffRequestIsMobile(req)
-    );
+    // V192 : mode application obligatoire même sur smartphone/tablette.
+    // Ne remplace JAMAIS PIN, codes temporaires et sessions signées.
+    // X-iCHEF-PWA est déclaratif et peut être falsifié : il ne constitue
+    // pas une attestation matérielle de l'installation.
+    return ICHEF_STAFF_PWA_REQUIRED === true;
 }
+
+// V192 : limiter UNIQUEMENT les endpoints d'identification propres au
+// Portail Staff. Ne pas toucher aux routes /api/staff utilisées par Admin/RH.
+const ICHEF_STAFF_PWA_ONLY_ENDPOINTS_V192 = new Set([
+    '/api/staff/login',
+    '/api/staff/activation/inspect',
+    '/api/staff/activation/email/request',
+    '/api/staff/activation/whatsapp/request',
+    '/api/staff/activation/complete',
+    '/api/staff/pin-reset/code/request',
+    '/api/staff/pin-reset/complete',
+    '/api/staff/pin-reset/confirm',
+    '/api/staff/security/email/check',
+    '/api/staff/security/whatsapp/check',
+    '/api/staff/security/app-challenge',
+    '/api/staff/security/app-unlock'
+]);
+app.use((req,res,next)=>{
+    if(req.method === 'OPTIONS') return next();
+    if(!ICHEF_STAFF_PWA_ONLY_ENDPOINTS_V192.has(req.path.toLowerCase())) return next();
+    if(!ichefStaffRequestRequiresInstalledPwa(req) || ichefStaffRequestIsPwa(req)) return next();
+    res.setHeader('Cache-Control','no-store');
+    return res.status(428).json({
+        success:false,
+        code:'STAFF_PWA_REQUIRED',
+        pwaRequired:true,
+        error:'Ouvrez iCHEF Staff depuis l’application installée sur votre appareil.'
+    });
+});
 
 function ichefStaffNormalizePhone(value=''){
     let phone=String(value||'').trim().replace(/[()\s.-]/g,'');
@@ -19296,6 +19323,8 @@ function ichefStaffActivationTokenFromUrl(rawUrl=''){
 
 async function ichefStaffSendActivationEmail({
     profile,
+    tenantID,
+    staffId,
     activationCode,
     activationUrl,
     expiresAt
@@ -19322,6 +19351,10 @@ async function ichefStaffSendActivationEmail({
 
     const code=String(activationCode||'')
         .toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,16);
+    // Identifiants non secrets : utiles pour reprendre l'activation
+    // dans une PWA dont le stockage est isolé du navigateur mobile.
+    const inviteTenantID=String(tenantID||'').trim().slice(0,80);
+    const inviteStaffId=String(staffId||'').trim().slice(0,160);
 
     // L'URL contenue dans la requête Admin ne détermine JAMAIS le domaine
     // d'un lien envoyé à l'utilisateur (protection Host-header / phishing).
@@ -19363,14 +19396,15 @@ async function ichefStaffSendActivationEmail({
 
 Votre responsable vous invite à activer votre accès iCHEF Staff.
 
-1. Ouvrez ce lien sur votre téléphone :
+1. Installez iCHEF Staff depuis le navigateur de votre téléphone (Android : Installer l'application ; iPhone : Safari > Partager > Sur l’écran d’accueil), puis lancez l’icône iCHEF Staff.
+2. Ouvrez ce lien d’invitation si votre appareil le propose :
 ${link}
 
-2. Dans iCHEF Staff, appuyez sur « RECEVOIR LE CODE PAR E-MAIL ».
-3. Saisissez le code de sécurité à 6 chiffres reçu dans un deuxième e-mail.
-4. Choisissez et confirmez votre PIN personnel pour terminer l'activation.
+3. Dans l'application iCHEF Staff, appuyez sur « RECEVOIR LE CODE PAR E-MAIL ».
+4. Saisissez le code de sécurité à 6 chiffres reçu dans un deuxième e-mail.
+5. Choisissez et confirmez votre PIN personnel pour terminer l'activation.
 
-Si le lien ne s'ouvre pas, allez sur ${publicStaffOrigin}/portail-staff.html et entrez manuellement l'identifiant établissement, votre ID collaborateur et ce code d'invitation : ${code}.
+Si le lien s’ouvre dans un navigateur classique, revenez dans l’application iCHEF Staff installée, puis saisissez : établissement ${inviteTenantID}, ID collaborateur ${inviteStaffId}, code d’invitation ${code}.
 
 Invitation valable jusqu'au ${expiryLabel}, à usage unique. Ne partagez jamais ce lien ni ces codes.
 Si vous n'avez pas demandé cette activation, ignorez cet e-mail.
@@ -19379,6 +19413,8 @@ iCHEF Staff`;
 
     const safeName=ichefStaffActivationEmailEscape(name);
     const safeCode=ichefStaffActivationEmailEscape(code);
+    const safeTenant=ichefStaffActivationEmailEscape(inviteTenantID);
+    const safeStaffId=ichefStaffActivationEmailEscape(inviteStaffId);
     const safeExpiry=ichefStaffActivationEmailEscape(expiryLabel);
     const safeLink=ichefStaffActivationEmailEscape(link);
     const safePortal=ichefStaffActivationEmailEscape(`${publicStaffOrigin}/portail-staff.html`);
@@ -19393,17 +19429,17 @@ iCHEF Staff`;
     <div style="padding:26px">
       <p style="margin:0 0 16px;color:#edf0f1;font-size:15px">Bonjour ${safeName},</p>
       <p style="margin:0 0 18px;color:#aeb8bd;font-size:14px;line-height:1.55">Votre responsable vous invite à activer votre accès personnel <b style="color:#fff">iCHEF Staff</b>.</p>
-      <p style="margin:0 0 20px;color:#aeb8bd;font-size:13px;line-height:1.55">Ouvrez cette invitation sur votre téléphone :</p>
+      <p style="margin:0 0 20px;color:#aeb8bd;font-size:13px;line-height:1.55">Installez d’abord iCHEF Staff sur votre téléphone et lancez l’application depuis son icône. Pour activer votre compte, ouvrez ensuite cette invitation :</p>
       <div style="text-align:center;margin:24px 0">
         <a href="${safeLink}" style="display:inline-block;background:#e5bb55;color:#11181c;text-decoration:none;padding:16px 25px;border-radius:11px;font-size:15px;font-weight:800">ACTIVER MON ACCÈS STAFF</a>
       </div>
       <p style="margin:0 0 12px;color:#aeb8bd;font-size:13px;line-height:1.65">Dans iCHEF Staff, appuyez sur <b>RECEVOIR LE CODE PAR E-MAIL</b>, entrez le code à 6 chiffres du second e-mail, puis choisissez votre PIN personnel.</p>
-      <p style="margin:16px 0 6px;color:#9fa8ad;font-size:11px">Si le bouton ne fonctionne pas, copiez le lien suivant dans votre navigateur :</p>
+      <p style="margin:16px 0 6px;color:#9fa8ad;font-size:11px">Si le lien s’ouvre dans un navigateur classique, revenez dans l’application installée et utilisez le code de secours ci-dessous :</p>
       <p style="margin:0 0 18px;overflow-wrap:anywhere;font-size:11px"><a href="${safeLink}" style="color:#8fd5fa;text-decoration:underline">${safeLink}</a></p>
       <div style="padding:15px;border:1px solid #5f512e;border-radius:12px;background:#17160f;text-align:center">
         <div style="color:#9fa8ad;font-size:11px;font-weight:700">CODE D’INVITATION (SECOURS)</div>
         <div style="margin-top:7px;color:#efc96a;font-size:23px;font-weight:900;letter-spacing:.14em">${safeCode}</div>
-        <div style="margin-top:8px;color:#8f999f;font-size:11px">Si nécessaire, ouvrez <a style="color:#8fd5fa" href="${safePortal}">iCHEF Staff</a> et saisissez votre établissement, votre ID collaborateur et ce code.</div>
+        <div style="margin-top:8px;color:#8f999f;font-size:11px">Ouvrez l’application iCHEF Staff depuis votre écran d’accueil.<br>Établissement : <b>${safeTenant}</b><br>ID collaborateur : <b>${safeStaffId}</b><br>Saisissez ensuite le code ci-dessus.</div>
       </div>
       <div style="margin-top:20px;padding-top:16px;border-top:1px solid #262d31;color:#77838a;font-size:11px;line-height:1.5;text-align:center">Invitation valable jusqu’au ${safeExpiry} · usage unique. Ne transmettez ni lien ni codes.</div>
     </div>
@@ -21062,6 +21098,9 @@ async function ichefLoadStaffActivationManagerSession(req){
     };
 }
 
+// V193 — écriture ciblée et confirmation du PIN dans MongoDB.
+// Ne remplace plus les tableaux RH/STAFF entiers : une écriture concurrente
+// ne peut pas effacer les autres données de planning ou des collègues.
 async function ichefStaffActivationUpdatePin(
     tenantID,
     staffId,
@@ -21070,158 +21109,105 @@ async function ichefStaffActivationUpdatePin(
 ){
     const safeTenant=cleanString(tenantID);
     const id=String(staffId||'').trim();
+    if(!safeTenant || !id || !/^\d{4,12}$/.test(String(newPin||'')))return false;
 
-    const wantedIds=
-        new Set(
-            [
-                id,
-                ...(Array.isArray(additionalAliases)
-                    ? additionalAliases
-                    : [])
-            ]
-            .filter(v=>
-                v!==undefined &&
-                v!==null &&
-                String(v).trim()!==''
-            )
+    const wantedIds=new Set(
+        [id,...(Array.isArray(additionalAliases)?additionalAliases:[])]
+            .filter(v=>v!==undefined && v!==null && String(v).trim())
             .map(v=>String(v).trim())
-        );
-
+    );
+    const identityFields=[
+        'id','staffId','employeeId','rhId','matricule',
+        'employeeNo','employeeNumber','internalId'
+    ];
     const state=await AppState.findOne(
         {tenantID:safeTenant},
-        {
-            'activeOrders.STAFF_ACCESS':1,
-            'activeOrders.DIRECTORY_MASTER':1
-        }
+        {'activeOrders.STAFF_ACCESS.data':1,'activeOrders.DIRECTORY_MASTER.data':1}
     ).lean();
-
     if(!state)return false;
 
-    const access=Array.isArray(state?.activeOrders?.STAFF_ACCESS?.data)
-        ? JSON.parse(JSON.stringify(state.activeOrders.STAFF_ACCESS.data))
-        : [];
-
-    const directory=Array.isArray(state?.activeOrders?.DIRECTORY_MASTER?.data)
-        ? JSON.parse(JSON.stringify(state.activeOrders.DIRECTORY_MASTER.data))
-        : [];
-
-    const matches=item=>{
-        const values=[
-            item?.id,
-            item?.staffId,
-            item?.employeeId,
-            item?.rhId,
-            item?.matricule,
-            item?.employeeNo,
-            item?.employeeNumber,
-            item?.internalId
-        ]
-        .filter(v=>
-            v!==undefined &&
-            v!==null &&
-            String(v).trim()!==''
-        )
-        .map(String);
-
-        return values.some(value =>
-            wantedIds.has(value)
-        );
-    };
-
+    const changes={};
+    const arrayFilters=[];
+    const selected=[];
     const now=new Date().toISOString();
-    let touched=false;
 
-    for(const item of access){
-        if(matches(item)){
-            item.pin=newPin;
-            item.pinUpdatedAt=now;
-            item.staffActivatedAt=now;
-            touched=true;
-        }
-    }
-
-    for(const item of directory){
-        if(matches(item)){
-            item.pin=newPin;
-            item.pinUpdatedAt=now;
-            item.staffActivatedAt=now;
-            touched=true;
-        }
-    }
-
-    if(!touched)return false;
-
-    const set={};
-
-    if(access.length){
-        set['activeOrders.STAFF_ACCESS.data']=access;
-        set['activeOrders.STAFF_ACCESS.updatedAt']=now;
-    }
-
-    if(directory.length){
-        set['activeOrders.DIRECTORY_MASTER.data']=directory;
-        set['activeOrders.DIRECTORY_MASTER.updatedAt']=now;
-    }
-
-    await AppState.updateOne(
-        {tenantID:safeTenant},
-        {$set:set}
-    );
-
-    // V175 — vérification réelle : l'activation n'est validée que si le
-    // nouveau PIN est relu depuis MongoDB sur la fiche correspondante.
-    const confirmedState=
-        await AppState.findOne(
-            {tenantID:safeTenant},
-            {
-                'activeOrders.STAFF_ACCESS.data':1,
-                'activeOrders.DIRECTORY_MASTER.data':1
-            }
-        )
-        .lean();
-
-    const confirmedRecords=[
-        ...(
-            Array.isArray(
-                confirmedState?.activeOrders?.STAFF_ACCESS?.data
+    for(const [table,alias] of [['STAFF_ACCESS','st'],['DIRECTORY_MASTER','rh']]){
+        const records=state?.activeOrders?.[table]?.data;
+        if(!Array.isArray(records))continue;
+        const matching=records.filter(item=>
+            item && item.active!==false &&
+            identityFields.some(field=>
+                item[field]!==undefined && item[field]!==null &&
+                wantedIds.has(String(item[field]).trim())
             )
-                ? confirmedState.activeOrders.STAFF_ACCESS.data
-                : []
-        ),
-        ...(
-            Array.isArray(
-                confirmedState?.activeOrders?.DIRECTORY_MASTER?.data
-            )
-                ? confirmedState.activeOrders.DIRECTORY_MASTER.data
-                : []
-        )
-    ];
-
-    const pinConfirmed=
-        confirmedRecords.some(item=>
-            matches(item) &&
-            String(item?.pin||'').trim()===newPin
         );
+        // Ne jamais modifier deux personnes ayant accidentellement le même alias.
+        if(matching.length>1){
+            console.warn('[iCHEF Staff PIN V193] Identité ambiguë',table);
+            return false;
+        }
+        if(!matching.length)continue;
 
-    if(!pinConfirmed){
-        return false;
+        const item=matching[0];
+        // Sélecteur unique dans TOUT le tableau (actifs et inactifs).
+        // Privilégier un alias présent dans l'identité canonique validée.
+        const fields=[
+            ...identityFields.filter(f=>wantedIds.has(String(item[f]??'').trim())),
+            ...identityFields
+        ];
+        const key=fields.find(field=>{
+            const raw=item[field];
+            if(raw===undefined || raw===null || !String(raw).trim())return false;
+            return records.filter(other=>
+                other && String(other[field]??'').trim()===String(raw).trim()
+            ).length===1;
+        });
+        if(!key)return false;
+        const value=item[key];
+        const prefix=`activeOrders.${table}.data.$[${alias}]`;
+        changes[`${prefix}.pin`]=String(newPin);
+        changes[`${prefix}.pinUpdatedAt`]=now;
+        changes[`${prefix}.staffActivatedAt`]=now;
+        changes[`activeOrders.${table}.updatedAt`]=now;
+        arrayFilters.push({[`${alias}.${key}`]:value});
+        selected.push({table,key,value});
     }
+
+    if(!selected.length)return false;
+
+    // La même commande MongoDB met à jour les deux fiches liées de manière atomique.
+    // AppState.activeOrders est un champ mixte : driver natif pour préserver les
+    // chemins positionnels et arrayFilters sans remplacement complet de tableaux.
+    const result=await AppState.collection.updateOne(
+        {tenantID:safeTenant},
+        {$set:changes},
+        {arrayFilters}
+    );
+    if(result.matchedCount!==1)return false;
+
+    // Relecture réelle de toutes les fiches ciblées avant de consommer l'invitation.
+    const saved=await AppState.findOne(
+        {tenantID:safeTenant},
+        {'activeOrders.STAFF_ACCESS.data':1,'activeOrders.DIRECTORY_MASTER.data':1}
+    ).lean();
+    const confirmed=selected.every(({table,key,value})=>{
+        const rows=saved?.activeOrders?.[table]?.data;
+        if(!Array.isArray(rows))return false;
+        const matched=rows.filter(item=>item?.[key]===value);
+        return matched.length===1 &&
+            String(matched[0].pin||'')===String(newPin) &&
+            matched[0].staffActivatedAt===now;
+    });
+    if(!confirmed)return false;
 
     try{
-        ichefEmitStaffSyncRequired(
-            safeTenant,
-            {
-                tableId:'STAFF_ACCESS',
-                source:'staff-activation-v160',
-                staffId:id,
-                timestamp:now
-            }
-        );
+        ichefEmitStaffSyncRequired(safeTenant,{
+            tableId:'STAFF_ACCESS',source:'staff-activation-v194',
+            staffId:id,timestamp:now
+        });
     }catch(_){}
-
     return true;
 }
-
 
 async function ichefLoadActiveStaffSession(req) {
     const auth =
@@ -22207,6 +22193,8 @@ app.post(
                                 return (
                                     sharesId ||
                                     (
+                                        !member?.staffActivatedAt &&
+                                        !member?.pinUpdatedAt &&
                                         samePin(member?.pin) &&
                                         samePin(item?.pin)
                                     )
@@ -22228,9 +22216,13 @@ app.post(
                          * membre STAFF_ACCESS afin que dashboard / demandes
                          * utilisent le même staffId technique que le reste d'iCHEF.
                          */
+                        // Après activation, seul le PIN de la fiche Staff canonique est accepté.
+                        const staffPinIsActivated=Boolean(
+                            member?.staffActivatedAt || member?.pinUpdatedAt
+                        );
                         if (
                             !samePin(member?.pin) &&
-                            !samePin(linkedDirectory?.pin)
+                            (staffPinIsActivated || !samePin(linkedDirectory?.pin))
                         ) {
                             continue;
                         }
@@ -23554,6 +23546,8 @@ app.post('/api/staff/activation/admin/email',async(req,res)=>{
         const sent=
             await ichefStaffSendActivationEmail({
                 profile,
+                tenantID:row.tenantID,
+                staffId:row.staffId,
                 activationCode,
                 activationUrl,
                 expiresAt:
@@ -24095,6 +24089,53 @@ app.post('/api/staff/pin-reset/request',async(req,res)=>{
         });
     }
 });
+
+// V195 : code e-mail personnel pour le PIN oublié, option A.
+// La réponse ne permet pas de deviner si un identifiant existe.
+// Elle préserve les anciennes routes à lien sécurisé pour les demandes en cours.
+app.post('/api/staff/pin-reset/code/request',async(req,res)=>{
+    res.setHeader('Cache-Control','no-store');
+    const fakeId=()=>nodeCrypto.randomBytes(18).toString('base64url');
+    const reply=(id)=>res.json({
+        success:true,
+        challengeId:id,
+        message:'Si ce compte possède un e-mail RH, un code de vérification lui sera envoyé.'
+    });
+    try{
+        const tenantID=cleanString(req.body?.tenantID||req.headers?.['x-ichef-tenant']||'');
+        const staffId=String(req.body?.staffId||'').trim().slice(0,160);
+        if(!tenantID||!staffId)return reply(fakeId());
+        // Une panne de configuration SMTP, indépendante de l'existence du compte,
+        // peut être indiquée sans dévoiler l'identité d'un collaborateur.
+        if(!ichefStaffResetMailer()){
+            return res.status(503).json({success:false,code:'STAFF_SMTP_NOT_CONFIGURED',
+                error:'Envoi e-mail indisponible. Vérifiez la configuration SMTP sur Render.'});
+        }
+        const ip=String(req.headers?.['x-forwarded-for']||req.socket?.remoteAddress||'')
+            .split(',')[0].trim().slice(0,120);
+        const bucketKey=`OTP|${tenantID}|${staffId.toLowerCase()}|${ip}`;
+        const last=Number(ichefStaffPinResetBuckets.get(bucketKey)||0);
+        if(Date.now()-last<60000){
+            // Même forme de réponse, que le compte existe ou non.
+            return reply(fakeId());
+        }
+        ichefStaffPinResetBuckets.set(bucketKey,Date.now());
+        const profile=await ichefStaffResolveProfileForReset(tenantID,staffId);
+        if(!profile)return reply(fakeId());
+        try{
+            const result=await ichefStaffCreatePinResetCode({req,profile,requestedFrom:'SELF_EMAIL_CODE_V195'});
+            if(result?.ok && result.resetId)return reply(result.resetId);
+            console.warn('[iCHEF STAFF PIN RESET OTP V195]',{code:result?.code||'CREATE_FAILED'});
+        }catch(error){
+            console.error('[iCHEF STAFF PIN RESET OTP V195]',error?.code||error?.message||'SMTP_FAILURE');
+        }
+        return reply(fakeId());
+    }catch(error){
+        console.error('[iCHEF STAFF PIN RESET OTP V195 request]',error?.code||error?.message||'ERROR');
+        return reply(fakeId());
+    }
+});
+
 app.post('/api/staff/pin-reset/admin/request',async(req,res)=>{
     try{
         res.setHeader('Cache-Control','no-store'); const auth=await ichefLoadStaffActivationManagerSession(req); if(!auth.ok)return res.status(auth.status||401).json({success:false,error:auth.error});
@@ -24814,7 +24855,7 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
         }
         ichefPinAttemptSuccess(req,attemptKey,deviceId);
         const identityMode=qrMode?'QR_EMAIL_VERIFIED':'EMAIL_ACTIVATION_VERIFIED';
-        const verifiedVia=identityMode;
+        const verifiedVia='EMAIL'; // Preuve OTP e-mail valide, distincte du mode de parcours UI.
 
         const publicKeyJwk=
             ichefStaffPublicJwkSafe(
@@ -24892,6 +24933,19 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
             throw new Error(
                 'Profil Staff non modifiable.'
             );
+        }
+
+        // Ne pas consommer l'invitation avant que la fiche utilisée pour
+        // les connexions renvoie réellement le PIN nouvellement enregistré.
+        const confirmedLoginProfile=
+            await ichefStaffFindActiveSecurityProfile(
+                lockedRow.tenantID,lockedRow.staffId
+            );
+        if(
+            !confirmedLoginProfile ||
+            String(confirmedLoginProfile.member?.pin||'')!==newPin
+        ){
+            throw new Error('Enregistrement du PIN non confirmé pour le login Staff.');
         }
 
         await IchefStaffTrustedDevice
@@ -24976,6 +25030,7 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
         return res.json({
             ...payload,
             activationCompleted:true,
+            pinSaved:true,
             activationMethod:identityMode,
             pwaRequired:true
         });
@@ -25008,7 +25063,8 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
 
         return res.status(500).json({
             success:false,
-            error:'Activation momentanément impossible. Aucun accès n’a été ouvert.'
+            code:'STAFF_ACTIVATION_SAVE_FAILED',
+            error:'Activation non confirmée. Vérifiez le PIN enregistré et réessayez, ou contactez votre responsable.'
         });
     }
 });
