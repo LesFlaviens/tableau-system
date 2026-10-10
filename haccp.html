@@ -10,7 +10,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="theme-color" content="#0f172a">
-    <title>iCHEF OS - HACCP V6.0 · SSO Identité automatique</title>
+    <title>iCHEF OS - HACCP V6.3 · Photo thermomètre + OCR</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
     <link rel="preconnect" href="https://tableau-system.onrender.com" crossorigin>
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
@@ -1666,7 +1666,7 @@ pointer-events:none;opacity:.75
 
 
 <style id="ichef-haccp-fast-v61">
-/* iCHEF HACCP V6.1 FAST — performance UI uniquement */
+/* iCHEF HACCP V6.3 FAST · PHOTO RETENTION — performance UI uniquement */
 .module { contain: layout style; }
 .card { contain: layout style paint; }
 @media (max-width:820px) {
@@ -1802,7 +1802,21 @@ pointer-events:none;opacity:.75
         </div>
 
         <div id="hx-live-state" class="hx-live-state neutral" aria-live="polite">
-            Entrez la température ou utilisez le micro.
+            Entrez la température, prenez une photo ou utilisez le micro.
+        </div>
+
+        <div class="hx-photo-actions">
+            <input id="hx-temp-photo-input" type="file" accept="image/*" capture="environment" hidden>
+            <button type="button" class="hx-photo-btn" id="hx-temp-photo-btn">📷 PHOTO DU THERMOMÈTRE</button>
+            <button type="button" class="hx-photo-clear" id="hx-temp-photo-clear" hidden aria-label="Retirer la photo">✕</button>
+        </div>
+        <div class="hx-photo-retention-note">Photo preuve : 30 jours maximum · relevé écrit conservé · aucune photo copiée dans le cache du téléphone.</div>
+        <div id="hx-temp-photo-proof" class="hx-temp-photo-proof" hidden>
+            <img id="hx-temp-photo-preview" alt="Photo preuve du thermomètre">
+            <div>
+                <strong id="hx-temp-photo-title">PHOTO PREUVE</strong>
+                <span id="hx-temp-photo-status">Lecture automatique…</span>
+            </div>
         </div>
 
         <button type="button" class="hx-mic" id="hx-mic">
@@ -1948,6 +1962,11 @@ pointer-events:none;opacity:.75
                     <div class="input-group">
                         <label>Valeur Relevée (°C)</label>
                         <input type="number" id="temp-val" step="0.1" placeholder="Ex: 3.4">
+                    </div>
+                    <div class="input-group temp-photo-desktop-control">
+                        <label>Preuve photo du thermomètre</label>
+                        <button type="button" class="btn-file" id="temp-photo-desktop-btn" onclick="window.ICHEF_TEMP_EVIDENCE?.openPicker()">📷 PRENDRE / AJOUTER UNE PHOTO</button>
+                        <small id="temp-photo-desktop-status" style="color:#7f8b99;line-height:1.35;">La valeur détectée sera proposée automatiquement puis devra être confirmée. Photo conservée 30 jours maximum ; relevé écrit conservé.</small>
                     </div>
                     <div class="input-group" style="justify-content: flex-end;">
                         <button class="btn-empire" id="btn-save-temp" onclick="saveEntry('temp')">ENREGISTRER</button>
@@ -2600,7 +2619,7 @@ pointer-events:none;opacity:.75
         }
 
 
-        const ICHEF_HACCP_SECURITY_BUILD = "6.1 FAST";
+        const ICHEF_HACCP_SECURITY_BUILD = "6.3 FAST · PHOTO RETENTION";
         console.info("[iCHEF HACCP] Build sécurisé", ICHEF_HACCP_SECURITY_BUILD, "· SSO identité unique · tenant:", tenantID);
 
         function haccpSessionTokens() {
@@ -2656,8 +2675,15 @@ pointer-events:none;opacity:.75
         }
 
         function writeHaccpCache(state) {
+            // Le cache local sert uniquement à ouvrir HACCP rapidement.
+            // Les preuves photo ne sont JAMAIS dupliquées dans localStorage :
+            // elles restent côté serveur pendant leur durée de conservation.
             try {
-                localStorage.setItem(HACCP_CACHE_KEY, JSON.stringify(state || { activeOrders: {} }));
+                const json = JSON.stringify(
+                    state || { activeOrders: {} },
+                    (key, value) => (key === "tempPhotoData" || key === "imgData") ? undefined : value
+                );
+                localStorage.setItem(HACCP_CACHE_KEY, json);
             } catch (_) {}
         }
 
@@ -4029,6 +4055,102 @@ function haccpSectorReturnConfig() {
             }
         }
 
+        const ICHEF_TEMP_PHOTO_RETENTION_DAYS = 30;
+        const ICHEF_TEMP_PHOTO_QUICK_DAYS = 7;
+        let ichefTempPhotoRetentionTimer = null;
+        let ichefTempPhotoRetentionSyncing = false;
+
+        function estimateDataUrlBytes(dataUrl) {
+            const text = String(dataUrl || "");
+            const comma = text.indexOf(",");
+            const base64 = comma >= 0 ? text.slice(comma + 1) : text;
+            return Math.max(0, Math.floor(base64.length * 0.75));
+        }
+
+        function tempPhotoDate(entry) {
+            const raw =
+                entry?.tempPhotoCapturedAt ||
+                entry?.timestamp ||
+                "";
+            const time = Date.parse(raw);
+            return Number.isFinite(time) ? time : 0;
+        }
+
+        function applyTemperaturePhotoRetention(entries) {
+            if (!Array.isArray(entries)) return { changed:false, purged:0 };
+            const now = Date.now();
+            const fullMs = ICHEF_TEMP_PHOTO_RETENTION_DAYS * 86400000;
+            const quickMs = ICHEF_TEMP_PHOTO_QUICK_DAYS * 86400000;
+            let changed = false;
+            let purged = 0;
+
+            for (const item of entries) {
+                if (!item || typeof item !== "object") continue;
+                const capturedAt = tempPhotoDate(item);
+                const hasPhotoData = !!String(item.tempPhotoData || "");
+                const hadPhoto = hasPhotoData || item.tempPhoto === true || item.tempPhotoEver === true;
+
+                if (!hadPhoto) continue;
+
+                if (item.tempPhotoEver !== true) {
+                    item.tempPhotoEver = true;
+                    changed = true;
+                }
+
+                if (!item.tempPhotoRetentionPolicy) {
+                    item.tempPhotoRetentionPolicy = "FULL_30D_LOCAL_CACHE_0D";
+                    changed = true;
+                }
+
+                if (capturedAt) {
+                    const quickUntil = new Date(capturedAt + quickMs).toISOString();
+                    const retentionUntil = new Date(capturedAt + fullMs).toISOString();
+                    if (item.tempPhotoQuickUntil !== quickUntil) {
+                        item.tempPhotoQuickUntil = quickUntil;
+                        changed = true;
+                    }
+                    if (item.tempPhotoRetentionUntil !== retentionUntil) {
+                        item.tempPhotoRetentionUntil = retentionUntil;
+                        changed = true;
+                    }
+                }
+
+                if (hasPhotoData && !item.tempPhotoBytes) {
+                    item.tempPhotoBytes = estimateDataUrlBytes(item.tempPhotoData);
+                    changed = true;
+                }
+
+                const expired = capturedAt > 0 && (now - capturedAt) >= fullMs;
+                if (expired && hasPhotoData) {
+                    delete item.tempPhotoData;
+                    item.tempPhoto = false;
+                    item.tempPhotoPurged = true;
+                    item.tempPhotoPurgedAt = new Date(now).toISOString();
+                    item.tempPhotoRetentionReason = "AUTO_PURGE_30_DAYS";
+                    changed = true;
+                    purged += 1;
+                }
+            }
+
+            return { changed, purged };
+        }
+
+        function scheduleTemperaturePhotoRetentionSync() {
+            clearTimeout(ichefTempPhotoRetentionTimer);
+            ichefTempPhotoRetentionTimer = setTimeout(async () => {
+                if (ichefTempPhotoRetentionSyncing || !Array.isArray(db.temp)) return;
+                ichefTempPhotoRetentionSyncing = true;
+                try {
+                    await API.update("HACCP_TEMP", db.temp);
+                    console.info("[iCHEF HACCP] Rétention photo température synchronisée.");
+                } catch (err) {
+                    console.warn("[iCHEF HACCP] Rétention photo non synchronisée :", err);
+                } finally {
+                    ichefTempPhotoRetentionSyncing = false;
+                }
+            }, 900);
+        }
+
         let haccpDataApplyQueued = false;
         function applyHaccpState(state, { render = true } = {}) {
             const aO = state?.activeOrders || {};
@@ -4039,6 +4161,13 @@ function haccpSectorReturnConfig() {
             applyRegulatoryProfile(settings);
 
             db.temp = aO['HACCP_TEMP']?.data || [];
+            const tempRetention = applyTemperaturePhotoRetention(db.temp);
+            if (tempRetention.changed) {
+                scheduleTemperaturePhotoRetentionSync();
+                if (tempRetention.purged > 0) {
+                    console.info(`[iCHEF HACCP] ${tempRetention.purged} preuve(s) photo température purgée(s) après ${ICHEF_TEMP_PHOTO_RETENTION_DAYS} jours.`);
+                }
+            }
             db.cleaning = aO['HACCP_CLEANING']?.data || [];
             db.trace = aO['HACCP_TRACE']?.data || [];
             db.inventoryLogs = aO['HACCP_INV_LOGS']?.data || [];
@@ -4487,11 +4616,16 @@ function haccpSectorReturnConfig() {
                     ? `<div class="audit-trail">${escapeHaccpUi(l.coolingProduct || "Refroidissement")} · ${Number(l.coolingStartTemp).toLocaleString("fr-FR")} → ${Number(l.coolingEndTemp).toLocaleString("fr-FR")} °C · ${Number(l.coolingDurationMin || 0)} min</div>`
                     : "";
                 const statusClass = l.status === "OK" ? "status-ok" : "status-danger";
+                const tempProofBadge = l.tempPhotoData
+                    ? `<div class="temp-proof-badge">📷 PREUVE PHOTO${Number.isFinite(Number(l.tempOcrValue)) ? ` · OCR ${Number(l.tempOcrValue).toLocaleString("fr-FR")}°C` : ""}</div>`
+                    : (l.tempPhotoEver
+                        ? `<div class="temp-proof-badge">${l.tempPhotoPurged ? "📷 PHOTO PURGÉE · RELEVÉ CONSERVÉ" : "📷 PREUVE PHOTO · SERVEUR"}</div>`
+                        : "");
                 return `
                 <tr class="${l.originalId ? 'strikethrough' : ''}">
-                    <td>${l.date} à ${l.time}</td><td><b>${l.eq}</b>${detail}</td><td><span class="status-badge ${statusClass}">${l.val}°C</span></td>
+                    <td>${l.date} à ${l.time}</td><td><b>${l.eq}</b>${detail}${tempProofBadge}</td><td><span class="status-badge ${statusClass}">${l.val}°C</span></td>
                     <td>${l.status}</td><td><span class="audit-trail">${l.audit}</span>${l.rectified ? `<span class="audit-trail rectified-text">${l.rectified}</span>` : ''}</td>
-                    <td>${!l.originalId && !isCooling ? `<div style="display:flex; gap:5px; flex-direction:column;"><button class="btn-rectify" onclick="initRectify('temp', ${l.id})">Corriger</button><button class="btn-rectify" onclick="printDossier('temp', '${l.eq.replace(/'/g, "\\'")}')">Imprimer</button></div>` : ''}</td>
+                    <td>${!l.originalId && !isCooling ? `<div style="display:flex; gap:5px; flex-direction:column;"><button class="btn-rectify" onclick="initRectify('temp', ${l.id})">Corriger</button>${l.tempPhotoData ? `<button class="btn-rectify temp-proof-action" onclick="viewTemperaturePhoto(${l.id})">📷 Voir preuve</button><button class="btn-rectify temp-proof-action" onclick="downloadTemperatureProof(${l.id})">⬇ Télécharger</button><button class="btn-rectify temp-proof-action" onclick="printTemperatureProof(${l.id})">🖨 Imprimer preuve</button>` : `<button class="btn-rectify" onclick="printDossier('temp', '${l.eq.replace(/'/g, "\\'")}')">Imprimer</button>`}</div>` : ''}</td>
                 </tr>`;
             }).join('');
 
@@ -4716,6 +4850,28 @@ function haccpSectorReturnConfig() {
                 entry.temperatureRuleSource = evaluation.rule.source;
                 entry.temperatureRuleNote = evaluation.rule.note || "";
                 entry.regulatoryProfileApplied = currentRegulatoryProfile?.id || "INTL";
+
+                const tempEvidence = window.ICHEF_TEMP_EVIDENCE?.pending || null;
+                if (tempEvidence?.imgData) {
+                    entry.tempPhoto = true;
+                    entry.tempPhotoEver = true;
+                    entry.tempPhotoData = tempEvidence.imgData;
+                    entry.tempPhotoCapturedAt = tempEvidence.capturedAt || now.toISOString();
+                    entry.tempPhotoFileName = tempEvidence.fileName || "thermometre.jpg";
+                    entry.tempPhotoBytes = estimateDataUrlBytes(tempEvidence.imgData);
+                    entry.tempPhotoRetentionPolicy = "FULL_30D_LOCAL_CACHE_0D";
+                    entry.tempPhotoQuickUntil = new Date(Date.parse(entry.tempPhotoCapturedAt) + ICHEF_TEMP_PHOTO_QUICK_DAYS * 86400000).toISOString();
+                    entry.tempPhotoRetentionUntil = new Date(Date.parse(entry.tempPhotoCapturedAt) + ICHEF_TEMP_PHOTO_RETENTION_DAYS * 86400000).toISOString();
+                    entry.tempPhotoPurged = false;
+                    entry.tempOcrText = tempEvidence.ocrText || "";
+                    entry.tempOcrValue = Number.isFinite(Number(tempEvidence.ocrValue)) ? Number(tempEvidence.ocrValue) : null;
+                    entry.tempOcrEngine = tempEvidence.ocrEngine || "";
+                    entry.tempValueSource = entry.tempOcrValue !== null ? "PHOTO_OCR_CONFIRMED" : "PHOTO_MANUAL_CONFIRMED";
+                    entry.tempValueConfirmed = true;
+                } else {
+                    entry.tempPhoto = false;
+                    entry.tempValueSource = "MANUAL_OR_VOICE";
+                }
             } else if(type === 'cleaning') {
                 entry.zone = document.getElementById('clean-zone').value.trim(); entry.status = document.getElementById('clean-status').value; entry.obs = document.getElementById('clean-obs').value.trim();
                 if(!entry.zone) return alert("Veuillez indiquer la zone nettoyée.");
@@ -4752,8 +4908,12 @@ function haccpSectorReturnConfig() {
             document.querySelectorAll('input[type="text"], input[type="number"]').forEach(i => i.value = "");
             
             let fileInput = document.getElementById('trace-img'); if(fileInput) fileInput.value = '';
+            if (type === "temp") {
+                try { window.ICHEF_TEMP_EVIDENCE?.clearAfterSave?.(); } catch (_) {}
+            }
             
             renderLogs();
+            return entry;
         }
 
         function viewPhoto(id) {
@@ -4915,9 +5075,14 @@ function haccpSectorReturnConfig() {
 
             if(selectedArchiveData.temp.length > 0) {
                 html += `<div class="print-section"><h2>🌡️ Relevés de Températures</h2><table class="print-table">
-                    <thead><tr><th>Date / Heure</th><th>Équipement</th><th>Valeur (°C)</th><th>Statut</th><th>Signature / Audit</th></tr></thead><tbody>`;
+                    <thead><tr><th>Date / Heure</th><th>Équipement</th><th>Valeur (°C)</th><th>Statut</th><th>Preuve photo</th><th>Signature / Audit</th></tr></thead><tbody>`;
                 selectedArchiveData.temp.forEach(l => {
-                    html += `<tr><td>${l.date} ${l.time}</td><td>${l.eq}</td><td>${l.val}°C</td><td>${l.status}</td><td>${l.audit} ${l.rectified ? '<br><i>'+l.rectified+'</i>' : ''}</td></tr>`;
+                    const photoHtml = l.tempPhotoData
+                        ? `<img src="${l.tempPhotoData}" class="print-img"><br><small>${Number.isFinite(Number(l.tempOcrValue)) ? `OCR : ${Number(l.tempOcrValue).toLocaleString("fr-FR")}°C · ` : ""}Valeur confirmée : ${Number(l.val).toLocaleString("fr-FR")}°C</small>`
+                        : (l.tempPhotoEver
+                            ? `<small>Photo preuve purgée automatiquement après ${ICHEF_TEMP_PHOTO_RETENTION_DAYS} jours · valeur écrite et audit conservés.</small>`
+                            : "—");
+                    html += `<tr><td>${l.date} ${l.time}</td><td>${l.eq}</td><td>${l.val}°C</td><td>${l.status}</td><td style="text-align:center;">${photoHtml}</td><td>${l.audit} ${l.rectified ? '<br><i>'+l.rectified+'</i>' : ''}</td></tr>`;
                 });
                 html += `</tbody></table></div>`;
             }
@@ -5424,6 +5589,10 @@ function haccpSectorReturnConfig() {
 
     function hxNext(step = 1) {
         if (!hxEquipment.length) return;
+        // Une photo est toujours liée à l'équipement actuellement affiché.
+        // Si l'utilisateur passe au suivant sans enregistrer, on retire la preuve
+        // pour éviter qu'elle soit associée au mauvais matériel.
+        try { window.ICHEF_TEMP_EVIDENCE?.clear?.(); } catch (_) {}
         hxIndex = (hxIndex + step + hxEquipment.length) % hxEquipment.length;
         hxRender();
     }
@@ -8541,6 +8710,316 @@ body.haccp-real-phone *::after{
   // observateur périodique court uniquement pendant les premières secondes.
   let tries=0;
   const boot=setInterval(()=>{syncShell();if(++tries>40||window.ICHEF_HACCP?.authenticated)clearInterval(boot)},150);
+})();
+</script>
+
+
+<style id="ichef-haccp-temp-photo-v62">
+.hx-photo-actions{width:min(100%,390px);margin:0 auto;display:grid;grid-template-columns:minmax(0,1fr) 48px;gap:8px}
+.hx-photo-retention-note{width:min(100%,390px);margin:5px auto 0;color:#6f7d8d;font-size:.58rem;line-height:1.35;text-align:center}
+.hx-photo-btn,.hx-photo-clear{min-height:44px;border:1px solid #2b394b;border-radius:12px;background:#0d141d;color:#dbe5ef;font-weight:900;font-size:.72rem;letter-spacing:.25px;cursor:pointer;touch-action:manipulation}
+.hx-photo-clear{font-size:1.05rem;color:#ff7e91}
+.hx-temp-photo-proof{width:min(100%,390px);margin:0 auto;display:grid;grid-template-columns:68px minmax(0,1fr);gap:10px;align-items:center;padding:8px;border:1px solid rgba(61,214,160,.28);border-radius:12px;background:rgba(61,214,160,.045);box-sizing:border-box;text-align:left}
+.hx-temp-photo-proof[hidden]{display:none!important}
+.hx-temp-photo-proof img{width:68px;height:52px;object-fit:cover;border-radius:8px;border:1px solid #2a3748;background:#000}
+.hx-temp-photo-proof strong{display:block;color:#6eddb5;font-size:.63rem;letter-spacing:.55px}
+.hx-temp-photo-proof span{display:block;margin-top:3px;color:#9cacbd;font-size:.63rem;line-height:1.35}
+.temp-proof-badge{display:inline-flex;margin-top:5px;padding:4px 7px;border:1px solid rgba(61,214,160,.32);border-radius:999px;color:#62d7ac;background:rgba(61,214,160,.045);font-size:.58rem;font-weight:900}
+.temp-proof-action{border-color:rgba(61,214,160,.35)!important;color:#73dcb7!important}
+@media(max-width:1100px){
+ body.haccp-express-mobile .hx-photo-btn,body.haccp-express-mobile .hx-photo-clear{background:#fff!important;color:#111!important;border-color:#bfc5ca!important}
+ body.haccp-express-mobile .hx-temp-photo-proof{background:#f7f8f8!important;border-color:#cfd4d8!important}
+ body.haccp-express-mobile .hx-temp-photo-proof strong{color:#167a55!important}
+ body.haccp-express-mobile .hx-temp-photo-proof span{color:#5f6368!important}
+ .temp-photo-desktop-control{display:none!important}
+}
+</style>
+<script id="ichef-haccp-temp-photo-v62-js">
+(() => {
+  "use strict";
+
+  const state = {
+    pending: null,
+    tesseractPromise: null,
+    tesseractWorkerPromise: null,
+    ocrBusy: false
+  };
+
+  const $ = id => document.getElementById(id);
+
+  function setPhotoStatus(text, kind="neutral"){
+    const el=$("hx-temp-photo-status");
+    if(el) el.textContent=text;
+    const desk=$("temp-photo-desktop-status");
+    if(desk) desk.textContent=text;
+    const proof=$("hx-temp-photo-proof");
+    if(proof) proof.dataset.state=kind;
+  }
+
+  function syncPreview(){
+    const proof=$("hx-temp-photo-proof");
+    const preview=$("hx-temp-photo-preview");
+    const clear=$("hx-temp-photo-clear");
+    if(!state.pending?.imgData){
+      if(proof) proof.hidden=true;
+      if(preview) preview.removeAttribute("src");
+      if(clear) clear.hidden=true;
+      return;
+    }
+    if(preview) preview.src=state.pending.imgData;
+    if(proof) proof.hidden=false;
+    if(clear) clear.hidden=false;
+  }
+
+  function clearPending(message="Aucune photo sélectionnée."){
+    state.pending=null;
+    const inp=$("hx-temp-photo-input"); if(inp) inp.value="";
+    syncPreview();
+    setPhotoStatus(message);
+  }
+
+  async function compressEvidence(file){
+    return await new Promise((resolve,reject)=>{
+      const reader=new FileReader();
+      reader.onerror=reject;
+      reader.onload=e=>{
+        const img=new Image();
+        img.onerror=reject;
+        img.onload=()=>{
+          try{
+            let maxSide=680;
+            let quality=.52;
+            let output="";
+            for(let pass=0;pass<4;pass++){
+              const scale=Math.min(1,maxSide/Math.max(img.width,img.height));
+              const c=document.createElement("canvas");
+              c.width=Math.max(1,Math.round(img.width*scale));
+              c.height=Math.max(1,Math.round(img.height*scale));
+              const ctx=c.getContext("2d");
+              ctx.drawImage(img,0,0,c.width,c.height);
+              output=c.toDataURL("image/jpeg",quality);
+              // ~120 000 caractères base64 ≈ 90 Ko binaires.
+              if(output.length<=120000) break;
+              maxSide=Math.max(420,Math.round(maxSide*.82));
+              quality=Math.max(.36,quality-.06);
+            }
+            resolve(output);
+          }catch(err){reject(err)}
+        };
+        img.src=e.target.result;
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function dataUrlToBlob(dataUrl){
+    const r=await fetch(dataUrl); return await r.blob();
+  }
+
+  async function preprocessForOcr(dataUrl){
+    const img=await new Promise((resolve,reject)=>{const i=new Image();i.onload=()=>resolve(i);i.onerror=reject;i.src=dataUrl;});
+    const scale=Math.min(2.2,1400/Math.max(1,img.width));
+    const c=document.createElement("canvas");
+    c.width=Math.max(1,Math.round(img.width*scale));c.height=Math.max(1,Math.round(img.height*scale));
+    const ctx=c.getContext("2d",{willReadFrequently:true});ctx.drawImage(img,0,0,c.width,c.height);
+    const d=ctx.getImageData(0,0,c.width,c.height);const a=d.data;
+    for(let i=0;i<a.length;i+=4){
+      const g=Math.round(a[i]*.299+a[i+1]*.587+a[i+2]*.114);
+      const v=g<110?0:g>205?255:Math.max(0,Math.min(255,Math.round((g-110)*2.7)));
+      a[i]=a[i+1]=a[i+2]=v;
+    }
+    ctx.putImageData(d,0,0);
+    return c.toDataURL("image/png");
+  }
+
+  function parseTemperature(text){
+    const raw=String(text||"").replace(/[Oo]/g,"0").replace(/[−–—]/g,"-").replace(/,/g,".");
+    const matches=[...raw.matchAll(/-?\d{1,3}(?:\.\d{1,2})?/g)].map(m=>({raw:m[0],value:Number(m[0])})).filter(x=>Number.isFinite(x.value)&&x.value>=-80&&x.value<=250);
+    if(!matches.length) return null;
+    const scored=matches.map(x=>{
+      let score=0;
+      if(x.raw.includes(".")) score+=5;
+      if(x.value>=-40&&x.value<=80) score+=4;
+      if(Math.abs(x.value)<=40) score+=2;
+      if(/°|c/i.test(raw.slice(Math.max(0,raw.indexOf(x.raw)-3),raw.indexOf(x.raw)+x.raw.length+4))) score+=4;
+      return {...x,score};
+    }).sort((a,b)=>b.score-a.score);
+    return scored[0];
+  }
+
+  async function nativeTextDetect(dataUrl){
+    if(!(window.TextDetector)) return null;
+    try{
+      const blob=await dataUrlToBlob(dataUrl);const bitmap=await createImageBitmap(blob);const detector=new TextDetector();
+      const blocks=await detector.detect(bitmap);bitmap.close?.();
+      const text=blocks.map(b=>b.rawValue||"").join(" ");
+      return text?{text,engine:"NATIVE_TEXT_DETECTOR"}:null;
+    }catch(_){return null}
+  }
+
+  function loadTesseract(){
+    if(window.Tesseract) return Promise.resolve(window.Tesseract);
+    if(state.tesseractPromise) return state.tesseractPromise;
+    state.tesseractPromise=new Promise((resolve,reject)=>{
+      const sc=document.createElement("script");
+      sc.src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js";
+      sc.async=true;sc.onload=()=>resolve(window.Tesseract);sc.onerror=()=>reject(new Error("Moteur OCR indisponible"));
+      document.head.appendChild(sc);
+    });
+    return state.tesseractPromise;
+  }
+
+  async function getTesseractWorker(){
+    if(state.tesseractWorkerPromise) return state.tesseractWorkerPromise;
+    state.tesseractWorkerPromise=(async()=>{
+      const T=await loadTesseract();
+      const worker=await T.createWorker("eng");
+      await worker.setParameters({tessedit_char_whitelist:"0123456789.,-°C"});
+      return worker;
+    })();
+    try{return await state.tesseractWorkerPromise}catch(err){state.tesseractWorkerPromise=null;throw err}
+  }
+
+  async function tesseractDetect(dataUrl){
+    const processed=await preprocessForOcr(dataUrl);
+    const worker=await getTesseractWorker();
+    const out=await worker.recognize(processed);
+    const text=String(out?.data?.text||"").trim();
+    return {text,engine:"TESSERACT_LOCAL"};
+  }
+
+  function applyDetectedValue(value, sourceText, engine){
+    if(!Number.isFinite(value)) return;
+    const hx=$("hx-temp"); if(hx) hx.value=String(value);
+    const legacy=$("temp-val"); if(legacy) legacy.value=String(value);
+    try{hx?.dispatchEvent(new Event("input",{bubbles:true}))}catch(_){}
+    if(state.pending){state.pending.ocrValue=value;state.pending.ocrText=sourceText||"";state.pending.ocrEngine=engine||"";}
+    setPhotoStatus(`Détecté : ${value.toLocaleString("fr-FR")} °C · vérifiez puis ENREGISTRER`,"ok");
+    const confirm=$("hx-confirm");if(confirm)confirm.textContent=`📷 ${value.toLocaleString("fr-FR")} °C détecté sur la photo · confirmation humaine requise`;
+  }
+
+  async function analyzePhoto(){
+    if(!state.pending?.imgData||state.ocrBusy)return;
+    state.ocrBusy=true;setPhotoStatus("Lecture automatique de l’écran du thermomètre…","busy");
+    try{
+      let result=await nativeTextDetect(state.pending.imgData);
+      let parsed=result?parseTemperature(result.text):null;
+      if(!parsed){
+        result=await tesseractDetect(state.pending.imgData);
+        parsed=parseTemperature(result?.text||"");
+      }
+      state.pending.ocrText=result?.text||"";state.pending.ocrEngine=result?.engine||"";
+      if(parsed){applyDetectedValue(parsed.value,state.pending.ocrText,state.pending.ocrEngine)}
+      else{
+        state.pending.ocrValue=null;
+        setPhotoStatus("Photo conservée · température non lue automatiquement. Saisissez la valeur puis ENREGISTRER.","review");
+      }
+    }catch(err){
+      console.warn("[iCHEF HACCP] OCR température :",err);
+      setPhotoStatus("Photo conservée · lecture automatique indisponible. Saisissez la valeur puis ENREGISTRER.","review");
+    }finally{state.ocrBusy=false}
+  }
+
+  async function handleFile(file){
+    if(!file)return;
+    setPhotoStatus("Compression de la photo…","busy");
+    try{
+      const imgData=await compressEvidence(file);
+      state.pending={imgData,fileName:file.name||"thermometre.jpg",capturedAt:new Date().toISOString(),ocrText:"",ocrValue:null,ocrEngine:""};
+      syncPreview();
+      await analyzePhoto();
+    }catch(err){
+      clearPending("Impossible de lire cette photo.");
+      alert("Photo illisible. Reprenez une photo bien cadrée sur l’écran du thermomètre.");
+    }
+  }
+
+  function openPicker(){const input=$("hx-temp-photo-input");if(input){input.value="";input.click();}}
+
+  window.ICHEF_TEMP_EVIDENCE={
+    get pending(){return state.pending},
+    openPicker,
+    clearAfterSave(){clearPending("Photo enregistrée avec le relevé.")},
+    clear(){clearPending()}
+  };
+
+  window.viewTemperaturePhoto=function(id){
+    const items=(typeof db!=="undefined"&&Array.isArray(db?.temp))?db.temp:[];
+    const item=items.find(x=>String(x.id)===String(id));
+    if(!item?.tempPhotoData)return;
+    const img=$("photo-viewer-img");if(img)img.src=item.tempPhotoData;
+    $("photo-modal")?.classList.add("open");
+  };
+
+  function safeFileName(value){return String(value||"temperature").normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9_-]+/gi,"_").replace(/^_+|_+$/g,"").slice(0,80)||"temperature"}
+  function wrapCanvasText(ctx,text,x,y,maxWidth,lineHeight,maxLines=4){
+    const words=String(text||"").split(/\s+/);let line="",lines=[];
+    for(const word of words){const test=line?line+" "+word:word;if(ctx.measureText(test).width>maxWidth&&line){lines.push(line);line=word}else line=test}
+    if(line)lines.push(line);lines=lines.slice(0,maxLines);lines.forEach((l,i)=>ctx.fillText(l,x,y+i*lineHeight));return y+lines.length*lineHeight;
+  }
+  async function proofCanvas(item){
+    const c=document.createElement("canvas");c.width=1240;c.height=1754;const ctx=c.getContext("2d");
+    ctx.fillStyle="#fff";ctx.fillRect(0,0,c.width,c.height);ctx.fillStyle="#111";
+    ctx.font="900 54px Arial";ctx.fillText("iCHEF HACCP",70,90);ctx.font="700 28px Arial";ctx.fillText("PREUVE DE RELEVÉ DE TEMPÉRATURE",70,138);
+    ctx.strokeStyle="#111";ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(70,165);ctx.lineTo(1170,165);ctx.stroke();
+    let y=225;ctx.font="700 25px Arial";
+    const rows=[
+      ["Équipement",item.eq],["Température confirmée",`${Number(item.val).toLocaleString("fr-FR")} °C`],["Statut",item.status],["Date / heure",`${item.date} ${item.time}`],["Secteur",item.dept],["Utilisateur",String(item.audit||"").replace(/^Saisi par\s*/i,"")],["Profil réglementaire",item.regulatoryProfileApplied||item.regulatoryProfile||"—"]
+    ];
+    for(const [lab,val] of rows){ctx.fillStyle="#555";ctx.font="700 22px Arial";ctx.fillText(lab.toUpperCase(),70,y);ctx.fillStyle="#111";ctx.font="800 30px Arial";y=wrapCanvasText(ctx,val||"—",70,y+38,1100,36,2)+22;}
+    if(Number.isFinite(Number(item.tempOcrValue))){ctx.fillStyle="#166b4a";ctx.font="800 25px Arial";ctx.fillText(`LECTURE PHOTO DÉTECTÉE : ${Number(item.tempOcrValue).toLocaleString("fr-FR")} °C · VALEUR CONFIRMÉE PAR L’UTILISATEUR`,70,y);y+=48;}
+    if(item.tempPhotoData){
+      const img=await new Promise((resolve,reject)=>{const i=new Image();i.onload=()=>resolve(i);i.onerror=reject;i.src=item.tempPhotoData});
+      const boxX=70,boxY=y+15,boxW=1100,boxH=Math.min(720,1754-boxY-150);const sc=Math.min(boxW/img.width,boxH/img.height);const w=img.width*sc,h=img.height*sc;
+      ctx.fillStyle="#f5f5f5";ctx.fillRect(boxX,boxY,boxW,boxH);ctx.drawImage(img,boxX+(boxW-w)/2,boxY+(boxH-h)/2,w,h);ctx.strokeStyle="#bbb";ctx.lineWidth=2;ctx.strokeRect(boxX,boxY,boxW,boxH);
+      y=boxY+boxH+40;
+    }
+    const tid=(typeof tenantID!=="undefined"&&tenantID)?tenantID:(localStorage.getItem("ichef_tenant_id")||"");
+    ctx.fillStyle="#555";ctx.font="20px Arial";ctx.fillText(`Preuve générée le ${new Date().toLocaleString("fr-FR")} · Établissement ${String(tid)}`,70,1690);
+    return c;
+  }
+  function findTemp(id){const items=(typeof db!=="undefined"&&Array.isArray(db?.temp))?db.temp:[];return items.find(x=>String(x.id)===String(id))||null}
+  window.downloadTemperatureProof=async function(id){
+    const item=findTemp(id);if(!item)return;
+    const c=await proofCanvas(item);c.toBlob(blob=>{if(!blob)return;const a=document.createElement("a");const u=URL.createObjectURL(blob);a.href=u;a.download=`HACCP_PREUVE_${safeFileName(item.eq)}_${String(item.date||"").replace(/\//g,"-")}.png`;a.click();setTimeout(()=>URL.revokeObjectURL(u),1500)},"image/png");
+  };
+  window.printTemperatureProof=async function(id){
+    const item=findTemp(id);if(!item)return;const c=await proofCanvas(item);const url=c.toDataURL("image/png");
+    const w=window.open("","_blank");if(!w)return alert("Autorisez les fenêtres pour imprimer la preuve.");
+    try{w.opener=null}catch(_){}
+    w.document.write(`<html><head><title>Preuve HACCP</title><style>@page{size:A4 portrait;margin:8mm}body{margin:0;background:#fff}img{width:100%;height:auto;display:block}</style></head><body><img src="${url}" onload="setTimeout(()=>window.print(),250)"></body></html>`);w.document.close();
+  };
+
+  document.addEventListener("DOMContentLoaded",()=>{
+    $("hx-temp-photo-btn")?.addEventListener("click",openPicker);
+    $("hx-temp-photo-clear")?.addEventListener("click",()=>clearPending());
+    $("hx-temp-photo-input")?.addEventListener("change",e=>handleFile(e.target.files?.[0]));
+  },{once:true});
+})();
+</script>
+
+
+<script id="ichef-haccp-temp-photo-retention-v63">
+(() => {
+  "use strict";
+  async function runRetentionMaintenance(){
+    try{
+      if(!Array.isArray(window.db?.temp) && !(typeof db !== "undefined" && Array.isArray(db.temp))) return;
+      const rows = (typeof db !== "undefined" && Array.isArray(db.temp)) ? db.temp : window.db.temp;
+      const result = typeof applyTemperaturePhotoRetention === "function"
+        ? applyTemperaturePhotoRetention(rows)
+        : {changed:false,purged:0};
+      if(result.changed && typeof scheduleTemperaturePhotoRetentionSync === "function"){
+        scheduleTemperaturePhotoRetentionSync();
+        try{ typeof renderLogs === "function" && renderLogs(); }catch(_){}
+      }
+    }catch(err){
+      console.warn("[iCHEF HACCP] Maintenance rétention photo :",err);
+    }
+  }
+  document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible")runRetentionMaintenance()});
+  window.addEventListener("focus",runRetentionMaintenance);
+  setInterval(runRetentionMaintenance, 6 * 60 * 60 * 1000);
 })();
 </script>
 
