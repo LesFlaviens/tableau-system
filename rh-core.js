@@ -5124,6 +5124,8 @@ const urlParamsJS = new URLSearchParams(window.location.search);
         let rhSymbioseHeartbeatV172 = null;
         let rhSymbiosePresenceV172 = {};
         let rhSymbioseLastPublishV172 = 0;
+        // V250 : mémoriser notre adaptateur local pour éviter une publication récursive.
+        let rhSymbioseLocalBusV250 = null;
         function rhSymbioseDeviceIdV172() {
             const existing =
                 localStorage.getItem('ichef_device_id') ||
@@ -5402,8 +5404,11 @@ const urlParamsJS = new URLSearchParams(window.location.search);
         ) {
             const bus =
                 window.ICHEF_BUS;
+            // V250 : si ICHEF_BUS est notre adaptateur local,
+            // son publish() rappelle cette fonction. Ne jamais lui déléguer.
             if (
                 bus &&
+                bus !== rhSymbioseLocalBusV250 &&
                 typeof bus.publish === 'function'
             ) {
                 return Promise.resolve(
@@ -5613,7 +5618,7 @@ const urlParamsJS = new URLSearchParams(window.location.search);
             if (
                 !window.ICHEF_BUS
             ) {
-                window.ICHEF_BUS = {
+                rhSymbioseLocalBusV250 = {
                     socket:
                         rhSocket,
                     tenantID:
@@ -5644,6 +5649,7 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                         () =>
                             scheduleRhStaffRefresh()
                 };
+                window.ICHEF_BUS = rhSymbioseLocalBusV250;
             }
             clearInterval(
                 rhSymbioseHeartbeatV172
@@ -17265,4 +17271,4 @@ window.__ICHEF_RH_CORE_BUILD__='RH-CORE-V247-PLANNING-INDIVIDUEL-SYNC-MODIFIABLE
 
 
 // iCHEF RH CORE V249 · actions feuilles d'heures + correction motivée + photo interne
-window.__ICHEF_RH_CORE_BUILD__='RH-CORE-V249-HEURES-ACTIONS-PHOTO-ACTIVE-SECURE';
+window.__ICHEF_RH_CORE_BUILD__='RH-CORE-V250-BOUCLE-SYMBIOSE-CORRIGEE';
