@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>iCHEF OS — Mon espace collaborateur</title>
-<meta name="ichef-build" content="V220-PLANNING-SEMAINE-JOUR-HISTORIQUE">
+<meta name="ichef-build" content="V221-PLANNING-SEMAINE-JOUR-HISTORIQUE">
 
 <script id="ichef-staff-pwa-capture-v208">
 // Capture precoce : l'invite Android peut etre emise avant la fin du chargement.
@@ -5207,9 +5207,13 @@ html body .staff-pwa-required-gate:not([hidden]){
 
       <article class="card" id="today-card">
         <div class="card-header">
-          <h3>Aujourd’hui</h3>
+          <h3 id="ich221-home-heading">Aujourd’hui</h3>
           <span class="spacer"></span>
-          <span class="link" id="today-label">Aujourd'hui</span>
+          <div class="ich221-home-datebar" aria-label="Parcours des journées du mois">
+            <button type="button" class="ich221-home-step" id="ich221-day-prev" aria-label="Jour précédent">‹</button>
+            <span class="link" id="today-label" aria-live="polite">Aujourd’hui</span>
+            <button type="button" class="ich221-home-step" id="ich221-day-next" aria-label="Jour suivant">›</button>
+          </div>
         </div>
         <div class="card-body">
           <div class="shift">
@@ -14272,5 +14276,281 @@ body.staff-app-v82 #planning > .card-header {display:grid!important;}
 }
 @media(prefers-reduced-motion:reduce){#planning .spv220-weekline{transition:none;}}
 </style>
+
+<style id="ichef-staff-v221-home-daily-swipe-style">
+/* V221 – Carrousel du mois en cours, exclusivement dans l'accueil. */
+#today-card .ich221-home-datebar{display:flex;align-items:center;gap:5px;min-width:0;max-width:100%;margin-left:auto}
+#today-card #today-label{display:flex;align-items:center;justify-content:center;white-space:normal;line-height:1.25;min-width:0;max-width:185px;text-align:center;min-height:44px;padding:5px 6px;font-size:11px;font-weight:750;color:#f4d48b}
+#today-card .ich221-home-step{appearance:none;flex:0 0 42px;width:42px;min-height:44px;border:1px solid rgba(232,194,110,.25);border-radius:10px;background:#141f20;color:#f5d68e;font-size:24px;line-height:1;cursor:pointer}
+#today-card .ich221-home-step:disabled{opacity:.30;cursor:not-allowed}
+#today-card .ich221-home-step:focus-visible,#today-card .ich221-slide:focus-visible{outline:3px solid #5ed9ff;outline-offset:2px}
+#today-card .ich221-swiper{display:flex;width:100%;min-width:0;max-width:100%;gap:0;overflow-x:auto;overflow-y:hidden;scroll-snap-type:x mandatory;scrollbar-width:none;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch;touch-action:pan-x pan-y}
+#today-card .ich221-swiper::-webkit-scrollbar{display:none}
+#today-card .ich221-slide{flex:0 0 100%;width:100%;min-width:0;max-width:100%;scroll-snap-align:start;scroll-snap-stop:always;box-sizing:border-box;display:flex;flex-direction:column;justify-content:center;gap:9px;padding:3px 1px 8px}
+#today-card .ich221-slide-status{min-height:23px;display:flex;align-items:center;font-size:11px;color:#b4c2bd;font-weight:700;gap:7px;line-height:1.3}
+#today-card .ich221-slide-status[data-status="work"]{color:#83dfb2}
+#today-card .ich221-slide-status[data-status="off"]{color:#aeb4b7}
+#today-card .ich221-slide-status[data-status="holiday"]{color:#f8d18a}
+#today-card .ich221-slide-status[data-status="leave"]{color:#80d2f5}
+#today-card .ich221-slide-status[data-status="sick"]{color:#ffa1a5}
+#today-card .ich221-slide .shift{min-width:0;max-width:100%;width:100%;margin:0}
+#today-card .ich221-slide:not(.ich221-slide-today) .shift-time{font-size:clamp(18px,5vw,27px)!important;white-space:normal;overflow-wrap:anywhere;line-height:1.25}
+#today-card .ich221-slide:not(.ich221-slide-today) .shift-meta{font-size:12px!important;overflow-wrap:anywhere}
+#today-card .ich221-swipe-hint{font-size:10px;line-height:1.45;text-align:center;color:#b2beba;padding:9px 0 0;letter-spacing:.1px}
+#today-card .ich221-swipe-hint strong{color:#e6c77e;font-size:10px}
+#today-card .ich221-home-datebar .link{border:none!important;background:transparent!important;box-shadow:none!important}
+@media(max-width:390px){
+ #today-card .card-header{gap:4px!important}
+ #today-card .ich221-home-step{width:39px;flex-basis:39px}
+ #today-card #today-label{font-size:10px;max-width:154px}
+ #today-card .ich221-slide:not(.ich221-slide-today) .shift-time{font-size:19px!important}
+}
+@media(prefers-reduced-motion:reduce){#today-card .ich221-swiper{scroll-behavior:auto}}
+</style>
+<script id="ichef-staff-v221-home-daily-swipe-script">
+(() => {
+  'use strict';
+  // Page ACCUEIL uniquement. Les API, sessions, appareils et données RH restent inchangés.
+  const root = document.getElementById('today-card');
+  if (!root || typeof renderToday !== 'function') return;
+  if (window.__ICHEF_HOME_MONTH_SWIPER_V221__) return;
+  window.__ICHEF_HOME_MONTH_SWIPER_V221__ = true;
+
+  const pad = n => String(n).padStart(2, '0');
+  const iso = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+  const month = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}`;
+  const asDate = (y,m,d) => new Date(y,m,d,12,0,0,0);
+  const dateText = date => new Intl.DateTimeFormat('fr-FR',
+    {weekday:'short',day:'numeric',month:'long'}).format(date);
+  const homeHeading = document.getElementById('ich221-home-heading');
+  const todayLabel = document.getElementById('today-label');
+  const prev = document.getElementById('ich221-day-prev');
+  const next = document.getElementById('ich221-day-next');
+  const cardBody = root.querySelector('.card-body');
+  const actualTodayShift = cardBody?.querySelector('.shift');
+  const clockButton = document.getElementById('service-btn');
+  const state = {
+    track: null, slides: [], dates: [], selected: 0, todayIndex: 0,
+    todayIso: '', month: '', identity: '', timer: null,
+    loadedAt: 0, requestSequence: 0, resizeObserver: null
+  };
+  if (!cardBody || !actualTodayShift) return;
+
+  const currentIdentity = () => {
+    try {
+      if (!requireStaffSession()) return '';
+      const profile = readProfile();
+      const token = staffAuthToken();
+      if (!profile?.id || !token) return '';
+      // Comparaison locale uniquement : rien n'est logué ni envoyé ailleurs.
+      return `${currentTenant()}|${profile.id}|${token}`;
+    } catch (_) { return ''; }
+  };
+  const normalize = value => String(value || '').normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '').toUpperCase();
+
+  function stateFor(row) {
+    if (!row) return {label:'Non publié',category:'unknown'};
+    const status = normalize(row.status || '');
+    const label = normalize(row.statusLabel || row.status || '');
+    if (/FERIE|HOLIDAY/.test(label+' '+status)) return {label:'Férié',category:'holiday'};
+    if (/MALAD/.test(label+' '+status)) return {label:'Maladie',category:'sick'};
+    if (/CONG|VAC|ABSEN/.test(label+' '+status)) return {label:'Congé / absence',category:'leave'};
+    if (/FORMATION/.test(label+' '+status)) return {label:'Formation',category:'work'};
+    if (status === 'OFF_SOIR') return {label:'Travail · matin',category:'work'};
+    if (status === 'OFF_MATIN') return {label:'Travail · soir',category:'work'};
+    if (status === 'PRESENT' || /TRAVAIL|SERVICE/.test(label) || Number(row.plannedHours || 0)>0)
+      return {label:'Travail',category:'work'};
+    if (/OFF|REPOS|RECUP|RTT/.test(label+' '+status))
+      return {label:'OFF / repos',category:'off'};
+    return {label:String(row.statusLabel || row.status || 'Non publié'),category:'unknown'};
+  }
+  function placeholderHTML() {
+    // Seulement une structure HTML statique ; les informations RH passent par textContent.
+    return `<div class="ich221-slide-status" data-status="unknown">Chargement du planning RH…</div>
+      <div class="shift">
+        <div><div class="shift-time ich221-time">—</div>
+          <div class="shift-meta"><span class="ich221-position">Poste non renseigné</span> ·
+            <span class="ich221-zone">Zone non précisée</span></div></div>
+        <div class="shift-side"><div><strong class="ich221-planned">—</strong> prévues</div>
+          <div style="margin-top:6px"><strong class="ich221-worked">—</strong> effectuées</div>
+          <div class="progress"><span style="width:0%"></span></div></div>
+      </div>`;
+  }
+  function teardown() {
+    state.requestSequence++;
+    state.resizeObserver?.disconnect(); state.resizeObserver = null;
+    if (state.track) {
+      // Le shift original conserve ses IDs attendus par renderToday().
+      cardBody.insertBefore(actualTodayShift, clockButton || state.track);
+      state.track.remove();
+    }
+    state.track=null; state.slides=[]; state.dates=[];
+    state.loadedAt=0;
+    if (state.timer) { clearTimeout(state.timer); state.timer=null; }
+    root.querySelector('.ich221-swipe-hint')?.remove();
+    if (clockButton) clockButton.hidden=false;
+  }
+  function selectedIndex() {
+    if(!state.track || !state.track.clientWidth) return state.selected;
+    return Math.max(0,Math.min(state.slides.length-1,
+      Math.round(state.track.scrollLeft/state.track.clientWidth)));
+  }
+  function updateHeader() {
+    const date=state.dates[state.selected];
+    if (!date) return;
+    const isCurrent=state.selected===state.todayIndex;
+    if (homeHeading) homeHeading.textContent=isCurrent?'Aujourd’hui':'Ma journée';
+    if (todayLabel) todayLabel.textContent=dateText(date);
+    if (prev) prev.disabled=state.selected===0;
+    if (next) next.disabled=state.selected>=state.slides.length-1;
+    if (clockButton) clockButton.hidden=!isCurrent;
+    state.slides.forEach((el,i)=>el.setAttribute('aria-current',i===state.selected?'date':'false'));
+    const count=root.querySelector('.ich221-swipe-count');
+    if (count) count.textContent=`${state.selected+1} / ${state.slides.length}`;
+  }
+  function select(index,animated=true) {
+    if (!state.track) return;
+    const value=Math.max(0,Math.min(state.slides.length-1,index));
+    state.selected=value;
+    updateHeader();
+    if (state.track.clientWidth) state.track.scrollTo({
+      left:value*state.track.clientWidth,
+      behavior:animated && !window.matchMedia('(prefers-reduced-motion: reduce)').matches?'smooth':'instant'
+    });
+  }
+  function prepare() {
+    const now=new Date();
+    const identity=currentIdentity();
+    if (!identity) { if (state.track) teardown(); state.identity=''; return false; }
+    const monthKey=month(now),todayIso=iso(now);
+    if (state.track && identity===state.identity && monthKey===state.month && todayIso===state.todayIso)
+      return true;
+    teardown();
+    state.identity=identity; state.month=monthKey; state.todayIso=todayIso;
+    state.todayIndex=now.getDate()-1;
+    state.selected=state.todayIndex;
+    const length=new Date(now.getFullYear(),now.getMonth()+1,0).getDate();
+    const track=document.createElement('div');
+    track.className='ich221-swiper';
+    track.setAttribute('aria-label','Journées du mois · balayez horizontalement');
+    track.setAttribute('tabindex','0');
+    const dates=[];
+    for (let i=0;i<length;i++) {
+      const date=asDate(now.getFullYear(),now.getMonth(),i+1);
+      const slide=document.createElement('div');
+      slide.className='ich221-slide'+(i===state.todayIndex?' ich221-slide-today':'');
+      slide.dataset.day=iso(date);
+      slide.setAttribute('aria-label',dateText(date));
+      const status=document.createElement('div');
+      status.className='ich221-slide-status';
+      status.dataset.status='unknown';
+      status.textContent=i===state.todayIndex?'Aujourd’hui':'Chargement du planning RH…';
+      if (i===state.todayIndex) {
+        slide.append(status,actualTodayShift);
+      } else {
+        slide.innerHTML=placeholderHTML();
+      }
+      track.appendChild(slide);dates.push(date);
+    }
+    cardBody.insertBefore(track,clockButton || cardBody.firstChild);
+    state.track=track;state.slides=Array.from(track.children);state.dates=dates;
+    const hint=document.createElement('div');
+    hint.className='ich221-swipe-hint';
+    hint.innerHTML='‹ Balayez pour parcourir les journées du mois › · <strong class="ich221-swipe-count"></strong>';
+    track.insertAdjacentElement('afterend',hint);
+    track.addEventListener('scroll',()=>{
+      if(state.timer)clearTimeout(state.timer);
+      state.timer=setTimeout(()=>{
+        const index=selectedIndex();
+        if(index!==state.selected){state.selected=index;updateHeader();}
+      },45);
+    },{passive:true});
+    track.addEventListener('keydown',event=>{
+      if(event.key==='ArrowLeft' || event.key==='ArrowRight'){
+        event.preventDefault();select(state.selected+(event.key==='ArrowRight'?1:-1));
+      }
+    });
+    if ('ResizeObserver' in window) {
+      state.resizeObserver=new ResizeObserver(()=>{
+        if (state.track?.clientWidth) state.track.scrollLeft=state.selected*state.track.clientWidth;
+      });
+      state.resizeObserver.observe(track);
+    }
+    requestAnimationFrame(()=>select(state.todayIndex,false));
+    return true;
+  }
+  function renderRow(slide,row) {
+    const badge=slide.querySelector('.ich221-slide-status');
+    const status=stateFor(row);
+    if (badge) {badge.textContent=status.label;badge.dataset.status=status.category;}
+    if(slide.classList.contains('ich221-slide-today')) return;
+    const time=slide.querySelector('.ich221-time');
+    const position=slide.querySelector('.ich221-position');
+    const zone=slide.querySelector('.ich221-zone');
+    const planned=slide.querySelector('.ich221-planned');
+    const worked=slide.querySelector('.ich221-worked');
+    const isWork=status.category==='work';
+    const rawTime=String(row?.time || row?.hours || '').trim();
+    if (time) time.textContent=!row?'Planning non publié':isWork ? (rawTime && !/^re?pos$/i.test(rawTime) ? rawTime : 'Horaires non renseignés') : status.label;
+    if (position) position.textContent=isWork?String(row?.position||row?.poste||'Poste non renseigné'):'Aucun poste prévu';
+    if (zone) zone.textContent=isWork?String(row?.location||row?.zone||'Zone non précisée'):'Pas de service';
+    if (planned) planned.textContent=row?formatHours(row.plannedHours):'—';
+    // Aucun pointage réel provenant de cette API : ne pas inventer d'heures effectuées.
+    if (worked) worked.textContent='—';
+  }
+  async function loadMonth(force=false) {
+    if(!state.track || !currentIdentity()) return;
+    if(!force && state.loadedAt && Date.now()-state.loadedAt<60000) return;
+    const requestSeq=++state.requestSequence;
+    const requestedMonth=state.month, requestedIdentity=state.identity;
+    try {
+      const response=await fetch(`${SERVER_URL}/api/staff/planning-archive?month=${encodeURIComponent(requestedMonth)}`,
+        {method:'GET',headers:authHeaders(),credentials:'omit',cache:'no-store'});
+      const data=await response.json().catch(()=>({}));
+      if (!response.ok || data.success!==true) throw new Error(data.error||'Planning indisponible.');
+      if (!state.track || requestSeq!==state.requestSequence || currentIdentity()!==requestedIdentity || state.month!==requestedMonth) return;
+      const rows=new Map();
+      for(const row of Array.isArray(data.days)?data.days:[]){
+        const value=String(row?.date||row?.isoDate||'').slice(0,10);
+        if(/^\d{4}-\d{2}-\d{2}$/.test(value))rows.set(value,row);
+      }
+      state.slides.forEach(slide=>renderRow(slide,rows.get(slide.dataset.day)||null));
+      state.loadedAt=Date.now();
+    }catch(error){
+      if(requestSeq!==state.requestSequence || currentIdentity()!==requestedIdentity)return;
+      state.slides.forEach(slide=>{
+        if(slide.classList.contains('ich221-slide-today'))return;
+        const badge=slide.querySelector('.ich221-slide-status');
+        if(badge){badge.textContent='Planning indisponible';badge.dataset.status='unknown';}
+        const time=slide.querySelector('.ich221-time');
+        if(time) time.textContent='—';
+      });
+      console.warn('[iCHEF Staff accueil V221] Chargement des journées indisponible.');
+    }
+  }
+  prev?.addEventListener('click',()=>select(state.selected-1));
+  next?.addEventListener('click',()=>select(state.selected+1));
+  const oldRenderToday=renderToday;
+  renderToday=function(today){
+    const result=oldRenderToday.apply(this,arguments);
+    if (prepare()) {
+      updateHeader();
+      void loadMonth();
+    }
+    return result;
+  };
+  // Le dashboard peut déjà être synchronisé si ce script se charge après connexion.
+  function initIfAuthenticated() {
+    if(currentIdentity() && prepare()) void loadMonth();
+  }
+  if(document.readyState==='loading')
+    document.addEventListener('DOMContentLoaded',initIfAuthenticated,{once:true});
+  else initIfAuthenticated();
+  document.addEventListener('visibilitychange',()=>{
+    if(!document.hidden && currentIdentity() && prepare()) void loadMonth(true);
+  });
+})();
+</script>
 </body>
 </html>
