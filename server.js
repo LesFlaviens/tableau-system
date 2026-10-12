@@ -35647,6 +35647,49 @@ app.put('/api/staff/haccp/manage/:staffId',async(req,res)=>{
 });
 // ============================================================================
 
+// ============================================================================
+// V226 — SSO responsable HACCP depuis iCHEF Admin et les modules Chef.
+// Le navigateur n'est PAS une preuve d'identité. Seule une session signée,
+// associée au bon établissement et au bon appareil, ouvre cet endpoint.
+// Rien n'est accordé sur la base de ?from=cuisine / ?sector / User-Agent.
+// Aucun PIN n'est transmis ou réutilisé par HACCP.
+// ============================================================================
+app.get('/api/chef/context',async(req,res)=>{
+ try{
+  res.setHeader('Cache-Control','no-store');
+  const auth=await ichefOpsLoadAuthorizedSession(req);
+  if(!auth.ok)return res.status(401).json({success:false,error:'Session iCHEF signée requise.'});
+  const roleFields=[auth.staff?.role,auth.staff?.position,auth.staff?.fonction,auth.staff?.title,auth.staff?.rank].filter(Boolean);
+  const role=roleFields.join(' ').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[\s-]+/g,'_');
+  const isChef=/(^|_)(SOUS_CHEF|CHEF_CUISINE|CHEF_DE_CUISINE|CHEF_PATISSIER|CHEF_PATISSERIE|CHEF_DE_PATISSERIE|CHEF_BAR|CHEF_DE_BAR|CHEF_EXECUTIF|HEAD_CHEF)(_|$)/.test(role) || roleFields.some(x=>String(x).trim().toUpperCase()==='CHEF');
+  const isManager=ichefHaccp223Manager(auth);
+  // Un cuisinier ou serveur ne doit pas obtenir un contexte de responsable.
+  if(!isManager&&!isChef)return res.status(403).json({success:false,error:'Accès HACCP responsable non autorisé.'});
+  const sectors=await ichefHaccp223Access(auth);
+  if(!sectors?.sectors?.length)return res.status(403).json({success:false,error:'Aucun secteur HACCP attribué.'});
+  const self=ichefOpsSelf(auth);
+  const master=String(auth.claims?.staffId||'').startsWith('MASTER:');
+  // Secteur établi par le serveur via le profil RH (pas l'URL).
+  let deptKey=ichefHaccp223Dept([auth.staff?.dept,auth.staff?.department,auth.staff?.service,auth.staff?.role].filter(Boolean).join(' '));
+  if(!deptKey)deptKey=ichefHaccp223Dept(role);
+  if(!deptKey&&master)deptKey='ADMIN';
+  if(!deptKey&&sectors.sectors.length===1)deptKey=sectors.sectors[0];
+  return res.json({
+   success:true,
+   self:{id:self.id,name:self.name,role:self.role,deptKey,dept:self.dept||''},
+   allowedSectors:sectors.sectors,
+   manager:Boolean(isManager||isChef),
+   // Désignation d'une connexion responsable validée côté serveur.
+   accessChannel:'CHEF_DESKTOP',
+   fullDomainAccess:Boolean(master),
+   build:'HACCP-V226-RESPONSABLE-SSO'
+  });
+ }catch(error){
+  console.error('[HACCP V226 chef context]',error?.message||error);
+  return res.status(503).json({success:false,error:'Session responsable momentanément indisponible.'});
+ }
+});
+
 app.get('/api/ops/context',async(req,res)=>{
 try{
 res.setHeader('Cache-Control','no-store');
