@@ -35404,6 +35404,139 @@ if(supplierManage&&!caps.manageSuppliers){res.status(403).json({success:false,er
 return {...auth,caps,self:ichefOpsSelf(auth)};
 }
 
+
+// ============================================================================
+// V223 — DROITS HACCP STAFF. API isolée, session signée + appareil + tenant.
+// Ne remplace pas les routes historiques /get-current-state et /update-order.
+// Les routes historiques doivent être migrées avant revendication de sécurité globale.
+// ============================================================================
+const ICHEF_HACCP_223_SECTORS = ['CUISINE','PATISSERIE','BAR','SERVICE'];
+const ICHEF_HACCP_223_DATA_TABLES = ['HACCP_TEMP','HACCP_CLEANING','HACCP_TRACE'];
+const ichefHaccp223Schema=new mongoose.Schema({
+ tenantID:{type:String,required:true,index:true},staffId:{type:String,required:true},
+ sectors:{type:[String],default:[]},temporary:{type:[new mongoose.Schema({sector:String,expiresAt:Date},{_id:false})],default:[]},
+ disabled:{type:Boolean,default:false},updatedBy:String,updatedAt:{type:Date,default:Date.now}
+},{minimize:false});
+ichefHaccp223Schema.index({tenantID:1,staffId:1},{unique:true});
+const IchefHaccp223Grant=mongoose.models.IchefHaccp223Grant||mongoose.model('IchefHaccp223Grant',ichefHaccp223Schema);
+function ichefHaccp223Dept(text=''){
+ const s=String(text||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toUpperCase();
+ if(/SERVICE|SALLE|SERVEUR|SERVEUSE|WAITER|RESTAURANT|CHEF DE RANG/.test(s))return 'SERVICE';
+ if(/CUISINE|CUISINIER|COMMIS|KITCHEN|CHEF DE CUISINE|SOUS CHEF/.test(s))return 'CUISINE';
+ if(/PATISSERIE|PATISSIER|PASTRY/.test(s))return 'PATISSERIE';
+ if(/BAR|BARMAN|BARMAID/.test(s))return 'BAR';
+ return '';
+}
+function ichefHaccp223Manager(auth){
+ const id=String(auth?.claims?.staffId||'');
+ const perm=auth?.staff?.permissions?.haccp?.manage===true || auth?.staff?.permissions?.['haccp.manage']===true;
+ const named=/(RESPONSABLE\s*HACCP|SUPERVISEUR\s*HACCP)/i.test([auth?.staff?.role,auth?.staff?.position,auth?.staff?.fonction].join(' '));
+ return id.startsWith('MASTER:') || ichefTerminalStaffIsManager(auth?.staff||{}) || perm || named;
+}
+function ichefHaccp223SelfId(auth){return String(auth?.claims?.staffId||auth?.staff?.id||'');}
+async function ichefHaccp223Access(auth){
+ const sid=ichefHaccp223SelfId(auth);
+ if(ichefHaccp223Manager(auth))return {manager:true,sectors:[...ICHEF_HACCP_223_SECTORS],assigned:true};
+ const grant=await IchefHaccp223Grant.findOne({tenantID:auth.tenantID,staffId:sid}).lean();
+ if(grant?.disabled)return {manager:false,sectors:[],assigned:true};
+ const base=grant?grant.sectors:[ichefHaccp223Dept(ichefStaffChatMemberDept(auth.staff)||auth.staff?.role||'')];
+ const now=Date.now();
+ const temporary=(grant?.temporary||[]).filter(x=>new Date(x?.expiresAt||0).getTime()>now).map(x=>x.sector);
+ return {manager:false,sectors:[...new Set([...base,...temporary].filter(x=>ICHEF_HACCP_223_SECTORS.includes(x)))],assigned:!!grant};
+}
+async function ichefHaccp223Auth(req,res,{manager=false}={}){
+ const auth=await ichefOpsLoadAuthorizedSession(req);
+ if(!auth.ok){res.status(401).json({success:false,error:auth.error||'Session Staff non reconnue.'});return null;}
+ const access=await ichefHaccp223Access(auth);
+ if(manager&&!access.manager){res.status(403).json({success:false,error:'Réservé aux responsables HACCP.'});return null;}
+ if(!manager&&!access.sectors.length){res.status(403).json({success:false,error:'Aucun secteur HACCP attribué. Contactez votre responsable.'});return null;}
+ return {...auth,haccp223:access};
+}
+function ichefHaccp223Subset(data=[],sectors=[]){
+ const set=new Set(sectors);
+ return (Array.isArray(data)?data:[]).filter(row=>set.has(String(row?.dept||'').trim().toUpperCase()));
+}
+function ichefHaccp223NodeData(state,key,fallback){
+ const val=state?.activeOrders?.[key]?.data;
+ return val===undefined?fallback:val;
+}
+app.get('/api/staff/haccp/context',async(req,res)=>{
+ try{res.setHeader('Cache-Control','no-store');const a=await ichefHaccp223Auth(req,res);if(!a)return;
+ return res.json({success:true,self:{id:ichefHaccp223SelfId(a),name:ichefOpsStaffName(a.staff),role:ichefStaffChatMemberRole(a.staff)},allowedSectors:a.haccp223.sectors,manager:a.haccp223.manager,explicitAssignment:a.haccp223.assigned,build:'HACCP-V223'});
+ }catch(e){console.error('[HACCP V223 context]',e);return res.status(500).json({success:false,error:'Autorisation HACCP indisponible.'});}
+});
+app.get('/api/staff/haccp/state',async(req,res)=>{
+ try{res.setHeader('Cache-Control','no-store');const a=await ichefHaccp223Auth(req,res);if(!a)return;
+ const sectors=a.haccp223.sectors,st=a.state||await AppState.findOne({tenantID:a.tenantID}).lean();
+ const lists=ichefHaccp223NodeData(st,'HACCP_LISTS_MASTER',{}),safeLists={};
+ for(const sect of sectors)if(lists&&typeof lists[sect]==='object')safeLists[sect]=lists[sect];
+ const origSettings=ichefHaccp223NodeData(st,'SETTINGS_MASTER',{});
+ const settings={country:origSettings?.country||'',countryCode:origSettings?.countryCode||'',taxConfig:{country:origSettings?.taxConfig?.country||'',currency:origSettings?.taxConfig?.currency||''}};
+ const activeOrders={SETTINGS_MASTER:{data:settings},HACCP_LISTS_MASTER:{data:safeLists}};
+ for(const table of ICHEF_HACCP_223_DATA_TABLES)activeOrders[table]={data:ichefHaccp223Subset(ichefHaccp223NodeData(st,table,[]),sectors)};
+ return res.json({success:true,tenantID:a.tenantID,activeOrders,allowedSectors:sectors});
+ }catch(e){console.error('[HACCP V223 state]',e);return res.status(500).json({success:false,error:'Données HACCP momentanément indisponibles.'});}
+});
+// Contrôles HACCP ajoutés sans écraser les relevés de collègues / secteurs.
+app.post('/api/staff/haccp/records',async(req,res)=>{
+ try{res.setHeader('Cache-Control','no-store');const a=await ichefHaccp223Auth(req,res);if(!a)return;
+ const table=String(req.body?.tableId||'').toUpperCase();
+ if(!ICHEF_HACCP_223_DATA_TABLES.includes(table))return res.status(403).json({success:false,error:'Modification de cette table interdite depuis Staff.'});
+ const incoming=req.body?.data;
+ if(!Array.isArray(incoming)||incoming.length>1600)return res.status(400).json({success:false,error:'Format ou volume de relevés invalide.'});
+ const sectors=new Set(a.haccp223.sectors);
+ if(incoming.some(x=>!x||typeof x!=='object'||Array.isArray(x)||!sectors.has(String(x.dept||'').trim().toUpperCase())))return res.status(403).json({success:false,error:'Un relevé concerne un secteur non autorisé.'});
+ // Garanties d'intégrité : append-only et identifiants uniques ; pas de suppression ni réécriture.
+ const current=ichefHaccp223NodeData(a.state,table,[]);
+ const stored=(Array.isArray(current)?current:[]);
+ const identity=x=>String(x?.id??x?.recordId??'').trim();
+ const byId=new Map(stored.map(x=>[identity(x),x]).filter(([id])=>id));
+ const receivedIds=new Set();const newEntries=[];
+ for(const row of incoming){
+   const id=identity(row);
+   if(!id||id.length>150||receivedIds.has(id))return res.status(409).json({success:false,error:'Identifiant de relevé invalide ou répété.'});
+   receivedIds.add(id);
+   const previous=byId.get(id);
+   if(previous){
+    if(JSON.stringify(previous)!==JSON.stringify(row))return res.status(409).json({success:false,error:'Un relevé existant ne peut pas être réécrit depuis Staff. Utilisez une rectification.'});
+   }else{
+    if(JSON.stringify(row).length>360000)return res.status(413).json({success:false,error:'Relevé trop volumineux.'});
+    if(row.originalId){const orig=byId.get(String(row.originalId));if(!orig||!sectors.has(String(orig.dept||'').toUpperCase()))return res.status(403).json({success:false,error:'Rectification hors de votre secteur interdite.'});}
+    newEntries.push({...row,staffId:ichefHaccp223SelfId(a),staffName:ichefOpsStaffName(a.staff),serverRecordedAt:new Date().toISOString()});
+   }
+ }
+ // Évite les sauvegardes qui suppriment silencieusement un relevé du même secteur.
+ if(stored.some(x=>sectors.has(String(x?.dept||'').toUpperCase())&&identity(x)&&!receivedIds.has(identity(x)))){
+  return res.status(409).json({success:false,error:'Données modifiées sur un autre appareil. Actualisez avant de sauvegarder.'});
+ }
+ if(newEntries.length){
+  const nodePath=`activeOrders.${table}.data`;
+  await AppState.updateOne({tenantID:a.tenantID},{$push:{[nodePath]:{$each:newEntries}}});
+  const room=ichefStaffRealtimeRoom(a.tenantID);if(room)io.to(room).emit('haccp-staff-changed',{tenantID:a.tenantID,tableId:table,sectors:[...sectors]});
+ }
+ return res.json({success:true,added:newEntries.length});
+ }catch(e){console.error('[HACCP V223 records]',e);return res.status(500).json({success:false,error:'Enregistrement HACCP indisponible.'});}
+});
+app.get('/api/staff/haccp/manage',async(req,res)=>{
+ try{res.setHeader('Cache-Control','no-store');const a=await ichefHaccp223Auth(req,res,{manager:true});if(!a)return;
+ const people=ichefOpsDirectory(a),grants=await IchefHaccp223Grant.find({tenantID:a.tenantID}).lean();
+ const byId=new Map(grants.map(g=>[g.staffId,g]));
+ return res.json({success:true,sectors:ICHEF_HACCP_223_SECTORS,people:people.map(p=>({id:p.id,name:p.name,dept:p.dept,role:p.role,grant:byId.get(p.id)?{sectors:byId.get(p.id).sectors,temporary:byId.get(p.id).temporary,disabled:byId.get(p.id).disabled}:null}))});
+ }catch(e){console.error('[HACCP V223 manage]',e);return res.status(500).json({success:false,error:'Gestion HACCP momentanément indisponible.'});}
+});
+app.put('/api/staff/haccp/manage/:staffId',async(req,res)=>{
+ try{res.setHeader('Cache-Control','no-store');const a=await ichefHaccp223Auth(req,res,{manager:true});if(!a)return;
+ const staffId=String(req.params.staffId||'').slice(0,120);const people=ichefOpsDirectory(a);
+ if(!people.some(p=>p.id===staffId))return res.status(404).json({success:false,error:'Collaborateur non trouvé dans cet établissement.'});
+ const sectors=req.body?.sectors;if(!Array.isArray(sectors)||sectors.some(x=>!ICHEF_HACCP_223_SECTORS.includes(x)))return res.status(400).json({success:false,error:'Secteurs invalides.'});
+ const temporary=Array.isArray(req.body?.temporary)?req.body.temporary:[];
+ if(temporary.length>4||temporary.some(x=>!ICHEF_HACCP_223_SECTORS.includes(x?.sector)||!Number.isFinite(Date.parse(x?.expiresAt))||Date.parse(x.expiresAt)<Date.now()||Date.parse(x.expiresAt)>Date.now()+30*86400000))return res.status(400).json({success:false,error:'Accès temporaire invalide (maximum 30 jours).'});
+ await IchefHaccp223Grant.findOneAndUpdate({tenantID:a.tenantID,staffId},{$set:{sectors:[...new Set(sectors)],temporary,disabled:req.body?.disabled===true,updatedBy:ichefHaccp223SelfId(a),updatedAt:new Date()}},{upsert:true,new:true,setDefaultsOnInsert:true});
+ return res.json({success:true,staffId,sectors:[...new Set(sectors)]});
+ }catch(e){console.error('[HACCP V223 grant]',e);return res.status(500).json({success:false,error:'Attribution HACCP impossible.'});}
+});
+// ============================================================================
+
 app.get('/api/ops/context',async(req,res)=>{
 try{
 res.setHeader('Cache-Control','no-store');
