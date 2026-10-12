@@ -7423,6 +7423,36 @@ const urlParamsJS = new URLSearchParams(window.location.search);
             );
             return false;
         }
+        // V216 — une invitation n'est déclenchée qu'après création RH
+        // persistée et PIN provisoire confirmé sur le serveur. Le responsable
+        // présente sa session signée, pas le PIN du nouveau collaborateur.
+        async function ichefRhAutoInvitationV216(staffId) {
+            const managerPin=getRhDirectionAuthPin();
+            if(!managerPin)return {status:'NO_MANAGER_SESSION'};
+            const proof=await verifyPinWithServer(managerPin);
+            const token=String(proof?.operationsToken||'');
+            if(!proof?.success||!token||proof?.isMaster!==true){
+                return {status:'NO_MANAGER_SESSION'};
+            }
+            try{
+                const response=await fetch(
+                    `${SERVER_URL_JS}/api/staff/activation/auto/manager`,{
+                        method:'POST',credentials:'omit',cache:'no-store',
+                        headers:{'Content-Type':'application/json','Accept':'application/json',
+                            'Authorization':`Bearer ${token}`,
+                            'X-iCHEF-Tenant':tenantID_JS,'X-iCHEF-Device':RH_DEVICE_ID},
+                        body:JSON.stringify({tenantID:tenantID_JS,staffId})
+                    }
+                );
+                const data=await response.json().catch(()=>({}));
+                return response.ok&&data.success
+                    ? {status:data.status||'SENT',sent:data.sent===true}
+                    : {status:data.code||'SEND_FAILED'};
+            }catch(error){
+                console.warn('[iCHEF RH auto invite V216]',error?.message||'NETWORK');
+                return {status:'NETWORK'};
+            }
+        }
         async function saveStaff() {
             let name = document.getElementById('staff-name').value.trim();
             let title = document.getElementById('staff-title').value.trim();
@@ -7664,9 +7694,21 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                 '✓ PIN provisoire reconnu · prêt pour l’activation Staff'
             );
 
-            showToast(
-                'Collaborateur prêt pour l’activation iCHEF Staff'
-            );
+            // Premier enregistrement seulement : une modification de fiche
+            // ne renvoie pas d'invitation et ne révoque pas un appareil existant.
+            if (!existing && newStaff.active && email) {
+                const invitation=await ichefRhAutoInvitationV216(newStaff.id);
+                if(invitation.status==='SENT'){
+                    showToast('Collaborateur enregistré · invitation envoyée par e-mail');
+                } else if(invitation.status==='ALREADY_SENT'){
+                    showToast('Collaborateur enregistré · invitation déjà envoyée');
+                } else {
+                    showToast('Collaborateur enregistré · envoi automatique non confirmé (première connexion possible)');
+                    console.warn('[iCHEF RH V216] invitation non envoyée :',invitation.status);
+                }
+            } else {
+                showToast('Collaborateur prêt pour l’activation iCHEF Staff');
+            }
 
             setTimeout(
                 closeModals,
