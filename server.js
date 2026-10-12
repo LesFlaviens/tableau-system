@@ -422,7 +422,8 @@ function ichefSecurityRateLimitForPath(pathname){
 
     if(
         p === '/api/staff/activation/admin/email' ||
-        p === '/api/staff/activation/email/request'
+        p === '/api/staff/activation/email/request' ||
+        p === '/api/staff/activation/auto/manager'
     ){
         return {
             limit:20,
@@ -19430,6 +19431,110 @@ iCHEF Staff`;
     return {info,email,maskedEmail:ichefStaffMaskEmail(email)};
 }
 
+// ============================================================================
+// iCHEF V216 — INVITATION STAFF AUTOMATIQUE, SANS OUVERTURE DE SESSION
+// Déclenchement UNIQUEMENT après PIN Staff vérifié sur le serveur OU
+// une action Direction/RH disposant d'une session privilégiée signée.
+// Pas d'envoi basé sur une identité demandée librement par le navigateur.
+// ============================================================================
+const ichefStaffAutoInviteGateSchemaV216 = new mongoose.Schema({
+    tenantID:{type:String,required:true},
+    staffId:{type:String,required:true},
+    windowStartedAt:{type:Date,default:Date.now},
+    attempts:{type:Number,default:0},
+    nextAllowedAt:{type:Date,default:()=>new Date(0)},
+    updatedAt:{type:Date,default:Date.now}
+},{minimize:false});
+ichefStaffAutoInviteGateSchemaV216.index({tenantID:1,staffId:1},{unique:true});
+const IchefStaffAutoInviteGateV216 = mongoose.models.IchefStaffAutoInviteGateV216 ||
+    mongoose.model('IchefStaffAutoInviteGateV216',ichefStaffAutoInviteGateSchemaV216);
+
+async function ichefStaffAutoInviteV216({tenantID,staffId,origin='AUTO_PIN',req=null}={}){
+    const safeTenant=cleanString(tenantID);
+    const safeStaff=String(staffId||'').trim().slice(0,160);
+    if(!safeTenant||!safeStaff)return {status:'INVALID'};
+
+    // Toujours recharger un profil ACTIF dans le tenant canonique.
+    const profile=await ichefStaffFindActiveSecurityProfile(safeTenant,safeStaff);
+    if(!profile)return {status:'PROFILE_MISSING'};
+    const email=ichefStaffProfileEmail(profile);
+    if(!email)return {status:'EMAIL_MISSING'};
+    if(!ichefStaffActivationEmailConfigured())return {status:'SMTP_NOT_CONFIGURED'};
+    const now=new Date();
+    const recent=new Date(now.getTime()-120000);
+    const duplicate=await IchefStaffActivation.findOne({
+        tenantID:safeTenant,staffId:safeStaff,usedAt:null,revokedAt:null,
+        expiresAt:{$gt:now},lastEmailSentAt:{$gte:recent}
+    },{_id:1}).lean();
+    if(duplicate)return {status:'ALREADY_SENT'};
+
+    // Limite tenant + collaborateur partagée entre toutes les IP/appareils.
+    await IchefStaffAutoInviteGateV216.updateOne(
+        {tenantID:safeTenant,staffId:safeStaff},
+        {$setOnInsert:{tenantID:safeTenant,staffId:safeStaff,
+            windowStartedAt:now,attempts:0,nextAllowedAt:new Date(0)}},
+        {upsert:true}
+    ).catch(error=>{if(error?.code!==11000)throw error;});
+    await IchefStaffAutoInviteGateV216.updateOne({
+        tenantID:safeTenant,staffId:safeStaff,windowStartedAt:{$lt:new Date(now.getTime()-86400000)}
+    },{$set:{windowStartedAt:now,attempts:0,nextAllowedAt:new Date(0)}});
+    const gate=await IchefStaffAutoInviteGateV216.findOneAndUpdate({
+        tenantID:safeTenant,staffId:safeStaff,nextAllowedAt:{$lte:now},attempts:{$lt:5}
+    },{
+        $inc:{attempts:1},
+        $set:{nextAllowedAt:new Date(now.getTime()+180000),updatedAt:now}
+    },{new:true});
+    if(!gate)return {status:'COOLDOWN_OR_LIMIT'};
+
+    // La nouvelle invitation ne doit PAS annuler une invitation encore
+    // utilisable si le SMTP tombe. Les anciennes seront révoquées seulement
+    // après confirmation d'envoi, afin d'éviter une perte d'accès.
+    // Aucun PIN ni code en clair n'est écrit en base.
+    const activationId=nodeCrypto.randomBytes(18).toString('base64url');
+    const secret=nodeCrypto.randomBytes(32).toString('base64url');
+    const code=ichefStaffActivationCode();
+    const token=`act1.${activationId}.${secret}`;
+    const expiresAt=new Date(now.getTime()+24*3600000);
+    const created=await IchefStaffActivation.create({
+        activationId,tenantID:safeTenant,staffId:safeStaff,
+        tokenHash:ichefStaffActivationHmac(`${activationId}|${secret}`),
+        shortCodeHash:ichefStaffActivationHmac(`${safeTenant}|${safeStaff}|${code}`),
+        createdById:origin==='AUTO_RH'?'RH_MANAGER':'PIN_VERIFIED',
+        createdByName:origin==='AUTO_RH'?'Direction / RH':'Connexion après PIN vérifié',
+        createdByRole:origin,
+        createdAt:now,expiresAt,
+        cleanupAt:new Date(expiresAt.getTime()+90*86400000)
+    });
+    try{
+        // L'expéditeur construit lui-même l'URL sur un domaine iCHEF de confiance.
+        // L'e-mail provient uniquement de la fiche RH serveur.
+        const sent=await ichefStaffSendActivationEmail({
+            profile,activationCode:code,
+            activationUrl:`https://os.ichef.ch/portail-staff.html#activate=${encodeURIComponent(token)}`,
+            expiresAt
+        });
+        await IchefStaffActivation.updateOne({_id:created._id,revokedAt:null},{
+            $set:{lastEmailSentAt:new Date(),lastEmailHash:ichefSecurityHash(email)},
+            $inc:{emailSentCount:1}
+        });
+        // Invalider maintenant les anciennes invitations actives.
+        await IchefStaffActivation.updateMany({
+            tenantID:safeTenant,staffId:safeStaff,activationId:{$ne:activationId},
+            usedAt:null,revokedAt:null,expiresAt:{$gt:new Date()}
+        },{$set:{revokedAt:new Date()}}).catch(error=>{
+            console.warn('[iCHEF AUTO INVITE V216] révocation différée',error?.code||'FAILED');
+        });
+        void ichefWriteSecurityEvent({req,severity:'INFO',type:'STAFF_AUTO_INVITE_SENT',
+            tenantID:safeTenant,detail:`Invitation auto ${origin} pour staff (identifiant masqué).`});
+        return {status:'SENT',maskedEmail:sent.maskedEmail};
+    }catch(error){
+        await IchefStaffActivation.updateOne({_id:created._id,usedAt:null},
+            {$set:{revokedAt:new Date()}}).catch(()=>{});
+        console.error('[iCHEF AUTO INVITE V216] SMTP',error?.code||error?.message||'SEND_FAILED');
+        return {status:'SEND_FAILED'};
+    }
+}
+
 function ichefStaffActivationPublicBase(req){
     const forwarded=String(req?.headers?.['x-forwarded-proto']||'').split(',')[0].trim();
     const protocol=forwarded || req?.protocol || 'https';
@@ -22494,8 +22599,21 @@ app.post(
             const whatsappReady=Boolean(twilioClient && ICHEF_TWILIO_VERIFY_SERVICE_SID);
 
             if(!trusted && ICHEF_STAFF_ACTIVATION_REQUIRED){
+                // PIN vérifié côté serveur, aucun accès ouvert avant preuve
+                // d'e-mail + enregistrement d'une clé appareil dans /complete.
+                // On ne déclenche jamais cet envoi pour un PIN incorrect.
                 ichefPinAttemptSuccess(req,attemptKey,deviceId);
-
+                let autoStatus='UNAVAILABLE';
+                let maskedEmail='';
+                try{
+                    const outcome=await ichefStaffAutoInviteV216({
+                        tenantID,staffId:String(member.id),origin:'AUTO_PIN',req
+                    });
+                    autoStatus=outcome.status;
+                    maskedEmail=outcome.maskedEmail||'';
+                }catch(error){
+                    console.error('[iCHEF STAFF auto login V216]',error?.code||'FAILED');
+                }
                 return res.status(428).json({
                     success:false,
                     code:'STAFF_ACTIVATION_REQUIRED',
@@ -22503,7 +22621,13 @@ app.post(
                     pwaRequired:true,
                     safeTenantID:tenantID,
                     staffId:String(member.id),
-                    error:'Nouvel appareil : utilisez le QR ou le code d’activation fourni par votre responsable.'
+                    autoInviteStatus:autoStatus,
+                    maskedEmail,
+                    error: autoStatus==='SENT'
+                        ? 'Un code d’activation vient d’être envoyé à votre e-mail RH. Saisissez-le pour autoriser cet appareil.'
+                        : autoStatus==='ALREADY_SENT'
+                        ? 'Une invitation vient d’être envoyée. Consultez votre e-mail RH.'
+                        : 'Appareil non activé. Si vous n’avez pas reçu de code, contactez votre responsable.'
                 });
             }
 
@@ -22942,6 +23066,44 @@ app.get('/api/staff/activation/admin/staff',async(req,res)=>{
             success:false,
             error:'Liste collaborateurs momentanément indisponible.'
         });
+    }
+});
+
+// V216 — appelée après une création RH validée. Session manager obligatoire.
+app.post('/api/staff/activation/auto/manager',async(req,res)=>{
+    res.setHeader('Cache-Control','no-store');
+    try{
+        const auth=await ichefLoadStaffActivationManagerSession(req);
+        if(!auth.ok)return res.status(auth.status||401).json({
+            success:false,code:'STAFF_AUTO_MANAGER_AUTH_REQUIRED',
+            error:'Session Direction / RH requise.'
+        });
+        const staffId=String(req.body?.staffId||'').trim().slice(0,160);
+        if(!staffId)return res.status(400).json({success:false,error:'ID collaborateur requis.'});
+        const profile=await ichefStaffFindActiveSecurityProfile(auth.tenantID,staffId);
+        if(!profile)return res.status(404).json({success:false,error:'Collaborateur actif introuvable.'});
+        const canonical=String(profile.canonicalStaffId||profile.member?.id||staffId).trim();
+        const alreadyActivated=await IchefStaffTrustedDevice.exists({
+            tenantID:auth.tenantID,staffId:canonical,revokedAt:null
+        });
+        if(alreadyActivated)return res.json({success:true,status:'ALREADY_ACTIVE',sent:false});
+        const outcome=await ichefStaffAutoInviteV216({
+            tenantID:auth.tenantID,staffId:canonical,origin:'AUTO_RH',req
+        });
+        if(outcome.status==='SENT'||outcome.status==='ALREADY_SENT')return res.json({
+            success:true,sent:outcome.status==='SENT',status:outcome.status,
+            maskedEmail:outcome.maskedEmail||''
+        });
+        if(outcome.status==='COOLDOWN_OR_LIMIT')return res.status(429).json({
+            success:false,code:'STAFF_AUTO_INVITE_LIMIT',error:'Invitation déjà demandée récemment ou quota atteint.'
+        });
+        return res.status(503).json({
+            success:false,code:`STAFF_AUTO_${outcome.status}`,
+            error:'Invitation non envoyée. Vérifiez l’adresse RH et le serveur de messagerie.'
+        });
+    }catch(error){
+        console.error('[iCHEF AUTO RH V216]',error?.code||'FAILED');
+        return res.status(503).json({success:false,error:'Activation automatique momentanément indisponible.'});
     }
 });
 
