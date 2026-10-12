@@ -35450,8 +35450,118 @@ async function ichefHaccp223Auth(req,res,{manager=false}={}){
  const access=await ichefHaccp223Access(auth);
  if(manager&&!access.manager){res.status(403).json({success:false,error:'Réservé aux responsables HACCP.'});return null;}
  if(!manager&&!access.sectors.length){res.status(403).json({success:false,error:'Aucun secteur HACCP attribué. Contactez votre responsable.'});return null;}
+ // V224 : toutes les API sectorisées passent cette vérification SERVEUR.
+ // L'entrée MASTER reste un accès d'administration distinct.
+ if(!String(auth?.claims?.staffId||'').startsWith('MASTER:')){
+   const presence=await ichefHaccp224CheckPresence(req,auth);
+   if(!presence.allowed){res.setHeader('Cache-Control','no-store');res.status(403).json({success:false,code:'HACCP_SITE_REQUIRED',error:'Accès HACCP suspendu : présence dans l’établissement non vérifiée.',presence});return null;}
+ }
  return {...auth,haccp223:access};
 }
+
+// ============================================================================
+// V224 — PRÉSENCE HACCP : accès par réseau d'établissement + tolérance 5 min.
+// PILOTE INACTIF par défaut. Nécessite vérification de la chaîne proxy Render.
+// Un navigateur ne peut PAS lire de façon fiable le SSID Wi-Fi : le serveur
+// vérifie l'IP publique connue de l'établissement, via un proxy de confiance.
+// Le pointage RH reste indépendant. Aucune IP de l'employé n'est enregistrée.
+// ============================================================================
+const ICHEF_HACCP_224_ENABLED=/^(1|true|yes|on)$/i.test(String(process.env.ICHEF_HACCP_V224_ENABLED||'false'));
+const ICHEF_HACCP_224_GRACE_MS=5*60*1000;
+let ICHEF_HACCP_224_SITES={};
+try{const x=JSON.parse(String(process.env.ICHEF_HACCP_V224_TENANT_SITE_IPS||'{}'));if(x&&typeof x==='object'&&!Array.isArray(x))ICHEF_HACCP_224_SITES=x;}catch(e){console.warn('[HACCP V224] configuration des réseaux invalide');}
+function ichefHaccp224AllowedIps(tenantID){
+ const list=ICHEF_HACCP_224_SITES[String(tenantID||'')];
+ return new Set((Array.isArray(list)?list:[]).map(x=>String(x).trim()).filter(x=>net.isIP(x)));
+}
+const ICHEF_HACCP_224_PROXY_CIDRS=String(process.env.ICHEF_HACCP_V224_TRUSTED_PROXY_CIDRS||'').split(',').map(x=>x.trim()).filter(Boolean);
+const ichefHaccp224PresenceSchema=new mongoose.Schema({
+ tenantID:{type:String,required:true,index:true},staffId:{type:String,required:true},
+ deviceHash:{type:String,required:true},lastVerifiedAt:{type:Date,default:null},
+ updatedAt:{type:Date,default:Date.now}
+},{minimize:false});
+ichefHaccp224PresenceSchema.index({tenantID:1,staffId:1,deviceHash:1},{unique:true});
+ichefHaccp224PresenceSchema.index({updatedAt:1},{expireAfterSeconds:7*24*3600});
+const IchefHaccp224Presence=mongoose.models.IchefHaccp224Presence||mongoose.model('IchefHaccp224Presence',ichefHaccp224PresenceSchema);
+function ichefHaccp224Ip(ip){
+ let x=String(ip||'').trim().replace(/^\[|\]$/g,'');
+ if(x.startsWith('::ffff:')&&net.isIP(x.slice(7))===4)x=x.slice(7);
+ return net.isIP(x)?x:'';
+}
+function ichefHaccp224TrustedPeer(peer){
+ // Aucun wildcard ni confiance accordée à une adresse simplement déclarée
+ // par le navigateur ; seules les plages des reverse-proxies configurés.
+ const ip=ichefHaccp224Ip(peer);if(!ip)return false;
+ return ICHEF_HACCP_224_PROXY_CIDRS.some(rule=>{
+   const parts=rule.split('/'),base=ichefHaccp224Ip(parts[0]);if(!base||!net.isIP(ip)||net.isIP(ip)!==net.isIP(base))return false;
+   if(parts.length===1)return ip===base;
+   const bits=Number(parts[1]);const width=net.isIP(ip)===4?32:128;
+   if(!Number.isInteger(bits)||bits<0||bits>width||bits<8)return false;
+   function bytes(s){
+     if(net.isIP(s)===4)return s.split('.').map(Number);
+     const [left,right]=s.toLowerCase().split('::');
+     const a=left?left.split(':'):[],b=right?right.split(':'):[];
+     if(right===undefined&&a.length!==8)return null;
+     const parts=right===undefined?a:[...a,...Array(8-a.length-b.length).fill('0'),...b];
+     if(parts.length!==8)return null;
+     return parts.flatMap(v=>[(parseInt(v||'0',16)>>8)&255,parseInt(v||'0',16)&255]);
+   }
+   const aa=bytes(ip),bb=bytes(base);if(!aa||!bb)return false;
+   let left=bits;for(let k=0;k<aa.length;k++){
+     if(left<=0)break;const take=Math.min(left,8),mask=(0xff<<(8-take))&255;
+     if((aa[k]&mask)!==(bb[k]&mask))return false;left-=take;
+   }
+   return true;
+ });
+}
+function ichefHaccp224ClientIp(req){
+ const peer=ichefHaccp224Ip(req.socket?.remoteAddress);
+ if(!peer)return '';
+ if(ichefHaccp224TrustedPeer(peer)){
+   // Le proxy DOIT ajouter l'adresse du client réel en dernier.
+   // Exige configuration et tests d'anti-usurpation à la sortie Render.
+   const list=String(req.headers['x-forwarded-for']||'').split(',').map(x=>x.trim()).filter(Boolean);
+   if(!list.length)return '';
+   return ichefHaccp224Ip(list[list.length-1]);
+ }
+ // Connexion directe : ne jamais utiliser un X-Forwarded-For non fiable.
+ return peer;
+}
+function ichefHaccp224DeviceHash(req){
+ const dev=String(req.headers['x-ichef-device']||'').trim();
+ return dev&&dev.length<=255?nodeCrypto.createHash('sha256').update('HACCP-V224|'+dev).digest('hex'):'';
+}
+async function ichefHaccp224CheckPresence(req,auth){
+ if(!ICHEF_HACCP_224_ENABLED)return {enabled:false,allowed:true,reason:'PILOTE_NON_ACTIVE',graceSeconds:300};
+ const siteIps=ichefHaccp224AllowedIps(auth.tenantID);
+ if(!siteIps.size)return {enabled:true,allowed:false,reason:'RESEAU_NON_CONFIGURE',graceSeconds:300};
+ const staffId=ichefHaccp223SelfId(auth),deviceHash=ichefHaccp224DeviceHash(req);
+ if(!staffId||!deviceHash)return {enabled:true,allowed:false,reason:'APPAREIL_NON_RECONNU',graceSeconds:300};
+ const filter={tenantID:auth.tenantID,staffId,deviceHash},now=Date.now();
+ const ip=ichefHaccp224ClientIp(req),onSite=ip&&siteIps.has(ip);
+ if(onSite){
+   await IchefHaccp224Presence.updateOne(filter,{$set:{lastVerifiedAt:new Date(now),updatedAt:new Date(now)}},{upsert:true});
+   return {enabled:true,allowed:true,onSite:true,reason:'RESEAU_ETABLISSEMENT',expiresAt:new Date(now+ICHEF_HACCP_224_GRACE_MS).toISOString(),graceSeconds:300};
+ }
+ const old=await IchefHaccp224Presence.findOne(filter,{lastVerifiedAt:1}).lean();
+ const ts=old?.lastVerifiedAt?new Date(old.lastVerifiedAt).getTime():0;
+ const expiresAt=ts+ICHEF_HACCP_224_GRACE_MS;
+ if(ts&&now<expiresAt)return {enabled:true,allowed:true,onSite:false,reason:'TOLERANCE_5_MINUTES',expiresAt:new Date(expiresAt).toISOString(),graceSeconds:300};
+ return {enabled:true,allowed:false,onSite:false,reason:'HORS_ETABLISSEMENT',graceSeconds:300};
+}
+// Statut non sensible pour le portail : aucune donnée HACCP divulguée.
+app.get('/api/staff/haccp/presence',async(req,res)=>{
+ try{
+  res.setHeader('Cache-Control','no-store');
+  const auth=await ichefOpsLoadAuthorizedSession(req);
+  if(!auth.ok)return res.status(401).json({success:false,error:'Session Staff invalide.'});
+  const access=await ichefHaccp223Access(auth);
+  if(!access.sectors.length)return res.status(403).json({success:false,hasSectors:false,error:'Aucun secteur HACCP autorisé.'});
+  const presence=await ichefHaccp224CheckPresence(req,auth);
+  return res.json({success:true,hasSectors:true,allowedSectors:access.sectors,manager:access.manager,...presence});
+ }catch(err){console.warn('[HACCP V224 présence]',err?.message||err);return res.status(503).json({success:false,error:'Présence impossible à vérifier.'});}
+});
+
 function ichefHaccp223Subset(data=[],sectors=[]){
  const set=new Set(sectors);
  return (Array.isArray(data)?data:[]).filter(row=>set.has(String(row?.dept||'').trim().toUpperCase()));
