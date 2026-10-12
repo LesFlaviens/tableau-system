@@ -2758,6 +2758,8 @@ pointer-events:none;opacity:.75
                     } catch (e) {
                         console.warn("[iCHEF HACCP] Lecture serveur indisponible :", e);
                         setSyncStatus("degraded", "SYSTÈME · MODE SECOURS");
+                        // V224 : ne jamais révéler de données Staff hors vérification serveur.
+                        if(haccp223Staff())throw e;
                         const cached = haccpStateMemory || readHaccpCache();
                         if (cached) {
                             haccpStateMemory = cached;
@@ -9544,6 +9546,52 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
  else setTimeout(initAccess,450);
  window.addEventListener('ichef:haccp:authenticated',()=>setTimeout(initAccess,90));
  setTimeout(initAccess,2500);
+})();
+</script>
+
+<style id="ichef-v224-haccp-presence-style">
+#ichef-v224-presence-lock{position:fixed;inset:0;z-index:999999;display:none;align-items:center;justify-content:center;
+ background:rgba(4,8,13,.97);color:#fff;padding:24px;font-family:Inter,Arial,sans-serif;text-align:center}
+#ichef-v224-presence-lock.visible{display:flex!important}
+#ichef-v224-presence-lock .box{background:#0e1721;border:1px solid #5b4330;border-radius:18px;padding:30px 24px;max-width:410px}
+#ichef-v224-presence-lock strong{font-size:21px;color:#f0bb70}
+#ichef-v224-presence-lock p{color:#cbd5e1;line-height:1.65}
+#ichef-v224-presence-lock button{border:0;border-radius:9px;background:#d7ad58;color:#0b0e14;padding:13px 16px;font-weight:900;cursor:pointer}
+</style>
+<div id="ichef-v224-presence-lock" role="alertdialog" aria-modal="true" aria-label="Accès HACCP désactivé">
+ <div class="box"><strong>🔒 HACCP désactivé</strong><p id="ichef-v224-presence-reason">Vous êtes hors du réseau professionnel. Votre accès a expiré.</p>
+ <button type="button" id="ichef-v224-presence-retry">Vérifier ma présence</button>
+ <p><a href="portail-staff.html" style="color:#e7c88a">Retour à iCHEF Staff</a></p></div>
+</div>
+<script id="ichef-v224-haccp-presence-script">
+(()=>{'use strict';
+ const lock=document.getElementById('ichef-v224-presence-lock'),reason=document.getElementById('ichef-v224-presence-reason');
+ let busy=false,lastValidated=false;
+ function token(){return String(window.ICHEF_HACCP?.accessToken||sessionStorage.getItem('ichef_access_token')||'')}
+ function device(){return String(window.ICHEF_HACCP?.deviceId||localStorage.getItem('ichef_device_id')||'')}
+ async function check(){
+  if(!window.ICHEF_HACCP?.v223Staff||busy)return;
+  busy=true;
+  try{
+   const t=token(),id=window.ICHEF_HACCP.tenantID;
+   if(!t||!id)throw Error('Session Staff absente.');
+   const r=await fetch('https://tableau-system.onrender.com/api/staff/haccp/presence?tenantID='+encodeURIComponent(id),{
+    cache:'no-store',credentials:'omit',headers:{Authorization:'Bearer '+t,'X-iCHEF-Tenant':id,'X-iCHEF-Device':device()}});
+   const data=await r.json().catch(()=>({}));
+   if(!r.ok||!data.success||!data.allowed){lastValidated=false;lock.classList.add('visible');
+    reason.textContent='Votre présence dans l’établissement n’est pas vérifiée. Reconnectez-vous au réseau du restaurant, puis réessayez.';return;}
+   lastValidated=true;lock.classList.remove('visible');
+  }catch(e){lastValidated=false;lock.classList.add('visible');
+   reason.textContent='Impossible de vérifier votre présence. Aucun relevé HACCP ne doit être enregistré hors connexion.';
+  }finally{busy=false}
+ }
+ document.getElementById('ichef-v224-presence-retry')?.addEventListener('click',check);
+ window.addEventListener('offline',()=>{if(window.ICHEF_HACCP?.v223Staff){lastValidated=false;lock.classList.add('visible')}});
+ window.addEventListener('online',check);
+ document.addEventListener('visibilitychange',()=>{if(!document.hidden)void check()});
+ setInterval(()=>{if(!document.hidden)void check()},20000);
+ const timer=setInterval(()=>{if(window.ICHEF_HACCP?.v223Staff){clearInterval(timer);void check()}},500);
+ setTimeout(()=>clearInterval(timer),30000);
 })();
 </script>
 </body>
