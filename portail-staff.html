@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>iCHEF OS — Mon espace collaborateur</title>
-<meta name="ichef-build" content="V215-PLANNING-JOUR-SEMAINE-MOIS">
+<meta name="ichef-build" content="V217-PLANNING-MENSUEL-JOUR-IMMEDIAT">
 
 <script id="ichef-staff-pwa-capture-v208">
 // Capture precoce : l'invite Android peut etre emise avant la fin du chargement.
@@ -5309,8 +5309,8 @@ html body .staff-pwa-required-gate:not([hidden]){
           <div class="staff-plan-commandbar" aria-label="Navigation du planning personnel">
             <div class="staff-plan-view-tabs" role="tablist" aria-label="Vue du planning">
               <button type="button" class="staff-plan-view-btn" data-staff-plan-view="day" role="tab" aria-selected="false">Jour</button>
-              <button type="button" class="staff-plan-view-btn active" data-staff-plan-view="week" role="tab" aria-selected="true">Semaine</button>
-              <button type="button" class="staff-plan-view-btn" data-staff-plan-view="month" role="tab" aria-selected="false">Mois</button>
+              <button type="button" class="staff-plan-view-btn" data-staff-plan-view="week" role="tab" aria-selected="false">Semaine</button>
+              <button type="button" class="staff-plan-view-btn active" data-staff-plan-view="month" role="tab" aria-selected="true">Mois</button>
             </div>
 
             <div class="staff-plan-nav-group">
@@ -5330,7 +5330,7 @@ html body .staff-pwa-required-gate:not([hidden]){
           <div class="staff-plan-period-head">
             <div>
               <small id="staff-plan-period-kicker">PLANNING PERSONNEL</small>
-              <strong id="staff-plan-period-label">Cette semaine</strong>
+              <strong id="staff-plan-period-label">Ce mois</strong>
             </div>
             <div class="staff-plan-period-limit">Visible jusqu’à <strong id="staff-plan-limit-label">+6 mois</strong></div>
           </div>
@@ -9391,7 +9391,7 @@ bootstrapCollaboratorPortal();
 (() => {
   'use strict';
   // V215 : présentation distincte JOUR / SEMAINE / MOIS, sans changer l'API RH ni l'authentification.
-  const state={view:'week',cursor:null,returnMonth:null,cache:new Map(),monthSeq:new Map(),lastRows:[],lastTitle:'Mon planning personnel',refreshSeq:0,identityKey:''};
+  const state={view:'month',cursor:null,returnMonth:null,cache:new Map(),monthSeq:new Map(),lastRows:[],lastTitle:'Mon planning personnel',refreshSeq:0,identityKey:''};
   const pad=n=>String(n).padStart(2,'0');
   const startOfDay=d=>new Date(d.getFullYear(),d.getMonth(),d.getDate());
   const addDays=(d,n)=>{const x=startOfDay(d);x.setDate(x.getDate()+n);return x;};
@@ -9422,9 +9422,12 @@ bootstrapCollaboratorPortal();
   }
   function statusClass(row){
     const st=normalized(row?.statusLabel||row?.status);
+    const raw=normalized(row?.status);
+    if(/FERIE|HOLIDAY/.test(st+' '+raw))return 'holiday';
     if(/MALAD/.test(st))return 'sick';
-    if(/CONG|VAC|ABSEN|FERIE/.test(st))return 'leave';
+    if(/CONG|VAC|ABSEN/.test(st))return 'leave';
     if(/FORM/.test(st))return 'training';
+    if(raw==='PRESENT'||raw==='OFF_SOIR'||raw==='OFF_MATIN')return 'work';
     if(/REPOS|OFF|RECUP|RTT/.test(st))return 'off';
     return Number(row?.plannedHours||0)>0||/TRAVAIL|WORK|SERVICE/.test(st)?'work':'off';
   }
@@ -9510,19 +9513,57 @@ bootstrapCollaboratorPortal();
       </button>`;}).join('')}</div><p class="spv215-hint">Touchez une journée pour voir les détails et observations.</p>`;
   }
   function renderMonth(items){
-    const first=items[0]?.date||state.cursor,startOffset=(first.getDay()+6)%7;
-    const cells=Array.from({length:startOffset},()=>'<span class="spv215-month-blank" aria-hidden="true"></span>');
+    // V217 — calendrier de 6 lignes, du lundi au dimanche, comme un calendrier natif.
+    // Seules les données RH du collaborateur authentifié apparaissent dans les cases.
+    const first=items[0]?.date||new Date(state.cursor.getFullYear(),state.cursor.getMonth(),1);
+    const startOffset=(first.getDay()+6)%7;
+    const cells=[];
+    for(let n=startOffset;n>0;n--){
+      const previous=addDays(first,-n);
+      cells.push(`<span class="spv217-outside" aria-hidden="true">${previous.getDate()}</span>`);
+    }
     for(const {date,row,inRange} of items){
-      const sc=statusClass(row),isToday=key(date)===key(today()),hasMessage=!!notes(row).length,worked=hasWork(row);
-      const label=row?statusLabel(row):'Non publié';
-      const short=worked?hoursLabel(row):label;
-      cells.push(`<button type="button" class="spv215-month-day ${sc}${isToday?' today':''}" data-staff-plan-open-day="${key(date)}" ${inRange?'':'disabled'} aria-label="${esc(formatDate(date,{weekday:'long',day:'numeric',month:'long'}))} : ${esc(label)}. ${hasMessage?'Observation présente. ':''}Voir le détail">
-        <span class="spv215-number">${date.getDate()}</span><span class="spv215-dot" aria-hidden="true"></span><span class="spv215-month-hours">${inRange?esc(short):'—'}</span>${hasMessage?'<span class="spv215-message-marker" title="Observation">✉</span>':''}
+      const sc=statusClass(row),isToday=key(date)===key(today());
+      const worked=hasWork(row),hasMessage=!!notes(row).length;
+      const fullLabel=row?statusLabel(row):'Non publié';
+      const label=!inRange?'—':!row?'—':
+        sc==='work'?'Travail':
+        sc==='off'?'OFF':
+        sc==='holiday'?'Férié':
+        sc==='leave'?'Congé':
+        sc==='sick'?'Maladie':
+        sc==='training'?'Formation':fullLabel;
+      const time=worked?hoursLabel(row):'';
+      const showTime=inRange&&worked&&time&&time!=='—'&&!/^REPOS$/i.test(time);
+      cells.push(`<button type="button"
+        class="spv215-month-day spv217-day ${sc}${isToday?' today':''}"
+        data-staff-plan-open-day="${key(date)}"
+        ${inRange?'':'disabled'}
+        aria-label="${esc(formatDate(date,{weekday:'long',day:'numeric',month:'long'}))} : ${esc(fullLabel)}${showTime?' · '+esc(time):''}${hasMessage?' · observation présente':''}. Voir les détails">
+        <span class="spv215-number">${date.getDate()}</span>
+        <span class="spv217-day-status">${esc(label)}</span>
+        ${showTime?`<span class="spv217-day-time">${esc(time)}</span>`:''}
+        ${hasMessage?'<span class="spv215-message-marker" aria-hidden="true">✉</span>':''}
       </button>`);
     }
-    return `<div class="spv215-month"><div class="spv215-weekdays" aria-hidden="true">${['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'].map(d=>`<span>${d}</span>`).join('')}</div><div class="spv215-month-grid">${cells.join('')}</div></div>
-      <div class="spv215-legend"><span><i class="work"></i>Travail</span><span><i class="off"></i>Repos / OFF</span><span><i class="leave"></i>Congé / férié</span><span>✉ Observation</span></div>
-      <p class="spv215-hint">Touchez une date pour ouvrir la journée, puis « Retour au mois » pour revenir au calendrier.</p>`;
+    // Les cases hors du mois restent grises et ne sont pas cliquables.
+    const nextDate=addDays(first,items.length);
+    while(cells.length<42){
+      const date=addDays(nextDate,cells.length-startOffset-items.length);
+      cells.push(`<span class="spv217-outside" aria-hidden="true">${date.getDate()}</span>`);
+    }
+    return `<div class="spv215-month spv217-calendar" aria-label="Planning mensuel personnel">
+      <div class="spv215-weekdays" aria-hidden="true">${['Lu','Ma','Me','Je','Ve','Sa','Di'].map(d=>`<span>${d}</span>`).join('')}</div>
+      <div class="spv215-month-grid">${cells.join('')}</div>
+    </div>
+    <div class="spv215-legend" aria-label="Légende du planning">
+      <span><i class="work"></i>Travail</span>
+      <span><i class="off"></i>OFF / repos</span>
+      <span><i class="holiday"></i>Férié</span>
+      <span><i class="leave"></i>Congé</span>
+      <span>✉ Observation</span>
+    </div>
+    <p class="spv215-hint">Touchez un jour pour voir immédiatement vos horaires, votre poste, vos tâches et les observations RH. Puis revenez au mois.</p>`;
   }
   function render(items){
     const wrap=document.getElementById('schedule-list');if(!wrap)return;
@@ -9568,7 +9609,17 @@ bootstrapCollaboratorPortal();
     const [y,m,day]=d.split('-').map(Number),target=new Date(y,m-1,day);
     if(key(target)!==d||target<minDate()||target>maxDate())return;
     state.returnMonth=fromCalendar?new Date(state.cursor.getFullYear(),state.cursor.getMonth(),1):null;
-    state.view='day';state.cursor=target;refresh();
+    state.view='day';state.cursor=target;
+    // Affichage immédiat depuis le mois déjà chargé : aucun aller-retour serveur au clic.
+    const cached=(state.identityKey===identity())
+      ?state.lastRows.find(item=>key(item.date)===d)
+      :null;
+    if(cached){
+      state.lastRows=[cached];state.lastTitle=title([target]);
+      updateControls([target]);render([cached]);
+    }else{
+      void refresh();
+    }
     document.getElementById('staff-plan-period-label')?.scrollIntoView?.({behavior:'smooth',block:'nearest'});
   }
   function move(dir){
@@ -9610,7 +9661,7 @@ bootstrapCollaboratorPortal();
     if(!state.lastRows.length)refresh();
   };
   window.__ichefStaffPlanningRefresh=({force=false}={})=>{if(force)state.cache.clear();return refresh({force});};
-  window.__ICHEF_STAFF_PLANNING_UI__='V215-JOUR-SEMAINE-MOIS';
+  window.__ICHEF_STAFF_PLANNING_UI__='V217-MOIS-PAR-DEFAUT-JOUR-IMMEDIAT';
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bind,{once:true});else bind();
 })();
 </script>
@@ -13908,6 +13959,52 @@ html body #messages #staff-video-enable-alerts[hidden],
  #planning .spv215-week-day{grid-template-columns:48px minmax(0,1fr) 14px;padding:10px 8px;gap:8px}
  #planning .spv215-week-date strong{font-size:21px}
  #planning .spv215-day-fields{grid-template-columns:1fr}
+}
+</style>
+
+<style id="ichef-staff-v217-calendrier-mensuel">
+/* V217 : affichage mensuel adapté aux téléphones, aucune modification des API et PIN. */
+#planning .spv217-calendar{background:#151719;border:1px solid rgba(255,255,255,.10);padding:8px;border-radius:14px}
+#planning .spv217-calendar .spv215-weekdays>span{font-size:14px;color:#c5c9cc;font-weight:750}
+#planning .spv217-calendar .spv215-month-grid{gap:5px}
+#planning .spv217-day{display:flex;flex-direction:column;align-items:center;justify-content:flex-start;text-align:center;min-height:90px;padding:8px 3px;gap:4px;border-radius:10px;background:#1b2023;border:1px solid rgba(255,255,255,.08);color:#f5f5f5}
+#planning .spv217-day.off{background:#202226;border-color:rgba(255,255,255,.07)}
+#planning .spv217-day.work{background:#13342b;border-color:rgba(46,215,161,.20)}
+#planning .spv217-day.holiday{background:#48381f;border-color:rgba(246,193,91,.35)}
+#planning .spv217-day.leave{background:#183648;border-color:rgba(99,201,243,.25)}
+#planning .spv217-day.sick{background:#402328}
+#planning .spv217-day.training{background:#393020}
+#planning .spv217-day.today{outline:0;border-color:#53b9f5;box-shadow:inset 0 0 0 1px rgba(83,185,245,.3)}
+#planning .spv217-day .spv215-number{font-size:19px;line-height:1.2;font-weight:650}
+#planning .spv217-day.today .spv215-number{display:grid;place-items:center;width:33px;height:33px;border-radius:999px;background:#45b6f2;color:#061a23}
+#planning .spv217-day-status{display:block;font-weight:800;font-size:10px;line-height:1.15;overflow:hidden;text-overflow:ellipsis;width:100%;white-space:nowrap}
+#planning .spv217-day.work .spv217-day-status{color:#89e7c3}
+#planning .spv217-day.holiday .spv217-day-status{color:#ffe0a1}
+#planning .spv217-day.off .spv217-day-status{color:#c0c2c4}
+#planning .spv217-day-time{display:block;width:100%;font-size:9px;color:#d9e6dd;line-height:1.2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#planning .spv217-outside{display:flex;align-items:flex-start;justify-content:center;min-height:90px;padding-top:14px;color:#73777a;opacity:.55;font-size:19px;user-select:none}
+#planning .spv215-legend i.off{background:#9da2a6}
+#planning .spv215-legend i.holiday{background:#f3c15f}
+#planning .spv215-day-hero.holiday{background:linear-gradient(145deg,#463219,#191817);border-color:#c79b49}
+#planning .spv217-day:focus-visible{outline:3px solid #fbd47a;outline-offset:2px}
+@media(max-width:720px){
+ #planning .spv217-calendar{padding:4px}
+ #planning .spv217-calendar .spv215-month-grid{gap:3px}
+ #planning .spv217-calendar .spv215-weekdays>span{font-size:11px;padding:8px 0}
+ #planning .spv217-day{min-height:70px;padding:6px 1px;gap:5px;border-radius:7px}
+ #planning .spv217-day .spv215-number{font-size:15px}
+ #planning .spv217-day.today .spv215-number{width:28px;height:28px}
+ #planning .spv217-day-status{font-size:9px;letter-spacing:-.3px}
+ #planning .spv217-day-time{display:none}
+ #planning .spv217-outside{min-height:70px;padding-top:10px;font-size:15px}
+}
+@media(max-width:390px){
+ #planning .spv217-day{min-height:67px}
+ #planning .spv217-day-status{font-size:8px}
+ #planning .spv217-outside{min-height:67px}
+}
+@media(prefers-reduced-motion:reduce){
+ #planning .spv217-day{transition:none}
 }
 </style>
 </body>
