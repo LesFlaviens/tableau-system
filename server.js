@@ -457,6 +457,8 @@ function ichefSecurityRateLimitForPath(pathname){
     }
 
     if(
+        p === '/api/staff/chat/channels/group' ||
+        p === '/api/staff/chat/channels/group/update' ||
         p === '/api/staff/chat/message' ||
         p === '/api/rh/chat/message' ||
         p === '/api/support/client/send' ||
@@ -1373,6 +1375,7 @@ const staffChatChannelSchema = new mongoose.Schema({
   channelId: { type: String, required: true, index: true },
   type: { type: String, required: true, enum: ['ALL','DEPARTMENT','DIRECT','CUSTOM'], index: true },
   name: { type: String, default: '' },
+  groupKind: { type: String, enum: ['', 'PRIVATE', 'OFFICIAL'], default: '' },
   deptKey: { type: String, default: '', index: true },
   participantIds: { type: [String], default: [] },
   createdBy: { type: String, default: '' },
@@ -27314,10 +27317,16 @@ app.get('/api/staff/chat/channels', async (req,res) => {
                 lastMessage:last ? (String(last.text || '') || (Array.isArray(last.attachments) && last.attachments.length ? `📎 ${String(last.attachments[0]?.name || 'Pièce jointe')}` : '')) : '',
                 lastSender:last ? String(last.senderName || '') : '',
                 lastAt:last?.createdAt ? new Date(last.createdAt).toISOString() : '',
-                participants:Array.isArray(row.participantIds) ? row.participantIds.map(String) : []
+                participants:Array.isArray(row.participantIds) ? row.participantIds.map(String) : [],
+                groupKind:String(row.groupKind || ''),
+                canManage:row.type==='CUSTOM' && String(row.channelId).startsWith('group:') && (
+                    row.groupKind==='OFFICIAL'
+                        ? ichefStaffIsRhPrivileged(auth.staff || {})
+                        : (row.groupKind==='PRIVATE' && String(row.createdBy)===self.id)
+                )
             });
         }
-        return res.json({ success:true, channels, totalUnread:channels.reduce((sum,row)=>sum+Number(row.unread||0),0) });
+        return res.json({ success:true, channels, canCreateOfficial:ichefStaffIsRhPrivileged(auth.staff || {}), totalUnread:channels.reduce((sum,row)=>sum+Number(row.unread||0),0) });
     } catch (error) {
         console.error('[iCHEF STAFF CHAT channels]',error?.message || error);
         return res.status(500).json({ success:false, error:'Conversations indisponibles.' });
@@ -27423,6 +27432,104 @@ app.post('/api/staff/chat/channels/direct', async (req,res) => {
                 : 'Conversation privée impossible.',
             requestId:req?.ichefRequestId || ''
         });
+    }
+});
+
+
+// V222 — GROUPES MULTIPLES : privés par collaborateurs, officiels par responsables.
+// Même authentification, mêmes règles tenant/appareil que le chat iCHEF existant.
+function ichefStaffChatGroupPayload(req,auth,{mustKeepCreator='' }={}) {
+    const self=ichefStaffChatSelf(auth);
+    const kind=String(req.body?.kind||'').trim().toUpperCase();
+    const name=String(req.body?.name||'').replace(/[\u0000-\u001f\u007f]/g,' ').replace(/\s+/g,' ').trim();
+    if(!['PRIVATE','OFFICIAL'].includes(kind))return {ok:false,status:400,error:'Type de groupe invalide.'};
+    if(name.length<3 || name.length>60)return {ok:false,status:400,error:'Nom du groupe : 3 à 60 caractères.'};
+    if(kind==='OFFICIAL' && !ichefStaffIsRhPrivileged(auth.staff||{}))
+        return {ok:false,status:403,error:'Seul un responsable peut créer ou gérer un groupe officiel.'};
+    const raw=req.body?.participantIds;
+    if(!Array.isArray(raw) || raw.length>39)return {ok:false,status:400,error:'Choisissez entre 1 et 39 collègues.'};
+    const ids=[...new Set(raw.map(v=>String(v||'').trim()).filter(Boolean))];
+    if(!ids.length || ids.some(x=>x.length>120))return {ok:false,status:400,error:'Sélectionnez au moins un collègue.'};
+    const directory=ichefStaffChatDirectory(auth?.state?.activeOrders||{});
+    const available=new Set(directory.map(ichefStaffChatMemberId));
+    if(!ids.every(id=>available.has(id) && id!==self.id))
+        return {ok:false,status:400,error:'Certains collègues sont introuvables ou inactifs.'};
+    if(mustKeepCreator && !available.has(String(mustKeepCreator)))
+        return {ok:false,status:409,error:'Créateur du groupe indisponible.'};
+    // En modification, conserve le créateur sans inscrire silencieusement
+    // le responsable qui édite un groupe officiel s'il n'en était pas membre.
+    const groupMembers=[...new Set(mustKeepCreator ? [String(mustKeepCreator),...ids] : [self.id,...ids])];
+    if(groupMembers.length>40)return {ok:false,status:400,error:'40 membres maximum par groupe.'};
+    return {ok:true,self,kind,name,participantIds:groupMembers};
+}
+
+app.post('/api/staff/chat/channels/group',async(req,res)=>{
+    try{
+        res.setHeader('Cache-Control','no-store');
+        const auth=await ichefLoadActiveStaffChatSession(req);
+        if(!auth.ok)return res.status(401).json({success:false,error:auth.error});
+        const input=ichefStaffChatGroupPayload(req,auth);
+        if(!input.ok)return res.status(input.status).json({success:false,error:input.error});
+        // Quota par créateur et établissement : empêche le spam de groupes.
+        const count=await StaffChatChannel.countDocuments({
+            tenantID:auth.tenantID,createdBy:input.self.id,
+            type:'CUSTOM',channelId:{$regex:'^group:'},archived:{$ne:true}
+        });
+        if(count>=40)return res.status(429).json({success:false,error:'Limite de 40 groupes créés atteinte.'});
+        const channelId=`group:${nodeCrypto.randomBytes(18).toString('hex')}`;
+        const now=new Date();
+        const created=await StaffChatChannel.create({
+            tenantID:auth.tenantID,channelId,type:'CUSTOM',
+            groupKind:input.kind,name:input.name,deptKey:'',
+            participantIds:input.participantIds,createdBy:input.self.id,
+            archived:false,createdAt:now,updatedAt:now
+        });
+        return res.status(201).json({success:true,channel:{
+            id:String(created.channelId),type:'CUSTOM',groupKind:created.groupKind,
+            name:created.name,participants:created.participantIds.map(String),
+            canManage:true,unread:0,lastMessage:'',lastSender:'',lastAt:''
+        }});
+    }catch(error){
+        console.error('[iCHEF STAFF GROUP CREATE V222]',error?.message||error);
+        return res.status(500).json({success:false,error:'Création du groupe indisponible.'});
+    }
+});
+
+app.post('/api/staff/chat/channels/group/update',async(req,res)=>{
+    try{
+        res.setHeader('Cache-Control','no-store');
+        const auth=await ichefLoadActiveStaffChatSession(req);
+        if(!auth.ok)return res.status(401).json({success:false,error:auth.error});
+        const id=String(req.body?.channelId||'').trim().slice(0,160);
+        if(!/^group:[a-f0-9]{36}$/.test(id))return res.status(400).json({success:false,error:'Groupe invalide.'});
+        const existing=await StaffChatChannel.findOne({
+            tenantID:auth.tenantID,channelId:id,type:'CUSTOM',
+            groupKind:{$in:['PRIVATE','OFFICIAL']},archived:{$ne:true}
+        }).lean();
+        if(!existing)return res.status(404).json({success:false,error:'Groupe introuvable.'});
+        const self=ichefStaffChatSelf(auth);
+        const manager=ichefStaffIsRhPrivileged(auth.staff||{});
+        const allowed=existing.groupKind==='OFFICIAL'
+            ?manager:String(existing.createdBy)===self.id;
+        if(!allowed)return res.status(403).json({success:false,error:'Gestion du groupe non autorisée.'});
+        // Le type (privé/officiel) n'est jamais modifiable par cette route.
+        const input=ichefStaffChatGroupPayload({body:{
+            kind:existing.groupKind,name:req.body?.name,
+            participantIds:req.body?.participantIds
+        }},auth,{mustKeepCreator:String(existing.createdBy)});
+        if(!input.ok)return res.status(input.status).json({success:false,error:input.error});
+        const row=await StaffChatChannel.findOneAndUpdate({
+            _id:existing._id,tenantID:auth.tenantID,channelId:id,
+            archived:{$ne:true},groupKind:existing.groupKind
+        },{$set:{name:input.name,participantIds:input.participantIds,updatedAt:new Date()}},
+        {new:true}).lean();
+        if(!row)return res.status(409).json({success:false,error:'Groupe modifié ou indisponible.'});
+        return res.json({success:true,channel:{id:String(row.channelId),
+            type:'CUSTOM',groupKind:row.groupKind,name:row.name,
+            participants:row.participantIds.map(String),canManage:true}});
+    }catch(error){
+        console.error('[iCHEF STAFF GROUP UPDATE V222]',error?.message||error);
+        return res.status(500).json({success:false,error:'Modification du groupe indisponible.'});
     }
 });
 
