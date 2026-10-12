@@ -2469,6 +2469,9 @@ pointer-events:none;opacity:.75
                 : "https://tableau-system.onrender.com";
 
         const HACCP_CACHE_KEY = "EMPIRE_HACCP_SYNC_" + tenantID;
+        function haccp223Staff(){return window.ICHEF_HACCP?.v223Staff === true;}
+        function haccp223ScopedUrl(path){return `${SERVER_URL}/api/staff/haccp/${path}?tenantID=${encodeURIComponent(tenantID)}`;}
+
 
         const EU_COUNTRY_CODES = new Set([
             "AT","BE","BG","HR","CY","CZ","DK","EE","FI","FR","DE","GR","HU","IE",
@@ -2668,7 +2671,8 @@ pointer-events:none;opacity:.75
 
         function readHaccpCache() {
             try {
-                return JSON.parse(localStorage.getItem(HACCP_CACHE_KEY)) || { activeOrders: {} };
+                const key=haccp223Staff()?`EMPIRE_HACCP_STAFF_V223_${tenantID}_${window.ICHEF_HACCP?.staffId||''}`:HACCP_CACHE_KEY;
+                return JSON.parse(localStorage.getItem(key)) || { activeOrders: {} };
             } catch (_) {
                 return { activeOrders: {} };
             }
@@ -2683,13 +2687,14 @@ pointer-events:none;opacity:.75
                     state || { activeOrders: {} },
                     (key, value) => (key === "tempPhotoData" || key === "imgData") ? undefined : value
                 );
-                localStorage.setItem(HACCP_CACHE_KEY, json);
+                const key=haccp223Staff()?`EMPIRE_HACCP_STAFF_V223_${tenantID}_${window.ICHEF_HACCP?.staffId||''}`:HACCP_CACHE_KEY;
+                localStorage.setItem(key, json);
             } catch (_) {}
         }
 
         async function getHaccpServerStateStrict() {
             const r = await fetch(
-                `${SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(tenantID)}&_t=${Date.now()}&haccpBuild=5800`,
+                (haccp223Staff()?haccp223ScopedUrl('state'):`${SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(tenantID)}&_t=${Date.now()}&haccpBuild=5800`),
                 {
                     method:"GET",
                     credentials:"include",
@@ -2725,7 +2730,7 @@ pointer-events:none;opacity:.75
                         let r;
                         try {
                             r = await fetch(
-                                `${SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(tenantID)}&_t=${Date.now()}&haccpBuild=6100`,
+                                (haccp223Staff()?haccp223ScopedUrl('state'):`${SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(tenantID)}&_t=${Date.now()}&haccpBuild=6100`),
                                 {
                                     method: "GET",
                                     credentials: "include",
@@ -2769,6 +2774,16 @@ pointer-events:none;opacity:.75
             },
 
             update: async (key, data) => {
+                if(haccp223Staff()){
+                    if(!['HACCP_TEMP','HACCP_CLEANING','HACCP_TRACE'].includes(key))throw new Error('Cette opération est réservée au responsable HACCP.');
+                    const r=await fetch(haccp223ScopedUrl('records'),{method:'POST',cache:'no-store',credentials:'omit',headers:systemHeaders({'Content-Type':'application/json'}),body:JSON.stringify({tableId:key,data})});
+                    const ans=await r.json().catch(()=>({}));
+                    if(!r.ok||ans.success!==true)throw new Error(ans.error||'Enregistrement HACCP refusé.');
+                    // On recharge l'état filtré et canonique après l'écriture.
+                    haccpStateMemory=null;haccpStateMemoryAt=0;
+                    const snap=await getHaccpServerStateStrict();writeHaccpCache(snap);applyHaccpState(snap);
+                    return ans;
+                }
                 const r = await fetch(
                     `${SERVER_URL}/update-order?tenantID=${encodeURIComponent(tenantID)}&haccpBuild=5800`,
                     {
@@ -3734,6 +3749,10 @@ function haccpSectorReturnConfig() {
 
             // Pour les collaborateurs ordinaires, le secteur doit toujours venir
             // de leur session signée. On ne fait jamais confiance à l'URL seule.
+            if(window.ICHEF_HACCP?.v223Staff){
+                const allowed=window.ICHEF_HACCP.allowedSectors||[];
+                if(!allowed.includes(dept))dept=allowed[0]||'';
+            }
             if (!dept) return false;
 
             currentDept = dept;
@@ -3846,6 +3865,23 @@ function haccpSectorReturnConfig() {
                     .sort((a,b) => (a.tokenIndex - b.tokenIndex) || (a.endpoint.rank - b.endpoint.rank));
 
                 for (const candidate of valid) {
+                    const isStaffContext=(candidate.endpoint.source==='SESSION_SERVICE_SIGNEE'||new URLSearchParams(location.search).get('from')==='staff') &&
+                        !String(candidate.data?.self?.id||'').startsWith('MASTER:');
+                    if(isStaffContext){
+                        try{
+                            const grantResp=await fetch(haccp223ScopedUrl('context'),{cache:'no-store',credentials:'omit',headers:haccpStaffSessionHeaders(candidate.token)});
+                            if(!grantResp.ok){setSyncStatus('degraded','HACCP · AUTORISATION REQUISE');continue;}
+                            const grant=await grantResp.json();
+                            if(!grant.success||!grant.allowedSectors?.length)continue;
+                            candidate.haccp223Grant=grant;
+                            window.ICHEF_HACCP.v223Staff=true;
+                            window.ICHEF_HACCP.allowedSectors=[...grant.allowedSectors];
+                            window.ICHEF_HACCP.staffId=String(grant.self?.id||candidate.data?.self?.id||'');
+                            // Les données Staff viennent uniquement de l'API sectorisée.
+                            haccpStateMemory=null;haccpStateMemoryAt=0;
+                        }catch(e){console.warn('[HACCP V223] droits indisponibles',e);continue;}
+                    }
+                    window.ICHEF_HACCP.accessToken=candidate.token;
                     const ok = await activateHaccpFromValidatedStaffContext(candidate.data, candidate.endpoint.source);
                     if (ok === true) {
                         window.ICHEF_HACCP.accessToken = candidate.token;
@@ -9418,5 +9454,97 @@ body.haccp-real-phone *::after{
 })();
 </script>
 
+
+<style id="ichef-haccp-v223-scope-style">
+#haccp-v223-sector-bar{margin:10px 16px;padding:12px 14px;border:1px solid #467d6d;border-radius:12px;background:#10221f;color:#e7fff3;font:700 13px Inter,sans-serif;display:none;gap:9px;align-items:center;flex-wrap:wrap}
+#haccp-v223-sector-bar select{width:auto;min-width:130px;max-width:80%;font-weight:800;padding:8px}
+#haccp-v223-manage{display:none;margin:12px 16px;border:1px solid #7b6333;border-radius:14px;background:#121a20;padding:14px;max-width:780px;font:13px Inter,sans-serif;color:#eee}
+#haccp-v223-manage h3{color:#d7ad58;margin:0 0 10px}
+#haccp-v223-manage button{border:1px solid #907035;background:#263221;color:#ffe0a0;border-radius:9px;padding:10px;cursor:pointer;font-weight:800}
+#haccp-v223-manage select{margin:8px 0;max-width:480px}
+#haccp-v223-manage label{display:inline-flex;align-items:center;gap:6px;margin:9px}
+#haccp-v223-manage label input{width:auto}
+#haccp-v223-manage-status{font-size:12px;color:#9bd0b6;padding:8px 0}
+/* QR des ETIQUETTES : création et impression uniquement sur ordinateur. */
+body.haccp-v223-phone .hv71-menu-btn[onclick*="haccpV71OpenPrepared"],body.haccp-v223-phone #hv71-prepared,body.haccp-v223-phone #hv71-preview{display:none!important}
+body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-staff #haccp-phone-dock [data-haccp-phone-tab="inventory"],body.haccp-v223-staff .nav-haccp .admin-return,body.haccp-v223-staff #ichef-system-link-panel,body.haccp-v223-staff #mod-inventaire,body.haccp-v223-staff #mod-reception{display:none!important}
+</style>
+<script id="ichef-haccp-v223-scope-script">
+(()=>{'use strict';
+ const $=id=>document.getElementById(id),h=window.ICHEF_HACCP;
+ const server=()=>typeof SERVER_URL!=='undefined'?SERVER_URL:'https://tableau-system.onrender.com';
+ const tenant=()=>h?.tenantID||new URLSearchParams(location.search).get('tenantID')||'';
+ const headers=()=>typeof systemHeaders==='function'?systemHeaders({'Content-Type':'application/json'}):{'Content-Type':'application/json'};
+ const esc=s=>String(s??'').replace(/[&<>"']/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x]));
+ const desktop=()=>typeof haccpIsPhoneMode==='function'?!haccpIsPhoneMode():innerWidth>=1101;
+ if(!desktop())document.body.classList.add('haccp-v223-phone');
+ // Blocage des fonctions de CRÉATION de QR pour mobile, sans toucher au scan.
+ function restrictQr(){
+  for(const f of ['haccpV71OpenPrepared','haccpV71PreviewPrepared','haccpV71PrintPrepared','haccpV71DownloadPdf']){
+   const previous=window[f];if(typeof previous!=='function'||previous.__v223Wrapped)continue;
+   const wrapper=function(...args){if(!desktop()){alert('Création de QR et étiquettes réservée au mode ordinateur. La lecture HACCP reste disponible sur téléphone.');return;}return previous.apply(this,args)};
+   wrapper.__v223Wrapped=true;window[f]=wrapper;
+  }
+ }
+ // Le script étiquettes se charge en dernier ; capture les fonctions après son init.
+ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',restrictQr,{once:true});else restrictQr();
+ setTimeout(restrictQr,300);
+ const bar=document.createElement('div');bar.id='haccp-v223-sector-bar';
+ bar.innerHTML='<strong>🔐 Mes secteurs autorisés</strong> <select id="haccp-v223-sector-select" aria-label="Secteur HACCP autorisé"></select>';
+ const nav=document.querySelector('.nav-haccp');if(nav)nav.insertAdjacentElement('afterend',bar);
+ const mgr=document.createElement('div');mgr.id='haccp-v223-manage';
+ mgr.innerHTML='<h3>🔐 Attribution des secteurs HACCP</h3><p>Sur ordinateur uniquement. Les secteurs non attribués restent invisibles au collaborateur.</p><button type="button" id="haccp-v223-manager-load">GÉRER LES ACCÈS</button><div id="haccp-v223-manager-inner" hidden><select id="haccp-v223-person"></select><div id="haccp-v223-checkboxes"></div><button id="haccp-v223-save" type="button">ENREGISTRER LES DROITS</button><div id="haccp-v223-manage-status"></div></div>';
+ const content=document.querySelector('.content');if(content)content.prepend(mgr);else if(nav)bar.insertAdjacentElement('afterend',mgr);
+ function refreshSectorBar(){
+  if(!h?.v223Staff)return;
+  const allowed=Array.isArray(h.allowedSectors)?h.allowedSectors:[];
+  if(!allowed.length)return;
+  bar.style.display='flex';let sel=$('haccp-v223-sector-select');
+  sel.innerHTML=allowed.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('');
+  sel.value=String(h.department||'');
+ }
+ $('haccp-v223-sector-select').addEventListener('change',e=>{
+  if(!h.v223Staff||!h.allowedSectors.includes(e.target.value))return;
+  if(typeof currentDept!=='undefined')currentDept=e.target.value;
+  h.department=e.target.value;sessionStorage.setItem('ichef_haccp_department',e.target.value);
+  document.querySelectorAll('.display-dept').forEach(x=>x.textContent=e.target.value);
+  if(typeof populateSelects==='function')populateSelects();
+  if(typeof renderLogs==='function')renderLogs();
+  if(typeof hcleanEnterExpress==='function'&&typeof haccpIsPhoneMode==='function'&&haccpIsPhoneMode())hcleanEnterExpress(true);
+  if(typeof updateHaccpSectorReturnButton==='function')updateHaccpSectorReturnButton();
+ });
+ let people=[];const zones=['CUISINE','PATISSERIE','BAR','SERVICE'];
+ async function api(path,init={}){const r=await fetch(`${server()}/api/staff/haccp/${path}?tenantID=${encodeURIComponent(tenant())}`,{cache:'no-store',...init,headers:headers()});const d=await r.json().catch(()=>({}));if(!r.ok||!d.success)throw new Error(d.error||'Erreur HACCP '+r.status);return d}
+ function updateForm(){const selected=people.find(p=>p.id===$('haccp-v223-person')?.value);$('haccp-v223-checkboxes').innerHTML=zones.map(k=>`<label><input type="checkbox" value="${k}" ${selected?.grant?.sectors?.includes(k)?'checked':''}> ${k}</label>`).join('');}
+ $('haccp-v223-manager-load').addEventListener('click',async()=>{
+  const status=$('haccp-v223-manage-status');try{const d=await api('manage');people=d.people||[];
+   const target=$('haccp-v223-person');target.innerHTML=people.map(p=>`<option value="${esc(p.id)}">${esc(p.name)} — ${esc(p.dept||p.role||'')}</option>`).join('');
+   $('haccp-v223-manager-inner').hidden=false;updateForm();status.textContent='';
+  }catch(e){status.textContent=e.message;}
+ });
+ $('haccp-v223-person').addEventListener('change',updateForm);
+ $('haccp-v223-save').addEventListener('click',async()=>{
+  const id=$('haccp-v223-person').value;const checked=[...$('haccp-v223-checkboxes').querySelectorAll('input:checked')].map(x=>x.value);
+  const status=$('haccp-v223-manage-status');try{await api('manage/'+encodeURIComponent(id),{method:'PUT',body:JSON.stringify({sectors:checked})});
+   const p=people.find(p=>p.id===id);if(p)p.grant={sectors:checked};status.textContent='✓ Accès enregistrés. Les changements prennent effet à la prochaine validation serveur.';
+  }catch(e){status.textContent='❌ '+e.message;}
+ });
+ async function initAccess(){
+  if(!h?.authenticated)return;
+  if(h.v223Staff){
+   document.body.classList.add('haccp-v223-staff');
+   refreshSectorBar();
+   return;
+  }
+  // Seul un responsable connecté et sur ordinateur voit les réglages.
+  if(!desktop())return;
+  try{await api('manage');mgr.style.display='block'}catch(e){}
+ }
+ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(initAccess,450),{once:true});
+ else setTimeout(initAccess,450);
+ window.addEventListener('ichef:haccp:authenticated',()=>setTimeout(initAccess,90));
+ setTimeout(initAccess,2500);
+})();
+</script>
 </body>
 </html>
