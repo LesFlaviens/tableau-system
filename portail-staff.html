@@ -14742,6 +14742,12 @@ body.staff-app-v82 #planning > .card-header {display:grid!important;}
 .ichef-v223-haccp-home button{width:100%;background:linear-gradient(110deg,#12221f,#0d171a);border:1px solid #32745e;border-radius:15px;padding:16px;color:#f6fffb;display:flex;align-items:center;gap:12px;text-align:left}
 .ichef-v223-haccp-home button span{font-size:12px;font-weight:900;color:#63dcb0}.ichef-v223-haccp-home button strong{flex:1;font-size:14px}.ichef-v223-haccp-home button b{color:#d7ad58;font-size:25px}
 </style>
+
+<style id="ichef-v224-haccp-presence-style">
+.ichef-v223-haccp-home button:disabled{opacity:.62;cursor:not-allowed;border-color:#975f36!important;background:linear-gradient(110deg,#261b16,#171311)!important}
+.ichef-v224-presence-note{display:block;font-size:11px;color:#e5ad7c;line-height:1.4;margin:7px 4px 0}
+</style>
+
 <script id="ichef-v223-staff-haccp-script">
 (()=>{'use strict';
  const el=document.getElementById('ichef-v223-staff-haccp');const btn=document.getElementById('ichef-v223-haccp-open');
@@ -14749,16 +14755,38 @@ body.staff-app-v82 #planning > .card-header {display:grid!important;}
  function token(){for(const k of ['ichef_access_token','ichef_auth_token','ichef_staff_token']){let x=sessionStorage.getItem(k);if(x&&x.length>20)return x}return ''}
  function tenant(){return (localStorage.getItem('ichef_tenant_id')||new URLSearchParams(location.search).get('tenantID')||'').trim()}
  function device(){return localStorage.getItem('ichef_device_id')||localStorage.getItem('ichef_device_fingerprint')||''}
- let last='';async function refresh(){const t=token(),id=tenant();if(!t||!id){el.hidden=true;return}const key=id+':'+t.slice(-14);if(last===key&&!el.hidden)return;
- try{const url='https://tableau-system.onrender.com/api/staff/haccp/context?tenantID='+encodeURIComponent(id);
- const r=await fetch(url,{cache:'no-store',headers:{'Authorization':'Bearer '+t,'X-iCHEF-Tenant':id,'X-iCHEF-Device':device()}});
- if(!r.ok){el.hidden=true;return}const d=await r.json();if(!d.success||!d.allowedSectors?.length){el.hidden=true;return}
- document.getElementById('ichef-v223-sector-label').textContent=d.allowedSectors.join(' · ');el.hidden=false;last=key;
- }catch(e){el.hidden=true}}
- btn.addEventListener('click',()=>{const id=tenant();if(!id)return;location.href='haccp.html?tenantID='+encodeURIComponent(id)+'&from=staff'});
+ let lastState=null,updating=false;
+ const note=document.createElement('small');note.className='ichef-v224-presence-note';note.hidden=true;el.appendChild(note);
+ async function refresh(){
+  if(updating)return;updating=true;
+  try{
+   const t=token(),id=tenant();if(!t||!id){el.hidden=true;lastState=null;return}
+   const url='https://tableau-system.onrender.com/api/staff/haccp/presence?tenantID='+encodeURIComponent(id);
+   const r=await fetch(url,{cache:'no-store',credentials:'omit',headers:{'Authorization':'Bearer '+t,'X-iCHEF-Tenant':id,'X-iCHEF-Device':device()}});
+   const d=await r.json().catch(()=>({}));
+   if(!r.ok||!d.success||!d.hasSectors){el.hidden=true;lastState=null;return}
+   document.getElementById('ichef-v223-sector-label').textContent=d.allowedSectors.join(' · ');
+   lastState=d;el.hidden=false;
+   btn.disabled=!d.allowed;
+   note.hidden=d.allowed && d.enabled;
+   note.textContent=!d.enabled?'⚠ Mode pilote : contrôle de présence non activé sur le serveur.':
+        !d.allowed?'🔒 HACCP désactivé hors établissement. Accès rétabli sur le réseau professionnel.':
+        '';
+   if(d.enabled&&d.allowed&&!d.onSite){note.hidden=false;note.textContent='⏳ Réseau quitté : accès temporaire pendant 5 minutes maximum.';}
+  }catch(e){lastState=null;btn.disabled=true;note.hidden=false;note.textContent='Connexion indisponible : accès HACCP non vérifié.';}
+  finally{updating=false}
+ }
+ btn.addEventListener('click',async()=>{
+   btn.disabled=true;await refresh();
+   if(lastState?.allowed){const id=tenant();if(id)location.href='haccp.html?tenantID='+encodeURIComponent(id)+'&from=staff';}
+ });
  document.addEventListener('DOMContentLoaded',()=>{setTimeout(refresh,500)},{once:true});
- document.addEventListener('visibilitychange',()=>{if(!document.hidden){last='';refresh()}});
- window.addEventListener('ichef:staff:authenticated',refresh);window.addEventListener('storage',()=>{last='';refresh()});
+ document.addEventListener('visibilitychange',()=>{if(!document.hidden)void refresh()});
+ window.addEventListener('ichef:staff:authenticated',refresh);
+ window.addEventListener('storage',refresh);
+ window.addEventListener('online',refresh);
+ window.addEventListener('offline',()=>{if(lastState?.enabled){btn.disabled=true;note.hidden=false;note.textContent='HACCP suspendu : réseau indisponible.'}});
+ setInterval(()=>{if(!document.hidden)void refresh()},30000);
  setTimeout(refresh,1500);setTimeout(refresh,5000);
 })();
 </script>
