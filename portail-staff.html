@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>iCHEF OS — Mon espace collaborateur</title>
-<meta name="ichef-build" content="V219-CALENDRIER-NAVIGATION-SIMPLE">
+<meta name="ichef-build" content="V220-PLANNING-SEMAINE-JOUR-HISTORIQUE">
 
 <script id="ichef-staff-pwa-capture-v208">
 // Capture precoce : l'invite Android peut etre emise avant la fin du chargement.
@@ -5302,7 +5302,7 @@ html body .staff-pwa-required-gate:not([hidden]){
           <span class="rh-sync-chip">Personnel · lecture seule</span>
           <span class="spacer"></span>
           <button class="link" id="planning-print-btn" type="button">Imprimer</button>
-          <button class="link" id="planning-archive-btn" type="button">Archives 5 ans</button>
+          <button class="link" id="planning-archive-btn" type="button" aria-expanded="false" aria-controls="planning-archive-panel">Historique planning</button>
         </div>
 
         <div class="card-body staff-personal-planning-shell">
@@ -5331,15 +5331,23 @@ html body .staff-pwa-required-gate:not([hidden]){
           </div>
         </div>
 
-        <div class="staff-plan-archive" id="planning-archive-panel" hidden>
-          <div class="staff-plan-archive-head">
-            <label>Mois <input id="planning-archive-month" type="month"></label>
-            <button type="button" id="planning-archive-load">Afficher</button>
-            <button type="button" id="planning-archive-print">Imprimer ce mois</button>
-            <span class="spacer"></span><small>Archives conservées 5 ans · futur disponible jusqu'à 6 mois</small>
+        <section class="staff-plan-archive spv220-history" id="planning-archive-panel" aria-label="Historique du planning" hidden>
+          <div class="spv220-history-header">
+            <div><h4>Historique du planning</h4><p>Modifications, dates et motifs enregistrés par iCHEF RH · 5 ans</p></div>
+            <button type="button" id="spv220-history-close" aria-label="Fermer l’historique">✕ Fermer</button>
           </div>
-          <div id="planning-archive-body"><div class="empty">Choisissez un mois.</div></div>
-        </div>
+          <div id="spv220-history-items" class="spv220-history-list" aria-live="polite">Ouvrez l’historique pour consulter les modifications.</div>
+          <details class="spv220-history-archives">
+            <summary>Consulter le planning d’un ancien mois</summary>
+            <div class="staff-plan-archive-head">
+              <label>Mois <input id="planning-archive-month" type="month"></label>
+              <button type="button" id="planning-archive-load">Afficher</button>
+              <button type="button" id="planning-archive-print">Imprimer ce mois</button>
+              <span class="spacer"></span><small>Archives disponibles sur 5 ans</small>
+            </div>
+            <div id="planning-archive-body"><div class="empty">Choisissez un mois.</div></div>
+          </details>
+        </section>
       </article>
 
       <article class="card" id="documents">
@@ -9355,9 +9363,49 @@ bootstrapCollaboratorPortal();
     const html=`<table><thead><tr><th>Date / heure</th><th>Événement</th><th>Détail</th><th>Auteur</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(formatPortalDate(r.at,true))}</td><td>${esc(r.label||r.action||r.type||'RH')}</td><td>${esc(r.detail||'')}</td><td>${esc(r.by||'—')}</td></tr>`).join('')}</tbody></table>`;
     printWindow('iCHEF · Historique RH personnel · 5 ans',html);
   }
+  async function loadPlanningHistoryV220(){
+    const container=document.getElementById('spv220-history-items');
+    if(!container)return;
+    container.textContent='Chargement des modifications du planning…';
+    try{
+      const response=await fetch(`${SERVER_URL}/api/staff/planning-history`,{
+        method:'GET',headers:authHeaders(),credentials:'omit',cache:'no-store'
+      });
+      const data=await response.json().catch(()=>({}));
+      if(!response.ok||data.success!==true)throw new Error(data.error||'Historique momentanément indisponible.');
+      const history=Array.isArray(data.history)?data.history:[];
+      // Toutes les dates restent celles du serveur RH ; aucune information inventée.
+      history.sort((a,b)=>Date.parse(b.at||b.timestamp||0)-Date.parse(a.at||a.timestamp||0));
+      if(!history.length){
+        container.innerHTML='<div class="spv220-history-empty">Aucune modification enregistrée pour ce collaborateur. Vous pouvez consulter les mois archivés ci-dessous.</div>';
+        return;
+      }
+      const latest=history.slice(0,250);
+      container.innerHTML=`<p class="spv220-history-count">${latest.length} modification${latest.length>1?'s':''}${history.length>latest.length?' (sur '+history.length+')':''} · Plus récentes en premier</p>${latest.map(entry=>{
+        const stamp=entry.at||entry.timestamp||'';
+        const dateText=stamp?formatPortalDate(stamp,true):'Date non précisée';
+        const title=entry.label||entry.type||'Modification du planning';
+        const reason=entry.reason||entry.detail||'';
+        const notes=entry.note||'';
+        const author=entry.by||'';
+        return `<article class="spv220-history-entry"><time>${esc(dateText)}</time><strong>${esc(title)}</strong>${reason?`<p>${esc(reason)}</p>`:''}${notes?`<p class="spv220-history-note">${esc(notes)}</p>`:''}${author?`<small>Par : ${esc(author)}</small>`:''}</article>`;
+      }).join('')}`;
+    }catch(error){
+      container.innerHTML=`<div class="spv220-history-empty" role="status">${esc(error?.message||'Historique non disponible.')} Vous pouvez toujours consulter un ancien mois ci-dessous.</div>`;
+    }
+  }
   function connect(){
     const input=document.getElementById('planning-archive-month'); if(input){input.min=minMonth();input.max=maxMonth();if(!input.value)input.value=monthNow();}
-    document.getElementById('planning-archive-btn')?.addEventListener('click',()=>{const p=document.getElementById('planning-archive-panel');if(!p)return;p.hidden=!p.hidden;if(!p.hidden)loadArchive(input?.value||monthNow());});
+    const historyBtn=document.getElementById('planning-archive-btn');
+    const historyPanel=document.getElementById('planning-archive-panel');
+    const setHistoryOpen=open=>{
+      if(!historyPanel)return;
+      historyPanel.hidden=!open;
+      historyBtn?.setAttribute('aria-expanded',String(open));
+      if(open){void loadPlanningHistoryV220();historyPanel.scrollIntoView?.({behavior:'smooth',block:'nearest'});}
+    };
+    historyBtn?.addEventListener('click',()=>setHistoryOpen(Boolean(historyPanel?.hidden)));
+    document.getElementById('spv220-history-close')?.addEventListener('click',()=>setHistoryOpen(false));
     document.getElementById('planning-archive-load')?.addEventListener('click',()=>loadArchive(input?.value||monthNow()));
     document.getElementById('planning-archive-print')?.addEventListener('click',printArchive);
     document.getElementById('planning-print-btn')?.addEventListener('click',()=>{const p=document.getElementById('planning-archive-panel');if(p&&!p.hidden&&archiveData)printArchive();else printUpcoming();});
@@ -9376,7 +9424,7 @@ bootstrapCollaboratorPortal();
 (() => {
   'use strict';
   // V215 : présentation distincte JOUR / SEMAINE / MOIS, sans changer l'API RH ni l'authentification.
-  const state={view:'month',cursor:null,returnMonth:null,cache:new Map(),monthSeq:new Map(),lastRows:[],lastTitle:'Mon planning personnel',refreshSeq:0,identityKey:''};
+  const state={view:'month',cursor:null,returnMonth:null,cache:new Map(),monthSeq:new Map(),lastRows:[],lastTitle:'Mon planning personnel',refreshSeq:0,identityKey:'',selectionType:null,selectionDate:null,selectionWeek:null};
   const pad=n=>String(n).padStart(2,'0');
   const startOfDay=d=>new Date(d.getFullYear(),d.getMonth(),d.getDate());
   const addDays=(d,n)=>{const x=startOfDay(d);x.setDate(x.getDate()+n);return x;};
@@ -9498,57 +9546,72 @@ bootstrapCollaboratorPortal();
       </button>`;}).join('')}</div><p class="spv215-hint">Touchez une journée pour voir les détails et observations.</p>`;
   }
   function renderMonth(items){
-    // V217 — calendrier de 6 lignes, du lundi au dimanche, comme un calendrier natif.
-    // Seules les données RH du collaborateur authentifié apparaissent dans les cases.
+    // V220 : une ligne explicite par semaine, sélection persistante, aucune modification des données RH.
     const first=items[0]?.date||new Date(state.cursor.getFullYear(),state.cursor.getMonth(),1);
-    const startOffset=(first.getDay()+6)%7;
-    const cells=[];
-    for(let n=startOffset;n>0;n--){
-      const previous=addDays(first,-n);
-      cells.push(`<span class="spv217-outside" aria-hidden="true">${previous.getDate()}</span>`);
+    const offset=(first.getDay()+6)%7;
+    const mondayFirst=addDays(first,-offset);
+    const dayByKey=new Map(items.map(item=>[key(item.date),item]));
+    const parts=[];
+    for(let weekIndex=0;weekIndex<6;weekIndex++){
+      const start=addDays(mondayFirst,weekIndex*7);
+      const weekId=key(start);
+      const hasMonthDays=Array.from({length:7},(_,i)=>dayByKey.has(key(addDays(start,i)))).some(Boolean);
+      const isSelectedWeek=state.selectionType==='week'&&state.selectionWeek===weekId;
+      const hasSelectedDay=state.selectionType==='day'&&typeof state.selectionDate==='string'&&state.selectionDate>=weekId&&state.selectionDate<=key(addDays(start,6));
+      const days=[];
+      for(let weekday=0;weekday<7;weekday++){
+        const date=addDays(start,weekday),iso=key(date),item=dayByKey.get(iso);
+        if(!item){days.push(`<span class="spv217-outside" aria-hidden="true">${date.getDate()}</span>`);continue;}
+        const {row,inRange}=item,sc=statusClass(row),isToday=iso===key(today());
+        const active=state.selectionType==='day'&&state.selectionDate===iso;
+        const note=!!notes(row).length,worked=hasWork(row);
+        const full=row?statusLabel(row):'Non publié';
+        const short=!inRange?'—':!row?'—':sc==='work'?'Travail':sc==='off'?'OFF':sc==='holiday'?'Férié':sc==='leave'?'Congé':sc==='sick'?'Maladie':sc==='training'?'Formation':full;
+        const times=worked?hoursLabel(row):'';
+        const showTimes=inRange&&worked&&times&&times!=='—'&&!/^REPOS$/i.test(times);
+        days.push(`<button type="button" class="spv215-month-day spv217-day spv220-day ${sc}${isToday?' today':''}${active?' selected-day':''}"
+          data-staff-plan-open-day="${iso}" ${inRange?'':'disabled'} aria-pressed="${active}"
+          aria-label="${esc(formatDate(date,{weekday:'long',day:'numeric',month:'long'}))} : ${esc(full)}. Afficher ma journée">
+          <span class="spv215-number">${date.getDate()}</span><span class="spv217-day-status">${esc(short)}</span>
+          ${showTimes?`<span class="spv217-day-time">${esc(times)}</span>`:''}${note?'<span class="spv215-message-marker" aria-hidden="true">✉</span>':''}
+        </button>`);
+      }
+      const end=addDays(start,6);
+      const weekLabel=`Du ${formatDate(start,{day:'numeric',month:'short'})} au ${formatDate(end,{day:'numeric',month:'short'})}`;
+      let detail='';
+      if(isSelectedWeek||hasSelectedDay){
+        let content='';
+        let heading='';
+        if(isSelectedWeek){
+          const weekItems=Array.from({length:7},(_,i)=>{
+            const date=addDays(start,i);
+            return dayByKey.get(key(date))||{date,row:null,inRange:false};
+          });
+          heading=`Ma semaine · ${weekLabel}`;
+          content=renderWeek(weekItems);
+        }else{
+          const selected=dayByKey.get(state.selectionDate);
+          heading=selected?formatDate(selected.date,{weekday:'long',day:'numeric',month:'long'}):'Ma journée';
+          content=selected?dayDetails(selected):'<p class="spv215-empty">Aucune donnée disponible.</p>';
+        }
+        detail=`<section class="spv220-week-detail" id="spv220-selected-detail" aria-label="Détails du planning">
+          <div class="spv220-detail-heading"><h4>${esc(heading)}</h4><button type="button" data-staff-plan-close-selection aria-label="Revenir au calendrier">✕ Fermer</button></div>${content}
+        </section>`;
+      }
+      parts.push(`<div class="spv220-weekline${isSelectedWeek?' selected-week':''}${hasSelectedDay?' contains-selected-day':''}${hasMonthDays?'':' spv220-outside-week'}" ${hasMonthDays?`data-staff-plan-week="${weekId}"`:''}>
+        <div class="spv220-weekcells">${days.join('')}</div>
+        ${hasMonthDays?`<button type="button" class="spv220-week-action" data-staff-plan-open-week="${weekId}" aria-pressed="${isSelectedWeek}">
+          <span>▤ ${esc(weekLabel)}</span><strong>${isSelectedWeek?'Semaine ouverte ✓':'Voir la semaine ›'}</strong>
+        </button>`:''}
+        ${detail}
+      </div>`);
     }
-    for(const {date,row,inRange} of items){
-      const sc=statusClass(row),isToday=key(date)===key(today());
-      const worked=hasWork(row),hasMessage=!!notes(row).length;
-      const fullLabel=row?statusLabel(row):'Non publié';
-      const label=!inRange?'—':!row?'—':
-        sc==='work'?'Travail':
-        sc==='off'?'OFF':
-        sc==='holiday'?'Férié':
-        sc==='leave'?'Congé':
-        sc==='sick'?'Maladie':
-        sc==='training'?'Formation':fullLabel;
-      const time=worked?hoursLabel(row):'';
-      const showTime=inRange&&worked&&time&&time!=='—'&&!/^REPOS$/i.test(time);
-      cells.push(`<button type="button"
-        class="spv215-month-day spv217-day ${sc}${isToday?' today':''}"
-        data-staff-plan-open-day="${key(date)}"
-        ${inRange?'':'disabled'}
-        aria-label="${esc(formatDate(date,{weekday:'long',day:'numeric',month:'long'}))} : ${esc(fullLabel)}${showTime?' · '+esc(time):''}${hasMessage?' · observation présente':''}. Voir les détails">
-        <span class="spv215-number">${date.getDate()}</span>
-        <span class="spv217-day-status">${esc(label)}</span>
-        ${showTime?`<span class="spv217-day-time">${esc(time)}</span>`:''}
-        ${hasMessage?'<span class="spv215-message-marker" aria-hidden="true">✉</span>':''}
-      </button>`);
-    }
-    // Les cases hors du mois restent grises et ne sont pas cliquables.
-    const nextDate=addDays(first,items.length);
-    while(cells.length<42){
-      const date=addDays(nextDate,cells.length-startOffset-items.length);
-      cells.push(`<span class="spv217-outside" aria-hidden="true">${date.getDate()}</span>`);
-    }
-    return `<div class="spv215-month spv217-calendar" aria-label="Planning mensuel personnel">
+    return `<div class="spv215-month spv217-calendar spv220-calendar" aria-label="Planning mensuel personnel">
       <div class="spv215-weekdays" aria-hidden="true">${['Lu','Ma','Me','Je','Ve','Sa','Di'].map(d=>`<span>${d}</span>`).join('')}</div>
-      <div class="spv215-month-grid">${cells.join('')}</div>
+      <div class="spv215-month-grid spv220-month-grid">${parts.join('')}</div>
     </div>
-    <div class="spv215-legend" aria-label="Légende du planning">
-      <span><i class="work"></i>Travail</span>
-      <span><i class="off"></i>OFF / repos</span>
-      <span><i class="holiday"></i>Férié</span>
-      <span><i class="leave"></i>Congé</span>
-      <span>✉ Observation</span>
-    </div>
-    <p class="spv215-hint">Touchez un jour pour voir immédiatement vos horaires, votre poste, vos tâches et les observations RH. Puis revenez au mois.</p>`;
+    <div class="spv215-legend" aria-label="Légende du planning"><span><i class="work"></i>Travail</span><span><i class="off"></i>OFF / repos</span><span><i class="holiday"></i>Férié</span><span><i class="leave"></i>Congé</span><span>✉ Observation</span></div>
+    <p class="spv215-hint">Touchez une <strong>case</strong> pour le planning du jour, ou une <strong>ligne « Voir la semaine »</strong> pour le planning hebdomadaire.</p>`;
   }
   function render(items){
     const wrap=document.getElementById('schedule-list');if(!wrap)return;
@@ -9577,7 +9640,7 @@ bootstrapCollaboratorPortal();
   }
   async function refresh({force=false}={}){
     const seq=++state.refreshSeq,id=identity();
-    if(id!==state.identityKey){state.cache.clear();state.monthSeq.clear();state.lastRows=[];state.identityKey=id;}
+    if(id!==state.identityKey){state.cache.clear();state.monthSeq.clear();state.lastRows=[];state.identityKey=id;state.selectionType=null;state.selectionDate=null;state.selectionWeek=null;}
     if(!state.cursor)state.cursor=today();state.cursor=clampDate(state.cursor);
     const dates=dateRange(),wrap=document.getElementById('schedule-list');
     updateControls(dates);
@@ -9593,24 +9656,47 @@ bootstrapCollaboratorPortal();
     if(!/^\d{4}-\d{2}-\d{2}$/.test(d))return;
     const [y,m,day]=d.split('-').map(Number),target=new Date(y,m-1,day);
     if(key(target)!==d||target<minDate()||target>maxDate())return;
+    if(fromCalendar&&state.view==='month'){
+      if(state.selectionType==='day'&&state.selectionDate===d){
+        state.selectionType=null;state.selectionDate=null;state.selectionWeek=null;
+      }else{
+        state.selectionType='day';state.selectionDate=d;state.selectionWeek=null;
+      }
+      render(state.lastRows);
+      scrollToSelectedDetail();
+      return;
+    }
     state.returnMonth=fromCalendar?new Date(state.cursor.getFullYear(),state.cursor.getMonth(),1):null;
     state.view='day';state.cursor=target;
-    // Affichage immédiat depuis le mois déjà chargé : aucun aller-retour serveur au clic.
-    const cached=(state.identityKey===identity())
-      ?state.lastRows.find(item=>key(item.date)===d)
-      :null;
-    if(cached){
-      state.lastRows=[cached];state.lastTitle=title([target]);
-      updateControls([target]);render([cached]);
+    void refresh();
+  }
+  function scrollToSelectedDetail(){
+    // Le détail apparaît sous la ligne choisie, en conservant le calendrier visible.
+    requestAnimationFrame(()=>document.getElementById('spv220-selected-detail')?.scrollIntoView?.({behavior:'smooth',block:'nearest'}));
+  }
+  function openWeek(iso){
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(iso)||state.view!=='month')return;
+    const [y,m,d]=iso.split('-').map(Number);
+    const date=new Date(y,m-1,d);
+    if(key(date)!==iso||date.getDay()!==1)return;
+    if(state.selectionType==='week'&&state.selectionWeek===iso){
+      state.selectionType=null;state.selectionWeek=null;state.selectionDate=null;
     }else{
-      void refresh();
+      state.selectionType='week';state.selectionWeek=iso;state.selectionDate=null;
     }
-    document.getElementById('staff-plan-period-label')?.scrollIntoView?.({behavior:'smooth',block:'nearest'});
+    render(state.lastRows);
+    scrollToSelectedDetail();
+  }
+  function clearSelection(){
+    state.selectionType=null;state.selectionDate=null;state.selectionWeek=null;
+    render(state.lastRows);
   }
   function move(dir){
     const next=state.view==='month'?new Date(state.cursor.getFullYear(),state.cursor.getMonth()+dir,1):addDays(state.view==='week'?monday(state.cursor):state.cursor,dir*(state.view==='week'?7:1));
     if(next<minDate()||next>maxDate())return;
-    state.cursor=next;state.returnMonth=null;refresh();
+    state.cursor=next;state.returnMonth=null;
+    state.selectionType=null;state.selectionDate=null;state.selectionWeek=null;
+    refresh();
   }
   function printCurrent(){
     if(!state.lastRows.length){showSync('Aucun planning à imprimer.','error');return;}
@@ -9636,7 +9722,16 @@ bootstrapCollaboratorPortal();
       state.cursor=clampDate(m===monthKey(today())?today():target);
       state.returnMonth=null;refresh();
     });
-    document.getElementById('schedule-list')?.addEventListener('click',e=>{const btn=e.target.closest?.('[data-staff-plan-open-day]');if(btn&&!btn.disabled)openDay(btn.dataset.staffPlanOpenDay,state.view==='month');});
+    document.getElementById('schedule-list')?.addEventListener('click',e=>{
+      const close=e.target.closest?.('[data-staff-plan-close-selection]');
+      if(close){clearSelection();return;}
+      const dayBtn=e.target.closest?.('[data-staff-plan-open-day]');
+      if(dayBtn&&!dayBtn.disabled){openDay(dayBtn.dataset.staffPlanOpenDay,state.view==='month');return;}
+      const weekBtn=e.target.closest?.('[data-staff-plan-open-week]');
+      if(weekBtn&&!weekBtn.disabled){openWeek(weekBtn.dataset.staffPlanOpenWeek);return;}
+      const row=e.target.closest?.('[data-staff-plan-week]');
+      if(row&&!e.target.closest?.('button,a,input,select,textarea,.spv220-week-detail')){openWeek(row.dataset.staffPlanWeek);}
+    });
     const print=document.getElementById('planning-print-btn');if(print){const fresh=print.cloneNode(true);print.replaceWith(fresh);fresh.addEventListener('click',printCurrent);}
     if(readProfile?.()?.id)refresh();
   }
@@ -9646,7 +9741,7 @@ bootstrapCollaboratorPortal();
     if(!state.lastRows.length)refresh();
   };
   window.__ichefStaffPlanningRefresh=({force=false}={})=>{if(force)state.cache.clear();return refresh({force});};
-  window.__ICHEF_STAFF_PLANNING_UI__='V217-MOIS-PAR-DEFAUT-JOUR-IMMEDIAT';
+  window.__ICHEF_STAFF_PLANNING_UI__='V220-SEMAINE-LIGNE-JOUR-CASE-HISTORIQUE';
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bind,{once:true});else bind();
 })();
 </script>
@@ -14121,6 +14216,61 @@ body.staff-app-v82 #planning .spv219-month-navigation .staff-plan-nav-btn {
    min-height: 44px !important;
  }
 }
+</style>
+
+<style id="ichef-staff-v220-week-day-history">
+/* V220 : planning mensuel conservé à l'écran ; case bleue = jour, ligne dorée = semaine. */
+#planning .spv220-month-grid {display:flex!important;flex-direction:column!important;gap:8px!important;}
+#planning .spv220-weekline {border:1px solid rgba(255,255,255,.10);border-radius:12px;padding:5px 4px 3px;min-width:0;background:rgba(255,255,255,.015);transition:border-color .15s,background .15s;}
+#planning .spv220-outside-week {border:0;background:transparent;padding:2px 0;}
+#planning .spv220-weekline.selected-week {border:2px solid #f3bf5b;background:rgba(228,175,68,.11);box-shadow:0 0 0 1px rgba(243,191,91,.15);padding:4px 3px 2px;}
+#planning .spv220-weekline.contains-selected-day {border-color:rgba(74,190,238,.6);background:rgba(64,174,221,.045);}
+#planning .spv220-weekcells {display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;min-width:0;}
+#planning .spv220-day.selected-day {outline:3px solid #65d9ff!important;outline-offset:-3px!important;background:#1b5364!important;box-shadow:inset 0 0 0 1px rgba(190,241,255,.75);}
+#planning .spv220-day.selected-day .spv217-day-status {color:#f2fdff;}
+#planning .spv220-week-action {display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:44px;width:100%;margin-top:3px;padding:6px 10px;line-height:1.3;color:#d8c48e;background:rgba(230,184,97,.055);border:1px solid transparent;border-radius:7px;cursor:pointer;text-align:left;font:700 11px system-ui,sans-serif;}
+#planning .spv220-week-action strong {white-space:nowrap;color:#f1cd81;font-size:11px;}
+#planning .spv220-week-action[aria-pressed="true"] {border-color:rgba(243,191,91,.5);background:rgba(243,191,91,.16);color:#ffe5a6;}
+#planning .spv220-week-action:focus-visible,#planning .spv220-detail-heading button:focus-visible {outline:3px solid #65d9ff;outline-offset:2px;}
+#planning .spv220-week-detail {margin:9px 3px 7px;padding:14px 11px;border-radius:12px;background:#101b20;border:1px solid rgba(101,217,255,.40);color:#f5f7f8;}
+#planning .spv220-weekline.selected-week .spv220-week-detail {border-color:rgba(243,191,91,.50);}
+#planning .spv220-detail-heading {display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 12px;}
+#planning .spv220-detail-heading h4 {font-size:15px;margin:0;color:#f4d386;line-height:1.3;}
+#planning .spv220-detail-heading button {min-height:40px;min-width:72px;padding:6px 10px;border-radius:9px;background:rgba(255,255,255,.08);color:#fff;border:1px solid rgba(255,255,255,.16);font-size:12px;cursor:pointer;}
+#planning .spv220-week-detail .spv215-week-day {min-width:0;}
+/* V218 masquait l'en-tête et les archives : réafficher explicitement la commande demandée. */
+#planning > .card-header {display:flex!important;flex-wrap:wrap!important;align-items:center!important;gap:8px!important;}
+body.staff-app-v82 #planning > .card-header {display:grid!important;}
+#planning #planning-archive-panel:not([hidden]) {display:block!important;}
+#planning #planning-archive-panel[hidden] {display:none!important;}
+#planning #planning-archive-btn {white-space:normal!important;}
+#planning .spv220-history {padding:16px 12px;background:#0c1619;border-top:1px solid rgba(255,255,255,.12);}
+#planning .spv220-history-header {display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px;}
+#planning .spv220-history-header h4 {color:#f2ce82;font-size:17px;margin:0 0 6px;}
+#planning .spv220-history-header p {color:#b8c3c2;font-size:12px;line-height:1.5;margin:0;}
+#planning #spv220-history-close {min-height:40px;min-width:75px;flex-shrink:0;border:1px solid rgba(255,255,255,.18);border-radius:10px;background:#152226;color:#f2e8ce;padding:8px 11px;cursor:pointer;}
+#planning .spv220-history-list {display:grid;gap:10px;}
+#planning .spv220-history-count {font-size:11px;color:#d5d8d3;margin:0 0 2px;}
+#planning .spv220-history-entry {background:#111f23;border:1px solid rgba(243,191,91,.2);border-left:3px solid #f3bf5b;border-radius:10px;padding:11px 13px;display:grid;gap:5px;}
+#planning .spv220-history-entry time {color:#a4b3b5;font-size:11px;}
+#planning .spv220-history-entry strong {color:#e9f3ec;font-size:13px;line-height:1.4;overflow-wrap:anywhere;}
+#planning .spv220-history-entry p {font-size:12px;line-height:1.5;color:#e2c783;margin:0;overflow-wrap:anywhere;}
+#planning .spv220-history-entry small {color:#b5c3c3;font-size:11px;}
+#planning .spv220-history-empty {border:1px solid rgba(255,255,255,.13);border-radius:10px;padding:14px;color:#b9c5c6;font-size:12px;line-height:1.5;}
+#planning .spv220-history-archives {margin-top:14px;border-radius:11px;border:1px solid rgba(255,255,255,.1);background:#10191c;overflow:hidden;}
+#planning .spv220-history-archives summary {padding:13px 12px;cursor:pointer;color:#f2ca7c;font-weight:750;font-size:13px;min-height:44px;}
+@media(max-width:720px){
+ #planning .spv220-month-grid{gap:5px!important;}
+ #planning .spv220-weekline{padding:3px 2px 2px;border-radius:9px;}
+ #planning .spv220-weekline.selected-week{padding:2px 1px 1px;}
+ #planning .spv220-weekcells{gap:3px;}
+ #planning .spv220-week-action{min-height:44px;font-size:10px;padding:7px 6px;}
+ #planning .spv220-week-action strong{font-size:10px;}
+ #planning .spv220-week-detail{margin:7px 1px 5px;padding:10px 7px;}
+ #planning .spv220-detail-heading h4{font-size:13px;}
+ #planning .spv220-history-header{flex-wrap:wrap;}
+}
+@media(prefers-reduced-motion:reduce){#planning .spv220-weekline{transition:none;}}
 </style>
 </body>
 </html>
