@@ -35474,11 +35474,39 @@ function ichefOpsSectorLabel(value=''){
 const key=ichefOpsSectorKey(value);
 return ICHEF_OPS_SECTORS.find(s=>s.key===key)?.label || 'Économat';
 }
+// V239 — accès limité au département réel, indépendamment du droit de commander.
+function ichef239IsMaster(auth={}){return String(auth?.claims?.staffId||'').startsWith('MASTER:');}
+function ichef239InSector(auth={},sector='economat'){
+ if(ichef239IsMaster(auth))return true;
+ const self=ichefOpsSelf(auth);
+ return Boolean(self.deptKey && ichefOpsSectorKey(self.deptKey)===ichefOpsSectorKey(sector));
+}
 function ichefOpsCanReceiveOrder(order={},auth={}){
-const caps=ichefOpsCapabilities(auth.staff||{});
-if(caps.manageTasks||caps.createPurchases||caps.approvePurchases)return true;
-const self=ichefOpsSelf(auth);
-return Boolean(self.deptKey && ichefOpsSectorKey(self.deptKey)===ichefOpsSectorKey(order.sectorKey||'economat'));
+ return ichef239InSector(auth,order.sectorKey||'economat');
+}
+// L'annuaire des collaborateurs RH est la source de vérité des affectations.
+const ichef239PurchaseGrantSchema=new mongoose.Schema({
+ tenantID:{type:String,required:true,index:true},staffId:{type:String,required:true},
+ sectorKey:{type:String,required:true},canOrder:{type:Boolean,default:false},
+ updatedBy:String,updatedAt:{type:Date,default:Date.now}
+},{minimize:false});
+ichef239PurchaseGrantSchema.index({tenantID:1,staffId:1,sectorKey:1},{unique:true});
+const Ichef239PurchaseGrant=mongoose.models.Ichef239PurchaseGrant||mongoose.model('Ichef239PurchaseGrant',ichef239PurchaseGrantSchema);
+function ichef239CanManageDepartment(auth={},sector='economat'){
+ if(ichef239IsMaster(auth))return true;
+ const role=ichefOpsRoleText(auth.staff||{});
+ return /direction|directeur|directrice|gerant|gerante|manager|chef|responsable|superviseur|supervisor|admin/.test(role)&&ichef239InSector(auth,sector);
+}
+async function ichef239CanOrder(auth={},sector='economat'){
+ if(!ichef239InSector(auth,sector))return false;
+ if(ichef239IsMaster(auth)||ichef239CanManageDepartment(auth,sector))return true;
+ const id=ichefOpsSelf(auth).id;if(!id)return false;
+ const g=await Ichef239PurchaseGrant.findOne({tenantID:auth.tenantID,staffId:id,sectorKey:ichefOpsSectorKey(sector)}).lean();
+ return g?.canOrder===true;
+}
+async function ichef239EnsureOrder(req,res,auth,sector){
+ if(await ichef239CanOrder(auth,sector))return true;
+ res.status(403).json({success:false,error:'Commande réservée aux collaborateurs autorisés de votre département.'});return false;
 }
 
 function ichefOpsStaffId(item={}){return String(item?.id ?? item?.staffId ?? item?.employeeId ?? item?.rhId ?? item?.matricule ?? '').trim().slice(0,120);}
@@ -35867,6 +35895,30 @@ app.get('/api/chef/context',async(req,res)=>{
  }
 });
 
+// V239 — Gestion des droits de commandes, par responsable du département.
+app.get('/api/ops/purchase-permissions',async(req,res)=>{
+ try{res.setHeader('Cache-Control','no-store');const auth=await ichefOpsRequire(req,res);if(!auth)return;
+ const sector=ichefOpsSectorKey(req.query?.sectorKey||auth.self.deptKey||'economat');
+ if(!ichef239CanManageDepartment(auth,sector))return res.status(403).json({success:false,error:'Gestion réservée au responsable du département.'});
+ const people=ichefOpsDirectory(auth).filter(p=>ichefOpsSectorKey(p.deptKey)===sector&&p.deptKey);
+ const ids=people.map(p=>p.id),grants=await Ichef239PurchaseGrant.find({tenantID:auth.tenantID,sectorKey:sector,staffId:{$in:ids}}).lean();
+ const byId=new Map(grants.map(g=>[g.staffId,g.canOrder===true]));
+ return res.json({success:true,sectorKey:sector,people:people.map(p=>({...p,canOrder:byId.get(p.id)===true,manager:ichef239CanManageDepartment({staff:{role:p.role,dept:p.dept}},sector)}))});
+ }catch(e){console.error('[V239 grants GET]',e);return res.status(500).json({success:false,error:'Droits achats indisponibles.'});}
+});
+app.put('/api/ops/purchase-permissions/:staffId',async(req,res)=>{
+ try{res.setHeader('Cache-Control','no-store');const auth=await ichefOpsRequire(req,res);if(!auth)return;
+ const sector=ichefOpsSectorKey(req.body?.sectorKey||auth.self.deptKey||'economat');
+ if(!ichef239CanManageDepartment(auth,sector))return res.status(403).json({success:false,error:'Gestion réservée au responsable du département.'});
+ if(typeof req.body?.canOrder!=='boolean')return res.status(400).json({success:false,error:'Autorisation booléenne requise.'});
+ const id=String(req.params.staffId||'').slice(0,120);
+ const person=ichefOpsDirectory(auth).find(p=>p.id===id&&p.deptKey&&ichefOpsSectorKey(p.deptKey)===sector);
+ if(!person)return res.status(404).json({success:false,error:'Collaborateur non affecté au département.'});
+ if(ichef239CanManageDepartment({staff:{role:person.role,dept:person.dept}},sector))return res.status(403).json({success:false,error:'Droits des responsables non modifiables ici.'});
+ await Ichef239PurchaseGrant.findOneAndUpdate({tenantID:auth.tenantID,staffId:id,sectorKey:sector},{$set:{canOrder:req.body.canOrder,updatedBy:auth.self.id,updatedAt:new Date()}},{upsert:true,new:true,setDefaultsOnInsert:true});
+ return res.json({success:true,staffId:id,sectorKey:sector,canOrder:req.body.canOrder});
+ }catch(e){console.error('[V239 grants PUT]',e);return res.status(500).json({success:false,error:'Modification des droits impossible.'});}
+});
 app.get('/api/ops/context',async(req,res)=>{
 try{
 res.setHeader('Cache-Control','no-store');
@@ -35956,7 +36008,7 @@ return res.status(201).json({success:true,task:ichefOpsPublicTask(task)});
 
 app.get('/api/ops/suppliers',async(req,res)=>{
 try{
-res.setHeader('Cache-Control','no-store');const auth=await ichefOpsRequire(req,res,{purchaseView:true});if(!auth)return;
+res.setHeader('Cache-Control','no-store');const auth=await ichefOpsRequire(req,res);if(!auth)return;
 const rows=await IchefOpsSupplier.find({tenantID:auth.tenantID}).sort({active:-1,name:1}).limit(1000).lean();
 return res.json({success:true,suppliers:rows.map(x=>({id:x.supplierId,name:x.name,contactName:x.contactName,address:x.address||'',email:x.email,phone:x.phone,category:x.category,deliveryDays:x.deliveryDays||[],minimumOrder:Number(x.minimumOrder||0),defaultCurrency:x.defaultCurrency||'CHF',orderChannel:x.orderChannel||'MEMO',whatsappPhone:x.whatsappPhone||'',orderPortalUrl:x.orderPortalUrl||'',notes:x.notes||'',active:x.active!==false,createdAt:x.createdAt,updatedAt:x.updatedAt})),capabilities:auth.caps});
 }catch(error){console.error('[iCHEF OPS suppliers GET]',error);return res.status(500).json({success:false,error:'Chargement des fournisseurs impossible.'});}
@@ -36000,10 +36052,12 @@ return res.json({success:true,supplier:{id:row.supplierId,name:row.name,active:r
 app.post('/api/ops/inventory/:inventoryItemId/quick-order',async(req,res)=>{
 try{
 res.setHeader('Cache-Control','no-store');
-const auth=await ichefOpsRequire(req,res,{purchaseCreate:true});if(!auth)return;
+const auth=await ichefOpsRequire(req,res);if(!auth)return;
 const state=await AppState.findOne({tenantID:auth.tenantID});if(!state)return res.status(404).json({success:false,error:'Économat introuvable.'});
 const inventory=ichefStaffPortalArray(state?.activeOrders?.INVENTORY_MASTER);
 const item=inventory.find(x=>String(x?.id??'')===String(req.params.inventoryItemId||''));if(!item)return res.status(404).json({success:false,error:'Article Économat introuvable.'});
+const quickSector=ichefOpsSectorKey(req.body?.sectorKey||item?.sectorKey||item?.sector||'economat');
+if(!await ichef239EnsureOrder(req,res,auth,quickSector))return;
 const supplierName=ichefOpsText(item?.fournisseur,220);if(!supplierName)return res.status(400).json({success:false,error:'Aucun fournisseur n’est renseigné sur cet article.'});
 let supplier=(await IchefOpsSupplier.find({tenantID:auth.tenantID,active:true})).find(x=>ichefOpsKey(x.name)===ichefOpsKey(supplierName));
 if(!supplier){
@@ -36013,7 +36067,7 @@ const currentQty=Number.isFinite(Number(item?.currentQty))?Number(item.currentQt
 const minStock=Math.max(0,Number(item?.minStock||0)),reorderQty=Math.max(0,Number(item?.reorderQty||0));
 const quantity=Math.max(0.001,Number(req.body?.quantity||0)||reorderQty||(minStock>0?Math.max(minStock*2-currentQty,minStock-currentQty,1):1));
 const unitPrice=Number.isFinite(Number(item?.unitPrice))?Math.max(0,Number(item.unitPrice)):0;
-const sectorKey=ichefOpsSectorKey(req.body?.sectorKey||item?.sectorKey||item?.sector||'economat'),sectorLabel=ichefOpsSectorLabel(sectorKey);
+const sectorKey=quickSector,sectorLabel=ichefOpsSectorLabel(sectorKey);
 const now=new Date(),status=auth.caps.approvePurchases?'APPROVED':'PENDING_APPROVAL';
 const poItem={itemId:ichefOpsId('IT1'),name:ichefOpsText(item?.name||'Article',220),sku:ichefOpsText(item?.sku,120),unit:ichefOpsText(item?.unit||'unité',80),quantity,unitPrice,receivedQuantity:0,notes:ichefOpsText(item?.observation,1000),inventoryItemId:String(item?.id||'')};
 const order=await IchefOpsPurchaseOrder.create({tenantID:auth.tenantID,orderId:ichefOpsId('PO'),supplierId:supplier.supplierId,supplierName:supplier.name,status,currency:supplier.defaultCurrency||'CHF',sectorKey,sectorLabel,supplierOrderChannel:supplier.orderChannel||'MEMO',supplierPhone:supplier.phone||'',supplierWhatsappPhone:supplier.whatsappPhone||supplier.phone||'',supplierEmail:supplier.email||'',supplierPortalUrl:supplier.orderPortalUrl||'',items:[poItem],totalEstimated:ichefOpsOrderTotal([poItem]),requestedDeliveryAt:req.body?.requestedDeliveryAt?new Date(req.body.requestedDeliveryAt):null,notes:ichefOpsText(req.body?.observation||item?.observation||`Commande rapide depuis Économat · stock ${currentQty} ${item?.unit||''}`,5000),createdByStaffId:auth.self.id,createdByName:auth.self.name,createdByRole:auth.self.role,approvedByStaffId:status==='APPROVED'?auth.self.id:'',approvedByName:status==='APPROVED'?auth.self.name:'',approvedAt:status==='APPROVED'?now:null,history:[ichefOpsHistory('QUICK_ORDER_FROM_INVENTORY',auth,{inventoryItemId:String(item?.id||''),sectorKey,status})],createdAt:now,updatedAt:now});
@@ -36079,11 +36133,11 @@ return res.json({success:true,deliveries,self:auth.self});
 
 app.get('/api/ops/purchase-orders',async(req,res)=>{
 try{
-res.setHeader('Cache-Control','no-store');const auth=await ichefOpsRequire(req,res,{purchaseView:true});if(!auth)return;
+res.setHeader('Cache-Control','no-store');const auth=await ichefOpsRequire(req,res);if(!auth)return;
 const query={tenantID:auth.tenantID},status=ichefOpsText(req.query?.status||'',40).toUpperCase();
 if(['DRAFT','PENDING_APPROVAL','APPROVED','SENT','PARTIAL','RECEIVED','CANCELLED'].includes(status))query.status=status;
 const rows=await IchefOpsPurchaseOrder.find(query).sort({createdAt:-1}).limit(500).lean();
-return res.json({success:true,orders:rows.map(x=>({id:x.orderId,supplierId:x.supplierId,supplierName:x.supplierName,status:x.status,currency:x.currency,
+return res.json({success:true,orders:rows.filter(x=>ichefOpsCanReceiveOrder(x,auth)).map(x=>({id:x.orderId,supplierId:x.supplierId,supplierName:x.supplierName,status:x.status,currency:x.currency,
 sectorKey:x.sectorKey||'economat',sectorLabel:x.sectorLabel||ichefOpsSectorLabel(x.sectorKey),
 supplierOrderChannel:x.supplierOrderChannel||'MEMO',supplierPhone:x.supplierPhone||'',supplierWhatsappPhone:x.supplierWhatsappPhone||'',supplierEmail:x.supplierEmail||'',supplierPortalUrl:x.supplierPortalUrl||'',
 items:x.items||[],totalEstimated:Number(x.totalEstimated||0),requestedDeliveryAt:x.requestedDeliveryAt,notes:x.notes||'',createdByStaffId:x.createdByStaffId,createdByName:x.createdByName,createdByRole:x.createdByRole,approvedByName:x.approvedByName||'',approvedAt:x.approvedAt,sentAt:x.sentAt,receivedAt:x.receivedAt,receivedByName:x.receivedByName||'',receptionNote:x.receptionNote||'',receptionHasIssue:x.receptionHasIssue===true,linkedReceptionTaskId:x.linkedReceptionTaskId||'',history:Array.isArray(x.history)?x.history.slice(-40):[],createdAt:x.createdAt,updatedAt:x.updatedAt})),capabilities:auth.caps,self:auth.self});
@@ -36092,7 +36146,7 @@ items:x.items||[],totalEstimated:Number(x.totalEstimated||0),requestedDeliveryAt
 
 app.post('/api/ops/purchase-orders',async(req,res)=>{
 try{
-res.setHeader('Cache-Control','no-store');const auth=await ichefOpsRequire(req,res,{purchaseCreate:true});if(!auth)return;
+res.setHeader('Cache-Control','no-store');const auth=await ichefOpsRequire(req,res);if(!auth)return;
 const supplierId=String(req.body?.supplierId||'').trim(),supplier=await IchefOpsSupplier.findOne({tenantID:auth.tenantID,supplierId,active:true}).lean();
 if(!supplier)return res.status(400).json({success:false,error:'Fournisseur actif introuvable.'});
 const raw=Array.isArray(req.body?.items)?req.body.items:[];
@@ -36101,6 +36155,7 @@ if(!items.length)return res.status(400).json({success:false,error:'Ajoutez au mo
 const delivery=req.body?.requestedDeliveryAt?new Date(req.body.requestedDeliveryAt):null;if(delivery&&Number.isNaN(delivery.getTime()))return res.status(400).json({success:false,error:'Date de livraison invalide.'});
 const c=String(req.body?.currency||supplier.defaultCurrency||'CHF').toUpperCase(),status=req.body?.submitForApproval===true?'PENDING_APPROVAL':'DRAFT',now=new Date();
 const sectorKey=ichefOpsSectorKey(req.body?.sectorKey||req.body?.sector||'economat'),sectorLabel=ichefOpsSectorLabel(sectorKey);
+if(!await ichef239EnsureOrder(req,res,auth,sectorKey))return;
 const order=await IchefOpsPurchaseOrder.create({tenantID:auth.tenantID,orderId:ichefOpsId('PO'),supplierId:supplier.supplierId,supplierName:supplier.name,status,currency:['CHF','EUR'].includes(c)?c:'CHF',
 sectorKey,sectorLabel,supplierOrderChannel:String(supplier.orderChannel||'MEMO').toUpperCase(),supplierPhone:String(supplier.phone||''),supplierWhatsappPhone:String(supplier.whatsappPhone||supplier.phone||''),supplierEmail:String(supplier.email||''),supplierPortalUrl:String(supplier.orderPortalUrl||''),
 items,totalEstimated:ichefOpsOrderTotal(items),requestedDeliveryAt:delivery,notes:ichefOpsText(req.body?.notes,5000),createdByStaffId:auth.self.id,createdByName:auth.self.name,createdByRole:auth.self.role,history:[ichefOpsHistory('CREATED',auth,{status,sectorKey})],createdAt:now,updatedAt:now});
@@ -36118,16 +36173,17 @@ try{
 res.setHeader('Cache-Control','no-store');const auth=await ichefOpsRequire(req,res);if(!auth)return;
 const order=await IchefOpsPurchaseOrder.findOne({tenantID:auth.tenantID,orderId:String(req.params.orderId||'')});if(!order)return res.status(404).json({success:false,error:'Commande fournisseur introuvable.'});
 const action=String(req.body?.action||'').toUpperCase(),isCreator=String(order.createdByStaffId||'')===auth.self.id,now=new Date();
+if(action!=='RECEIVE'&&!await ichef239EnsureOrder(req,res,auth,order.sectorKey||'economat'))return;
 if(action==='SUBMIT'){
-if(!auth.caps.createPurchases||(!isCreator&&!auth.caps.approvePurchases))return res.status(403).json({success:false,error:'Envoi en validation non autorisé.'});
+if(!isCreator&&!ichef239CanManageDepartment(auth,order.sectorKey||'economat'))return res.status(403).json({success:false,error:'Envoi en validation non autorisé.'});
 if(order.status!=='DRAFT')return res.status(409).json({success:false,error:'Cette commande ne peut plus être envoyée en validation.'});
 order.status='PENDING_APPROVAL';order.history.push(ichefOpsHistory('SUBMITTED',auth,{}));
 }else if(action==='APPROVE'){
-if(!auth.caps.approvePurchases)return res.status(403).json({success:false,error:'Validation non autorisée.'});
+if(!ichef239CanManageDepartment(auth,order.sectorKey||'economat'))return res.status(403).json({success:false,error:'Validation non autorisée.'});
 if(!['PENDING_APPROVAL','DRAFT'].includes(order.status))return res.status(409).json({success:false,error:'Commande non validable dans cet état.'});
 order.status='APPROVED';order.approvedByStaffId=auth.self.id;order.approvedByName=auth.self.name;order.approvedAt=now;order.history.push(ichefOpsHistory('APPROVED',auth,{}));
 }else if(action==='SEND'){
-if(!auth.caps.approvePurchases)return res.status(403).json({success:false,error:'Envoi fournisseur non autorisé.'});
+if(!ichef239CanManageDepartment(auth,order.sectorKey||'economat'))return res.status(403).json({success:false,error:'Envoi fournisseur non autorisé.'});
 if(order.status!=='APPROVED')return res.status(409).json({success:false,error:'La commande doit être approuvée avant envoi.'});
 order.status='SENT';order.sentAt=now;order.history.push(ichefOpsHistory('SENT',auth,{}));
 }else if(action==='RECEIVE'){
