@@ -1727,7 +1727,7 @@ pointer-events:none;opacity:.75
                     class="nav-btn haccp-sector-return-btn"
                     type="button"
                     onclick="retourSecteurAttribue()">
-                ← RETOUR
+                ← RETOUR BUREAU
             </button>
         </div>
 
@@ -1741,7 +1741,7 @@ pointer-events:none;opacity:.75
         
         <span id="haccp-sync-status" class="sync-pill degraded">SYSTÈME · IDENTIFICATION…</span>
         <span id="haccp-reg-profile" class="reg-profile-pill">RÉFÉRENTIEL · AUTO</span>
-        <button class="nav-btn admin-return" type="button" onclick="returnToAdmin()">← RETOUR ADMIN</button>
+        <button class="nav-btn admin-return" type="button" onclick="returnToAdmin()">← RETOUR BUREAU</button>
         <button class="nav-btn" style="border-color:var(--alert); color:var(--alert);" onclick="location.reload()">🔒 VERROUILLER</button>
     </div>
 
@@ -2899,12 +2899,48 @@ pointer-events:none;opacity:.75
             return currentUser.name || currentUser.role || "Utilisateur iCHEF";
         }
 
-        function returnToAdmin() {
-            const target = tenantID
-                ? `https://os.ichef.ch/admin.html?tenantID=${encodeURIComponent(tenantID)}`
-                : "https://os.ichef.ch/admin.html";
-            window.location.href = target;
+        // V244 — Retour Bureau : navigation seulement (jamais preuve d'autorisation).
+        // Le serveur reste le seul à valider la session et les permissions HACCP.
+        function ichefHaccpDeskPage() {
+            const params = new URLSearchParams(window.location.search);
+            const from = String(params.get('from') || '').trim().toLowerCase()
+                .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+            const pages = {
+                chef: 'chef.html', cuisine: 'chef.html', 'chef.html': 'chef.html',
+                patisserie: 'chef-patissier.html', patissier: 'chef-patissier.html',
+                'chef-patissier': 'chef-patissier.html', 'chef-patissier.html': 'chef-patissier.html',
+                bar: 'chef-bar.html', 'chef-bar': 'chef-bar.html', 'chef-bar.html': 'chef-bar.html',
+                service: 'pack-eco.html', caisse: 'pack-eco.html', salle: 'pack-eco.html',
+                'pack-eco': 'pack-eco.html',
+                staff: 'portail-staff.html', collaborateur: 'portail-staff.html',
+                'portail-staff': 'portail-staff.html',
+                admin: 'admin.html', administration: 'admin.html', direction: 'admin.html'
+            };
+            if (Object.prototype.hasOwnProperty.call(pages, from)) return pages[from];
+            const dept = String(currentDept || window.ICHEF_HACCP?.department || '')
+                .trim().toUpperCase();
+            if (dept === 'CUISINE') return 'chef.html';
+            if (dept === 'PATISSERIE') return 'chef-patissier.html';
+            if (dept === 'BAR') return 'chef-bar.html';
+            if (dept === 'SERVICE') return 'pack-eco.html';
+            if (dept === 'ADMIN' || dept === 'DIRECTION') return 'admin.html';
+            const ref = String(document.referrer || '');
+            // On ne suit aucun domaine externe : uniquement une page iCHEF connue.
+            try {
+                const u = new URL(ref);
+                if (u.origin === window.location.origin) {
+                    const name = u.pathname.split('/').pop().toLowerCase();
+                    if (Object.values(pages).includes(name)) return name;
+                }
+            } catch (_) {}
+            return 'admin.html';
         }
+        function ichefHaccpGoToDesk() {
+            const page = ichefHaccpDeskPage();
+            const q = tenantID ? '?tenantID=' + encodeURIComponent(tenantID) : '';
+            window.location.assign(page + q);
+        }
+        function returnToAdmin() { ichefHaccpGoToDesk(); }
 
         let haccpSocket = null;
         let haccpRefreshTimer = null;
@@ -3501,29 +3537,10 @@ pointer-events:none;opacity:.75
 
         // --- GESTION DU BOUTON RETOUR INTELLIGENT ---
         
-        function retourAdmin() {
-            const currentTenant =
-                (typeof tenantID !== 'undefined' && tenantID)
-                    ? tenantID
-                    : (localStorage.getItem('ichef_tenant_id') || localStorage.getItem('tenantID') || '');
-            const url = currentTenant
-                ? `https://os.ichef.ch/admin.html?tenantID=${encodeURIComponent(currentTenant)}`
-                : 'https://os.ichef.ch/admin.html';
-            window.location.href = url;
-        }
+        function retourAdmin() { ichefHaccpGoToDesk(); }
 
 function haccpSectorReturnConfig() {
-            const dept = String(currentDept || window.ICHEF_HACCP?.department || "")
-                .trim()
-                .toUpperCase();
-
-            if (dept === "CUISINE") return { label: "← RETOUR CUISINE", page: "chef.html" };
-            if (dept === "PATISSERIE") return { label: "← RETOUR PÂTISSERIE", page: "chef-patissier.html" };
-            if (dept === "BAR") return { label: "← RETOUR BAR", page: "chef-bar.html" };
-            if (dept === "SERVICE") return { label: "← RETOUR SERVICE / CAISSE", page: "pack-eco.html" };
-            if (dept === "ADMIN" || dept === "DIRECTION") return { label: "← RETOUR ADMINISTRATION", page: "admin.html" };
-
-            return { label: "← RETOUR PORTAIL STAFF", page: "portail-staff.html" };
+            return { label: '← RETOUR BUREAU', page: ichefHaccpDeskPage() };
         }
 
         function updateHaccpSectorReturnButton() {
@@ -3534,11 +3551,7 @@ function haccpSectorReturnConfig() {
             btn.dataset.destination = config.page;
         }
 
-        function retourSecteurAttribue() {
-            const config = haccpSectorReturnConfig();
-            const q = tenantID ? "?tenantID=" + encodeURIComponent(tenantID) : "";
-            window.location.href = config.page + q;
-        }
+        function retourSecteurAttribue() { ichefHaccpGoToDesk(); }
 
         function retourAccueilApp() {
             retourSecteurAttribue();
@@ -3971,11 +3984,6 @@ function haccpSectorReturnConfig() {
             if(haccpIsPhoneMode() || window.ICHEF_HACCP?.authenticated) return;
             const gate=document.getElementById('haccp-mobile-secure-gate');
             const btn=document.getElementById('haccp-identity-login-btn');
-            const params=new URLSearchParams(window.location.search);
-            const from=String(params.get('from')||'').toLowerCase();
-            const target=(from==='chef'||from==='cuisine')?'chef.html':
-              (from==='patisserie'||from==='pâtisserie')?'chef-patissier.html':
-              from==='bar'?'chef-bar.html':from==='staff'?'portail-staff.html':'admin.html';
             const title=document.getElementById('haccp-identity-gate-title');
             const desc=document.getElementById('haccp-identity-gate-text');
             const failure=window.ICHEF_HACCP_SSO_FAILURE || 'UNKNOWN';
@@ -3994,8 +4002,8 @@ function haccpSectorReturnConfig() {
             if(desc)desc.textContent=diagnostics[failure] || diagnostics.UNKNOWN;
             if(btn){
               btn.hidden=false;
-              btn.textContent='← RETOUR À MON MODULE';
-              btn.onclick=()=>window.location.assign(target+'?tenantID='+encodeURIComponent(tenantID));
+              btn.textContent='← RETOUR BUREAU';
+              btn.onclick=ichefHaccpGoToDesk;
             }
             // Un bouton de nouvelle tentative est utile quand le serveur vient de se réveiller.
             // Il ne court-circuite jamais la validation des sessions côté serveur.
@@ -9860,7 +9868,7 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
  function create(){if(created)return;created=true;
   const bar=document.createElement('header');bar.id='hv225-bar';bar.innerHTML=`<div class="brand"><b>iCHEF</b><em>HACCP</em></div><span class="top-site">Établissement : <strong id="hv225-location">—</strong></span><span class="top-pill" id="hv225-profile">RÉFÉRENTIEL HACCP</span><span class="top-status" id="hv225-sync">Synchronisation…</span><span class="top-time" id="hv225-time"></span><button type="button" id="hv225-account">▣ &nbsp; Mon compte</button>`;document.body.append(bar);
   const side=document.createElement('aside');side.id='hv225-sidebar';side.setAttribute('aria-label','Navigation HACCP ordinateur');
-  side.innerHTML=`<button type="button" data-hv225-action="dashboard"><i>⌂</i>Tableau de bord</button><button type="button" data-hv225-nav="temp"><i>♧</i>Températures</button><button type="button" data-hv225-nav="cleaning"><i>🧹</i>Nettoyage</button><button type="button" data-hv225-nav="trace"><i>▤</i>Traçabilité</button><button type="button" data-hv225-action="ticket"><i>◇</i>Tickets DLC</button><button type="button" data-hv225-nav="inventaire"><i>▣</i>Inventaire</button><button type="button" data-hv225-action="reception"><i>▰</i>Réception BL</button><button type="button" data-hv225-nav="archive"><i>▤</i>Archives</button><div class="group-label">ADMINISTRATION</div><button type="button" data-hv225-action="parc"><i>⚙</i>Parc HACCP</button><button type="button" data-hv225-action="rights" hidden><i>♟</i>Accès collaborateurs</button><button type="button" data-hv225-action="return" class="hv225-admin-return"><i>↩</i>Retour administration</button><div class="sidebar-foot"><strong>Référentiel sanitaire</strong><span id="hv225-side-reference">Chargement…</span><br><span id="hv225-side-presence">Contrôles iCHEF actifs</span></div>`;document.body.append(side);
+  side.innerHTML=`<button type="button" data-hv225-action="dashboard"><i>⌂</i>Tableau de bord</button><button type="button" data-hv225-nav="temp"><i>♧</i>Températures</button><button type="button" data-hv225-nav="cleaning"><i>🧹</i>Nettoyage</button><button type="button" data-hv225-nav="trace"><i>▤</i>Traçabilité</button><button type="button" data-hv225-action="ticket"><i>◇</i>Tickets DLC</button><button type="button" data-hv225-nav="inventaire"><i>▣</i>Inventaire</button><button type="button" data-hv225-action="reception"><i>▰</i>Réception BL</button><button type="button" data-hv225-nav="archive"><i>▤</i>Archives</button><div class="group-label">ADMINISTRATION</div><button type="button" data-hv225-action="parc"><i>⚙</i>Parc HACCP</button><button type="button" data-hv225-action="rights" hidden><i>♟</i>Accès collaborateurs</button><div class="group-label">NAVIGATION</div><button type="button" data-hv225-action="return" class="hv225-admin-return"><i>↩</i>Retour bureau</button><div class="sidebar-foot"><strong>Référentiel sanitaire</strong><span id="hv225-side-reference">Chargement…</span><br><span id="hv225-side-presence">Contrôles iCHEF actifs</span></div>`;document.body.append(side);
   const hub=$('haccp-desktop-temp-hub');if(!hub)return;
   const actions=hub.querySelector('.hd-temp-head-actions');if(actions){const sec=document.createElement('div');sec.id='hv225-sector-control';sec.innerHTML='<label for="hv225-sector-select">Secteur</label><span id="hv225-sector-static">—</span><select id="hv225-sector-select" aria-label="Choisir un secteur autorisé" hidden></select>';actions.prepend(sec)}
   const grid=document.createElement('div');grid.id='hv225-workgrid';
