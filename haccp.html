@@ -3568,7 +3568,7 @@ function haccpSectorReturnConfig() {
             const sector = String(params.get("sectorKey") || params.get("sector") || "").toLowerCase();
             const ref = String(document.referrer || "").toLowerCase();
 
-            if (sector === "cuisine" || fromPage === "cuisine" || ref.includes("chef.html")) return "CUISINE";
+            if (sector === "cuisine" || fromPage === "cuisine" || fromPage === "chef" || ref.includes("chef.html")) return "CUISINE";
             if (sector === "patisserie" || sector === "pâtisserie" || fromPage === "patisserie" || ref.includes("chef-patissier.html")) return "PATISSERIE";
             if (sector === "bar" || fromPage === "bar" || ref.includes("chef-bar.html")) return "BAR";
             if (
@@ -3844,7 +3844,11 @@ function haccpSectorReturnConfig() {
 
         async function tryResumeHaccpStaffSession() {
             const tokens = haccpSessionTokens();
-            if (!tokens.length || !tenantID) return false;
+            if (!tokens.length || !tenantID) {
+                window.ICHEF_HACCP_SSO_FAILURE = !tenantID ? 'TENANT' : 'NO_TOKEN';
+                return false;
+            }
+            window.ICHEF_HACCP_SSO_FAILURE = null;
 
             const endpoints = [
                 { path: "/api/chef/context", source: "SESSION_CHEF_SIGNEE", rank: 0 },
@@ -3862,7 +3866,9 @@ function haccpSectorReturnConfig() {
                         checks.push((async () => {
                             try {
                                 const controller = new AbortController();
-                                const timeout = setTimeout(() => controller.abort(), 4500);
+                                // Le serveur Render peut être en veille : ne pas refuser la session
+                                // après seulement 4,5 secondes de démarrage à froid.
+                                const timeout = setTimeout(() => controller.abort(), 35000);
                                 let response;
                                 try {
                                     response = await fetch(`${SERVER_URL}${endpoint.path}`, {
@@ -3917,12 +3923,23 @@ function haccpSectorReturnConfig() {
 
                 const hadReachableServer = results.some(r => r.response);
                 const hadAuthoritativeRejection = results.some(r => r.response && (r.response.status === 401 || r.response.status === 403));
+                // Aucune donnée sensible / aucun jeton n’est affiché dans ce diagnostic.
+                const codes = results.map(r => r.response?.status).filter(Boolean);
+                const errors = results.some(r => r.error);
+                window.ICHEF_HACCP_SSO_FAILURE =
+                    codes.includes(403) ? 'FORBIDDEN' :
+                    codes.includes(401) ? 'EXPIRED' :
+                    codes.includes(404) ? 'ROUTE_MISSING' :
+                    codes.includes(503) || codes.includes(502) || codes.includes(504) ? 'BACKEND_BUSY' :
+                    (errors && !codes.length) ? 'NETWORK' :
+                    (hadReachableServer && valid.length > 0) ? 'PROFILE' : 'UNKNOWN';
                 if (hadReachableServer && hadAuthoritativeRejection && valid.length === 0) {
                     clearExpiredHaccpStaffSession();
                 }
                 return false;
-            } catch (error) {
-                console.warn("[iCHEF HACCP] Validation session signée indisponible :", error);
+             } catch (error) {
+                console.warn("[iCHEF HACCP] Validation session signée indisponible :", error?.name || 'Connexion');
+                window.ICHEF_HACCP_SSO_FAILURE = 'NETWORK';
                 setSyncStatus("degraded", "SYSTÈME · SESSION À VÉRIFIER");
                 return false;
             }
@@ -3952,21 +3969,54 @@ function haccpSectorReturnConfig() {
 
         function ichef226DesktopGate(){
             if(haccpIsPhoneMode() || window.ICHEF_HACCP?.authenticated) return;
+            const gate=document.getElementById('haccp-mobile-secure-gate');
             const btn=document.getElementById('haccp-identity-login-btn');
             const params=new URLSearchParams(window.location.search);
             const from=String(params.get('from')||'').toLowerCase();
-            const target=(from==='cuisine')?'chef.html':
+            const target=(from==='chef'||from==='cuisine')?'chef.html':
               (from==='patisserie'||from==='pâtisserie')?'chef-patissier.html':
-              from==='bar'?'chef-bar.html':'admin.html';
+              from==='bar'?'chef-bar.html':from==='staff'?'portail-staff.html':'admin.html';
             const title=document.getElementById('haccp-identity-gate-title');
             const desc=document.getElementById('haccp-identity-gate-text');
-            if(title)title.textContent='Session responsable à confirmer';
-            if(desc)desc.textContent='Le serveur ne retrouve pas une session responsable iCHEF signée. Retournez à votre module, connectez-vous avec votre accès habituel, puis ouvrez HACCP. Aucun deuxième PIN dans HACCP.';
+            const failure=window.ICHEF_HACCP_SSO_FAILURE || 'UNKNOWN';
+            const diagnostics={
+              TENANT:'Établissement non identifié. Revenez à votre module habituel.',
+              NO_TOKEN:'Aucune session signée iCHEF dans cet onglet. Retournez dans Chef, connectez-vous avec votre accès habituel, puis ouvrez HACCP dans LE MÊME ONGLET.',
+              EXPIRED:'La session iCHEF a été refusée ou a expiré (401). Reconnectez-vous dans votre module, puis ouvrez HACCP.',
+              FORBIDDEN:'La session existe mais le serveur refuse cet accès (403). Vérifiez le rôle Chef / Responsable et les autorisations HACCP.',
+              ROUTE_MISSING:'La route d’authentification iCHEF est absente du serveur (404). Il faut vérifier la version server.js déployée.',
+              BACKEND_BUSY:'Le serveur iCHEF ne répond pas correctement (502/503/504). Patientez, puis réessayez.',
+              NETWORK:'Impossible de contacter le serveur ou délai dépassé. Patientez quelques instants puis réessayez.',
+              PROFILE:'Le serveur a reconnu une session, mais aucun secteur HACCP autorisé n’a été trouvé. Vérifiez les affectations du collaborateur.',
+              UNKNOWN:'Le serveur n’a pas pu confirmer cette session. Reconnectez-vous depuis Chef, sans utiliser de second PIN dans HACCP.'
+            };
+            if(title)title.textContent='Connexion HACCP à vérifier';
+            if(desc)desc.textContent=diagnostics[failure] || diagnostics.UNKNOWN;
             if(btn){
               btn.hidden=false;
               btn.textContent='← RETOUR À MON MODULE';
               btn.onclick=()=>window.location.assign(target+'?tenantID='+encodeURIComponent(tenantID));
             }
+            // Un bouton de nouvelle tentative est utile quand le serveur vient de se réveiller.
+            // Il ne court-circuite jamais la validation des sessions côté serveur.
+            let retry=document.getElementById('ichef-v243-sso-retry');
+            if(!retry && gate){
+              retry=document.createElement('button');
+              retry.id='ichef-v243-sso-retry';
+              retry.type='button';
+              retry.textContent='↻ RÉESSAYER LA CONNEXION';
+              retry.style.cssText='display:block;width:100%;margin:10px 0 0;padding:14px 12px;background:#122238;border:1px solid #516f90;border-radius:10px;color:#fff;font-size:.75rem;font-weight:800;cursor:pointer';
+              (btn?.parentElement || gate).appendChild(retry);
+              retry.onclick=async()=>{
+                retry.disabled=true;
+                retry.textContent='VÉRIFICATION DU SERVEUR…';
+                try{
+                  const resumed=await tryResumeHaccpStaffSession();
+                  if(!resumed){showHaccpMobileSecureGate(haccpEntrySectorHint());ichef226DesktopGate();}
+                }finally{retry.disabled=false;retry.textContent='↻ RÉESSAYER LA CONNEXION';}
+              };
+            }
+            if(retry) retry.style.display=['NETWORK','BACKEND_BUSY','UNKNOWN'].includes(failure)?'block':'none';
         }
 
         async function submitPin() {
