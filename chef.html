@@ -144,6 +144,7 @@
 
             if (!existingToken) return null;
 
+            let explicitlyRejected = false;
             try {
                 const ctxRes = await fetch(
                     `${securityServerURL}/api/chef/context?tenantID=${encodeURIComponent(tenant)}&_t=${Date.now()}`,
@@ -161,7 +162,10 @@
                 );
                 const ctx = await ctxRes.json().catch(() => ({}));
 
-                if (ctxRes.ok && ctx.success === true && ctx.fullDomainAccess === true) {
+                // V244 : CHEF_DESKTOP + manager=true est un accès Chef validé côté serveur.
+                // fullDomainAccess=true concerne uniquement le Master et ne doit pas exclure les Chefs.
+                if (ctxRes.ok && ctx.success === true && ctx.accessChannel === 'CHEF_DESKTOP'
+                    && (ctx.manager === true || ctx.fullDomainAccess === true)) {
                     window.ICHEF_CHEF_ACCESS_TOKEN = existingToken;
                     window.ICHEF_CHEF_CONTEXT = ctx;
                     window.ICHEF_SECURITY = Object.assign(window.ICHEF_SECURITY || {}, {
@@ -175,10 +179,15 @@
                     });
                     return ctx;
                 }
+                explicitlyRejected = ctxRes.status === 401 || ctxRes.status === 403;
+                if (!explicitlyRejected) console.warn('[iCHEF CHEF] Contexte indisponible ou incompatible :', ctxRes.status);
             } catch (e) {
-                console.warn('[iCHEF CHEF] Reprise de session impossible :', e);
+                console.warn('[iCHEF CHEF] Reprise de session momentanément impossible :', e);
             }
 
+            // Ne pas effacer un jeton potentiellement valide lors d'un incident réseau / 404 / 503.
+            // HACCP refusera quand même l'accès tant que le serveur n'aura pas confirmé le droit.
+            if (!explicitlyRejected) return null;
             sessionStorage.removeItem('ichef_chef_access_token');
             if (sessionStorage.getItem('ichef_access_token') === existingToken) {
                 sessionStorage.removeItem('ichef_access_token');
@@ -2468,7 +2477,8 @@
                 const token = getChefAccessToken();
                 const ctx = window.ICHEF_CHEF_CONTEXT;
 
-                if (!token || ctx?.fullDomainAccess !== true) return false;
+                if (!token || ctx?.accessChannel !== 'CHEF_DESKTOP'
+                    || (ctx.manager !== true && ctx.fullDomainAccess !== true)) return false;
 
                 window.ICHEF_SECURITY = Object.assign(window.ICHEF_SECURITY || {}, {
                     tenantID,
