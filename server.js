@@ -36222,6 +36222,167 @@ error
 );
 ichefGracefulShutdown('uncaughtException', 1);
 });
+// ============================================================================
+// iCHEF V232 — DOSSIER DE CONTROLE SANITAIRE, LECTURE SEULE (API SERVEUR)
+// Sources : AppState HACCP + receptions de commandes effectivement receptionnees.
+// Authentification signee + tenant + appareil ; jamais d'acces par simple URL.
+// ============================================================================
+function ichef232AsArray(node) {
+  if (Array.isArray(node)) return node;
+  if (Array.isArray(node?.data)) return node.data;
+  return [];
+}
+function ichef232AsObject(node) {
+  if (node?.data && typeof node.data === 'object' && !Array.isArray(node.data)) return node.data;
+  if (node && typeof node === 'object' && !Array.isArray(node)) return node;
+  return {};
+}
+function ichef232DateOnly(raw) {
+  if (raw instanceof Date && !isNaN(raw)) return raw.toISOString().slice(0, 10);
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  const fr = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(s);
+  if (fr) return `${fr[3]}-${fr[2].padStart(2,'0')}-${fr[1].padStart(2,'0')}`;
+  const ms = Date.parse(s);
+  return Number.isFinite(ms) ? new Date(ms).toISOString().slice(0,10) : '';
+}
+function ichef232ValidDate(d) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return false;
+  const parsed = new Date(d+'T12:00:00Z');
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0,10)===d;
+}
+function ichef232Dept(item) {
+  return ichefHaccp223Dept(item?.dept || item?.department || item?.sector ||
+    item?.sectorKey || item?.sectorLabel || item?.service || '');
+}
+function ichef232RecordDate(r) {
+  return ichef232DateOnly(r?.timestamp || r?.capturedAt || r?.receivedAt ||
+    r?.createdAt || r?.at || r?.date || r?.prepDate || r?.openDate);
+}
+app.get('/api/haccp/inspection/dossier', async (req,res) => {
+  res.setHeader('Cache-Control','no-store, private');
+  res.setHeader('Pragma','no-cache');
+  res.setHeader('X-Content-Type-Options','nosniff');
+  try {
+    const auth = await ichefOpsLoadAuthorizedSession(req);
+    if (!auth.ok) return res.status(401).json({success:false,error:'Session responsable valide requise.'});
+    const fields = [auth.staff?.role,auth.staff?.position,auth.staff?.fonction,auth.staff?.title]
+      .filter(Boolean).join(' ').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
+    const chef = /\bCHEF\b|CHEF_|_CHEF\b/.test(fields);
+    if (!ichefHaccp223Manager(auth) && !chef)
+      return res.status(403).json({success:false,error:'Dossier inspecteur reserve aux responsables HACCP.'});
+    const from = String(req.query?.from || '').trim();
+    const to = String(req.query?.to || '').trim();
+    if (!ichef232ValidDate(from) || !ichef232ValidDate(to) || from > to)
+      return res.status(400).json({success:false,error:'Periode incorrecte (AAAA-MM-JJ).'});
+    const days = (Date.parse(to+'T12:00:00Z')-Date.parse(from+'T12:00:00Z')) / 86400000;
+    if (days > 366*5 + 2) return res.status(400).json({success:false,error:'Limitez le dossier a cinq ans.'});
+    const access = await ichefHaccp223Access(auth);
+    const allowed = (access?.sectors || []).filter(x=>ICHEF_HACCP_223_SECTORS.includes(x));
+    if (!allowed.length) return res.status(403).json({success:false,error:'Aucun secteur HACCP autorise.'});
+    const asked = String(req.query?.sector||'ALL').trim().toUpperCase();
+    if (asked!=='ALL' && !allowed.includes(asked))
+      return res.status(403).json({success:false,error:'Secteur non autorise.'});
+    const permitted = asked==='ALL' ? allowed : [asked];
+    const isAllSectors = asked==='ALL' && allowed.length===4;
+    const state = await AppState.findOne({tenantID:auth.tenantID},{
+      tenantID:1, 'activeOrders.HACCP_TEMP':1, 'activeOrders.HACCP_CLEANING':1,
+      'activeOrders.HACCP_TRACE':1, 'activeOrders.HACCP_RECEPTION':1,
+      'activeOrders.HACCP_INV_LOGS':1, 'activeOrders.HACCP_LISTS_MASTER':1,
+      'activeOrders.SETTINGS_MASTER':1
+    }).lean();
+    if (!state) return res.status(404).json({success:false,error:'Etablissement indisponible.'});
+    const ao = state.activeOrders || {};
+    const missing = [], excludedUndated = {}, totalsBefore = {};
+    const defs = {
+      temperatures:'HACCP_TEMP', nettoyage:'HACCP_CLEANING',
+      tracabilite:'HACCP_TRACE', receptions_haccp:'HACCP_RECEPTION',
+      inventaires_haccp:'HACCP_INV_LOGS'
+    };
+    const sections = {};
+    for (const [label,key] of Object.entries(defs)) {
+      if (!Object.prototype.hasOwnProperty.call(ao,key)) missing.push(key+' : aucune source enregistree');
+      const rows = ichef232AsArray(ao[key]);
+      totalsBefore[label]=rows.length;
+      excludedUndated[label]=0;
+      sections[label]=rows.filter(r=>{
+        if(!r || typeof r!=='object')return false;
+        const dept=ichef232Dept(r);
+        // Des enregistrements anciens sans secteur sont visibles uniquement par un responsable tous secteurs.
+        if(!dept && !isAllSectors)return false;
+        if(dept && !permitted.includes(dept))return false;
+        const date=ichef232RecordDate(r);
+        if(!date){excludedUndated[label]++;return false;}
+        return date>=from && date<=to;
+      });
+    }
+    // BL receptionnes dans la base Operations, hors commandes simplement creees/envoyees.
+    const start = new Date(from+'T00:00:00.000Z');
+    const end = new Date(to+'T23:59:59.999Z');
+    const orders = await IchefOpsPurchaseOrder.find({
+      tenantID:auth.tenantID,status:{$in:['PARTIAL','RECEIVED']},
+      receivedAt:{$gte:start,$lte:end}
+    },{
+      _id:0,orderId:1,supplierId:1,supplierName:1,status:1,currency:1,
+      sectorKey:1,sectorLabel:1,items:1,receivedAt:1,receivedByName:1,
+      receptionNote:1,receptionHasIssue:1,history:1
+    }).sort({receivedAt:-1}).limit(5001).lean();
+    if(orders.length>5000)return res.status(413).json({success:false,error:'Plus de 5 000 BL : choisissez une periode plus courte.'});
+    sections.bons_livraison=orders.filter(o=>{
+      const dept=ichef232Dept(o);
+      return (!dept && isAllSectors) || permitted.includes(dept);
+    });
+    const count=Object.values(sections).reduce((n,v)=>n+v.length,0);
+    if(count>20000)return res.status(413).json({success:false,error:'Dossier trop volumineux : choisissez une periode plus courte.'});
+    const settings=ichef232AsObject(ao.SETTINGS_MASTER);
+    const lists=ichef232AsObject(ao.HACCP_LISTS_MASTER);
+    if(!Object.prototype.hasOwnProperty.call(ao,'HACCP_LISTS_MASTER'))missing.push('HACCP_LISTS_MASTER : référentiel non enregistré');
+    const catalogs={};
+    const catalogue=[];
+    for(const sector of permitted){
+      const c=lists[sector];
+      if(!c || typeof c!=='object')continue;
+      catalogs[sector]=c;
+      for(const [kind,key] of [['eq','Équipement'],['clean','Zone nettoyage'],['trace','Catégorie traçabilité']]){
+        for(const [category,items] of Object.entries(c[kind]||{})){
+          for(const name of Array.isArray(items)?items:[]){
+            catalogue.push({dept:sector,category,name:String(name),kind:key,
+              type:kind==='eq'?String(c?.eqCategoryTypes?.[category]||''):'',
+              snapshotAt:new Date().toISOString(),status:'Référentiel courant (non historique)'});
+          }
+        }
+      }
+    }
+    sections.referentiel_haccp=catalogue;
+    if(count+catalogue.length>20000) return res.status(413).json({success:false,error:'Dossier et référentiel trop volumineux ; contactez votre administrateur.'});
+    // Les référentiels sont l'état courant, et non des contrôles passés.
+    const result={
+      success:true,build:'ICHEF-HACCP-V232-INSPECTION-PILOTE',
+      meta:{tenantID:auth.tenantID,generatedAt:new Date().toISOString(),from,to,
+        sectors:permitted,source:'MongoDB AppState et bons de livraison Operations',
+        regulatoryCountry:String(settings?.taxConfig?.country||settings?.countryCode||settings?.country||''),
+        exportedBy:String(auth.staff?.name||auth.staff?.prenom||auth.claims?.staffId||'Responsable'),
+        readOnly:true,photoPolicy:'Uniquement les preuves encore presentes en base',
+        partial:false,undatedNotExported:excludedUndated,missingSources:missing,
+        note:'Absence de ligne = aucune preuve trouvee ; ne certifie ni la conformite ni l\u2019exhaustivite reglementaire.'},
+      sections,catalogs,counts:Object.fromEntries(Object.entries(sections).map(([k,v])=>[k,v.length]))
+    };
+    // Interdit de retourner un dossier coupe ou partiellement transforme.
+    // Journaliser la preparation (sans photographies, tokens, ni données RH).
+    void ichefWriteSecurityEvent({req,severity:'INFO',type:'HACCP_INSPECTION_PREPARED',tenantID:auth.tenantID,detail:`Période ${from}..${to}; secteurs ${permitted.join(',')}; preuves ${count+catalogue.length}`,blocked:false});
+    const serialized=JSON.stringify(result);
+    if(Buffer.byteLength(serialized,'utf8')>32*1024*1024)
+      return res.status(413).json({success:false,error:'Preuves photos trop volumineuses : reduisez la periode.'});
+    return res.type('json').send(serialized);
+  }catch(err){
+    console.error('[HACCP V232 inspection]',err?.message||err);
+    return res.status(503).json({success:false,error:'Dossier sanitaire indisponible ; reessayez plus tard.'});
+  }
+});
+// FIN API INSPECTION V232
+
 server.on('error', error => {
 console.error(
 '❌ Erreur serveur HTTP :',
