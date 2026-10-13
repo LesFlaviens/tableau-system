@@ -1112,11 +1112,17 @@
     <div id="annuaire-modal" class="modal" role="dialog" aria-modal="true" aria-label="Répertoire fournisseurs">
       <div class="modal-content v238-directory">
         <div class="v238-dir-head"><div><h3 style="margin:0">📒 Répertoire fournisseurs</h3><p>Coordonnées partagées avec les achats et l’Économat.</p></div><button type="button" class="add-btn" style="width:auto" onclick="closeInvModal('annuaire-modal')">✕ Fermer</button></div>
-        <div class="v238-dir-actions"><input id="v238-search" type="search" placeholder="Rechercher un fournisseur…" aria-label="Rechercher un fournisseur" oninput="renderSuppliers()"><button id="v238-add" class="add-btn primary" style="width:auto" onclick="v238OpenSupplierEdit('')">+ Nouveau fournisseur</button><button class="add-btn" style="width:auto" onclick="v238LoadSuppliers()">↻ Actualiser</button></div>
+        <div class="v238-dir-actions"><input id="v238-search" type="search" placeholder="Rechercher un fournisseur…" aria-label="Rechercher un fournisseur" oninput="renderSuppliers()"><button id="v238-add" class="add-btn primary" style="width:auto" onclick="v238OpenSupplierEdit('')">+ Nouveau fournisseur</button><button class="add-btn" style="width:auto" onclick="v238LoadSuppliers()">↻ Actualiser</button><button class="add-btn" style="width:auto" onclick="v239OpenPermissions()">🔐 Droits de commande</button></div>
         <p class="v238-dir-message" id="v238-status" role="status">Chargement du répertoire…</p>
         <div id="supplier-directory-list" class="v238-directory-grid"></div>
       </div>
     </div>
+<div id="v239-permission-modal" class="modal" role="dialog" aria-modal="true" aria-label="Droits d'achat du département">
+ <div class="modal-content" style="max-width:760px;gap:12px"><h3>🔐 Qui peut commander ? — Cuisine</h3>
+ <p style="color:var(--text-muted)">Le responsable choisit qui peut passer les commandes. Tous les collaborateurs affectés au département peuvent toujours contrôler ses livraisons.</p>
+ <p id="v239-permission-status" role="status">Chargement…</p><div id="v239-permission-list" style="display:grid;gap:9px"></div>
+ <button class="add-btn" onclick="closeInvModal('v239-permission-modal');openInvModal('annuaire-modal')">Retour fournisseurs</button></div>
+</div>
     <div id="edit-supplier-v238-modal" class="modal" role="dialog" aria-modal="true" aria-label="Fiche fournisseur">
       <div class="modal-content" style="max-width:640px;gap:12px"><h3 id="v238-edit-title">Fiche fournisseur</h3>
         <form id="v238-form" onsubmit="v238SaveSupplier(event)">
@@ -3305,6 +3311,30 @@
             if (confirm("La création d’un article appartient à l’Économat. Ouvrir l’Économat ?")) {
                 openEconomatFromChef();
             }
+        }
+
+
+        // V239 — attribution de l'autorisation achat Cuisine par responsable signé.
+        async function v239PermissionsRequest(method,path,payload){
+          const token=getChefAccessToken();if(!token)throw Error('Session responsable nécessaire.');
+          const response=await fetch(SERVER_URL+path+(path.includes('?')?'&':'?')+'tenantID='+encodeURIComponent(tenantID),{
+           method,cache:'no-store',credentials:'include',headers:{Authorization:'Bearer '+token,'X-iCHEF-Tenant':tenantID,'X-iCHEF-Device':CHEF_DEVICE_ID,'Content-Type':'application/json'},
+           ...(payload?{body:JSON.stringify(payload)}:{})});
+          const data=await response.json().catch(()=>({}));if(!response.ok||!data.success)throw Error(data.error||'Opération refusée ('+response.status+').');return data;
+        }
+        async function v239OpenPermissions(){
+          closeInvModal('annuaire-modal');setTimeout(()=>openInvModal('v239-permission-modal'),210);
+          const status=document.getElementById('v239-permission-status'),list=document.getElementById('v239-permission-list');
+          status.textContent='Chargement des collaborateurs autorisés…';list.replaceChildren();
+          try{const result=await v239PermissionsRequest('GET','/api/ops/purchase-permissions?sectorKey=cuisine');
+            status.textContent=result.people.length+' collaborateur(s) affecté(s) à la Cuisine.';
+            for(const person of result.people){const row=document.createElement('label');row.style.cssText='display:flex;justify-content:space-between;align-items:center;gap:16px;padding:15px;border:1px solid var(--border-strong);border-radius:9px';
+              const name=document.createElement('span');name.textContent=person.name+' · '+(person.role||'Collaborateur');
+              const check=document.createElement('input');check.type='checkbox';check.checked=person.canOrder||person.manager;check.disabled=!!person.manager;check.style.cssText='width:25px;min-height:25px';
+              check.addEventListener('change',async()=>{check.disabled=true;try{await v239PermissionsRequest('PUT','/api/ops/purchase-permissions/'+encodeURIComponent(person.id),{sectorKey:'cuisine',canOrder:check.checked});status.textContent='✓ Autorisation enregistrée sur le serveur.';}catch(e){check.checked=!check.checked;status.textContent='⚠ '+e.message;}finally{check.disabled=!!person.manager;}});
+              row.append(name,check);list.append(row);
+            }
+          }catch(e){status.textContent='⚠ '+e.message;}
         }
 
         // V238 : fournisseurs partagés serveur, jamais stockés uniquement sur ce navigateur.
