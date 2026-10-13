@@ -36508,6 +36508,62 @@ async function ichef232DossierHandler(req,res) {
 app.get('/api/haccp/inspection/dossier', ichef232DossierHandler);
 // FIN API INSPECTION V232
 
+
+// ============================================================================
+// iCHEF HACCP V242 — Actions correctives Nettoyage / audit de suivi.
+// Route atomique : conserve le contrôle d'origine, ajoute une preuve de suivi.
+// ==========================================================================
+app.post('/api/haccp/cleaning/corrective',async(req,res)=>{
+ res.setHeader('Cache-Control','no-store, private');
+ try{
+  const auth=await ichefOpsLoadAuthorizedSession(req);
+  if(!auth.ok)return res.status(401).json({success:false,error:'Session HACCP requise.'});
+  const named=[auth.staff?.role,auth.staff?.position,auth.staff?.fonction,auth.staff?.title]
+   .filter(Boolean).join(' ').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
+  if(!ichefHaccp223Manager(auth)&&!(/\bCHEF\b|CHEF_|_CHEF\b/.test(named)))
+   return res.status(403).json({success:false,error:'Action corrective réservée aux responsables autorisés.'});
+  const access=await ichefHaccp223Access(auth);
+  const sector=ichefHaccp223Dept(req.body?.sector);
+  if(!sector||!access.sectors.includes(sector))
+   return res.status(403).json({success:false,error:'Secteur HACCP non autorisé.'});
+  // Même règle de présence que le HACCP Staff, sauf compte maître.
+  if(!String(auth.claims?.staffId||'').startsWith('MASTER:')){
+   const presence=await ichefHaccp224CheckPresence(req,auth);
+   if(!presence.allowed)return res.status(403).json({success:false,error:'Présence dans l’établissement non vérifiée.'});
+  }
+  const action=String(req.body?.action||'').trim();
+  const status=String(req.body?.status||'');
+  const sourceId=String(req.body?.sourceId||'').trim();
+  if(action.length<8||action.length>1500||!['CONFORME','NON CONFORME'].includes(status)||!sourceId||sourceId.length>150)
+   return res.status(400).json({success:false,error:'Action, statut ou référence invalides.'});
+  const state=await AppState.findOne({tenantID:auth.tenantID},{'activeOrders.HACCP_CLEANING':1}).lean();
+  const records=ichef232AsArray(state?.activeOrders?.HACCP_CLEANING);
+  const source=records.find(r=>r && String(r.id)===sourceId && ichef232Dept(r)===sector && r.recordType!=='CORRECTIVE_ACTION');
+  if(!source)return res.status(404).json({success:false,error:'Contrôle introuvable dans ce département.'});
+  if(!Array.isArray(state?.activeOrders?.HACCP_CLEANING?.data))
+   return res.status(409).json({success:false,error:'Format de stockage incompatible : migration nécessaire.'});
+  const now=new Date(),name=String(auth.staff?.name||[auth.staff?.prenom,auth.staff?.nom].filter(Boolean).join(' ')||auth.claims?.staffId||'Responsable').slice(0,100);
+  const entry={
+   id:'ACT-'+nodeCrypto.randomUUID(),recordType:'CORRECTIVE_ACTION',correctionOf:String(source.id),
+   zone:String(source.zone||'Zone HACCP').slice(0,200),dept:sector,status,
+   obs:action,actionCorrective:action,verified:status==='CONFORME',
+   date:now.toLocaleDateString('fr-FR',{timeZone:'Europe/Paris'}),time:now.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/Paris'}),
+   timestamp:now.toISOString(),audit:'Action corrective enregistrée par '+name,
+   recordedByStaffId:String(auth.claims?.staffId||''),sourceStatus:String(source.status||''),
+   sourceTimestamp:String(source.timestamp||'')
+  };
+  // Écriture atomique : ne réécrit pas le tableau entier depuis un cache de navigateur.
+  const result=await AppState.updateOne({tenantID:auth.tenantID,
+    'activeOrders.HACCP_CLEANING.data':{$elemMatch:{id:source.id,dept:source.dept}}},
+    {$push:{'activeOrders.HACCP_CLEANING.data':entry}});
+  if(result.modifiedCount!==1)return res.status(409).json({success:false,error:'Le contrôle a changé ; actualisez puis réessayez.'});
+  void ichefWriteSecurityEvent({req,severity:'INFO',type:'HACCP_CLEANING_CORRECTIVE_RECORDED',tenantID:auth.tenantID,
+    detail:'Secteur '+sector+'; contrôle '+sourceId+'; suivi '+entry.id,blocked:false});
+  return res.json({success:true,id:entry.id,sector,status,linkedTo:sourceId});
+ }catch(err){console.error('[HACCP V242 corrective]',err?.message||err);
+  return res.status(503).json({success:false,error:'Enregistrement impossible sur le serveur.'});}
+});
+
 // ==========================================================================
 // V234 — INSPECTION HACCP : PARTAGE TEMPORAIRE EN LECTURE SEULE
 // Un jeton à 256 bits, seulement sa SHA256 conservée en base, durée <= 2 h.
