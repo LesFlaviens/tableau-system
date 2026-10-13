@@ -35497,16 +35497,42 @@ function ichef239CanManageDepartment(auth={},sector='economat'){
  const role=ichefOpsRoleText(auth.staff||{});
  return /direction|directeur|directrice|gerant|gerante|manager|chef|responsable|superviseur|supervisor|admin/.test(role)&&ichef239InSector(auth,sector);
 }
-async function ichef239CanOrder(auth={},sector='economat'){
+// V240 — Horaires de travail : un collaborateur connecté doit être pointé
+// EN SERVICE dans STAFF_ACCESS. On n'accepte ni heure ni rôle fournis par le navigateur.
+// Le pointage dure au maximum 16 h sans nouvelle entrée afin de ne jamais
+// conserver accidentellement un accès d'achat après une session oubliée.
+function ichef240DutyState(auth={}){
+ if(ichef239IsMaster(auth))return {onDuty:true,reason:'DIRECTION'};
+ const staff=auth.staff||{};
+ if(staff.onDuty!==true)return {onDuty:false,reason:'POINTAGE_REQUIS'};
+ const lastAt=Date.parse(String(staff.lastPunchAt||''));
+ const age=Date.now()-lastAt;
+ if(!Number.isFinite(lastAt)||age<0||age>16*60*60*1000)return {onDuty:false,reason:'POINTAGE_EXPIRE'};
+ const punch=String(staff.lastPunchType||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
+ if(punch&&!punch.includes('ENTREE')&&!punch.includes('IN'))return {onDuty:false,reason:'SORTIE_DE_SERVICE'};
+ return {onDuty:true,reason:'EN_SERVICE'};
+}
+async function ichef240PurchaseRights(auth={},sector='economat'){
  if(!ichef239InSector(auth,sector))return false;
  if(ichef239IsMaster(auth)||ichef239CanManageDepartment(auth,sector))return true;
+ const id=ichefOpsSelf(auth).id;
+ if(!id)return false;
+ const grant=await Ichef239PurchaseGrant.findOne({tenantID:auth.tenantID,staffId:id,sectorKey:ichefOpsSectorKey(sector)}).lean();
+ return grant?.canOrder===true;
+}
+async function ichef239CanOrder(auth={},sector='economat'){
+ if(!ichef239InSector(auth,sector))return false;
+ // Conserve les droits du responsable sur Chef/Administration hors service.
+ // Les collaborateurs DELEGUES restent bloqués hors de leur pointage.
+ if(ichef239IsMaster(auth)||ichef239CanManageDepartment(auth,sector))return true;
+ if(!ichef240DutyState(auth).onDuty)return false;
  const id=ichefOpsSelf(auth).id;if(!id)return false;
  const g=await Ichef239PurchaseGrant.findOne({tenantID:auth.tenantID,staffId:id,sectorKey:ichefOpsSectorKey(sector)}).lean();
  return g?.canOrder===true;
 }
 async function ichef239EnsureOrder(req,res,auth,sector){
  if(await ichef239CanOrder(auth,sector))return true;
- res.status(403).json({success:false,error:'Commande réservée aux collaborateurs autorisés de votre département.'});return false;
+ res.status(403).json({success:false,error:!ichef240DutyState(auth).onDuty?'Commande disponible uniquement pendant votre service, après pointage d’entrée.':'Commande réservée aux collaborateurs autorisés de votre département.'});return false;
 }
 
 function ichefOpsStaffId(item={}){return String(item?.id ?? item?.staffId ?? item?.employeeId ?? item?.rhId ?? item?.matricule ?? '').trim().slice(0,120);}
@@ -35895,6 +35921,21 @@ app.get('/api/chef/context',async(req,res)=>{
  }
 });
 
+// V240 — Portail Staff : statut de commande délivré par le serveur.
+// Une simple connexion ne suffit pas : affectation + autorisation + pointage actif.
+app.get('/api/ops/staff-purchase-access',async(req,res)=>{
+ try{
+  res.setHeader('Cache-Control','no-store');
+  const auth=await ichefOpsRequire(req,res);if(!auth)return;
+  const sectorKey=ichefOpsSectorKey(auth.self.deptKey||'economat');
+  const granted=await ichef240PurchaseRights(auth,sectorKey);
+  const duty=ichef240DutyState(auth);
+  return res.json({success:true,sectorKey,sectorLabel:ichefOpsSectorLabel(sectorKey),granted,
+   onDuty:duty.onDuty,enabled:Boolean(granted&&duty.onDuty),reason:duty.reason,
+   self:{id:auth.self.id,name:auth.self.name,dept:auth.self.dept}});
+ }catch(error){console.error('[iCHEF V240 staff access]',error);return res.status(503).json({success:false,error:'Droit de commande indisponible.'});}
+});
+
 // V239 — Gestion des droits de commandes, par responsable du département.
 app.get('/api/ops/purchase-permissions',async(req,res)=>{
  try{res.setHeader('Cache-Control','no-store');const auth=await ichefOpsRequire(req,res);if(!auth)return;
@@ -36183,7 +36224,8 @@ if(!ichef239CanManageDepartment(auth,order.sectorKey||'economat'))return res.sta
 if(!['PENDING_APPROVAL','DRAFT'].includes(order.status))return res.status(409).json({success:false,error:'Commande non validable dans cet état.'});
 order.status='APPROVED';order.approvedByStaffId=auth.self.id;order.approvedByName=auth.self.name;order.approvedAt=now;order.history.push(ichefOpsHistory('APPROVED',auth,{}));
 }else if(action==='SEND'){
-if(!ichef239CanManageDepartment(auth,order.sectorKey||'economat'))return res.status(403).json({success:false,error:'Envoi fournisseur non autorisé.'});
+// V240 : l'envoi d'une commande DÉJÀ APPROUVÉE est possible pour le collaborateur autorisé, en service.
+if(!await ichef239CanOrder(auth,order.sectorKey||'economat'))return res.status(403).json({success:false,error:'Envoi réservé aux collaborateurs autorisés et actuellement en service.'});
 if(order.status!=='APPROVED')return res.status(409).json({success:false,error:'La commande doit être approuvée avant envoi.'});
 order.status='SENT';order.sentAt=now;order.history.push(ichefOpsHistory('SENT',auth,{}));
 }else if(action==='RECEIVE'){
