@@ -7081,6 +7081,182 @@ if (!responseText.startsWith("{")) responseText = responseText.substring(respons
 res.json({ success: true, data: JSON.parse(responseText) });
 } catch (error) { res.status(500).json({ success: false, error: "Erreur de traitement IA ou Image illisible." }); }
 });
+// ============================================================================
+// iCHEF V229 PILOTE — FACTURES FOURNISSEURS IA / RAPPROCHEMENT BL / SYNCHRO
+// Séparation stricte : la réception BL augmente le stock ; la facture NON.
+// Facture validée : journal central + prix d'achat des articles liés + food cost.
+// Aucun document image conservé. Aucun comptage de TVA inventé.
+// ============================================================================
+const ichef229InvoiceSchema = new mongoose.Schema({
+  tenantID:{type:String,required:true,index:true},
+  supplierId:{type:String,required:true},invoiceKey:{type:String,required:true},
+  invoiceId:{type:String,required:true,unique:true},number:{type:String,required:true},
+  supplierName:{type:String,required:true},orderId:{type:String,default:''},
+  currency:{type:String,enum:['CHF','EUR'],required:true},
+  invoiceDate:{type:String,required:true},status:{type:String,enum:['SYNC_PENDING','VALIDATED'],default:'SYNC_PENDING'},
+  lines:{type:[mongoose.Schema.Types.Mixed],default:[]},
+  taxBreakdown:{type:[mongoose.Schema.Types.Mixed],default:[]},
+  totalHT:{type:Number,required:true},totalTax:{type:Number,required:true},totalTTC:{type:Number,required:true},
+  createdBy:{type:String,required:true},createdByName:{type:String,default:''},
+  createdAt:{type:Date,default:Date.now},validatedAt:{type:Date,default:null},
+  recognitionSource:{type:String,default:'CAMERA_OR_UPLOAD'},
+  audit:{type:[mongoose.Schema.Types.Mixed],default:[]}
+},{minimize:false});
+ichef229InvoiceSchema.index({tenantID:1,supplierId:1,invoiceKey:1},{unique:true});
+ichef229InvoiceSchema.index({tenantID:1,createdAt:-1});
+const Ichef229SupplierInvoice=mongoose.models.Ichef229SupplierInvoice||mongoose.model('Ichef229SupplierInvoice',ichef229InvoiceSchema);
+const ichef229Round=x=>Math.round((Number(x)||0)*100)/100;
+const ichef229Num=x=>x===null||x===undefined||x===''?NaN:(typeof x==='string'?Number(x.replace(/\s/g,'').replace(',','.')):Number(x));
+function ichef229Value(x,lo=0,hi=1e9){const n=ichef229Num(x);return Number.isFinite(n)&&n>=lo&&n<=hi?n:null;}
+function ichef229Text(x,max=200){return String(x??'').trim().slice(0,max);}
+function ichef229Unit(x){
+ const k=ichef229Text(x,30).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+ return ({kg:'kg',kilo:'kg',kilogramme:'kg',kilogrammes:'kg',g:'g',gramme:'g',l:'L',litre:'L',litres:'L',ml:'ml',unite:'u',piece:'u',pieces:'u',u:'u',carton:'carton',cartons:'carton'})[k]||'';
+}
+function ichef229Normalize(raw){
+ const j=raw&&typeof raw==='object'?raw:{};
+ const src=Array.isArray(j.articles)?j.articles:(Array.isArray(j.lines)?j.lines:[]);
+ return {fournisseur:ichef229Text(j.fournisseur||j.supplierName,220),numero:ichef229Text(j.numero||j.numeroFacture||j.invoiceNumber,100),date:ichef229Text(j.date,32),devise:ichef229Text(j.devise||j.currency,10),totalHT:ichef229Num(j.totalHT),tva:ichef229Num(j.tvaMontant??j.tva),totalTTC:ichef229Num(j.totalTTC),articles:src.slice(0,100).map(it=>({nom:ichef229Text(it.nom||it.name,220),quantite:ichef229Num(it.quantite??it.quantity),unite:ichef229Unit(it.unite||it.unit),prixUnitaire:ichef229Num(it.prixUnitaire??it.unitPriceHT),tvaTaux:ichef229Num(it.tvaTaux??it.taxRate??it.tauxTVA),totalHT:ichef229Num(it.totalHT??it.lineTotalHT)}))};
+}
+async function ichef229Session(req,res,{approve=false}={}){
+ const a=await ichefOpsRequire(req,res,approve?{purchaseApprove:true}:{purchaseView:true});
+ if(a)res.setHeader('Cache-Control','no-store');
+ return a;
+}
+app.get('/api/ops/supplier-invoices/context',async(req,res)=>{
+ try{
+  const a=await ichef229Session(req,res);if(!a)return;
+  const [sup,orders]=await Promise.all([
+    IchefOpsSupplier.find({tenantID:a.tenantID,active:true},{supplierId:1,name:1,defaultCurrency:1}).sort({name:1}).limit(300).lean(),
+    IchefOpsPurchaseOrder.find({tenantID:a.tenantID,status:{$in:['PARTIAL','RECEIVED','APPROVED','SENT']}},{orderId:1,supplierId:1,supplierName:1,status:1,currency:1,items:1,receivedAt:1}).sort({createdAt:-1}).limit(150).lean()
+  ]);
+  return res.json({success:true,suppliers:sup.map(s=>({id:s.supplierId,name:s.name,currency:s.defaultCurrency})),orders:orders.map(o=>({id:o.orderId,supplierId:o.supplierId,name:o.supplierName,status:o.status,currency:o.currency,items:o.items.map(i=>({id:i.itemId,name:i.name,unit:i.unit,inventoryItemId:i.inventoryItemId,receivedQuantity:i.receivedQuantity,quantity:i.quantity}))})),canValidate:a.caps.approvePurchases});
+ }catch(e){console.error('[V229 context]',e);return res.status(503).json({success:false,error:'Contexte factures indisponible.'});}
+});
+app.post('/api/ops/supplier-invoices/scan',async(req,res)=>{
+ try{
+  const a=await ichef229Session(req,res);if(!a)return;
+  if(!process.env.GEMINI_API_KEY)return res.status(503).json({success:false,error:'Analyse IA non configurée.'});
+  const mime=String(req.body?.mimeType||'image/jpeg');
+  if(!['image/jpeg','image/png','image/webp'].includes(mime))return res.status(415).json({success:false,error:'Utilisez une photographie JPG, PNG ou WebP.'});
+  const payload=String(req.body?.imageBase64||'').replace(/^data:[^,]+,/,'');
+  if(!payload||payload.length>6_000_000||!/^[A-Za-z0-9+/=\s]+$/.test(payload))return res.status(413).json({success:false,error:'Photo manquante ou trop volumineuse (max. 4 Mo).'});
+  const bytes=Buffer.from(payload,'base64');if(!bytes.length||bytes.length>4_000_000)return res.status(413).json({success:false,error:'Image trop volumineuse.'});
+  const prompt=`Lis cette photographie de facture fournisseur. Retourne uniquement UN OBJET JSON, sans markdown ni texte annexe. Ne devine jamais une valeur illisible : null. Document de facture, pas bon de livraison. Format : {"fournisseur":"", "numero":"", "date":"AAAA-MM-JJ", "devise":"CHF ou EUR", "totalHT":0, "tvaMontant":0, "totalTTC":0, "articles":[{"nom":"", "quantite":0, "unite":"kg/g/L/ml/u/carton", "prixUnitaire":0, "tvaTaux":0, "totalHT":0}]}. Prix unitaires et totaux en HT. tvaTaux est un pourcentage (ex 2.6). Conserve toutes les lignes visibles et les taux distincts. N'invente pas de taux de TVA ; signaler toute ambiguïté via null.`;
+  const model=genAI.getGenerativeModel({model:'gemini-2.5-flash'});
+  const r=await model.generateContent([prompt,{inlineData:{data:bytes.toString('base64'),mimeType:mime}}]);
+  const raw=String(r.response.text()||'').replace(/^```(?:json)?\s*/i,'').replace(/```\s*$/,'').trim();
+  const start=raw.indexOf('{'),end=raw.lastIndexOf('}');if(start<0||end<=start)throw new Error('Réponse illisible');
+  const data=ichef229Normalize(JSON.parse(raw.slice(start,end+1)));
+  return res.json({success:true,draft:data,warning:'Vérifier les montants, les unités et les taux de TVA avant validation. La photo n’est pas conservée.'});
+ }catch(e){console.warn('[V229 scan IA]',e.message);return res.status(422).json({success:false,error:'Reconnaissance incertaine. Réessayez avec une photo nette ou saisissez les données manuellement.'});}
+});
+function ichef229CheckDoc(data){
+ const inv=data&&typeof data==='object'?data:{};
+ const number=ichef229Text(inv.number,100),supplierId=ichef229Text(inv.supplierId,120);
+ const date=ichef229Text(inv.date,10),currency=ichef229Text(inv.currency,3).toUpperCase();
+ if(!supplierId||!number||!/^(19|20)\d\d-\d\d-\d\d$/.test(date)||!['CHF','EUR'].includes(currency))throw new Error('Fournisseur, numéro, date et devise requis.');
+ const parsedDate=new Date(date+'T12:00:00Z');if(!Number.isFinite(parsedDate.getTime())||parsedDate.toISOString().slice(0,10)!==date)throw new Error('Date de facture invalide.');
+ const src=Array.isArray(inv.lines)?inv.lines:[];if(!src.length||src.length>120)throw new Error('Facture : de 1 à 120 lignes autorisées.');
+ const lines=src.map((x,i)=>{
+  const name=ichef229Text(x.name,220),unit=ichef229Unit(x.unit);
+  const quantity=ichef229Value(x.quantity,0.000001,1000000),unitPrice=ichef229Value(x.unitPriceHT,0,100000000),taxRate=ichef229Value(x.taxRate,0,100);
+  if(!name||!unit||quantity===null||unitPrice===null||taxRate===null)throw new Error(`Ligne ${i+1}: produit, quantité, unité, prix HT ou TVA invalide.`);
+  const lineHT=ichef229Round(quantity*unitPrice),claimed=ichef229Value(x.lineTotalHT,0,1e9);
+  if(claimed!==null&&Math.abs(lineHT-claimed)>0.08)throw new Error(`Ligne ${i+1}: total HT incohérent avec quantité × prix.`);
+  return {name,quantity,unit,unitPriceHT:unitPrice,taxRate,lineHT,inventoryItemId:ichef229Text(x.inventoryItemId,120)};
+ });
+ const ht=ichef229Round(lines.reduce((sum,i)=>sum+i.lineHT,0)),buckets=new Map();
+ for(const l of lines){const rate=String(l.taxRate);buckets.set(rate,ichef229Round((buckets.get(rate)||0)+l.lineHT));}
+ const taxBreakdown=[...buckets].map(([rate,base])=>({rate:Number(rate),baseHT:base,tax:ichef229Round(base*Number(rate)/100)}));
+ const tax=ichef229Round(taxBreakdown.reduce((sum,b)=>sum+b.tax,0)),ttc=ichef229Round(ht+tax);
+ for(const [key,computed] of [['totalHT',ht],['totalTax',tax],['totalTTC',ttc]]){const claimed=ichef229Value(inv[key],0,1e10);if(claimed===null||Math.abs(claimed-computed)>0.12)throw new Error(`Montant ${key} incohérent : ${computed.toFixed(2)} attendu. Vérifiez le document et les taux de TVA.`);}
+ return {number,supplierId,date,currency,lines,ht,tax,ttc,taxBreakdown,orderId:ichef229Text(inv.orderId,120)};
+}
+async function ichef229SyncInvoice(invoice){
+ // Le journal AppState est la source de lecture unique des modules.
+ // Les colonnes quantité et mouvements ne sont JAMAIS modifiées par une facture.
+ return ichefSwitchQueue(invoice.tenantID,async()=>{
+  const state=await AppState.findOne({tenantID:invoice.tenantID}).lean();if(!state)throw new Error('Établissement sans état central.');
+  const ao=state.activeOrders||{}, existing=ichefSwitchUnwrap(ao.SUPPLIER_INVOICES_MASTER)||[];
+  if(Array.isArray(existing)&&existing.some(x=>x.id===invoice.invoiceId))return {alreadySynced:true,linked:0};
+  const now=new Date().toISOString(),invItems=ichefSwitchClone(ichefSwitchUnwrap(ao.INVENTORY_MASTER))||[];
+  const recipes=ichefSwitchClone(ichefSwitchUnwrap(ao.RECIPES_MASTER))||[];
+  const menu=ichefSwitchClone(ichefSwitchUnwrap(ao.MENU_MASTER)||ichefSwitchUnwrap(ao.MENU_CUISINE))||{};
+  let changed=0;
+  for(const line of invoice.lines){
+   if(!line.inventoryItemId)continue;
+   const index=invItems.findIndex(x=>String(x?.id||'')===line.inventoryItemId);if(index<0)continue;
+   const item=invItems[index],stockUnit=ichef229Unit(item.unit||item.unite||'');
+   if(stockUnit!==line.unit)continue; // Pas de conversion automatique carton/kg.
+   invItems[index]={...item,unitPrice:line.unitPriceHT,totalPrice:ichef229Round(ichefSwitchInventoryQty(item)*line.unitPriceHT),lastInvoiceId:invoice.invoiceId,lastInvoicePriceAt:now,lastInvoiceSupplierId:invoice.supplierId,updatedAt:now,updatedByModule:'SUPPLIER_INVOICES_V229'};
+   changed++;
+  }
+  const map=new Map(invItems.map(x=>[String(x?.id||''),x]));
+  if(changed){
+   for(const recipe of recipes){
+    const calc=ichefSwitchRecipeCost(recipe,map);if(calc.linked>0)recipe.cost=calc.cost;
+    const ref=ichefSwitchFindMenuItem(menu,recipe.name),selling=ichefSwitchNum(ref?.item?.price??recipe?.price,0);
+    recipe.fc=selling>0?Math.round(ichefSwitchNum(recipe.cost,0)/selling*1000)/10:0;
+    recipe.switchUpdatedAt=now;
+    if(ref?.item){ref.item.foodCost=recipe.cost;ref.item.foodCostRate=recipe.fc;ref.item.switchUpdatedAt=now;}
+   }
+  }
+  const ledgerRow={id:invoice.invoiceId,supplierId:invoice.supplierId,supplierName:invoice.supplierName,number:invoice.number,date:invoice.invoiceDate,orderId:invoice.orderId,currency:invoice.currency,totalHT:invoice.totalHT,totalTax:invoice.totalTax,totalTTC:invoice.totalTTC,taxBreakdown:invoice.taxBreakdown,lines:invoice.lines,priceLinkedCount:changed,status:'VALIDATED',validatedAt:now,accountingStatus:'READY_FOR_ACCOUNTING_REVIEW',stockMovement:'NONE_INVOICE_ONLY'};
+  const list=[ledgerRow,...(Array.isArray(existing)?existing:[])].slice(0,3000);
+  const purchaseSummary=ichefSwitchUnwrap(ao.SUPPLIER_SPEND_MASTER)||[];
+  const summary=[{id:invoice.invoiceId,supplierId:invoice.supplierId,supplierName:invoice.supplierName,date:invoice.invoiceDate,currency:invoice.currency,amountHT:invoice.totalHT,amountTTC:invoice.totalTTC},...(Array.isArray(purchaseSummary)?purchaseSummary:[])].slice(0,3000);
+  const set={
+   'activeOrders.SUPPLIER_INVOICES_MASTER':ichefSwitchWrapLike(ao.SUPPLIER_INVOICES_MASTER,list),
+   'activeOrders.ACCOUNTING_SUPPLIER_INVOICES':ichefSwitchWrapLike(ao.ACCOUNTING_SUPPLIER_INVOICES,list.map(({lines,...rest})=>rest)),
+   'activeOrders.SUPPLIER_SPEND_MASTER':ichefSwitchWrapLike(ao.SUPPLIER_SPEND_MASTER,summary),
+   'activeOrders.HACCP_INVOICE_LINKS':ichefSwitchWrapLike(ao.HACCP_INVOICE_LINKS,list.map(x=>({id:x.id,orderId:x.orderId,supplierId:x.supplierId,number:x.number,date:x.date})))
+  };
+  if(changed){
+   set['activeOrders.INVENTORY_MASTER']=ichefSwitchWrapLike(ao.INVENTORY_MASTER,invItems);
+   set['activeOrders.RECIPES_MASTER']=ichefSwitchWrapLike(ao.RECIPES_MASTER,recipes);
+   set['activeOrders.MENU_MASTER']=ichefSwitchWrapLike(ao.MENU_MASTER,menu);
+  }
+  const next=await AppState.findOneAndUpdate({tenantID:invoice.tenantID},{$set:set},{new:true});if(!next)throw new Error('Enregistrement central impossible.');
+  io.to(invoice.tenantID).emit('updateState',next);
+  for(const channel of ['supplier-invoices-updated','inventory-updated','recipes-updated','menu-updated','accounting-updated','haccp-updated'])io.to(invoice.tenantID).emit(channel,{tenantID:invoice.tenantID,source:'SUPPLIER_INVOICE_V229',invoiceId:invoice.invoiceId,at:now});
+  const room=ichefStaffRealtimeRoom(invoice.tenantID);if(room)io.to(room).emit('ops-invoice-changed',{tenantID:invoice.tenantID,id:invoice.invoiceId,at:now});
+  return {alreadySynced:false,linked:changed};
+ });
+}
+app.post('/api/ops/supplier-invoices/validate',async(req,res)=>{
+ try{
+  const a=await ichef229Session(req,res,{approve:true});if(!a)return;
+  const doc=ichef229CheckDoc(req.body);
+  const supplier=await IchefOpsSupplier.findOne({tenantID:a.tenantID,supplierId:doc.supplierId,active:true}).lean();
+  if(!supplier)return res.status(409).json({success:false,error:'Fournisseur inconnu ou inactif : choisissez un fournisseur enregistré.'});
+  let order=null;
+  if(doc.orderId){
+   order=await IchefOpsPurchaseOrder.findOne({tenantID:a.tenantID,orderId:doc.orderId,supplierId:doc.supplierId}).lean();
+   if(!order)return res.status(409).json({success:false,error:'Commande/BL incompatible avec ce fournisseur.'});
+   if(!['PARTIAL','RECEIVED'].includes(order.status))return res.status(409).json({success:false,error:'Validez d’abord la réception du BL avant de rapprocher la facture.'});
+   if(order.currency!==doc.currency)return res.status(409).json({success:false,error:'Devise différente de celle de la commande.'});
+   for(const l of doc.lines){if(!l.inventoryItemId)continue;const valid=order.items.some(i=>String(i.inventoryItemId||'')===l.inventoryItemId&&ichef229Unit(i.unit)===l.unit&&Number(i.receivedQuantity||0)>0);if(!valid)return res.status(409).json({success:false,error:`Article « ${l.name} » non lié à un article réceptionné compatible (unité) sur ce BL.`});}
+  }else if(doc.lines.some(x=>x.inventoryItemId))return res.status(409).json({success:false,error:'Pour actualiser un prix de stock, rapprochez d’abord la facture d’une réception BL.'});
+  const key=doc.number.toUpperCase().replace(/\s+/g,'');
+  let invoice=await Ichef229SupplierInvoice.findOne({tenantID:a.tenantID,supplierId:doc.supplierId,invoiceKey:key});
+  if(!invoice){
+   try{invoice=await Ichef229SupplierInvoice.create({tenantID:a.tenantID,invoiceId:ichefOpsId('FINV'),supplierId:doc.supplierId,supplierName:supplier.name,invoiceKey:key,number:doc.number,invoiceDate:doc.date,orderId:doc.orderId,currency:doc.currency,lines:doc.lines,taxBreakdown:doc.taxBreakdown,totalHT:doc.ht,totalTax:doc.tax,totalTTC:doc.ttc,status:'SYNC_PENDING',createdBy:a.self.id,createdByName:a.self.name,audit:[{event:'HUMAN_VALIDATED',at:new Date(),staffId:a.self.id,orderId:doc.orderId,amount:doc.ttc}]} );}
+   catch(e){if(e.code===11000)invoice=await Ichef229SupplierInvoice.findOne({tenantID:a.tenantID,supplierId:doc.supplierId,invoiceKey:key});else throw e;}
+  }
+  if(!invoice)return res.status(503).json({success:false,error:'Enregistrement facture impossible.'});if(invoice.totalTTC!==doc.ttc||invoice.totalHT!==doc.ht||invoice.orderId!==doc.orderId||invoice.invoiceDate!==doc.date)return res.status(409).json({success:false,error:'Facture déjà créée avec des données différentes : impossible de la remplacer silencieusement.'});
+  // Le numéro/fournisseur unique interdit de remplacer discrètement une facture déjà enregistrée.
+  if(invoice.status==='VALIDATED'){if(invoice.totalTTC!==doc.ttc||invoice.totalHT!==doc.ht||invoice.orderId!==doc.orderId||invoice.invoiceDate!==doc.date)return res.status(409).json({success:false,error:'Numéro de facture déjà enregistré avec des données différentes. Vérifiez le doublon.'});return res.json({success:true,id:invoice.invoiceId,alreadyValidated:true});}
+  const sync=await ichef229SyncInvoice(invoice);
+  invoice.status='VALIDATED';invoice.validatedAt=new Date();invoice.audit.push({event:'CENTRAL_SYNC_OK',at:new Date(),linked:sync.linked});await invoice.save();
+  return res.json({success:true,id:invoice.invoiceId,alreadyValidated:false,orderLinked:!!invoice.orderId,stockQuantityChanged:false,priceLinkedCount:sync.linked,accountingStatus:'READY_FOR_ACCOUNTING_REVIEW'});
+ }catch(e){console.error('[V229 validation]',e.message);const bad=/incohérent|requis|invalide|ligne|montant|facture/i.test(e.message||'');return res.status(bad?400:503).json({success:false,error:bad?e.message:'Validation ou synchronisation impossible. Réessayez ; aucune quantité de stock ne doit être ajoutée par la facture.'});}
+});
+app.get('/api/ops/supplier-invoices',async(req,res)=>{
+ try{const a=await ichef229Session(req,res);if(!a)return;const invoices=await Ichef229SupplierInvoice.find({tenantID:a.tenantID},{lines:0,audit:0}).sort({createdAt:-1}).limit(120).lean();return res.json({success:true,invoices:invoices.map(i=>({id:i.invoiceId,number:i.number,supplierName:i.supplierName,date:i.invoiceDate,currency:i.currency,orderId:i.orderId,ht:i.totalHT,tax:i.totalTax,ttc:i.totalTTC,status:i.status}))});}catch(e){return res.status(503).json({success:false,error:'Historique factures indisponible.'});}
+});
+// FIN V229
+
 app.post('/analyse-ticket', async (req, res) => {
 const { image, mimeType } = req.body;
 if (!image) return res.status(400).json({ success: false, error: "Image manquante" });
