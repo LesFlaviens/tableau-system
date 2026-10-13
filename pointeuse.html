@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>iCHEF · Pointeuse collaborateurs · Réveil intelligent · V5</title>
+<title>iCHEF · Pointeuse collaborateurs · Réveil intelligent · V245 rapide</title>
 <link rel="preload" as="image" href="ChatGPT Image 20 sept. 2026, 14_24_41.png">
 <link rel="preload" as="image" href="logo-ichef.png">
 <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
@@ -231,13 +231,21 @@ video{width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:11px;background
   let staffAccess=[]; let pin=''; let inFlight=false; let stream=null; let socket=null; let cameraStartPromise=null; let cameraPrimedAt=0;
   let isAutoSleeping=false; let sleepReason=null; let wakeLock=null; let autoPowerTimer=null;
   let manualWakeUntil=0; let lastActivity=Date.now();
+  // V245 : évite les requêtes concurrentes et les rechargements inutiles de l'état complet.
+  let stateRefreshPromise=null, stateRefreshTimer=null, pendingStaffRefresh=false;
+  let lastStaffRefreshAt=0;
+  let punchingStatusTimer=null;
   const IDLE_SLEEP_MS=60000; const MANUAL_WAKE_GRACE_MS=120000;
   const $=id=>document.getElementById(id);
 
   function toast(msg){const el=$('toast');el.textContent=msg;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),1800)}
   function setSync(ok,text){const el=$('sync-status');el.classList.toggle('offline',!ok);$('sync-text').textContent=text}
   function renderPin(){const box=$('pin-display');box.innerHTML='';const count=Math.max(6,pin.length);for(let i=0;i<count;i++){const d=document.createElement('span');d.className='pin-dot'+(i<pin.length?' filled':'');box.appendChild(d)}}
-  function clearPin(){pin='';renderPin();lastActivity=Date.now();setTimeout(()=>{if(pin.length===0&&!inFlight&&(Date.now()-cameraPrimedAt)>7000)stopCamera()},8000)}
+  function clearPin(){
+    pin='';renderPin();lastActivity=Date.now();
+    setTimeout(()=>{if(pin.length===0&&!inFlight&&(Date.now()-cameraPrimedAt)>7000)stopCamera()},8000);
+    if(pendingStaffRefresh&&!inFlight){pendingStaffRefresh=false;queueStaffRefresh(500);}
+  }
   async function addDigit(d){
     if(isAutoSleeping){await wakeWithFirstDigit(d);return}
     if(pin.length<12){
@@ -251,9 +259,39 @@ video{width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:11px;background
   function updateClock(){const now=new Date();$('clock').textContent=now.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});$('date').textContent=now.toLocaleDateString('fr-FR',{weekday:'long',day:'2-digit',month:'long',year:'numeric'})}
   setInterval(updateClock,1000); updateClock(); renderPin();
 
-  async function getState(){const r=await fetch(`${SERVER}/get-current-state?tenantID=${encodeURIComponent(tenantID)}&t=${Date.now()}`,{cache:'no-store'});if(!r.ok)throw new Error('Serveur injoignable');return r.json()}
-  function applyState(state){const list=state?.activeOrders?.STAFF_ACCESS?.data;staffAccess=Array.isArray(list)?list.filter(s=>s&&s.active!==false).map(s=>({...s,pin:String(s.pin||'').trim()})):[];localStorage.setItem('ichef_pointeuse_staff_cache',JSON.stringify(staffAccess));setSync(true,isAutoSleeping?'VEILLE · SYNCHRONISÉE':'EN LIGNE · SYNCHRONISÉ')}
-  async function refreshState(){if(!navigator.onLine){setSync(false,'HORS LIGNE');return}try{applyState(await getState())}catch(e){console.warn(e);setSync(false,'SYNCHRONISATION IMPOSSIBLE')}}
+  async function getState(){
+    // Cet endpoint renvoie actuellement TOUT l'état de l'établissement ;
+    // l'optimisation définitive exige une route RH dédiée, légère, côté serveur.
+    const r=await fetch(`${SERVER}/get-current-state?tenantID=${encodeURIComponent(tenantID)}&t=${Date.now()}`,{cache:'no-store'});
+    if(!r.ok)throw new Error('Serveur injoignable');
+    return r.json();
+  }
+  function applyState(state){
+    const list=state?.activeOrders?.STAFF_ACCESS?.data;
+    // Ne pas effacer la liste si une notification Socket ne contient pas STAFF_ACCESS.
+    if(!Array.isArray(list))return;
+    staffAccess=list.filter(s=>s&&s.active!==false).map(s=>({...s,pin:String(s.pin||'').trim()}));
+    try { localStorage.setItem('ichef_pointeuse_staff_cache',JSON.stringify(staffAccess)); } catch(_){}
+    lastStaffRefreshAt=Date.now();
+    if(!inFlight)setSync(true,isAutoSleeping?'VEILLE · SYNCHRONISÉE':'EN LIGNE · SYNCHRONISÉ');
+  }
+  async function refreshState(options={}){
+    if(!navigator.onLine){setSync(false,'HORS LIGNE');return false;}
+    if(inFlight&&!options.force){pendingStaffRefresh=true;return false;}
+    // Un seul téléchargement de l'état complet à la fois.
+    if(stateRefreshPromise)return stateRefreshPromise;
+    stateRefreshPromise=(async()=>{
+      try {applyState(await getState());return true;}
+      catch(e){console.warn('[iCHEF Pointeuse] synchronisation :',e?.message||e);if(!staffAccess.length)setSync(false,'SYNCHRONISATION IMPOSSIBLE');return false;}
+      finally {stateRefreshPromise=null;}
+    })();
+    return stateRefreshPromise;
+  }
+  function queueStaffRefresh(delayMs=2500){
+    if(inFlight||pin.length){pendingStaffRefresh=true;return;}
+    clearTimeout(stateRefreshTimer);
+    stateRefreshTimer=setTimeout(()=>{stateRefreshTimer=null;refreshState()},delayMs);
+  }
 
   const AUTO_POWER_KEY='ichef_pointeuse_auto_power_v1';
   const AUTO_POWER_DEFAULT={enabled:false,start:'06:00',end:'02:00',days:[0,1,2,3,4,5,6]};
@@ -384,35 +422,93 @@ video{width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:11px;background
 
   function capturePhoto(){const video=$('camera'),canvas=$('capture');if(!video||!canvas||!stream)throw new Error('Caméra indisponible.');const ctx=canvas.getContext('2d',{alpha:false});canvas.width=240;canvas.height=180;ctx.drawImage(video,0,0,240,180);return canvas.toDataURL('image/jpeg',.42)}
 
-  function showSuccess(staff,type,ts){const ov=$('success');const entry=type==='ENTRÉE';ov.className='overlay show '+(entry?'entry':'exit');$('success-title').textContent=entry?'ENTRÉE ENREGISTRÉE':'SORTIE ENREGISTRÉE';$('success-name').textContent=staff?.name||'Collaborateur';$('success-time').textContent=new Date(ts||Date.now()).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});setTimeout(()=>{ov.className='overlay';clearPin()},1400)}
+  function showSuccess(staff,type,ts){
+    const ov=$('success'),entry=type==='ENTRÉE';
+    ov.className='overlay show '+(entry?'entry':'exit');
+    $('success-title').textContent=entry?'ENTRÉE ENREGISTRÉE':'SORTIE ENREGISTRÉE';
+    $('success-name').textContent=staff?.name||'Collaborateur';
+    $('success-time').textContent=new Date(ts||Date.now()).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    // La preuve est déjà prise : éteindre la caméra immédiatement pour préparer le prochain pointage.
+    stopCamera();
+    setTimeout(()=>{ov.className='overlay';clearPin()},1100);
+  }
 
   async function punch(){
     if(isAutoSleeping){toast('Saisissez votre PIN pour réveiller la borne');return;}
+    if(inFlight)return;
     markActivity();
     const entered=String(pin||'').trim();
-    if(!/^\d{4,12}$/.test(entered)){toast('PIN : 4 à 12 chiffres');clearPin();return}
-    if(inFlight)return;
-    if(!navigator.onLine){toast('Connexion serveur requise');setSync(false,'HORS LIGNE');return}
-    inFlight=true;$('submit').disabled=true;
-    try{
+    if(!/^\d{4,12}$/.test(entered)){toast('PIN : 4 à 12 chiffres');clearPin();return;}
+    if(!navigator.onLine){toast('Connexion serveur requise');setSync(false,'HORS LIGNE');return;}
+    const startedAt=performance.now();
+    let lookupMs=0,cameraMs=0,networkMs=0;
+    inFlight=true;
+    $('submit').disabled=true;
+    // Retour visible pendant une requête lente : éviter un deuxième pointage par impatience.
+    let seconds=0;
+    punchingStatusTimer=setInterval(()=>{
+      seconds++;
+      $('sync-text').textContent=`ENREGISTREMENT… ${seconds}s · PATIENTEZ`;
+    },1000);
+    setSync(true,'VÉRIFICATION…');
+    try {
       let staff=staffAccess.find(s=>String(s.pin||'').trim()===entered&&s.active!==false);
-      if(!staff){await refreshState();staff=staffAccess.find(s=>String(s.pin||'').trim()===entered&&s.active!==false)}
+      if(!staff){
+        const t=performance.now();
+        // Seuls les PIN inconnus nécessitent un rattrapage réseau. Si déjà en cours,
+        // la fonction attend la même promesse au lieu de télécharger l'état deux fois.
+        await refreshState({force:true});
+        lookupMs=Math.round(performance.now()-t);
+        staff=staffAccess.find(s=>String(s.pin||'').trim()===entered&&s.active!==false);
+      }
       if(!staff)throw new Error('CODE PIN INVALIDE OU COLLABORATEUR INACTIF');
-      if(!stream){const ready=await startCamera();if(!ready)throw new Error('CAMÉRA INDISPONIBLE');}
+      const camT=performance.now();
+      if(!stream?.active){
+        const ready=await startCamera();
+        if(!ready)throw new Error('CAMÉRA INDISPONIBLE');
+      }
+      cameraMs=Math.round(performance.now()-camT);
       const photo=capturePhoto();
-      const startedAt=performance.now();
+      const serverT=performance.now();
       setSync(true,'ENREGISTREMENT…');
-      const r=await fetch(`${SERVER}/api/rh/punch`,{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},cache:'no-store',body:JSON.stringify({tenantID,staffId:staff.id,pin:entered,deviceId:DEVICE_ID,photo})});
+      // Le serveur connaît fastResponse : il répond avec le seul pointage au lieu
+      // de renvoyer toutes les feuilles d'heures et tous les collaborateurs.
+      // Cela ne supprime ni la photo, ni l'audit, ni la sauvegarde serveur.
+      const r=await fetch(`${SERVER}/api/rh/punch`,{
+        method:'POST',
+        headers:{'Content-Type':'application/json','Accept':'application/json'},
+        cache:'no-store',
+        body:JSON.stringify({tenantID,staffId:staff.id,pin:entered,deviceId:DEVICE_ID,photo,fastResponse:true})
+      });
       const data=await r.json().catch(()=>({}));
-      const elapsed=Math.round(performance.now()-startedAt);
-      console.info(`[iCHEF Pointeuse] réponse serveur: ${elapsed} ms`,data?.serverLatencyMs?`serveur ${data.serverLatencyMs} ms`:'');
+      networkMs=Math.round(performance.now()-serverT);
+      const totalMs=Math.round(performance.now()-startedAt);
+      const serverMs=Number(data?.serverDurationMs||0);
+      // Diagnostic technique sans journaliser PIN, identifiant, photo ni coordonnées.
+      console.info('[iCHEF Pointeuse V245] durée (ms)',{
+        total:totalMs,identification:lookupMs,camera:cameraMs,requete:networkMs,
+        serveur:serverMs>0?serverMs:'non indiqué',transfert:serverMs>0?Math.max(0,networkMs-serverMs):'inconnu'
+      });
       if(!r.ok||!data.success)throw new Error(data.error||'Impossible d’enregistrer le pointage.');
-      if(Array.isArray(data.staffAccess)){staffAccess=data.staffAccess.filter(s=>s&&s.active!==false).map(s=>({...s,pin:String(s.pin||'').trim()}));localStorage.setItem('ichef_pointeuse_staff_cache',JSON.stringify(staffAccess))}
-      localStorage.setItem('ichef_pointeuse_last_sync',new Date().toISOString());
+      // Compatibilité si une version serveur retourne toujours une liste complète.
+      if(Array.isArray(data.staffAccess)){
+        staffAccess=data.staffAccess.filter(s=>s&&s.active!==false).map(s=>({...s,pin:String(s.pin||'').trim()}));
+        try{localStorage.setItem('ichef_pointeuse_staff_cache',JSON.stringify(staffAccess))}catch(_){}
+      }
+      try{localStorage.setItem('ichef_pointeuse_last_sync',new Date().toISOString())}catch(_){}
       showSuccess(staff,data.punchType,data.punch?.timestamp||Date.now());
-      setSync(true,'EN LIGNE · SYNCHRONISÉ');
-    }catch(e){console.error(e);toast(e?.message||'Erreur de pointage');clearPin()}
-    finally{inFlight=false;$('submit').disabled=false}
+      setSync(true,'POINTAGE ENREGISTRÉ');
+    }catch(e){
+      console.warn('[iCHEF Pointeuse] pointage non confirmé :',e?.message||e);
+      // En cas de délai incertain, ne pas renvoyer automatiquement la demande :
+      // un deuxième pointage serait susceptible de créer une SORTIE involontaire.
+      toast(e?.message||'Pointage non confirmé · vérifiez auprès du responsable');
+      clearPin();stopCamera();
+    }finally{
+      if(punchingStatusTimer){clearInterval(punchingStatusTimer);punchingStatusTimer=null;}
+      inFlight=false;$('submit').disabled=false;
+      if(pendingStaffRefresh){pendingStaffRefresh=false;queueStaffRefresh(2000);}
+    }
   }
 
   document.querySelectorAll('[data-key]').forEach(b=>{
@@ -450,14 +546,35 @@ video{width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:11px;background
     ['pointerup','pointercancel','pointerleave'].forEach(ev=>hot.addEventListener(ev,cancel));
     hot.addEventListener('contextmenu',e=>e.preventDefault());
   })();
-  window.addEventListener('online',()=>{setSync(true,isAutoSleeping?'VEILLE · RECONNEXION…':'RECONNEXION…');refreshState();connectSocket()});window.addEventListener('offline',()=>setSync(false,isAutoSleeping?'VEILLE · HORS LIGNE':'HORS LIGNE'));
+  window.addEventListener('online',()=>{setSync(true,isAutoSleeping?'VEILLE · RECONNEXION…':'RECONNEXION…');queueStaffRefresh(800);connectSocket()});
+  window.addEventListener('offline',()=>setSync(false,isAutoSleeping?'VEILLE · HORS LIGNE':'HORS LIGNE'));
 
-  function connectSocket(){if(typeof io!=='function'||socket)return;try{socket=io(SERVER,{transports:['websocket','polling'],reconnection:true,reconnectionAttempts:Infinity,reconnectionDelay:1000});socket.on('connect',()=>{socket.emit('joinTenant',{tenantID});setSync(true,isAutoSleeping?'VEILLE · SYNCHRONISÉE':'EN LIGNE · SYNCHRONISÉ')});socket.on('updateState',s=>applyState(s));socket.on('server-state-changed',refreshState);socket.on('disconnect',()=>setSync(false,isAutoSleeping?'VEILLE · RECONNEXION…':'RECONNEXION…'));socket.on('connect_error',()=>setSync(false,isAutoSleeping?'VEILLE · RECONNEXION…':'RECONNEXION…'))}catch(e){console.warn(e)}}
-
+  function connectSocket(){
+    if(typeof io!=='function'||socket)return;
+    try{
+      socket=io(SERVER,{transports:['websocket','polling'],reconnection:true,reconnectionAttempts:Infinity,reconnectionDelay:1000});
+      socket.on('connect',()=>{
+        socket.emit('joinTenant',{tenantID});
+        if(!inFlight)setSync(true,isAutoSleeping?'VEILLE · SYNCHRONISÉE':'EN LIGNE · SYNCHRONISÉ');
+        // Socket connecté ne signifie pas que la liste RH vient d'être rafraîchie.
+        if(Date.now()-lastStaffRefreshAt>90000)queueStaffRefresh(800);
+      });
+      socket.on('updateState',s=>applyState(s));
+      socket.on('server-state-changed',event=>{
+        // Ne pas recharger l'état COMPLET pour chaque mouvement stock / commande / caisse.
+        const t=String(event?.tableId||'').toUpperCase(),src=String(event?.source||'').toUpperCase();
+        if(t==='STAFF_ACCESS'||t==='PUNCHES_MASTER'||src.startsWith('RH_'))queueStaffRefresh(2200);
+      });
+      socket.on('disconnect',()=>{if(!inFlight)setSync(false,isAutoSleeping?'VEILLE · RECONNEXION…':'RECONNEXION…')});
+      socket.on('connect_error',()=>{if(!inFlight)setSync(false,isAutoSleeping?'VEILLE · RECONNEXION…':'RECONNEXION…')});
+    }catch(e){console.warn('[iCHEF Pointeuse] socket :',e?.message||e)}
+  }
   try{const cached=JSON.parse(localStorage.getItem('ichef_pointeuse_staff_cache')||'[]');if(Array.isArray(cached))staffAccess=cached}catch(_){ }
-  updateAutoPowerButton();connectSocket();refreshState();evaluateAutoPower().then(()=>{if(!isAutoSleeping){stopCamera();requestWakeLock()}});
+  updateAutoPowerButton();connectSocket();refreshState();
+  evaluateAutoPower().then(()=>{if(!isAutoSleeping){stopCamera();requestWakeLock()}});
   autoPowerTimer=setInterval(evaluateAutoPower,5000);
-  setInterval(refreshState,30000);
+  // Secours toutes les 2 minutes ; Socket reçoit normalement les changements RH.
+  setInterval(()=>queueStaffRefresh(0),120000);
 })();
 </script>
 </body>
