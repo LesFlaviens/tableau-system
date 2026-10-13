@@ -9154,6 +9154,17 @@ queuedAt,
 fastResponse
 } = req.body || {};
 const rhPunchStartedAt = Date.now();
+// V246: chronométrage sans données personnelles pour localiser la lenteur.
+const rhStagesMs = { read: 0, calculation: 0, stateWrite: 0, proofAndAudit: 0 };
+const rhFastResponse = fastResponse === true || String(req.headers['x-ichef-fast-response'] || '') === '1';
+function rhFinishTiming() {
+  const total = Math.max(0, Date.now() - rhPunchStartedAt);
+  res.setHeader('Server-Timing',
+    `rh-read;dur=${rhStagesMs.read}, rh-calc;dur=${rhStagesMs.calculation}, rh-save;dur=${rhStagesMs.stateWrite}, rh-audit;dur=${rhStagesMs.proofAndAudit}, rh-total;dur=${total}`);
+  res.setHeader('Access-Control-Expose-Headers', 'Server-Timing, X-Request-ID');
+  if (total > 1800) console.warn('[iCHEF RH] Pointage lent (ms)', {total, ...rhStagesMs});
+  return total;
+}
 const safeID =
 cleanString(
 tenantID
@@ -9234,11 +9245,23 @@ error:
 });
 }
 try {
-const tenant =
-await Tenant.findOne({
-tenantID:
-safeID
-});
+// V246 : lire en parallèle les seules données nécessaires au pointage.
+// L'état complet iCHEF peut contenir cuisine, stocks, factures, chats,
+// pièces jointes ; il ne doit pas être chargé pour un pointage RH.
+const rhReadAt = Date.now();
+const [tenant, existingRhState] = await Promise.all([
+  Tenant.findOne({ tenantID: safeID }, { status: 1 }).lean(),
+  AppState.findOne(
+    { tenantID: safeID },
+    {
+      tenantID: 1,
+      'activeOrders.STAFF_ACCESS': 1,
+      'activeOrders.PUNCHES_MASTER': 1,
+      'activeOrders.RH_TIMESHEET_REAL': 1
+    }
+  ).lean()
+]);
+rhStagesMs.read = Date.now() - rhReadAt;
 if (!tenant) {
 return res
 .status(404)
@@ -9260,20 +9283,10 @@ error:
 "Licence suspendue."
 });
 }
-let state =
-await AppState.findOne({
-tenantID:
-safeID
-});
-if (!state) {
-state =
-new AppState({
-tenantID:
-safeID,
-activeOrders:
-{}
-});
-}
+let state = existingRhState || {
+  tenantID: safeID,
+  activeOrders: {}
+};
 if (
 !state.activeOrders
 ) {
@@ -9343,15 +9356,17 @@ type: alreadyArchived.type,
 serverRecordedAt: alreadyArchived.createdAt || null,
 idempotentReplay: true
 };
-const useFastReplay = fastResponse === true || String(req.headers['x-ichef-fast-response'] || '') === '1';
-return res.json(useFastReplay ? {
+const replayPublicPunch = { ...existingPunch };
+if (rhFastResponse) delete replayPublicPunch.photo;
+return res.json(rhFastResponse ? {
 success: true,
 idempotent: true,
 offlineAccepted: existingPunch?.offlineSync === true,
 punchType: existingPunch.type,
-punch: existingPunch,
+punch: replayPublicPunch,
 onDuty: String(existingPunch.type || '').toUpperCase() === 'ENTRÉE',
-serverDurationMs: Date.now() - rhPunchStartedAt
+serverDurationMs: rhFinishTiming(),
+serverStagesMs: rhStagesMs
 } : {
 success: true,
 idempotent: true,
@@ -9365,6 +9380,7 @@ serverDurationMs: Date.now() - rhPunchStartedAt
 });
 }
 }
+const rhCalcAt = Date.now();
 const punches =
 Array.isArray(
 state
@@ -9404,14 +9420,16 @@ type: String(laterStaffPunch.type || '')
 });
 }
 
-const previousStaffPunch =
-punches
-.filter(p =>
-String(p?.staffId || '') === String(staff.id) &&
-Number(p?.timestamp || 0) < punchTimestamp
-)
-.sort((a, b) => Number(a.timestamp || 0) - Number(b.timestamp || 0))
-.pop();
+// V246 : une seule traversée, sans tri supplémentaire de tous les pointages.
+let previousStaffPunch = null;
+for (const previous of punches) {
+  if (String(previous?.staffId || '') !== String(staff.id)) continue;
+  const previousTimestamp = Number(previous?.timestamp || 0);
+  if (previousTimestamp >= punchTimestamp) continue;
+  if (!previousStaffPunch || previousTimestamp > Number(previousStaffPunch.timestamp || 0)) {
+    previousStaffPunch = previous;
+  }
+}
 const punchType =
 previousStaffPunch &&
 String(previousStaffPunch.type || '').trim().toUpperCase() === 'ENTRÉE'
@@ -9520,6 +9538,7 @@ updatedAt:
 new Date()
 .toISOString()
 };
+rhStagesMs.calculation = Date.now() - rhCalcAt;
 const staffIndex =
 staffAccess.findIndex(
 s =>
@@ -9560,6 +9579,7 @@ new Date()
 .toISOString()
 };
 }
+const rhSaveAt = Date.now();
 await AppState.updateOne(
 { tenantID: safeID },
 {
@@ -9571,77 +9591,65 @@ $set: {
 },
 { upsert: true }
 );
-try {
-const archiveDetails = { ...punch };
-delete archiveDetails.photo;
-await RhPunchRecord.updateOne(
-{ tenantID: safeID, punchId: punch.id },
-{ $setOnInsert: {
-tenantID: safeID,
-punchId: punch.id,
-staffId: String(punch.staffId),
-timestamp: Number(punch.timestamp),
-type: punch.type,
-photo: punch.photo || '',
-details: archiveDetails,
-createdAt: new Date(receivedAtMs)
-} },
-{ upsert: true }
-);
-} catch (archiveError) {
-console.warn('[iCHEF RH] archive pointage non bloquante :', archiveError?.message || archiveError);
-}
-io
-.to(
-safeID
-)
-.emit(
-'staffDutyChanged',
-{
-staffId:
-staff.id,
-staffName:
-staff.name || '',
-dept:
-staff.dept || '',
-onDuty:
-punchType === 'ENTRÉE',
-punchType:
-punchType,
-timestamp:
-now
-}
-);
-try {
-await scellerOperation(
-safeID,
-'CREATE',
-'RH_PUNCH',
-punch.id,
-String(
-staff.id
-),
-{
-staffId:
-staff.id,
-staffName:
-staff.name,
-type:
-punchType,
-timestamp:
-now,
-deviceId:
-punch.deviceId
-}
-);
-} catch (
-auditError
-) {
-console.warn(
-"Audit RH non bloquant :",
-auditError?.message
-);
-}
+rhStagesMs.stateWrite = Date.now() - rhSaveAt;
+// V246 : la preuve photo et le scellement d'audit sont obligatoirement
+// attendus avant de confirmer le pointage. Ils concernent des collections
+// distinctes et peuvent être exécutés en parallèle sans perdre leur traçabilité.
+const rhProofAndAuditAt = Date.now();
+await Promise.all([
+  (async () => {
+    try {
+      const archiveDetails = { ...punch };
+      delete archiveDetails.photo;
+      await RhPunchRecord.updateOne(
+        { tenantID: safeID, punchId: punch.id },
+        { $setOnInsert: {
+          tenantID: safeID,
+          punchId: punch.id,
+          staffId: String(punch.staffId),
+          timestamp: Number(punch.timestamp),
+          type: punch.type,
+          photo: punch.photo || '',
+          details: archiveDetails,
+          createdAt: new Date(receivedAtMs)
+        } },
+        { upsert: true }
+      );
+    } catch (archiveError) {
+      console.warn('[iCHEF RH] archive pointage non bloquante :', archiveError?.message || archiveError);
+    }
+  })(),
+  (async () => {
+    try {
+      await scellerOperation(
+        safeID,
+        'CREATE',
+        'RH_PUNCH',
+        punch.id,
+        String(staff.id),
+        {
+          staffId: staff.id,
+          staffName: staff.name,
+          type: punchType,
+          timestamp: now,
+          deviceId: punch.deviceId
+        }
+      );
+    } catch (auditError) {
+      console.warn('[iCHEF RH] audit pointage :', auditError?.message || auditError);
+    }
+  })()
+]);
+rhStagesMs.proofAndAudit = Date.now() - rhProofAndAuditAt;
+// Diffuser le nouvel état de présence une fois la preuve RH enregistrée.
+io.to(safeID).emit('staffDutyChanged', {
+  staffId: staff.id,
+  staffName: staff.name || '',
+  dept: staff.dept || '',
+  onDuty: punchType === 'ENTRÉE',
+  punchType,
+  timestamp: now
+});
 io.to(safeID).emit('rhPunchSaved', punch);
 io.to(safeID).emit('server-state-changed', {
 tenantID: safeID,
@@ -9660,15 +9668,17 @@ staffId: staff.id,
 timestamp: now
 }
 );
-const useFastResponse = fastResponse === true || String(req.headers['x-ichef-fast-response'] || '') === '1';
-const responsePayload = useFastResponse ? {
+const rhPublicPunch = { ...punch };
+if (rhFastResponse) delete rhPublicPunch.photo;
+const responsePayload = rhFastResponse ? {
 success: true,
 idempotent: false,
 offlineAccepted: isDeferredOfflineSync,
 punchType,
-punch,
+punch: rhPublicPunch,
 onDuty: punchType === 'ENTRÉE',
-serverDurationMs: Date.now() - rhPunchStartedAt
+serverDurationMs: rhFinishTiming(),
+serverStagesMs: rhStagesMs
 } : {
 success: true,
 idempotent: false,
@@ -9680,6 +9690,8 @@ timesheets,
 staffAccess,
 serverDurationMs: Date.now() - rhPunchStartedAt
 };
+// Legacy clients retain their full response; measurement still available.
+if (!rhFastResponse) rhFinishTiming();
 res.json(responsePayload);
 setImmediate(async () => {
 try {
