@@ -35369,6 +35369,7 @@ tenantID:{type:String,required:true,index:true},
 supplierId:{type:String,required:true,index:true},
 name:{type:String,required:true,maxlength:220},
 contactName:{type:String,default:'',maxlength:180},
+address:{type:String,default:'',maxlength:700},
 email:{type:String,default:'',maxlength:240},
 phone:{type:String,default:'',maxlength:80},
 category:{type:String,default:'',maxlength:180,index:true},
@@ -35957,7 +35958,7 @@ app.get('/api/ops/suppliers',async(req,res)=>{
 try{
 res.setHeader('Cache-Control','no-store');const auth=await ichefOpsRequire(req,res,{purchaseView:true});if(!auth)return;
 const rows=await IchefOpsSupplier.find({tenantID:auth.tenantID}).sort({active:-1,name:1}).limit(1000).lean();
-return res.json({success:true,suppliers:rows.map(x=>({id:x.supplierId,name:x.name,contactName:x.contactName,email:x.email,phone:x.phone,category:x.category,deliveryDays:x.deliveryDays||[],minimumOrder:Number(x.minimumOrder||0),defaultCurrency:x.defaultCurrency||'CHF',orderChannel:x.orderChannel||'MEMO',whatsappPhone:x.whatsappPhone||'',orderPortalUrl:x.orderPortalUrl||'',notes:x.notes||'',active:x.active!==false,createdAt:x.createdAt,updatedAt:x.updatedAt})),capabilities:auth.caps});
+return res.json({success:true,suppliers:rows.map(x=>({id:x.supplierId,name:x.name,contactName:x.contactName,address:x.address||'',email:x.email,phone:x.phone,category:x.category,deliveryDays:x.deliveryDays||[],minimumOrder:Number(x.minimumOrder||0),defaultCurrency:x.defaultCurrency||'CHF',orderChannel:x.orderChannel||'MEMO',whatsappPhone:x.whatsappPhone||'',orderPortalUrl:x.orderPortalUrl||'',notes:x.notes||'',active:x.active!==false,createdAt:x.createdAt,updatedAt:x.updatedAt})),capabilities:auth.caps});
 }catch(error){console.error('[iCHEF OPS suppliers GET]',error);return res.status(500).json({success:false,error:'Chargement des fournisseurs impossible.'});}
 });
 
@@ -35966,7 +35967,7 @@ try{
 res.setHeader('Cache-Control','no-store');const auth=await ichefOpsRequire(req,res,{supplierManage:true});if(!auth)return;
 const name=ichefOpsText(req.body?.name,220);if(name.length<2)return res.status(400).json({success:false,error:'Nom du fournisseur requis.'});
 const c=String(req.body?.defaultCurrency||'CHF').toUpperCase();
-const row=await IchefOpsSupplier.create({tenantID:auth.tenantID,supplierId:ichefOpsId('SUP'),name,contactName:ichefOpsText(req.body?.contactName,180),email:ichefOpsText(req.body?.email,240),phone:ichefOpsText(req.body?.phone,80),category:ichefOpsText(req.body?.category,180),deliveryDays:(Array.isArray(req.body?.deliveryDays)?req.body.deliveryDays:[]).map(v=>ichefOpsText(v,40)).slice(0,7),minimumOrder:Math.max(0,Number(req.body?.minimumOrder||0)),defaultCurrency:['CHF','EUR'].includes(c)?c:'CHF',
+const row=await IchefOpsSupplier.create({tenantID:auth.tenantID,supplierId:ichefOpsId('SUP'),name,contactName:ichefOpsText(req.body?.contactName,180),address:ichefOpsText(req.body?.address,700),email:ichefOpsText(req.body?.email,240),phone:ichefOpsText(req.body?.phone,80),category:ichefOpsText(req.body?.category,180),deliveryDays:(Array.isArray(req.body?.deliveryDays)?req.body.deliveryDays:[]).map(v=>ichefOpsText(v,40)).slice(0,7),minimumOrder:Math.max(0,Number(req.body?.minimumOrder||0)),defaultCurrency:['CHF','EUR'].includes(c)?c:'CHF',
 orderChannel:['MEMO','PDF','WHATSAPP','EMAIL','PORTAL','MANUAL'].includes(String(req.body?.orderChannel||'MEMO').toUpperCase())?String(req.body?.orderChannel||'MEMO').toUpperCase():'MEMO',
 whatsappPhone:ichefOpsText(req.body?.whatsappPhone||req.body?.phone,80),
 orderPortalUrl:ichefOpsText(req.body?.orderPortalUrl,500),
@@ -35980,7 +35981,7 @@ app.put('/api/ops/suppliers/:supplierId',async(req,res)=>{
 try{
 res.setHeader('Cache-Control','no-store');const auth=await ichefOpsRequire(req,res,{supplierManage:true});if(!auth)return;
 const row=await IchefOpsSupplier.findOne({tenantID:auth.tenantID,supplierId:String(req.params.supplierId||'')});if(!row)return res.status(404).json({success:false,error:'Fournisseur introuvable.'});
-for(const[key,max]of[['name',220],['contactName',180],['email',240],['phone',80],['category',180],['notes',4000]])if(req.body?.[key]!==undefined)row[key]=ichefOpsText(req.body[key],max);
+for(const[key,max]of[['name',220],['contactName',180],['address',700],['email',240],['phone',80],['category',180],['notes',4000]])if(req.body?.[key]!==undefined)row[key]=ichefOpsText(req.body[key],max);
 if(req.body?.minimumOrder!==undefined)row.minimumOrder=Math.max(0,Number(req.body.minimumOrder||0));
 if(req.body?.defaultCurrency!==undefined){const c=String(req.body.defaultCurrency).toUpperCase();if(['CHF','EUR'].includes(c))row.defaultCurrency=c;}
 if(req.body?.orderChannel!==undefined){const c=String(req.body.orderChannel).toUpperCase();if(['MEMO','PDF','WHATSAPP','EMAIL','PORTAL','MANUAL'].includes(c))row.orderChannel=c;}
