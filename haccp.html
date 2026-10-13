@@ -9811,7 +9811,20 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
   const lower=document.createElement('div');lower.id='hv225-lower';lower.innerHTML=`<section class="hv225-card"><h3 class="hv225-sectiontitle">⚠ &nbsp; Alertes et actions à traiter <span id="hv225-alert-total"></span><button type="button" id="hv225-show-alerts">Voir tout</button></h3><div id="hv225-alerts"></div></section><section class="hv225-card"><h3 class="hv225-sectiontitle">◉ &nbsp; Derniers contrôles<button type="button" id="hv225-show-archive">Voir tout</button></h3><div id="hv225-recent"></div></section><section class="hv225-card" id="hv225-permission-card"><h3 class="hv225-sectiontitle">♟ &nbsp; Accès collaborateurs (Admin)</h3><div id="hv225-manage-slot"></div></section>`;
   hub.insertBefore(grid,hub.querySelector('.hd-temp-layout'));
   hub.insertBefore(lower,hub.querySelector('.hd-temp-layout'));
-  const legacy=hub.querySelector('.hd-temp-layout');const close=document.createElement('button');close.type='button';close.id='hv225-close-reading';close.textContent='✕   Fermer le contrôle';legacy.prepend(close);
+  const legacy=hub.querySelector('.hd-temp-layout');
+  // V228: garder les champs métier existants; déplacer UNIQUEMENT le tiroir affiché
+  // directement sous body pour qu'il soit toujours AU-DESSUS du voile sombre.
+  // Un repère DOM permet de restaurer le tiroir à sa place en sortie.
+  legacy.id='hv228-reading-drawer';
+  const drawerAnchor=document.createComment('iCHEF HACCP V228: place du tiroir de relevé');
+  legacy.parentNode.insertBefore(drawerAnchor,legacy);
+  window.__ichefV228DrawerAnchor=drawerAnchor;
+  const close=document.createElement('button');close.type='button';close.id='hv225-close-reading';close.textContent='✕   Fermer le contrôle';legacy.prepend(close);
+  const progress=document.createElement('div');progress.id='hv228-progress';progress.setAttribute('aria-live','polite');
+  progress.innerHTML='<div class="hv228-kicker">🌡  RELEVÉ HACCP <span>· CONTRÔLE RAPIDE</span></div><div id="hv228-step">Équipement à contrôler</div>';
+  legacy.insertBefore(progress,legacy.querySelector('.hd-reading-panel'));
+  const nameObserver=new MutationObserver(()=>updateDrawerProgress());
+  ['hd-reading-name','hd-cooling-name'].forEach(id=>{const node=$(id);if(node)nameObserver.observe(node,{childList:true,characterData:true,subtree:true})});
   const shade=document.createElement('div');shade.id='hv225-drawer-shade';document.body.append(shade);
   const mgr=$('haccp-v223-manage');if(mgr)$('hv225-manage-slot').append(mgr);
   bar.querySelector('#hv225-account').addEventListener('click',()=>{try{if(typeof returnToAdmin==='function')returnToAdmin()}catch(_){}});
@@ -9839,9 +9852,29 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
   $('hv225-recent').addEventListener('click',e=>{const b=e.target.closest('[data-hv225-eq]');if(b)selectEquipment(b.dataset.hv225Eq)});
   close.addEventListener('click',closeReading);shade.addEventListener('click',closeReading);
   document.addEventListener('keydown',e=>{if(e.key==='Escape')closeReading()});
+  window.addEventListener('resize',()=>{if(PHONE())closeReading()});
  }
- function openReading(){if(PHONE())return;const m=$('mod-temp');if(!m)return;m.classList.add('hv225-reading-open');document.body.classList.add('hv225-drawer-open');$('hd-temp-value')?.focus({preventScroll:true})}
- function closeReading(){ $('mod-temp')?.classList.remove('hv225-reading-open');document.body.classList.remove('hv225-drawer-open') }
+ function updateDrawerProgress(){
+  const out=$('hv228-step');if(!out)return;
+  const selected=String(typeof desktopTempSelected!=='undefined'?desktopTempSelected?.name||'':'');
+  const inRound=(typeof desktopRound!=='undefined'&&Array.isArray(desktopRound)&&desktopRound.length)?desktopRound:[];
+  const all=inRound.length?inRound:(typeof getSectorEquipmentList==='function'?getSectorEquipmentList():[]);
+  const position=all.findIndex(eq=>String(eq.name)===selected);
+  out.textContent=selected?`Équipement ${position>=0?position+1:'—'} sur ${all.length||'—'} · ${selected}`:'Sélectionnez un équipement';
+ }
+ function openReading(){
+  if(PHONE())return;
+  const m=$('mod-temp'),drawer=$('hv228-reading-drawer');if(!m||!drawer)return;
+  // Evite que le voile assombrisse aussi le formulaire : nouveau contexte de pile.
+  if(drawer.parentNode!==document.body)document.body.append(drawer);
+  m.classList.add('hv225-reading-open');document.body.classList.add('hv225-drawer-open');
+  updateDrawerProgress();$('hd-temp-value')?.focus({preventScroll:true});
+ }
+ function closeReading(){
+  $('mod-temp')?.classList.remove('hv225-reading-open');document.body.classList.remove('hv225-drawer-open');
+  const drawer=$('hv228-reading-drawer'), anchor=window.__ichefV228DrawerAnchor;
+  if(drawer&&anchor?.parentNode&&drawer.parentNode===document.body)anchor.after(drawer);
+ }
  function selectEquipment(name){if(typeof selectDesktopEquipmentByName==='function'){selectDesktopEquipmentByName(name);openReading()}}
  function updateNav(){document.querySelectorAll('#hv225-sidebar [data-hv225-nav],#hv225-sidebar [data-hv225-action="dashboard"]').forEach(b=>b.classList.toggle('active',(b.dataset.hv225Nav||b.dataset.hv225Action)===currentSection));}
  function readData(){try{
@@ -10064,5 +10097,228 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
 })();
 </script>
 
+<!-- iCHEF HACCP V228 — tiroir de contrôle rapide clair et lisible · ORDINATEUR UNIQUEMENT -->
+<style id="ichef-haccp-v228-quick-reading-css">
+@media (min-width:1101px){
+  /* Le tiroir est momentanément déplacé comme enfant direct de body. Il ne peut
+     plus être obscurci par l'overlay du tableau de bord, quelle que soit la
+     création de contextes d'empilement dans le panneau HACCP principal. */
+  body.hv225-ready.hv225-drawer-open > #hv225-drawer-shade{
+    display:block!important;z-index:840!important;background:rgba(10,23,41,.52)!important;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer{
+    display:block!important;position:fixed!important;inset:0 0 0 auto!important;
+    width:min(670px,94vw)!important;height:100dvh!important;max-height:100dvh!important;
+    z-index:850!important;padding:20px 30px 32px!important;margin:0!important;
+    overflow-x:hidden!important;overflow-y:auto!important;box-sizing:border-box!important;
+    background:#fff!important;border:0!important;border-left:5px solid #eebc4d!important;
+    box-shadow:-22px 0 70px rgba(4,16,34,.25)!important;color:#132236!important;
+    font-family:Inter,Arial,sans-serif!important;overscroll-behavior:contain;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-parc-panel{display:none!important}
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-reading-panel{
+    display:flex!important;border:0!important;padding:20px 0!important;min-height:0!important;
+    box-shadow:none!important;background:#fff!important;color:#122338!important;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-reading-view{gap:17px!important}
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer #hv225-close-reading{
+    position:sticky!important;top:-20px!important;z-index:3!important;
+    display:block!important;width:100%!important;text-align:right!important;
+    padding:15px 4px 13px!important;background:#fff!important;
+    border:0!important;border-bottom:1px solid #e6ecf3!important;color:#293b50!important;
+    font:800 14px Inter,Arial,sans-serif!important;cursor:pointer;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer #hv225-close-reading:hover{color:#b06b0c!important}
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer #hv228-progress{
+    display:block!important;margin:16px 0 7px!important;padding:17px 19px!important;
+    background:#f5f8fd!important;border:1px solid #dce5ef!important;border-radius:12px!important;
+    color:#182a41!important;
+  }
+  #hv228-progress .hv228-kicker{font-size:12px!important;font-weight:950!important;letter-spacing:1px!important;color:#a86e15!important}
+  #hv228-progress .hv228-kicker span{color:#77899f!important}
+  #hv228-step{font-size:16px!important;font-weight:900!important;line-height:1.45!important;margin-top:7px!important}
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-reading-category{
+    font-size:12px!important;color:#66788d!important;letter-spacing:.6px!important;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-reading-topline h2{
+    font-size:27px!important;line-height:1.2!important;color:#16263a!important;margin-top:8px!important;
+    overflow-wrap:anywhere;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-status{
+    font-size:12px!important;min-height:35px!important;padding:6px 12px!important;
+    border-radius:99px!important;border-width:1px!important;color:#26394f!important;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-status.alert{
+    color:#bd273b!important;background:#fff0f1!important;border-color:#efb5bb!important;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-status.ok{
+    color:#167446!important;background:#ecf9f0!important;border-color:#acd9b9!important;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-rule-box{
+    background:#fff8e8!important;border:1px solid #ecd59c!important;
+    border-left:4px solid #eabf56!important;padding:16px 18px!important;border-radius:12px!important;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-rule-box strong{
+    font-size:15px!important;line-height:1.45!important;color:#344256!important;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-rule-box span{
+    font-size:12px!important;line-height:1.55!important;color:#6c7787!important;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-reading-input-row{
+    display:grid!important;grid-template-columns:minmax(0,1fr) 185px!important;
+    gap:14px!important;align-items:end!important;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-reading-input-row label>span{
+    display:block!important;font-size:13px!important;color:#33465b!important;letter-spacing:.55px!important;margin-bottom:10px!important;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-big-temp{
+    height:96px!important;border:2px solid #a7bdce!important;border-radius:14px!important;
+    background:#fff!important;box-shadow:0 0 0 3px #f1f5f9!important;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-big-temp:focus-within{
+    border-color:#e4ad3d!important;box-shadow:0 0 0 4px rgba(239,192,77,.19)!important;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer #hd-temp-value{
+    font-size:48px!important;font-weight:900!important;color:#102339!important;
+    opacity:1!important;line-height:1.2!important;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-big-temp b{
+    color:#5d6c7c!important;font-size:20px!important;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer #hd-save-temp{
+    height:96px!important;min-height:96px!important;border-radius:14px!important;
+    background:#f5c75d!important;border:2px solid #d4a039!important;
+    color:#172335!important;font-size:16px!important;font-weight:950!important;
+    box-shadow:0 4px 12px rgba(151,100,12,.12)!important;cursor:pointer;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer #hd-save-temp:not(:disabled):hover{
+    background:#edb945!important;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer #hd-save-temp:disabled{opacity:.6!important;cursor:wait!important}
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-compliance{
+    min-height:52px!important;padding:12px!important;border-radius:11px!important;
+    font-size:15px!important;color:#425063!important;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-compliance.ok{
+    background:#e7f7ed!important;border-color:#a6d6b8!important;color:#13804b!important;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-compliance.alert{
+    background:#fff0f1!important;border-color:#f3b3b8!important;color:#bc243b!important;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-reading-meta{gap:10px!important}
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-reading-meta>div{
+    background:#f8fafc!important;border:1px solid #dce5ed!important;
+    padding:14px 12px!important;border-radius:10px!important;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-reading-meta span{
+    font-size:11px!important;color:#687a91!important;font-weight:850!important;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-reading-meta strong{
+    display:block!important;font-size:14px!important;color:#16273b!important;line-height:1.4!important;overflow-wrap:anywhere;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-round-actions{
+    display:grid!important;grid-template-columns:1fr 1fr!important;gap:12px!important;margin-top:8px!important;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-round-actions button{
+    min-height:52px!important;border-radius:12px!important;font-size:14px!important;
+    background:#f5f8fc!important;color:#18293c!important;border:1px solid #cdd8e4!important;
+    cursor:pointer;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-round-actions button:hover{
+    background:#e8f1fd!important;
+  }
+  /* Les contrôles de refroidissement utilisent également ce tiroir. */
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-cooling-form label>span{
+    font-size:13px!important;color:#41536a!important;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-cooling-form input{
+    font-size:17px!important;background:#fff!important;color:#1a2b3e!important;
+  }
+  body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer .hd-cooling-actions button{
+    min-height:49px!important;font-size:13px!important;
+  }
+  @media(max-width:1240px){
+    body.hv225-ready.hv225-drawer-open > #hv228-reading-drawer{width:min(610px,94vw)!important;padding:15px 20px 26px!important}
+  }
+}
+</style>
+<style id="ichef-v229-invoices-css">
+#v229-backdrop{position:fixed;inset:0;background:rgba(9,16,27,.74);z-index:99990;display:none;align-items:center;justify-content:center;padding:16px;box-sizing:border-box}
+#v229-backdrop.open{display:flex!important}
+#v229-panel{width:min(1120px,98vw);max-height:min(93vh,960px);overflow:auto;background:#f5f7fb;color:#142235;border-radius:20px;box-shadow:0 24px 80px rgba(0,0,0,.6);font-family:Inter,Arial,sans-serif}
+#v229-panel *,#v229-panel *::before{box-sizing:border-box}
+#v229-panel .v229-header{background:#14202e;color:white;padding:20px 24px;display:flex;justify-content:space-between;gap:12px;align-items:center}
+#v229-panel .v229-header h2{margin:0;font-size:22px;font-weight:900;color:white}
+#v229-panel .v229-header p{font-size:12px;color:#c5d1df;margin:5px 0 0}
+#v229-panel button{cursor:pointer;border:1px solid #d2dae4;background:white;color:#1a293b;border-radius:10px;padding:12px 14px;font-size:13px;font-weight:800;min-height:44px}
+#v229-panel button.primary{background:#e8b84a;border-color:#caa043;color:#152232}
+#v229-panel button:disabled{opacity:.55;cursor:wait}
+#v229-panel .v229-body{padding:20px;display:grid;gap:16px}
+#v229-panel .v229-steps{display:flex;gap:9px;flex-wrap:wrap}
+#v229-panel .v229-steps span{background:white;border:1px solid #d5ddea;padding:8px 12px;border-radius:30px;font-size:12px;font-weight:800}
+#v229-panel .v229-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+#v229-panel label{display:flex;flex-direction:column;gap:5px;font-size:11px;font-weight:800;letter-spacing:.25px;color:#42526a;min-width:0}
+#v229-panel input,#v229-panel select{background:#fff!important;color:#172536!important;border:1px solid #b7c4d2!important;border-radius:9px!important;font-size:14px!important;padding:11px 9px!important;width:100%;min-width:0;box-shadow:none!important}
+#v229-panel .v229-tablebox{overflow:auto;border:1px solid #d5dce7;border-radius:12px;background:#fff}
+#v229-panel table{width:100%;border-collapse:collapse;min-width:850px;margin:0;font-size:12px}
+#v229-panel th,#v229-panel td{padding:9px 7px;border-bottom:1px solid #e2e9f1;vertical-align:middle;color:#213249}
+#v229-panel th{position:static;background:#e9eef5!important;color:#394c66!important;text-align:left;white-space:nowrap}
+#v229-panel td input,#v229-panel td select{font-size:12px!important;padding:8px 6px!important}
+#v229-panel .v229-status{background:#fff;border:1px solid #d8e1ea;border-radius:11px;padding:13px;font-size:13px;white-space:pre-wrap;line-height:1.5}
+#v229-panel .v229-status.good{background:#e8f9ee;color:#165d3c}
+#v229-panel .v229-status.error{background:#fff0f2;color:#9c2138}
+#v229-panel .v229-totals{display:flex;flex-wrap:wrap;gap:12px;justify-content:flex-end;font-weight:900;font-size:14px}
+#v229-panel .v229-totals span{background:white;border:1px solid #d5dce7;padding:12px;border-radius:10px}
+#v229-panel .v229-actions{display:flex;gap:12px;justify-content:space-between;flex-wrap:wrap}
+#v229-panel .v229-note{background:#fff7e2;color:#6d5119;border-left:4px solid #ddaf44;padding:12px;border-radius:9px;font-size:12px;line-height:1.5}
+#v229-panel .v229-mini{font-size:11px;color:#63748a}
+#v229-open{font-size:12px!important;font-weight:900!important}
+@media(max-width:760px){#v229-backdrop{padding:0}#v229-panel{width:100vw;max-height:100dvh;height:100dvh;border-radius:0}#v229-panel .v229-header{padding:14px}#v229-panel .v229-header h2{font-size:17px}#v229-panel .v229-body{padding:12px}#v229-panel .v229-grid{grid-template-columns:repeat(2,minmax(0,1fr))}#v229-panel table{min-width:840px}}
+</style>
+<script id="ichef-v229-invoice-ui-script">
+(function(){'use strict';
+ const $=id=>document.getElementById(id);
+ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+ const tenant=()=>String(window.ICHEF_HACCP?.tenantID||new URLSearchParams(location.search).get('tenantID')||'');
+ const server=()=>location.hostname==='localhost'||location.hostname==='127.0.0.1'?'http://localhost:10000':'https://tableau-system.onrender.com';
+ let context={suppliers:[],orders:[],canValidate:false},rows=[],busy=false;
+ const num=x=>Number(String(x??'').replace(',','.'))||0;
+ const money=x=>num(x).toLocaleString('fr-FR',{minimumFractionDigits:2,maximumFractionDigits:2});
+ const round=x=>Math.round((Number(x)||0)*100)/100;
+ const normal=x=>String(x||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase();
+ function headers(body){const tok=String(window.ICHEF_HACCP?.accessToken||sessionStorage.getItem('ichef_access_token')||sessionStorage.getItem('ichef_ops_token')||sessionStorage.getItem('ichef_chef_access_token')||'');const h={'Accept':'application/json','X-iCHEF-Tenant':tenant(),'X-iCHEF-Device':String(window.ICHEF_HACCP?.deviceId||localStorage.getItem('ichef_device_id')||'')};if(tok)h.Authorization='Bearer '+tok;if(body)h['Content-Type']='application/json';return h}
+ async function request(path,method='GET',body){const url=server()+path+(path.includes('?')?'&':'?')+'tenantID='+encodeURIComponent(tenant());const r=await fetch(url,{method,cache:'no-store',credentials:'omit',headers:headers(!!body),body:body?JSON.stringify(body):undefined});const d=await r.json().catch(()=>({}));if(!r.ok||!d.success)throw Error(d.error||`Erreur ${r.status}`);return d;}
+ function status(t,kind=''){const e=$('v229-status');if(e){e.textContent=t;e.className='v229-status '+kind}}
+ function unitOptions(u){return ['kg','g','L','ml','u','carton'].map(x=>`<option value="${x}"${x===u?' selected':''}>${x}</option>`).join('')}
+ function orderOptions(){const chosen=$('v229-supplier')?.value||'';return '<option value="">Aucune commande — comptabilité seulement</option>'+context.orders.filter(o=>!chosen||o.supplierId===chosen).map(o=>`<option value="${esc(o.id)}">${esc(o.id)} · ${esc(o.name)} · ${esc(o.status)}</option>`).join('');}
+ function orderById(){return context.orders.find(o=>o.id===$('v229-order')?.value)}
+ function inventoryChoices(line){const order=orderById();return '<option value="">Non lié au stock</option>'+(order?.items||[]).filter(it=>it.inventoryItemId&&it.receivedQuantity>0&&String(it.unit).toLowerCase()===String(line.unit).toLowerCase()).map(it=>`<option value="${esc(it.inventoryItemId)}"${it.inventoryItemId===line.inventoryItemId?' selected':''}>${esc(it.name)} · ${esc(it.inventoryItemId)}</option>`).join('');}
+ function readRows(){rows=[...$('v229-lines').querySelectorAll('tr[data-row]')].map(tr=>{const get=s=>tr.querySelector(`[data-field="${s}"]`)?.value||'';return {name:get('name'),quantity:get('quantity')===''?'':num(get('quantity')),unit:get('unit'),unitPriceHT:get('unitPriceHT')===''?'':num(get('unitPriceHT')),taxRate:get('taxRate')===''?'':num(get('taxRate')),inventoryItemId:get('inventoryItemId')}});}
+ function calculations(){let ht=0;const groups={};for(const l of rows){const base=round(l.quantity*l.unitPriceHT);ht=round(ht+base);const key=String(l.taxRate);groups[key]=round((groups[key]||0)+base);}const tax=round(Object.entries(groups).reduce((a,[r,b])=>a+round(b*num(r)/100),0));return {ht,tax,ttc:round(ht+tax)}}
+ function drawRows(){const box=$('v229-lines');box.innerHTML=rows.map((l,i)=>`<tr data-row="${i}"><td><input aria-label="Produit" data-field="name" value="${esc(l.name)}"></td><td><input aria-label="Quantité" data-field="quantity" type="number" min="0.001" step="any" value="${l.quantity||''}"></td><td><select data-field="unit">${unitOptions(l.unit)}</select></td><td><input aria-label="Prix unitaire HT" data-field="unitPriceHT" type="number" min="0" step="0.001" value="${l.unitPriceHT??''}"></td><td><input aria-label="TVA en pourcentage" data-field="taxRate" type="number" min="0" step="0.1" value="${l.taxRate??''}"></td><td data-total="${i}">${money(round(l.quantity*l.unitPriceHT))}</td><td><select data-field="inventoryItemId">${inventoryChoices(l)}</select></td><td><button type="button" data-del="${i}" title="Supprimer">×</button></td></tr>`).join('');refreshTotals()}
+ function refreshTotals(){const x=calculations();for(let i=0;i<rows.length;i++){const e=$('v229-lines')?.querySelector(`[data-total="${i}"]`);if(e)e.textContent=money(round(rows[i].quantity*rows[i].unitPriceHT));}$('v229-totals').innerHTML=`<span>HT : ${money(x.ht)}</span><span>TVA : ${money(x.tax)}</span><span>TTC : ${money(x.ttc)}</span>`;}
+ function skeleton(){if($('v229-backdrop'))return;const wrap=document.createElement('div');wrap.id='v229-backdrop';wrap.innerHTML=`<section id="v229-panel" role="dialog" aria-modal="true" aria-label="Factures fournisseurs"><header class="v229-header"><div><h2>📸 Factures fournisseurs — iCHEF IA</h2><p>Photographier → contrôler → rapprocher le BL → synchroniser les modules</p></div><button type="button" id="v229-close">✕ Fermer</button></header><div class="v229-body"><div class="v229-steps"><span>1. Photo</span><span>2. Lecture IA</span><span>3. Vérification</span><span>4. Validation</span></div><div class="v229-actions"><label>Photo de facture (JPG / PNG / WebP)<input id="v229-file" type="file" accept="image/jpeg,image/png,image/webp" capture="environment"></label><button type="button" class="primary" id="v229-scan">📷 Analyser la facture</button><button type="button" id="v229-new-line">＋ Ajouter une ligne</button></div><div class="v229-grid"><label>FOURNISSEUR<select id="v229-supplier"></select></label><label>N° FACTURE<input id="v229-number" placeholder="FAC-2026-001"></label><label>DATE<input id="v229-date" type="date"></label><label>DEVISE<select id="v229-currency"><option value="CHF">CHF</option><option value="EUR">EUR</option></select></label></div><label>RAPPROCHEMENT DU BON DE LIVRAISON<select id="v229-order"></select></label><div class="v229-tablebox"><table><thead><tr><th>Produit</th><th>Quantité</th><th>Unité</th><th>Prix unitaire HT</th><th>TVA %</th><th>Total ligne HT</th><th>Article réceptionné</th><th></th></tr></thead><tbody id="v229-lines"></tbody></table></div><div id="v229-totals" class="v229-totals"></div><div class="v229-note">Le BL validé est la seule entrée de stock. Cette facture met à jour les prix d'achat des articles liés et le food cost, sans ajouter de quantités. Les lignes non rapprochées restent dans le journal facture. L'export comptable reste à contrôler.</div><div class="v229-actions"><button type="button" id="v229-history">Historique</button><button type="button" id="v229-validate" class="primary">✓ Vérifier et valider la facture</button></div><div id="v229-status" class="v229-status">Préparation de la facture…</div><div class="v229-mini">Reconnaissance automatique indicative. Confirmation obligatoire par un responsable. Photo analysée mais non enregistrée par V229.</div></div></section>`;document.body.appendChild(wrap);
+ $('v229-close').onclick=()=>{wrap.classList.remove('open')};wrap.addEventListener('click',e=>{if(e.target===wrap)wrap.classList.remove('open')});
+ $('v229-order').onchange=()=>{readRows();rows.forEach(r=>r.inventoryItemId='');drawRows()};
+ $('v229-supplier').onchange=()=>{const p=$('v229-order').value;$('v229-order').innerHTML=orderOptions();if(context.orders.some(x=>x.id===p&&x.supplierId===$('v229-supplier').value))$('v229-order').value=p;readRows();rows.forEach(r=>r.inventoryItemId='');drawRows()};
+ $('v229-lines').addEventListener('input',e=>{if(e.target.closest('tr')){readRows();refreshTotals()}});
+ $('v229-lines').addEventListener('change',e=>{if(e.target.matches('[data-field="unit"]')){readRows();rows.forEach(r=>r.inventoryItemId='');drawRows()}else{readRows();refreshTotals()}});
+ $('v229-lines').onclick=e=>{const b=e.target.closest('[data-del]');if(!b)return;readRows();rows.splice(Number(b.dataset.del),1);drawRows()};
+ $('v229-new-line').onclick=()=>{readRows();rows.push({name:'',quantity:1,unit:'kg',unitPriceHT:0,taxRate:0,inventoryItemId:''});drawRows()};
+ $('v229-scan').onclick=scan;
+ $('v229-validate').onclick=validate;
+ $('v229-history').onclick=history;
+ }
+ async function open(){skeleton();$('v229-backdrop').classList.add('open');status('Chargement des fournisseurs et commandes…');try{const d=await request('/api/ops/supplier-invoices/context');context=d;$('v229-supplier').innerHTML='<option value="">Choisir le fournisseur</option>'+context.suppliers.map(s=>`<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');$('v229-order').innerHTML=orderOptions();if(!rows.length)rows=[{name:'',quantity:1,unit:'kg',unitPriceHT:0,taxRate:0,inventoryItemId:''}];drawRows();$('v229-validate').disabled=!d.canValidate;status(d.canValidate?'Prêt. Vérifiez le fournisseur, les unités, les taux et chaque montant avant validation.':'Lecture autorisée : la validation nécessite un responsable des achats.')}catch(e){status(e.message,'error')}}
+ function imageData(file){return new Promise((resolve,reject)=>{const img=new Image(),u=URL.createObjectURL(file);img.onload=()=>{const scale=Math.min(1,2000/Math.max(img.width,img.height)),cv=document.createElement('canvas');cv.width=Math.max(1,Math.round(img.width*scale));cv.height=Math.max(1,Math.round(img.height*scale));cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);URL.revokeObjectURL(u);const src=cv.toDataURL('image/jpeg',.80);resolve({imageBase64:src.split(',')[1],mimeType:'image/jpeg'})};img.onerror=()=>{URL.revokeObjectURL(u);reject(Error('Photo impossible à lire.'))};img.src=u})}
+ async function scan(){const f=$('v229-file')?.files?.[0];if(!f)return status('Sélectionnez d’abord une photographie de facture.','error');if(f.size>15_000_000)return status('Photo trop volumineuse.','error');try{status('Reconnaissance IA en cours…');$('v229-scan').disabled=true;const data=await imageData(f),d=await request('/api/ops/supplier-invoices/scan','POST',data),p=d.draft||{};$('v229-number').value=p.numero||'';$('v229-date').value=/^\d{4}-\d{2}-\d{2}$/.test(p.date)?p.date:'';$('v229-currency').value=['CHF','EUR'].includes(p.devise)?p.devise:'CHF';const s=context.suppliers.find(s=>normal(s.name)===normal(p.fournisseur))||context.suppliers.find(s=>normal(s.name).includes(normal(p.fournisseur))&&normal(p.fournisseur).length>3);if(s){$('v229-supplier').value=s.id;$('v229-order').innerHTML=orderOptions()}rows=(p.articles||[]).map(l=>({name:l.nom,quantity:Number.isFinite(l.quantite)?l.quantite:'',unit:l.unite||'u',unitPriceHT:Number.isFinite(l.prixUnitaire)?l.prixUnitaire:'',taxRate:Number.isFinite(l.tvaTaux)?l.tvaTaux:'',inventoryItemId:''}));if(!rows.length)rows=[{name:'',quantity:1,unit:'kg',unitPriceHT:0,taxRate:0,inventoryItemId:''}];drawRows();const x=calculations();status(`IA terminée. Fournisseur lu : ${p.fournisseur||'non reconnu'}. HT détecté : ${money(p.totalHT)}, HT calculé : ${money(x.ht)}.\nContrôlez TOUTES les lignes, les éventuels taux de TVA manquants, puis choisissez le BL.`, 'good')}catch(e){status(e.message,'error')}finally{$('v229-scan').disabled=false}}
+ async function validate(){if(busy)return;readRows();const x=calculations();if(rows.some(r=>r.taxRate===''||r.unitPriceHT===''||r.quantity===''))return status('Vérifiez et renseignez toutes les quantités, les prix HT et les taux de TVA manquants (0 uniquement si la facture indique vraiment 0 %).','error');const invoice={supplierId:$('v229-supplier').value,number:$('v229-number').value.trim(),date:$('v229-date').value,currency:$('v229-currency').value,orderId:$('v229-order').value,lines:rows.map(r=>({...r,lineTotalHT:round(r.quantity*r.unitPriceHT)})),totalHT:x.ht,totalTax:x.tax,totalTTC:x.ttc};if(!invoice.supplierId||!invoice.number||!invoice.date)return status('Fournisseur, numéro et date obligatoires.','error');if(!confirm(`Confirmer la facture ${invoice.number} ?\nTotal TTC : ${money(x.ttc)} ${invoice.currency}\nAucune entrée de stock ne sera créée par la facture.`))return;try{busy=true;$('v229-validate').disabled=true;status('Vérification des droits, des montants et synchronisation…');const d=await request('/api/ops/supplier-invoices/validate','POST',invoice);status(`✓ Facture enregistrée. ID : ${d.id}\nCommande liée : ${d.orderLinked?'oui':'non'}\nArticles dont le prix a été synchronisé : ${d.priceLinkedCount||0}\nStock ajouté par facture : AUCUN.\nComptabilité : écriture prête à vérifier et exporter.`, 'good')}catch(e){status(e.message,'error')}finally{busy=false;$('v229-validate').disabled=!context.canValidate}}
+ async function history(){try{status('Chargement des factures…');const d=await request('/api/ops/supplier-invoices');status((d.invoices||[]).slice(0,12).map(x=>`${x.date} · ${x.supplierName} · ${x.number} · ${money(x.ttc)} ${x.currency} · ${x.status}`).join('\n')||'Aucune facture enregistrée.')}catch(e){status(e.message,'error')}}
+ function install(){let b=$('v229-open');if(!b){b=document.createElement('button');b.id='v229-open';b.type='button';b.textContent='📸 FACTURES IA';b.onclick=open;const nav=document.querySelector('.nav-haccp');const after=$('hv7-desktop-reception');if(nav&&after){after.insertAdjacentElement('afterend',b);b.className='nav-btn'}else if(nav){nav.appendChild(b);b.className='nav-btn'}else document.body.appendChild(b)}const side=$('hv225-sidebar');if(side&&!$('v229-side')){const s=document.createElement('button');s.id='v229-side';s.type='button';s.innerHTML='<i>▤</i>Factures IA';s.onclick=open;const ref=side.querySelector('[data-hv225-action="reception"]');if(ref)ref.insertAdjacentElement('afterend',s);else side.appendChild(s)}if(document.body.classList.contains('haccp-v223-staff')){b.hidden=true;const adminButton=$('v229-side');if(adminButton)adminButton.hidden=true;if(!b.dataset.permissionCheck){b.dataset.permissionCheck='1';request('/api/ops/supplier-invoices/context').then(data=>{if(data.canValidate||data.suppliers){b.hidden=false;if(adminButton)adminButton.hidden=false}}).catch(()=>{})}}}
+ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(install,500));else setTimeout(install,500);
+ setTimeout(install,1700);
+ window.iCHEF229OpenInvoices=open;
+})();
+</script>
 </body>
 </html>
