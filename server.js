@@ -36036,6 +36036,31 @@ ichefOpsEmitTask(auth.tenantID,task,'created');return res.status(201).json({succ
 }catch(error){console.error('[iCHEF OPS quick-task]',error);return res.status(500).json({success:false,error:'Création rapide de tâche impossible.'});}
 });
 
+
+// V237 — Copie lisible du bon de commande fournisseur pour la réception HACCP.
+// L'ordre est relu en base à chaque ouverture; aucune duplication de stock ou d'écritures.
+app.get('/api/ops/purchase-orders/:orderId/copy',async(req,res)=>{
+ try{
+  res.setHeader('Cache-Control','no-store');
+  const auth=await ichefOpsRequire(req,res);if(!auth)return;
+  const id=String(req.params.orderId||'').trim();
+  if(!/^[A-Za-z0-9_:\-]{2,150}$/.test(id))return res.status(400).json({success:false,error:'Référence de commande invalide.'});
+  const row=await IchefOpsPurchaseOrder.findOne({tenantID:auth.tenantID,orderId:id}).lean();
+  if(!row)return res.status(404).json({success:false,error:'Commande introuvable.'});
+  if(!ichefOpsCanReceiveOrder(row,auth))return res.status(403).json({success:false,error:'Cette commande appartient à un autre secteur.'});
+  const allowed=['APPROVED','SENT','PARTIAL','RECEIVED'];
+  if(!allowed.includes(String(row.status||'').toUpperCase()))return res.status(403).json({success:false,error:'La commande doit être approuvée pour être consultée dans Réception BL.'});
+  return res.json({success:true,order:{
+   id:row.orderId,supplierId:row.supplierId||'',supplierName:row.supplierName||'',
+   sectorKey:row.sectorKey||'economat',sectorLabel:row.sectorLabel||ichefOpsSectorLabel(row.sectorKey),
+   status:row.status,currency:row.currency||'CHF',createdAt:row.createdAt,
+   requestedDeliveryAt:row.requestedDeliveryAt||null,approvedAt:row.approvedAt||null,sentAt:row.sentAt||null,
+   totalEstimated:Number(row.totalEstimated||0),notes:String(row.notes||'').slice(0,5000),
+   items:(Array.isArray(row.items)?row.items:[]).map(i=>({name:String(i.name||''),sku:String(i.sku||''),quantity:Number(i.quantity||0),receivedQuantity:Number(i.receivedQuantity||0),unit:String(i.unit||''),unitPrice:Number(i.unitPrice||0)}))
+  }});
+ }catch(e){console.error('[iCHEF V237 copie commande]',e);return res.status(503).json({success:false,error:'Copie de commande momentanément indisponible.'})}
+});
+
 app.get('/api/ops/deliveries',async(req,res)=>{
 try{
 res.setHeader('Cache-Control','no-store');
