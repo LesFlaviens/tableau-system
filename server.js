@@ -36261,7 +36261,7 @@ function ichef232RecordDate(r) {
   return ichef232DateOnly(r?.timestamp || r?.capturedAt || r?.receivedAt ||
     r?.createdAt || r?.at || r?.date || r?.prepDate || r?.openDate);
 }
-app.get('/api/haccp/inspection/dossier', async (req,res) => {
+async function ichef232DossierHandler(req,res) {
   res.setHeader('Cache-Control','no-store, private');
   res.setHeader('Pragma','no-cache');
   res.setHeader('X-Content-Type-Options','nosniff');
@@ -36380,8 +36380,86 @@ app.get('/api/haccp/inspection/dossier', async (req,res) => {
     console.error('[HACCP V232 inspection]',err?.message||err);
     return res.status(503).json({success:false,error:'Dossier sanitaire indisponible ; reessayez plus tard.'});
   }
-});
+}
+app.get('/api/haccp/inspection/dossier', ichef232DossierHandler);
 // FIN API INSPECTION V232
+
+// ==========================================================================
+// V234 — INSPECTION HACCP : PARTAGE TEMPORAIRE EN LECTURE SEULE
+// Un jeton à 256 bits, seulement sa SHA256 conservée en base, durée <= 2 h.
+// Aucun accès direct aux API générales de l'établissement depuis le lien.
+// ==========================================================================
+const ichef234ShareSchema = new mongoose.Schema({
+ tokenHash:{type:String,required:true,unique:true,index:true},
+ tenantID:{type:String,required:true,index:true},
+ createdAt:{type:Date,default:Date.now},
+ expiresAt:{type:Date,required:true,index:true},
+ revokedAt:{type:Date,default:null},
+ document:{type:mongoose.Schema.Types.Mixed,required:true},
+ opens:{type:Number,default:0},downloads:{type:Number,default:0},
+ createdBy:{type:String,default:''}
+},{minimize:false});
+ichef234ShareSchema.index({expiresAt:1},{expireAfterSeconds:0});
+const Ichef234InspectionShare=mongoose.models.Ichef234InspectionShare||mongoose.model('Ichef234InspectionShare',ichef234ShareSchema);
+const ICHEF234_SECTIONS=['temperatures','nettoyage','tracabilite','receptions_haccp','inventaires_haccp','bons_livraison','referentiel_haccp'];
+const ichef234TokenHash=t=>nodeCrypto.createHash('sha256').update(t).digest('hex');
+function ichef234NoStore(res){res.setHeader('Cache-Control','no-store, private');res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','no-referrer');res.setHeader('X-Robots-Tag','noindex, nofollow');}
+async function ichef234LoadShare(raw){
+ const t=String(raw||'');
+ if(!/^[a-f0-9]{64}$/.test(t))return null;
+ return Ichef234InspectionShare.findOne({tokenHash:ichef234TokenHash(t),revokedAt:null,expiresAt:{$gt:new Date()}}).lean();
+}
+app.post('/api/haccp/inspection/share',async(req,res)=>{
+ ichef234NoStore(res);
+ try{
+  const auth=await ichefOpsLoadAuthorizedSession(req);
+  if(!auth.ok)return res.status(401).json({success:false,error:'Session responsable requise.'});
+  const role=[auth.staff?.role,auth.staff?.position,auth.staff?.fonction,auth.staff?.title].filter(Boolean).join(' ').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
+  if(!ichefHaccp223Manager(auth)&&!/\bCHEF\b|CHEF_|_CHEF\b/.test(role))return res.status(403).json({success:false,error:'Responsable HACCP requis.'});
+  const b=req.body||{},from=String(b.from||''),to=String(b.to||''),sector=String(b.sector||'ALL');
+  const selected=Array.isArray(b.sections)?[...new Set(b.sections.map(String))].filter(s=>ICHEF234_SECTIONS.includes(s)):[];
+  if(!selected.length)return res.status(400).json({success:false,error:'Choisissez au moins une rubrique.'});
+  if(!ichef232ValidDate(from)||!ichef232ValidDate(to)||from>to)return res.status(400).json({success:false,error:'Période incorrecte.'});
+  let code=200,body=null;
+  const out={setHeader(){return this},status(n){code=n;return this},json(d){body=d;return this},type(){return this},send(s){try{body=JSON.parse(s)}catch(_){body={success:false}}return this}};
+  const fake=Object.create(req);fake.query={...req.query,from,to,sector,tenantID:auth.tenantID};
+  await ichef232DossierHandler(fake,out);
+  if(code!==200||body?.success!==true)return res.status(code===200?503:code).json({success:false,error:body?.error||'Dossier indisponible.'});
+  const sections=Object.fromEntries(selected.map(k=>[k,body.sections?.[k]||[]]));
+  const snapshot={meta:{...body.meta,shared:true,allowedSections:selected},sections,counts:Object.fromEntries(selected.map(k=>[k,sections[k].length]))};
+  const bytes=Buffer.byteLength(JSON.stringify(snapshot),'utf8');
+  if(bytes>8*1024*1024)return res.status(413).json({success:false,error:'Dossier trop volumineux pour un QR temporaire. Réduisez la période.'});
+  const token=nodeCrypto.randomBytes(32).toString('hex');
+  const expiry=new Date(Date.now()+2*60*60*1000);
+  await Ichef234InspectionShare.create({tokenHash:ichef234TokenHash(token),tenantID:auth.tenantID,expiresAt:expiry,document:snapshot,createdBy:String(auth.staff?.name||auth.staff?.prenom||'Responsable').slice(0,100)});
+  void ichefWriteSecurityEvent({req,type:'HACCP_INSPECTION_SHARE_CREATED',tenantID:auth.tenantID,detail:`Période ${from}..${to}; rubriques ${selected.join(',')}`});
+  const host=String(process.env.ICHEF_INSPECTION_PUBLIC_ORIGIN||'https://os.ichef.ch').replace(/\/$/,'');
+  return res.json({success:true,url:host+'/inspection-haccp.html?t='+token,token,expiresAt:expiry.toISOString()});
+ }catch(err){console.error('[V234 partage]',err?.message||err);return res.status(503).json({success:false,error:'Partage indisponible.'})}
+});
+app.post('/api/haccp/inspection/share/revoke',async(req,res)=>{
+ ichef234NoStore(res);
+ try{
+ const auth=await ichefOpsLoadAuthorizedSession(req);
+ if(!auth.ok)return res.status(401).json({success:false,error:'Session invalide'});
+ const role=[auth.staff?.role,auth.staff?.position,auth.staff?.fonction,auth.staff?.title].filter(Boolean).join(' ').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
+ if(!ichefHaccp223Manager(auth)&&!/\bCHEF\b|CHEF_|_CHEF\b/.test(role))return res.status(403).json({success:false});
+ const token=String(req.body?.token||'');if(!/^[a-f0-9]{64}$/.test(token))return res.status(400).json({success:false});
+ const result=await Ichef234InspectionShare.updateOne({tokenHash:ichef234TokenHash(token),tenantID:auth.tenantID},{$set:{revokedAt:new Date()}});
+ return res.json({success:Boolean(result.matchedCount)});
+ }catch(_){return res.status(503).json({success:false})}
+});
+app.get('/inspection-haccp.html',(req,res)=>{ichef234NoStore(res);res.setHeader('Content-Security-Policy',"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src https://tableau-system.onrender.com; base-uri 'none'; form-action 'none'");res.type('html').send("<!doctype html><html lang=\"fr\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"referrer\" content=\"no-referrer\"><meta name=\"robots\" content=\"noindex,nofollow\"><title>iCHEF HACCP · Dossier d'inspection</title><style>\n:root{font-family:Arial,Helvetica,sans-serif;color:#182536;background:#f3f6fa}body{margin:0}header{background:#101d2b;color:#fff;padding:21px 5%;display:flex;align-items:center;justify-content:space-between;gap:15px}header b{font-size:25px;color:#edbd59}main{max-width:1100px;margin:24px auto;padding:0 16px 48px}section{background:white;border:1px solid #ccd6e2;border-radius:12px;padding:20px;margin:13px 0;overflow-wrap:anywhere}h1{font-size:27px;margin:0 0 7px}h2{font-size:21px}p{line-height:1.5}small{color:#53657c}.buttons{display:flex;gap:10px;flex-wrap:wrap}.buttons button{background:#dcaf53;border:0;border-radius:8px;padding:13px 17px;font-weight:bold;cursor:pointer}.buttons button:disabled{opacity:.5}.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}.pill{background:#edf2f8;border-radius:9px;padding:10px}.warn{background:#fff4de;border:1px solid #edc878}.tablewrap{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:12px}th,td{border-bottom:1px solid #d8e0eb;text-align:left;padding:9px;vertical-align:top}th{background:#ebf1f7}a{color:#1260b1}.cover{border-top:5px solid #dcaf53}#message{padding:10px;font-weight:bold} @media print{header,.buttons,#message{display:none!important}body{background:white}main{max-width:unset;margin:0;padding:0}section{break-inside:auto;border:0;border-radius:0;padding:8px 0;box-shadow:none}h2{break-after:avoid}thead{display:table-header-group}tr{break-inside:avoid}@page{size:A4 landscape;margin:12mm}}</style></head><body><header><div><b>iCHEF</b> &nbsp; HACCP · INSPECTION</div><span>LECTURE SEULE · ACCÈS TEMPORAIRE</span></header><main><section class=\"cover\"><h1>Dossier de contrôle sanitaire</h1><p id=\"intro\">Vérification de l'accès temporaire…</p><div class=\"buttons\"><button id=\"pdf\" disabled>📄 Imprimer / Enregistrer en PDF unique</button><button id=\"zip\" disabled>📦 Télécharger le dossier ZIP</button></div><div id=\"message\" role=\"status\"></div></section><section id=\"sommaire\" hidden></section><div id=\"sections\"></div></main><script>\n(()=>{'use strict';const $=id=>document.getElementById(id);const t=new URLSearchParams(location.search).get('t');let result=null;const title={temperatures:'Températures',nettoyage:'Nettoyage et désinfection',tracabilite:'Traçabilité et DLC',receptions_haccp:'Réceptions HACCP',inventaires_haccp:'Inventaires HACCP',bons_livraison:'Bons de livraison',referentiel_haccp:'Référentiel courant'};\nconst clean=(x)=>String(x??'').replace(/[&<>\"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[ch]));\nconst date=r=>String(r?.timestamp||r?.receivedAt||r?.date||r?.createdAt||r?.capturedAt||r?.at||'—');\nconst label=r=>String(r?.eq||r?.zone||r?.productName||r?.name||r?.supplierName||r?.orderId||r?.itemName||'Contrôle');\nfunction csv(rows){const enc=v=>'\"'+String(v??'').replace(/\"/g,'\"\"').replace(/^[\\s]*([=+\\-@])/,'\\'$1')+'\"';return '\\uFEFF'+['Date;Équipement;Statut;Valeur;Observation',...rows.map(r=>[date(r),label(r),r.status||'',r.val??r.temperature??'',r.obs||r.note||''].map(enc).join(';'))].join('\\r\\n')}\nasync function init(){if(!/^[a-f0-9]{64}$/.test(t||'')){$('intro').textContent='Lien invalide.';return}\ntry{const r=await fetch('https://tableau-system.onrender.com/api/haccp/inspection/public?t='+encodeURIComponent(t),{cache:'no-store',referrerPolicy:'no-referrer'});const d=await r.json();if(!r.ok||!d.success)throw Error(d.error||'Accès indisponible');result=d.document;const m=result.meta||{};\n$('intro').textContent='Établissement : '+(m.tenantID||'—')+' · Du '+(m.from||'—')+' au '+(m.to||'—')+' · Secteurs : '+(m.sectors||[]).join(', ')+' · Généré : '+new Date(m.generatedAt).toLocaleString('fr-FR')+' · Expiration : '+new Date(d.expiresAt).toLocaleString('fr-FR');\nconst entries=Object.entries(result.sections||{});$('sommaire').hidden=false;$('sommaire').innerHTML='<h2>Sommaire</h2>'+entries.map(([k,v])=>'<p>'+clean(title[k]||k)+' : '+v.length+' élément(s)</p>').join('')+'<p class=\"warn\">Les contrôles manquants ne sont pas inventés. Le référentiel, lorsqu’il est inclus, reflète son état actuel.</p>';\n$('sections').innerHTML=entries.map(([k,rows])=>'<section><h2>'+clean(title[k]||k)+' — '+rows.length+' élément(s)</h2><div class=\"tablewrap\"><table><thead><tr><th>Date</th><th>Élément</th><th>Résultat</th><th>Auteur</th><th>Observation</th></tr></thead><tbody>'+rows.map(r=>'<tr><td>'+clean(date(r))+'</td><td>'+clean(label(r))+'</td><td>'+clean(r.status||r.val||r.temperature||'—')+'</td><td>'+clean(r.user||r.receivedByName||r.audit||'—')+'</td><td>'+clean(r.obs||r.note||r.receptionNote||'—')+'</td></tr>').join('')+'</tbody></table></div></section>').join('');\n$('pdf').disabled=false;$('zip').disabled=false;$('message').textContent='Dossier accessible en lecture seule. Enregistrer en PDF depuis la fenêtre d’impression.';\n}catch(e){$('intro').textContent='Accès refusé : '+e.message;}}\n$('pdf').addEventListener('click',()=>{if(result)window.print()});\nfunction crc32table(){let t=[];for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=(c&1)?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0}return t}const ct=crc32table();function crc32(bytes){let c=0xffffffff;for(const b of bytes)c=ct[(c^b)&255]^(c>>>8);return(c^0xffffffff)>>>0}\nfunction zipStore(files){const enc=new TextEncoder(),parts=[],cent=[];let offset=0;const u16=(v,p,x)=>v.setUint16(p,x,true),u32=(v,p,x)=>v.setUint32(p,x>>>0,true);\nfor(const f of files){const name=enc.encode(f.name),content=enc.encode(f.data),crc=crc32(content),local=new Uint8Array(30+name.length),v=new DataView(local.buffer);u32(v,0,0x04034b50);u16(v,4,20);u16(v,6,0x0800);u32(v,14,crc);u32(v,18,content.length);u32(v,22,content.length);u16(v,26,name.length);local.set(name,30);parts.push(local,content);const z=new Uint8Array(46+name.length),d=new DataView(z.buffer);u32(d,0,0x02014b50);u16(d,4,20);u16(d,6,20);u16(d,8,0x0800);u32(d,16,crc);u32(d,20,content.length);u32(d,24,content.length);u16(d,28,name.length);u32(d,42,offset);z.set(name,46);cent.push(z);offset+=local.length+content.length}const cd=offset;for(const c of cent){parts.push(c);offset+=c.length}const end=new Uint8Array(22),dv=new DataView(end.buffer);u32(dv,0,0x06054b50);u16(dv,8,files.length);u16(dv,10,files.length);u32(dv,12,offset-cd);u32(dv,16,cd);parts.push(end);return new Blob(parts,{type:'application/zip'})}\n$('zip').addEventListener('click',()=>{if(!result)return;try{const files=[{name:'dossier_integral.json',data:JSON.stringify(result,null,2)},{name:'A_LIRE.txt',data:'Dossier HACCP, lecture seule. Données disponibles à la génération. Les preuves absentes ne sont pas inventées.'}];for(const[k,rows]of Object.entries(result.sections||{}))files.push({name:'tableaux/'+k+'.csv',data:csv(rows)});const blob=zipStore(files),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='iCHEF_DOSSIER_INSPECTION.zip';a.click();setTimeout(()=>URL.revokeObjectURL(url),30000)}catch(e){$('message').textContent='Export impossible : '+e.message}});init()})();\n</script></body></html>\n")});
+app.get('/api/haccp/inspection/public',async(req,res)=>{
+ ichef234NoStore(res);
+ try{
+ const share=await ichef234LoadShare(req.query?.t);
+ if(!share)return res.status(410).json({success:false,error:'Lien expiré ou révoqué.'});
+ await Ichef234InspectionShare.updateOne({_id:share._id},{$inc:{opens:1}});
+ return res.json({success:true,document:share.document,expiresAt:share.expiresAt});
+ }catch(_){return res.status(503).json({success:false,error:'Lecture indisponible.'})}
+});
+
 
 server.on('error', error => {
 console.error(
