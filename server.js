@@ -35935,6 +35935,37 @@ app.get('/api/chef/context',async(req,res)=>{
 
 // V240 — Portail Staff : statut de commande délivré par le serveur.
 // Une simple connexion ne suffit pas : affectation + autorisation + pointage actif.
+// V248 — Catalogue central, vue MINIMALE et filtrée par département.
+// Autorisation vérifiée à chaque lecture : session signée, tenant, appareil,
+// délégation active et pointage RH. Aucune donnée complète AppState transmise.
+app.get('/api/ops/purchase-catalog',async(req,res)=>{
+ try{
+  res.setHeader('Cache-Control','no-store');
+  const auth=await ichefOpsRequire(req,res);if(!auth)return;
+  const sector=ichefOpsSectorKey(auth.self.deptKey||'economat');
+  const granted=await ichef240PurchaseRights(auth,sector);
+  const duty=ichef240DutyState(auth);
+  if(!granted||!duty.onDuty)return res.status(403).json({success:false,error:!granted?'Droit de commande non attribué.':'Pointage d’entrée requis pour commander.'});
+  const db=await AppState.findOne({tenantID:auth.tenantID},{'activeOrders.INVENTORY_MASTER.data':1}).lean();
+  if(!db)return res.status(404).json({success:false,error:'Catalogue Économat indisponible.'});
+  const all=ichefStaffPortalArray(db?.activeOrders?.INVENTORY_MASTER);
+  const items=all.filter(x=>x?.id&&x?.name&&ichef248ProductInSector(x,sector)).slice(0,5000).map(x=>({
+   id:String(x.id),name:String(x.name||'').slice(0,220),
+   unit:String(x.unit||'pce').slice(0,80),unitPrice:Math.max(0,Number(x.unitPrice||0)),
+   supplierName:String(x.fournisseur||'').slice(0,220),
+   sectorKey:ichefOpsSectorKey(x.sectorKey||x.sector||'economat'),
+   currentQty:Math.max(0,Number(x.currentQty??x.initialQty??0)),
+   minStock:Math.max(0,Number(x.minStock||0))
+  }));
+  return res.json({success:true,sectorKey:sector,items});
+ }catch(err){console.error('[V248 CATALOG]',err);return res.status(503).json({success:false,error:'Catalogue commandes temporairement indisponible.'});}
+});
+function ichef248ProductInSector(product,sector){
+ const pSector=ichefOpsSectorKey(product?.sectorKey||product?.sector||'economat');
+ // Un produit d'Économat est commun ; un produit dédié reste dans son département.
+ return pSector==='economat'||pSector===ichefOpsSectorKey(sector);
+}
+
 app.get('/api/ops/staff-purchase-access',async(req,res)=>{
  try{
   res.setHeader('Cache-Control','no-store');
@@ -36205,6 +36236,36 @@ if(!supplier)return res.status(400).json({success:false,error:'Fournisseur actif
 const raw=Array.isArray(req.body?.items)?req.body.items:[];
 const items=raw.slice(0,150).map((item,index)=>({itemId:ichefOpsId(`IT${index+1}`),name:ichefOpsText(item?.name,220),sku:ichefOpsText(item?.sku,120),unit:ichefOpsText(item?.unit||'unité',80),quantity:Number(item?.quantity||0),unitPrice:Math.max(0,Number(item?.unitPrice||0)),receivedQuantity:0,notes:ichefOpsText(item?.notes,1000),inventoryItemId:ichefOpsText(item?.inventoryItemId,180)})).filter(item=>item.name&&Number.isFinite(item.quantity)&&item.quantity>0&&item.quantity<=1000000);
 if(!items.length)return res.status(400).json({success:false,error:'Ajoutez au moins un article à la commande.'});
+// V247 : les nouvelles commandes Économat exigent une liaison vérifiée côté serveur
+// au référentiel INVENTORY_MASTER. Le mode est opt-in pour ne pas casser les
+// clients Staff/Bar plus anciens. Il ne permet aucune élévation des droits.
+const requestedSector=ichefOpsSectorKey(req.body?.sectorKey||req.body?.sector||'economat');
+// Aucun collaborateur délégué ne peut désactiver strictCatalogue via le navigateur.
+// Les modules responsables antérieurs restent compatibles sur leur périmètre.
+const mustVerifyCatalog=req.body?.strictCatalogue===true ||
+  (!ichef239IsMaster(auth)&&!ichef239CanManageDepartment(auth,requestedSector));
+if(mustVerifyCatalog){
+  if(raw.length>150||items.length!==raw.length)return res.status(400).json({success:false,error:'Chaque ligne doit contenir un produit et une quantité valides.'});
+  if(items.some(x=>!x.inventoryItemId))return res.status(400).json({success:false,error:'Toutes les lignes doivent correspondre à un produit du stock central.'});
+  const stockState=await AppState.findOne({tenantID:auth.tenantID},{'activeOrders.INVENTORY_MASTER':1}).lean();
+  const catalog=ichefStaffPortalArray(stockState?.activeOrders?.INVENTORY_MASTER);
+  const itemsById=new Map(catalog.filter(x=>x?.id).map(x=>[String(x.id),x]));
+  for(const item of items){
+    const reference=itemsById.get(String(item.inventoryItemId));
+    if(!reference)return res.status(409).json({success:false,error:`Article central introuvable : ${item.name}. Rechargez le catalogue.`});
+    if(String(reference.name||'').trim()!==item.name||String(reference.unit||'pce').trim()!==item.unit){
+      return res.status(409).json({success:false,error:`L’article « ${item.name} » a changé dans le catalogue. Rechargez-le avant de commander.`});
+    }
+    if(!ichef248ProductInSector(reference,requestedSector)){
+      return res.status(403).json({success:false,error:`L'article « ${item.name} » n'est pas affecté à votre département.`});
+    }
+    const supplierForItem=String(reference.fournisseur||'').trim();
+    if(supplierForItem&&ichefOpsKey(supplierForItem)!==ichefOpsKey(supplier.name)){
+      return res.status(409).json({success:false,error:`L'article « ${item.name} » dépend de « ${supplierForItem} » et non de « ${supplier.name} ». Vérifiez le fournisseur.`});
+    }
+  }
+}
+
 const delivery=req.body?.requestedDeliveryAt?new Date(req.body.requestedDeliveryAt):null;if(delivery&&Number.isNaN(delivery.getTime()))return res.status(400).json({success:false,error:'Date de livraison invalide.'});
 const c=String(req.body?.currency||supplier.defaultCurrency||'CHF').toUpperCase(),status=req.body?.submitForApproval===true?'PENDING_APPROVAL':'DRAFT',now=new Date();
 const sectorKey=ichefOpsSectorKey(req.body?.sectorKey||req.body?.sector||'economat'),sectorLabel=ichefOpsSectorLabel(sectorKey);
