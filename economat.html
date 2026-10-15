@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="fr" class="economat-session-pending">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
@@ -819,6 +819,33 @@ tbody tr:hover td{
 }
 
 
+/* V250 — Accès SSO Chef / Portail Staff : aucun second PIN pour une session signée.
+   La navigation ne donne jamais accès par elle-même. */
+html.economat-session-pending #login-overlay .pinrow,
+html.economat-sso-refused #login-overlay .pinrow { display:none !important; }
+html.economat-session-pending #login-overlay #econ-auth-progress { display:block; }
+#econ-auth-progress { display:none; margin:12px auto; padding:10px; text-align:center; color:#f0d896; font-size:.78rem; }
+#econ-entry-return { display:none; width:100%; margin-top:15px; }
+html.economat-sso-refused #econ-entry-return { display:block; }
+html.economat-sso-refused #login-overlay .entry-security { display:none; }
+#econ-direct-back { display:none; }
+@media(max-width:820px) {
+  html.econ-direct-commands .topbar,
+  html.econ-direct-commands .econ-fusion-tabs { display:none !important; }
+  html.econ-direct-commands #econ-direct-back { display:block; }
+  html.econ-direct-commands .wrap { padding-top:60px !important; }
+}
+html.econ-direct-commands.econ-from-staff .topbar,
+html.econ-direct-commands.econ-from-staff .econ-fusion-tabs { display:none !important; }
+html.econ-direct-commands.econ-from-staff #econ-direct-back { display:block; }
+html.econ-direct-commands.econ-from-staff .wrap { padding-top:60px !important; }
+html.econ-direct-commands #econ-direct-back {
+  position:fixed;top:calc(8px + env(safe-area-inset-top));left:12px;z-index:85;
+  border:1px solid #b79435;border-radius:10px;color:#f2d27a;background:#0b1720;
+  font-weight:900;padding:10px 14px;box-shadow:0 5px 20px #0009;
+}
+html.econ-direct-commands #econ-return-bureau { color:#f2d27a; }
+
 /* V247 : Facture fournisseur en lecture comptable, jamais de réception par facture. */
 .invoice-safe-warning{margin:10px 0;padding:11px 13px;border:1px solid rgba(212,175,55,.4);border-radius:11px;background:rgba(212,175,55,.065);color:#eee2bd;font-size:.76rem;line-height:1.5}
 #invoice-modal .modalbox{max-height:93dvh;overflow:auto}
@@ -850,6 +877,7 @@ tbody tr:hover td{
   <button class="topbtn gold" id="econ-return-bureau" onclick="goBureau()">↩ RETOUR BUREAU</button>
   <button class="topbtn red" onclick="lockEconomat()">VERROUILLER</button>
 </div>
+<button id="econ-direct-back" type="button" onclick="goBureau()">↩ RACCOURCIS</button>
 
 <main class="wrap">
   <section class="economat-hero">
@@ -957,11 +985,13 @@ tbody tr:hover td{
     <h1>Accès Économat</h1>
     <p class="entry-subtitle">Connectez-vous pour accéder au stock, aux achats et aux réceptions.</p>
     <div class="entry-security">ACCÈS SÉCURISÉ · SERVEUR iCHEF</div>
+    <div id="econ-auth-progress" role="status">Reconnaissance de votre session iCHEF en cours…</div>
     <div class="pinrow">
       <input id="pin-input" type="password" inputmode="numeric" autocomplete="off" placeholder="Code PIN">
       <button id="pin-submit" class="primary" onclick="verifyEconomatPin()">ENTRER</button>
     </div>
-    <div id="login-error" class="err">Accès refusé.</div>
+    <div id="login-error" class="err" role="alert">Accès refusé.</div>
+    <button id="econ-entry-return" class="secondary" type="button" onclick="goBureau()">↩ RETOUR AUX RACCOURCIS</button>
   </div>
 </div>
 
@@ -1140,6 +1170,28 @@ const SERVER_URL =
     : "https://tableau-system.onrender.com";
 
 const qs = new URLSearchParams(location.search);
+const ECONOMAT_ORIGIN = String(qs.get('from') || qs.get('origin') || '').trim().toLowerCase();
+const ECONOMAT_EMBEDDED = ['chef','staff'].includes(ECONOMAT_ORIGIN);
+const ECONOMAT_ORDERS_ENTRY = ECONOMAT_EMBEDDED &&
+  ['commandes-fournisseurs','orders'].includes(String(qs.get('ichefView') || '').toLowerCase());
+const ECONOMAT_CREATE_ENTRY = ECONOMAT_ORDERS_ENTRY &&
+  String(qs.get('ichefAction') || '').toLowerCase() === 'nouvelle-commande';
+let economatInboundHandled = false;
+if (ECONOMAT_ORDERS_ENTRY) {
+  document.documentElement.classList.add('econ-direct-commands');
+  if (ECONOMAT_ORIGIN === 'staff') document.documentElement.classList.add('econ-from-staff');
+}
+const economatReturnButton = document.getElementById('econ-return-bureau');
+if (ECONOMAT_EMBEDDED) {
+  if (economatReturnButton) economatReturnButton.textContent = ECONOMAT_ORIGIN === 'staff'
+    ? '↩ RETOUR PORTAIL STAFF' : '↩ RETOUR RACCOURCIS';
+  const compactBack = document.getElementById('econ-direct-back');
+  const loginBack = document.getElementById('econ-entry-return');
+  if (ECONOMAT_ORIGIN === 'staff') {
+    if (compactBack) compactBack.textContent = '↩ PORTAIL STAFF';
+    if (loginBack) loginBack.textContent = '↩ RETOUR AU PORTAIL STAFF';
+  }
+}
 const tenantID = String(qs.get("tenantID") || localStorage.getItem("ichef_tenant_id") || "").trim();
 
 if (!tenantID) {
@@ -1241,25 +1293,88 @@ async function economatOpenVerifiedSession(context) {
   try { await loadState(); }
   catch (e) { console.warn('[ECONOMAT V249] Stock non chargé',e);setSync('warn','SERVEUR · STOCK EN RECONNEXION…'); }
   try { startRealtime(); } catch (e) { console.warn('[ECONOMAT V249] Temps réel différé',e); }
+  await economatHandleVerifiedNavigation(context);
 }
-async function economatResumeSignedSession() {
-  const token = String(sessionStorage.getItem('ichef_ops_token') || '').trim();
-  const sessionTenant = String(sessionStorage.getItem('ichef_ops_tenant') || '').trim();
-  if (!token || (sessionTenant && sessionTenant.toLowerCase() !== tenantID.toLowerCase())) return false;
-  const error = document.getElementById('login-error');
-  setSync('warn','SERVEUR · VÉRIFICATION SESSION…');
+
+// Une demande de navigation de chef.html n'est prise en compte qu'APRÈS
+// authentification serveur, contrôle du tenant, de l'appareil et des droits.
+async function economatHandleVerifiedNavigation(context) {
+  if (!ECONOMAT_ORDERS_ENTRY || economatInboundHandled) return;
+  economatInboundHandled = true;
   try {
-    const context = await opsApi('/api/ops/context?tenantID='+encodeURIComponent(tenantID));
-    await economatOpenVerifiedSession(context);
-    return true;
-  } catch (e) {
-    console.warn('[ECONOMAT V249] Session existante non reconnue',e?.message||e);
-    // Une session refusée ne doit JAMAIS ouvrir la porte par simple présence du token.
-    // Le PIN reste disponible pour une nouvelle connexion.
-    error.textContent = 'Session non reconnue. Reconnectez-vous avec votre accès habituel.';
+    await window.switchEconomatView('orders');
+    if (!ECONOMAT_CREATE_ENTRY) return;
+    if (context?.capabilities?.createPurchases !== true) {
+      setSync('warn', 'COMMANDES · AUTORISATION REQUISE');
+      alert('Vous n’êtes pas autorisé à créer une commande fournisseur dans cette session.');
+      return;
+    }
+    await window.openFusionOrderModal();
+    // Le secteur est un choix d'affichage; le serveur valide le département
+    // et l'éventuel pointage actif à chaque création de commande.
+    if (ECONOMAT_ORIGIN === 'chef') {
+      const sector = document.getElementById('fo-sector');
+      if (sector) sector.value = 'cuisine';
+    }
+  } catch (error) {
+    console.warn('[ECONOMAT SSO] Navigation directe indisponible', error);
+    setSync('warn', 'COMMANDES · CHARGEMENT INCOMPLET');
+  }
+}
+
+async function economatResumeSignedSession() {
+  // Les tokens signés proviennent du PIN déjà validé par chef.html.
+  // L'URL, le rôle affiché et la présence d'un token ne suffisent JAMAIS.
+  const signedTenant = String(sessionStorage.getItem('ichef_ops_tenant') || '').trim();
+  if (signedTenant && signedTenant.toLowerCase() !== tenantID.toLowerCase()) return false;
+  const previousToken = String(sessionStorage.getItem('ichef_ops_token') || '').trim();
+  const candidateTokens = [...new Set([
+    previousToken,
+    String(sessionStorage.getItem('ichef_access_token') || '').trim(),
+    String(sessionStorage.getItem('ichef_auth_token') || '').trim()
+  ].filter(Boolean))];
+  if (!candidateTokens.length) return false;
+  setSync('warn', 'SERVEUR · VÉRIFICATION SESSION CHEF…');
+  let lastFailure = null;
+  for (const signedToken of candidateTokens) {
+    try {
+      sessionStorage.setItem('ichef_ops_token', signedToken);
+      // Vérification serveur OBLIGATOIRE, jeton signé + tenant + appareil.
+      const context = await opsApi('/api/ops/context?tenantID='+encodeURIComponent(tenantID));
+      if (!context?.success || !economatMayManageCentral(context)) {
+        throw new Error('Session reconnue, mais droits Économat insuffisants.');
+      }
+      sessionStorage.setItem('ichef_ops_tenant', tenantID);
+      await economatOpenVerifiedSession(context);
+      return true;
+    } catch (e) {
+      lastFailure = e;
+      console.warn('[ECONOMAT SSO] Jeton non reconnu par /api/ops/context', e?.message || e);
+    }
+  }
+  if (previousToken) sessionStorage.setItem('ichef_ops_token', previousToken);
+  else sessionStorage.removeItem('ichef_ops_token');
+  setSync('warn', 'SERVEUR · SESSION À REVÉRIFIER');
+  if (lastFailure) document.getElementById('login-error').dataset.reason = lastFailure.message || '';
+  return false;
+}
+
+function economatCompleteEntry(ok) {
+  document.documentElement.classList.remove('economat-session-pending');
+  if (ok || authenticated) return;
+  const error = document.getElementById('login-error');
+  document.getElementById('login-overlay').style.display = 'flex';
+  if (ECONOMAT_EMBEDDED) {
+    // Pas de deuxième PIN sur une redirection Chef/Staff échouée :
+    // on invite à revenir à l'écran d'origine et à rouvrir sa session.
+    document.documentElement.classList.add('economat-sso-refused');
+    const reason = error.dataset.reason || 'Jeton de session absent ou expiré.';
+    error.textContent = 'Votre session iCHEF n’a pas pu être reconnue par le serveur Économat. '
+      + 'Revenez au ' + (ECONOMAT_ORIGIN === 'staff' ? 'Portail Staff' : 'module Chef')
+      + ' et vérifiez vos accès. ' + reason;
     error.style.display = 'block';
-    setSync('warn','SERVEUR · AUTHENTIFICATION REQUISE');
-    return false;
+  } else {
+    document.getElementById('pin-input').focus();
   }
 }
 
@@ -2546,7 +2661,11 @@ function goBureau() {
     staff:'portail-staff.html', administration:'admin.html', admin:'admin.html'
   };
   const destination = desks[origin] || 'admin.html';
-  location.href = `${destination}?tenantID=${encodeURIComponent(tenantID)}`;
+  const destinationQuery = new URLSearchParams({tenantID});
+  if (origin === 'chef' && qs.get('ichefReturn') === 'raccourcis') {
+    destinationQuery.set('ichefReturn', 'raccourcis');
+  }
+  location.href = `${destination}?${destinationQuery.toString()}`;
 }
 function goHaccp() {
   location.href = `haccp.html?tenantID=${encodeURIComponent(tenantID)}`;
@@ -2563,9 +2682,12 @@ function lockEconomat() {
 }
 
 window.addEventListener('load',()=>{
-  economatResumeSignedSession().then(ok=>{
-    if(!ok && !authenticated) document.getElementById('pin-input').focus();
-  });
+  economatResumeSignedSession()
+    .then(economatCompleteEntry)
+    .catch(error=>{
+      console.warn('[ECONOMAT SSO] Échec de vérification', error);
+      economatCompleteEntry(false);
+    });
 });
 </script>
 
