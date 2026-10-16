@@ -1484,6 +1484,13 @@
     <div id="mod-menu" class="module"><div id="dynamic-menu-grid" class="grid-menu"></div></div>
 
     <div id="mod-market" class="module">
+        <div class="ichef-lab-intro"><div><span class="ichef-lab-eyebrow">LABO · FICHES TECHNIQUES CONNECTÉES</span><h2>Créer une fiche technique</h2><p>Choisissez les ingrédients du stock Économat, indiquez les quantités : le coût matière et le Food Cost se calculent automatiquement.</p></div><button type="button" class="add-btn" style="width:auto" onclick="refreshChefSharedData().then(()=>ichefLabRefreshStock()).catch(()=>ichefLabRefreshStock())">↻ ACTUALISER LE STOCK</button></div>
+        <div class="ichef-lab-steps"><span class="current">① Plat & catégorie</span><span>② Ingrédients & quantités</span><span>③ Prix & rentabilité</span><span>④ Fiche technique & publication</span></div>
+        <section class="ichef-lab-workflow"><div id="ichef-lab-identity" class="ichef-lab-panel"><h3>① IDENTITÉ DU PLAT</h3><div class="ichef-lab-identity-grid"><div id="ichef-lab-name-slot"></div><div id="ichef-lab-category-slot"></div><div id="ichef-lab-pax-slot"></div></div></div>
+        <div class="ichef-lab-panel"><div class="ichef-lab-panel-head"><div><h3>② INGRÉDIENTS DU STOCK CENTRAL</h3><p>Sélection précise dans INVENTORY_MASTER — aucune création d'article ici.</p></div><span id="ichef-lab-stock-status" class="ichef-lab-stock-pill">Connexion au stock…</span></div><div id="ichef-lab-lines"></div><div class="ichef-lab-inline"><button class="add-btn" type="button" onclick="ichefLabAddLine()" style="width:auto">＋ AJOUTER UN INGRÉDIENT</button><button class="add-btn" type="button" onclick="openEconomatFromChef()" style="width:auto">OUVRIR ÉCONOMAT</button></div><div id="ichef-lab-lines-feedback" class="ichef-lab-help">Les prix sont lus depuis le stock central. Un prix manquant n'est jamais inventé.</div></div>
+        <div class="ichef-lab-panel"><h3>③ PRIX DE VENTE & RENTABILITÉ</h3><div class="ichef-lab-pricing"><div><small>COÛT MATIÈRE / PORTION</small><strong id="ichef-lab-live-cost">—</strong></div><div><small>PRIX CONSEILLÉ (COEFFICIENT)</small><strong id="ichef-lab-live-advised">—</strong></div><div><small>FOOD COST THÉORIQUE</small><strong id="ichef-lab-live-foodcost">—</strong></div><div id="ichef-lab-price-slot"></div><div id="ichef-lab-coef-slot"></div></div></div></section>
+        <div id="ichef-lab-publish" class="ichef-lab-panel"><h3>④ FICHE TECHNIQUE & PUBLICATION</h3><p>Indiquez la préparation et le dressage. Les ingrédients sélectionnés sont ajoutés automatiquement à la fiche enregistrée.</p><div id="ichef-lab-description-slot"></div><div id="ichef-lab-save-slot"></div></div>
+        <details id="ichef-lab-legacy" class="ichef-lab-advanced"><summary>▸ SAISIE MANUELLE / OUTILS AVANCÉS (ancien laboratoire)</summary><p>Mode compatible avec les anciennes fiches : ingrédients libres, dictée et calcul historique. Pour une fiche reliée précisément au stock, utilisez la sélection guidée ci-dessus.</p>
         <div class="market-layout">
             <div class="menu-category" style="padding:25px; border-color: var(--border-strong);">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:25px; flex-wrap: wrap; gap:10px;">
@@ -1588,6 +1595,8 @@
             </div>
         </div>
     </div>
+        </details>
+
 
     <div id="mod-inventaire" class="module">
         <div class="chef-note-card" style="margin-bottom:14px;">
@@ -3761,6 +3770,12 @@
             let price = parseFloat(document.getElementById('market-price').value);
             let category = document.getElementById('market-category').value;
             let unitCost = parseFloat(document.getElementById('market-total-cost').value) || 0;
+            const guidedLines = (window.ichefLabGetLines ? window.ichefLabGetLines() : []);
+            if (guidedLines.length) {
+                if (guidedLines.some(x => !x.item || !x.qty || !(x.qty > 0))) return alert('Complétez chaque ingrédient et sa quantité avant de publier.');
+                if (guidedLines.some(x => !Number.isFinite(x.cost))) return alert('Prix du stock manquant ou unité incompatible. Corrigez dans Économat avant publication.');
+                unitCost = guidedLines.reduce((sum, x) => sum + x.cost, 0);
+            }
             let ing = document.getElementById('rec-ing') ? document.getElementById('rec-ing').value : '';
             let prep = document.getElementById('rec-prep') ? document.getElementById('rec-prep').value : '';
 
@@ -3794,6 +3809,16 @@
                     });
                 }
             });
+
+            if (guidedLines.length) {
+                structuredIngs = guidedLines.map(x => ({
+                    name:x.item.name, qtyPerPortion:x.qty, quantityUnit:x.unit,
+                    cat:'stock', inventoryItemId:x.item.id, inventoryItemName:x.item.name,
+                    inventoryUnit:x.item.unit || '', unitPriceSnapshot:Number(x.item.unitPrice || 0),
+                    linkedAt:new Date().toISOString(), linkStatus:'linked'
+                }));
+                ing = guidedLines.map(x => `• ${x.item.name} : ${x.qty} ${x.unit} / portion`).join('\n');
+            }
 
             // Identification automatique du type de TVA
             let newTva = systemSettings.tva !== undefined ? systemSettings.tva : 10;
@@ -6073,5 +6098,84 @@ body.chef-dashboard-open #ichefSwitchBtn{display:none !important}
 }
 </style>
 
+<style id="ichef-lab-guided-v1">
+#mod-market{background:#fafbfc!important;color:#111827!important}
+#mod-market .ichef-lab-intro{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:16px 20px;margin-bottom:12px;background:#fff;border:1px solid #e1e5ea;border-radius:15px}
+#mod-market .ichef-lab-eyebrow{font-size:.66rem;color:#a77721;letter-spacing:1.5px;font-weight:900}
+#mod-market .ichef-lab-intro h2{margin:4px 0;font-size:1.5rem;color:#111}
+#mod-market .ichef-lab-intro p,#mod-market .ichef-lab-panel p{margin:4px 0;color:#667385;font-size:.78rem;line-height:1.45}
+#mod-market .ichef-lab-steps{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px}
+#mod-market .ichef-lab-steps span{border:1px solid #d9dee5;border-radius:999px;padding:7px 12px;font-size:.7rem;color:#516071;background:white;font-weight:750}
+#mod-market .ichef-lab-steps .current{background:#f9f0dc;border-color:#bf963e;color:#815511}
+#mod-market .ichef-lab-workflow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:start}
+#mod-market .ichef-lab-panel{background:white;padding:16px;border:1px solid #dce1e6;border-radius:14px;min-width:0}
+#mod-market .ichef-lab-panel:nth-child(2){grid-row:span 2}
+#mod-market #ichef-lab-publish{grid-column:1/-1}
+#mod-market #ichef-lab-publish .grid-2col-mobile{margin:12px 0!important}
+#mod-market #ichef-lab-publish textarea{background:white!important;color:#18202b!important;border:1px solid #cbd4dc!important}
+#mod-market #ichef-lab-save-slot .add-btn{background:#bb8d3f!important;color:#fff!important;border:0!important;max-width:440px;margin:8px 0}
+#mod-market .ichef-lab-panel h3{margin:0 0 12px;color:#20252b;font-size:.8rem;letter-spacing:.35px}
+#mod-market .ichef-lab-panel-head{display:flex;justify-content:space-between;gap:12px;align-items:start}
+#mod-market .ichef-lab-stock-pill{background:#f2f4f5;border-radius:20px;padding:7px 9px;font-size:.66rem;white-space:nowrap;color:#6c7681;font-weight:750}
+#mod-market .ichef-lab-stock-pill.ready{color:#146c43;background:#e2f6eb}
+#mod-market .ichef-lab-identity-grid{display:grid;grid-template-columns:1.6fr 1fr .65fr;gap:9px}
+#mod-market .ichef-lab-panel input,#mod-market .ichef-lab-panel select{min-width:0;min-height:42px;background:#fff!important;color:#15202a!important;border:1px solid #cbd4dc!important}
+#mod-market .ichef-lab-panel label{display:block;color:#526071;font-size:.68rem;font-weight:850;margin-bottom:5px}
+#mod-market .ichef-lab-line{display:grid;grid-template-columns:minmax(0,1fr) 80px 86px 92px 32px;gap:7px;align-items:center;margin-top:9px}
+#mod-market .ichef-lab-line select,#mod-market .ichef-lab-line input{min-height:40px!important;padding:7px!important;font-size:.76rem}
+#mod-market .ichef-lab-line .ichef-line-cost{font-size:.76rem;color:#91641d;text-align:right;font-weight:900}
+#mod-market .ichef-line-remove{border:1px solid #e9ced0;background:white;border-radius:8px;color:#ad3333;min-height:38px;cursor:pointer}
+#mod-market .ichef-lab-inline{display:flex;gap:8px;flex-wrap:wrap;margin-top:13px}
+#mod-market .ichef-lab-inline .add-btn,#mod-market .ichef-lab-intro .add-btn{color:#9a681f!important;background:#fff!important;border:1px solid #d6aa60!important;font-size:.7rem!important;min-height:36px}
+#mod-market .ichef-lab-help{font-size:.7rem;color:#667385;margin-top:10px}
+#mod-market .ichef-lab-pricing{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}
+#mod-market .ichef-lab-pricing>div{min-width:0;background:#f9fafb;padding:10px;border:1px solid #e4e7eb;border-radius:10px}
+#mod-market .ichef-lab-pricing small{display:block;font-size:.62rem;color:#637184;font-weight:850}
+#mod-market .ichef-lab-pricing strong{display:block;margin-top:8px;font-size:1.1rem;color:#a17126}
+#mod-market .ichef-lab-pricing #ichef-lab-price-slot{grid-column:span 2;background:#fff}
+#mod-market .ichef-lab-pricing #ichef-lab-coef-slot{background:#fff}
+#mod-market .ichef-lab-pricing #market-price,#mod-market .ichef-lab-pricing #market-margin{width:100%!important;margin:0!important}
+#mod-market .ichef-lab-advanced{border:1px solid #dce1e6;border-radius:13px;background:#fff;margin-top:12px;padding:12px;color:#111}
+#mod-market .ichef-lab-advanced>summary{color:#946821;cursor:pointer;font-size:.75rem;font-weight:900;padding:5px}
+#mod-market .ichef-lab-advanced>p{font-size:.73rem;color:#6b7280}
+#mod-market .ichef-lab-advanced .market-layout{margin-top:14px}
+#mod-market .ichef-lab-advanced .menu-category{background:#fff!important}
+#mod-market .ichef-lab-advanced input,#mod-market .ichef-lab-advanced textarea,#mod-market .ichef-lab-advanced select{color:#101827!important;background:white!important;border-color:#c9d2da!important}
+#mod-market #ichef-lab-name-slot>div{margin:0!important;display:flex!important}
+#mod-market #ichef-lab-category-slot>div{margin:0!important;display:block!important}
+#mod-market #ichef-lab-category-slot .add-btn{display:none!important}
+#mod-market #ichef-lab-pax-slot{display:flex;flex-direction:column;justify-content:center}
+#mod-market #ichef-lab-pax-slot #recipe-pax{width:100%!important}
+#mod-market #ichef-lab-coef-slot #market-margin{width:100%!important}
+@media(max-width:1000px){#mod-market .ichef-lab-workflow{grid-template-columns:1fr}#mod-market .ichef-lab-panel:nth-child(2){grid-row:auto}}
+@media(max-width:650px){#mod-market .ichef-lab-identity-grid{grid-template-columns:1fr 1fr}#mod-market #ichef-lab-name-slot{grid-column:1/-1}#mod-market .ichef-lab-line{grid-template-columns:minmax(0,1fr) 70px 70px 26px}#mod-market .ichef-lab-line .ichef-line-cost{grid-column:1/-1;text-align:left}#mod-market .ichef-lab-pricing{grid-template-columns:1fr 1fr}#mod-market .ichef-lab-pricing #ichef-lab-price-slot{grid-column:span 1}#mod-market .ichef-lab-intro{flex-direction:column;align-items:stretch}}
+</style>
+<script id="ichef-lab-guided-script">
+(function(){
+  const q=id=>document.getElementById(id);
+  const num=v=>Number(String(v??'').replace(',','.'));
+  const money=v=>Number.isFinite(v)?v.toFixed(2)+' '+(typeof currentCurrency==='string'?currentCurrency:''): '—';
+  const list=()=>Array.isArray(window.stockGlobalData)?window.stockGlobalData:(typeof stockGlobalData!=='undefined'&&Array.isArray(stockGlobalData)?stockGlobalData:[]);
+  function quantityCost(item,qty,unit){
+    const price=num(item?.unitPrice);const stockUnit=String(item?.unit||'').toLowerCase().trim();
+    if(!Number.isFinite(price)||price<=0||!Number.isFinite(qty)||qty<=0)return NaN;
+    const norm=u=>({'kilogramme':'kg','kilogrammes':'kg','gr':'g','gramme':'g','grammes':'g','litre':'l','litres':'l','piece':'pce','pièce':'pce','unité':'pce','unite':'pce','pcs':'pce'})[u]||u;
+    const a=norm(stockUnit),b=norm(unit.toLowerCase());
+    if(a===b)return price*qty;
+    const conv={kg:1000,g:1,l:1000,ml:1,cl:10};
+    if((a==='kg'||a==='g')&&(b==='kg'||b==='g'))return qty*conv[b]/conv[a]*price;
+    if((a==='l'||a==='ml'||a==='cl')&&(b==='l'||b==='ml'||b==='cl'))return qty*conv[b]/conv[a]*price;
+    return NaN;
+  }
+  function rowData(row){const item=list().find(i=>String(i.id)===row.querySelector('.il-item').value)||null;const qty=num(row.querySelector('.il-qty').value);const unit=row.querySelector('.il-unit').value;return {item,qty,unit,cost:item?quantityCost(item,qty,unit):NaN};}
+  window.ichefLabGetLines=()=>[...document.querySelectorAll('#ichef-lab-lines .ichef-lab-line')].filter(r=>r.querySelector('.il-item').value||r.querySelector('.il-qty').value).map(rowData);
+  function repaint(){let total=0,invalid=0;document.querySelectorAll('#ichef-lab-lines .ichef-lab-line').forEach(row=>{let r=rowData(row);const label=row.querySelector('.ichef-line-cost');label.textContent=money(r.cost);if(r.item){if(Number.isFinite(r.cost)){total+=r.cost}else invalid++}});const price=num(q('market-price')?.value);const coef=num(q('market-margin')?.value)||3.5;q('ichef-lab-live-cost').textContent=invalid?'À compléter':money(total);q('ichef-lab-live-advised').textContent=invalid?'—':money(total*coef);q('ichef-lab-live-foodcost').textContent=invalid?'—':(price>0?(total/price*100).toFixed(1)+' %':'—');q('ichef-lab-lines-feedback').textContent=invalid?'⚠ Un ou plusieurs ingrédients n’ont pas de prix valide ou utilisent une unité incompatible. Vérifier dans Économat.':'Prix matière lus depuis le stock Économat. La fiche technique sera reliée aux identifiants réels des articles.';if(!invalid&&total>0){q('market-total-cost').value=total.toFixed(2)+' '+(typeof currentCurrency==='string'?currentCurrency:'');q('market-recommended').textContent=(total*coef).toFixed(2)} }
+  window.ichefLabRefreshStock=function(){let items=list();const badge=q('ichef-lab-stock-status');if(!badge)return;badge.textContent=items.length?items.length+' articles connectés':'Aucun article disponible';badge.classList.toggle('ready',!!items.length);document.querySelectorAll('.il-item').forEach(sel=>{let prev=sel.value;sel.replaceChildren(new Option('Choisir un article du stock…',''));items.forEach(item=>{if(item?.id!=null&&item?.name)sel.add(new Option(item.name+' · '+(item.unit||'unité')+' · '+(Number(item.unitPrice)||0).toFixed(2),String(item.id)))});sel.value=prev;});repaint()};
+  window.ichefLabAddLine=function(){const root=q('ichef-lab-lines');if(!root)return;const row=document.createElement('div');row.className='ichef-lab-line';row.innerHTML='<select class="il-item" aria-label="Article du stock"><option value="">Choisir un article du stock…</option></select><input class="il-qty" type="number" min="0" step="any" placeholder="Qté" aria-label="Quantité par portion"><select class="il-unit" aria-label="Unité"><option value="g">g</option><option value="kg">kg</option><option value="ml">ml</option><option value="cl">cl</option><option value="l">L</option><option value="pce">pce</option></select><span class="ichef-line-cost">—</span><button class="ichef-line-remove" type="button" aria-label="Supprimer cet ingrédient">×</button>';root.append(row);row.querySelector('.il-item').addEventListener('change',()=>{let item=list().find(i=>String(i.id)===row.querySelector('.il-item').value);if(item){const u=String(item.unit||'').toLowerCase();row.querySelector('.il-unit').value=({'kg':'g','l':'ml','pce':'pce','g':'g','ml':'ml','cl':'cl'})[u]||'pce'}repaint()});row.querySelectorAll('input,select').forEach(el=>el.addEventListener('input',repaint));row.querySelector('.ichef-line-remove').onclick=()=>{row.remove();repaint()};ichefLabRefreshStock()};
+  function move(selector,slot){let el=document.querySelector(selector),dest=q(slot);if(el&&dest)dest.append(el)}
+  function init(){const market=q('mod-market');if(!market||market.dataset.labReady)return;market.dataset.labReady='1';let name=q('market-name')?.parentElement;let cat=q('market-category')?.parentElement;let pax=q('recipe-pax');let coef=q('market-margin');let price=q('market-price');if(name)q('ichef-lab-name-slot').append(name);if(cat)q('ichef-lab-category-slot').append(cat);if(pax)q('ichef-lab-pax-slot').append(pax);if(price)q('ichef-lab-price-slot').append(price);let recipeField=q('rec-ing')?.closest('.grid-2col-mobile');if(recipeField)q('ichef-lab-description-slot').append(recipeField);let publishBtn=[...market.querySelectorAll('button')].find(b=>b.getAttribute('onclick')==='saveRecipe()');if(publishBtn)q('ichef-lab-save-slot').append(publishBtn);if(coef)q('ichef-lab-coef-slot').append(coef);q('ichef-lab-name-slot').insertAdjacentHTML('afterbegin','<label>Nom du plat *</label>');q('ichef-lab-category-slot').insertAdjacentHTML('afterbegin','<label>Catégorie / carte</label>');q('ichef-lab-pax-slot').insertAdjacentHTML('afterbegin','<label>Portions de référence</label>');q('ichef-lab-price-slot').insertAdjacentHTML('afterbegin','<label>Prix de vente / portion *</label>');q('ichef-lab-coef-slot').insertAdjacentHTML('afterbegin','<label>Coefficient</label>');q('market-price')?.addEventListener('input',repaint);q('market-margin')?.addEventListener('input',repaint);ichefLabAddLine();q('ichef-lab-legacy').open=false;setInterval(()=>{if(q('mod-market')?.classList.contains('active'))ichefLabRefreshStock()},15000)}
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
+})();
+</script>
 </body>
 </html>
