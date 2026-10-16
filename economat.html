@@ -2626,8 +2626,24 @@ function startRealtime() {
       }
     });
   });
+  // Le serveur publie aussi les changements de commande (avant ou après livraison).
+  socket.on('ops-purchase-order-changed',async message=>{
+    if (!authenticated || (message?.tenantID && String(message.tenantID)!==String(tenantID))) return;
+    try { if (typeof loadFusionOrders==='function') await loadFusionOrders(); } catch (_) {}
+  });
   startPolling();
 }
+
+// Entre onglets même origine : relit l'état du serveur, jamais une copie locale des stocks.
+window.addEventListener('storage',async event=>{
+  if(event.key!=='ichef_procurement_refresh_'+tenantID || !authenticated) return;
+  try {
+    const notice=JSON.parse(event.newValue||'{}');
+    if(String(notice.tenantID)!==String(tenantID))return;
+    normalizeState(await API.getState());
+    if(typeof loadFusionOrders==='function')await loadFusionOrders();
+  } catch (error) { console.warn('Actualisation Économat reportée',error); }
+});
 
 let pollTimer = null;
 function startPolling() {
@@ -2810,6 +2826,7 @@ window.saveFusionOrder=async function(){
       submitForApproval:$f('fo-workflow').value==='1',createReceptionTask:true,strictCatalogue:true
     })});
     closeFusionOrderModal();$f('fo-notes').value='';$f('fo-delivery').value='';await loadFusionOrders();
+    try { localStorage.setItem('ichef_procurement_refresh_'+tenantID,JSON.stringify({tenantID,kind:'ORDER_CREATED',at:Date.now()})); } catch (_) {}
   }catch(e){alert(e.message)}
 };
 
@@ -2918,4 +2935,3 @@ window.addEventListener('ichef:inventory-updated',()=>{if(!$f('econ-orders-view'
 </script>
 </body>
 </html>
-
