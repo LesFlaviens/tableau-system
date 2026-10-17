@@ -36133,6 +36133,55 @@ return res.json({success:true,supplier:{id:row.supplierId,name:row.name,active:r
 
 
 
+// iCHEF V177 - Suppression stricte d'une fiche fournisseur jamais utilisée.
+// Sécurité : session signée, appareil, établissement, permission serveur,
+// confirmation explicite, protection commandes/factures/stock/historique.
+app.delete('/api/ops/suppliers/:supplierId', async (req,res)=>{
+  try {
+    res.setHeader('Cache-Control','no-store');
+    const auth=await ichefOpsRequire(req,res,{supplierManage:true});
+    if(!auth)return;
+    const supplierId=String(req.params.supplierId||'').trim();
+    if(!/^[A-Za-z0-9_:\-]{2,150}$/.test(supplierId))return res.status(400).json({success:false,error:'Référence fournisseur invalide.'});
+    if(req.body?.confirmation!=='SUPPRIMER'||req.body?.supplierId!==supplierId)
+      return res.status(400).json({success:false,error:'Confirmation de suppression requise.'});
+    const supplier=await IchefOpsSupplier.findOne({tenantID:auth.tenantID,supplierId}).lean();
+    if(!supplier)return res.status(404).json({success:false,error:'Fournisseur introuvable.'});
+    if(supplier.active!==false)return res.status(409).json({success:false,error:'Retirez d’abord le fournisseur des commandes avant de demander sa suppression.'});
+    const criteria={tenantID:auth.tenantID,supplierId};
+    if(await IchefOpsPurchaseOrder.exists(criteria))return res.status(409).json({success:false,error:'Fournisseur lié à une commande ou une réception : conservez son historique.'});
+    // Les factures structurées V229 sont dans une collection séparée.
+    if(typeof Ichef229SupplierInvoice!=='undefined' && await Ichef229SupplierInvoice.exists(criteria))
+      return res.status(409).json({success:false,error:'Fournisseur lié à une facture : suppression interdite.'});
+    const state=await AppState.findOne({tenantID:auth.tenantID}).lean();
+    const nodes=state?.activeOrders||{};
+    const normalizeName=v=>String(v||'').trim().normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/\s+/g,' ');
+    const nameKey=normalizeName(supplier.name);
+    const seen=new WeakSet();
+    function hasReference(v,depth=0){
+      if(v==null||depth>12)return false;
+      if(Array.isArray(v))return v.some(x=>hasReference(x,depth+1));
+      if(typeof v!=='object'||seen.has(v))return false;
+      seen.add(v);
+      const idFields=['supplierId','fournisseurId','supplierRefId','vendorId'];
+      if(idFields.some(k=>String(v[k]||'').trim()===supplierId))return true;
+      const nameFields=['supplierName','fournisseur','vendorName','supplier'];
+      if(nameKey&&nameFields.some(k=>typeof v[k]==='string'&&normalizeName(v[k])===nameKey))return true;
+      return Object.values(v).some(x=>hasReference(x,depth+1));
+    }
+    // On exclut uniquement le répertoire fournisseurs lui-même, sinon une fiche
+    // inutilisée s'auto-référencerait. Toutes les données métier sont contrôlées.
+    const relevant=Object.entries(nodes).filter(([key])=>!/(^|_)(SUPPLIERS?_MASTER|FOURNISSEURS?_MASTER)(_|$)/i.test(key));
+    if(relevant.some(([,value])=>hasReference(value)))return res.status(409).json({success:false,error:'Fournisseur utilisé dans le stock, la comptabilité ou un historique. Désactivez-le plutôt.'});
+    const result=await IchefOpsSupplier.deleteOne({tenantID:auth.tenantID,supplierId,active:false});
+    if(result.deletedCount!==1)return res.status(409).json({success:false,error:'Fiche modifiée entre-temps : actualisez la liste.'});
+    void ichefWriteSecurityEvent({req,tenantID:auth.tenantID,severity:'INFO',type:'SUPPLIER_DELETED',detail:`supplierId=${supplierId}; staffId=${auth.self.id}`});
+    const room=ichefStaffRealtimeRoom(auth.tenantID);
+    if(room)io.to(room).emit('ops-supplier-changed',{tenantID:auth.tenantID,supplierId,kind:'deleted'});
+    return res.json({success:true,deleted:true,supplierId});
+  }catch(error){console.error('[iCHEF supplier DELETE]',error);return res.status(500).json({success:false,error:'Suppression du fournisseur impossible.'});}
+});
+
 app.post('/api/ops/inventory/:inventoryItemId/quick-order',async(req,res)=>{
 try{
 res.setHeader('Cache-Control','no-store');
