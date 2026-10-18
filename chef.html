@@ -1333,7 +1333,7 @@
                     <span class="shortcut-icon">✓</span><span><b>HACCP</b><small>Faire un relevé</small></span>
                 </button>
                 <button type="button" onclick="closeChefDesktopShortcuts();openDeliveryReceptionFromChef()">
-                    <span class="shortcut-icon">▣</span><span><b>Réception</b><small>Scanner un BL · réception express</small></span>
+                    <span class="shortcut-icon">▣</span><span><b>Réception</b><small>Contrôler une livraison</small></span>
                 </button>
                 <button type="button" onclick="closeChefDesktopShortcuts();openNewSupplierOrderFromChef()">
                     <span class="shortcut-icon">≡</span><span><b>Commandes</b><small>Créer une commande fournisseur</small></span>
@@ -1448,7 +1448,7 @@
 
                 <button class="chef-action-card" id="chef-home-delivery-card" type="button" onclick="openDeliveryReceptionFromChef()">
                     <span class="chef-action-top"><span class="chef-action-icon">▣</span><span class="chef-action-badge" id="chef-home-delivery-badge">0</span></span>
-                    <span><span class="chef-action-name">Réception</span><span class="chef-action-desc">Photographier un BL, vérifier les écarts puis confirmer la réception.</span></span>
+                    <span><span class="chef-action-name">Réception</span><span class="chef-action-desc">Vérifier une livraison et comparer les quantités reçues à la commande.</span></span>
                     <span class="chef-action-arrow">→</span>
                 </button>
 
@@ -1681,17 +1681,6 @@
             return headers;
         }
 
-        // Devise d'affichage selon le pays de l'ÉTABLISSEMENT client, non celui de l'utilisateur.
-        // Les montants existants ne sont pas convertis : seul le symbole/format suit le compte.
-        function chefCurrencyFromClientAccount(clientSettings = {}) {
-            const s = clientSettings && typeof clientSettings === 'object' ? clientSettings : {};
-            const raw = String(s.billingCountry || s.countryCode || s.country || s.pays ||
-                s.establishmentCountry || s.fiscalCountry || '').trim().toUpperCase();
-            const country = raw.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-            if (country) return /^(CH|CHE|SUISSE|SWITZERLAND|SCHWEIZ|SVIZZERA)(\b|[-_ ])/i.test(country) ? 'CHF' : '€';
-            const legacy = String(s.currency || s.devise || '').trim().toUpperCase();
-            return legacy === 'CHF' || legacy.includes('FRANC') ? 'CHF' : '€';
-        }
         let currentCurrency = "€";
         let systemSettings = {};
 
@@ -1850,9 +1839,64 @@
             return `${fileName}?${params.toString()}`;
         }
 
-        function openEconomatFromChef() {
+        // Accès intermodule : PAS de PIN supplémentaire, MAIS vérification
+        // du jeton signé par le serveur avant de quitter le Chef.
+        // Ne jamais autoriser selon ?from=chef, localStorage ou rôle affiché.
+        let chefEconomatNavigationBusy = false;
+        async function chefValidateEconomatSession() {
+            if (window.ICHEF_SECURITY?.ready !== true) {
+                throw new Error('Session Chef non ouverte. Identifiez-vous dans Chef.');
+            }
             persistChefAccessTokenForModules();
-            window.location.href = chefModuleUrl('economat.html');
+            const token = String(window.ICHEF_SECURITY?.operationsToken ||
+                                 sessionStorage.getItem('ichef_ops_token') || '').trim();
+            if (!token) {
+                throw new Error('Le serveur ne fournit pas de session Économat signée. Reconnectez-vous dans Chef après la mise à jour serveur.');
+            }
+            const response = await fetch(`${SERVER_URL}/api/ops/context?tenantID=${encodeURIComponent(tenantID)}`, {
+                method:'GET',
+                cache:'no-store',
+                credentials:'omit',
+                headers:{
+                    'Accept':'application/json',
+                    'Authorization':`Bearer ${token}`,
+                    'X-iCHEF-Tenant':String(tenantID),
+                    'X-iCHEF-Device':getDeviceFingerprint()
+                }
+            });
+            const data = await response.json().catch(()=>({}));
+            if (!response.ok || data?.success !== true) {
+                if (response.status === 401) throw new Error('Session Économat invalide ou expirée. Reconnectez-vous dans Chef avec votre PIN, puis réessayez.');
+                if (response.status === 403) throw new Error('Votre compte ne possède pas les autorisations Économat requises.');
+                throw new Error(response.status >= 500 ? 'Serveur iCHEF temporairement indisponible. Réessayez.' : (data?.error || `Contrôle serveur refusé (${response.status}).`));
+            }
+            const caps = data?.capabilities || {};
+            if (![caps.viewPurchases, caps.viewSuppliers, caps.createPurchases,
+                  caps.approvePurchases, caps.manageSuppliers].some(v=>v===true)) {
+                throw new Error('Votre session est valide mais l’accès Économat n’est pas attribué à votre compte.');
+            }
+            sessionStorage.setItem('ichef_ops_token',token);
+            sessionStorage.setItem('ichef_ops_tenant',String(tenantID));
+            return data;
+        }
+        async function chefNavigateEconomat(extra = {}, needsCreate = false) {
+            if (chefEconomatNavigationBusy) return;
+            chefEconomatNavigationBusy = true;
+            try {
+                const context = await chefValidateEconomatSession();
+                if (needsCreate && context?.capabilities?.createPurchases !== true) {
+                    throw new Error('Vous n’êtes pas autorisé à créer une commande fournisseur.');
+                }
+                window.location.href = chefModuleUrl('economat.html',extra);
+            } catch (error) {
+                console.warn('[iCHEF Chef → Économat] Accès non validé',error?.message||error);
+                alert(error?.message || 'Économat indisponible. Vérifiez votre session Chef.');
+            } finally {
+                chefEconomatNavigationBusy = false;
+            }
+        }
+        function openEconomatFromChef() {
+            return chefNavigateEconomat();
         }
 
         function openHaccpFromChef() {
@@ -1862,27 +1906,19 @@
 
         function openDeliveryReceptionFromChef() {
             persistChefAccessTokenForModules();
-            window.location.href = chefModuleUrl('livraisons-staff.html', { sectorKey:'cuisine', ichefView:'reception-express' });
+            window.location.href = chefModuleUrl('livraisons-staff.html', { sectorKey:'cuisine' });
         }
 
         function openSupplierOrdersFromChef(options = {}) {
-            // Accès SSO : la session personnelle, déjà ouverte, est réutilisée.
-            // Aucun second code PIN n'est demandé par chef.html et aucun PIN
-            // ni jeton d'accès n'est transmis dans l'URL.
-            // IMPORTANT : Économat V249 et le serveur restent responsables de
-            // vérifier l'identité, les droits nominaux et le service pointé actif
-            // à chaque action de commande (création, validation, envoi).
-            if (!window.ICHEF_SECURITY?.ready) {
-                alert('Session Chef non authentifiée. Ouvrez votre session personnelle avant de commander.');
-                return;
-            }
-            persistChefAccessTokenForModules();
-            window.location.href = chefModuleUrl('economat.html', {
+            // Reprise de la session signée, contrôlée par le serveur et sans PIN
+            // répété. Les droits + le pointage restent vérifiés à chaque action
+            // par les API Économat / commandes fournisseurs.
+            return chefNavigateEconomat({
                 ichefView: 'commandes-fournisseurs',
                 ...(options.create === true ? { ichefAction: 'nouvelle-commande' } : {}),
                 sectorKey: 'cuisine',
                 ichefReturn: 'raccourcis'
-            });
+            }, options.create === true);
         }
 
         // Raccourci dédié à la création d'une commande fournisseur, en un clic.
@@ -1911,6 +1947,12 @@
                 ...(hasBody ? {'Content-Type':'application/json'} : {}),
                 ...(options.headers || {})
             });
+            // IMPORTANT : un MASTER a un jeton Operations signé (OPS_MASTER),
+            // mais pas nécessairement de jeton STAFF. Utiliser le jeton OPS
+            // UNIQUEMENT pour les routes /api/ops, sans élever les autres API.
+            const opsToken = String(window.ICHEF_SECURITY?.operationsToken ||
+                                    sessionStorage.getItem('ichef_ops_token') || '').trim();
+            if (opsToken) headers['Authorization'] = `Bearer ${opsToken}`;
             const res = await fetch(`${SERVER_URL}${path}`, {
                 cache:'no-store',
                 credentials:'include',
@@ -2105,7 +2147,7 @@
                 }
                 if (aO['SETTINGS_MASTER']?.data && typeof aO['SETTINGS_MASTER'].data === 'object') {
                     systemSettings = aO['SETTINGS_MASTER'].data || {};
-                    currentCurrency = chefCurrencyFromClientAccount(systemSettings);
+                    if (systemSettings.currency) currentCurrency = systemSettings.currency;
                 }
                 if (Array.isArray(aO['STOCK_CATS']?.data)) {
                     stockCategories = aO['STOCK_CATS'].data;
@@ -2119,7 +2161,6 @@
                 }
 
                 renderAll();
-                try { if (document.getElementById('mod-market')?.classList.contains('active') && typeof window.ichefLabRefreshStock==='function') window.ichefLabRefreshStock(); } catch (_) {}
                 const syncDot = document.getElementById('sync-dot');
                 const syncText = document.getElementById('sync-text');
                 if (syncDot) syncDot.style.background = 'var(--success)';
@@ -2363,7 +2404,7 @@
                     }
                     if (state.activeOrders['SETTINGS_MASTER']) {
                         systemSettings = state.activeOrders['SETTINGS_MASTER'].data || {};
-                        currentCurrency = chefCurrencyFromClientAccount(systemSettings);
+                        if (systemSettings.currency) currentCurrency = systemSettings.currency;
                     }
                 }
 
@@ -2481,7 +2522,7 @@
                             if (Array.isArray(aO['RECIPES_MASTER']?.data)) recipesData = aO['RECIPES_MASTER'].data;
                             if (aO['SETTINGS_MASTER']?.data) {
                                 systemSettings = aO['SETTINGS_MASTER'].data || {};
-                                currentCurrency = chefCurrencyFromClientAccount(systemSettings);
+                                if (systemSettings.currency) currentCurrency = systemSettings.currency;
                             }
                             if (Array.isArray(aO['STOCK_CATS']?.data)) stockCategories = aO['STOCK_CATS'].data;
                             renderAll();
@@ -2491,37 +2532,6 @@
                     } catch (_) {}
                 });
             });
-
-        // Commande -> BL -> Économat -> LABO : chaque page RELIT la source serveur.
-        // Le signal local ne porte aucune quantité ni prix et ne remplace jamais les contrôles API.
-        (function bindChefProcurementRefresh(){
-            let pending=false;
-            async function refresh(){
-                if(pending || !window.ICHEF_SECURITY?.ready) return;
-                if(typeof isTyping!=='undefined' && isTyping) { setTimeout(refresh,2500);return; }
-                const focus=document.activeElement;
-                if(focus && ['INPUT','TEXTAREA','SELECT'].includes(focus.tagName)) {setTimeout(refresh,2500);return;}
-                pending=true;
-                try {
-                    await refreshChefSharedData({includeMenu:false});
-                    if(typeof window.ichefLabRefreshStock==='function')window.ichefLabRefreshStock();
-                    if(typeof loadChefHomeIndicators==='function')loadChefHomeIndicators().catch(()=>{});
-                    if(typeof window.loadChefDashboard==='function')window.loadChefDashboard(true).catch(()=>{});
-                } catch(e) { console.warn('[iCHEF] Réception: rafraîchissement différé',e); }
-                finally { pending=false; }
-            }
-            window.addEventListener('storage',ev=>{
-                const id=String(window.tenantID||localStorage.getItem('ichef_tenant_id')||'').trim();
-                if(!id || ev.key!=='ichef_procurement_refresh_'+id)return;
-                try{const data=JSON.parse(ev.newValue||'{}');if(String(data.tenantID)!==id)return;}catch(_){return;}
-                refresh();
-            });
-            socket.on('ops-purchase-order-changed',data=>{
-                const id=String(window.tenantID||localStorage.getItem('ichef_tenant_id')||'').trim();
-                if(data?.tenantID && String(data.tenantID)!==id)return;
-                refresh();
-            });
-        })();
 
         //  SAUVEGARDE MENU SECURISEE ANTI-SPAM
         let isSyncingMenu = false;
@@ -5928,7 +5938,7 @@ body.chef-dashboard-open #ichefSwitchBtn{display:none !important}
     const menu=ao.MENU_MASTER?.data||ao.MENU_CUISINE?.data;
     if(menu&&typeof menu==='object'&&!Array.isArray(menu))menuData=menu;
     if(ao.SETTINGS_MASTER?.data)systemSettings=ao.SETTINGS_MASTER.data;
-    currentCurrency=chefCurrencyFromClientAccount(systemSettings);
+    if(systemSettings?.currency)currentCurrency=systemSettings.currency;
     setMetrics(state);setStock();
     await staffData();
     lastUpdate=Date.now();
@@ -6582,36 +6592,6 @@ body.chef-dashboard-open #ichefSwitchBtn{display:none !important}
   const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const euro=(x,cur)=>Number.isFinite(Number(x))?new Intl.NumberFormat('fr-FR',{style:'currency',currency:cur==='CHF'?'CHF':'EUR'}).format(Number(x)):'—';
   const txt=x=>esc(x||'Non renseigné');
-  // Calcul indicatif DIRECT depuis INVENTORY_MASTER, avec conservation du coût initial.
-  // Aucune écriture serveur; prix manuels et anciens historiques ne sont jamais remplacés.
-  function liveRecipeCost(recipe){
-    const portions=Number(recipe?.portions||0);
-    const lines=Array.isArray(recipe?.structuredIngs)?recipe.structuredIngs:[];
-    if(!lines.length||!(portions>0))return null;
-    const unit=u=>({gr:'g',gramme:'g',grammes:'g',kilogramme:'kg',kilogrammes:'kg',litre:'l',litres:'l',piece:'pce','pièce':'pce',pieces:'pce','pièces':'pce',pcs:'pce',unite:'pce','unité':'pce'}[String(u||'').toLowerCase()]||String(u||'').toLowerCase());
-    const factor={g:1,kg:1000,ml:1,cl:10,l:1000};
-    const cost=(qty,qtyUnit,price,priceUnit)=>{
-      if(!Number.isFinite(qty)||qty<=0||!Number.isFinite(price)||price<0)return NaN;
-      const a=unit(qtyUnit),b=unit(priceUnit);
-      if(a===b)return qty*price;
-      if((['g','kg'].includes(a)&&['g','kg'].includes(b))||(['ml','cl','l'].includes(a)&&['ml','cl','l'].includes(b)))return qty*factor[a]/factor[b]*price;
-      return NaN;
-    };
-    let total=0,live=0,estimated=0;
-    for(const ing of lines){
-      const qty=Number(ing.recipeQty??Number(ing.qtyPerPortion||0)*portions);
-      const item=ing.inventoryItemId!=null?(stockGlobalData||[]).find(x=>String(x.id)===String(ing.inventoryItemId)):null;
-      let amount;
-      if(item&&Number.isFinite(Number(item.unitPrice))&&Number(item.unitPrice)>0){
-        amount=cost(qty,ing.quantityUnit,Number(item.unitPrice),item.unit);live++;
-      } else {
-        amount=cost(qty,ing.quantityUnit,Number(ing.purchaseUnitPrice??ing.unitPriceSnapshot),ing.purchaseUnit||ing.inventoryUnit||ing.quantityUnit);estimated++;
-      }
-      if(!Number.isFinite(amount))return null;
-      total+=amount;
-    }
-    return {batch:total,portion:total/portions,live,estimated};
-  }
   window.closeChefRecipeSheet=()=>{const root=document.getElementById('ichef-recipe-sheet');root.classList.remove('open');root.setAttribute('aria-hidden','true');};
   window.openChefRecipeSheet=(id)=>{
     const r=recipesData.find(x=>String(x.id)===String(id));if(!r)return;
@@ -6621,9 +6601,7 @@ body.chef-dashboard-open #ichefSwitchBtn{display:none !important}
     const imgs=(r.photos||[]).filter(x=>x&&/^data:image\/jpeg;base64,/.test(x.dataUrl)).map(x=>({kind:x.kind==='dressage'?'dressage':'preparation',dataUrl:x.dataUrl,caption:x.caption||''}));
     const picture=kind=>{const list=imgs.filter(x=>x.kind===kind);return list.length?'<div class="irs-images">'+list.map(x=>`<figure><img alt="Photo de ${kind}" src="${x.dataUrl}"><figcaption>${esc(x.caption)}</figcaption></figure>`).join('')+'</div>':'<small>Pas de photo</small>';};
     const pax=Number(r.portions)||1,costBatch=Number(r.costBatch??(Number(r.cost||0)*pax));
-    const live=(String(cur)===String(currentCurrency))?liveRecipeCost(r):null;
-    const liveNote=live?`<div style="padding:12px 14px;margin:12px 0;background:#f7fbf7;border:1px solid #afd4b3;border-radius:10px;color:#23442a;font-size:.82rem"><strong>COÛT MATIÈRE ACTUALISÉ (LECTURE DU STOCK)</strong><br>${euro(live.batch,cur)} / recette · ${euro(live.portion,cur)} / portion · ${live.live} prix Économat ${live.estimated?'· '+live.estimated+' estimation(s) à confirmer':''}<br><small>Le coût enregistré à la création est conservé. Les prix actuels sont indicatifs et ne mettent pas à jour la fiche sans action du Chef.</small></div>`:'<p style="font-size:.8rem;color:#946b00">Coût actuel indisponible : article, unité, devise ou prix à contrôler dans Économat.</p>';
-    document.getElementById('ichef-recipe-sheet-content').innerHTML=`<h2>${esc(r.name)}</h2><p>${esc(r.cat)} · ${esc(pax)} portion(s) · ${r.publishedToMenu?'À la carte':'Fiche de production'}</p><div class="irs-kpis"><div><small>ACHATS RECETTE</small><b>${euro(costBatch,cur)}</b></div><div><small>COÛT / PORTION</small><b>${euro(r.cost,cur)}</b></div><div><small>PRIX DE VENTE</small><b>${euro(r.price,cur)}</b></div><div><small>FOOD COST</small><b>${r.fc==null?'—':esc(r.fc)+' %'}</b></div></div>${liveNote}<h3>Produits & coût d'achat ${r.pricingStatus==='estimated'?'(estimation avant achat)':''}</h3><table><thead><tr><th>Ingrédient</th><th>Qté recette</th><th>Achat / unité</th><th>Coût recette</th></tr></thead><tbody>${tr||'<tr><td colspan="4">'+txt(r.ing)+'</td></tr>'}</tbody></table><div class="irs-grid"><div><h3>Procédé de fabrication</h3><div class="irs-process">${txt(r.prep)}</div>${picture('preparation')}</div><div><h3>Procédé de dressage</h3><div class="irs-process">${txt(r.dressage||r.prep)}</div>${picture('dressage')}</div></div>`;
+    document.getElementById('ichef-recipe-sheet-content').innerHTML=`<h2>${esc(r.name)}</h2><p>${esc(r.cat)} · ${esc(pax)} portion(s) · ${r.publishedToMenu?'À la carte':'Fiche de production'}</p><div class="irs-kpis"><div><small>ACHATS RECETTE</small><b>${euro(costBatch,cur)}</b></div><div><small>COÛT / PORTION</small><b>${euro(r.cost,cur)}</b></div><div><small>PRIX DE VENTE</small><b>${euro(r.price,cur)}</b></div><div><small>FOOD COST</small><b>${r.fc==null?'—':esc(r.fc)+' %'}</b></div></div><h3>Produits & coût d'achat ${r.pricingStatus==='estimated'?'(estimation avant achat)':''}</h3><table><thead><tr><th>Ingrédient</th><th>Qté recette</th><th>Achat / unité</th><th>Coût recette</th></tr></thead><tbody>${tr||'<tr><td colspan="4">'+txt(r.ing)+'</td></tr>'}</tbody></table><div class="irs-grid"><div><h3>Procédé de fabrication</h3><div class="irs-process">${txt(r.prep)}</div>${picture('preparation')}</div><div><h3>Procédé de dressage</h3><div class="irs-process">${txt(r.dressage||r.prep)}</div>${picture('dressage')}</div></div>`;
     const root=document.getElementById('ichef-recipe-sheet');root.classList.add('open');root.setAttribute('aria-hidden','false');
     root.querySelector('button')?.focus();
   };
@@ -6806,60 +6784,5 @@ body.chef-dashboard-open #ichefSwitchBtn{display:none !important}
 })();
 </script>
 
-
-<style id="ichef-door-hold500-css">
-/* Accueil rapide verrouillé par défaut. L'authentification serveur/PIN reste obligatoire. */
-#ichef-second-door-guard { position:fixed;inset:0;z-index:120000;display:none;align-items:center;justify-content:center;background:rgba(9,21,24,.52);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);color:#fff;font-family:Inter,system-ui,sans-serif;touch-action:manipulation;user-select:none; }
-#ichef-second-door-guard.show {display:flex}
-#ichef-second-door-guard .door-guard-card {max-width:min(510px,calc(100vw - 30px));padding:33px 31px;border:1px solid rgba(255,255,255,.53);border-radius:24px;background:rgba(15,30,34,.88);box-shadow:0 25px 100px rgba(0,0,0,.32);text-align:center;}
-#ichef-second-door-guard .door-guard-icon{font-size:34px;margin-bottom:14px}
-#ichef-second-door-guard h2 {font-size:clamp(1.2rem,3vw,1.85rem);margin:0 0 9px;line-height:1.23;color:#fff}
-#ichef-second-door-guard p {margin:0;color:#e4eeee;line-height:1.55;font-size:.9rem}
-#ichef-second-door-guard .door-guard-progress {width:min(260px,100%);height:7px;border-radius:99px;background:rgba(255,255,255,.16);margin:23px auto 16px;overflow:hidden}
-#ichef-second-door-guard .door-guard-progress span{display:block;height:100%;width:0;background:#e1b754;border-radius:99px}
-#ichef-second-door-guard.holding .door-guard-progress span {width:100%;transition:width 500ms linear}
-#ichef-second-door-guard small {display:block;color:#d5dddf;font-size:.72rem;margin:4px 0 14px}
-#ichef-second-door-guard a{color:#eac675;display:inline-block;padding:12px;text-decoration:underline;font-size:.8rem;font-weight:750}
-#ichef-second-door-guard .only-mobile{display:none}
-@media(max-width:767px){#ichef-second-door-guard .only-mobile{display:block}#ichef-second-door-guard .only-desktop{display:none}#ichef-second-door-guard .door-guard-card{padding:25px 18px}#ichef-second-door-guard .door-guard-progress{display:none}}
-@media(prefers-reduced-motion:reduce){#ichef-second-door-guard.holding .door-guard-progress span{transition:none}}
-</style>
-<script id="ichef-door-hold500-js">
-(() => {
-'use strict';
-const init=()=>{
- const home=document.getElementById('mod-home');
- const security=document.getElementById('security-overlay');
- if(!home||document.getElementById('ichef-second-door-guard'))return;
- const guard=document.createElement('div');guard.id='ichef-second-door-guard';guard.setAttribute('role','dialog');guard.setAttribute('aria-modal','true');guard.setAttribute('aria-label','Raccourcis Cuisine verrouillés');
- guard.innerHTML=`<div class="door-guard-card"><div class="door-guard-icon" aria-hidden="true">🔒</div><h2>Raccourcis Cuisine verrouillés</h2><div class="only-desktop"><p>Maintenez le clic sur cet écran pendant <strong>0,5 seconde</strong> pour afficher les raccourcis.</p><div class="door-guard-progress"><span></span></div><small>Protection contre les activations accidentelles — votre session reste vérifiée.</small></div><div class="only-mobile"><p>Cette deuxième porte reste verrouillée sur téléphone. Pour réceptionner une livraison, utilisez le <strong>Portail Staff</strong> avec votre session personnelle.</p><a id="ichef-door-staff-link" href="portail-staff.html">Accéder au Portail Staff →</a></div></div>`;
- document.body.appendChild(guard);
- const link=guard.querySelector('#ichef-door-staff-link');
- const tenant=String(new URLSearchParams(location.search).get('tenantID')||localStorage.getItem('ichef_tenant_id')||'');
- if(tenant)link.href='portail-staff.html?tenantID='+encodeURIComponent(tenant);
- let unlocked=false,holdTimer=null;
- const onPhone=()=>matchMedia('(max-width:767px)').matches;
- function authenticated(){return !security || getComputedStyle(security).display==='none';}
- function stopHold(){if(holdTimer!==null)clearTimeout(holdTimer);holdTimer=null;guard.classList.remove('holding');}
- function state(){
-  const visible=home.classList.contains('active')&&authenticated();
-  if(!visible){unlocked=false;stopHold();}
-  const locked=visible&&(!unlocked||onPhone());
-  guard.classList.toggle('show',locked);
-  if(locked){home.querySelector('.chef-home-shell')?.setAttribute('inert','');}
-  else{home.querySelector('.chef-home-shell')?.removeAttribute('inert');}
- }
- function beginHold(e){if(onPhone()||!authenticated()||!home.classList.contains('active'))return;if(e.type==='pointerdown'&&e.button!==0)return;stopHold();guard.classList.add('holding');holdTimer=setTimeout(()=>{holdTimer=null;unlocked=true;state();},500);}
- guard.addEventListener('pointerdown',e=>{if(e.target.closest('a'))return;beginHold(e)});
- ['pointerup','pointercancel','pointerleave','contextmenu'].forEach(x=>guard.addEventListener(x,stopHold));
- guard.tabIndex=0;guard.addEventListener('keydown',e=>{if(['Enter',' '].includes(e.key)&&!e.repeat){e.preventDefault();beginHold(e)}});guard.addEventListener('keyup',stopHold);
- new MutationObserver(state).observe(home,{attributes:true,attributeFilter:['class']});
- if(security)new MutationObserver(state).observe(security,{attributes:true,attributeFilter:['style','class']});
- window.addEventListener('resize',state);window.addEventListener('pageshow',state);
- state();
-};
-if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init,{once:true});else init();
-})();
-</script>
 </body>
 </html>
