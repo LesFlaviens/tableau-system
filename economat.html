@@ -827,6 +827,7 @@ html.economat-session-pending #login-overlay #econ-auth-progress { display:block
 #econ-auth-progress { display:none; margin:12px auto; padding:10px; text-align:center; color:#f0d896; font-size:.78rem; }
 #econ-entry-return { display:none; width:100%; margin-top:15px; }
 html.economat-sso-refused #econ-entry-return { display:block; }
+html.economat-sso-refused #econ-entry-retry { display:block !important; }
 html.economat-sso-refused #login-overlay .entry-security { display:none; }
 #econ-direct-back { display:none; }
 @media(max-width:820px) {
@@ -1065,6 +1066,7 @@ html.econ-direct-commands #econ-return-bureau { color:#f2d27a; }
       <button id="pin-submit" class="primary" onclick="verifyEconomatPin()">ENTRER</button>
     </div>
     <div id="login-error" class="err" role="alert">Accès refusé.</div>
+    <button id="econ-entry-retry" class="secondary" type="button" onclick="economatRetrySignedSession()" style="display:none;width:100%;margin-top:12px">↻ RÉESSAYER LA CONNEXION</button>
     <button id="econ-entry-return" class="secondary" type="button" onclick="goBureau()">↩ RETOUR AUX RACCOURCIS</button>
   </div>
 </div>
@@ -1291,19 +1293,19 @@ localStorage.setItem("ichef_tenant_id", tenantID);
 localStorage.removeItem("ichef_master_pin");
 
 function getDeviceId() {
+  // Doit reprendre strictement la préférence de chef.html. Une ancienne
+  // empreinte différente provoquerait un refus serveur malgré le même PC.
   let id =
-    String(localStorage.getItem("ichef_device_fingerprint") || "").trim() ||
-    String(localStorage.getItem("ichef_device_id") || "").trim();
+    String(localStorage.getItem("ichef_device_id") || "").trim() ||
+    String(localStorage.getItem("ichef_device_fingerprint") || "").trim();
 
   if (!id) {
     id = "device_" + cryptoRandomToken();
   }
 
   // Compatibilité ancienne Économat + sécurité iCHEF récente.
+  localStorage.setItem("ichef_device_id", id);
   localStorage.setItem("ichef_device_fingerprint", id);
-  if (!String(localStorage.getItem("ichef_device_id") || "").trim()) {
-    localStorage.setItem("ichef_device_id", id);
-  }
 
   return id;
 }
@@ -1363,7 +1365,9 @@ async function opsApi(path, options={}) {
 // par /api/ops/context peut ouvrir la page sans demander un deuxième PIN.
 function economatMayManageCentral(context) {
   const p = context?.capabilities || {};
-  return p.createPurchases === true || p.approvePurchases === true || p.manageSuppliers === true;
+  return p.viewPurchases === true || p.viewSuppliers === true ||
+         p.createPurchases === true || p.approvePurchases === true ||
+         p.manageSuppliers === true;
 }
 function economatSetAuthenticated(context) {
   ichefVerifiedAccount = context || null;
@@ -1416,14 +1420,20 @@ async function economatResumeSignedSession() {
   // Les tokens signés proviennent du PIN déjà validé par chef.html.
   // L'URL, le rôle affiché et la présence d'un token ne suffisent JAMAIS.
   const signedTenant = String(sessionStorage.getItem('ichef_ops_tenant') || '').trim();
-  if (signedTenant && signedTenant.toLowerCase() !== tenantID.toLowerCase()) return false;
+  if (signedTenant && signedTenant.toLowerCase() !== tenantID.toLowerCase()) {
+    document.getElementById('login-error').dataset.reason = 'Le compte du jeton est différent de l’établissement demandé.';
+    return false;
+  }
   const previousToken = String(sessionStorage.getItem('ichef_ops_token') || '').trim();
   const candidateTokens = [...new Set([
     previousToken,
     String(sessionStorage.getItem('ichef_access_token') || '').trim(),
     String(sessionStorage.getItem('ichef_auth_token') || '').trim()
   ].filter(Boolean))];
-  if (!candidateTokens.length) return false;
+  if (!candidateTokens.length) {
+    document.getElementById('login-error').dataset.reason = 'Aucune session signée partagée depuis Chef : ouvrez Chef et identifiez-vous à nouveau.';
+    return false;
+  }
   setSync('warn', 'SERVEUR · VÉRIFICATION SESSION CHEF…');
   let lastFailure = null;
   for (const signedToken of candidateTokens) {
@@ -1442,8 +1452,9 @@ async function economatResumeSignedSession() {
       console.warn('[ECONOMAT SSO] Jeton non reconnu par /api/ops/context', e?.message || e);
     }
   }
-  if (previousToken) sessionStorage.setItem('ichef_ops_token', previousToken);
-  else sessionStorage.removeItem('ichef_ops_token');
+  // Un jeton définitivement refusé ne doit pas rester réutilisable dans
+  // cette page. Une reprise implique un nouveau PIN Chef si nécessaire.
+  sessionStorage.removeItem('ichef_ops_token');
   setSync('warn', 'SERVEUR · SESSION À REVÉRIFIER');
   if (lastFailure) document.getElementById('login-error').dataset.reason = lastFailure.message || '';
   return false;
@@ -1458,13 +1469,38 @@ function economatCompleteEntry(ok) {
     // Pas de deuxième PIN sur une redirection Chef/Staff échouée :
     // on invite à revenir à l'écran d'origine et à rouvrir sa session.
     document.documentElement.classList.add('economat-sso-refused');
-    const reason = error.dataset.reason || 'Jeton de session absent ou expiré.';
-    error.textContent = 'Votre session iCHEF n’a pas pu être reconnue par le serveur Économat. '
-      + 'Revenez au ' + (ECONOMAT_ORIGIN === 'staff' ? 'Portail Staff' : 'module Chef')
-      + ' et vérifiez vos accès. ' + reason;
+    const reason = error.dataset.reason || 'Aucun jeton Operations signé utilisable.';
+    error.textContent = 'Connexion sécurisée Économat refusée. ' + reason +
+      ' Si la session a expiré, reconnectez-vous dans ' +
+      (ECONOMAT_ORIGIN === 'staff' ? 'Portail Staff.' : 'Chef avec votre PIN.') +
+      ' Aucun droit n’est accordé sans vérification du serveur.';
     error.style.display = 'block';
   } else {
     document.getElementById('pin-input').focus();
+  }
+}
+
+// Réessai sur panne temporaire : jamais de contournement de la signature.
+let economatSsoRetryBusy = false;
+async function economatRetrySignedSession() {
+  if (economatSsoRetryBusy) return;
+  economatSsoRetryBusy = true;
+  const btn = document.getElementById('econ-entry-retry');
+  if (btn) { btn.disabled = true; btn.textContent = 'VÉRIFICATION…'; }
+  try {
+    const ok = await economatResumeSignedSession();
+    if (ok) {
+      document.documentElement.classList.remove('economat-sso-refused');
+    } else {
+      economatCompleteEntry(false);
+    }
+  } catch (error) {
+    document.getElementById('login-error').dataset.reason =
+      error?.message || 'Vérification indisponible.';
+    economatCompleteEntry(false);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '↻ RÉESSAYER LA CONNEXION'; }
+    economatSsoRetryBusy = false;
   }
 }
 
@@ -2772,6 +2808,8 @@ function lockEconomat() {
   currentRole = "";
   sessionStorage.removeItem("ichef_ops_token");
   sessionStorage.removeItem("ichef_ops_tenant");
+  sessionStorage.removeItem("ichef_access_token");
+  sessionStorage.removeItem("ichef_auth_token");
   document.getElementById("role-badge").textContent = "ACCÈS —";
   document.getElementById("pin-input").value = "";
   document.getElementById("login-overlay").style.display = "flex";
