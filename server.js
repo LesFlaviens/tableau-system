@@ -36627,6 +36627,167 @@ async function ichef232DossierHandler(req,res) {
     return res.status(503).json({success:false,error:'Dossier sanitaire indisponible ; reessayez plus tard.'});
   }
 }
+// ============================================================================
+// iCHEF HACCP V247 — Catalogue autonome sécurisé des catégories / choix HACCP
+// Les règles techniques et anciens relevés restent immuables.
+// Nécessite les helpers iCHEF existants : ichefHaccp223Auth, AppState,
+// ichefStaffRealtimeRoom, io, nodeCrypto.
+// ============================================================================
+const ICHEF_HACCP247_TYPES = Object.freeze({
+ COLD_ROOM_POS:'COLD',COLD_ROOM_NEG:'FROZEN',FRIDGE:'COLD',FREEZER:'FROZEN',
+ DISPLAY:'COLD',COOLING_CELL:'COOLING',HOT_HOLD:'HOT',REHEAT:'REHEAT',
+ BEVERAGE:'COLD',ICE:'COLD',OTHER:'COLD'
+});
+const ICHEF_HACCP247_SECTORS = new Set(['CUISINE','PATISSERIE','BAR','SERVICE','ADMIN']);
+function h247Norm(v){return String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase()}
+function h247Name(v){const s=String(v??'').trim();if(s.length<2||s.length>65||/[<>\u0000-\u001f.$]/.test(s)||['__proto__','constructor','prototype'].includes(s.toLowerCase()))throw Object.assign(new Error('Nom invalide (2 à 65 caractères, sans caractères réservés).'),{status:400});return s}
+function h247Failure(message,status=409){throw Object.assign(new Error(message),{status})}
+function h247Sector(v){const s=String(v||'').trim().toUpperCase();if(!ICHEF_HACCP247_SECTORS.has(s))h247Failure('Secteur HACCP inconnu.',400);return s}
+function h247NormalizeSector(value){const s=value&&typeof value==='object'&&!Array.isArray(value)?structuredClone(value):{};for(const k of ['eq','clean','trace','eqCategoryTypes','eqCategoryOptionIds'])if(!s[k]||typeof s[k]!=='object'||Array.isArray(s[k]))s[k]={};if(!Array.isArray(s.eqCustomTypeOptions))s.eqCustomTypeOptions=[];if(!Array.isArray(s.eqHiddenTypeIds))s.eqHiddenTypeIds=[];return s}
+const ICHEF_HACCP247_LABELS={'Chambres froides positives':'COLD_ROOM_POS','Chambres froides négatives':'COLD_ROOM_NEG','Frigos / Tours / Armoires':'FRIDGE','Congélateurs / Surgélateurs':'FREEZER','Vitrines / Meubles froids':'DISPLAY','Cellules de refroidissement':'COOLING_CELL','Liaison / Maintien chaud':'HOT_HOLD','Remise en température':'REHEAT','Caves / Boissons':'BEVERAGE','Machines à glaçons':'ICE','Autres équipements':'OTHER'};
+function h247TypeOf(s,k){const id=String(s.eqCategoryTypes[k]||'');if(ICHEF_HACCP247_TYPES[id])return id;return ICHEF_HACCP247_LABELS[k]||'OTHER'}
+function h247Choices(s){const customs=s.eqCustomTypeOptions.filter(x=>x&&typeof x==='object'&&/^OPT_[a-z0-9_-]+$/i.test(x.id||'')&&ICHEF_HACCP247_TYPES[x.baseTypeId]);return [...Object.keys(ICHEF_HACCP247_TYPES).map(id=>({id,baseTypeId:id,system:true})),...customs.map(x=>({...x,system:false}))]}
+function h247ExistingCategory(s,name){if(!Object.hasOwn(s.eq,name)||!Array.isArray(s.eq[name]))h247Failure('Catégorie introuvable.',404)}
+function h247CategoryExists(s,label,exclude=''){return Object.keys(s.eq).some(n=>h247Norm(n)===h247Norm(label)&&n!==exclude)}
+function h247Mutate(s,action,p){
+ const name=p?.name==null?'':String(p.name),to=p?.target==null?'':String(p.target),label=p?.label==null?'':String(p.label),id=String(p?.id||'');
+ switch(action){
+  case 'CREATE_CATEGORY':{
+   const newName=h247Name(name);if(h247CategoryExists(s,newName))h247Failure('Cette catégorie existe déjà.');
+   if(Object.keys(s.eq).length>=150)h247Failure('Limite de catégories atteinte.');
+   const option=h247Choices(s).find(x=>x.id===id);if(!option||s.eqHiddenTypeIds.includes(id)||option.hidden)h247Failure('Choix HACCP non disponible.');
+   s.eq[newName]=[];s.eqCategoryTypes[newName]=option.baseTypeId;s.eqCategoryOptionIds[newName]=option.id;return;
+  }
+  case 'RENAME_CATEGORY':{
+   h247ExistingCategory(s,name);const newName=h247Name(label);if(h247CategoryExists(s,newName,name))h247Failure('Une catégorie porte déjà ce nom.');
+   if(newName===name)return;
+   const out={};for(const [k,v]of Object.entries(s.eq))out[k===name?newName:k]=v;s.eq=out;
+   const base=h247TypeOf(s,name);delete s.eqCategoryTypes[name];s.eqCategoryTypes[newName]=base;
+   if(s.eqCategoryOptionIds[name]){s.eqCategoryOptionIds[newName]=s.eqCategoryOptionIds[name];delete s.eqCategoryOptionIds[name]};return;
+  }
+  case 'DELETE_CATEGORY':{
+   h247ExistingCategory(s,name);if(s.eq[name].length)h247Failure('Cette catégorie contient des équipements : déplacez-les avant de la retirer.');
+   delete s.eq[name];delete s.eqCategoryTypes[name];delete s.eqCategoryOptionIds[name];return;
+  }
+  case 'MOVE_AND_DELETE_CATEGORY':{
+   h247ExistingCategory(s,name);h247ExistingCategory(s,to);if(name===to)h247Failure('Choisissez une autre catégorie.');
+   if(h247TypeOf(s,name)!==h247TypeOf(s,to))h247Failure('La destination doit avoir le même type HACCP.');
+   if(s.eq[name].some(x=>s.eq[to].includes(x)))h247Failure('Équipement déjà présent dans la destination.');
+   s.eq[to].push(...s.eq[name]);delete s.eq[name];delete s.eqCategoryTypes[name];delete s.eqCategoryOptionIds[name];return;
+  }
+  case 'MOVE_EQUIPMENT':{
+   h247ExistingCategory(s,name);h247ExistingCategory(s,to);if(name===to)h247Failure('Sélectionnez une autre catégorie.');
+   if(h247TypeOf(s,name)!==h247TypeOf(s,to))h247Failure('Pour préserver les seuils de contrôle, déplacez vers le même type HACCP.');
+   const equipment=String(p.equipment||'');const pos=s.eq[name].indexOf(equipment);if(pos<0||s.eq[to].includes(equipment))h247Failure('Équipement absent ou déjà présent.');
+   s.eq[name].splice(pos,1);s.eq[to].push(equipment);return;
+  }
+  case 'ADD_CHOICE':{
+   const newLabel=h247Name(label),base=String(p.baseTypeId||'');if(!ICHEF_HACCP247_TYPES[base])h247Failure('Règle technique HACCP inconnue.');
+   if(s.eqCustomTypeOptions.length>=120)h247Failure('Limite de choix personnalisés atteinte.');
+   if(h247Choices(s).some(x=>h247Norm(x.label||x.id)===h247Norm(newLabel)))h247Failure('Ce choix existe déjà.');
+   // Vérifier aussi les libellés officiels affichés dans le navigateur.
+   const builtinNames=['Chambres froides positives','Chambres froides négatives','Frigos / Tours / Armoires','Congélateurs / Surgélateurs','Vitrines / Meubles froids','Cellules de refroidissement','Liaison / Maintien chaud','Remise en température','Caves / Boissons','Machines à glaçons','Autres équipements'];
+   if(builtinNames.some(x=>h247Norm(x)===h247Norm(newLabel)))h247Failure('Ce choix est déjà disponible.');
+   s.eqCustomTypeOptions.push({id:'OPT_'+nodeCrypto.randomBytes(12).toString('hex'),label:newLabel,baseTypeId:base,hidden:false});return;
+  }
+  case 'RENAME_CHOICE':{
+   const choice=s.eqCustomTypeOptions.find(x=>x.id===id);if(!choice)h247Failure('Seuls les choix personnalisés peuvent être renommés.',404);
+   const next=h247Name(label);if(s.eqCustomTypeOptions.some(x=>x.id!==id&&h247Norm(x.label)===h247Norm(next))||Object.keys(ICHEF_HACCP247_LABELS).some(x=>h247Norm(x)===h247Norm(next)))h247Failure('Nom déjà utilisé.');choice.label=next;return;
+  }
+  case 'HIDE_CHOICE':case 'RESTORE_CHOICE':{
+   const choice=h247Choices(s).find(x=>x.id===id);if(!choice)h247Failure('Choix HACCP introuvable.',404);
+   const hidden=action==='HIDE_CHOICE';
+   if(choice.system){s.eqHiddenTypeIds=s.eqHiddenTypeIds.filter(x=>x!==id);if(hidden)s.eqHiddenTypeIds.push(id)}
+   else{const c=s.eqCustomTypeOptions.find(x=>x.id===id);c.hidden=hidden;}return;
+  }
+  case 'DELETE_CHOICE':{
+   const choice=s.eqCustomTypeOptions.find(x=>x.id===id);if(!choice)h247Failure('Les règles techniques standards ne peuvent pas être supprimées. Retirez-les du menu.',409);
+   if(Object.values(s.eqCategoryOptionIds).includes(id))h247Failure('Ce choix est encore associé à une catégorie : retirez-le du menu, sans le supprimer.');
+   s.eqCustomTypeOptions=s.eqCustomTypeOptions.filter(x=>x.id!==id);return;
+  }
+  default:h247Failure('Action non reconnue.',400);
+ }
+}
+async function h247Auth(req,res){
+ // Ni rôle, ni droit, ni secteur ne proviennent de l'URL sans vérification.
+ const auth=await ichefOpsLoadAuthorizedSession(req);
+ if(!auth.ok){res.status(401).json({success:false,error:auth.error||'Session iCHEF invalide.'});return null;}
+ const raw=[auth.staff?.role,auth.staff?.title,auth.staff?.position,auth.staff?.fonction].filter(Boolean).join(' ');
+ const role=raw.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
+ const chef=/(^|\b)(CHEF|CHEF DE CUISINE|SOUS CHEF|CHEF DE BAR|CHEF PATISSIER)(\b|$)/.test(role);
+ const explicit=auth.staff?.permissions?.haccp?.manage ?? auth.staff?.permissions?.['haccp.manage'];
+ if(explicit===false||!(ichefHaccp223Manager(auth)||chef)){
+   res.status(403).json({success:false,error:'Gestion des catégories réservée au responsable HACCP autorisé.'});return null;
+ }
+ if(!String(auth?.claims?.staffId||'').startsWith('MASTER:')){
+   const presence=await ichefHaccp224CheckPresence(req,auth);
+   if(!presence.allowed){res.status(403).json({success:false,error:'Présence dans l’établissement non vérifiée.',code:'HACCP_SITE_REQUIRED'});return null;}
+ }
+ const access=await ichefHaccp223Access(auth);
+ if(!auth.tenantID)return res.status(403).json({success:false,error:'Établissement non identifié.'}),null;
+ return {...auth,haccp247Access:access};
+}
+function h247SafeSeed(seed){
+ if(!seed||typeof seed!=='object'||Array.isArray(seed))return h247NormalizeSector({});
+ const x=h247NormalizeSector({});
+ for(const group of ['eq','clean','trace']){
+   const folder=seed[group]&&typeof seed[group]==='object'&&!Array.isArray(seed[group])?seed[group]:{};
+   for(const [k,v]of Object.entries(folder).slice(0,120)){
+     const name=h247Name(k);if(!Array.isArray(v)||v.length>500)h247Failure('Inventaire de catégorie invalide.',400);
+     x[group][name]=v.map(item=>h247Name(item));
+     if(group==='eq'){
+       const id=String(seed.eqCategoryTypes?.[k]||'');
+       x.eqCategoryTypes[name]=ICHEF_HACCP247_TYPES[id]?id:(ICHEF_HACCP247_LABELS[k]||'OTHER');
+     }
+   }
+ }
+ return x;
+}
+app.get('/api/haccp/category-admin',async(req,res)=>{
+ res.setHeader('Cache-Control','no-store');
+ try{const auth=await h247Auth(req,res);if(!auth)return;const sector=h247Sector(req.query?.sector);
+ if(sector==='ADMIN'&&!String(auth?.claims?.staffId||'').startsWith('MASTER:'))h247Failure('Secteur Direction réservé au propriétaire.',403);
+ if(sector!=='ADMIN'&&!auth.haccp247Access?.sectors?.includes(sector))h247Failure('Ce secteur HACCP ne vous est pas attribué.',403);
+ const node=auth.state?.activeOrders?.HACCP_LISTS_MASTER||{};
+ const s=h247NormalizeSector(node.data?.[sector]);
+ return res.json({success:true,sector,sectorData:s,revision:Number(node.revision||0),initialized:Boolean(node.data?.[sector])});
+ }catch(e){return res.status(e.status||503).json({success:false,error:e.message||'Catalogue HACCP indisponible.'})}
+});
+app.post('/api/haccp/category-admin',async(req,res)=>{
+ res.setHeader('Cache-Control','no-store');
+ try{
+ const auth=await h247Auth(req,res);if(!auth)return;
+ const sector=h247Sector(req.body?.sector),action=String(req.body?.action||'');
+ if(sector==='ADMIN'&&!String(auth?.claims?.staffId||'').startsWith('MASTER:'))h247Failure('Secteur Direction réservé au propriétaire.',403);
+ if(sector!=='ADMIN'&&!auth.haccp247Access?.sectors?.includes(sector))h247Failure('Ce secteur HACCP ne vous est pas attribué.',403);
+ const revision=Number(req.body?.revision);if(!Number.isSafeInteger(revision)||revision<0)return res.status(400).json({success:false,error:'Version du catalogue absente.'});
+ if(!['CREATE_CATEGORY','RENAME_CATEGORY','DELETE_CATEGORY','MOVE_AND_DELETE_CATEGORY','MOVE_EQUIPMENT','ADD_CHOICE','RENAME_CHOICE','HIDE_CHOICE','RESTORE_CHOICE','DELETE_CHOICE'].includes(action))return res.status(400).json({success:false,error:'Opération HACCP inconnue.'});
+ // État rechargé à chaque action : aucune confiance dans le catalogue navigateur.
+ const document=await AppState.findOne({tenantID:auth.tenantID},{'activeOrders.HACCP_LISTS_MASTER':1});
+ const node=document?.activeOrders?.HACCP_LISTS_MASTER||{};
+ const rev=Number(node.revision||0);
+ if(revision!==rev)return res.status(409).json({success:false,code:'CATALOG_CHANGED',error:'Catalogue modifié entre-temps. Actualisez, puis recommencez.'});
+ const whole=node.data&&typeof node.data==='object'&&!Array.isArray(node.data)?structuredClone(node.data):{};
+ const hadSector=Boolean(whole[sector]);
+ const edited=h247NormalizeSector(hadSector?whole[sector]:h247SafeSeed(req.body?.initialSector));
+ h247Mutate(edited,action,req.body||{});
+ whole[sector]=edited;
+ if(Buffer.byteLength(JSON.stringify(whole),'utf8')>6*1024*1024)h247Failure('Catalogue trop volumineux.',413);
+ const filter={tenantID:auth.tenantID};
+ if(node.revision===undefined)filter['activeOrders.HACCP_LISTS_MASTER.revision']={$exists:false};
+ else filter['activeOrders.HACCP_LISTS_MASTER.revision']=rev;
+ const newNode={...node,data:whole,revision:rev+1,updatedAt:new Date().toISOString()};
+ const updated=await AppState.findOneAndUpdate(filter,{$set:{'activeOrders.HACCP_LISTS_MASTER':newNode}},{new:true});
+ if(!updated)return res.status(409).json({success:false,code:'CATALOG_CHANGED',error:'Catalogue modifié simultanément. Actualisez puis réessayez.'});
+ const packet={tenantID:auth.tenantID,tableId:'HACCP_LISTS_MASTER',sector,action,revision:rev+1};
+ io.to(auth.tenantID).emit('server-state-changed',{...packet,source:'HACCP_CATEGORY_V247',persisted:true,timestamp:new Date().toISOString()});
+ const staffRoom=ichefStaffRealtimeRoom(auth.tenantID);if(staffRoom)io.to(staffRoom).emit('haccp-categories-changed',packet);
+ void ichefWriteSecurityEvent({req,type:'HACCP_CATALOG_UPDATED',tenantID:auth.tenantID,detail:`${action} · ${sector} · session autorisée`});
+ return res.json({success:true,sector,sectorData:edited,revision:rev+1,action});
+ }catch(e){if(!res.headersSent)return res.status(e.status||503).json({success:false,error:e?.message||'Enregistrement HACCP indisponible.'});}
+});
+// =================== FIN HACCP V247 =========================================
+
 app.get('/api/haccp/inspection/dossier', ichef232DossierHandler);
 // FIN API INSPECTION V232
 
