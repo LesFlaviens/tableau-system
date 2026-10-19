@@ -2625,7 +2625,7 @@ pointer-events:none;opacity:.75
         }
 
 
-        const ICHEF_HACCP_SECURITY_BUILD = "7.0 MOBILE · BL CONNECTÉ · CATÉGORIES";
+        const ICHEF_HACCP_SECURITY_BUILD = "7.0 HACCP V251 · IDENTIFICATION RAPIDE";
         console.info("[iCHEF HACCP] Build sécurisé", ICHEF_HACCP_SECURITY_BUILD, "· SSO identité unique · tenant:", tenantID);
 
         function haccpSessionTokens() {
@@ -3867,6 +3867,9 @@ function haccpSectorReturnConfig() {
             return true;
         }
 
+        // HACCP V251 — IDENTIFICATION RAPIDE, VALIDÉE PAR LE SERVEUR
+        // Un endpoint lent ne doit jamais bloquer la réponse d'un autre endpoint.
+        // L'identité, le secteur et les droits proviennent exclusivement du serveur.
         async function ichefTryResumeHaccpStaffSessionCore() {
             const tokens = haccpSessionTokens();
             if (!tokens.length || !tenantID) {
@@ -3876,98 +3879,126 @@ function haccpSectorReturnConfig() {
             window.ICHEF_HACCP_SSO_FAILURE = null;
 
             const endpoints = [
-                { path: "/api/chef/context", source: "SESSION_CHEF_SIGNEE", rank: 0 },
-                { path: "/api/ops/context", source: "SESSION_SERVICE_SIGNEE", rank: 1 }
+                { path: '/api/chef/context', source: 'SESSION_CHEF_SIGNEE', rank: 0 },
+                { path: '/api/ops/context', source: 'SESSION_SERVICE_SIGNEE', rank: 1 }
             ];
+            const MAX_WAIT_MS = 7500; // Évite une attente de 35 s x 2 (= 70 s).
+            const startedAt = Date.now();
+            const controllers = [];
+            const statuses = [];
+            let hadNetworkError = false;
+            let hadProfileError = false;
+            let timedOut = false;
+            let deadlineTimer = null;
+            setSyncStatus('degraded', 'SYSTÈME · VÉRIFICATION DE LA SESSION…');
 
-            try {
-                setSyncStatus("degraded", "SYSTÈME · IDENTIFICATION…");
-
-                // FAST SSO : validation des jetons en parallèle. Le classement final
-                // conserve la priorité du jeton courant puis Chef Desktop avant Ops.
-                const checks = [];
-                tokens.forEach((token, tokenIndex) => {
-                    endpoints.forEach(endpoint => {
-                        checks.push((async () => {
-                            try {
-                                const controller = new AbortController();
-                                // Le serveur Render peut être en veille : ne pas refuser la session
-                                // après seulement 4,5 secondes de démarrage à froid.
-                                const timeout = setTimeout(() => controller.abort(), 35000);
-                                let response;
-                                try {
-                                    response = await fetch(`${SERVER_URL}${endpoint.path}`, {
-                                        method: "GET",
-                                        cache: "no-store",
-                                        credentials: "omit",
-                                        headers: haccpStaffSessionHeaders(token),
-                                        signal: controller.signal
-                                    });
-                                } finally {
-                                    clearTimeout(timeout);
-                                }
-                                const data = await response.json().catch(() => ({}));
-                                return { token, tokenIndex, endpoint, response, data };
-                            } catch (error) {
-                                return { token, tokenIndex, endpoint, error };
-                            }
-                        })());
+            // Chaque essai inclut le contrôle du secteur Staff si nécessaire.
+            // Une réponse sans autorisation valable ne peut jamais gagner la course.
+            const check = (token, tokenIndex, endpoint) => (async () => {
+                const controller = new AbortController();
+                controllers.push(controller);
+                const headers = haccpStaffSessionHeaders(token);
+                try {
+                    const response = await fetch(`${SERVER_URL}${endpoint.path}`, {
+                        method: 'GET', cache: 'no-store', credentials: 'omit',
+                        headers, signal: controller.signal
                     });
+                    statuses.push(response.status);
+                    if (!response.ok) throw new Error('CONTEXT_REFUSED');
+                    const data = await response.json().catch(() => ({}));
+                    if (data?.success !== true || !data?.self) {
+                        hadProfileError = true;
+                        throw new Error('CONTEXT_INVALID');
+                    }
+
+                    const isStaffContext =
+                        (endpoint.source === 'SESSION_SERVICE_SIGNEE' ||
+                         new URLSearchParams(location.search).get('from') === 'staff') &&
+                        !String(data.self.id || '').startsWith('MASTER:');
+                    let grant = null;
+                    if (isStaffContext) {
+                        const grantResponse = await fetch(haccp223ScopedUrl('context'), {
+                            method: 'GET', cache: 'no-store', credentials: 'omit',
+                            headers, signal: controller.signal
+                        });
+                        statuses.push(grantResponse.status);
+                        if (!grantResponse.ok) throw new Error('STAFF_PERMISSION_REFUSED');
+                        grant = await grantResponse.json().catch(() => ({}));
+                        if (grant.success !== true ||
+                            !Array.isArray(grant.allowedSectors) || !grant.allowedSectors.length) {
+                            hadProfileError = true;
+                            throw new Error('NO_ASSIGNED_SECTOR');
+                        }
+                    }
+                    return { token, tokenIndex, endpoint, data, grant, isStaffContext };
+                } catch (error) {
+                    if (error?.name !== 'AbortError' && !statuses.length) hadNetworkError = true;
+                    throw error;
+                }
+            })();
+
+            // Promise.any renvoie le PREMIER contexte authentifié et autorisé.
+            // À l'inverse de Promise.all, aucun autre appel lent n'est attendu.
+            const attempts = [];
+            tokens.forEach((token, index) => endpoints.forEach(endpoint => {
+                attempts.push(check(token, index, endpoint));
+            }));
+            const winnerPromise = Promise.any(attempts).catch(() => null);
+            const deadlinePromise = new Promise(resolve => {
+                deadlineTimer = setTimeout(() => {
+                    timedOut = true;
+                    resolve(null);
+                }, MAX_WAIT_MS);
+            });
+            let winner = null;
+            try {
+                winner = await Promise.race([winnerPromise, deadlinePromise]);
+            } finally {
+                clearTimeout(deadlineTimer);
+                controllers.forEach(controller => {
+                    try { controller.abort(); } catch (_) {}
                 });
+            }
 
-                const results = await Promise.all(checks);
-                const valid = results
-                    .filter(r => r.response?.ok && r.data?.success === true && r.data?.self)
-                    .sort((a,b) => (a.tokenIndex - b.tokenIndex) || (a.endpoint.rank - b.endpoint.rank));
-
-                for (const candidate of valid) {
-                    const isStaffContext=(candidate.endpoint.source==='SESSION_SERVICE_SIGNEE'||new URLSearchParams(location.search).get('from')==='staff') &&
-                        !String(candidate.data?.self?.id||'').startsWith('MASTER:');
-                    if(isStaffContext){
-                        try{
-                            const grantResp=await fetch(haccp223ScopedUrl('context'),{cache:'no-store',credentials:'omit',headers:haccpStaffSessionHeaders(candidate.token)});
-                            if(!grantResp.ok){setSyncStatus('degraded','HACCP · AUTORISATION REQUISE');continue;}
-                            const grant=await grantResp.json();
-                            if(!grant.success||!grant.allowedSectors?.length)continue;
-                            candidate.haccp223Grant=grant;
-                            window.ICHEF_HACCP.v223Staff=true;
-                            window.ICHEF_HACCP.allowedSectors=[...grant.allowedSectors];
-                            window.ICHEF_HACCP.staffId=String(grant.self?.id||candidate.data?.self?.id||'');
-                            // Les données Staff viennent uniquement de l'API sectorisée.
-                            haccpStateMemory=null;haccpStateMemoryAt=0;
-                        }catch(e){console.warn('[HACCP V223] droits indisponibles',e);continue;}
-                    }
-                    window.ICHEF_HACCP.accessToken=candidate.token;
-                    const ok = await activateHaccpFromValidatedStaffContext(candidate.data, candidate.endpoint.source);
-                    if (ok === true) {
-                        window.ICHEF_HACCP.accessToken = candidate.token;
-                        sessionStorage.setItem("ichef_access_token", candidate.token);
-                        return true;
-                    }
+            if (winner) {
+                // Le grant Staff a été vérifié avant l'affichage de l'interface.
+                if (winner.isStaffContext) {
+                    window.ICHEF_HACCP.v223Staff = true;
+                    window.ICHEF_HACCP.allowedSectors = [...winner.grant.allowedSectors];
+                    window.ICHEF_HACCP.staffId = String(
+                        winner.grant.self?.id || winner.data.self.id || ''
+                    );
+                    haccpStateMemory = null;
+                    haccpStateMemoryAt = 0;
                 }
-
-                const hadReachableServer = results.some(r => r.response);
-                const hadAuthoritativeRejection = results.some(r => r.response && (r.response.status === 401 || r.response.status === 403));
-                // Aucune donnée sensible / aucun jeton n’est affiché dans ce diagnostic.
-                const codes = results.map(r => r.response?.status).filter(Boolean);
-                const errors = results.some(r => r.error);
-                window.ICHEF_HACCP_SSO_FAILURE =
-                    codes.includes(403) ? 'FORBIDDEN' :
-                    codes.includes(401) ? 'EXPIRED' :
-                    codes.includes(404) ? 'ROUTE_MISSING' :
-                    codes.includes(503) || codes.includes(502) || codes.includes(504) ? 'BACKEND_BUSY' :
-                    (errors && !codes.length) ? 'NETWORK' :
-                    (hadReachableServer && valid.length > 0) ? 'PROFILE' : 'UNKNOWN';
-                if (hadReachableServer && hadAuthoritativeRejection && valid.length === 0) {
-                    clearExpiredHaccpStaffSession();
+                window.ICHEF_HACCP.accessToken = winner.token;
+                const success = await activateHaccpFromValidatedStaffContext(
+                    winner.data, winner.endpoint.source
+                );
+                if (success === true) {
+                    sessionStorage.setItem('ichef_access_token', winner.token);
+                    window.ICHEF_HACCP_SSO_FAILURE = null;
+                    console.info('[iCHEF HACCP] Session validée en', Date.now() - startedAt, 'ms');
+                    return true;
                 }
-                return false;
-             } catch (error) {
-                console.warn("[iCHEF HACCP] Validation session signée indisponible :", error?.name || 'Connexion');
-                window.ICHEF_HACCP_SSO_FAILURE = 'NETWORK';
-                setSyncStatus("degraded", "SYSTÈME · SESSION À VÉRIFIER");
+                window.ICHEF_HACCP.accessToken = '';
+                window.ICHEF_HACCP_SSO_FAILURE = 'PROFILE';
                 return false;
             }
+
+            // Pas d'accès hors-ligne ni sur jeton périmé : échec explicite rapide.
+            window.ICHEF_HACCP_SSO_FAILURE =
+                statuses.includes(403) ? 'FORBIDDEN' :
+                statuses.includes(401) ? 'EXPIRED' :
+                statuses.includes(404) ? 'ROUTE_MISSING' :
+                statuses.some(s => [502, 503, 504].includes(s)) ? 'BACKEND_BUSY' :
+                hadProfileError ? 'PROFILE' :
+                timedOut || hadNetworkError ? 'NETWORK' : 'UNKNOWN';
+            if (statuses.length && statuses.every(s => s === 401 || s === 403)) {
+                clearExpiredHaccpStaffSession();
+            }
+            setSyncStatus('degraded', 'SYSTÈME · CONNEXION À VÉRIFIER');
+            return false;
         }
 
         // HACCP V249 : un seul appel d'authentification partagé par tous les
@@ -4007,6 +4038,18 @@ function haccpSectorReturnConfig() {
 
             setTimeout(run, 30);
         }
+
+        // Diagnostic partageable sans divulguer PIN, session, appareil ni ID client.
+        window.ichefHaccpConnectionDiagnostic = function () {
+            return {
+                build: 'HACCP-V251-SSO-RACE',
+                authenticated: window.ICHEF_HACCP?.authenticated === true,
+                failure: window.ICHEF_HACCP_SSO_FAILURE || null,
+                hasSessionToken: haccpSessionTokens().length > 0,
+                online: navigator.onLine,
+                at: new Date().toISOString()
+            };
+        };
 
         function ichef226DesktopGate(){
             if(haccpIsPhoneMode() || window.ICHEF_HACCP?.authenticated) return;
@@ -4052,7 +4095,7 @@ function haccpSectorReturnConfig() {
                 }finally{retry.disabled=false;retry.textContent='↻ RÉESSAYER LA CONNEXION';}
               };
             }
-            if(retry) retry.style.display=['NETWORK','BACKEND_BUSY','UNKNOWN'].includes(failure)?'block':'none';
+            if(retry) retry.style.display=['NO_TOKEN','NETWORK','BACKEND_BUSY','UNKNOWN'].includes(failure)?'block':'none';
         }
 
         async function submitPin() {
@@ -5619,11 +5662,13 @@ function haccpSectorReturnConfig() {
             // Téléphone ET ordinateur : une seule règle.
             // HACCP reprend la session iCHEF déjà signée et le serveur fournit
             // l'identité, le rôle et le secteur. Aucun choix d'espace, aucun second PIN.
-            const resumed = await tryResumeHaccpStaffSession();
+            let resumed = await tryResumeHaccpStaffSession();
             if (resumed) return;
 
+            // V251 : pas de seconde attente bloquante. Si le serveur tarde, le
+            // bouton « Réessayer » reste disponible sans contourner la sécurité.
             showHaccpMobileSecureGate(haccpEntrySectorHint());
-            setSyncStatus("degraded", "SYSTÈME · CONNEXION iCHEF REQUISE");
+            setSyncStatus('degraded','SYSTÈME · CONNEXION iCHEF À VÉRIFIER');
             ichef226DesktopGate();
         });
     </script>
@@ -6527,13 +6572,11 @@ tbody tr:hover td{
         }
     };
 
-    if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", start, { once:true });
-    } else {
-        start();
-    }
-
-    window.addEventListener("pageshow", () => {
+    // V250 : la connexion initiale est déjà prise en charge par le boot
+    // principal. Éviter les tentatives concurrentes au chargement.
+    // pageshow sert uniquement à la restauration depuis le cache navigateur.
+    window.addEventListener("pageshow", (event) => {
+        if (!event.persisted) return;
         try {
             if (!window.ICHEF_HACCP?.authenticated &&
                 typeof scheduleHaccpStaffSessionResume === "function") {
