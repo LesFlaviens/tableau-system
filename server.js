@@ -35136,6 +35136,151 @@ async function ichefLoadRhPlanningManagerSession(req) {
     return {ok:true,tenantID:auth.tenantID,claims:auth.claims,tenant};
 }
 
+// ============================================================================
+// iCHEF OS · PLANNING PREMIUM PWA · API protégée
+// À INSÉRER dans le server.js EXISTANT, APRÈS les helpers suivants :
+// ichefLoadRhPlanningManagerSession, ichefPlanningNodeData,
+// ichefPlanningChangeWindow, ichefPlanningDayHasContent,
+// ichefPlanningNotificationSummary, ichefPlanningStaffName.
+// Ne pas déployer isolément ce fichier comme server.js.
+// ============================================================================
+const ICHEF_PREMIUM_RH_STATUSES = new Set([
+    'present','off_soir','off_matin','off','conge','recup',
+    'maladie','accident_travail','ferie','formation',
+    'absence_autorisee','absence_injustifiee','maternite','paternite',
+    'parental','enfant_malade','evenement_familial','deces','sans_solde'
+]);
+function ichefPremiumRhDayHash(day) {
+    return nodeCrypto.createHash('sha256')
+        .update(JSON.stringify(ichefPlanningPlainObject(day)))
+        .digest('hex').slice(0,28);
+}
+function ichefPremiumRhMonth(date) {
+    return `${date.getUTCFullYear()}-${String(date.getUTCMonth()+1).padStart(2,'0')}`;
+}
+function ichefPremiumRhStaffList(state) {
+    const orders=state?.activeOrders||{};
+    const staff=ichefStaffPortalArray(orders?.DIRECTORY_MASTER);
+    const fallback=ichefStaffPortalArray(orders?.STAFF_ACCESS);
+    const rows=staff.length?staff:fallback;
+    const seen=new Set(),output=[];
+    for(const s of rows) {
+        const id=String(s?.id??s?.staffId??s?.employeeId??'').trim();
+        if(!id||seen.has(id)||s?.active===false)continue;
+        seen.add(id);
+        output.push({
+            id,
+            name:String(s?.name||[s?.prenom,s?.nom].filter(Boolean).join(' ')||'Collaborateur').slice(0,130),
+            role:String(s?.role||'Collaborateur').slice(0,90),
+            dept:String(s?.dept||s?.department||'Sans secteur').slice(0,90),
+            contract:Number(s?.contract)||0
+        });
+    }
+    return output.slice(0,300);
+}
+function ichefPremiumRhValidateDay(raw) {
+    if(raw===null)return {ok:true,day:null};
+    if(!raw||typeof raw!=='object'||Array.isArray(raw))return {ok:false,error:'Journée invalide.'};
+    const status=String(raw.status||'').trim();
+    if(!ICHEF_PREMIUM_RH_STATUSES.has(status))return {ok:false,error:'Statut RH inconnu.'};
+    const time=v=>String(v||'').trim();
+    const validSegment=v=>!v||(/^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/.test(v)&&v.slice(0,5)!==v.slice(6));
+    const s1=time(raw.s1),s2=time(raw.s2),pause=Number(raw.pause||0);
+    if(!validSegment(s1)||!validSegment(s2)||!Number.isFinite(pause)||pause<0||pause>720)return {ok:false,error:'Horaires ou pause invalides.'};
+    if(['present','off_soir','off_matin'].includes(status)&&!s1&&!s2)return {ok:false,error:'Heures de travail manquantes.'};
+    if(!['present','off_soir','off_matin'].includes(status)&&(s1||s2))return {ok:false,error:'Une absence ne doit pas comporter d’horaires.'};
+    return {ok:true,day:{status,s1,s2,pause,obs:String(raw.obs||'').slice(0,500)}};
+}
+app.get('/api/rh/planning/premium/state', async(req,res)=>{
+    res.setHeader('Cache-Control','no-store, private');
+    try {
+        const auth=await ichefLoadRhPlanningManagerSession(req);
+        if(!auth.ok)return res.status(401).json({success:false,error:auth.error});
+        const input=String(req.query.month||'');
+        if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(input))return res.status(400).json({success:false,error:'Mois incorrect.'});
+        const y=Number(input.slice(0,4)),m=Number(input.slice(5,7));
+        if(y<2020||y>2100)return res.status(400).json({success:false,error:'Mois non autorisé.'});
+        const months=[-1,0,1].map(offset=>ichefPremiumRhMonth(new Date(Date.UTC(y,m-1+offset,1))));
+        const projection={ 'activeOrders.DIRECTORY_MASTER':1,'activeOrders.STAFF_ACCESS':1,'activeOrders.RH_SETTINGS':1 };
+        for(const mm of months) projection[`activeOrders.TIMESHEETS_MASTER.data.${mm}`]=1;
+        const row=await AppState.findOne({tenantID:auth.tenantID},projection).lean();
+        if(!row)return res.status(404).json({success:false,error:'Établissement RH introuvable.'});
+        const order=row.activeOrders||{},all=ichefPlanningNodeData(order,'TIMESHEETS_MASTER',{});
+        const timesheets={};for(const mm of months)timesheets[mm]=ichefPlanningPlainObject(all?.[mm]);
+        return res.json({success:true,tenantID:auth.tenantID,staff:ichefPremiumRhStaffList(row),
+            settings:{planningStatus:String(ichefPlanningNodeData(order,'RH_SETTINGS',{})?.planningStatus||'draft')},
+            months,timesheets,serverTime:new Date().toISOString()});
+    }catch(e){console.error('[PLANNING PREMIUM READ]',e);return res.status(500).json({success:false,error:'Lecture sécurisée du planning indisponible.'});}
+});
+app.post('/api/rh/planning/premium/day', async(req,res)=>{
+    res.setHeader('Cache-Control','no-store, private');
+    try {
+        const auth=await ichefLoadRhPlanningManagerSession(req);
+        if(!auth.ok)return res.status(401).json({success:false,error:auth.error});
+        const {date,staffId,baseRevision,reason}=req.body||{};
+        const d=String(date||''),sid=String(staffId||'').trim();
+        const match=d.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        const parsed=match?new Date(d+'T12:00:00Z'):null;
+        if(!parsed||Number.isNaN(+parsed)||parsed.toISOString().slice(0,10)!==d||!/^\d{1,4}$/.test(d.slice(0,4))||!sid||sid.length>120||/[.$]/.test(sid))
+            return res.status(400).json({success:false,error:'Date ou collaborateur invalide.'});
+        const motive=String(reason||'').trim().slice(0,180);
+        if(motive.length<3)return res.status(400).json({success:false,error:'Motif de modification obligatoire.'});
+        const valid=ichefPremiumRhValidateDay(req.body.day);
+        if(!valid.ok)return res.status(400).json({success:false,error:valid.error});
+        const previousState=await AppState.findOne({tenantID:auth.tenantID},
+            {'activeOrders.TIMESHEETS_MASTER':1,'activeOrders.DIRECTORY_MASTER':1,'activeOrders.STAFF_ACCESS':1,'activeOrders.RH_SETTINGS':1}).lean();
+        if(!previousState)return res.status(404).json({success:false,error:'Planning non trouvé.'});
+        const orders=previousState.activeOrders||{};
+        if(String(ichefPlanningNodeData(orders,'RH_SETTINGS',{})?.planningStatus||'').toLowerCase()==='locked')
+            return res.status(423).json({success:false,error:'Planning clôturé : impossible de modifier.'});
+        const people=ichefPremiumRhStaffList(previousState),employee=people.find(p=>p.id===sid);
+        if(!employee)return res.status(403).json({success:false,error:'Collaborateur non autorisé ou inexistant.'});
+        const mm=d.slice(0,7),dy=String(Number(d.slice(8))),days=ichefPlanningNodeData(orders,'TIMESHEETS_MASTER',{});
+        const before=days?.[mm]?.[sid]?.[dy];
+        // Contrôle de conflit : toute édition externe plus récente est refusée.
+        if(before===undefined ? baseRevision!==null : String(before?.planningVersionId||'')!==String(baseRevision||''))
+            return res.status(409).json({success:false,code:'PLANNING_CONFLICT',error:'Le planning a été modifié ailleurs. Rechargez avant de réessayer.'});
+        const settings=ichefPlanningNodeData(orders,'RH_SETTINGS',{});
+        const window=ichefPlanningChangeWindow(d,before,valid.day,settings);
+        const now=new Date(),actor=String(auth.claims?.actorName||'Direction / RH').slice(0,120);
+        const id=`pv_${Date.now().toString(36)}_${nodeCrypto.randomBytes(7).toString('hex')}`;
+        const after=valid.day===null?null:{
+            ...ichefPlanningPlainObject(before),...valid.day,
+            poste:String(before?.poste||employee.dept).slice(0,90),
+            lastChangeReason:motive,lastChangeAt:now.toISOString(),lastChangeBy:actor,
+            updatedAt:now.toISOString(),planningVersionId:id,
+            planningChangeKind:window.kind,planningUrgent:window.urgent===true
+        };
+        const version={id,tenantID:auth.tenantID,staffId:sid,staffName:employee.name,date:d,month:mm,day:Number(dy),createdAt:now,
+            by:actor,source:'PLANNING_PREMIUM_PWA',reason:motive,changeKind:window.kind,urgent:window.urgent===true,
+            original:ichefPlanningClone(before||{}),before:ichefPlanningClone(before||{}),after:ichefPlanningClone(after||{})};
+        const notification={id:`pn_${id}`,versionId:id,staffId:sid,staffName:employee.name,date:d,createdAt:now,by:actor,
+            source:'PLANNING_PREMIUM_PWA',reason:motive,changeKind:window.kind,urgent:window.urgent===true,
+            before:ichefPlanningNotificationSummary(before||{}),after:ichefPlanningNotificationSummary(after||{}),ackRequired:true,seenByStaff:false,seenAt:null};
+        const key=`activeOrders.TIMESHEETS_MASTER.data.${mm}.${sid}.${dy}`;
+        // Opération MongoDB atomique : une seule case + son historique, sans réécrire le mois entier.
+        const condition={tenantID:auth.tenantID};
+        if(before===undefined)condition[key]={$exists:false};else condition[key]=before;
+        const changes={$set:{
+            'activeOrders.TIMESHEETS_MASTER.updatedAt':now,
+            'activeOrders.TIMESHEETS_MASTER.source':'PLANNING_PREMIUM_PWA',
+            'activeOrders.PLANNING_VERSIONS_MASTER.updatedAt':now,
+            'activeOrders.PLANNING_NOTIFICATIONS_MASTER.updatedAt':now
+        },$push:{'activeOrders.PLANNING_VERSIONS_MASTER.data':{$each:[version],$slice:-10000}}};
+        if(after===null)changes.$unset={[key]:''};else changes.$set[key]=after;
+        if(ichefPlanningDayHasContent(before||{}))changes.$push['activeOrders.PLANNING_NOTIFICATIONS_MASTER.data']={$each:[notification],$slice:-5000};
+        const result=await AppState.updateOne(condition,changes);
+        if(result.matchedCount!==1)return res.status(409).json({success:false,code:'PLANNING_CONFLICT',error:'La case a changé sur le serveur. Actualisez votre planning.'});
+        // Même source partagée avec RH/Staff/IA ; les pointages ne sont pas touchés.
+        try{if(typeof ichefEmitStaffSyncRequired==='function')ichefEmitStaffSyncRequired(auth.tenantID,{tableId:'TIMESHEETS_MASTER',source:'premium-pwa',timestamp:now.toISOString()});}catch(_){}
+        io.to(auth.tenantID).emit('rhPlanningUpdated',{tenantID:auth.tenantID,source:'PLANNING_PREMIUM_PWA',changed:1,timestamp:now.toISOString()});
+        io.to(auth.tenantID).emit('staff-planning-notice',{tenantID:auth.tenantID,source:'PLANNING_PREMIUM_PWA',changed:1,timestamp:now.toISOString()});
+        return res.json({success:true,changed:1,day:after,staffName:employee.name,versionId:id,serverTime:now.toISOString()});
+    }catch(e){console.error('[PLANNING PREMIUM DAY]',e);return res.status(500).json({success:false,error:'Impossible d’enregistrer le service.'});}
+});
+// ============================================================================
+
+
 app.post('/api/rh/planning/session', async (req,res) => {
     try {
         res.setHeader('Cache-Control','no-store');
@@ -36628,7 +36773,7 @@ async function ichef232DossierHandler(req,res) {
   }
 }
 // ============================================================================
-// iCHEF HACCP V247 — Catalogue autonome sécurisé des catégories / choix HACCP
+// iCHEF HACCP V248 — Catalogue autonome + réinitialisation sûre des catégories
 // Les règles techniques et anciens relevés restent immuables.
 // Nécessite les helpers iCHEF existants : ichefHaccp223Auth, AppState,
 // ichefStaffRealtimeRoom, io, nodeCrypto.
@@ -36643,7 +36788,7 @@ function h247Norm(v){return String(v||'').normalize('NFD').replace(/[\u0300-\u03
 function h247Name(v){const s=String(v??'').trim();if(s.length<2||s.length>65||/[<>\u0000-\u001f.$]/.test(s)||['__proto__','constructor','prototype'].includes(s.toLowerCase()))throw Object.assign(new Error('Nom invalide (2 à 65 caractères, sans caractères réservés).'),{status:400});return s}
 function h247Failure(message,status=409){throw Object.assign(new Error(message),{status})}
 function h247Sector(v){const s=String(v||'').trim().toUpperCase();if(!ICHEF_HACCP247_SECTORS.has(s))h247Failure('Secteur HACCP inconnu.',400);return s}
-function h247NormalizeSector(value){const s=value&&typeof value==='object'&&!Array.isArray(value)?structuredClone(value):{};for(const k of ['eq','clean','trace','eqCategoryTypes','eqCategoryOptionIds'])if(!s[k]||typeof s[k]!=='object'||Array.isArray(s[k]))s[k]={};if(!Array.isArray(s.eqCustomTypeOptions))s.eqCustomTypeOptions=[];if(!Array.isArray(s.eqHiddenTypeIds))s.eqHiddenTypeIds=[];return s}
+function h247NormalizeSector(value){const s=value&&typeof value==='object'&&!Array.isArray(value)?structuredClone(value):{};for(const k of ['eq','clean','trace','eqCategoryTypes','eqCategoryOptionIds'])if(!s[k]||typeof s[k]!=='object'||Array.isArray(s[k]))s[k]={};if(!Array.isArray(s.eqCustomTypeOptions))s.eqCustomTypeOptions=[];if(!Array.isArray(s.eqHiddenTypeIds))s.eqHiddenTypeIds=[];if(!Array.isArray(s.eqResetPendingKeys))s.eqResetPendingKeys=[];s.eqResetPendingKeys=s.eqResetPendingKeys.filter(k=>typeof k==='string'&&Array.isArray(s.eq[k]));return s}
 const ICHEF_HACCP247_LABELS={'Chambres froides positives':'COLD_ROOM_POS','Chambres froides négatives':'COLD_ROOM_NEG','Frigos / Tours / Armoires':'FRIDGE','Congélateurs / Surgélateurs':'FREEZER','Vitrines / Meubles froids':'DISPLAY','Cellules de refroidissement':'COOLING_CELL','Liaison / Maintien chaud':'HOT_HOLD','Remise en température':'REHEAT','Caves / Boissons':'BEVERAGE','Machines à glaçons':'ICE','Autres équipements':'OTHER'};
 function h247TypeOf(s,k){const id=String(s.eqCategoryTypes[k]||'');if(ICHEF_HACCP247_TYPES[id])return id;return ICHEF_HACCP247_LABELS[k]||'OTHER'}
 function h247Choices(s){const customs=s.eqCustomTypeOptions.filter(x=>x&&typeof x==='object'&&/^OPT_[a-z0-9_-]+$/i.test(x.id||'')&&ICHEF_HACCP247_TYPES[x.baseTypeId]);return [...Object.keys(ICHEF_HACCP247_TYPES).map(id=>({id,baseTypeId:id,system:true})),...customs.map(x=>({...x,system:false}))]}
@@ -36659,7 +36804,7 @@ function h247Mutate(s,action,p){
    s.eq[newName]=[];s.eqCategoryTypes[newName]=option.baseTypeId;s.eqCategoryOptionIds[newName]=option.id;return;
   }
   case 'RENAME_CATEGORY':{
-   h247ExistingCategory(s,name);const newName=h247Name(label);if(h247CategoryExists(s,newName,name))h247Failure('Une catégorie porte déjà ce nom.');
+   h247ExistingCategory(s,name);if(s.eqResetPendingKeys.includes(name))h247Failure('Pour renommer le matériel à reclasser, créez votre catégorie et affectez-le dedans.');const newName=h247Name(label);if(h247CategoryExists(s,newName,name))h247Failure('Une catégorie porte déjà ce nom.');
    if(newName===name)return;
    const out={};for(const [k,v]of Object.entries(s.eq))out[k===name?newName:k]=v;s.eq=out;
    const base=h247TypeOf(s,name);delete s.eqCategoryTypes[name];s.eqCategoryTypes[newName]=base;
@@ -36667,19 +36812,56 @@ function h247Mutate(s,action,p){
   }
   case 'DELETE_CATEGORY':{
    h247ExistingCategory(s,name);if(s.eq[name].length)h247Failure('Cette catégorie contient des équipements : déplacez-les avant de la retirer.');
-   delete s.eq[name];delete s.eqCategoryTypes[name];delete s.eqCategoryOptionIds[name];return;
+   delete s.eq[name];delete s.eqCategoryTypes[name];delete s.eqCategoryOptionIds[name];s.eqResetPendingKeys=s.eqResetPendingKeys.filter(x=>x!==name);return;
   }
   case 'MOVE_AND_DELETE_CATEGORY':{
    h247ExistingCategory(s,name);h247ExistingCategory(s,to);if(name===to)h247Failure('Choisissez une autre catégorie.');
    if(h247TypeOf(s,name)!==h247TypeOf(s,to))h247Failure('La destination doit avoir le même type HACCP.');
    if(s.eq[name].some(x=>s.eq[to].includes(x)))h247Failure('Équipement déjà présent dans la destination.');
-   s.eq[to].push(...s.eq[name]);delete s.eq[name];delete s.eqCategoryTypes[name];delete s.eqCategoryOptionIds[name];return;
+   s.eq[to].push(...s.eq[name]);delete s.eq[name];delete s.eqCategoryTypes[name];delete s.eqCategoryOptionIds[name];s.eqResetPendingKeys=s.eqResetPendingKeys.filter(x=>x!==name);return;
   }
   case 'MOVE_EQUIPMENT':{
    h247ExistingCategory(s,name);h247ExistingCategory(s,to);if(name===to)h247Failure('Sélectionnez une autre catégorie.');
    if(h247TypeOf(s,name)!==h247TypeOf(s,to))h247Failure('Pour préserver les seuils de contrôle, déplacez vers le même type HACCP.');
    const equipment=String(p.equipment||'');const pos=s.eq[name].indexOf(equipment);if(pos<0||s.eq[to].includes(equipment))h247Failure('Équipement absent ou déjà présent.');
-   s.eq[name].splice(pos,1);s.eq[to].push(equipment);return;
+   s.eq[name].splice(pos,1);s.eq[to].push(equipment);if(s.eqResetPendingKeys.includes(name)&&s.eq[name].length===0){delete s.eq[name];delete s.eqCategoryTypes[name];delete s.eqCategoryOptionIds[name];s.eqResetPendingKeys=s.eqResetPendingKeys.filter(x=>x!==name);}return;
+  }
+  case 'RESET_CATEGORIES':{
+   // Aucun équipement n'est détruit : regroupement technique en catégories
+   // temporaires non présentées comme les catégories personnalisées du client.
+   // L'API conserve les logs HACCP dans leurs tables historiques distinctes.
+   const groups=new Map();
+   for(const [old,items] of Object.entries(s.eq)){
+    if(!Array.isArray(items))h247Failure('Parc HACCP invalide : réinitialisation refusée.',400);
+    const technical=h247TypeOf(s,old);
+    if(!groups.has(technical))groups.set(technical,[]);
+    for(const equipment of items){
+     // Conserver même les noms historiques courts : ne pas utiliser la
+     // validation stricte des *nouveaux* noms sur les données existantes.
+     if(typeof equipment!=='string'||!equipment.trim()||equipment.length>1000)
+       h247Failure('Nom d’équipement historique invalide : réinitialisation refusée.',400);
+     // En cas de deux équipements portant le même nom dans deux anciennes
+     // catégories, conserver chacun dans un casier technique distinct.
+     let bucket=groups.get(technical).find(rows=>!rows.includes(equipment));
+     if(!bucket){bucket=[];groups.get(technical).push(bucket)}
+     bucket.push(equipment);
+    }
+   }
+   const eq={},eqCategoryTypes={},eqCategoryOptionIds={},pending=[];
+   for(const [technical,buckets] of groups){
+    for(let i=0;i<buckets.length;i++){
+     const items=buckets[i];if(!items.length)continue;
+     const key='À classer · '+technical+(i?' · '+(i+1):'');
+     if(key.length>65||items.length>3000)h247Failure('Parc HACCP trop volumineux.',413);
+     eq[key]=items;
+     eqCategoryTypes[key]=technical;
+     eqCategoryOptionIds[key]=technical;
+     pending.push(key);
+    }
+   }
+   s.eq=eq;s.eqCategoryTypes=eqCategoryTypes;s.eqCategoryOptionIds=eqCategoryOptionIds;
+   s.eqResetPendingKeys=pending;
+   return;
   }
   case 'ADD_CHOICE':{
    const newLabel=h247Name(label),base=String(p.baseTypeId||'');if(!ICHEF_HACCP247_TYPES[base])h247Failure('Règle technique HACCP inconnue.');
@@ -36761,7 +36943,7 @@ app.post('/api/haccp/category-admin',async(req,res)=>{
  if(sector==='ADMIN'&&!String(auth?.claims?.staffId||'').startsWith('MASTER:'))h247Failure('Secteur Direction réservé au propriétaire.',403);
  if(sector!=='ADMIN'&&!auth.haccp247Access?.sectors?.includes(sector))h247Failure('Ce secteur HACCP ne vous est pas attribué.',403);
  const revision=Number(req.body?.revision);if(!Number.isSafeInteger(revision)||revision<0)return res.status(400).json({success:false,error:'Version du catalogue absente.'});
- if(!['CREATE_CATEGORY','RENAME_CATEGORY','DELETE_CATEGORY','MOVE_AND_DELETE_CATEGORY','MOVE_EQUIPMENT','ADD_CHOICE','RENAME_CHOICE','HIDE_CHOICE','RESTORE_CHOICE','DELETE_CHOICE'].includes(action))return res.status(400).json({success:false,error:'Opération HACCP inconnue.'});
+ if(!['CREATE_CATEGORY','RENAME_CATEGORY','DELETE_CATEGORY','MOVE_AND_DELETE_CATEGORY','MOVE_EQUIPMENT','RESET_CATEGORIES','ADD_CHOICE','RENAME_CHOICE','HIDE_CHOICE','RESTORE_CHOICE','DELETE_CHOICE'].includes(action))return res.status(400).json({success:false,error:'Opération HACCP inconnue.'});
  // État rechargé à chaque action : aucune confiance dans le catalogue navigateur.
  const document=await AppState.findOne({tenantID:auth.tenantID},{'activeOrders.HACCP_LISTS_MASTER':1});
  const node=document?.activeOrders?.HACCP_LISTS_MASTER||{};
