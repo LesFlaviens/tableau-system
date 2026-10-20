@@ -1,0 +1,21161 @@
+/* iCHEF RH V266 - modules historiques conservés, ordre original de chargement. */
+
+;
+/* RH V264 - preserved script #7 */
+(function(){
+    function safeStopCamera(){
+        try {
+            if (typeof videoStream !== 'undefined' && videoStream) {
+                videoStream.getTracks().forEach(function(track){ try { track.stop(); } catch(e) {} });
+                videoStream = null;
+            }
+        } catch(e) {}
+        try {
+            var video = document.getElementById('punch-video');
+            if (video && video.srcObject) {
+                video.srcObject.getTracks().forEach(function(track){ try { track.stop(); } catch(e) {} });
+                video.srcObject = null;
+            }
+        } catch(e) {}
+    }
+    window.iChefRhHardHome = function(event){
+        if (event && typeof event.preventDefault === 'function') event.preventDefault();
+        if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+        // 1. Supprime définitivement le verrou de borne.
+        try { localStorage.removeItem('ichef_rh_kiosk_mode'); } catch(e) {}
+        try { sessionStorage.removeItem('ichef_rh_kiosk_mode'); } catch(e) {}
+        // 2. Réinitialise tous les états JS de la pointeuse.
+        try { punchKioskMode = false; } catch(e) {}
+        try { loginMode = ''; } catch(e) {}
+        try { currentPin = ''; } catch(e) {}
+        try { punchPin = ''; } catch(e) {}
+        // 3. Arrête caméra + horloge.
+        safeStopCamera();
+        try { if (typeof stopPunchClockDisplay === 'function') stopPunchClockDisplay(); } catch(e) {}
+        // 4. Ferme toutes les modales liées à la pointeuse / accès.
+        ['punch-modal','pin-modal','dept-modal'].forEach(function(id){
+            var el = document.getElementById(id);
+            if (el) {
+                el.style.display = 'none';
+                el.classList.remove('show');
+                el.classList.remove('punch-kiosk-active');
+            }
+        });
+        var overlay = document.getElementById('punch-success-overlay');
+        if (overlay) overlay.style.display = 'none';
+        // 5. Ferme toutes les interfaces secondaires et réaffiche le vrai menu RH.
+        document.querySelectorAll('.full-interface').forEach(function(el){ el.style.display = 'none'; });
+        var landing = document.getElementById('landing-portal');
+        if (landing) landing.style.display = 'flex';
+        // 6. Nettoie les affichages PIN.
+        ['pin-display','punch-display'].forEach(function(id){
+            var el = document.getElementById(id);
+            if (el) el.innerText = '';
+        });
+        // 7. Quitte le plein écran sans jamais recharger rh.html.
+        try {
+            if (document.fullscreenElement && document.exitFullscreen) {
+                document.exitFullscreen().catch(function(){});
+            } else if (document.webkitFullscreenElement && document.webkitExitFullscreen) {
+                document.webkitExitFullscreen();
+            }
+        } catch(e) {}
+        try { document.body.style.overflow = ''; } catch(e) {}
+        try { window.scrollTo(0,0); } catch(e) {}
+        // 8. Nettoie l'URL, mais SANS navigation donc sans redémarrage de la pointeuse.
+        try {
+            var u = new URL(window.location.href);
+            u.searchParams.delete('home');
+            if (typeof tenantID !== 'undefined' && tenantID) u.searchParams.set('tenantID', tenantID);
+            history.replaceState(null, '', u.pathname + u.search + u.hash);
+        } catch(e) {}
+        return false;
+    };
+    // Au chargement, une ancienne clé laissée par une version précédente ne peut plus réactiver la borne.
+    try { localStorage.removeItem('ichef_rh_kiosk_mode'); } catch(e) {}
+})();
+
+
+;
+/* RH V264 - preserved script #8 */
+(() => {
+    let rhCockpitWeekOffset = 0;
+    let rhCockpitPlanView = 'week';
+    const planningHorizonEnd = () => {
+        const now = new Date();
+        // Fin du mois situé six mois après le mois courant.
+        return new Date(now.getFullYear(), now.getMonth() + 7, 0, 12, 0, 0, 0);
+    };
+    const esc = value => {
+        const div = document.createElement('div');
+        div.textContent = value == null ? '' : String(value);
+        return div.innerHTML;
+    };
+    const pendingRequest = r => !['approved','accepte','accepté','valide','validé','rejected','refuse','refusé']
+        .includes(String(r?.status || 'pending').toLowerCase());
+    const mondayOf = date => {
+        const d = new Date(date);
+        d.setHours(12,0,0,0);
+        const day = (d.getDay()+6)%7;
+        d.setDate(d.getDate()-day);
+        return d;
+    };
+    const maxCockpitWeekOffset = () => {
+        const start = mondayOf(new Date());
+        const endWeek = mondayOf(planningHorizonEnd());
+        return Math.max(0, Math.round((endWeek.getTime() - start.getTime()) / (7 * 86400000)));
+    };
+    const isAfterPlanningHorizon = date => {
+        const d = new Date(date);
+        d.setHours(12,0,0,0);
+        return d.getTime() > planningHorizonEnd().getTime();
+    };
+    window.getRhPlanningHorizonEnd = planningHorizonEnd;
+    const weekDates = () => {
+        const monday = mondayOf(new Date());
+        monday.setDate(monday.getDate() + rhCockpitWeekOffset*7);
+        return Array.from({length:7},(_,i)=>{
+            const d=new Date(monday);d.setDate(monday.getDate()+i);return d;
+        });
+    };
+    const monthKey = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    const sameDay = (a,b) => a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth() && a.getDate()===b.getDate();
+    const planFor = (staff,date) => {
+        const ts = typeof getTs==='function' ? getTs() : {};
+        const m = ts?.[monthKey(date)] || {};
+        const sm = m?.[staff.id] || m?.[String(staff.id)] || {};
+        return sm?.[date.getDate()] || sm?.[String(date.getDate())] || {status:'off',s1:'',s2:'',pause:0};
+    };
+    const shiftText = p => {
+        const status = String(p?.status || 'off').toLowerCase();
+        const category = window.iChefPlanningMetaV202?.(p);
+        const shifts=[p?.s1,p?.s2].filter(Boolean);
+        if(category && String(p?.categoryId||'') && String(p.categoryId)!==status){
+            if(['present','off_soir','off_matin','ferie'].includes(String(category.legalType||status)) && shifts.length){
+                return shifts.join(' / ');
+            }
+            return String(category.label||category.short||status).toUpperCase();
+        }
+        const map = {
+            off:'REPOS', conge:'CP', maladie:'MALADIE', recup:'RÉCUP', ferie:'FÉRIÉ',
+            formation:'FORMATION', sans_solde:'SANS SOLDE', absence_autorisee:'ABSENCE',
+            absence_injustifiee:'ABSENCE', accident_travail:'ACCIDENT', maternite:'MATERNITÉ',
+            paternite:'PATERNITÉ', parental:'PARENTAL', enfant_malade:'ENFANT MALADE'
+        };
+        if (map[status]) return map[status];
+        if(!shifts.length) return status==='present'?'TRAVAIL':status.replaceAll('_',' ').toUpperCase();
+        return shifts.join(' / ');
+    };
+    const chipClass = p => {
+        const st=String(p?.status||'off').toLowerCase();
+        if(st==='off') return 'off';
+        if(st==='conge'||st==='ferie'||st==='formation') return 'leave';
+        if(st==='maladie'||st==='accident_travail'||st==='absence_injustifiee') return 'sick';
+        if(st==='recup') return 'recovery';
+        return String(p?.poste||'').toLowerCase()==='bar' || String(p?.poste||'').toLowerCase()==='admin' ? 'purple' : '';
+    };
+    const initials = name => String(name||'E').split(/\s+/).filter(Boolean).slice(0,2).map(x=>x[0]).join('').toUpperCase();
+    const dayKey = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    const plannedHoursForDates = (staff, dates) => (dates || []).reduce((sum,d)=>{
+        const p=planFor(staff,d);
+        const h=typeof calculateNet==='function'?Number(calculateNet(p)||0):0;
+        return sum + (Number.isFinite(h)?h:0);
+    },0);
+    const actualHoursForDates = (staff, dates) => {
+        let total=0;
+        const cache=new Map();
+        (dates||[]).forEach(d=>{
+            const mk=monthKey(d);
+            if(!cache.has(mk)){
+                try{cache.set(mk,typeof getActualHoursSummary==='function'?getActualHoursSummary(staff.id,mk):null)}catch(_){cache.set(mk,null)}
+            }
+            const summary=cache.get(mk);
+            total += Number(summary?.byDay?.[d.getDate()] || summary?.byDay?.[String(d.getDate())] || 0);
+        });
+        return total;
+    };
+    const currentServiceState = staff => {
+        const sid=String(staff?.id ?? '');
+        let punches=[];
+        try{
+            punches=(typeof getPunches==='function'?getPunches():[])
+                .filter(p=>String(p?.staffId ?? '')===sid && Number(p?.timestamp||p?.clientTimestamp||0)>0)
+                .sort((a,b)=>Number(a?.timestamp||a?.clientTimestamp||0)-Number(b?.timestamp||b?.clientTimestamp||0));
+        }catch(_){punches=[]}
+        const last=punches[punches.length-1]||null;
+        const ts=Number(last?.timestamp||last?.clientTimestamp||0);
+        const type=String(last?.type||last?.punchType||'').toUpperCase();
+        const isEntry=type==='ENTRÉE'||type==='ENTREE';
+        const age=ts?Date.now()-ts:Infinity;
+        const liveFromPunch=isEntry && age>=0 && age<=18*3600000;
+        const live=liveFromPunch || (!last && staff?.onDuty===true);
+        return {live,since:liveFromPunch?ts:null,lastType:type,lastTimestamp:ts};
+    };
+    const monthChipText = p => {
+        const st=String(p?.status||'off').toLowerCase();
+        const category=window.iChefPlanningMetaV202?.(p);
+        if(category && String(p?.categoryId||'')) return String(category.short||category.label||st).slice(0,10).toUpperCase();
+        const map={present:'TRAV',off:'OFF',conge:'CP',maladie:'MAL',recup:'REC',ferie:'FER',formation:'FORM',sans_solde:'SS',absence_autorisee:'ABS',absence_injustifiee:'ABS'};
+        return map[st] || st.slice(0,4).toUpperCase();
+    };
+    const syncFullPlanningMonthToWeek = () => {
+        const dates = weekDates();
+        const focus = dates[3] || dates[0];
+        const selector = document.getElementById('month-selector');
+        if (selector && focus) {
+            const value = monthKey(focus);
+            const max = typeof getRhPlanningMaxMonth === 'function' ? getRhPlanningMaxMonth() : value;
+            selector.value = value > max ? max : value;
+            if (typeof enforceRhPlanningMonthHorizon === 'function') enforceRhPlanningMonthHorizon(false);
+        }
+    };
+    window.rhCockpitSetPlanView = view => {
+        const wanted=['day','week','month'].includes(String(view))?String(view):'week';
+        rhCockpitPlanView=wanted;
+        if(wanted==='day') rhCockpitWeekOffset=0;
+        syncFullPlanningMonthToWeek();
+        renderRhCockpit();
+    };
+    window.rhCockpitMoveWeek = offset => {
+        const delta = Number(offset) || 0;
+        const max = maxCockpitWeekOffset();
+        const requested = rhCockpitWeekOffset + delta;
+        rhCockpitWeekOffset = Math.min(max, Math.max(0, requested));
+        rhCockpitPlanView='week';
+        if (requested > max && typeof showToast === 'function') {
+            showToast('Horizon planning atteint : 6 mois');
+        }
+        syncFullPlanningMonthToWeek();
+        renderRhCockpit();
+    };
+    window.rhCockpitToday = () => { rhCockpitWeekOffset = 0; rhCockpitPlanView='day'; syncFullPlanningMonthToWeek(); renderRhCockpit(); };
+    window.rhCockpitGoToHorizon = () => { rhCockpitWeekOffset = maxCockpitWeekOffset(); rhCockpitPlanView='week'; syncFullPlanningMonthToWeek(); renderRhCockpit(); };
+    window.publishRhPlanningToStaff = () => {
+        try {
+            const current = typeof getRhSettings==='function' ? getRhSettings() : {};
+            if (typeof saveRhSettings==='function') saveRhSettings({...current, planningStatus:'published'});
+            if (typeof recordRhChange==='function') recordRhChange({type:'PLANNING_PUBLISHED',source:'DIRECTION_COCKPIT',month:document.getElementById('month-selector')?.value||monthKey(new Date())});
+            if (typeof showToast==='function') showToast('Planning publié au staff');
+            renderRhCockpit();
+        } catch(e) { console.error('Publication planning',e); }
+    };
+    window.renderRhCockpit = (query='') => {
+        const hub=document.getElementById('director-hub');
+        if(!hub) return;
+        const q=String(query || document.getElementById('rh-cockpit-search')?.value || '').trim().toLowerCase();
+        const all=typeof getDir==='function'?getDir():[];
+        const staff=all.filter(s=>s.active!==false);
+        const visible=q?staff.filter(s=>`${s.name||''} ${s.role||''} ${s.dept||''}`.toLowerCase().includes(q)):staff;
+        const dates=weekDates();
+        const today=new Date();today.setHours(12,0,0,0);
+        const label=document.getElementById('rh-cockpit-week-label');
+        if(label){
+            const f=d=>d.toLocaleDateString('fr-FR',{day:'2-digit',month:'short'}).replace('.','');
+            if(rhCockpitPlanView==='day') label.textContent=today.toLocaleDateString('fr-FR',{weekday:'long',day:'2-digit',month:'long',year:'numeric'});
+            else if(rhCockpitPlanView==='month') label.textContent=(dates[3]||dates[0]).toLocaleDateString('fr-FR',{month:'long',year:'numeric'});
+            else label.textContent=`${f(dates[0])} – ${f(dates[6])} ${dates[6].getFullYear()}`;
+        }
+        document.querySelectorAll('[data-rh-plan-view]').forEach(btn=>btn.classList.toggle('active',btn.dataset.rhPlanView===rhCockpitPlanView));
+        const horizonEnd = planningHorizonEnd();
+        const nextWeekBtn = document.getElementById('rh-cockpit-next-week');
+        if (nextWeekBtn) {
+            nextWeekBtn.disabled = rhCockpitWeekOffset >= maxCockpitWeekOffset();
+            nextWeekBtn.title = nextWeekBtn.disabled ? 'Horizon de 6 mois atteint' : 'Semaine suivante';
+        }
+        const horizonBtn = document.getElementById('rh-cockpit-horizon-btn');
+        if (horizonBtn) {
+            horizonBtn.title = `Planifier jusqu’au ${horizonEnd.toLocaleDateString('fr-FR')}`;
+        }
+        let planned=0,target=0,underCount=0,pointed=0;
+        const weeklyMetrics=staff.map(s=>{
+            const contract=Math.max(0,Number(s.contract)||0);
+            const plannedHours=plannedHoursForDates(s,dates);
+            const actualHours=actualHoursForDates(s,dates);
+            planned+=plannedHours; target+=contract; pointed+=actualHours;
+            if(plannedHours+0.05<contract) underCount++;
+            return {staff:s,contract,planned:plannedHours,actual:actualHours,delta:plannedHours-contract};
+        });
+        const missing=Math.max(0,target-planned);
+        const pct=target>0?Math.min(999,Math.round(planned/target*100)):0;
+        const pending=(typeof getReqs==='function'?getReqs():[]).filter(pendingRequest);
+        const liveStaff=staff.map(s=>({staff:s,state:currentServiceState(s)})).filter(x=>x.state.live);
+        const onDuty=liveStaff.length;
+        const set=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v};
+        set('stat-total-staff',staff.length); set('stat-active-staff',onDuty);
+        set('rh-cockpit-planned',`${planned.toFixed(1)} h`); set('rh-cockpit-target',`${target.toFixed(1)} h`);
+        set('rh-cockpit-percent',`${pct}% des contrats`); set('rh-cockpit-missing',`${missing.toFixed(1)} h`);
+        set('rh-cockpit-under',underCount?`${underCount} collaborateur${underCount>1?'s':''} à compléter`:'Équipe équilibrée');
+        set('req-badge',pending.length); set('rh-side-request-badge',pending.length); set('rh-cockpit-todo-count',pending.length);
+        set('rh-cockpit-request-sub',pending.length?`${pending.length} décision${pending.length>1?'s':''} à prendre`:'Aucune demande en attente');
+        const venue=document.getElementById('rh-venue-name'); if(venue) venue.textContent=(localStorage.getItem('ichef_establishment_name')||'iCHEF Établissement');
+        // Vue opérationnelle : présence réelle, équilibre des heures et journée du jour.
+        set('rh-cockpit-live-count',liveStaff.length);
+        const liveBox=document.getElementById('rh-cockpit-live-service');
+        if(liveBox){
+            liveBox.innerHTML=liveStaff.slice(0,6).map(({staff:s,state})=>{
+                const p=planFor(s,today);
+                const since=state.since?new Date(state.since).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}):'actif';
+                return `<div class="rh-live-row"><span class="rh-plan-avatar">${esc(initials(s.name))}</span><div><strong>${esc(s.name||'Collaborateur')}</strong><small>${esc(s.role||s.dept||'Équipe')} · ${esc(shiftText(p))}</small></div><span class="rh-live-badge">EN SERVICE · ${esc(since)}</span></div>`;
+            }).join('') || '<div class="rh-empty-line">Aucun collaborateur pointé en service actuellement.</div>';
+        }
+        const balance=document.getElementById('rh-cockpit-balance');
+        if(balance){
+            const sorted=[...weeklyMetrics].sort((a,b)=>b.delta-a.delta);
+            const high=sorted[0]||null;
+            const low=sorted[sorted.length-1]||null;
+            const balanceCard=(row,label,kind)=>{
+                if(!row) return `<div class="rh-balance-card ${kind}"><small>${label}</small><strong>—</strong><span>Aucune donnée</span></div>`;
+                const delta=row.delta;
+                const sign=delta>0?'+':'';
+                return `<div class="rh-balance-card ${kind} ${delta>=0?'positive':'negative'}"><small>${label}</small><strong>${esc(row.staff.name||'Collaborateur')}</strong><span>${sign}${delta.toFixed(1)} h · ${row.planned.toFixed(1)} h / ${row.contract.toFixed(1)} h</span></div>`;
+            };
+            balance.innerHTML=balanceCard(high,'PLUS D’HEURES','high')+balanceCard(low,'MOINS D’HEURES','low');
+        }
+        const todaySummary=document.getElementById('rh-cockpit-today-summary');
+        if(todaySummary){
+            const todayRows=staff.map(s=>({s,p:planFor(s,today),live:currentServiceState(s).live}));
+            const scheduled=todayRows.filter(x=>String(x.p?.status||'off').toLowerCase()!=='off' || x.live);
+            todaySummary.innerHTML=scheduled.slice(0,7).map(({s,p,live})=>`<div class="rh-today-row"><span class="rh-today-dot ${live?'live':''}"></span><div><strong>${esc(s.name||'Collaborateur')}</strong><small>${esc(s.role||s.dept||'Équipe')}</small></div><span class="rh-today-shift ${chipClass(p)}">${esc(shiftText(p))}</span>${live?'<b>EN SERVICE</b>':''}</div>`).join('') || '<div class="rh-empty-line">Aucun service planifié aujourd’hui.</div>';
+        }
+        const head=document.getElementById('rh-cockpit-plan-head');
+        const body=document.getElementById('rh-cockpit-plan-body');
+        const table=head?.closest('table');
+        if(table){table.classList.toggle('rh-plan-month-mode',rhCockpitPlanView==='month');table.classList.toggle('rh-plan-day-mode',rhCockpitPlanView==='day');}
+        if(rhCockpitPlanView==='day'){
+            if(head) head.innerHTML='<tr><th>Collaborateur</th><th>Statut</th><th>Horaires</th><th>Présence réelle</th></tr>';
+            if(body){
+                body.innerHTML=visible.slice(0,14).map(s=>{
+                    const p=planFor(s,today), state=currentServiceState(s), dateKeyToday=dayKey(today);
+                    return `<tr><td><div class="rh-plan-person"><span class="rh-plan-avatar">${esc(initials(s.name))}</span><div><strong>${esc(s.name||'Collaborateur')}</strong><small>${esc(s.role||s.dept||'Équipe')}</small></div></div></td><td><button type="button" class="rh-shift-chip rh-cockpit-edit-chip ${chipClass(p)}" data-rh-edit-staff="${esc(String(s.id))}" data-rh-edit-date="${dateKeyToday}">${esc(window.iChefPlanningMetaV202?.(p)?.label || String(p?.status||'off').replaceAll('_',' ').toUpperCase())}<span class="rh-edit-mark">✎</span></button></td><td><button type="button" class="rh-shift-chip rh-cockpit-edit-chip ${chipClass(p)}" data-rh-edit-staff="${esc(String(s.id))}" data-rh-edit-date="${dateKeyToday}">${esc(shiftText(p))}<span class="rh-edit-mark">✎</span></button></td><td>${state.live?`<span class="rh-live-badge">EN SERVICE${state.since?' · '+new Date(state.since).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}):''}</span>`:'<span class="rh-offline-badge">HORS SERVICE</span>'}</td></tr>`;
+                }).join('') || '<tr><td colspan="4"><div class="rh-empty-line">Aucun collaborateur à afficher.</div></td></tr>';
+            }
+        }else if(rhCockpitPlanView==='month'){
+            const focus=dates[3]||dates[0];
+            const first=new Date(focus.getFullYear(),focus.getMonth(),1,12,0,0,0);
+            const last=new Date(focus.getFullYear(),focus.getMonth()+1,0,12,0,0,0);
+            const monthDates=[];
+            for(let d=new Date(first);d<=last;d.setDate(d.getDate()+1)) monthDates.push(new Date(d));
+            if(head) head.innerHTML='<tr><th>Collaborateur</th>'+monthDates.map(d=>`<th class="${sameDay(d,today)?'rh-today-col':''}"><span class="v167-day-date">${['D','L','M','M','J','V','S'][d.getDay()]} ${String(d.getDate()).padStart(2,'0')}</span></th>`).join('')+'</tr>';
+            if(body){
+                body.innerHTML=visible.slice(0,14).map(s=>{
+                    const cells=monthDates.map(d=>{
+                        if(isAfterPlanningHorizon(d)) return '<td class="rh-horizon-cell"><span class="rh-month-mini off">—</span></td>';
+                        const p=planFor(s,d);
+                        return `<td class="${sameDay(d,today)?'rh-today-col':''}"><button type="button" class="rh-month-mini rh-cockpit-edit-chip ${chipClass(p)}" data-rh-edit-staff="${esc(String(s.id))}" data-rh-edit-date="${dayKey(d)}" title="${esc(shiftText(p))}">${esc(monthChipText(p))}</button></td>`;
+                    }).join('');
+                    return `<tr><td><div class="rh-plan-person"><span class="rh-plan-avatar">${esc(initials(s.name))}</span><div><strong>${esc(s.name||'Collaborateur')}</strong><small>${esc(s.role||s.dept||'Équipe')}</small></div></div></td>${cells}</tr>`;
+                }).join('') || `<tr><td colspan="${monthDates.length+1}"><div class="rh-empty-line">Aucun collaborateur à afficher.</div></td></tr>`;
+            }
+        }else{
+            if(head) head.innerHTML='<tr><th>Collaborateur</th>'+dates.map(d=>`<th class="${sameDay(d,today)?'rh-today-col':''}"><span class="v167-day-date">${['D','L','M','M','J','V','S'][d.getDay()]} ${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}</span></th>`).join('')+'</tr>';
+            if(body){
+                const rows=visible.slice(0,8).map(s=>{
+                    const cells=dates.map(d=>{
+                        if (isAfterPlanningHorizon(d)) {
+                            return `<td class="rh-horizon-cell"><div class="rh-shift-chip off rh-horizon-locked" title="Au-delà de l’horizon de planification de 6 mois">HORS PÉRIODE</div></td>`;
+                        }
+                        const p=planFor(s,d);
+                        return `<td class="${sameDay(d,today)?'rh-today-col':''}"><button type="button" class="rh-shift-chip rh-cockpit-edit-chip ${chipClass(p)}" data-rh-edit-staff="${esc(String(s.id))}" data-rh-edit-date="${dayKey(d)}" title="Modifier cette journée">${esc(shiftText(p))}<span class="rh-edit-mark">✎</span></button></td>`;
+                    }).join('');
+                    return `<tr><td><div class="rh-plan-person"><span class="rh-plan-avatar">${esc(initials(s.name))}</span><div><strong>${esc(s.name||'Collaborateur')}</strong><small>${esc(s.role||s.dept||'Équipe')} · ${Number(s.contract||0).toFixed(0)} h</small></div></div></td>${cells}</tr>`;
+                }).join('');
+                body.innerHTML=rows || '<tr><td colspan="8"><div class="rh-empty-line">Aucun collaborateur à afficher.</div></td></tr>';
+            }
+        }
+        const todo=document.getElementById('rh-cockpit-todo');
+        if(todo){
+            todo.innerHTML=pending.slice(0,3).map(r=>{
+                const id=String(r.id||r.requestNumber||r.proofId||'');
+                const typ=typeof rhRequestTypeLabel==='function'?rhRequestTypeLabel(r.type||r.requestType):String(r.type||'Demande');
+                const datesTxt=[r.startDate||r.start,r.endDate||r.end].filter(Boolean).join(' → ');
+                return `<div class="rh-list-item"><div class="rh-list-ico">▤</div><div><strong>${esc(typ)}</strong><small>${esc(r.staffName||'Collaborateur')}${datesTxt?' · '+esc(datesTxt):''}</small></div><div class="rh-list-actions"><button class="ok" title="Accepter" onclick="event.stopPropagation();setDirectorRequestStatus('${esc(id)}','approved');setTimeout(renderRhCockpit,50)">✓</button><button class="no" title="Refuser" onclick="event.stopPropagation();setDirectorRequestStatus('${esc(id)}','rejected');setTimeout(renderRhCockpit,50)">×</button></div></div>`;
+            }).join('') || '<div class="rh-empty-line">Aucune demande en attente.</div>';
+        }
+        const hours=document.getElementById('rh-cockpit-hours');
+        if(hours){
+            const diff=pointed-planned;
+            hours.innerHTML=`<div class="rh-hours-line"><span>Heures planifiées</span><strong>${planned.toFixed(1)} h</strong></div><div class="rh-hours-line"><span>Heures pointées</span><strong>${pointed.toFixed(1)} h</strong></div><div class="rh-hours-line emph"><span>Écart pointé / planning</span><strong>${diff>=0?'+':''}${diff.toFixed(1)} h</strong></div><div class="rh-hours-line"><span>Objectif contrats</span><strong>${target.toFixed(1)} h</strong></div><div class="rh-hours-progress"><i style="width:${Math.min(100,pct)}%"></i></div><div class="rh-hours-percent"><strong>${pct}%</strong> · ${planned.toFixed(1)} h / ${target.toFixed(1)} h</div>`;
+        }
+        const alerts=document.getElementById('rh-cockpit-alerts');
+        if(alerts){
+            const rows=[];
+            if(missing>0.05) rows.push(`<div class="rh-list-item rh-alert-red"><div class="rh-list-ico">!</div><div><strong>Sous-planification</strong><small>${missing.toFixed(1)} h restent à planifier sur la semaine.</small></div><span></span></div>`);
+            const over=staff.map(s=>{let h=0;dates.forEach(d=>{const p=planFor(s,d);h+=typeof calculateNet==='function'?Number(calculateNet(p)||0):0});return {s,h,c:Number(s.contract)||0}}).filter(x=>x.h>x.c+0.05);
+            if(over.length) rows.push(`<div class="rh-list-item rh-alert-gold"><div class="rh-list-ico">△</div><div><strong>Dépassement d’heures</strong><small>${over.length} collaborateur${over.length>1?'s':''} au-dessus du contrat hebdomadaire.</small></div><span></span></div>`);
+            const settings=typeof getRhSettings==='function'?getRhSettings():{};
+            if(String(settings.planningStatus||'draft')!=='published') rows.push(`<div class="rh-list-item rh-alert-blue"><div class="rh-list-ico">i</div><div><strong>Planning non publié</strong><small>Le planning est actuellement ${esc(String(settings.planningStatus||'brouillon').replaceAll('_',' '))}.</small></div><span></span></div>`);
+            if(!rows.length) rows.push(`<div class="rh-list-item rh-alert-green"><div class="rh-list-ico">✓</div><div><strong>Planning équilibré</strong><small>Aucune alerte prioritaire détectée sur cette semaine.</small></div><span></span></div>`);
+            alerts.innerHTML=rows.slice(0,3).join('');
+        }
+        set('rh-cockpit-sync-time',`Dernière synchronisation : ${new Date().toLocaleString('fr-FR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}`);
+    };
+    const originalBack=window.backToHub;
+    if(typeof originalBack==='function'){
+        window.backToHub=function(){originalBack.apply(this,arguments);setTimeout(()=>renderRhCockpit(),0)};
+    }
+    const originalDash=window.updateDashboardStats;
+    if(typeof originalDash==='function'){
+        window.updateDashboardStats=function(){
+            return originalDash.apply(this,arguments);
+        };
+    }
+    document.addEventListener('DOMContentLoaded',()=>setTimeout(()=>renderRhCockpit(),350));
+    setInterval(()=>{
+        const hub=document.getElementById('director-hub');
+        if(hub?.style.display!=='flex') return;
+        const el=document.getElementById('rh-cockpit-sync-time');
+        if(!el) return;
+        const next=`Dernière synchronisation : ${new Date().toLocaleString('fr-FR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}`;
+        if(el.textContent!==next) el.textContent=next;
+    },15000);
+})();
+
+
+;
+/* RH V264 - preserved script #9 */
+(function(){
+    const AUTO_KEY='ichef_rh_auto_engine_v1';
+    function autoGet(){try{return {...{enabled:true,autoTimesheets:true,autoPayroll:true,lastRun:{}},...(JSON.parse(localStorage.getItem(AUTO_KEY)||'{}')||{})}}catch(e){return {enabled:true,autoTimesheets:true,autoPayroll:true,lastRun:{}}}}
+    function autoSet(v){localStorage.setItem(AUTO_KEY,JSON.stringify(v));return v}
+    function monthKeyFromTs(ts){const d=new Date(Number(ts||0));if(Number.isNaN(d.getTime()))return '';return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`}
+    function dateKeyFromTs(ts){const d=new Date(Number(ts||0));if(Number.isNaN(d.getTime()))return '';return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
+    function dayKeyFromDateKey(k){return String(Number(String(k||'').slice(8,10))).padStart(2,'0')}
+    function round2(v){return Math.round(Number(v||0)*100)/100}
+    function isManualDay(day){if(!day||typeof day!=='object')return false;return Boolean(day.correctedAt||day.correctionReason||day.manualCorrection||day.manuallyCorrected||day.adjustedBy||day.override===true||String(day.source||'').toUpperCase().includes('MANUAL'))}
+    function ensureDay(days,date){const dk=dayKeyFromDateKey(date);if(!days[dk])days[dk]={date,workedHours:0,sessions:[],anomalies:[],source:'AUTO_POINTAGE'};return days[dk]}
+    function pushAnomaly(days,date,message,punch){if(!date)return;const d=ensureDay(days,date);d.anomalies.push({type:'AUTO_CONTROL',message,punchId:punch?.id||null,timestamp:Number(punch?.timestamp||0)||null});}
+    function buildAutomaticDays(staffId,month){
+        const raw=(typeof getPunches==='function'?getPunches():[]).filter(p=>String(p?.staffId)===String(staffId)).slice().sort((a,b)=>Number(a?.timestamp||0)-Number(b?.timestamp||0));
+        const days={}; let open=null;
+        raw.forEach(p=>{
+            const type=String(p?.type||'').toUpperCase(); const pMonth=monthKeyFromTs(p?.timestamp); const pDate=dateKeyFromTs(p?.timestamp);
+            if(type==='ENTRÉE'||type==='ENTREE'){
+                if(open){const od=dateKeyFromTs(open.timestamp);if(monthKeyFromTs(open.timestamp)===month)pushAnomaly(days,od,'Entrée sans sortie avant le pointage suivant',open)}
+                open=p; return;
+            }
+            if(type==='SORTIE'){
+                if(!open){if(pMonth===month)pushAnomaly(days,pDate,'Sortie sans entrée correspondante',p);return}
+                const inTs=Number(open.timestamp||0),outTs=Number(p.timestamp||0),inMonth=monthKeyFromTs(inTs),inDate=dateKeyFromTs(inTs);
+                let hours=(outTs-inTs)/3600000;
+                if(inMonth===month){
+                    const d=ensureDay(days,inDate);
+                    const anomalies=[];
+                    if(!Number.isFinite(hours)||hours<0){hours=0;anomalies.push('Durée de pointage invalide')}
+                    if(hours>18)anomalies.push('Amplitude supérieure à 18 h à contrôler');
+                    const session={entry:open,exit:p,hours:round2(Math.max(0,hours)),source:'AUTO_POINTAGE'};
+                    d.sessions.push(session); d.workedHours=round2(d.workedHours+session.hours);
+                    anomalies.forEach(msg=>d.anomalies.push({type:'AUTO_CONTROL',message:msg,entryTimestamp:inTs,exitTimestamp:outTs}));
+                }
+                open=null;
+            }
+        });
+        if(open&&monthKeyFromTs(open.timestamp)===month)pushAnomaly(days,dateKeyFromTs(open.timestamp),'Entrée sans sortie',open);
+        return days;
+    }
+    async function buildAutomaticTimesheets(month){
+        if(typeof getRealTimesheets!=='function'||typeof saveRealTimesheetsLocal!=='function')return {employees:0,updated:0,skipped:0,anomalies:0};
+        const store=getRealTimesheets()||{months:{}};store.months=store.months||{};const monthNode=store.months[month]||{};monthNode.staff=monthNode.staff||{};store.months[month]=monthNode;
+        const staff=(typeof getDir==='function'?getDir():[]).filter(s=>s.active!==false);let updated=0,skipped=0,anomalies=0;
+        staff.forEach(st=>{
+            const id=String(st.id);const existing=monthNode.staff[id]||{};const status=String(existing.status||'').toUpperCase();
+            if(status==='LOCKED'||status==='VALIDATED'){skipped++;return}
+            const autoDays=buildAutomaticDays(st.id,month);const merged={};
+            const keys=new Set([...Object.keys(autoDays),...Object.keys(existing.days||{})]);
+            keys.forEach(k=>{const old=(existing.days||{})[k],fresh=autoDays[k];merged[k]=isManualDay(old)?old:(fresh||old);if(Array.isArray(merged[k]?.anomalies))anomalies+=merged[k].anomalies.length});
+            monthNode.staff[id]={...existing,staffId:st.id,staffName:st.name,month,status:'TO_VERIFY',days:merged,generatedAt:new Date().toISOString(),source:'AUTO_POINTAGE'};updated++;
+        });
+        saveRealTimesheetsLocal(store);
+        try{if(typeof API!=='undefined'&&API?.update)await API.update('RH_TIMESHEET_REAL',store)}catch(e){console.warn('[iCHEF RH] Sync feuilles automatiques:',e)}
+        try{if(typeof recordRhChange==='function')recordRhChange({type:'AUTO_TIMESHEETS',message:`Feuilles d'heures générées automatiquement pour ${month}`,month,updated,skipped,anomalies})}catch(e){}
+        return {employees:staff.length,updated,skipped,anomalies};
+    }
+    window.iChefRunAutomaticMonth=async function(month,opts={}){
+        month=month||document.getElementById('real-timesheet-month')?.value||document.getElementById('payroll-month')?.value||new Date().toISOString().slice(0,7);
+        const cfg=autoGet();if(!cfg.enabled&&!opts.force)return null;
+        let timeResult=null,payResult=null;
+        if(cfg.autoTimesheets!==false)timeResult=await buildAutomaticTimesheets(month);
+        if(cfg.autoPayroll!==false&&typeof window.iChefPayrollGenerateAutomaticRun==='function')payResult=window.iChefPayrollGenerateAutomaticRun(month,{silent:true});
+        cfg.lastRun=cfg.lastRun||{};cfg.lastRun[month]={at:new Date().toISOString(),timesheets:timeResult,payroll:payResult?.totals||null};autoSet(cfg);
+        try{if(typeof renderRealTimesheets==='function')renderRealTimesheets()}catch(e){}
+        try{if(typeof window.renderPayrollCenter==='function'&&document.getElementById('payroll-interface')?.style.display==='flex')window.renderPayrollCenter()}catch(e){}
+        updateAutoUi();
+        if(!opts.silent&&typeof showToast==='function')showToast('Heures et salaires préparés automatiquement');
+        return {timesheets:timeResult,payroll:payResult};
+    };
+    window.iChefToggleAutoRh=function(){const cfg=autoGet();cfg.enabled=!cfg.enabled;autoSet(cfg);updateAutoUi();if(cfg.enabled)window.iChefRunAutomaticMonth(null,{silent:true});};
+    function updateAutoUi(){
+        const cfg=autoGet();document.querySelectorAll('.rh-auto-toggle').forEach(b=>{b.classList.toggle('on',cfg.enabled);b.textContent=cfg.enabled?'AUTOMATIQUE : ACTIVÉ':'AUTOMATIQUE : ARRÊTÉ'});
+        const month=document.getElementById('real-timesheet-month')?.value||document.getElementById('payroll-month')?.value||new Date().toISOString().slice(0,7);const last=cfg.lastRun?.[month];
+        document.querySelectorAll('.rh-auto-status').forEach(el=>{el.innerHTML=last?`Dernière génération : <strong>${new Date(last.at).toLocaleString('fr-FR')}</strong>`:'Aucune génération pour ce mois';});
+    }
+    function installTimesheetAutoBar(){
+        const target=document.getElementById('real-timesheet-summary');if(!target||document.getElementById('rh-auto-timesheet-bar'))return;
+        const bar=document.createElement('div');bar.id='rh-auto-timesheet-bar';bar.className='rh-auto-bar';bar.innerHTML=`<div class="rh-auto-copy"><strong>Feuilles d'heures + salaires automatiques</strong><span>Pointages → heures réelles → préparation du salaire du mois. Les corrections manuelles et les mois validés/clôturés sont préservés.</span><div class="rh-auto-status"></div></div><div class="rh-auto-actions"><button class="rh-auto-toggle" onclick="iChefToggleAutoRh()"></button><button class="rh-auto-btn" onclick="iChefRunAutomaticMonth(document.getElementById('real-timesheet-month')?.value,{force:true})">GÉNÉRER LE MOIS</button></div>`;
+        target.parentNode.insertBefore(bar,target);updateAutoUi();
+    }
+    function installPayrollAutoControls(){
+        const top=document.querySelector('#payroll-interface .payroll-topbar');if(!top||document.getElementById('rh-auto-payroll-btn'))return;
+        const toggle=document.createElement('button');toggle.id='rh-auto-payroll-toggle';toggle.className='rh-auto-toggle';toggle.onclick=window.iChefToggleAutoRh;top.appendChild(toggle);
+        const btn=document.createElement('button');btn.id='rh-auto-payroll-btn';btn.className='rh-auto-btn';btn.textContent='RECALCULER HEURES + SALAIRES';btn.onclick=()=>window.iChefRunAutomaticMonth(document.getElementById('payroll-month')?.value,{force:true});top.appendChild(btn);updateAutoUi();
+    }
+    function installHubAutoButton(){
+        const grid=document.querySelector('#director-hub .grid-2');if(!grid||document.getElementById('rh-auto-hub-btn'))return;
+        const b=document.createElement('button');b.id='rh-auto-hub-btn';b.className='pay-btn';b.style.cssText='border-color:var(--success);color:var(--success);background:rgba(16,185,129,.04);padding:22px;grid-column:span 2;';b.textContent='AUTOMATISATION RH · HEURES + SALAIRES';b.onclick=()=>window.iChefRunAutomaticMonth(new Date().toISOString().slice(0,7),{force:true});grid.insertBefore(b,grid.firstChild);
+    }
+    function installHooks(){
+        installTimesheetAutoBar();installPayrollAutoControls();installHubAutoButton();updateAutoUi();
+        const tm=document.getElementById('real-timesheet-month');if(tm&&!tm.dataset.autoHook){tm.dataset.autoHook='1';tm.addEventListener('change',()=>{if(autoGet().enabled)window.iChefRunAutomaticMonth(tm.value,{silent:true})})}
+        const pm=document.getElementById('payroll-month');if(pm&&!pm.dataset.autoHook){pm.dataset.autoHook='1';pm.addEventListener('change',()=>{if(autoGet().enabled)window.iChefRunAutomaticMonth(pm.value,{silent:true})})}
+        if(typeof window.openPayrollCenter==='function'&&!window.openPayrollCenter.__autoWrapped){const orig=window.openPayrollCenter;const wrapped=function(){const r=orig.apply(this,arguments);const month=document.getElementById('payroll-month')?.value;if(autoGet().enabled)setTimeout(()=>window.iChefRunAutomaticMonth(month,{silent:true}),0);return r};wrapped.__autoWrapped=true;window.openPayrollCenter=wrapped;}
+        if(typeof window.submitPunch==='function'&&!window.submitPunch.__autoWrapped){const origPunch=window.submitPunch;const wrappedPunch=async function(){const r=await origPunch.apply(this,arguments);if(autoGet().enabled)setTimeout(()=>window.iChefRunAutomaticMonth(new Date().toISOString().slice(0,7),{silent:true}),250);return r};wrappedPunch.__autoWrapped=true;window.submitPunch=wrappedPunch;}
+    }
+    document.addEventListener('DOMContentLoaded',()=>{installHooks();setTimeout(installHooks,700);setTimeout(()=>{if(autoGet().enabled)window.iChefRunAutomaticMonth(new Date().toISOString().slice(0,7),{silent:true})},1200)});
+})();
+
+;
+
+;
+/* RH V264 - preserved script #10 */
+(function(){
+    'use strict';
+    const DB_NAME='ichef_rh_offline_v1', DB_VERSION=1, STORE='punch_queue', LS_FALLBACK='ichef_rh_offline_queue_v1';
+    let syncRunning=false, onlineHideTimer=null;
+    function uid(){
+        if(globalThis.crypto?.randomUUID) return 'rhof_'+crypto.randomUUID();
+        return 'rhof_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2)+'_'+Math.random().toString(36).slice(2);
+    }
+    function openDb(){
+        return new Promise((resolve,reject)=>{
+            if(!('indexedDB' in window)) return reject(new Error('IndexedDB indisponible'));
+            const req=indexedDB.open(DB_NAME,DB_VERSION);
+            req.onupgradeneeded=()=>{const db=req.result;if(!db.objectStoreNames.contains(STORE)){const st=db.createObjectStore(STORE,{keyPath:'id'});st.createIndex('status','status',{unique:false});st.createIndex('clientTimestamp','clientTimestamp',{unique:false});}};
+            req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error||new Error('IndexedDB erreur'));
+        });
+    }
+    async function dbAll(){
+        try{const db=await openDb();return await new Promise((resolve,reject)=>{const tx=db.transaction(STORE,'readonly');const r=tx.objectStore(STORE).getAll();r.onsuccess=()=>resolve(Array.isArray(r.result)?r.result:[]);r.onerror=()=>reject(r.error);tx.oncomplete=()=>db.close();});}
+        catch(e){try{return JSON.parse(localStorage.getItem(LS_FALLBACK)||'[]')}catch(_){return []}}
+    }
+    async function dbPut(item){
+        try{const db=await openDb();await new Promise((resolve,reject)=>{const tx=db.transaction(STORE,'readwrite');tx.objectStore(STORE).put(item);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error)});db.close();return item;}
+        catch(e){const arr=await dbAll();const i=arr.findIndex(x=>x.id===item.id);if(i>=0)arr[i]=item;else arr.push(item);localStorage.setItem(LS_FALLBACK,JSON.stringify(arr));return item;}
+    }
+    async function dbDelete(id){
+        try{const db=await openDb();await new Promise((resolve,reject)=>{const tx=db.transaction(STORE,'readwrite');tx.objectStore(STORE).delete(id);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error)});db.close();}
+        catch(e){const arr=(await dbAll()).filter(x=>x.id!==id);localStorage.setItem(LS_FALLBACK,JSON.stringify(arr));}
+    }
+    async function queueEvent(item){item.status=item.status||'PENDING';item.attempts=Number(item.attempts||0);item.lastError=item.lastError||'';await dbPut(item);await updateBadge();return item;}
+    function provisionalType(staffId,ts){
+        const prev=(typeof getPunches==='function'?getPunches():[]).filter(p=>String(p?.staffId)===String(staffId)&&Number(p?.timestamp||0)<Number(ts)).sort((a,b)=>Number(a.timestamp||0)-Number(b.timestamp||0)).pop();
+        return prev&&String(prev.type||'').toUpperCase()==='ENTRÉE'?'SORTIE':'ENTRÉE';
+    }
+    function addProvisional(item,staff,type){
+        try{
+            const punches=(typeof getPunches==='function'?getPunches():[]).filter(p=>String(p?.id||'')!==String(item.id));
+            punches.push({id:item.id,tenantID:item.tenantID,staffId:staff.id,staffName:staff.name||'',dept:staff.dept||'',role:staff.role||'',type,timestamp:item.clientTimestamp,clientRecordedAt:new Date(item.clientTimestamp).toISOString(),serverRecordedAt:null,deviceId:item.deviceId||'',terminal:'RH_POINTEUSE',photo:'',offlinePending:true,offlineEventId:item.id,timestampSource:'CLIENT_DEVICE'});
+            punches.sort((a,b)=>Number(a.timestamp||0)-Number(b.timestamp||0));
+            storePunchesNoLoss(punches,'offline-provisional');
+        }catch(e){console.warn('[iCHEF RH OFFLINE] pointage provisoire local',e)}
+    }
+    function applyServerData(data){
+        try{
+            if(Array.isArray(data?.punches)) storePunchesNoLoss(data.punches,'offline-server-response');
+            if(data?.timesheets&&typeof saveRealTimesheetsLocal==='function') saveRealTimesheetsLocal(data.timesheets);
+            if(Array.isArray(data?.staffAccess)){
+                staffAccess=data.staffAccess;
+                localStorage.setItem('empire_hr_directory',JSON.stringify(typeof buildRhDirectoryFromServer==='function'?buildRhDirectoryFromServer(staffAccess,getDir()):staffAccess));
+            }
+            if(document.getElementById('logs-interface')?.style.display==='flex'&&typeof renderLogs==='function')renderLogs();
+            if(document.getElementById('timesheets-interface')?.style.display==='flex'&&typeof renderRealTimesheets==='function')renderRealTimesheets();
+        }catch(e){console.warn('[iCHEF RH OFFLINE] application réponse serveur',e)}
+    }
+    async function fetchPunch(item,pin,isOfflineSync){
+        const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),7000);
+        try{
+            const response=await fetch(`${SERVER_URL_JS}/api/rh/punch`,{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json','Idempotency-Key':item.id},cache:'no-store',signal:controller.signal,body:JSON.stringify({tenantID:item.tenantID,staffId:item.staffId,pin,deviceId:item.deviceId,photo:item.photo||'',offlineEventId:item.id,clientTimestamp:item.clientTimestamp,clientTimezoneOffset:item.clientTimezoneOffset,offlineSync:isOfflineSync===true,queuedAt:item.queuedAt})});
+            const data=await response.json().catch(()=>({}));
+            if(!response.ok||!data.success){const err=new Error(data.error||`Erreur HTTP ${response.status}`);err.httpStatus=response.status;err.code=data.code||'';err.retryable=response.status===408||response.status===429||response.status>=500;throw err;}
+            return data;
+        }catch(e){if(e?.name==='AbortError'){const x=new Error('Connexion trop lente ou interrompue.');x.retryable=true;x.code='NETWORK_TIMEOUT';throw x}if(typeof e.retryable==='undefined'&&(e instanceof TypeError||!navigator.onLine))e.retryable=true;throw e}
+        finally{clearTimeout(timer)}
+    }
+    function feedback(staff,type,ts,offline){
+        const overlay=document.getElementById('punch-success-overlay');
+        if(overlay){overlay.style.background=offline?'rgba(245,158,11,.96)':(type==='ENTRÉE'?'rgba(16,185,129,.96)':'rgba(56,189,248,.96)');overlay.style.display='flex';const t=document.getElementById('punch-success-title'),n=document.getElementById('punch-success-name'),time=document.getElementById('punch-success-time');if(t)t.innerText=offline?`${type} ENREGISTRÉE HORS LIGNE`:`${type} ENREGISTRÉE`;if(n)n.innerText=staff?.name||'Collaborateur';if(time)time.innerText=new Date(ts).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});}
+        if(typeof showToast==='function')showToast(offline?'Pointage conservé hors ligne · synchronisation automatique':(type==='ENTRÉE'?'Entrée enregistrée':'Sortie enregistrée'));
+        setTimeout(()=>{const o=document.getElementById('punch-success-overlay');if(punchKioskMode){if(o)o.style.display='none';clearPunchPin();if(typeof updatePunchClockDisplay==='function')updatePunchClockDisplay();}else if(typeof cancelPunchClock==='function')cancelPunchClock();},offline?1700:1200);
+    }
+    async function updateBadge(){
+        const el=document.getElementById('rh-offline-status');if(!el)return;
+        const q=await dbAll(),pending=q.filter(x=>x.status!=='BLOCKED').length,blocked=q.filter(x=>x.status==='BLOCKED').length,txt=el.querySelector('.txt');
+        el.className='';
+        if(!navigator.onLine){el.classList.add('offline');el.style.display='flex';txt.textContent=`HORS LIGNE · ${pending+blocked} À SYNCHRONISER`;return}
+        if(blocked){el.classList.add('blocked');el.style.display='flex';txt.textContent=`${blocked} POINTAGE${blocked>1?'S':''} À CONTRÔLER`;return}
+        if(syncRunning||pending){el.classList.add('syncing');el.style.display='flex';txt.textContent=syncRunning?`SYNCHRONISATION · ${pending}`:`EN ATTENTE · ${pending}`;return}
+        el.style.display='flex';txt.textContent='EN LIGNE · SYNCHRONISÉ';clearTimeout(onlineHideTimer);onlineHideTimer=setTimeout(()=>{if(navigator.onLine)el.style.display='none'},2500);
+    }
+    async function syncQueue(options={}){
+        if(syncRunning||!navigator.onLine)return;syncRunning=true;await updateBadge();
+        const touchedMonths=new Set();
+        try{
+            const items=(await dbAll()).filter(x=>x.status!=='BLOCKED').sort((a,b)=>Number(a.clientTimestamp||0)-Number(b.clientTimestamp||0));
+            for(const item of items){
+                const staff=(typeof getDir==='function'?getDir():[]).find(s=>String(s.id)===String(item.staffId)&&s.active!==false),pin=String(staff?.pin||'').trim();
+                if(!staff||!/^\d{4,12}$/.test(pin)){await dbPut({...item,status:'BLOCKED',lastError:'Collaborateur/PIN local indisponible. Contrôle manager requis.',lastAttemptAt:new Date().toISOString(),attempts:Number(item.attempts||0)+1});break}
+                try{
+                    const data=await fetchPunch(item,pin,true);await dbDelete(item.id);applyServerData(data);touchedMonths.add(new Date(Number(item.clientTimestamp)).toISOString().slice(0,7));
+                }catch(e){
+                    const updated={...item,attempts:Number(item.attempts||0)+1,lastAttemptAt:new Date().toISOString(),lastError:e?.message||'Erreur de synchronisation',lastErrorCode:e?.code||''};
+                    if(e?.retryable===false||([400,401,403,404,409,422].includes(Number(e?.httpStatus)))) updated.status='BLOCKED';
+                    await dbPut(updated);if(updated.status==='BLOCKED')console.error('[iCHEF RH OFFLINE] contrôle requis',updated.lastErrorCode,updated.lastError);break;
+                }
+            }
+            if(touchedMonths.size&&typeof window.iChefRunAutomaticMonth==='function'){for(const m of touchedMonths){try{await window.iChefRunAutomaticMonth(m,{force:true,silent:true})}catch(_){}}}
+            if(options.manual&&typeof showToast==='function'){const left=(await dbAll()).filter(x=>x.status!=='BLOCKED').length;showToast(left?'Synchronisation partielle · certains pointages restent en attente':'Pointages hors ligne synchronisés');}
+        }finally{syncRunning=false;await updateBadge()}
+    }
+    window.iChefRhSyncOfflinePunches=syncQueue;
+    // En présence de pointages provisoires, les heures locales priment jusqu'à la confirmation serveur.
+    if(typeof getActualHoursSummary==='function'&&!getActualHoursSummary.__offlineAware){
+        const original=getActualHoursSummary;
+        const wrapped=function(staffId,monthStr){
+            try{const hasPending=(typeof getPunches==='function'?getPunches():[]).some(p=>p?.offlinePending===true&&String(p?.staffId)===String(staffId)&&new Date(Number(p?.timestamp||0)).toISOString().slice(0,7)===monthStr);if(hasPending){const pairs=getPunchPairsForStaff(staffId,monthStr),total=pairs.reduce((sum,p)=>sum+Number(p.hours||0),0);return {total:Math.round(total*100)/100,pairs,byDay:getActualHoursByDay(staffId,monthStr),anomalies:0,sheetStatus:'OFFLINE_PENDING',source:'LOCAL_OFFLINE_PUNCHES'}}}catch(_){ }
+            return original(staffId,monthStr);
+        };wrapped.__offlineAware=true;getActualHoursSummary=wrapped;
+    }
+    // Remplace le pointage serveur-obligatoire par un pointage idempotent avec secours hors ligne.
+    window.submitPunch=async function(){
+        const enteredPin=String(punchPin||'').trim();
+        if(!/^\d{4,12}$/.test(enteredPin)){alert('Le code PIN doit contenir entre 4 et 12 chiffres.');clearPunchPin();return}
+        if(punchSubmitInFlight)return;punchSubmitInFlight=true;
+        try{
+            let staff=(typeof getDir==='function'?getDir():[]).find(s=>String(s.pin||'').trim()===enteredPin&&s.active!==false);
+            if(!staff&&navigator.onLine){try{await refreshRhStaffFromServer();staff=getDir().find(s=>String(s.pin||'').trim()===enteredPin&&s.active!==false)}catch(_){}}
+            if(!staff){alert(navigator.onLine?'CODE PIN INVALIDE OU COLLABORATEUR INACTIF':'PIN INCONNU HORS LIGNE · reconnectez une fois l’appareil pour actualiser le personnel');return}
+            const video=document.getElementById('punch-video'),canvas=document.getElementById('punch-canvas');if(!video||!canvas)throw new Error('Caméra pointeuse indisponible.');const ctx=canvas.getContext('2d');if(!ctx)throw new Error('Impossible de capturer la photo de pointage.');canvas.width=320;canvas.height=240;ctx.drawImage(video,0,0,canvas.width,canvas.height);const photo=canvas.toDataURL('image/jpeg',0.55);
+            const ts=Date.now(),item={id:uid(),tenantID:tenantID_JS,staffId:staff.id,deviceId:RH_DEVICE_ID,photo,clientTimestamp:ts,clientTimezoneOffset:new Date(ts).getTimezoneOffset(),queuedAt:new Date().toISOString(),status:'PENDING',attempts:0};
+            if(navigator.onLine){
+                try{const data=await fetchPunch(item,enteredPin,false);applyServerData(data);feedback(staff,data.punchType||provisionalType(staff.id,ts),data.punch?.timestamp||ts,false);if(typeof window.iChefRunAutomaticMonth==='function')setTimeout(()=>window.iChefRunAutomaticMonth(new Date(ts).toISOString().slice(0,7),{force:true,silent:true}),250);return}
+                catch(e){if(e?.retryable!==true)throw e;console.warn('[iCHEF RH OFFLINE] réseau interrompu, mise en file',e?.message||e)}
+            }
+            const type=provisionalType(staff.id,ts);await queueEvent(item);addProvisional(item,staff,type);feedback(staff,type,ts,true);if(typeof window.iChefRunAutomaticMonth==='function')setTimeout(()=>window.iChefRunAutomaticMonth(new Date(ts).toISOString().slice(0,7),{force:true,silent:true}),100);
+        }catch(e){console.error('Erreur pointage :',e);alert(e?.message||'Erreur de pointage.');}
+        finally{punchSubmitInFlight=false;clearPunchPin();await updateBadge()}
+    };
+    window.submitPunch.__offlineAware=true;
+    window.addEventListener('online',()=>{updateBadge();setTimeout(()=>syncQueue(),250)});
+    window.addEventListener('offline',updateBadge);
+    document.getElementById('rh-offline-status')?.addEventListener('click',()=>syncQueue({manual:true}));
+    document.addEventListener('DOMContentLoaded',()=>{updateBadge();setTimeout(()=>syncQueue(),900)});
+    setInterval(()=>{if(navigator.onLine)syncQueue()},30000);
+    if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost'||location.hostname==='127.0.0.1')){
+        window.addEventListener('load',()=>navigator.serviceWorker.register('/sw-rh.js?v=266',{scope:'/'}).catch(e=>console.warn('[iCHEF RH OFFLINE] Service Worker non installé',e?.message||e)));
+    }
+})();
+
+;
+
+;
+/* RH V264 - preserved script #11 */
+/* =========================================================
+   iCHEF OS · PORTE D'ENTRÉE OFFICIELLE V77
+   - rh.html réservé à la Direction RH
+   - PIN Direction serveur => cockpit Direction
+   - Centre de contrôle => pointeuse / direction
+   ========================================================= */
+let officialGatewayPin = "";
+let officialGatewayBusy = false;
+function setOfficialGatewayStatus(message, type = "ok") {
+    const box = document.getElementById("official-gateway-status");
+    const text = document.getElementById("official-gateway-status-text");
+    if (!box || !text) return;
+    box.classList.remove("offline", "error");
+    if (type === "offline") box.classList.add("offline");
+    if (type === "error") box.classList.add("error");
+    text.textContent = String(message || "");
+}
+function renderOfficialGatewayPin(error = false) {
+    const root = document.getElementById("official-pin-display");
+    if (!root) return;
+    const dots = root.querySelectorAll(".gateway-pin-dot");
+    dots.forEach((dot, index) => {
+        dot.classList.toggle("filled", index < Math.min(officialGatewayPin.length, dots.length));
+        dot.classList.toggle("error", Boolean(error));
+    });
+    const overflow = document.getElementById("official-pin-overflow");
+    if (overflow) {
+        const extra = Math.max(0, officialGatewayPin.length - dots.length);
+        overflow.textContent = extra ? `+${extra}` : "";
+        overflow.classList.toggle("show", extra > 0);
+    }
+}
+function appendOfficialGatewayPin(value) {
+    if (officialGatewayBusy || officialGatewayPin.length >= 12) return;
+    officialGatewayPin += String(value);
+    renderOfficialGatewayPin(false);
+    setOfficialGatewayStatus(
+        navigator.onLine
+            ? "ACCÈS RH AUTORISÉ · PIN SERVEUR REQUIS"
+            : "MODE HORS LIGNE · CONNEXION SERVEUR REQUISE",
+        navigator.onLine ? "ok" : "offline"
+    );
+}
+function deleteOfficialGatewayPin() {
+    if (officialGatewayBusy) return;
+    officialGatewayPin = officialGatewayPin.slice(0, -1);
+    renderOfficialGatewayPin(false);
+}
+function clearOfficialGatewayPin() {
+    if (officialGatewayBusy) return;
+    officialGatewayPin = "";
+    renderOfficialGatewayPin(false);
+}
+function resetOfficialGateway() {
+    officialGatewayPin = "";
+    officialGatewayBusy = false;
+    renderOfficialGatewayPin(false);
+    const submit = document.getElementById("official-gateway-submit");
+    if (submit) submit.disabled = false;
+    setOfficialGatewayStatus(
+        navigator.onLine
+            ? "ACCÈS RH AUTORISÉ · PIN SERVEUR REQUIS"
+            : "MODE HORS LIGNE · CONNEXION SERVEUR REQUISE",
+        navigator.onLine ? "ok" : "offline"
+    );
+}
+function openOfficialAccessCenter() {
+    const el = document.getElementById("official-access-center");
+    if (!el) return;
+    el.classList.add("show");
+    el.setAttribute("aria-hidden", "false");
+}
+function closeOfficialAccessCenter() {
+    const el = document.getElementById("official-access-center");
+    if (!el) return;
+    el.classList.remove("show");
+    el.setAttribute("aria-hidden", "true");
+}
+async function submitOfficialGatewayPin() {
+    const pin = String(officialGatewayPin || "").trim();
+    if (officialGatewayBusy) return;
+    if (!/^\d{4,12}$/.test(pin)) {
+        renderOfficialGatewayPin(true);
+        setOfficialGatewayStatus("PIN INCOMPLET · 4 À 12 CHIFFRES", "error");
+        return;
+    }
+    officialGatewayBusy = true;
+    const submit = document.getElementById("official-gateway-submit");
+    if (submit) submit.disabled = true;
+    setOfficialGatewayStatus("VÉRIFICATION SÉCURISÉE EN COURS…", "ok");
+    try {
+        /* rh.html est réservé à la Direction RH.
+           Le portail Staff est une interface séparée et n'est plus exposé ici. */
+        const auth = await verifyPinWithServer(pin);
+        if (!auth?.success) {
+            renderOfficialGatewayPin(true);
+            setOfficialGatewayStatus(auth?.error || "PIN NON RECONNU", "error");
+            return;
+        }
+        const serverRole = String(auth.role || "").trim().toLowerCase();
+        const serverDept = String(auth.dept || "").trim().toLowerCase();
+        const directionRoles = new Set([
+            "master",
+            "admin",
+            "manager",
+            "direction",
+            "directeur",
+            "gerant",
+            "gérant",
+            "responsable",
+            "responsable rh",
+            "rh",
+            "superviseur",
+            "supervisor",
+            "owner",
+            "proprietaire",
+            "propriétaire",
+            "founder",
+            "fondateur"
+        ]);
+        const directionDepts = new Set(["admin","direction","rh","management"]);
+        const serverManager =
+            auth?.isManager === true ||
+            auth?.isMaster === true ||
+            directionRoles.has(serverRole) ||
+            directionDepts.has(serverDept);
+        if (!serverManager) {
+            renderOfficialGatewayPin(true);
+            setOfficialGatewayStatus("PIN VALIDE · DROITS DIRECTION REQUIS", "error");
+            return;
+        }
+        // Le portail vérifie le PIN puis le conserve uniquement en mémoire
+        // pour les appels RH protégés (planning, IA, synchronisation).
+        currentPin = pin;
+        rhDirectionAuthPin = pin;
+        loginMode = "director";
+        currentDept = "admin";
+        document.querySelectorAll(".full-interface").forEach(el => el.style.display = "none");
+        document.getElementById("employee-portal").style.display = "none";
+        document.getElementById("landing-portal").style.display = "none";
+        document.getElementById("director-hub").style.display = "flex";
+        const hubDept = document.getElementById("hub-dept-display");
+        if (hubDept) hubDept.innerText = "DIRECTION";
+        try {
+            // Une fois le PIN Direction validé, on recharge l'état RH protégé.
+            const state = await API.getState();
+            if (state?.activeOrders) {
+                if (state.activeOrders['DIRECTORY_MASTER']) {
+                    localStorage.setItem(
+                        'empire_hr_directory',
+                        JSON.stringify(state.activeOrders['DIRECTORY_MASTER'].data || [])
+                    );
+                }
+                if (state.activeOrders['TIMESHEETS_MASTER']) {
+                    applyRemoteTimesheets(
+                        state.activeOrders['TIMESHEETS_MASTER'].data || {},
+                        'direction-auth'
+                    );
+                }
+                if (state.activeOrders['REQUESTS_MASTER'] || state.activeOrders['STAFF_REQUESTS']) {
+                    const reqRows =
+                        state.activeOrders['REQUESTS_MASTER']?.data ||
+                        state.activeOrders['STAFF_REQUESTS']?.data ||
+                        [];
+                    if (Array.isArray(reqRows)) {
+                        localStorage.setItem(
+                            'empire_hr_requests',
+                            JSON.stringify(reqRows)
+                        );
+                    }
+                }
+                if (state.activeOrders['RH_SETTINGS']) {
+                    localStorage.setItem(
+                        'ichef_rh_settings',
+                        JSON.stringify(state.activeOrders['RH_SETTINGS'].data || {})
+                    );
+                }
+                if (state.activeOrders['RH_TIMESHEET_REAL']) {
+                    localStorage.setItem(
+                        'ichef_rh_timesheet_real',
+                        JSON.stringify(state.activeOrders['RH_TIMESHEET_REAL'].data || { months:{} })
+                    );
+                }
+                syncRhStaffFromState(state, { render:false });
+            }
+            await refreshStaffAccessFromServer();
+        } catch (syncError) {
+            console.warn('[iCHEF RH V84] resynchronisation après PIN', syncError);
+        }
+        updateDashboardStats();
+        updateReqBadge();
+        resetOfficialGateway();
+    } catch (error) {
+        console.error("Porte d'entrée iCHEF :", error);
+        renderOfficialGatewayPin(true);
+        setOfficialGatewayStatus(
+            navigator.onLine
+                ? "SERVEUR INDISPONIBLE · RÉESSAYER"
+                : "PAS DE CONNEXION INTERNET",
+            navigator.onLine ? "error" : "offline"
+        );
+    } finally {
+        officialGatewayBusy = false;
+        if (submit) submit.disabled = false;
+    }
+}
+function updateOfficialGatewayNetworkStatus() {
+    if (officialGatewayBusy) return;
+    setOfficialGatewayStatus(
+        navigator.onLine
+            ? "ACCÈS RH AUTORISÉ · PIN SERVEUR REQUIS"
+            : "MODE HORS LIGNE · CONNEXION SERVEUR REQUISE",
+        navigator.onLine ? "ok" : "offline"
+    );
+}
+document.addEventListener("keydown", function(event) {
+    const landing = document.getElementById("landing-portal");
+    if (!landing || landing.style.display === "none") return;
+    const center = document.getElementById("official-access-center");
+    if (center?.classList.contains("show")) {
+        if (event.key === "Escape") closeOfficialAccessCenter();
+        return;
+    }
+    if (/^\d$/.test(event.key)) {
+        event.preventDefault();
+        appendOfficialGatewayPin(event.key);
+        return;
+    }
+    if (event.key === "Backspace") {
+        event.preventDefault();
+        deleteOfficialGatewayPin();
+        return;
+    }
+    if (event.key === "Delete") {
+        event.preventDefault();
+        clearOfficialGatewayPin();
+        return;
+    }
+    if (event.key === "Enter") {
+        event.preventDefault();
+        submitOfficialGatewayPin();
+    }
+});
+window.addEventListener("online", updateOfficialGatewayNetworkStatus);
+window.addEventListener("offline", updateOfficialGatewayNetworkStatus);
+document.addEventListener("DOMContentLoaded", function() {
+    resetOfficialGateway();
+});
+/* Sécurité visuelle : lorsqu'un logout RH ramène à l'accueil,
+   le PIN du pad principal ne doit jamais rester affiché. */
+try {
+    const __ichefOriginalFullLogout = window.fullLogout;
+    if (typeof __ichefOriginalFullLogout === "function") {
+        window.fullLogout = function(...args) {
+            const result = __ichefOriginalFullLogout.apply(this, args);
+            resetOfficialGateway();
+            return result;
+        };
+    }
+} catch (_) {}
+
+
+;
+/* RH V264 - preserved script #12 */
+(() => {
+    const PRIMARY = [
+        ['present','Travail','1'],['off','Repos','2'],['conge','Congé','3'],
+        ['recup','Récupération','4'],['maladie','Maladie','5'],['formation','Formation','6']
+    ];
+    const MORE = [
+        ['off_soir','Matin seul'],['off_matin','Soir seul'],['ferie','Férié'],
+        ['accident_travail','Accident travail'],['maternite','Maternité'],['paternite','Paternité'],
+        ['parental','Congé parental'],['enfant_malade','Enfant / proche malade'],['evenement_familial','Événement familial'],
+        ['deces','Décès / deuil'],['sans_solde','Sans solde'],['absence_autorisee','Absence autorisée'],['absence_injustifiee','Absence injustifiée']
+    ];
+    let ctx = null;
+    function esc(v){
+        if (typeof window.escapeRhHtml === 'function') return window.escapeRhHtml(String(v ?? ''));
+        return String(v ?? '').replace(/[&<>\"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));
+    }
+    function tone(status){if(['present','off_soir','off_matin'].includes(status))return'work';if(status==='off')return'rest';return'leave';}
+    function ensureMenu(){let m=document.getElementById('rh-quick-status-menu');if(m)return m;m=document.createElement('div');m.id='rh-quick-status-menu';m.setAttribute('role','dialog');m.setAttribute('aria-label','Choisir le statut du planning');document.body.appendChild(m);return m;}
+    function optionHtml(row,current,key=''){const [status,label]=row;return `<button type="button" class="rh-qsm-option tone-${tone(status)} ${current===status?'is-current':''}" data-rh-status="${esc(status)}"><span>${esc(label)}</span>${key?`<span class="rh-qsm-key">${esc(key)}</span>`:''}</button>`;}
+    function currentStatus(staffId,day){try{const month=document.getElementById('month-selector')?.value||'';const ts=typeof getTs==='function'?getTs():{};return String(ts?.[month]?.[staffId]?.[day]?.status??ts?.[month]?.[String(staffId)]?.[String(day)]?.status??'off')}catch(_){return'off'}}
+    function renderMenu(){if(!ctx)return;const menu=ensureMenu();const staff=typeof getDir==='function'?getDir().find(s=>String(s.id)===String(ctx.staffId)):null;const monthStr=document.getElementById('month-selector')?.value||'';const [y,m]=monthStr.split('-').map(Number);const dt=y&&m?new Date(y,m-1,ctx.day):null;const days=['Dim','Lun','Mar','Mer','Jeu','Ven','Sam'];const dateLabel=dt&&!Number.isNaN(dt.getTime())?`${days[dt.getDay()]} ${String(ctx.day).padStart(2,'0')}/${String(m).padStart(2,'0')}`:`Jour ${ctx.day}`;const current=currentStatus(ctx.staffId,ctx.day);menu.innerHTML=`<div class="rh-qsm-head"><div><strong>${esc(staff?.name||'Collaborateur')}</strong><small>${esc(dateLabel)} · saisie rapide</small></div><button type="button" class="rh-qsm-close" aria-label="Fermer">×</button></div><div class="rh-qsm-grid">${PRIMARY.map(r=>optionHtml(r,current,r[2])).join('')}</div><button type="button" class="rh-qsm-more-toggle">AUTRES STATUTS</button><div class="rh-qsm-grid rh-qsm-more">${MORE.map(r=>optionHtml(r,current)).join('')}</div><div class="rh-qsm-foot">1 Travail · 2 Repos · 3 Congé · 4 Récup · 5 Maladie · 6 Formation</div>`;
+        menu.querySelector('.rh-qsm-close')?.addEventListener('click',closeRhQuickStatus);
+        menu.querySelector('.rh-qsm-more-toggle')?.addEventListener('click',e=>{const more=menu.querySelector('.rh-qsm-more');const show=!more.classList.contains('show');more.classList.toggle('show',show);e.currentTarget.textContent=show?'MASQUER LES AUTRES STATUTS':'AUTRES STATUTS';positionMenu();});
+        menu.querySelectorAll('[data-rh-status]').forEach(btn=>btn.addEventListener('click',()=>applyRhQuickStatus(btn.dataset.rhStatus)));
+    }
+    function positionMenu(){const menu=ensureMenu();if(!ctx?.anchor||!document.body.contains(ctx.anchor))return;menu.style.visibility='hidden';menu.classList.add('show');const r=ctx.anchor.getBoundingClientRect();const mw=menu.offsetWidth||330;const mh=menu.offsetHeight||300;let left=Math.min(Math.max(8,r.left),window.innerWidth-mw-8);let top=r.bottom+7;if(top+mh>window.innerHeight-8)top=Math.max(8,r.top-mh-7);menu.style.left=`${Math.round(left)}px`;menu.style.top=`${Math.round(top)}px`;menu.style.visibility='visible';}
+    window.openRhQuickStatus=function(event,staffId,day){
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        const anchor =
+            event?.currentTarget ||
+            event?.target?.closest?.('.rh-status-quick-btn') ||
+            event?.target;
+        ctx={
+            staffId:String(staffId ?? ''),
+            day:Number(day),
+            anchor
+        };
+        renderMenu();
+        requestAnimationFrame(positionMenu);
+    };
+    window.closeRhQuickStatus=function(){
+        const menu=document.getElementById('rh-quick-status-menu');
+        if(menu){
+            menu.classList.remove('show');
+            menu.style.visibility='hidden';
+        }
+        ctx=null;
+    };
+    window.applyRhQuickStatus=async function(status){
+        if(!ctx||!status)return;
+        const {staffId,day}=ctx;
+        closeRhQuickStatus();
+        if(typeof updateData==='function'){
+            await updateData(staffId,day,'status',status);
+        }
+    };
+    /* V85 : gestion déléguée.
+       Elle reste fonctionnelle même après chaque re-render du tableau. */
+    document.addEventListener('click',event=>{
+        const quickBtn=event.target?.closest?.('.rh-status-quick-btn');
+        if(quickBtn){
+            event.preventDefault();
+            event.stopPropagation();
+            window.openRhQuickStatus(
+                event,
+                quickBtn.dataset.rhStaff,
+                Number(quickBtn.dataset.rhDay)
+            );
+            return;
+        }
+        const menu=document.getElementById('rh-quick-status-menu');
+        if(!menu?.classList.contains('show'))return;
+        if(menu.contains(event.target))return;
+        closeRhQuickStatus();
+    },true);
+    document.addEventListener('keydown',event=>{
+        const menu=document.getElementById('rh-quick-status-menu');
+        if(!menu?.classList.contains('show')||!ctx)return;
+        if(event.key==='Escape'){
+            event.preventDefault();
+            closeRhQuickStatus();
+            return;
+        }
+        const row=PRIMARY.find(x=>x[2]===event.key);
+        if(row){
+            event.preventDefault();
+            applyRhQuickStatus(row[0]);
+        }
+    });
+    window.addEventListener('resize',()=>{
+        if(ctx)requestAnimationFrame(positionMenu);
+    });
+    /* Important : avant, le moindre scroll fermait le menu.
+       Dans la grille horizontale cela pouvait le fermer immédiatement
+       au clic. Maintenant il suit simplement sa cellule. */
+    window.addEventListener('scroll',()=>{
+        if(ctx)requestAnimationFrame(positionMenu);
+    },true);
+})();
+
+
+;
+/* RH V264 - preserved script #13 */
+window.__ICHEF_RH_BUILD__ = 'RH-V84-PLANNING-AI-AUTH-FIX';
+console.info('[iCHEF RH V84] Planning manuel + sauvegarde cloud + IA planning sécurisés');
+
+
+;
+/* RH V264 - preserved script #14 */
+(() => {
+    let editorCtx = null;
+    const workStatuses = new Set(['present','off_matin','off_soir','ferie']);
+    const statusRows = [
+        ['present','Travail'],['off','Repos'],['off_soir','Matin seul'],['off_matin','Soir seul'],
+        ['conge','Congé'],['recup','Récupération'],['maladie','Maladie'],['ferie','Férié'],
+        ['formation','Formation'],['accident_travail','Accident du travail'],['maternite','Maternité'],
+        ['paternite','Paternité'],['parental','Congé parental'],['enfant_malade','Enfant / proche malade'],
+        ['evenement_familial','Événement familial'],['deces','Décès / deuil'],['sans_solde','Sans solde'],
+        ['absence_autorisee','Absence autorisée'],['absence_injustifiee','Absence injustifiée']
+    ];
+    const posteRows = [
+        ['salle','Salle'],['cuisine','Cuisine'],['patisserie','Pâtisserie'],['bar','Bar'],['admin','Admin']
+    ];
+    const esc = v => String(v ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    function ensureEditor(){
+        let modal=document.getElementById('rh-cockpit-shift-editor');
+        if(modal) return modal;
+        modal=document.createElement('div');
+        modal.id='rh-cockpit-shift-editor';
+        modal.setAttribute('role','dialog');
+        modal.setAttribute('aria-modal','true');
+        modal.innerHTML='<div class="rh-cse-card"></div>';
+        document.body.appendChild(modal);
+        modal.addEventListener('click',e=>{if(e.target===modal) window.closeRhCockpitShiftEditor();});
+        return modal;
+    }
+    function dayData(staffId,dateStr){
+        const [y,m,d]=String(dateStr).split('-').map(Number);
+        const month=`${y}-${String(m).padStart(2,'0')}`;
+        const ts=typeof getTs==='function'?getTs():{};
+        const sm=ts?.[month]?.[staffId] || ts?.[month]?.[String(staffId)] || {};
+        const staff=typeof getDir==='function'?getDir().find(s=>String(s.id)===String(staffId)):null;
+        const raw=sm?.[d] || sm?.[String(d)] || {};
+        return {y,m,d,month,staff,p:{status:'off',poste:staff?.dept||'salle',s1:'',s2:'',pause:0,obs:'',...raw}};
+    }
+    function toggleShiftFields(){
+        const st=document.getElementById('rh-cse-status')?.value||'off';
+        const s1=document.getElementById('rh-cse-s1');
+        const s2=document.getElementById('rh-cse-s2');
+        const pause=document.getElementById('rh-cse-pause');
+        const poste=document.getElementById('rh-cse-poste');
+        const enabled=workStatuses.has(st);
+        if(poste) poste.disabled=!enabled;
+        if(s1) s1.disabled=!['present','off_soir','ferie'].includes(st);
+        if(s2) s2.disabled=!['present','off_matin','ferie'].includes(st);
+        if(pause) pause.disabled=!enabled;
+    }
+    window.openRhCockpitShiftEditor = function(staffId,dateStr){
+        const requestedDate = new Date(`${String(dateStr)}T12:00:00`);
+        const horizon = typeof window.getRhPlanningHorizonEnd === 'function' ? window.getRhPlanningHorizonEnd() : null;
+        if (horizon && !Number.isNaN(requestedDate.getTime()) && requestedDate.getTime() > horizon.getTime()) {
+            alert(`Le planning peut être préparé jusqu’au ${horizon.toLocaleDateString('fr-FR')} (6 mois dans le futur).`);
+            return;
+        }
+        const settings=typeof getRhSettings==='function'?getRhSettings():{};
+        if(String(settings.planningStatus||'draft')==='locked'){
+            const unlock=confirm('Ce planning est verrouillé. Voulez-vous le repasser en BROUILLON pour pouvoir le modifier ?');
+            if(!unlock) return;
+            if(typeof saveRhSettings==='function') saveRhSettings({...settings,planningStatus:'draft'});
+        }
+        const data=dayData(staffId,dateStr);
+        if(!data.staff){
+            alert('Collaborateur introuvable.');
+            return;
+        }
+        editorCtx={staffId:String(staffId),dateStr:String(dateStr),...data};
+        const modal=ensureEditor();
+        const card=modal.querySelector('.rh-cse-card');
+        const dateObj=new Date(data.y,data.m-1,data.d,12,0,0,0);
+        const label=dateObj.toLocaleDateString('fr-FR',{weekday:'long',day:'2-digit',month:'long',year:'numeric'});
+        card.innerHTML=`
+            <div class="rh-cse-head">
+                <div><small>Modifier le planning</small><strong>${esc(data.staff.name||'Collaborateur')}</strong><div style="color:#8f969d;font-size:11px;margin-top:4px">${esc(label)}</div></div>
+                <button type="button" class="rh-cse-close" onclick="closeRhCockpitShiftEditor()">×</button>
+            </div>
+            <div class="rh-cse-body">
+                <div class="rh-cse-grid">
+                    <div class="rh-cse-field">
+                        <label>Catégorie planning</label>
+                        <select id="rh-cse-category">
+                            ${window.iChefPlanningCategoryOptionsV202?.(data.p.categoryId||data.p.status) || `<option value="${esc(String(data.p.status||'off'))}">${esc(String(data.p.status||'off').toUpperCase())}</option>`}
+                        </select>
+                        <small id="rh-cse-category-meaning" class="rh-v202-category-meaning"></small>
+                    </div>
+                    <div class="rh-cse-field rh-v202-legal-status-field"><label>Comportement légal · automatique</label><select id="rh-cse-status">${statusRows.map(([v,l])=>`<option value="${v}" ${String(data.p.status)===v?'selected':''}>${esc(l)}</option>`).join('')}</select></div>
+                    <div class="rh-cse-field"><label>Poste</label><select id="rh-cse-poste">${posteRows.map(([v,l])=>`<option value="${v}" ${String(data.p.poste||data.staff.dept||'salle')===v?'selected':''}>${esc(l)}</option>`).join('')}</select></div>
+                    <div class="rh-cse-field"><label>Matin (S1)</label><input id="rh-cse-s1" type="text" placeholder="10:00-14:45" value="${esc(data.p.s1||'')}"></div>
+                    <div class="rh-cse-field"><label>Soir (S2)</label><input id="rh-cse-s2" type="text" placeholder="18:00-22:45" value="${esc(data.p.s2||'')}"></div>
+                    <div class="rh-cse-field"><label>Pause (minutes)</label><input id="rh-cse-pause" type="number" min="0" max="240" step="5" value="${Number(data.p.pause)||0}"></div>
+                    <div class="rh-cse-field full"><label>Observation interne</label><textarea id="rh-cse-obs" placeholder="Observation interne...">${esc(data.p.obs||'')}</textarea></div>
+                    <div class="rh-cse-field full">
+                        <label>Note du gérant affichée dans la case · 40 caractères max</label>
+                        <input id="rh-cse-manager-note" type="text" maxlength="40" placeholder="Ex. Remplace Paul à 18h" value="${esc(data.p.managerNote||'')}">
+                        <small class="rh-cse-count" id="rh-cse-manager-count">${String(data.p.managerNote||'').length}/40</small>
+                    </div>
+                    <div class="rh-cse-field full rh-cse-reason-field">
+                        <label>Pourquoi ce planning est-il modifié ? · obligatoire</label>
+                        <textarea id="rh-cse-change-reason" maxlength="180" placeholder="Motif obligatoire : remplacement, changement d'activité, demande du collaborateur, erreur de saisie…"></textarea>
+                        <small class="rh-cse-count" id="rh-cse-reason-count">0/180</small>
+                    </div>
+                </div>
+                <div class="rh-cse-note">Chaque changement est horodaté avec le motif, l'avant/après et l'auteur. L'historique du planning est conservé 5 ans et synchronisé pour le Portail Staff.</div>
+            </div>
+            <div class="rh-cse-actions">
+                <button type="button" class="rh-cse-cancel" onclick="closeRhCockpitShiftEditor()">ANNULER</button>
+                <button type="button" class="rh-cse-save" onclick="saveRhCockpitShiftEditor()">ENREGISTRER</button>
+            </div>`;
+        const syncCategoryV202 = () => {
+            const categoryId=String(document.getElementById('rh-cse-category')?.value||data.p.categoryId||data.p.status||'off');
+            const category=window.iChefPlanningCategoryByIdV202?.(categoryId);
+            const statusSelect=document.getElementById('rh-cse-status');
+            if(category?.legalType && statusSelect){
+                statusSelect.value=category.legalType;
+            }
+            const meaning=document.getElementById('rh-cse-category-meaning');
+            if(meaning){
+                meaning.textContent=category?.meaning
+                    ? `${category.meaning} · traitement : ${window.iChefLegalTypeLabelV202?.(category.legalType)||category.legalType}`
+                    : `Traitement : ${window.iChefLegalTypeLabelV202?.(category?.legalType||statusSelect?.value)||category?.legalType||statusSelect?.value||''}`;
+            }
+            const color=category?.color||'#eeeeee';
+            const categorySelect=document.getElementById('rh-cse-category');
+            if(categorySelect) categorySelect.style.background=color;
+        };
+        document.getElementById('rh-cse-category')?.addEventListener('change',()=>{
+            syncCategoryV202();
+            document.getElementById('rh-cse-status')?.dispatchEvent(new Event('change',{bubbles:true}));
+        });
+        syncCategoryV202();
+        document.getElementById('rh-cse-status')?.addEventListener('change',()=>{
+            const st=document.getElementById('rh-cse-status')?.value||'off';
+            if(st==='present'){
+                if(!document.getElementById('rh-cse-s1').value) document.getElementById('rh-cse-s1').value='10:00-14:45';
+                if(!document.getElementById('rh-cse-s2').value) document.getElementById('rh-cse-s2').value='18:00-22:45';
+                if(!Number(document.getElementById('rh-cse-pause').value)) document.getElementById('rh-cse-pause').value='30';
+            } else if(st==='off_soir'){
+                if(!document.getElementById('rh-cse-s1').value) document.getElementById('rh-cse-s1').value='10:00-14:45';
+                document.getElementById('rh-cse-s2').value='';
+                document.getElementById('rh-cse-pause').value='0';
+            } else if(st==='off_matin'){
+                document.getElementById('rh-cse-s1').value='';
+                if(!document.getElementById('rh-cse-s2').value) document.getElementById('rh-cse-s2').value='18:00-22:45';
+                document.getElementById('rh-cse-pause').value='0';
+            } else if(!workStatuses.has(st)){
+                document.getElementById('rh-cse-s1').value='';
+                document.getElementById('rh-cse-s2').value='';
+                document.getElementById('rh-cse-pause').value='0';
+            }
+            toggleShiftFields();
+        });
+        toggleShiftFields();
+        const noteInput = document.getElementById('rh-cse-manager-note');
+        const reasonInput = document.getElementById('rh-cse-change-reason');
+        noteInput?.addEventListener('input', () => {
+            const count = document.getElementById('rh-cse-manager-count');
+            if (count) count.textContent = `${noteInput.value.length}/40`;
+        });
+        reasonInput?.addEventListener('input', () => {
+            const count = document.getElementById('rh-cse-reason-count');
+            if (count) count.textContent = `${reasonInput.value.length}/180`;
+        });
+        modal.classList.add('show');
+        setTimeout(()=>document.getElementById('rh-cse-status')?.focus(),30);
+    };
+    window.closeRhCockpitShiftEditor = function(){
+        document.getElementById('rh-cockpit-shift-editor')?.classList.remove('show');
+        editorCtx=null;
+    };
+    window.saveRhCockpitShiftEditor = async function(){
+        if(!editorCtx) return;
+        let status=String(document.getElementById('rh-cse-status')?.value||'off');
+        const categoryId=String(document.getElementById('rh-cse-category')?.value||editorCtx.p?.categoryId||status||'off');
+        const category=window.iChefPlanningCategoryByIdV202?.(categoryId);
+        if(category?.legalType) status=String(category.legalType);
+        const poste=String(document.getElementById('rh-cse-poste')?.value||editorCtx.staff?.dept||'salle');
+        let s1=String(document.getElementById('rh-cse-s1')?.value||'').trim();
+        let s2=String(document.getElementById('rh-cse-s2')?.value||'').trim();
+        let pause=Math.max(0,Math.min(240,Number(document.getElementById('rh-cse-pause')?.value)||0));
+        const obs=String(document.getElementById('rh-cse-obs')?.value||'').trim().slice(0,500);
+        const managerNote=String(document.getElementById('rh-cse-manager-note')?.value||'').trim().slice(0,40);
+        const changeReason=String(document.getElementById('rh-cse-change-reason')?.value||'').trim().slice(0,180);
+        if(!workStatuses.has(status)){s1='';s2='';pause=0;}
+        if(status==='off_soir'){s2='';}
+        if(status==='off_matin'){s1='';}
+        const shiftPattern=/^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/;
+        if(s1 && !shiftPattern.test(s1)){alert('Horaire matin invalide. Exemple : 10:00-14:45');return;}
+        if(s2 && !shiftPattern.test(s2)){alert('Horaire soir invalide. Exemple : 18:00-22:45');return;}
+        const ts=typeof getTs==='function'?getTs():{};
+        const month=editorCtx.month;
+        const sid=String(editorCtx.staffId);
+        const day=Number(editorCtx.d);
+        if(!ts[month]) ts[month]={};
+        if(!ts[month][sid]) ts[month][sid]={};
+        const previous=ts[month][sid][day] || ts[month][sid][String(day)] || {};
+        const previousSnapshot=JSON.parse(JSON.stringify(previous || {}));
+        const candidate={...previous,status,categoryId,poste,s1,s2,pause,obs,managerNote};
+        const comparable = node => JSON.stringify({
+            status:String(node?.status||'off'),categoryId:String(node?.categoryId||node?.status||'off'),poste:String(node?.poste||''),s1:String(node?.s1||''),s2:String(node?.s2||''),
+            pause:Number(node?.pause||0),obs:String(node?.obs||''),managerNote:String(node?.managerNote||'')
+        });
+        if(comparable(previousSnapshot)===comparable(candidate)){
+            window.closeRhCockpitShiftEditor();
+            if(typeof showToast==='function') showToast('Aucune modification');
+            return;
+        }
+        if(!changeReason){
+            alert('Le motif de modification est obligatoire pour garantir la traçabilité du planning.');
+            document.getElementById('rh-cse-change-reason')?.focus();
+            return;
+        }
+        const auditAt=new Date().toISOString();
+        const auditBy=typeof window.rhAuditActorV94==='function'?window.rhAuditActorV94():'Direction / RH';
+        ts[month][sid][day]={...candidate,lastChangeReason:changeReason,lastChangeAt:auditAt,lastChangeBy:auditBy,updatedAt:auditAt};
+        const saveBtn=document.querySelector('#rh-cockpit-shift-editor .rh-cse-save');
+        if(saveBtn){saveBtn.disabled=true;saveBtn.textContent='ENREGISTRÉ';}
+        try{
+            // saveTs écrit d'abord localement de façon synchrone, puis synchronise le cloud.
+            // L'interface ne reste donc jamais bloquée en attendant le réseau.
+            let cloudPromise = null;
+            if(typeof saveTs==='function') cloudPromise = saveTs(ts);
+            else localStorage.setItem('empire_hr_timesheets',JSON.stringify(ts));
+            if(typeof recordRhChange==='function') recordRhChange({
+                type:'PLANNING_MANUAL_EDIT',source:'DIRECTION_PLANNING',staffId:sid,
+                staffName:String(editorCtx.staff?.name||''),date:editorCtx.dateStr,month,day,
+                reason:changeReason,managerNote,by:auditBy,before:previousSnapshot,
+                after:{...ts[month][sid][day]},
+                message:`Planning modifié · ${editorCtx.dateStr} · ${changeReason}`
+            });
+            if(typeof loadMonthData==='function') loadMonthData();
+            if(typeof loadPublicPlanning==='function') loadPublicPlanning();
+            if(typeof broadcastStaffingLevels==='function') Promise.resolve(broadcastStaffingLevels()).catch(()=>{});
+            if(typeof renderRhCockpit==='function') renderRhCockpit();
+            window.closeRhCockpitShiftEditor();
+            if(typeof showToast==='function') showToast('Planning enregistré');
+            if(cloudPromise && typeof cloudPromise.then==='function'){
+                cloudPromise.then(ok=>{
+                    if(ok===false && typeof showToast==='function'){
+                        showToast('Planning conservé · synchronisation en attente');
+                    }
+                }).catch(error=>{
+                    console.warn('[iCHEF RH V90] synchronisation planning différée',error);
+                    if(typeof showToast==='function') showToast('Planning conservé · synchronisation en attente');
+                });
+            }
+        } catch(error){
+            console.error('[iCHEF RH V90] sauvegarde planning cockpit',error);
+            alert('La modification n’a pas pu être enregistrée localement.');
+            if(saveBtn){saveBtn.disabled=false;saveBtn.textContent='ENREGISTRER';}
+        }
+    };
+    document.addEventListener('click',event=>{
+        const chip=event.target?.closest?.('.rh-cockpit-edit-chip');
+        if(!chip) return;
+        event.preventDefault();
+        event.stopPropagation();
+        window.openRhCockpitShiftEditor(chip.dataset.rhEditStaff,chip.dataset.rhEditDate);
+    });
+    document.addEventListener('keydown',event=>{
+        if(event.key==='Escape' && document.getElementById('rh-cockpit-shift-editor')?.classList.contains('show')){
+            window.closeRhCockpitShiftEditor();
+        }
+    });
+})();
+
+
+;
+/* RH V264 - preserved script #15 */
+window.__ICHEF_RH_BUILD__ = 'RH-V91-PLANNING-STATUS-CONTROLS';
+console.info('[iCHEF RH V90] Planning éditable semaine par semaine jusqu’à 6 mois dans le futur');
+
+
+;
+/* RH V264 - preserved script #16 */
+console.info('[iCHEF RH V87 legacy] Correctifs planning manuel conservés sous V88');
+
+
+;
+/* RH V264 - preserved script #17 */
+(() => {
+  const QUICK = [
+    ['present','TRAVAIL'],['off','REPOS / OFF'],['conge','CONGÉ'],
+    ['recup','RÉCUPÉRATION'],['maladie','MALADIE'],['formation','FORMATION']
+  ];
+  function refreshStatusButtons(){
+    const select=document.getElementById('rh-cse-status');
+    if(!select) return;
+    select.disabled=false;
+    select.removeAttribute('disabled');
+    const current=String(select.value||'off');
+    document.querySelectorAll('#rh-cockpit-shift-editor .rh-cse-status-action').forEach(b=>{
+      const selected=String(b.dataset.status)===current;
+      b.classList.toggle('is-current',selected);
+      b.setAttribute('aria-pressed',selected?'true':'false');
+    });
+  }
+  function installStatusButtons(){
+    const select=document.getElementById('rh-cse-status');
+    if(!select) return;
+    select.disabled=false;
+    select.removeAttribute('disabled');
+    const grid=select.closest('.rh-cse-grid');
+    if(!grid) return;
+    let bar=grid.querySelector('.rh-cse-status-actions');
+    if(!bar){
+      bar=document.createElement('div');
+      bar.className='rh-cse-status-actions';
+      bar.setAttribute('aria-label','Statut rapide du planning');
+      bar.innerHTML=QUICK.map(([status,label])=>`<button type="button" class="rh-cse-status-action" data-status="${status}">${label}</button>`).join('');
+      const firstField=select.closest('.rh-cse-field');
+      if(firstField) firstField.insertAdjacentElement('afterend',bar); else grid.prepend(bar);
+      bar.addEventListener('click',e=>{
+        const btn=e.target.closest('.rh-cse-status-action');
+        if(!btn) return;
+        e.preventDefault();
+        e.stopPropagation();
+        select.disabled=false;
+        select.value=btn.dataset.status;
+        select.dispatchEvent(new Event('change',{bubbles:true}));
+        refreshStatusButtons();
+      });
+      select.addEventListener('change',refreshStatusButtons);
+    }
+    refreshStatusButtons();
+  }
+  const originalOpen=window.openRhCockpitShiftEditor;
+  if(typeof originalOpen==='function'){
+    window.openRhCockpitShiftEditor=function(...args){
+      const out=originalOpen.apply(this,args);
+      setTimeout(installStatusButtons,0);
+      return out;
+    };
+  }
+  async function saveStatusDirect(staffId,day,status){
+    const month=document.getElementById('month-selector')?.value;
+    if(!month) return false;
+    const [y,m]=month.split('-').map(Number);
+    const date=new Date(y,m-1,Number(day),12,0,0,0);
+    const horizon=typeof window.getRhPlanningHorizonEnd==='function'?window.getRhPlanningHorizonEnd():null;
+    if(horizon && date.getTime()>horizon.getTime()){
+      if(typeof showToast==='function') showToast('Hors période de planification');
+      return false;
+    }
+    const settings=typeof getRhSettings==='function'?getRhSettings():{};
+    if(String(settings?.planningStatus||'draft')==='locked'){
+      const ok=confirm('Ce planning est verrouillé. Le repasser en BROUILLON pour le modifier ?');
+      if(!ok) return false;
+      if(typeof saveRhSettings==='function') saveRhSettings({...settings,planningStatus:'draft'});
+    }
+    const ts=typeof getTs==='function'?getTs():{};
+    const sid=String(staffId);
+    const staff=typeof getDir==='function'?getDir().find(s=>String(s.id)===sid):null;
+    if(!ts[month]) ts[month]={};
+    if(!ts[month][sid]) ts[month][sid]={};
+    const d=Number(day);
+    const prev=ts[month][sid][d]||ts[month][sid][String(d)]||{poste:staff?.dept||'salle',s1:'',s2:'',pause:0,obs:'',managerNote:''};
+    if(String(prev?.status||'off')===String(status||'off')) return true;
+    const reason=String(prompt(`Pourquoi modifiez-vous le planning de ${staff?.name||'ce collaborateur'} ?\n\nCe motif sera conservé 5 ans.`)||'').trim().slice(0,180);
+    if(!reason){if(typeof showToast==='function')showToast('Modification annulée · motif obligatoire');return false;}
+    const auditAt=new Date().toISOString();
+    const auditBy=typeof window.rhAuditActorV94==='function'?window.rhAuditActorV94():'Direction / RH';
+    const next={...prev,status:String(status),lastChangeReason:reason,lastChangeAt:auditAt,lastChangeBy:auditBy,updatedAt:auditAt};
+    if(status==='present'){
+      next.s1=next.s1||'10:00-14:45'; next.s2=next.s2||'18:00-22:45'; next.pause=Number(next.pause)||30;
+    }else if(status==='off_soir'){
+      next.s1=next.s1||'10:00-14:45'; next.s2=''; next.pause=0;
+    }else if(status==='off_matin'){
+      next.s1=''; next.s2=next.s2||'18:00-22:45'; next.pause=0;
+    }else if(status!=='ferie'){
+      next.s1=''; next.s2=''; next.pause=0;
+    }
+    ts[month][sid][d]=next;
+    let cloud=null;
+    if(typeof saveTs==='function') cloud=saveTs(ts);
+    else localStorage.setItem('empire_hr_timesheets',JSON.stringify(ts));
+    try{ if(typeof recordRhChange==='function') recordRhChange({
+      type:'PLANNING_STATUS_EDIT',source:'DIRECTION_LEGACY',staffId:sid,staffName:String(staff?.name||''),month,day:d,
+      date:`${month}-${String(d).padStart(2,'0')}`,status,reason,managerNote:String(next.managerNote||''),by:auditBy,
+      before:JSON.parse(JSON.stringify(prev||{})),after:JSON.parse(JSON.stringify(next)),
+      message:`Planning modifié · ${month}-${String(d).padStart(2,'0')} · ${reason}`
+    }); }catch(_){ }
+    try{ if(typeof loadMonthData==='function') loadMonthData(); }catch(_){ }
+    try{ if(typeof renderRhCockpit==='function') renderRhCockpit(); }catch(_){ }
+    try{ if(typeof loadPublicPlanning==='function') loadPublicPlanning(); }catch(_){ }
+    if(typeof showToast==='function') showToast('Statut planning enregistré');
+    if(cloud?.catch) cloud.catch(e=>console.warn('[iCHEF RH V91] synchro statut différée',e));
+    return true;
+  }
+  window.rhApplyPlanningStatusV91=saveStatusDirect;
+  const oldOpenQuick=window.openRhQuickStatus;
+  if(typeof oldOpenQuick==='function'){
+    window.openRhQuickStatus=function(event,staffId,day){
+      window.__rhQuickV91={staffId:String(staffId),day:Number(day)};
+      return oldOpenQuick.call(this,event,staffId,day);
+    };
+  }
+  window.applyRhQuickStatus=async function(status){
+    const c=window.__rhQuickV91;
+    if(typeof window.closeRhQuickStatus==='function') window.closeRhQuickStatus();
+    if(c?.staffId && c?.day) await saveStatusDirect(c.staffId,c.day,status);
+  };
+  document.addEventListener('click',e=>{
+    if(e.target.closest('#rh-quick-status-menu')) return;
+    if(!e.target.closest('.rh-status-quick-btn')) window.__rhQuickV91=null;
+  });
+  console.info('[iCHEF RH V91] Statuts planning réactivés');
+})();
+
+
+;
+/* RH V264 - preserved script #18 */
+window.__ICHEF_RH_BUILD__='RH-V91-PLANNING-STATUS-CONTROLS';
+
+
+;
+/* RH V264 - preserved script #19 */
+window.__ICHEF_RH_BUILD__='RH-V92-DASHBOARD-OPERATIONNEL';
+console.info('[iCHEF RH V92] Accueil opérationnel : service en direct, équilibre heures, planning jour/semaine/mois');
+
+
+;
+/* RH V264 - preserved script #20 */
+(() => {
+    function planningSettings(){
+        try { return typeof getRhSettings === 'function' ? (getRhSettings() || {}) : {}; }
+        catch (_) { return {}; }
+    }
+    function activatePlanningDraft(showNotice = true){
+        const settings = planningSettings();
+        const current = String(settings.planningStatus || 'draft').toLowerCase();
+        if (current === 'draft') return true;
+        try {
+            if (typeof saveRhSettings === 'function') {
+                saveRhSettings({...settings, planningStatus:'draft'});
+            }
+            if (typeof recordRhChange === 'function') {
+                recordRhChange({
+                    type:'PLANNING_EDIT_MODE',
+                    source:'DIRECTION_PLANNING',
+                    previousStatus:current,
+                    newStatus:'draft',
+                    month:document.getElementById('month-selector')?.value || ''
+                });
+            }
+            if (showNotice && typeof showToast === 'function') {
+                showToast('Mode édition activé · planning en brouillon');
+            }
+            return true;
+        } catch (error) {
+            console.warn('[iCHEF RH V93] activation brouillon', error);
+            return current !== 'locked';
+        }
+    }
+    function dateForPlanningDay(day){
+        const month = document.getElementById('month-selector')?.value || '';
+        const n = Number(day);
+        if (!/^\d{4}-\d{2}$/.test(month) || !Number.isInteger(n) || n < 1 || n > 31) return '';
+        return `${month}-${String(n).padStart(2,'0')}`;
+    }
+    const previousQuick = window.openRhQuickStatus;
+    window.openRhQuickStatus = function(event, staffId, day){
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        activatePlanningDraft(true);
+        try { window.closeRhQuickStatus?.(); } catch (_) {}
+        const dateStr = dateForPlanningDay(day);
+        if (dateStr && typeof window.openRhCockpitShiftEditor === 'function') {
+            window.openRhCockpitShiftEditor(String(staffId), dateStr);
+            return;
+        }
+        if (typeof previousQuick === 'function') {
+            return previousQuick.call(this, event, staffId, day);
+        }
+    };
+    /* Toute modification dans la vue individuelle doit aussi être possible,
+       même si la période avait été publiée/verrouillée auparavant. */
+    document.addEventListener('change', event => {
+        const target = event.target;
+        if (!target?.closest?.('#hr-interface')) return;
+        if (!target.matches('.status-sel,.shift-inp,.pause-inp,.obs-inp')) return;
+        activatePlanningDraft(false);
+    }, true);
+    /* Si une période a été clôturée, entrer dans PLANNINGS ne doit plus donner
+       l'impression que l'écran entier est cassé. On la remet en brouillon pour
+       le travail de planification Direction/RH. */
+    const previousOpenInterface = window.openInterface;
+    if (typeof previousOpenInterface === 'function') {
+        window.openInterface = function(type, ...rest){
+            if (type === 'hr') {
+                const settings = planningSettings();
+                if (String(settings.planningStatus || 'draft').toLowerCase() === 'locked') {
+                    activatePlanningDraft(false);
+                }
+            }
+            const result = previousOpenInterface.call(this, type, ...rest);
+            if (type === 'hr') setTimeout(installHint, 0);
+            return result;
+        };
+    }
+    function installHint(){
+        const title = document.querySelector('#hr-interface h2');
+        if (!title || title.parentElement?.querySelector('.rh-v93-edit-hint')) return;
+        const hint = document.createElement('span');
+        hint.className = 'rh-v93-edit-hint';
+        hint.textContent = 'CLIQUEZ UNE CASE POUR MODIFIER';
+        title.insertAdjacentElement('afterend', hint);
+    }
+    document.addEventListener('DOMContentLoaded', installHint);
+    setTimeout(installHint, 50);
+    window.__ICHEF_RH_BUILD__ = 'RH-V93-PLANNING-MASTER-EDITABLE';
+    console.info('[iCHEF RH V93] PLANNINGS : grille maître directement éditable');
+})();
+
+
+;
+/* RH V264 - preserved script #21 */
+(() => {
+  const FIVE_YEARS_MS = 5 * 365.2425 * 86400000;
+  const esc = v => String(v ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  window.rhAuditActorV94 = function(){
+    try{
+      const profile = JSON.parse(sessionStorage.getItem('ichef_staff_profile') || '{}');
+      return String(profile?.name || sessionStorage.getItem('ichef_user_name') || sessionStorage.getItem('ichef_user_role') || window.currentDept || 'Direction / RH');
+    }catch(_){ return String(sessionStorage.getItem('ichef_user_role') || window.currentDept || 'Direction / RH'); }
+  };
+  function planningRows(){
+    let rows=[];
+    try{ rows = typeof getRhChangeHistory==='function' ? getRhChangeHistory() : JSON.parse(localStorage.getItem('ichef_rh_change_history')||'[]'); }catch(_){ rows=[]; }
+    const cutoff = Date.now() - FIVE_YEARS_MS;
+    return (Array.isArray(rows)?rows:[]).filter(r=>{
+      const type=String(r?.type||'');
+      const t=Date.parse(String(r?.timestamp||r?.at||''));
+      return (/^PLANNING_/i.test(type)||/^AI_PLANNING/i.test(type)) && String(r?.staffId||'').trim()!=='' && (!Number.isFinite(t)||t>=cutoff);
+    }).sort((a,b)=>(Date.parse(String(b?.timestamp||b?.at||0))||0)-(Date.parse(String(a?.timestamp||a?.at||0))||0));
+  }
+  function statusLabel(node){
+    try{ return rhStatusMeta(String(node?.status||'off')).label; }catch(_){ return String(node?.status||'—'); }
+  }
+  function summary(node){
+    if(!node||typeof node!=='object') return '—';
+    const sessions=[node.s1,node.s2].filter(Boolean).join(' / ');
+    return [statusLabel(node),sessions,node.managerNote?`Note: ${node.managerNote}`:''].filter(Boolean).join(' · ');
+  }
+  function ensureModal(){
+    let modal=document.getElementById('rh-planning-history-v94');
+    if(modal) return modal;
+    modal=document.createElement('div'); modal.id='rh-planning-history-v94'; modal.setAttribute('role','dialog'); modal.setAttribute('aria-modal','true');
+    modal.innerHTML=`<div class="rh-ph94-card"><div class="rh-ph94-head"><div><h3>Historique du planning · 5 ans</h3><small>Avant / après · motif obligatoire · note gérant · auteur · horodatage</small></div><span class="spacer"></span><button class="print" type="button" onclick="printPlanningHistoryV94()">IMPRIMER</button><button type="button" onclick="closePlanningHistoryV94()">FERMER</button></div><div class="rh-ph94-filters"><label>Collaborateur<select id="rh-ph94-staff"></select></label><label>Du<input id="rh-ph94-from" type="date"></label><label>Au<input id="rh-ph94-to" type="date"></label><button type="button" onclick="renderPlanningHistoryV94()">ACTUALISER</button></div><div class="rh-ph94-table-wrap"><table class="rh-ph94-table"><thead><tr><th>Date / heure</th><th>Collaborateur</th><th>Journée planning</th><th>Avant</th><th>Après</th><th>Pourquoi</th><th>Note case</th><th>Auteur</th></tr></thead><tbody id="rh-ph94-body"></tbody></table></div></div>`;
+    document.body.appendChild(modal);
+    modal.addEventListener('click',e=>{if(e.target===modal)window.closePlanningHistoryV94();});
+    return modal;
+  }
+  window.openPlanningHistoryV94=function(){
+    const modal=ensureModal();
+    const sel=document.getElementById('rh-ph94-staff');
+    const current=sel?.value||'';
+    if(sel){
+      const dir=typeof getDir==='function'?getDir():[];
+      sel.innerHTML='<option value="">Toute l’équipe</option>'+dir.map(s=>`<option value="${esc(String(s.id))}">${esc(s.name||String(s.id))}</option>`).join('');
+      if([...sel.options].some(o=>o.value===current)) sel.value=current;
+    }
+    const to=document.getElementById('rh-ph94-to'),from=document.getElementById('rh-ph94-from');
+    const today=new Date(); const cutoff=new Date(); cutoff.setFullYear(cutoff.getFullYear()-5);
+    if(to&&!to.value)to.value=today.toISOString().slice(0,10); if(from&&!from.value)from.value=cutoff.toISOString().slice(0,10);
+    window.renderPlanningHistoryV94(); modal.classList.add('show');
+  };
+  window.closePlanningHistoryV94=()=>document.getElementById('rh-planning-history-v94')?.classList.remove('show');
+  window.renderPlanningHistoryV94=function(){
+    const sid=String(document.getElementById('rh-ph94-staff')?.value||'');
+    const from=Date.parse(String(document.getElementById('rh-ph94-from')?.value||'')+'T00:00:00');
+    const to=Date.parse(String(document.getElementById('rh-ph94-to')?.value||'')+'T23:59:59');
+    const rows=planningRows().filter(r=>{
+      const t=Date.parse(String(r.timestamp||r.at||''));
+      return (!sid||String(r.staffId||'')===sid)&&(!Number.isFinite(from)||!Number.isFinite(t)||t>=from)&&(!Number.isFinite(to)||!Number.isFinite(t)||t<=to);
+    });
+    window.__rhPh94Rows=rows;
+    const body=document.getElementById('rh-ph94-body'); if(!body)return;
+    body.innerHTML=rows.length?rows.map(r=>{
+      const at=new Date(r.timestamp||r.at||Date.now());
+      const name=r.staffName||((typeof getDir==='function'?getDir():[]).find(s=>String(s.id)===String(r.staffId))?.name)||r.staffId||'—';
+      const before=r.before&&typeof r.before==='object'&&!Array.isArray(r.before)?summary(r.before):'Modification groupée';
+      const after=r.after&&typeof r.after==='object'&&!Array.isArray(r.after)&&('status' in r.after||'s1' in r.after||'s2' in r.after)?summary(r.after):'Planning mis à jour';
+      return `<tr><td><strong>${esc(at.toLocaleDateString('fr-FR'))}</strong><small>${esc(at.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit',second:'2-digit'}))}</small></td><td>${esc(name)}</td><td>${esc(r.date||r.month||'—')}</td><td>${esc(before)}</td><td>${esc(after)}</td><td class="rh-ph94-reason">${esc(r.reason||'—')}</td><td class="rh-ph94-note">${esc(r.managerNote||r.after?.managerNote||'—')}</td><td>${esc(r.by||'Direction / RH')}</td></tr>`;
+    }).join(''):`<tr><td colspan="8"><div class="rh-ph94-empty">Aucune modification de planning sur cette période.</div></td></tr>`;
+  };
+  function printDoc(title,body){
+    const w=window.open('','_blank','noopener,noreferrer'); if(!w){alert('Autorisez les fenêtres pop-up pour imprimer.');return;}
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+</head><body><h1>${esc(title)}</h1><small>Imprimé le ${esc(new Date().toLocaleString('fr-FR'))}</small>${body}</body></html>`);w.document.close();setTimeout(()=>w.print(),200);
+  }
+  window.printPlanningHistoryV94=function(){
+    if(!window.__rhPh94Rows) window.renderPlanningHistoryV94(); const rows=window.__rhPh94Rows||[];
+    const dir=typeof getDir==='function'?getDir():[];
+    const html=`<table><thead><tr><th>Date/heure</th><th>Collaborateur</th><th>Journée</th><th>Avant</th><th>Après</th><th>Motif</th><th>Note</th><th>Auteur</th></tr></thead><tbody>${rows.map(r=>{const at=new Date(r.timestamp||r.at||Date.now());const name=r.staffName||dir.find(s=>String(s.id)===String(r.staffId))?.name||r.staffId||'—';const before=r.before&&typeof r.before==='object'?summary(r.before):'—';const after=r.after&&typeof r.after==='object'&&('status'in r.after||'s1'in r.after)?summary(r.after):'Mise à jour groupée';return `<tr><td>${esc(at.toLocaleString('fr-FR'))}</td><td>${esc(name)}</td><td>${esc(r.date||r.month||'—')}</td><td>${esc(before)}</td><td>${esc(after)}</td><td>${esc(r.reason||'—')}</td><td>${esc(r.managerNote||r.after?.managerNote||'—')}</td><td>${esc(r.by||'Direction / RH')}</td></tr>`;}).join('')}</tbody></table>`;
+    printDoc('iCHEF RH · Historique planning 5 ans',html);
+  };
+  window.printCurrentPlanningV94=function(){
+    const month=document.getElementById('month-selector')?.value||''; if(!/^\d{4}-\d{2}$/.test(month)){alert('Sélectionnez un mois.');return;}
+    const ts=typeof getTs==='function'?getTs():{}; const dir=typeof getDir==='function'?getDir().filter(s=>s.active!==false):[]; const [y,m]=month.split('-').map(Number); const days=new Date(y,m,0).getDate();
+    let head='<tr><th>Collaborateur</th>'+Array.from({length:days},(_,i)=>{const d=new Date(y,m-1,i+1);const j=['D','L','M','M','J','V','S'][d.getDay()];return `<th>${j} ${String(i+1).padStart(2,'0')}</th>`;}).join('')+'</tr>';
+    let body=dir.map(st=>{const sm=ts?.[month]?.[st.id]||ts?.[month]?.[String(st.id)]||{};return `<tr><th>${esc(st.name||st.id)}</th>`+Array.from({length:days},(_,i)=>{const p=sm[i+1]||sm[String(i+1)]||{status:'off'};const sessions=[p.s1,p.s2].filter(Boolean).join(' / ');return `<td><strong>${esc(statusLabel(p))}</strong>${sessions?`<br>${esc(sessions)}`:''}${p.managerNote?`<br><span class="note">${esc(p.managerNote)}</span>`:''}</td>`;}).join('')+'</tr>';}).join('');
+    printDoc(`iCHEF RH · Planning ${month}`,`<table><thead>${head}</thead><tbody>${body}</tbody></table>`);
+  };
+  // Nettoyage local à l'ouverture : jamais plus de 5 ans, jamais moins.
+  try{ if(typeof saveRhChangeHistory==='function') saveRhChangeHistory(typeof getRhChangeHistory==='function'?getRhChangeHistory():[]); }catch(_){ }
+  window.__ICHEF_RH_BUILD__='RH-V95-RAPPORT-POINTEUSE-PRO';
+  console.info('[iCHEF RH V94] Note case 40 caractères · motif obligatoire · historique planning 5 ans · impression');
+})();
+
+
+;
+/* RH V264 - preserved script #22 */
+(() => {
+  let rhDocsSessionToken = '';
+  let rhDocsSessionExpiresAt = 0;
+  let rhDocsRows = [];
+  const MAX_FILE_BYTES = 12 * 1024 * 1024;
+  const CATEGORY_LABELS = {
+    PAYSLIP:'Bulletin / fiche de salaire',
+    SALARY_CERTIFICATE:'Certificat de salaire',
+    TAX_DOCUMENT:'Document fiscal salarié',
+    WITHHOLDING_TAX:'Impôt à la source / PAS',
+    SOCIAL_STATEMENT:'Cotisations / attestation sociale',
+    PAYROLL_OTHER:'Autre document paie',
+    CONTRACT:'Contrat / avenant',
+    ATTESTATION:'Attestation de travail',
+    CERTIFICATE:'Certificat / formation',
+    OTHER:'Autre document'
+  };
+  function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+  function attr(v){return esc(v).replace(/`/g,'&#96;');}
+  function staffFromModal(){
+    try{
+      const pin=String(document.getElementById('staff-edit-original-pin')?.value||'').trim();
+      if(!pin || typeof getDir!=='function') return null;
+      return (getDir()||[]).find(s=>String(s?.pin||'').trim()===pin)||null;
+    }catch(_){return null;}
+  }
+  function managerPin(){try{return typeof getRhDirectionAuthPin==='function'?String(getRhDirectionAuthPin()||'').trim():'';}catch(_){return '';}}
+  function currentDevice(){try{return String(window.RH_DEVICE_ID||RH_DEVICE_ID||localStorage.getItem('ichef_device_id')||'').trim();}catch(_){return String(localStorage.getItem('ichef_device_id')||'').trim();}}
+  function apiBase(){try{return String(window.SERVER_URL_JS||SERVER_URL_JS||'').replace(/\/$/,'');}catch(_){return '';}}
+  function ensurePanel(){
+    if(document.getElementById('rh-staff-documents-v100')) return;
+    const anchor=document.getElementById('staff-active')?.closest('.toggle-row');
+    if(!anchor) return;
+    anchor.insertAdjacentHTML('afterend', `
+      <section id="rh-staff-documents-v100">
+        <div class="rh-doc-v100-head">
+          <div><h4>Documents professionnels du collaborateur</h4><p>Bulletins de salaire, contrat et avenants, attestations de travail, certificats et autres documents RH. L’envoi apparaît automatiquement dans le Portail Staff personnel.</p></div>
+          <span class="rh-doc-v100-badge" id="rh-doc-v100-count">0 DOCUMENT</span>
+        </div>
+        <div class="rh-doc-v100-upload" id="rh-doc-v100-upload-box">
+          <div class="input-group"><label>Type de document</label><select class="input-full" id="rh-doc-v100-category">
+            <optgroup label="Paie & fiscalité salariale">
+              <option value="PAYSLIP">Bulletin / fiche de salaire</option>
+              <option value="SALARY_CERTIFICATE">Certificat de salaire</option>
+              <option value="TAX_DOCUMENT">Document fiscal salarié</option>
+              <option value="WITHHOLDING_TAX">Impôt à la source / prélèvement à la source</option>
+              <option value="SOCIAL_STATEMENT">Cotisations / attestation sociale</option>
+              <option value="PAYROLL_OTHER">Autre document paie</option>
+            </optgroup>
+            <optgroup label="Dossier RH">
+              <option value="CONTRACT">Contrat / avenant</option>
+              <option value="ATTESTATION">Attestation de travail</option>
+              <option value="CERTIFICATE">Certificat / formation</option>
+              <option value="OTHER">Autre document</option>
+            </optgroup>
+          </select></div>
+          <div class="input-group"><label>Date du document</label><input class="input-full" id="rh-doc-v100-issued" type="date"></div>
+          <div class="input-group wide"><label>Titre</label><input class="input-full" id="rh-doc-v100-title" maxlength="140" placeholder="Ex. Bulletin de salaire septembre 2026"></div>
+          <div class="input-group"><label>Période / référence</label><input class="input-full" id="rh-doc-v100-period" maxlength="80" placeholder="Ex. Septembre 2026"></div>
+          <div class="input-group"><label>Fichier · 12 Mo max.</label><input class="rh-doc-v100-file" id="rh-doc-v100-file" type="file" accept=".pdf,.png,.jpg,.jpeg,.doc,.docx,.xls,.xlsx,.txt,application/pdf,image/png,image/jpeg,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain"></div>
+          <div class="rh-doc-v100-status" id="rh-doc-v100-status"></div>
+          <div class="rh-doc-v100-actions"><button class="rh-doc-v100-send" id="rh-doc-v100-send" type="button" onclick="sendRhStaffDocumentV100()">ENVOYER AU COLLABORATEUR</button></div>
+        </div>
+        <div class="rh-doc-v100-list" id="rh-doc-v100-list"><div class="rh-doc-v100-empty">Sélectionnez un collaborateur existant pour gérer ses documents.</div></div>
+      </section>`);
+    const today=new Date().toISOString().slice(0,10);
+    const date=document.getElementById('rh-doc-v100-issued'); if(date&&!date.value) date.value=today;
+  }
+  function setStatus(text,kind=''){
+    const el=document.getElementById('rh-doc-v100-status'); if(!el)return;
+    el.textContent=String(text||'');
+    el.style.color=kind==='ok'?'#8bd8b5':kind==='error'?'#ef9a9a':'var(--text-muted)';
+  }
+  async function ensureSession(force=false){
+    if(!force && rhDocsSessionToken && Date.now()<rhDocsSessionExpiresAt-60000) return rhDocsSessionToken;
+    const pin=managerPin();
+    if(!/^\d{4,12}$/.test(pin)) throw new Error('Reconnectez-vous avec un PIN Direction / Manager pour accéder aux documents sensibles.');
+    const r=await fetch(`${apiBase()}/api/rh/documents/session`,{method:'POST',credentials:'include',cache:'no-store',headers:{'Content-Type':'application/json','Accept':'application/json','X-iCHEF-Tenant':tenantID_JS,'X-iCHEF-Device':currentDevice()},body:JSON.stringify({tenantID:tenantID_JS,pin,deviceId:currentDevice()})});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok||!data.success||!data.accessToken) throw new Error(data.error||'Autorisation Documents RH refusée.');
+    rhDocsSessionToken=String(data.accessToken); rhDocsSessionExpiresAt=Date.now()+Math.max(60000,Number(data.expiresInSeconds||7200)*1000);
+    return rhDocsSessionToken;
+  }
+  async function docsFetch(path,options={},retry=true){
+    const token=await ensureSession(false);
+    const headers={...(options.headers||{}),'Accept':'application/json','X-iCHEF-Tenant':tenantID_JS,'X-iCHEF-Device':currentDevice(),'Authorization':`Bearer ${token}`};
+    let r;
+    const controller=new AbortController();
+    const timeoutMs=String(path||'').includes('/documents/upload')?45000:18000;
+    const timer=setTimeout(()=>controller.abort(),timeoutMs);
+    try{
+      r=await fetch(`${apiBase()}${path}`,{...options,headers,credentials:'include',cache:'no-store',signal:controller.signal});
+    }catch(networkError){
+      if(networkError?.name==='AbortError'){
+        const e=new Error('Le serveur Documents RH met trop de temps à répondre. L’envoi a été interrompu pour éviter de rester bloqué.');
+        e.cause=networkError;e.status=408;throw e;
+      }
+      const e=new Error('Connexion serveur Documents RH impossible. Vérifiez le déploiement et réessayez.');
+      e.cause=networkError; e.status=0; throw e;
+    }
+    clearTimeout(timer);
+    if(r.status===401 && retry){rhDocsSessionToken='';rhDocsSessionExpiresAt=0;await ensureSession(true);return docsFetch(path,options,false);}
+    if(r.status===503 && retry){await new Promise(resolve=>setTimeout(resolve,850));return docsFetch(path,options,false);}
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok||data.success===false){
+      const e=new Error(data.error||`Erreur serveur Documents RH (${r.status})`);
+      e.status=r.status; e.code=data.code||''; e.payload=data; throw e;
+    }
+    return data;
+  }
+  function label(category){return CATEGORY_LABELS[String(category||'OTHER').toUpperCase()]||CATEGORY_LABELS.OTHER;}
+  function icon(category){
+    return ({
+      PAYSLIP:'PAIE',
+      SALARY_CERTIFICATE:'SAL.',
+      TAX_DOCUMENT:'FISC',
+      WITHHOLDING_TAX:'IMP.',
+      SOCIAL_STATEMENT:'SOC.',
+      PAYROLL_OTHER:'PAIE',
+      CONTRACT:'CTRT',
+      ATTESTATION:'ATST',
+      CERTIFICATE:'CERT',
+      OTHER:'DOC'
+    })[String(category||'OTHER').toUpperCase()]||'DOC';
+  }
+  function formatDate(v){if(!v)return'';const d=new Date(v);return Number.isFinite(d.getTime())?d.toLocaleDateString('fr-FR'):String(v);}
+  function renderRows(){
+    const list=document.getElementById('rh-doc-v100-list'); const badge=document.getElementById('rh-doc-v100-count');
+    if(badge)badge.textContent=`${rhDocsRows.length} DOCUMENT${rhDocsRows.length>1?'S':''}`;
+    if(!list)return;
+    if(!rhDocsRows.length){list.innerHTML='<div class="rh-doc-v100-empty">Aucun document professionnel envoyé à ce collaborateur.</div>';return;}
+    list.innerHTML=rhDocsRows.map(d=>{
+      const meta=[label(d.category),d.period||'',formatDate(d.issuedAt||d.uploadedAt),d.sizeLabel||''].filter(Boolean).join(' · ');
+      const proof=d.proofId?`<small style="color:#8bd8b5;font-weight:800">Preuve d’envoi : ${esc(d.proofId)}</small>`:'';
+      return `<div class="rh-doc-v100-row"><div class="rh-doc-v100-icon">${esc(icon(d.category))}</div><div><strong>${esc(d.title||d.fileName||'Document')}</strong><small>${esc(meta)}</small><small>${esc(d.fileName||'')}</small>${proof}</div><div class="rh-doc-v100-row-actions"><button class="download" type="button" onclick="downloadRhStaffDocumentV100('${attr(d.documentId||d.id)}')">TÉLÉCHARGER</button><button class="delete" type="button" onclick="deleteRhStaffDocumentV100('${attr(d.documentId||d.id)}')">SUPPRIMER</button></div></div>`;
+    }).join('');
+  }
+  window.loadRhStaffDocumentsV100=async function(){
+    ensurePanel();
+    const staff=staffFromModal();
+    const send=document.getElementById('rh-doc-v100-send');
+    if(!staff?.id){rhDocsRows=[];renderRows();if(send)send.disabled=true;setStatus('Enregistrez d’abord le collaborateur, puis rouvrez sa fiche pour lui envoyer des documents.');return;}
+    if(send)send.disabled=false;
+    setStatus('Chargement sécurisé des documents…');
+    try{
+      const data=await docsFetch(`/api/rh/documents/list?tenantID=${encodeURIComponent(tenantID_JS)}&staffId=${encodeURIComponent(String(staff.id))}`);
+      rhDocsRows=Array.isArray(data.documents)?data.documents:[]; renderRows(); setStatus(`${rhDocsRows.length} document(s) disponible(s).`,'ok');
+    }catch(e){rhDocsRows=[];renderRows();setStatus(e.message||'Impossible de charger les documents.','error');}
+  };
+  function fileBase64(file){return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onerror=()=>reject(new Error('Lecture du fichier impossible.'));reader.onload=()=>resolve(String(reader.result||'').split(',').pop()||'');reader.readAsDataURL(file);});}
+  window.sendRhStaffDocumentV100=async function(){
+    const staff=staffFromModal(); if(!staff?.id)return alert('Enregistrez d’abord le collaborateur.');
+    const file=document.getElementById('rh-doc-v100-file')?.files?.[0];
+    const title=String(document.getElementById('rh-doc-v100-title')?.value||'').trim();
+    const category=String(document.getElementById('rh-doc-v100-category')?.value||'OTHER').toUpperCase();
+    const period=String(document.getElementById('rh-doc-v100-period')?.value||'').trim();
+    const issuedAt=String(document.getElementById('rh-doc-v100-issued')?.value||'').trim();
+    if(!file)return alert('Choisissez un document à envoyer.');
+    if(file.size>MAX_FILE_BYTES)return alert('Le fichier dépasse 12 Mo.');
+    const btn=document.getElementById('rh-doc-v100-send'); if(btn)btn.disabled=true;
+    try{
+      setStatus(`Envoi sécurisé de ${file.name} (${(file.size/1024/1024).toFixed(2)} Mo)…`);
+      const params=new URLSearchParams({
+        tenantID:String(tenantID_JS||''),staffId:String(staff.id),staffName:String(staff.name||''),
+        category,title:title||file.name,period,issuedAt,filename:file.name,
+        mimeType:file.type||'application/octet-stream'
+      });
+      let data;
+      try{
+        data=await docsFetch(`/api/rh/documents/upload-binary?${params.toString()}`,{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:file});
+      }catch(binaryError){
+        if(![404,405].includes(Number(binaryError?.status||0))) throw binaryError;
+        setStatus('Compatibilité serveur : envoi sécurisé classique…');
+        const base64=await fileBase64(file);
+        data=await docsFetch('/api/rh/documents/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenantID_JS,staffId:String(staff.id),staffName:String(staff.name||''),category,title:title||file.name,period,issuedAt,filename:file.name,mimeType:file.type||'application/octet-stream',base64})});
+      }
+      if(data.document){
+        if(data.proof?.proofId&&!data.document.proofId)data.document.proofId=data.proof.proofId;
+        rhDocsRows=[data.document,...rhDocsRows.filter(d=>String(d.documentId||d.id)!==String(data.document.documentId||data.document.id))];
+      }
+      renderRows();
+      document.getElementById('rh-doc-v100-title').value=''; document.getElementById('rh-doc-v100-period').value=''; document.getElementById('rh-doc-v100-file').value='';
+      const proofId=String(data?.proof?.proofId||data?.document?.proofId||'').trim();
+      const proofText=proofId?` · PREUVE ${proofId}`:'';
+      setStatus(`✓ Document enregistré pour ${staff.name||'ce collaborateur'}${proofText}. Disponible dans son Portail Staff.`,'ok');
+      try{
+        recordRhChange?.({
+          staffId:String(staff.id),
+          staffName:String(staff.name||''),
+          type:'DOCUMENT_SENT',
+          category:'DOCUMENT',
+          documentId:String(data?.document?.documentId||data?.document?.id||''),
+          proofId,
+          documentCategory:category,
+          title:title||file.name,
+          fileName:file.name,
+          period,
+          issuedAt,
+          message:`Document envoyé · ${title||file.name}${proofId?` · preuve ${proofId}`:''}`
+        });
+      }catch(_){}
+      try{showToast(proofId?`Document envoyé · ${proofId}`:'Document envoyé au collaborateur');}catch(_){ }
+    }catch(e){
+      console.error('[iCHEF RH Documents upload]',e);
+      const detail=e?.status?` (HTTP ${e.status}${e.code?` · ${e.code}`:''})`:'';
+      const msg=(e?.message||'Envoi impossible.')+detail;
+      setStatus(msg,'error');alert(msg);
+    }finally{if(btn)btn.disabled=false;}
+  };
+  window.downloadRhStaffDocumentV100=function(id){
+    const doc=rhDocsRows.find(d=>String(d.documentId||d.id)===String(id)); if(!doc?.downloadUrl)return alert('Lien de téléchargement indisponible. Actualisez la fiche.');
+    window.open(String(doc.downloadUrl),'_blank','noopener,noreferrer');
+  };
+  window.deleteRhStaffDocumentV100=async function(id){
+    const doc=rhDocsRows.find(d=>String(d.documentId||d.id)===String(id)); if(!doc)return;
+    const reason=prompt(`Motif de suppression de « ${doc.title||doc.fileName||'ce document'} » (obligatoire) :`,'Document remplacé / erreur de fichier');
+    if(reason===null)return; if(String(reason).trim().length<5)return alert('Indiquez un motif de suppression (5 caractères minimum).');
+    try{
+      await docsFetch('/api/rh/documents/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenantID_JS,documentId:String(id),reason:String(reason).trim()})});
+      try{
+        const staff=staffFromModal();
+        recordRhChange?.({
+          staffId:String(staff?.id||''),
+          staffName:String(staff?.name||''),
+          type:'DOCUMENT_DELETED',
+          category:'DOCUMENT',
+          documentId:String(id),
+          title:String(doc?.title||doc?.fileName||'Document'),
+          fileName:String(doc?.fileName||''),
+          reason:String(reason).trim(),
+          proofId:String(doc?.proofId||''),
+          message:`Document supprimé · ${doc?.title||doc?.fileName||'Document'} · ${String(reason).trim()}`
+        });
+      }catch(_){}
+      rhDocsRows=rhDocsRows.filter(d=>String(d.documentId||d.id)!==String(id));renderRows();setStatus('Document supprimé du coffre-fort du collaborateur.','ok');
+    }catch(e){setStatus(e.message||'Suppression impossible.','error');alert(e.message||'Suppression impossible.');}
+  };
+  function install(){
+    ensurePanel();
+    if(typeof window.openStaffModal==='function' && !window.openStaffModal.__rhDocsV100){
+      const original=window.openStaffModal;
+      const wrapped=function(...args){const out=original.apply(this,args);setTimeout(()=>window.loadRhStaffDocumentsV100?.(),80);return out;};
+      wrapped.__rhDocsV100=true; window.openStaffModal=wrapped;
+    }
+  }
+  document.addEventListener('DOMContentLoaded',install); setTimeout(install,120);
+  window.__ICHEF_RH_BUILD__='RH-V106-DOCUMENTS-FAST-PROOF-SECURE';
+  console.info('[iCHEF RH V106] Documents collaborateurs : envoi rapide hors file planning + preuve immédiate + timeout + sécurité conservée');
+})();
+
+
+;
+/* RH V264 - preserved script #23 */
+(() => {
+  const RH_V102_URGENT_HOURS=5;
+  let planningToken='';
+  let planningTokenExpires=0;
+  let autoTakeoverRunning=false;
+  function currentDevice(){try{return String(window.RH_DEVICE_ID||RH_DEVICE_ID||localStorage.getItem('ichef_device_id')||'').trim();}catch(_){return String(localStorage.getItem('ichef_device_id')||'').trim();}}
+  function apiBase(){try{return String(window.SERVER_URL_JS||SERVER_URL_JS||'').replace(/\/$/,'');}catch(_){return '';}}
+  function managerPin(){try{return typeof getRhDirectionAuthPin==='function'?String(getRhDirectionAuthPin()||'').trim():'';}catch(_){return '';}}
+  function actor(){try{return typeof window.rhAuditActorV94==='function'?window.rhAuditActorV94():'Direction / RH';}catch(_){return 'Direction / RH';}}
+  function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+  async function ensurePlanningSession(force=false){
+    if(!force&&planningToken&&Date.now()<planningTokenExpires-60000)return planningToken;
+    const pin=managerPin();
+    if(!/^\d{4,12}$/.test(pin))throw new Error('Reconnectez-vous avec un PIN Direction / Manager pour enregistrer le planning.');
+    const r=await fetch(`${apiBase()}/api/rh/planning/session`,{method:'POST',credentials:'include',cache:'no-store',headers:{'Content-Type':'application/json','Accept':'application/json','X-iCHEF-Tenant':tenantID_JS,'X-iCHEF-Device':currentDevice()},body:JSON.stringify({tenantID:tenantID_JS,pin,deviceId:currentDevice()})});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok||!data.success||!data.accessToken)throw new Error(data.error||'Session Planning RH refusée.');
+    planningToken=String(data.accessToken);planningTokenExpires=Date.now()+Math.max(60000,Number(data.expiresInSeconds||7200)*1000);return planningToken;
+  }
+  async function securePlanningSave(snapshot,options={},retry=true){
+    const token=await ensurePlanningSession(false);
+    const r=await fetch(`${apiBase()}/api/rh/planning/save`,{method:'POST',credentials:'include',cache:'no-store',headers:{'Content-Type':'application/json','Accept':'application/json','X-iCHEF-Tenant':tenantID_JS,'X-iCHEF-Device':currentDevice(),'Authorization':`Bearer ${token}`},body:JSON.stringify({tenantID:tenantID_JS,timesheets:snapshot,source:String(options.source||'DIRECTION_PLANNING'),reason:String(options.reason||''),aiTakeover:options.aiTakeover===true,settings:typeof getRhSettings==='function'?getRhSettings():{}})});
+    const data=await r.json().catch(()=>({}));
+    if(r.status===401&&retry){planningToken='';planningTokenExpires=0;await ensurePlanningSession(true);return securePlanningSave(snapshot,options,false);}
+    if(!r.ok||data.success===false){const e=new Error(data.error||`Erreur planning (${r.status})`);e.code=data.code||'';e.payload=data;throw e;}
+    return data;
+  }
+  // Remplace la sauvegarde générique par la route Planning RH signée.
+  // Le snapshot local reste immédiat pour que l'interface ne bloque jamais.
+  try{
+    const legacySave=saveTs;
+    saveTs=function(ts,options={}){
+      if(window.ICHEF_PLANNING_PREMIUM_ONLY){
+        console.warn('[RH V258] sauvegarde planning ancien refusée : ouvrir Planning Premium');
+        try{if(typeof showToast==='function')showToast('Planning officiel : modifications uniquement dans Planning Premium.');}catch(_){}
+        try{window.iChefRhPremiumRefreshV258?.(true);}catch(_){}
+        return Promise.resolve(false);
+      }
+      let snapshot;try{snapshot=JSON.parse(JSON.stringify(ts||{}));}catch(_){snapshot=ts||{};}
+      localStorage.setItem('empire_hr_timesheets',JSON.stringify(snapshot));
+      try{
+        window.iChefPlanningMasterSyncV217?.({
+          source:String(options.source||'DIRECTION_PLANNING'),
+          snapshot,
+          local:true
+        });
+      }catch(_){}
+      try{rhPlanningLocalSignature=typeof rhPlanningSignature==='function'?rhPlanningSignature(snapshot):JSON.stringify(snapshot);rhPlanningPendingUntil=Date.now()+15000;}catch(_){ }
+      const run=async()=>{
+        try{
+          const data=await securePlanningSave(snapshot,options);
+          if(data?.timesheets&&typeof data.timesheets==='object'){
+            localStorage.setItem('empire_hr_timesheets',JSON.stringify(data.timesheets));
+            try{
+              window.iChefPlanningMasterSyncV217?.({
+                source:`${String(options.source||'DIRECTION_PLANNING')}:server-ack`,
+                snapshot:data.timesheets,
+                serverAck:true
+              });
+            }catch(_){}
+            try{rhPlanningLocalSignature=typeof rhPlanningSignature==='function'?rhPlanningSignature(data.timesheets):JSON.stringify(data.timesheets);rhPlanningPendingUntil=0;}catch(_){ }
+          }
+          return true;
+        }catch(error){
+          try{rhPlanningPendingUntil=Math.max(rhPlanningPendingUntil||0,Date.now()+60000);}catch(_){ }
+          console.warn('[iCHEF RH V102] synchronisation planning sécurisée différée',error);
+          if(typeof showToast==='function')showToast(error?.code==='PLANNING_REASON_REQUIRED_5H'?'Motif obligatoire à moins de 5 h du service':'Planning conservé · synchronisation en attente');
+          return false;
+        }
+      };
+      try{rhPlanningSaveChain=rhPlanningSaveChain.catch(()=>true).then(run);return rhPlanningSaveChain;}catch(_){window.__rhV102SaveChain=(window.__rhV102SaveChain||Promise.resolve(true)).catch(()=>true).then(run);return window.__rhV102SaveChain;}
+    };
+    saveTs.__rhV102Secure=true;
+    window.__rhLegacySaveTsV101=legacySave;
+  }catch(error){console.error('[iCHEF RH V102] installation saveTs',error);}
+  function firstStart(plan){
+    const p=plan&&typeof plan==='object'?plan:{};
+    const starts=[p.s1,p.s2].map(v=>String(v||'').match(/^(\d{1,2}:\d{2})/i)?.[1]||'').filter(Boolean).sort();
+    if(starts.length)return starts[0];
+    const s=typeof getRhSettings==='function'?getRhSettings():{};
+    const st=String(p.status||'').toLowerCase();
+    if(st==='off_matin')return String(s.dinnerWorkStart||s.dinnerStart||'18:00');
+    if(['present','off_soir','ferie'].includes(st))return String(s.lunchWorkStart||s.lunchStart||'10:00');
+    return '';
+  }
+  function changeWindow(dateStr,before,after){
+    const start=firstStart(after)||firstStart(before);
+    if(!start){const d=new Date(`${dateStr}T12:00:00`);return d.getTime()<=Date.now()?{needsReason:true,kind:'STARTED_OR_PAST',start:'',hours:null}:{needsReason:false,kind:'NORMAL',start:'',hours:null};}
+    const dt=new Date(`${dateStr}T${start}:00`);const h=(dt.getTime()-Date.now())/3600000;
+    if(h<=0)return{needsReason:true,kind:'STARTED_OR_PAST',start,hours:h};
+    if(h<=RH_V102_URGENT_HOURS)return{needsReason:true,kind:'URGENT_5H',start,hours:h};
+    return{needsReason:false,kind:'NORMAL',start,hours:h};
+  }
+  window.rhPlanningChangeWindowV102=changeWindow;
+  function editorPlanFromDom(base={}){
+    const status=String(document.getElementById('rh-cse-status')?.value||base.status||'off');
+    let s1=String(document.getElementById('rh-cse-s1')?.value||'').trim();
+    let s2=String(document.getElementById('rh-cse-s2')?.value||'').trim();
+    let pause=Math.max(0,Math.min(240,Number(document.getElementById('rh-cse-pause')?.value)||0));
+    const work=new Set(['present','off_matin','off_soir','ferie']);
+    if(!work.has(status)){s1='';s2='';pause=0;}if(status==='off_soir')s2='';if(status==='off_matin')s1='';
+    return{...base,status,poste:String(document.getElementById('rh-cse-poste')?.value||base.poste||'salle'),s1,s2,pause,obs:String(document.getElementById('rh-cse-obs')?.value||'').trim().slice(0,500),managerNote:String(document.getElementById('rh-cse-manager-note')?.value||'').trim().slice(0,40)};
+  }
+  function updateEditorReasonPolicy(){
+    const ctx=window.__rhV102Editor;if(!ctx)return;
+    const ts=typeof getTs==='function'?getTs():{};const [y,m,d]=ctx.dateStr.split('-').map(Number);const month=`${y}-${String(m).padStart(2,'0')}`;
+    const before=ts?.[month]?.[ctx.staffId]?.[d]||ts?.[month]?.[ctx.staffId]?.[String(d)]||{};
+    const after=editorPlanFromDom(before);const w=changeWindow(ctx.dateStr,before,after);
+    const field=document.querySelector('#rh-cockpit-shift-editor .rh-cse-reason-field');const input=document.getElementById('rh-cse-change-reason');
+    let note=document.getElementById('rh-v102-window-note');
+    if(!note){note=document.createElement('div');note.id='rh-v102-window-note';note.className='rh-v102-window-note';document.querySelector('#rh-cockpit-shift-editor .rh-cse-body')?.prepend(note);}
+    if(w.needsReason){if(field)field.style.display='flex';if(input)input.required=true;note.className='rh-v102-window-note '+(w.kind==='URGENT_5H'?'urgent':'started');note.innerHTML=w.kind==='URGENT_5H'?`<strong>MODIFICATION URGENTE</strong> · service dans moins de 5 h${w.start?` (${esc(w.start)})`:''}. Le motif est obligatoire et le collaborateur recevra la modification avec « Vu ».`:`<strong>SERVICE DÉJÀ COMMENCÉ / DATE PASSÉE</strong> · le motif est obligatoire. Les pointages réels ne seront jamais modifiés.`;}
+    else{if(field)field.style.display='none';if(input){input.required=false;input.value='';}note.className='rh-v102-window-note';note.innerHTML='<strong>MODIFICATION NORMALE</strong> · plus de 5 h avant le service : aucun motif n’est demandé. L’ancienne version reste archivée.';}
+  }
+  const previousOpen=window.openRhCockpitShiftEditor;
+  if(typeof previousOpen==='function')window.openRhCockpitShiftEditor=function(staffId,dateStr){window.__rhV102Editor={staffId:String(staffId),dateStr:String(dateStr)};const out=previousOpen.apply(this,arguments);setTimeout(()=>{updateEditorReasonPolicy();['rh-cse-status','rh-cse-s1','rh-cse-s2'].forEach(id=>document.getElementById(id)?.addEventListener('input',updateEditorReasonPolicy));},0);return out;};
+  const previousClose=window.closeRhCockpitShiftEditor;
+  if(typeof previousClose==='function')window.closeRhCockpitShiftEditor=function(){window.__rhV102Editor=null;return previousClose.apply(this,arguments);};
+  window.saveRhCockpitShiftEditor=async function(){
+    const ctx=window.__rhV102Editor;if(!ctx)return;
+    const [y,m,d]=ctx.dateStr.split('-').map(Number);const month=`${y}-${String(m).padStart(2,'0')}`;const sid=String(ctx.staffId);
+    const ts=typeof getTs==='function'?getTs():{};if(!ts[month])ts[month]={};if(!ts[month][sid])ts[month][sid]={};
+    const staff=typeof getDir==='function'?getDir().find(s=>String(s.id)===sid):null;
+    const previous=ts[month][sid][d]||ts[month][sid][String(d)]||{};const before=JSON.parse(JSON.stringify(previous||{}));const candidate=editorPlanFromDom(previous);
+    const comparable=n=>JSON.stringify({status:String(n?.status||'off'),poste:String(n?.poste||''),s1:String(n?.s1||''),s2:String(n?.s2||''),pause:Number(n?.pause||0),obs:String(n?.obs||''),managerNote:String(n?.managerNote||'')});
+    if(comparable(before)===comparable(candidate)){window.closeRhCockpitShiftEditor();if(typeof showToast==='function')showToast('Aucune modification');return;}
+    const shiftPattern=/^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/;if(candidate.s1&&!shiftPattern.test(candidate.s1)){alert('Horaire matin invalide. Exemple : 10:00-14:45');return;}if(candidate.s2&&!shiftPattern.test(candidate.s2)){alert('Horaire soir invalide. Exemple : 18:00-22:45');return;}
+    const w=changeWindow(ctx.dateStr,before,candidate);let reason=String(document.getElementById('rh-cse-change-reason')?.value||'').trim().slice(0,180);
+    if(w.needsReason&&!reason){alert('Motif obligatoire : la modification intervient à 5 h ou moins du service, ou après son démarrage.');document.getElementById('rh-cse-change-reason')?.focus();return;}
+    if(!w.needsReason)reason='';
+    const auditAt=new Date().toISOString(),auditBy=actor();
+    ts[month][sid][d]={...candidate,lastChangeReason:reason,lastChangeAt:auditAt,lastChangeBy:auditBy,planningChangeKind:w.kind,planningUrgent:w.kind==='URGENT_5H',updatedAt:auditAt};
+    if(typeof recordRhChange==='function')recordRhChange({type:'PLANNING_MANUAL_EDIT',source:'DIRECTION_PLANNING',staffId:sid,staffName:String(staff?.name||''),date:ctx.dateStr,month,day:d,reason,changeKind:w.kind,managerNote:String(candidate.managerNote||''),by:auditBy,before,after:JSON.parse(JSON.stringify(ts[month][sid][d])),message:reason?`Planning modifié · ${ctx.dateStr} · ${reason}`:`Planning modifié · ${ctx.dateStr} · version précédente archivée`});
+    const btn=document.querySelector('#rh-cockpit-shift-editor .rh-cse-save');if(btn){btn.disabled=true;btn.textContent='ENREGISTREMENT…';}
+    const ok=await saveTs(ts,{source:'DIRECTION_PLANNING',reason,staffId:sid,date:ctx.dateStr});
+    try{loadMonthData?.();loadPublicPlanning?.();broadcastStaffingLevels?.();renderRhCockpit?.();}catch(_){ }
+    if(ok){window.closeRhCockpitShiftEditor();if(typeof showToast==='function')showToast(w.needsReason?'Modification urgente envoyée au collaborateur':'Planning enregistré · ancienne version archivée');}
+    else if(btn){btn.disabled=false;btn.textContent='ENREGISTRER';}
+  };
+  // Vue individuelle : aucun prompt au-delà de 5 h, motif obligatoire dans la fenêtre sensible.
+  if(typeof updateData==='function'){
+    window.updateData=updateData=async function(staffId,day,key,val){
+      const settings=typeof getRhSettings==='function'?getRhSettings():{};if(String(settings.planningStatus||'draft')==='locked'){alert('Ce planning est clôturé / verrouillé. Passez-le en Brouillon pour le modifier.');loadMonthData?.();return;}
+      const month=document.getElementById('month-selector')?.value||'';const sid=String(staffId);const ts=getTs();const staff=getDir().find(s=>String(s.id)===sid);if(!ts[month])ts[month]={};if(!ts[month][sid])ts[month][sid]={};if(!ts[month][sid][day])ts[month][sid][day]={status:'off',poste:staff?.dept||'salle',s1:'',s2:'',pause:0,obs:'',managerNote:''};
+      const before=JSON.parse(JSON.stringify(ts[month][sid][day]||{}));if(String(before?.[key]??'')===String(val??'')){loadMonthData?.();return;}
+      const candidate={...before,[key]:val};if(key==='status'){const work=new Set(['present','off_matin','off_soir','ferie']);if(!work.has(val)){candidate.s1='';candidate.s2='';candidate.pause=0;}else if(val==='present'){candidate.s1=candidate.s1||'10:00-14:45';candidate.s2=candidate.s2||'18:00-22:45';candidate.pause=Number(candidate.pause)||30;}else if(val==='off_soir'){candidate.s1=candidate.s1||'10:00-14:45';candidate.s2='';candidate.pause=0;}else if(val==='off_matin'){candidate.s1='';candidate.s2=candidate.s2||'18:00-22:45';candidate.pause=0;}}
+      const dateStr=`${month}-${String(day).padStart(2,'0')}`;const w=changeWindow(dateStr,before,candidate);let reason='';if(w.needsReason){reason=String(prompt(`Modification à 5 h ou moins du service / service commencé.\nPourquoi modifiez-vous le planning de ${staff?.name||'ce collaborateur'} ?`)||'').trim().slice(0,180);if(!reason){loadMonthData?.();return;}}
+      const auditAt=new Date().toISOString(),auditBy=actor();ts[month][sid][day]={...candidate,lastChangeReason:reason,lastChangeAt:auditAt,lastChangeBy:auditBy,planningChangeKind:w.kind,planningUrgent:w.kind==='URGENT_5H',updatedAt:auditAt};
+      recordRhChange?.({type:'PLANNING_MANUAL_EDIT',source:'DIRECTION_INDIVIDUAL',staffId:sid,staffName:String(staff?.name||''),date:dateStr,month,day:Number(day),reason,changeKind:w.kind,by:auditBy,before,after:JSON.parse(JSON.stringify(ts[month][sid][day])),message:reason?`Planning modifié · ${dateStr} · ${reason}`:`Planning modifié · ${dateStr} · version précédente archivée`});
+      const ok=await saveTs(ts,{source:'DIRECTION_INDIVIDUAL',reason,staffId:sid,date:dateStr});loadMonthData?.();loadPublicPlanning?.();broadcastStaffingLevels?.();if(!ok)console.warn('[iCHEF RH V102] modification en attente de synchronisation');
+    };
+  }
+  // Application IA : motif non demandé en planification normale. En relève automatique,
+  // la cause système est enregistrée et la publication ne demande aucune validation.
+  window.applyAutomaticPlanning=async function(options={}){
+    if(
+      Array.isArray(planningAssistantDraft?.criticalIssues) &&
+      planningAssistantDraft.criticalIssues.length
+    ){
+      const first=planningAssistantDraft.criticalIssues[0];
+      alert(
+        'PLANNING BLOQUÉ\n\n' +
+        (first?.message || 'Un service est ouvert sans couverture cuisine qualifiée.') +
+        '\n\nCorrigez la couverture cuisine ou fermez le service concerné avant validation.'
+      );
+      return false;
+    }
+    const auto=options===true||options?.auto===true;
+    if(!planningAssistantDraft){if(auto){planningAssistantDraft=buildAutomaticPlanningDraft();renderAutomaticPlanningDraft(planningAssistantDraft);}else{alert('Générez d’abord une proposition de planning.');return false;}}
+    const settings=getRhSettings();if(settings.planningStatus==='locked'){if(!auto)alert('Le planning est clôturé / verrouillé.');return false;}
+    const month=getPlanningAssistantMonth();if(planningAssistantDraft.month!==month){if(auto){planningAssistantDraft=buildAutomaticPlanningDraft();}else{alert('Le mois affiché a changé. Régénérez la proposition.');return false;}}
+    if(!auto&&!confirm(`Appliquer la proposition iCHEF pour ${monthLabelFr(month)} ?\n\nLes anciennes versions resteront archivées.`))return false;
+    const ts=getTs();if(!ts[month])ts[month]={};const beforeByStaff={};let urgent=false;
+    for(const [staffId,days] of Object.entries(planningAssistantDraft.proposal||{})){if(!ts[month][staffId])ts[month][staffId]={};beforeByStaff[staffId]=JSON.parse(JSON.stringify(ts[month][staffId]||{}));for(const [day,plan] of Object.entries(days||{})){const previous=ts[month][staffId][day]||{};const candidate={status:plan.status||'off',poste:plan.poste||'salle',s1:plan.s1||'',s2:plan.s2||'',pause:Number(plan.pause||0),obs:String(plan.obs||''),managerNote:String(plan.managerNote||'').slice(0,40)};const w=changeWindow(`${month}-${String(day).padStart(2,'0')}`,previous,candidate);if(w.needsReason)urgent=true;ts[month][staffId][day]=candidate;}}
+    const reason=auto?String(options?.reason||'Relève automatique iCHEF IA — échéance de planification dépassée').slice(0,180):(urgent?'Application iCHEF IA dans la fenêtre urgente de 5 h':'');const auditAt=new Date().toISOString(),auditBy=auto?'iCHEF IA Autopilot':actor();
+    for(const [staffId,days] of Object.entries(planningAssistantDraft.proposal||{})){for(const day of Object.keys(days||{})){const dateStr=`${month}-${String(day).padStart(2,'0')}`;const previous=beforeByStaff[staffId]?.[day]||{};const current=ts[month][staffId][day];const w=changeWindow(dateStr,previous,current);ts[month][staffId][day]={...current,lastChangeReason:w.needsReason||auto?reason:'',lastChangeAt:auditAt,lastChangeBy:auditBy,planningChangeKind:auto?'AI_TAKEOVER':w.kind,planningUrgent:w.kind==='URGENT_5H',updatedAt:auditAt};}}
+    const ok=await saveTs(ts,{source:auto?'AI_TAKEOVER':'ASSISTANCE_PLANNING',reason,aiTakeover:auto});
+    for(const staffId of Object.keys(planningAssistantDraft.proposal||{})){const s=getDir().find(x=>String(x.id)===String(staffId));recordRhChange?.({type:auto?'AI_PLANNING_TAKEOVER':'PLANNING_AI_APPLIED',month,source:auto?'AI_TAKEOVER':'ASSISTANCE_PLANNING',staffId:String(staffId),staffName:String(s?.name||''),reason,by:auditBy,before:beforeByStaff[staffId]||{},after:JSON.parse(JSON.stringify(ts[month][staffId]||{})),message:auto?`Relève IA automatique · planning publié · ${month}`:`Planning IA appliqué · ${month}`});}
+    if(auto&&ok){saveRhSettings({...getRhSettings(),planningStatus:'published'});localStorage.setItem(`ichef_ai_takeover_${tenantID_JS}_${month}`,new Date().toISOString());}
+    loadMonthData?.();refreshViews?.();loadPublicPlanning?.();broadcastStaffingLevels?.();renderPlanningAssistantLocal?.();if(typeof showToast==='function')showToast(ok?(auto?'iCHEF IA a pris la relève et publié le planning':'Planning IA appliqué'):'Planning conservé · synchronisation en attente');return ok;
+  };
+  function planExistsFor(staffId,date){const month=`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}`;const day=date.getDate();const p=getTs()?.[month]?.[String(staffId)]?.[day]||getTs()?.[month]?.[String(staffId)]?.[String(day)];return !!(p&&typeof p==='object'&&Object.keys(p).length);}
+  function serviceStartFor(date,settings){const time=String(settings.lunchStart||'10:00');return new Date(`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}T${time}:00`);}
+  async function checkAiTakeover(){
+    if(window.ICHEF_PLANNING_PREMIUM_ONLY)return; // Aucune publication IA autonome hors Premium.
+    if(autoTakeoverRunning)return;const s=getRhSettings();if(s.planningAutopilotEnabled===false||String(s.planningStatus||'draft')==='locked')return;const staff=(getDir?.()||[]).filter(x=>x.active!==false);if(!staff.length)return;const now=new Date(),hours=Math.max(6,Math.min(168,Number(s.planningTakeoverHours)||48));let target=null;
+    for(let i=0;i<=7;i++){const d=new Date(now.getFullYear(),now.getMonth(),now.getDate()+i,12,0,0,0);const start=serviceStartFor(d,s);const delta=(start.getTime()-Date.now())/3600000;if(delta<0||delta>hours)continue;const ready=staff.every(emp=>planExistsFor(emp.id,d));if(!ready||String(s.planningStatus||'draft')!=='published'){target=d;break;}}
+    if(!target)return;const month=`${target.getFullYear()}-${String(target.getMonth()+1).padStart(2,'0')}`;const throttleKey=`ichef_ai_takeover_attempt_${tenantID_JS}_${month}`;const last=Date.parse(localStorage.getItem(throttleKey)||'');if(Number.isFinite(last)&&Date.now()-last<15*60*1000)return;localStorage.setItem(throttleKey,new Date().toISOString());autoTakeoverRunning=true;
+    try{const selector=document.getElementById('month-selector');if(selector){selector.value=month;try{enforceRhPlanningMonthHorizon?.(false);}catch(_){}}await generateAutomaticPlanning();await window.applyAutomaticPlanning({auto:true});}catch(error){console.error('[iCHEF RH V102] relève IA automatique',error);if(typeof showToast==='function')showToast('Relève IA à reprendre · données ou connexion insuffisantes');}finally{autoTakeoverRunning=false;}
+  }
+  document.addEventListener('DOMContentLoaded',()=>{setTimeout(checkAiTakeover,8000);setInterval(checkAiTakeover,5*60*1000);});
+  window.addEventListener('focus',()=>setTimeout(checkAiTakeover,1200));
+  window.__ICHEF_RH_BUILD__='RH-V106-DOCUMENTS-FAST-PROOF-SECURE';
+  console.info('[iCHEF RH V102] >5h sans motif · <=5h motif obligatoire · versions originales · relève IA autonome');
+})();
+
+
+;
+/* RH V264 - preserved script #24 */
+(() => {
+  const BUILD='RH-V106-DOCUMENTS-FAST-PROOF-SECURE';
+  let monthlyPlannerRunning=false;
+  function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+  function ensureModals(){
+    if(!document.getElementById('rh-ai-settings-v103')){
+      document.body.insertAdjacentHTML('beforeend',`<div class="modal" id="rh-ai-settings-v103"><div class="modal-content" style="width:min(920px,96vw);max-height:92vh;overflow:auto"><div class="modal-header"><div><h3>RÉGLAGES IA RH</h3><div style="color:var(--text-muted);font-size:.68rem;margin-top:4px">Paramètres propres à l’établissement · utilisés avant la mise en route et pour chaque mise à jour du planning.</div></div><button class="btn-outline" style="border:none" onclick="closeRhPlanningSettingsV103()">FERMER</button></div><div class="rh-v103-emphasis"><strong>PLANNING MENSUEL.</strong> iCHEF prépare un mois complet, conserve les congés validés, garantit les jours OFF configurés et ne réorganise ensuite que ce qui devient nécessaire.</div><div class="rh-v103-config-grid"><section class="rh-v103-config-section"><h4>Autonomie & échéances</h4><div class="input-group"><label>Mode IA</label><select class="input-full" id="v103-mode"><option value="autonomous">Autonome · publie selon les règles</option><option value="semi">Semi-automatique · prépare, responsable publie</option><option value="assisted">Assisté · analyse uniquement</option></select></div><div class="grid-2"><div class="input-group"><label>Préparer le mois suivant · J-</label><input class="input-full" id="v103-month-lead" type="number" min="1" max="31"></div><div class="input-group"><label>Relève si planning incomplet · heures</label><input class="input-full" id="v103-takeover-hours" type="number" min="6" max="168"></div></div><label class="rh-v103-toggle"><input id="v103-autopilot" type="checkbox"><span><strong>Relève IA automatique</strong><small>Si l’échéance client est dépassée, l’IA publie sans attendre une validation.</small></span></label></section><section class="rh-v103-config-section"><h4>Repos, OFF, congés & récupération</h4><div class="grid-2"><div class="input-group"><label>Jours OFF / 7 jours</label><select class="input-full" id="v103-off-days"><option value="0.5">0.5</option><option value="1">1</option><option value="1.5">1.5</option><option value="2">2</option><option value="2.5">2.5</option><option value="3">3</option><option value="3.5">3.5</option><option value="4">4</option><option value="4.5">4.5</option><option value="5">5</option><option value="5.5">5.5</option><option value="6">6</option><option value="6.5">6.5</option><option value="7">7</option></select></div><div class="input-group"><label>Récup. auto · max jours/mois</label><input class="input-full" id="v103-recovery-max" type="number" min="0" max="6" step="1"></div></div><div class="input-group"><label>Jours protégés · pas de nouvelle demande OFF / vacances / récupération</label><div class="rh-v104-weekdays"><label><input type="checkbox" data-v104-protected-day="1">Lun</label><label><input type="checkbox" data-v104-protected-day="2">Mar</label><label><input type="checkbox" data-v104-protected-day="3">Mer</label><label><input type="checkbox" data-v104-protected-day="4">Jeu</label><label><input type="checkbox" data-v104-protected-day="5">Ven</label><label><input type="checkbox" data-v104-protected-day="6">Sam</label><label><input type="checkbox" data-v104-protected-day="0">Dim</label></div><div class="rh-v103-config-note">Ces jours bloquent les nouvelles demandes planifiables. Maladie, accident et absences obligatoires restent possibles. Un congé déjà validé n’est jamais annulé.</div></div><label class="rh-v103-toggle"><input id="v104-block-protected" type="checkbox"><span><strong>Bloquer les nouvelles demandes sur ces jours</strong><small>OFF, vacances et récupération sont refusés depuis le Portail Staff sur les jours sélectionnés.</small></span></label><label class="rh-v103-toggle"><input id="v103-consecutive-off" type="checkbox"><span><strong>Privilégier les OFF consécutifs</strong><small>Évite de disperser inutilement les jours de repos.</small></span></label><label class="rh-v103-toggle"><input id="v103-auto-recovery" type="checkbox"><span><strong>Placer la récupération disponible</strong><small>Uniquement quand la banque permet un jour complet et de préférence sur les jours calmes.</small></span></label><label class="rh-v103-toggle"><input id="v104-protect-peaks" type="checkbox"><span><strong>Protéger automatiquement les gros pics d’affluence</strong><small>L’IA évite OFF, récupération et nouvelles vacances sur les journées les plus chargées, selon réservations, historique, événements et Anti-Rush.</small></span></label><div class="grid-2"><div class="input-group"><label>Jours de pic protégés / mois</label><select class="input-full" id="v104-peak-count"><option value="4">4</option><option value="6">6</option><option value="8">8</option><option value="10">10</option><option value="12">12</option></select></div><div class="input-group"><label>Seuil réservations · couverts</label><input class="input-full" id="v104-peak-covers" type="number" min="0" max="1000" step="1"></div></div><label class="rh-v103-toggle"><input type="checkbox" checked disabled><span><strong>Congés payés : demandes validées uniquement</strong><small>L’IA ne crée jamais seule des vacances payées. Une demande acceptée devient une contrainte protégée.</small></span></label></section><section class="rh-v103-config-section"><h4>Activité & coûts</h4><div class="grid-2"><div class="input-group"><label>Priorité</label><select class="input-full" id="v103-priority"><option value="balanced">Équilibre qualité / coût</option><option value="quality">Qualité prioritaire</option><option value="coverage">Couverture maximale</option><option value="cost">Coût RH maîtrisé</option></select></div><div class="input-group"><label>Budget main-d’œuvre (% CA)</label><input class="input-full" id="v103-budget" type="number" min="0" max="100" step=".5"></div></div><div class="input-group"><label>Niveau de service</label><select class="input-full" id="v103-service-level"><option value="standard">Standard</option><option value="reinforced">Renforcé</option><option value="premium">Premium</option><option value="excellence">Excellence</option></select></div><div class="grid-2"><div class="input-group"><label>1 serveur / X couverts</label><input class="input-full" id="v103-server-ratio" type="number" min="1"></div><div class="input-group"><label>1 cuisine / X couverts</label><input class="input-full" id="v103-kitchen-ratio" type="number" min="1"></div></div><label class="rh-v103-toggle"><input id="v103-reservations" type="checkbox"><span><strong>Réagir aux réservations</strong><small>Réévalue la couverture quand l’affluence prévue change.</small></span></label><label class="rh-v103-toggle"><input id="v103-antirush" type="checkbox"><span><strong>Intégrer Anti-Rush</strong><small>Utilise la pression opérationnelle détectée pour renforcer les services utiles.</small></span></label><label class="rh-v103-toggle"><input id="v103-absence" type="checkbox"><span><strong>Réagir aux absences</strong><small>Recherche un remplacement sans refaire inutilement tout le mois.</small></span></label></section><section class="rh-v103-config-section"><h4>Horaires de travail & service</h4><div class="grid-2"><div class="input-group"><label>Début travail midi</label><input class="input-full" id="v103-lunch-work-start" type="time"></div><div class="input-group"><label>Fin travail midi</label><input class="input-full" id="v103-lunch-work-end" type="time"></div></div><div class="grid-2"><div class="input-group"><label>Début service midi</label><input class="input-full" id="v103-lunch-start" type="time"></div><div class="input-group"><label>Fin service midi</label><input class="input-full" id="v103-lunch-end" type="time"></div></div><div class="grid-2"><div class="input-group"><label>Début travail soir</label><input class="input-full" id="v103-dinner-work-start" type="time"></div><div class="input-group"><label>Fin travail soir</label><input class="input-full" id="v103-dinner-work-end" type="time"></div></div><div class="grid-2"><div class="input-group"><label>Début service soir</label><input class="input-full" id="v103-dinner-start" type="time"></div><div class="input-group"><label>Fin service soir</label><input class="input-full" id="v103-dinner-end" type="time"></div></div><div class="rh-v103-config-note">Les heures de travail correspondent à la prise et à la fin de poste réelles. Les heures de service correspondent à la période de service aux clients. Les contraintes de contrat, compétences, disponibilités et repos restent prioritaires.</div></section></div><div style="display:flex;justify-content:flex-end;gap:9px;margin-top:16px"><button class="btn-outline" onclick="closeRhPlanningSettingsV103()">ANNULER</button><button class="btn-save-green" onclick="saveRhPlanningSettingsV103()">ENREGISTRER LES RÉGLAGES</button></div></div></div>`);
+    }
+    if(!document.getElementById('rh-doc-center-v103')){
+      document.body.insertAdjacentHTML('beforeend',`<div class="modal" id="rh-doc-center-v103"><div class="modal-content" style="width:min(680px,95vw)"><div class="modal-header"><div><h3>DOCUMENTS DES COLLABORATEURS</h3><div style="color:var(--text-muted);font-size:.68rem;margin-top:4px">Envoyer bulletin de salaire, contrat, avenant, attestation ou certificat vers le Portail Staff personnel.</div></div><button class="btn-outline" style="border:none" onclick="closeRhDocumentsCenterV103()">FERMER</button></div><div class="rh-v103-emphasis">Sélectionnez le collaborateur. Son dossier sécurisé s’ouvrira directement sur la zone <strong>Documents professionnels</strong>.</div><div class="rh-v103-doc-picker"><div class="input-group" style="margin:0"><label>Collaborateur</label><select id="v103-doc-staff" class="input-full"></select></div><button class="btn-save-green" style="min-height:44px" onclick="openSelectedStaffDocumentsV103()">OUVRIR LES DOCUMENTS</button></div></div></div>`);
+    }
+  }
+  function showModal(id){ensureModals();const m=document.getElementById(id);if(!m)return;m.style.opacity='1';m.classList.add('show');m.style.display='flex';}
+  function hideModal(id){const m=document.getElementById(id);if(!m)return;m.classList.remove('show');m.style.display='none';}
+  window.closeRhPlanningSettingsV103=()=>hideModal('rh-ai-settings-v103');
+  window.closeRhDocumentsCenterV103=()=>hideModal('rh-doc-center-v103');
+  window.openRhPlanningSettingsV103=function(){ensureModals();const s=typeof getRhSettings==='function'?getRhSettings():{};const set=(id,v)=>{const e=document.getElementById(id);if(e)e.value=v??''};const chk=(id,v)=>{const e=document.getElementById(id);if(e)e.checked=v!==false};set('v103-mode',s.planningMode||'autonomous');set('v103-month-lead',s.planningMonthlyLeadDays||14);set('v103-takeover-hours',s.planningTakeoverHours||48);set('v103-off-days',s.planningDaysOffPerWeek??2);set('v103-recovery-max',s.planningMaxRecoveryDaysPerMonth??2);set('v104-peak-count',s.planningPeakProtectionCount??6);set('v104-peak-covers',s.planningPeakMinCovers??40);set('v103-priority',s.planningPriority||'balanced');set('v103-budget',s.laborBudgetPct??25);set('v103-service-level',s.planningServiceLevel||'standard');set('v103-server-ratio',s.serverCoversRatio??25);set('v103-kitchen-ratio',s.kitchenCoversRatio??35);set('v103-lunch-work-start',s.lunchWorkStart||s.lunchStart||'10:00');set('v103-lunch-work-end',s.lunchWorkEnd||s.lunchEnd||'14:45');set('v103-lunch-start',s.lunchStart||'10:00');set('v103-lunch-end',s.lunchEnd||'14:45');set('v103-dinner-work-start',s.dinnerWorkStart||s.dinnerStart||'18:00');set('v103-dinner-work-end',s.dinnerWorkEnd||s.dinnerEnd||'22:45');set('v103-dinner-start',s.dinnerStart||'18:00');set('v103-dinner-end',s.dinnerEnd||'22:45');chk('v103-autopilot',s.planningAutopilotEnabled);chk('v103-consecutive-off',s.planningPreferConsecutiveOff);chk('v103-auto-recovery',s.planningAutoRecovery);chk('v104-block-protected',s.planningBlockPlannableLeaveOnProtectedDays);chk('v104-protect-peaks',s.planningProtectPeakLeave);document.querySelectorAll('[data-v104-protected-day]').forEach(el=>{el.checked=(Array.isArray(s.planningProtectedWeekdays)?s.planningProtectedWeekdays.map(Number):[]).includes(Number(el.dataset.v104ProtectedDay));});chk('v103-reservations',s.planningRebalanceOnReservations);chk('v103-antirush',s.planningRebalanceOnAntiRush);chk('v103-absence',s.planningRebalanceOnAbsence);showModal('rh-ai-settings-v103');};
+  window.saveRhPlanningSettingsV103=function(){
+    const current=typeof getRhSettings==='function'?getRhSettings():{};
+    const val=id=>document.getElementById(id)?.value;
+    const checked=id=>document.getElementById(id)?.checked!==false;
+    const protectedWeekdays=Array.from(document.querySelectorAll('[data-v104-protected-day]:checked')).map(el=>Number(el.dataset.v104ProtectedDay));
+    const saved=saveRhSettings({...current,
+      planningMode:val('v103-mode'),planningMonthlyLeadDays:val('v103-month-lead'),planningTakeoverHours:val('v103-takeover-hours'),
+      planningDaysOffPerWeek:val('v103-off-days'),planningMaxRecoveryDaysPerMonth:val('v103-recovery-max'),
+      planningProtectedWeekdays:protectedWeekdays,planningBlockPlannableLeaveOnProtectedDays:checked('v104-block-protected'),
+      planningProtectPeakLeave:checked('v104-protect-peaks'),planningPeakProtectionCount:val('v104-peak-count'),planningPeakMinCovers:val('v104-peak-covers'),
+      planningPriority:val('v103-priority'),planningServiceLevel:val('v103-service-level'),laborBudgetPct:val('v103-budget'),serverCoversRatio:val('v103-server-ratio'),kitchenCoversRatio:val('v103-kitchen-ratio'),
+      lunchWorkStart:val('v103-lunch-work-start'),lunchWorkEnd:val('v103-lunch-work-end'),lunchStart:val('v103-lunch-start'),lunchEnd:val('v103-lunch-end'),dinnerWorkStart:val('v103-dinner-work-start'),dinnerWorkEnd:val('v103-dinner-work-end'),dinnerStart:val('v103-dinner-start'),dinnerEnd:val('v103-dinner-end'),
+      planningAutopilotEnabled:checked('v103-autopilot'),planningPreferConsecutiveOff:checked('v103-consecutive-off'),planningAutoRecovery:checked('v103-auto-recovery'),
+      planningApprovedLeaveOnly:true,planningRebalanceOnReservations:checked('v103-reservations'),planningRebalanceOnAntiRush:checked('v103-antirush'),planningRebalanceOnAbsence:checked('v103-absence')
+    });
+    hideModal('rh-ai-settings-v103');
+    try{hydrateRhSettingsForm?.();renderPlanningAssistantLocal?.();showToast?.(`Réglages IA enregistrés · ${saved.planningDaysOffPerWeek} OFF / 7 jours · pics protégés ${saved.planningProtectPeakLeave?'OUI':'NON'}`);}catch(_){ }
+    return saved;
+  };
+  function refreshDocStaff(){ensureModals();const sel=document.getElementById('v103-doc-staff');if(!sel)return;const rows=(typeof getDir==='function'?getDir():[]).filter(s=>s&&s.id!=null);sel.innerHTML=rows.map(s=>`<option value="${esc(s.id)}">${esc(s.name||'Collaborateur')} · ${esc(String(s.dept||s.role||''))}</option>`).join('');if(typeof currentStaffId!=='undefined'&&currentStaffId!=null)sel.value=String(currentStaffId);}
+  window.openRhDocumentsCenterV103=function(){refreshDocStaff();showModal('rh-doc-center-v103');};
+  window.openSelectedStaffDocumentsV103=function(){const id=document.getElementById('v103-doc-staff')?.value;if(!id)return alert('Sélectionnez un collaborateur.');hideModal('rh-doc-center-v103');window.openStaffDocumentsV103(id);};
+  window.openStaffDocumentsV103=function(idOrPin){const rows=typeof getDir==='function'?getDir():[];const staff=rows.find(s=>String(s.id)===String(idOrPin)||String(s.pin||'')===String(idOrPin));if(!staff)return alert('Collaborateur introuvable.');if(typeof openStaffModal!=='function')return alert('Fiche collaborateur indisponible.');openStaffModal(staff.pin);setTimeout(()=>{try{window.loadRhStaffDocumentsV100?.();const panel=document.getElementById('rh-staff-documents-v100');panel?.scrollIntoView({behavior:'smooth',block:'start'});if(panel){panel.style.boxShadow='0 0 0 2px rgba(16,185,129,.45),0 18px 45px rgba(0,0,0,.35)';setTimeout(()=>panel.style.boxShadow='',2200);}}catch(_){ }},180);};
+  function monthIsComplete(month){try{const ts=getTs?.()||{};const staff=(getDir?.()||[]).filter(s=>s.active!==false);const [y,m]=String(month).split('-').map(Number);const days=new Date(y,m,0).getDate();if(!staff.length||!days)return false;return staff.every(s=>{const node=ts?.[month]?.[String(s.id)]||ts?.[month]?.[s.id]||{};let count=0;for(let d=1;d<=days;d++)if(node[d]||node[String(d)])count++;return count>=days;});}catch(_){return false;}}
+  async function checkMonthlyPlanning(force=false){if(window.ICHEF_PLANNING_PREMIUM_ONLY)return; // Proposition IA manuelle uniquement.
+    if(monthlyPlannerRunning)return;const s=getRhSettings?.()||{};if(s.planningAutopilotEnabled===false||String(s.planningStatus||'draft')==='locked')return;const now=new Date();const next=new Date(now.getFullYear(),now.getMonth()+1,1,12,0,0,0);const lead=Math.max(1,Math.min(31,Number(s.planningMonthlyLeadDays)||14));const daysUntil=(next.getTime()-Date.now())/86400000;if(!force&&daysUntil>lead)return;const month=`${next.getFullYear()}-${String(next.getMonth()+1).padStart(2,'0')}`;if(monthIsComplete(month))return;const key=`ichef_v103_monthly_${tenantID_JS}_${month}`;const last=Date.parse(localStorage.getItem(key)||'');if(!force&&Number.isFinite(last)&&Date.now()-last<30*60*1000)return;localStorage.setItem(key,new Date().toISOString());const mode=String(s.planningMode||'autonomous').toLowerCase();if(mode==='assisted'){try{showToast?.(`Planning ${month} à préparer · IA disponible`);}catch(_){ }return;}monthlyPlannerRunning=true;const selector=document.getElementById('month-selector');const old=selector?.value||'';try{if(selector){selector.value=month;try{enforceRhPlanningMonthHorizon?.(false);}catch(_){}}await generateAutomaticPlanning();if(mode==='semi'){openPlanningAssistant?.();showToast?.(`Proposition IA ${month} prête · publication à valider`);return;}await window.applyAutomaticPlanning?.({auto:true,reason:`Planification mensuelle automatique iCHEF IA · mois ${month} · réglages client`});}catch(e){console.error('[iCHEF RH V103] planning mensuel',e);try{showToast?.('Planning mensuel IA à reprendre · vérifier données ou connexion');}catch(_){ }}finally{monthlyPlannerRunning=false;if(selector&&old&&mode!=='semi')selector.value=old;try{loadMonthData?.();renderRhCockpit?.();}catch(_){ }}}
+  window.checkMonthlyPlanningV103=checkMonthlyPlanning;
+  document.addEventListener('DOMContentLoaded',()=>{ensureModals();setTimeout(()=>checkMonthlyPlanning(false),12000);setInterval(()=>checkMonthlyPlanning(false),30*60*1000);});
+  window.addEventListener('focus',()=>setTimeout(()=>checkMonthlyPlanning(false),1800));
+  window.__ICHEF_RH_BUILD__=BUILD;console.info('[iCHEF RH V104] OFF par 0,5 · jours protégés · pics d’affluence protégés · congés validés conservés');
+})();
+
+
+;
+/* RH V264 - preserved script #25 */
+(() => {
+  'use strict';
+  // UI layer only. No PIN/login/session/tenantID function is replaced.
+  const originalOpen = window.openRhPlanningSettingsV103;
+  const originalSave = window.saveRhPlanningSettingsV103;
+  function modeFromPriority(v){
+    if(v === 'cost') return 'cost';
+    if(v === 'coverage') return 'coverage';
+    return 'balanced';
+  }
+  function priorityFromMode(v){
+    if(v === 'cost') return 'cost';
+    if(v === 'coverage') return 'coverage';
+    return 'balanced';
+  }
+  function ensureSimpleUI(){
+    const modal = document.getElementById('rh-ai-settings-v103');
+    if(!modal || modal.dataset.simpleV109 === '1') return;
+    const content = modal.querySelector('.modal-content');
+    const header = content?.querySelector('.modal-header');
+    if(!content || !header) return;
+    const nodes = Array.from(content.children).filter(n => n !== header);
+    const original = document.createElement('div');
+    original.className = 'rh-v109-original';
+    nodes.forEach(n => original.appendChild(n));
+    const body = document.createElement('div');
+    body.className = 'rh-v109-body';
+    body.innerHTML = `
+      <div class="rh-v109-main">
+        <section class="rh-v109-hero">
+          <strong>Planification intelligente iCHEF</strong>
+          <p>Indiquez seulement les priorités de l’établissement. L’IA respecte automatiquement les contrats, congés validés, indisponibilités, repos et heures à récupérer. Les jours OFF sont proposés automatiquement et restent modifiables avant publication.</p>
+          <div class="rh-v109-mode">
+            <button type="button" data-v109-mode="balanced">✓ Équilibré<small>Qualité de service, équité et bien-être</small></button>
+            <button type="button" data-v109-mode="cost">€ Réduire les coûts<small>Optimise les effectifs sans ignorer les contraintes</small></button>
+            <button type="button" data-v109-mode="coverage">▥ Renforcer le service<small>Plus d’effectifs pendant les périodes fortes</small></button>
+          </div>
+        </section>
+
+        <section class="rh-v109-card">
+          <h4>Réglages essentiels</h4>
+          <div class="rh-v109-row">
+            <div class="rh-v109-field"><label>Jours OFF</label><select id="v109-off-days">
+              <option value="0.5">0,5 jour / semaine</option><option value="1">1 jour / semaine</option><option value="1.5">1,5 jour / semaine</option><option value="2">2 jours / semaine</option><option value="2.5">2,5 jours / semaine</option><option value="3">3 jours / semaine</option>
+            </select></div>
+            <div class="rh-v109-field"><label>Période d’affluence</label><select id="v109-affluence">
+              <option value="normal">Normale</option><option value="high">Forte</option><option value="very-high">Très forte / événement</option>
+            </select></div>
+          </div>
+          <div class="rh-v109-row">
+            <div class="rh-v109-field"><label>Effectif minimum</label><select id="v109-min-staff">
+              <option value="usual">Utiliser les besoins habituels</option><option value="reinforced">Renforcer automatiquement</option>
+            </select></div>
+            <div class="rh-v109-field"><label>Horaires du service</label><select id="v109-hours">
+              <option value="usual">Utiliser les horaires habituels</option><option value="custom">Personnaliser dans Réglages avancés</option>
+            </select></div>
+          </div>
+          <div class="rh-v109-info">Les congés déjà validés ne sont jamais annulés. Les OFF proposés par l’IA peuvent être déplacés ou refusés avant la publication du planning.</div>
+        </section>
+
+        <details class="rh-v109-advanced">
+          <summary>⚙ Réglages avancés</summary>
+          <div class="rh-v109-advanced-content"></div>
+        </details>
+
+        <div class="rh-v109-actions">
+          <button type="button" class="btn-outline" onclick="closeRhPlanningSettingsV103()">ANNULER</button>
+          <button type="button" class="btn-save-green" onclick="saveRhPlanningSettingsV109()">ENREGISTRER LES RÉGLAGES</button>
+        </div>
+      </div>
+      <aside class="rh-v109-side">
+        <section class="rh-v109-card">
+          <h4>Ce que l’IA gère automatiquement</h4>
+          <div class="rh-v109-check"><b>✓</b><span>Contrats et heures prévues</span></div>
+          <div class="rh-v109-check"><b>✓</b><span>Disponibilités et absences</span></div>
+          <div class="rh-v109-check"><b>✓</b><span>Congés déjà validés</span></div>
+          <div class="rh-v109-check"><b>✓</b><span>Repos et jours OFF proposés</span></div>
+          <div class="rh-v109-check"><b>✓</b><span>Heures supplémentaires et récupération</span></div>
+          <div class="rh-v109-check"><b>✓</b><span>Affluence, réservations et Anti-Rush</span></div>
+          <div class="rh-v109-check"><b>✓</b><span>Détection des conflits avant publication</span></div>
+        </section>
+      </aside>`;
+    body.querySelector('.rh-v109-advanced-content').appendChild(original);
+    content.appendChild(body);
+    modal.dataset.simpleV109 = '1';
+    body.querySelectorAll('[data-v109-mode]').forEach(btn => btn.addEventListener('click', () => {
+      body.querySelectorAll('[data-v109-mode]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      modal.dataset.v109Mode = btn.dataset.v109Mode;
+    }));
+  }
+  window.openRhPlanningSettingsV103 = function(...args){
+    const r = originalOpen?.apply(this,args);
+    ensureSimpleUI();
+    const modal = document.getElementById('rh-ai-settings-v103');
+    const priority = document.getElementById('v103-priority')?.value || 'balanced';
+    const mode = modeFromPriority(priority);
+    modal.dataset.v109Mode = mode;
+    modal.querySelectorAll('[data-v109-mode]').forEach(b => b.classList.toggle('active', b.dataset.v109Mode === mode));
+    const off = document.getElementById('v103-off-days')?.value || '2';
+    const offSelect = document.getElementById('v109-off-days');
+    if(offSelect && Array.from(offSelect.options).some(o=>o.value===String(off))) offSelect.value=String(off);
+    const peak = document.getElementById('v104-protect-peaks')?.checked;
+    const aff = document.getElementById('v109-affluence');
+    if(aff) aff.value = peak ? 'high' : 'normal';
+    return r;
+  };
+  window.saveRhPlanningSettingsV109 = function(){
+    ensureSimpleUI();
+    const modal = document.getElementById('rh-ai-settings-v103');
+    const mode = modal?.dataset.v109Mode || 'balanced';
+    const priority = document.getElementById('v103-priority');
+    if(priority) priority.value = priorityFromMode(mode);
+    const off = document.getElementById('v109-off-days')?.value;
+    const oldOff = document.getElementById('v103-off-days');
+    if(oldOff && off) oldOff.value = off;
+    const aff = document.getElementById('v109-affluence')?.value || 'normal';
+    const peaks = document.getElementById('v104-protect-peaks');
+    if(peaks) peaks.checked = aff !== 'normal';
+    const reservations = document.getElementById('v103-reservations');
+    const antirush = document.getElementById('v103-antirush');
+    if(reservations) reservations.checked = true;
+    if(antirush) antirush.checked = aff !== 'normal' || antirush.checked;
+    return originalSave?.call(this);
+  };
+  // If the modal was already created before this patch, prepare it now.
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', ensureSimpleUI, {once:true});
+  } else {
+    ensureSimpleUI();
+  }
+  window.__ICHEF_RH_BUILD__='RH-V109-SIMPLE-IA-SETTINGS-PIN-UNTOUCHED';
+  console.info('[iCHEF RH V109] Réglages IA simplifiés · connexion/PIN inchangés');
+})();
+
+;
+
+;
+/* RH V264 - preserved script #26 */
+(() => {
+  'use strict';
+  function installHelpButton(){
+    const card = document.querySelector('#rh-ai-settings-v103 .rh-v109-side .rh-v109-card');
+    if(!card || card.querySelector('.rh-v111-help-btn')) return;
+    const title = card.querySelector('h4');
+    if(!title) return;
+    const btn=document.createElement('button');
+    btn.type='button';
+    btn.className='rh-v111-help-btn';
+    btn.innerHTML='i';
+    btn.title='Comprendre l’IA Planning';
+    btn.setAttribute('aria-label','Comprendre l’IA Planning');
+    btn.onclick=()=>window.openRhAiHelpV111();
+    title.appendChild(btn);
+  }
+  window.openRhAiHelpV111=()=>{
+    const m=document.getElementById('rh-v111-help-modal');
+    if(m){m.classList.add('show');m.setAttribute('aria-hidden','false');}
+  };
+  window.closeRhAiHelpV111=()=>{
+    const m=document.getElementById('rh-v111-help-modal');
+    if(m){m.classList.remove('show');m.setAttribute('aria-hidden','true');}
+  };
+  document.addEventListener('click',e=>{
+    const m=document.getElementById('rh-v111-help-modal');
+    if(e.target===m) window.closeRhAiHelpV111();
+  });
+  document.addEventListener('keydown',e=>{if(e.key==='Escape') window.closeRhAiHelpV111();});
+  const obs=new MutationObserver(()=>{
+    installHelpButton();
+    if(document.querySelector('#rh-ai-settings-v103 .rh-v111-help-btn')){
+      obs.disconnect();
+    }
+  });
+  if(document.body) obs.observe(document.body,{childList:true,subtree:true});
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',()=>{
+      installHelpButton();
+      if(document.querySelector('#rh-ai-settings-v103 .rh-v111-help-btn')) obs.disconnect();
+    },{once:true});
+  }else{
+    installHelpButton();
+    if(document.querySelector('#rh-ai-settings-v103 .rh-v111-help-btn')) obs.disconnect();
+  }
+  window.__ICHEF_RH_HELP_BUILD__='V111';
+})();
+
+
+;
+/* RH V264 - preserved script #27 */
+(() => {
+ 'use strict';
+ function installV113(){
+   const modal=document.getElementById('ia-predictions-modal');
+   if(!modal || modal.dataset.v113==='1') return;
+   const host=modal.querySelector('.modal-content') || modal.firstElementChild;
+   if(!host) return;
+   const title=host.querySelector('h2,h3');
+   const flow=document.createElement('div');
+   flow.className='v113-flow';
+   flow.innerHTML=`
+     <div class="v113-step on" id="v113-s1"><b>1 · ANALYSER</b><small>Activité et contraintes</small></div>
+     <div class="v113-step" id="v113-s2"><b>2 · PLANNING IA</b><small>Horaires + OFF proposés</small></div>
+     <div class="v113-step" id="v113-s3"><b>3 · VÉRIFIER</b><small>Alertes et couverture</small></div>
+     <div class="v113-step" id="v113-s4"><b>4 · VALIDER</b><small>Appliquer au planning officiel</small></div>`;
+   if(title) title.insertAdjacentElement('afterend',flow); else host.prepend(flow);
+   const nativeSummary=document.getElementById('ia-planning-draft-summary');
+   const nativeWarnings=document.getElementById('ia-planning-draft-warnings');
+   const nativePreview=document.getElementById('ia-planning-preview');
+   const wrap=document.createElement('section');
+   wrap.className='v113-plan-wrap';
+   wrap.innerHTML=`
+     <div class="v113-plan-head">
+       <div><h3>PLANNING PROPOSÉ PAR L’IA</h3><p>Prévisualisation réelle du moteur iCHEF. Rien n’est appliqué avant validation.</p></div>
+       <span class="v113-state" id="v113-state">EN ATTENTE DE GÉNÉRATION</span>
+     </div>
+     <div class="v113-empty" id="v113-empty">Cliquez sur « GÉNÉRER LE PLANNING ». La proposition apparaîtra ici.</div>
+     <div class="v113-native-summary" id="v113-summary-slot"></div>
+     <div class="v113-native-warnings" id="v113-warning-slot"></div>
+     <div class="v113-native-preview" id="v113-preview-slot"></div>`;
+   const generateBtn=document.getElementById('assistant-generate-btn');
+   const actionZone=generateBtn?.closest('div');
+   const automaticBox=actionZone?.parentElement;
+   if(automaticBox) automaticBox.insertAdjacentElement('afterend',wrap);
+   else flow.insertAdjacentElement('afterend',wrap);
+   // Move the application's REAL output nodes into the new unified section.
+   if(nativeSummary) document.getElementById('v113-summary-slot').appendChild(nativeSummary);
+   if(nativeWarnings) document.getElementById('v113-warning-slot').appendChild(nativeWarnings);
+   if(nativePreview) document.getElementById('v113-preview-slot').appendChild(nativePreview);
+   // Remove the old empty containers/sections if they became visually redundant.
+   [nativeSummary,nativeWarnings,nativePreview].forEach(n=>{
+     const p=n?.parentElement;
+     if(p && p!==wrap && !p.id?.startsWith('v113-')) {
+       // no destructive removal: leave application structure intact
+     }
+   });
+   modal.dataset.v113='1';
+   refreshV113();
+ }
+ function refreshV113(){
+   const empty=document.getElementById('v113-empty');
+   const state=document.getElementById('v113-state');
+   const ready=typeof planningAssistantDraft!=='undefined' && !!planningAssistantDraft;
+   if(empty) empty.style.display=ready?'none':'block';
+   if(state){
+     state.textContent=ready?'PROPOSITION PRÊTE':'EN ATTENTE DE GÉNÉRATION';
+     state.classList.toggle('ready',ready);
+   }
+   document.getElementById('v113-s1')?.classList.toggle('on',!ready);
+   document.getElementById('v113-s2')?.classList.toggle('on',ready);
+   document.getElementById('v113-s3')?.classList.toggle('on',ready);
+ }
+ // Hook only AFTER the original function runs; no replacement of its algorithm.
+ const originalRender=window.renderAutomaticPlanningDraft;
+ if(typeof originalRender==='function'){
+   window.renderAutomaticPlanningDraft=function(draft){
+     const result=originalRender.apply(this,arguments);
+     installV113();
+     refreshV113();
+     return result;
+   };
+ }
+ const originalOpen=window.openPlanningAssistant;
+ if(typeof originalOpen==='function'){
+   window.openPlanningAssistant=function(){
+     const result=originalOpen.apply(this,arguments);
+     setTimeout(()=>{installV113();refreshV113();},0);
+     return result;
+   };
+ }
+ if(document.readyState==='loading'){
+   document.addEventListener('DOMContentLoaded',()=>{installV113();refreshV113();},{once:true});
+ } else {
+   installV113(); refreshV113();
+ }
+ window.__ICHEF_RH_FLOW_BUILD__='V113-REAL-PLANNING-DRAFT';
+ console.info('[iCHEF RH V113] affichage connecté à planningAssistantDraft réel · PIN/auth inchangés');
+})();
+
+
+;
+/* RH V264 - preserved script #28 */
+(() => {
+'use strict';
+// Performance only: authentication/PIN/session/tenantID are untouched.
+let inFlight=null;
+function setBusy(on){
+ const b=document.getElementById('assistant-generate-btn');
+ if(!b)return;
+ b.classList.toggle('v114-working',on); b.disabled=!!on;
+ let n=document.getElementById('v114-speed-note');
+ if(!n){n=document.createElement('div');n.id='v114-speed-note';n.textContent='Calcul du planning en cours…';b.insertAdjacentElement('afterend',n);}
+ n.classList.toggle('show',on);
+}
+const original=window.generateAutomaticPlanning;
+if(typeof original==='function' && !original.__v114){
+ const fast=async function(...args){
+   // Prevent accidental duplicate calculations.
+   if(inFlight) return inFlight;
+   setBusy(true);
+   inFlight=(async()=>{
+     try{
+       // Let browser paint loading state before CPU-heavy work.
+       await new Promise(r=>requestAnimationFrame(r));
+       return await original.apply(this,args);
+     }finally{
+       inFlight=null; setBusy(false);
+       requestAnimationFrame(()=>{
+         try{
+           if(typeof window.renderAutomaticPlanningDraft==='function' && window.planningAssistantDraft)
+             window.renderAutomaticPlanningDraft(window.planningAssistantDraft);
+         }catch(_){}
+       });
+     }
+   })();
+   return inFlight;
+ };
+ fast.__v114=true; fast.__original=original;
+ window.generateAutomaticPlanning=fast;
+}
+window.__ICHEF_RH_PERF_BUILD__='V114';
+console.info('[iCHEF RH V114] génération allégée : observer global supprimé + double calcul bloqué');
+})();
+
+;
+
+;
+/* RH V264 - preserved script #29 */
+(() => {
+'use strict';
+// UI only. No PIN/auth/session/tenantID changes.
+function installLegend(){
+ const modal=document.getElementById('ia-predictions-modal');
+ if(!modal || modal.querySelector('.v116-legend-btn')) return;
+ const head=modal.querySelector('.v113-plan-head');
+ if(!head) return;
+ const btn=document.createElement('button');
+ btn.type='button'; btn.className='v116-legend-btn';
+ btn.innerHTML='<span aria-hidden="true">ⓘ</span> LÉGENDE';
+ btn.onclick=()=>window.openPlanningLegendV116();
+ head.appendChild(btn);
+}
+window.openPlanningLegendV116=()=>{const m=document.getElementById('v116-legend-modal');if(m){m.classList.add('show');m.setAttribute('aria-hidden','false')}};
+window.closePlanningLegendV116=()=>{const m=document.getElementById('v116-legend-modal');if(m){m.classList.remove('show');m.setAttribute('aria-hidden','true')}};
+document.addEventListener('click',e=>{const m=document.getElementById('v116-legend-modal');if(e.target===m) closePlanningLegendV116()});
+document.addEventListener('keydown',e=>{if(e.key==='Escape') closePlanningLegendV116()});
+/* Automatic contrast helper: if a planning cell is truly white/very light,
+   force dark text. It never changes the cell background. */
+function applyReadableContrast(root=document){
+ root.querySelectorAll('#ia-predictions-modal td, #ia-predictions-modal .planning-cell, #ia-predictions-modal .shift-cell').forEach(el=>{
+  const rgb=getComputedStyle(el).backgroundColor.match(/\d+/g);
+  if(!rgb||rgb.length<3)return;
+  const [r,g,b]=rgb.map(Number);
+  const lum=(0.299*r+0.587*g+0.114*b);
+  el.classList.toggle('v116-light',lum>205);
+ });
+}
+const oldRender=window.renderAutomaticPlanningDraft;
+if(typeof oldRender==='function'&&!oldRender.__v116){
+ const wrapped=function(...args){const r=oldRender.apply(this,args);requestAnimationFrame(()=>{installLegend();applyReadableContrast()});return r};
+ wrapped.__v116=true; window.renderAutomaticPlanningDraft=wrapped;
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{installLegend();applyReadableContrast()},{once:true});
+else {installLegend();applyReadableContrast();}
+window.__ICHEF_RH_SERVICES_BUILD__='V116';
+})();
+
+
+;
+/* RH V264 - preserved script #30 */
+(() => {
+function install(){
+ const modal=document.getElementById('ia-predictions-modal');
+ if(!modal||document.getElementById('v124-bar'))return;
+ const flow=modal.querySelector('.v113-flow'); if(!flow)return;
+ const bar=document.createElement('div');bar.id='v124-bar';
+ bar.innerHTML=`<label>PÉRIODE À GÉNÉRER</label><select id="v124-horizon"><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option></select><label>mois</label><span id="v124-count">0 / 2 mois générés</span><div id="v124-nav"><button type="button" id="v124-prev">‹</button><span id="v124-month">—</span><button type="button" id="v124-next">›</button></div>`;
+ flow.insertAdjacentElement('afterend',bar);
+ document.getElementById('v124-horizon').onchange=sync;
+ document.getElementById('v124-prev').onclick=()=>move(-1);
+ document.getElementById('v124-next').onclick=()=>move(1);
+ sync();
+}
+function data(){return window.__ICHEF_MULTI_MONTH_PUBLIC__||{horizon:Number(document.getElementById('v124-horizon')?.value||2),index:0,months:[]}}
+function sync(){
+ const d=data(),h=Number(document.getElementById('v124-horizon')?.value||d.horizon||2);
+ const c=document.getElementById('v124-count'); if(c)c.textContent=`${d.months.length} / ${h} mois générés`;
+ const rec=d.months[d.index]||d.months[0];
+ const mn=document.getElementById('v124-month');
+ if(mn)mn.textContent=rec?.label||document.getElementById('month-selector')?.value||'—';
+ const p=document.getElementById('v124-prev'),n=document.getElementById('v124-next');
+ if(p)p.disabled=!d.months.length||d.index<=0;
+ if(n)n.disabled=!d.months.length||d.index>=d.months.length-1;
+}
+function move(delta){
+ const d=data(); if(!d.months.length)return;
+ const next=Math.max(0,Math.min(d.months.length-1,d.index+delta));
+ window.renderPlanningAssistantMultiMonth?.(next);
+}
+window.addEventListener('ichef-multimonth-update',sync);
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',install,{once:true});else install();
+})();
+
+
+;
+/* RH V264 - preserved script #31 */
+(() => {
+'use strict';
+function publicState(){
+ return window.__ICHEF_MULTI_MONTH_PUBLIC__ || {horizon:2,index:0,months:[]};
+}
+function currentRecord(){
+ const d=publicState();
+ return d.months?.[d.index] || null;
+}
+function syncMonthEverywhere(){
+ const d=publicState(), rec=currentRecord();
+ if(!rec)return;
+ // Barre multi-mois = source visuelle unique.
+ const top=document.getElementById('v124-month');
+ if(top) top.textContent=(rec.label||rec.month||'').toUpperCase();
+ // Sélecteur réel du moteur suit exactement le mois visible.
+ const sel=document.getElementById('month-selector');
+ if(sel && rec.month) sel.value=rec.month;
+ // Supprime seulement les titres autonomes qui répètent un mois/année.
+ const modal=document.getElementById('ia-predictions-modal');
+ if(modal){
+   modal.querySelectorAll('h1,h2,h3,h4,.month-title,.planning-month-title').forEach(el=>{
+     if(el.closest('#v124-bar')) return;
+     const t=(el.textContent||'').trim();
+     if(/^(janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre)\s+20\d{2}$/i.test(t)){
+       el.classList.add('v125-duplicate-month');
+     }
+   });
+ }
+}
+function evaluateProposal(){
+ const draft=window.planningAssistantDraft;
+ const modal=document.getElementById('ia-predictions-modal');
+ if(!draft||!modal)return;
+ // Lire les indicateurs déjà calculés par le moteur, sans inventer une seconde logique métier.
+ const text=modal.innerText||'';
+ const alertsMatch=text.match(/ALERTES\s*(\d+)/i);
+ const balancedMatch=text.match(/ÉQUILIBR[ÉE]S?\s*(\d+)\s*\/\s*(\d+)/i);
+ const alerts=alertsMatch?Number(alertsMatch[1]):0;
+ const balanced=balancedMatch?Number(balancedMatch[1]):null;
+ const total=balancedMatch?Number(balancedMatch[2]):null;
+ const needsReview=alerts>0 || (total!==null && balanced!==null && balanced<total);
+ // Remplace uniquement le badge de statut existant.
+ const candidates=[...modal.querySelectorAll('span,div')].filter(el=>{
+   const t=(el.textContent||'').trim().toUpperCase();
+   return t==='PROPOSITION PRÊTE' || t==='À VÉRIFIER';
+ });
+ candidates.forEach(el=>{
+   el.textContent=needsReview?'À VÉRIFIER':'PROPOSITION PRÊTE';
+   el.classList.add('v125-review');
+   el.classList.toggle('v125-ready',!needsReview);
+ });
+}
+function sync(){
+ syncMonthEverywhere();
+ requestAnimationFrame(evaluateProposal);
+}
+window.addEventListener('ichef-multimonth-update',sync);
+// Les flèches V124 utilisent déjà renderPlanningAssistantMultiMonth.
+// On resynchronise après chaque changement de mois.
+const old=window.renderPlanningAssistantMultiMonth;
+if(typeof old==='function' && !old.__v125){
+ const wrapped=function(...args){
+   const r=old.apply(this,args);
+   requestAnimationFrame(sync);
+   return r;
+ };
+ wrapped.__v125=true;
+ window.renderPlanningAssistantMultiMonth=wrapped;
+}
+const oldRender=window.renderAutomaticPlanningDraft;
+if(typeof oldRender==='function' && !oldRender.__v125){
+ const wrapped=function(...args){
+   const r=oldRender.apply(this,args);
+   requestAnimationFrame(sync);
+   return r;
+ };
+ wrapped.__v125=true;
+ window.renderAutomaticPlanningDraft=wrapped;
+}
+if(document.readyState==='loading'){
+ document.addEventListener('DOMContentLoaded',()=>requestAnimationFrame(sync),{once:true});
+}else requestAnimationFrame(sync);
+window.__ICHEF_RH_SYNC_BUILD__='V125';
+})();
+
+
+;
+/* RH V264 - preserved script #32 */
+window.__ICHEF_RH_BUILD__='RH-V127-IA-COMPACT';
+console.info('[iCHEF RH V127] proposition IA compactée');
+
+
+;
+/* RH V264 - preserved script #33 */
+(() => {
+  'use strict';
+  function installV128(){
+    const modal=document.getElementById('ia-predictions-modal');
+    const period=document.getElementById('v124-bar');
+    const generate=document.getElementById('assistant-generate-btn');
+    const apply=document.getElementById('assistant-apply-btn');
+    if(!modal || !period || !generate || !apply) return false;
+    let row=document.getElementById('v128-period-actions-row');
+    let actions=document.querySelector('#v128-period-actions-row .v128-main-actions');
+    if(!row){
+      row=document.createElement('div');
+      row.id='v128-period-actions-row';
+      actions=document.createElement('div');
+      actions.className='v128-main-actions';
+      period.insertAdjacentElement('beforebegin',row);
+      row.appendChild(period);
+      row.appendChild(actions);
+    }
+    if(!actions){
+      actions=document.createElement('div');
+      actions.className='v128-main-actions';
+      row.appendChild(actions);
+    }
+    const oldGenerateHost=generate.parentElement;
+    const oldApplyHost=apply.parentElement;
+    if(generate.parentElement!==actions) actions.appendChild(generate);
+    if(apply.parentElement!==actions) actions.appendChild(apply);
+    oldGenerateHost?.classList?.add('v128-old-actions-host');
+    oldApplyHost?.classList?.add('v128-old-actions-host');
+    modal.dataset.v128='1';
+    return true;
+  }
+  function bootV128(){
+    if(installV128()) return;
+    const modal=document.getElementById('ia-predictions-modal');
+    if(!modal) return;
+    const observer=new MutationObserver(()=>{
+      if(installV128()) observer.disconnect();
+    });
+    observer.observe(modal,{
+      childList:true,
+      subtree:true
+    });
+  }
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',bootV128,{once:true});
+  }else{
+    bootV128();
+  }
+  window.__ICHEF_RH_PERIOD_ACTIONS_BUILD__='V128';
+})();
+
+
+;
+/* RH V264 - preserved script #34 */
+window.__ICHEF_RH_BUILD__='RH-V128-PERIOD-ACTIONS-TOGETHER';
+console.info('[iCHEF RH V128] période + générer + appliquer sur la même ligne');
+
+
+;
+/* RH V264 - preserved script #35 */
+(() => {
+  'use strict';
+  function installV129(){
+    const modal=document.getElementById('ia-predictions-modal');
+    const flow=modal?.querySelector('.v113-flow');
+    if(!modal || !flow) return false;
+    if(document.getElementById('v129-planning-info-btn')) return true;
+    const anchor=document.createElement('div');
+    anchor.className='v129-info-anchor';
+    const btn=document.createElement('button');
+    btn.id='v129-planning-info-btn';
+    btn.type='button';
+    btn.setAttribute('aria-label','Informations sur les étapes du planning IA');
+    btn.setAttribute('aria-expanded','false');
+    btn.textContent='i';
+    const pop=document.createElement('div');
+    pop.id='v129-planning-info-pop';
+    pop.setAttribute('role','dialog');
+    pop.setAttribute('aria-label','Étapes du planning IA');
+    pop.innerHTML=`
+      <div class="v129-info-title">
+        <strong>PARCOURS DU PLANNING IA</strong>
+        <button class="v129-info-close" type="button" aria-label="Fermer">×</button>
+      </div>
+      <div class="v129-info-grid">
+        <div class="v129-info-step is-gold">
+          <b>1 · ANALYSER</b>
+          <small>Activité et contraintes</small>
+        </div>
+        <div class="v129-info-step">
+          <b>2 · PLANNING IA</b>
+          <small>Horaires + OFF proposés</small>
+        </div>
+        <div class="v129-info-step">
+          <b>3 · VÉRIFIER</b>
+          <small>Alertes et couverture</small>
+        </div>
+        <div class="v129-info-step">
+          <b>4 · VALIDER</b>
+          <small>Appliquer au planning officiel</small>
+        </div>
+      </div>`;
+    anchor.appendChild(btn);
+    flow.insertAdjacentElement('beforebegin',anchor);
+    document.body.appendChild(pop);
+    function positionPop(){
+      if(!pop.classList.contains('show')) return;
+      const r=btn.getBoundingClientRect();
+      const w=pop.offsetWidth || 420;
+      const h=pop.offsetHeight || 210;
+      const gap=8;
+      let left=r.right-w;
+      let top=r.bottom+gap;
+      left=Math.max(8,Math.min(left,window.innerWidth-w-8));
+      if(top+h>window.innerHeight-8){
+        top=Math.max(8,r.top-h-gap);
+      }
+      pop.style.left=`${left}px`;
+      pop.style.top=`${top}px`;
+    }
+    function open(){
+      pop.classList.add('show');
+      btn.setAttribute('aria-expanded','true');
+      requestAnimationFrame(positionPop);
+    }
+    function close(){
+      pop.classList.remove('show');
+      btn.setAttribute('aria-expanded','false');
+    }
+    btn.addEventListener('click',event=>{
+      event.preventDefault();
+      event.stopPropagation();
+      pop.classList.contains('show') ? close() : open();
+    });
+    pop.querySelector('.v129-info-close')?.addEventListener('click',close);
+    document.addEventListener('click',event=>{
+      if(!pop.classList.contains('show')) return;
+      if(pop.contains(event.target) || btn.contains(event.target)) return;
+      close();
+    });
+    document.addEventListener('keydown',event=>{
+      if(event.key==='Escape') close();
+    });
+    window.addEventListener('resize',positionPop);
+    window.addEventListener('scroll',positionPop,true);
+    modal.dataset.v129='1';
+    return true;
+  }
+  function bootV129(){
+    if(installV129()) return;
+    const modal=document.getElementById('ia-predictions-modal');
+    if(!modal) return;
+    const observer=new MutationObserver(()=>{
+      if(installV129()) observer.disconnect();
+    });
+    observer.observe(modal,{childList:true,subtree:true});
+  }
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',bootV129,{once:true});
+  }else{
+    bootV129();
+  }
+  window.__ICHEF_RH_FLOW_INFO_BUILD__='V129';
+})();
+
+
+;
+/* RH V264 - preserved script #36 */
+window.__ICHEF_RH_BUILD__='RH-V129-FLOW-IN-INFO';
+console.info('[iCHEF RH V129] étapes IA déplacées dans le bouton info');
+
+
+;
+/* RH V264 - preserved script #37 */
+window.__ICHEF_RH_BUILD__='RH-V130-HOURS-ON-STAFF';
+console.info('[iCHEF RH V130] heures restantes affichées sur chaque collaborateur · clic = détail');
+
+
+;
+/* RH V264 - preserved script #38 */
+(() => {
+  'use strict';
+  function findBlockByTitle(root, text){
+    const candidates=[...root.querySelectorAll('div')];
+    const title=candidates.find(el =>
+      el.children.length===0 &&
+      String(el.textContent||'').trim().toUpperCase()===text
+    );
+    return title?.parentElement || null;
+  }
+  function installV131(){
+    const modal=document.getElementById('ia-predictions-modal');
+    if(!modal || document.getElementById('v131-planning-tools-btn')) return !!modal;
+    const balance=findBlockByTitle(modal,'ÉQUILIBRE DES CONTRATS');
+    const settingsTitle=[...modal.querySelectorAll('.rh-section-title')]
+      .find(el => String(el.textContent||'').trim().toUpperCase()==='PARAMÈTRES DE PLANIFICATION');
+    const settings=settingsTitle?.closest('.rh-section');
+    if(!balance || !settings) return false;
+    const parent=balance.parentElement;
+    if(!parent || settings.parentElement!==parent) return false;
+    const button=document.createElement('button');
+    button.id='v131-planning-tools-btn';
+    button.type='button';
+    button.innerHTML=`
+      <span class="v131-tools-left">
+        <span class="v131-tools-icon">⚙</span>
+        <span class="v131-tools-copy">
+          <strong>ÉQUILIBRE & PARAMÈTRES DE PLANIFICATION</strong>
+          <small>Contrats · ratios · horaires · priorité IA · publication · relève automatique</small>
+        </span>
+      </span>
+      <span class="v131-tools-arrow">›</span>
+    `;
+    const overlay=document.createElement('div');
+    overlay.id='v131-planning-tools-overlay';
+    overlay.innerHTML=`
+      <div id="v131-planning-tools-panel" role="dialog" aria-modal="true" aria-label="Équilibre et paramètres de planification">
+        <div class="v131-tools-head">
+          <div>
+            <strong>ÉQUILIBRE & PARAMÈTRES DE PLANIFICATION</strong>
+            <small>Réglages du moteur de planning iCHEF</small>
+          </div>
+          <button id="v131-planning-tools-close" type="button" aria-label="Fermer">×</button>
+        </div>
+        <div id="v131-planning-tools-content"></div>
+      </div>
+    `;
+    parent.insertBefore(button,balance);
+    modal.appendChild(overlay);
+    const content=overlay.querySelector('#v131-planning-tools-content');
+    balance.classList.add('v131-balance-box');
+    content.appendChild(balance);
+    content.appendChild(settings);
+    function open(){
+      overlay.classList.add('show');
+      button.setAttribute('aria-expanded','true');
+      requestAnimationFrame(()=>{
+        overlay.querySelector('#v131-planning-tools-panel')?.scrollTo?.({top:0});
+      });
+    }
+    function close(){
+      overlay.classList.remove('show');
+      button.setAttribute('aria-expanded','false');
+    }
+    button.setAttribute('aria-expanded','false');
+    button.addEventListener('click',open);
+    overlay.querySelector('#v131-planning-tools-close')?.addEventListener('click',close);
+    overlay.addEventListener('click',event=>{
+      if(event.target===overlay) close();
+    });
+    document.addEventListener('keydown',event=>{
+      if(event.key==='Escape' && overlay.classList.contains('show')) close();
+    });
+    modal.dataset.v131='1';
+    return true;
+  }
+  function boot(){
+    if(installV131()) return;
+    const modal=document.getElementById('ia-predictions-modal');
+    if(!modal) return;
+    const observer=new MutationObserver(()=>{
+      if(installV131()) observer.disconnect();
+    });
+    observer.observe(modal,{childList:true,subtree:true});
+  }
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',boot,{once:true});
+  }else{
+    boot();
+  }
+  window.__ICHEF_RH_SETTINGS_BUTTON_BUILD__='V131';
+})();
+
+
+;
+/* RH V264 - preserved script #39 */
+window.__ICHEF_RH_BUILD__='RH-V131-SETTINGS-BUTTON';
+console.info('[iCHEF RH V131] équilibre + paramètres déplacés dans un bouton compact');
+
+
+;
+/* RH V264 - preserved script #40 */
+(() => {
+  'use strict';
+  const DAY_NAMES=['Dim','Lun','Mar','Mer','Jeu','Ven','Sam'];
+  function seasonForMonth(month){
+    const m=Number(month);
+    if([12,1,2].includes(m)) return 'HIVER';
+    if([3,4,5].includes(m)) return 'PRINTEMPS';
+    if([6,7,8].includes(m)) return 'ÉTÉ';
+    return 'AUTOMNE';
+  }
+  function readLiveSettings(){
+    const saved=typeof getRhSettings==='function' ? getRhSettings() : {};
+    const readCheck=(id,fallback)=>{
+      const el=document.getElementById(id);
+      return el ? el.checked===true : fallback;
+    };
+    return {
+      ...saved,
+      serviceContinuousEnabled:
+        readCheck('rh-setting-service-continuous',saved.serviceContinuousEnabled!==false),
+      serviceSplitEnabled:
+        readCheck('rh-setting-service-split',saved.serviceSplitEnabled!==false),
+      optimizeStaffChoice:
+        readCheck('rh-setting-optimize-staff',saved.optimizeStaffChoice!==false),
+      managerServiceAdvisorEnabled:
+        readCheck('rh-setting-manager-advisor',saved.managerServiceAdvisorEnabled!==false)
+    };
+  }
+  function modeForDemand(row,settings){
+    if(row?.closed===true) return 'FERMÉ';
+    const continu=settings.serviceContinuousEnabled!==false;
+    const split=settings.serviceSplitEnabled!==false;
+    if(continu && !split) return 'CONTINU';
+    if(!continu && split) return 'COUPÉ';
+    if(!continu && !split) return 'À CONFIGURER';
+    const score=Number(row?.score||1);
+    const covers=Number(row?.covers||0);
+    const coversThreshold=Math.max(20,Number(settings.planningPeakMinCovers||40));
+    return (score>=1.18 || covers>=coversThreshold)
+      ? 'CONTINU'
+      : 'COUPÉ';
+  }
+  function estimatedStaff(row,settings){
+    if(row?.closed===true) return 0;
+    if(typeof getDir!=='function') return 0;
+    const staff=getDir().filter(s=>s.active!==false);
+    if(!staff.length) return 0;
+    const departments=
+      typeof assistantPlanningDepartmentsV169==='function'
+        ? assistantPlanningDepartmentsV169(settings,staff)
+        : ['salle','cuisine','bar','patisserie'];
+    let total=0;
+    departments.forEach(dept=>{
+      const eligible=staff.filter(s=>
+        typeof assistantStaffCanCoverDept==='function'
+          ? assistantStaffCanCoverDept(s,dept)
+          : String(s.dept||'')===dept
+      );
+      if(!eligible.length) return;
+      if(typeof assistantRequiredCount==='function'){
+        total+=Number(
+          assistantRequiredCount(
+            dept,
+            row,
+            settings,
+            eligible.length
+          ) || 0
+        );
+      }else{
+        total+=1;
+      }
+    });
+    return Math.max(1,Math.min(staff.length,total));
+  }
+  function staffProfileAdvice(row,settings){
+    if(row?.closed===true) return 'Établissement fermé';
+    if(settings.optimizeStaffChoice===false){
+      return 'Choix manuel';
+    }
+    const score=Number(row?.score||1);
+    if(score>=1.35 || row?.isPeak===true){
+      return 'Référents + polyvalents';
+    }
+    if(score<=0.95){
+      return 'Équipe resserrée + polyvalente';
+    }
+    return 'Équipe équilibrée';
+  }
+  window.refreshRhServiceStrategyAdvice=function(forcedSettings){
+    const box=document.getElementById('v132-manager-advice');
+    const summary=document.getElementById('v132-advice-summary');
+    const weekdays=document.getElementById('v132-advice-weekdays');
+    const basis=document.getElementById('v132-advice-basis');
+    if(!box || !summary || !weekdays) return;
+    const settings=forcedSettings || readLiveSettings();
+    if(settings.managerServiceAdvisorEnabled===false){
+      box.style.display='none';
+      return;
+    }
+    box.style.display='block';
+    const monthStr=
+      typeof getPlanningAssistantMonth==='function'
+        ? getPlanningAssistantMonth()
+        : new Date().toISOString().slice(0,7);
+    const [year,month]=String(monthStr).split('-').map(Number);
+    const season=seasonForMonth(month);
+    let demand={};
+    if(typeof buildAssistantDemand==='function'){
+      try{
+        demand=buildAssistantDemand(
+          monthStr,
+          typeof planningAssistantPrediction!=='undefined'
+            ? planningAssistantPrediction
+            : null,
+          settings
+        ) || {};
+      }catch(error){
+        console.warn('[iCHEF RH V132] conseil demande',error);
+      }
+    }
+    if(!Object.keys(demand).length){
+      const days=new Date(year,month,0).getDate();
+      for(let day=1;day<=days;day++){
+        const dow=new Date(year,month-1,day).getDay();
+        demand[day]={
+          day,
+          score:(dow===5||dow===6)?1.22:1,
+          covers:0,
+          isPeak:false,
+          reason:'Base calendrier'
+        };
+      }
+    }
+    const groups=Array.from({length:7},()=>[]);
+    Object.values(demand).forEach(row=>{
+      const day=Number(row?.day||0);
+      if(!day) return;
+      const dow=new Date(year,month-1,day).getDay();
+      groups[dow].push(row);
+    });
+    const aggregates=groups.map((rows,dow)=>{
+      const n=Math.max(1,rows.length);
+      const score=rows.reduce((s,r)=>s+Number(r.score||1),0)/n;
+      const covers=rows.reduce((s,r)=>s+Number(r.covers||0),0)/n;
+      const peaks=rows.filter(r=>r.isPeak===true||Number(r.score||0)>=1.5).length;
+      const representative={
+        score,
+        covers,
+        isPeak:peaks>0
+      };
+      return {
+        dow,
+        score,
+        covers,
+        peaks,
+        mode:modeForDemand(representative,settings),
+        staff:estimatedStaff(representative,settings),
+        profile:staffProfileAdvice(representative,settings)
+      };
+    });
+    const rows=Object.values(demand);
+    const avgScore=rows.length
+      ? rows.reduce((s,r)=>s+Number(r.score||1),0)/rows.length
+      : 1;
+    const peakCount=rows.filter(r=>r.isPeak===true||Number(r.score||0)>=1.5).length;
+    const continuDays=aggregates.filter(x=>x.mode==='CONTINU').length;
+    const splitDays=aggregates.filter(x=>x.mode==='COUPÉ').length;
+    let globalMode='MIXTE';
+    if(!settings.serviceContinuousEnabled && !settings.serviceSplitEnabled){
+      globalMode='À CONFIGURER';
+    }else if(settings.serviceContinuousEnabled && !settings.serviceSplitEnabled){
+      globalMode='CONTINU';
+    }else if(!settings.serviceContinuousEnabled && settings.serviceSplitEnabled){
+      globalMode='COUPÉ';
+    }else if(continuDays>=5){
+      globalMode='PLUTÔT CONTINU';
+    }else if(splitDays>=5){
+      globalMode='PLUTÔT COUPÉ';
+    }
+    const hasPrediction=
+      typeof planningAssistantPrediction!=='undefined' &&
+      planningAssistantPrediction;
+    if(basis){
+      basis.textContent=hasPrediction
+        ? `Saison ${season.toLowerCase()} · réservations / affluence / Anti-Rush / contraintes RH disponibles`
+        : `Saison ${season.toLowerCase()} · conseil provisoire : données prédictives encore limitées`;
+    }
+    summary.innerHTML=`
+      <div class="v132-advice-kpi">
+        <small>STRATÉGIE DU MOIS</small>
+        <strong>${escapeRhHtml(globalMode)}</strong>
+      </div>
+      <div class="v132-advice-kpi">
+        <small>SAISON</small>
+        <strong>${escapeRhHtml(season)}</strong>
+      </div>
+      <div class="v132-advice-kpi">
+        <small>JOURS FORTS DÉTECTÉS</small>
+        <strong>${peakCount}</strong>
+      </div>
+      <div class="v132-advice-kpi">
+        <small>OBJECTIF</small>
+        <strong>${settings.optimizeStaffChoice===false?'COUVERTURE':'CA + EFFICACITÉ STAFF'}</strong>
+      </div>
+    `;
+    const order=[1,2,3,4,5,6,0];
+    weekdays.innerHTML=order.map(dow=>{
+      const row=aggregates[dow];
+      const cls=row.mode==='CONTINU'?'is-continu':'';
+      const demandLabel=
+        row.score>=1.35?'forte':
+        row.score<=0.95?'calme':
+        'normale';
+      return `
+        <div class="v132-day-advice ${cls}">
+          <b>${DAY_NAMES[dow]}</b>
+          <span>${escapeRhHtml(row.mode)}</span>
+          <small>${escapeRhHtml(demandLabel)} · ~${Number(row.staff||0)} staff</small>
+          <small>${escapeRhHtml(row.profile)}</small>
+        </div>
+      `;
+    }).join('');
+  };
+  function bind(){
+    const ids=[
+      'rh-setting-service-continuous',
+      'rh-setting-service-split',
+      'rh-setting-optimize-staff',
+      'rh-setting-manager-advisor'
+    ];
+    ids.forEach(id=>{
+      document.getElementById(id)?.addEventListener('change',()=>{
+        refreshRhServiceStrategyAdvice();
+      });
+    });
+    document.getElementById('v132-refresh-advice')?.addEventListener('click',()=>{
+      refreshRhServiceStrategyAdvice();
+    });
+    document.getElementById('month-picker')?.addEventListener('change',()=>{
+      requestAnimationFrame(()=>refreshRhServiceStrategyAdvice());
+    });
+    const originalGenerate=window.generateIAPrediction;
+    if(typeof originalGenerate==='function' && !originalGenerate.__v132Wrapped){
+      const wrapped=async function(...args){
+        const result=await originalGenerate.apply(this,args);
+        requestAnimationFrame(()=>refreshRhServiceStrategyAdvice());
+        return result;
+      };
+      wrapped.__v132Wrapped=true;
+      window.generateIAPrediction=wrapped;
+    }
+    const overlay=document.getElementById('v131-planning-tools-overlay');
+    if(overlay){
+      new MutationObserver(()=>{
+        if(overlay.classList.contains('show')){
+          requestAnimationFrame(()=>refreshRhServiceStrategyAdvice());
+        }
+      }).observe(overlay,{attributes:true,attributeFilter:['class']});
+    }
+    refreshRhServiceStrategyAdvice();
+  }
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',bind,{once:true});
+  }else{
+    bind();
+  }
+  window.__ICHEF_RH_SERVICE_STRATEGY_BUILD__='V132';
+})();
+
+
+;
+/* RH V264 - preserved script #41 */
+window.__ICHEF_RH_BUILD__='RH-V132-SERVICE-STRATEGY';
+console.info('[iCHEF RH V132] continu/coupé + optimisation staff + conseil manager');
+
+
+;
+/* RH V264 - preserved script #42 */
+(() => {
+  'use strict';
+  function bindV133(){
+    [
+      'rh-setting-kitchen-critical',
+      'rh-setting-kitchen-min'
+    ].forEach(id => {
+      document.getElementById(id)?.addEventListener('change', () => {
+        if (typeof refreshRhServiceStrategyAdvice === 'function') {
+          refreshRhServiceStrategyAdvice();
+        }
+      });
+    });
+  }
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',bindV133,{once:true});
+  }else{
+    bindV133();
+  }
+  window.__ICHEF_RH_CRITICAL_KITCHEN_BUILD__='V133';
+})();
+
+
+;
+/* RH V264 - preserved script #43 */
+window.__ICHEF_RH_BUILD__='RH-V133-CRITICAL-KITCHEN-COVERAGE';
+console.info('[iCHEF RH V133] couverture cuisine critique + blocage validation');
+
+
+;
+/* RH V264 - preserved script #44 */
+
+(() => {
+  'use strict';
+  const SETTINGS_KEY='ichef_rh_last_minute_settings';
+  const EVENTS_KEY='ichef_rh_last_minute_events';
+  let currentAnalysis=null;
+  let selectedCandidateId='';
+  function cfg(){
+    let saved={};
+    try{saved=JSON.parse(localStorage.getItem(SETTINGS_KEY)||'{}')||{}}catch(_){}
+    return {
+      enabled:saved.enabled!==false,
+      detectLate:saved.detectLate!==false,
+      lateMinutes:Math.max(1,Number(saved.lateMinutes)||10),
+      noShowMinutes:Math.max(5,Number(saved.noShowMinutes)||20),
+      maxSuggestions:Math.max(1,Math.min(10,Number(saved.maxSuggestions)||5)),
+      managerValidation:true
+    };
+  }
+  function saveCfg(next){
+    const clean={...cfg(),...(next||{})};
+    localStorage.setItem(SETTINGS_KEY,JSON.stringify(clean));
+    try{API?.update?.('RH_LAST_MINUTE_SETTINGS',clean)}catch(_){}
+    return clean;
+  }
+  function events(){
+    try{
+      const v=JSON.parse(localStorage.getItem(EVENTS_KEY)||'[]');
+      return Array.isArray(v)?v:[];
+    }catch(_){return []}
+  }
+  function saveEvents(list){
+    const safe=Array.isArray(list)?list.slice(-500):[];
+    localStorage.setItem(EVENTS_KEY,JSON.stringify(safe));
+    try{API?.update?.('RH_LAST_MINUTE_EVENTS',safe)}catch(_){}
+  }
+  function esc(v){
+    return typeof escapeRhHtml==='function'
+      ? escapeRhHtml(String(v??''))
+      : String(v??'').replace(/[&<>"']/g,c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;' }[c]));
+  }
+  function localDateKey(d=new Date()){
+    const y=d.getFullYear();
+    const m=String(d.getMonth()+1).padStart(2,'0');
+    const day=String(d.getDate()).padStart(2,'0');
+    return `${y}-${m}-${day}`;
+  }
+  function monthKey(dateStr){
+    return String(dateStr||'').slice(0,7);
+  }
+  function dayNum(dateStr){
+    return Number(String(dateStr||'').slice(8,10));
+  }
+  function getDayPlan(staffId,dateStr){
+    const ts=typeof getTs==='function'?getTs():{};
+    const month=monthKey(dateStr);
+    const day=dayNum(dateStr);
+    return ts?.[month]?.[staffId]?.[day] ||
+           ts?.[month]?.[String(staffId)]?.[day] ||
+           null;
+  }
+  function parseStart(range){
+    const s=String(range||'').split('-')[0];
+    const m=s.match(/^(\d{1,2}):(\d{2})$/);
+    if(!m)return null;
+    return Number(m[1])*60+Number(m[2]);
+  }
+  function parseEnd(range){
+    const s=String(range||'').split('-')[1];
+    const m=s?.match(/^(\d{1,2}):(\d{2})$/);
+    if(!m)return null;
+    return Number(m[1])*60+Number(m[2]);
+  }
+  function punchType(p){
+    const t=String(p?.type||'').toUpperCase();
+    if(t.includes('IN')||t.includes('ENTR'))return 'IN';
+    if(t.includes('OUT')||t.includes('SORT'))return 'OUT';
+    return t;
+  }
+  function punchDate(p){
+    const ts=Number(p?.timestamp||p?.clientTimestamp||0);
+    return ts?localDateKey(new Date(ts)):'';
+  }
+  function firstEntryFor(staffId,dateStr){
+    const list=(typeof getPunches==='function'?getPunches():[])
+      .filter(p=>String(p?.staffId)===String(staffId))
+      .filter(p=>punchDate(p)===dateStr)
+      .filter(p=>punchType(p)==='IN')
+      .sort((a,b)=>Number(a.timestamp||a.clientTimestamp||0)-Number(b.timestamp||b.clientTimestamp||0));
+    return list[0]||null;
+  }
+  function staffMonthlyHours(staffId,month){
+    const node=(typeof getTs==='function'?getTs():{})?.[month]?.[staffId] ||
+               (typeof getTs==='function'?getTs():{})?.[month]?.[String(staffId)] ||
+               {};
+    return Object.values(node||{}).reduce((sum,p)=>sum+(typeof calculateNet==='function'?Number(calculateNet(p)||0):0),0);
+  }
+  function staffMonthlyTarget(staff){
+    const weekly=Math.max(0,Number(staff?.contract)||0);
+    return weekly*52/12;
+  }
+  function activeNow(staffId,dateStr){
+    const entries=(typeof getPunches==='function'?getPunches():[])
+      .filter(p=>String(p?.staffId)===String(staffId))
+      .filter(p=>punchDate(p)===dateStr)
+      .sort((a,b)=>Number(a.timestamp||a.clientTimestamp||0)-Number(b.timestamp||b.clientTimestamp||0));
+    let open=false;
+    entries.forEach(p=>{
+      if(punchType(p)==='IN')open=true;
+      if(punchType(p)==='OUT')open=false;
+    });
+    return open;
+  }
+  function serviceFromPlan(plan,requested){
+    if(requested&&requested!=='auto')return requested;
+    if(plan?.s1&&plan?.s2)return 'day';
+    if(plan?.s1)return 'lunch';
+    if(plan?.s2)return 'dinner';
+    return 'day';
+  }
+  function workStatusForRemaining(plan){
+    if(plan?.s1&&plan?.s2)return 'present';
+    if(plan?.s1)return 'off_soir';
+    if(plan?.s2)return 'off_matin';
+    return 'off';
+  }
+  function detectRisks(){
+    const c=cfg();
+    if(!c.enabled||!c.detectLate)return [];
+    const dateStr=localDateKey();
+    const now=new Date();
+    const nowMin=now.getHours()*60+now.getMinutes();
+    const dir=(typeof getDir==='function'?getDir():[]).filter(s=>s.active!==false);
+    const risks=[];
+    dir.forEach(staff=>{
+      const plan=getDayPlan(staff.id,dateStr);
+      if(!plan || !(typeof isRhWorkStatus==='function'?isRhWorkStatus(plan.status):false))return;
+      const starts=[parseStart(plan.s1),parseStart(plan.s2)].filter(Number.isFinite);
+      const ends=[parseEnd(plan.s1),parseEnd(plan.s2)].filter(Number.isFinite);
+      if(!starts.length)return;
+      const start=Math.min(...starts);
+      const end=ends.length?Math.max(...ends):start+480;
+      const entry=firstEntryFor(staff.id,dateStr);
+      if(entry){
+        const dt=new Date(Number(entry.timestamp||entry.clientTimestamp||0));
+        const entryMin=dt.getHours()*60+dt.getMinutes();
+        const late=entryMin-start;
+        if(late>=c.lateMinutes){
+          risks.push({
+            staffId:String(staff.id),
+            type:'retard',
+            delayMinutes:late,
+            date:dateStr,
+            service:'auto',
+            label:`${staff.name} · retard ${late} min`,
+            detail:'Détecté depuis le premier pointage du jour.'
+          });
+        }
+      }else if(nowMin>=start+c.noShowMinutes && nowMin<=end+120){
+        risks.push({
+          staffId:String(staff.id),
+          type:'no_show',
+          delayMinutes:nowMin-start,
+          date:dateStr,
+          service:'auto',
+          label:`${staff.name} · non pointé`,
+          detail:`À vérifier · début prévu dépassé de ${Math.max(0,nowMin-start)} min.`
+        });
+      }
+    });
+    return risks;
+  }
+  function renderRiskList(){
+    const list=document.getElementById('v134-risk-list');
+    const badge=document.querySelector('#v134-emergency-btn .v134-alert-count');
+    if(!list)return;
+    const risks=detectRisks();
+    if(badge)badge.textContent=String(risks.length);
+    list.innerHTML=risks.length
+      ? risks.map((r,i)=>`
+          <div class="v134-risk" data-risk-index="${i}">
+            <b>${esc(r.label)}</b>
+            <span>${r.type==='retard'?'RETARD':'NON POINTÉ · À VÉRIFIER'}</span>
+            <small>${esc(r.detail)}</small>
+          </div>
+        `).join('')
+      : '<div style="color:#69747c;font-size:.55rem;padding:4px;">Aucun retard / non-pointé détecté sur les données disponibles.</div>';
+    list.querySelectorAll('[data-risk-index]').forEach(el=>{
+      el.addEventListener('click',()=>{
+        const r=risks[Number(el.dataset.riskIndex)];
+        if(!r)return;
+        fillEvent(r);
+        analyse();
+      });
+    });
+  }
+  function eligibleCandidate(candidate,affected,dept,dateStr,service){
+    if(candidate.active===false)return false;
+    if(String(candidate.id)===String(affected.id))return false;
+    if(typeof assistantStaffCanCoverDept==='function' && !assistantStaffCanCoverDept(candidate,dept)){
+      return false;
+    }
+    const month=monthKey(dateStr);
+    const day=dayNum(dateStr);
+    const dateObj=new Date(`${dateStr}T12:00:00`);
+    const tsMonth=(typeof getTs==='function'?getTs():{})?.[month]||{};
+    const p=tsMonth?.[candidate.id]?.[day]||tsMonth?.[String(candidate.id)]?.[day]||null;
+    if(p && typeof isRhLeaveStatus==='function' && isRhLeaveStatus(p.status))return false;
+    const services=service==='day'?['lunch','dinner']:[service];
+    for(const srv of services){
+      if(typeof assistantAvailabilityAllows==='function' && !assistantAvailabilityAllows(candidate,dateObj,srv)){
+        return false;
+      }
+      if(typeof assistantRestAllows==='function' && !assistantRestAllows(tsMonth,candidate,day,srv,typeof getRhSettings==='function'?getRhSettings():{})){
+        return false;
+      }
+      if(typeof assistantWeekQuotaAllows==='function' && !assistantWeekQuotaAllows(
+        tsMonth,
+        candidate.id,
+        day,
+        typeof getRhSettings==='function'?getRhSettings():{},
+        dateObj.getFullYear(),
+        dateObj.getMonth()+1,
+        srv
+      )){
+        return false;
+      }
+    }
+    return true;
+  }
+  function candidateScore(candidate,affected,dept,dateStr,service){
+    let score=0;
+    const month=monthKey(dateStr);
+    const day=dayNum(dateStr);
+    const p=getDayPlan(candidate.id,dateStr);
+    const currentHours=staffMonthlyHours(candidate.id,month);
+    const target=staffMonthlyTarget(candidate);
+    const deficit=target-currentHours;
+    if(String(candidate.dept||'').toLowerCase()===String(dept||'').toLowerCase())score+=70;
+    if(typeof assistantSkillScore==='function'){
+      score+=Number(assistantSkillScore(candidate)||0)*8;
+    }
+    const skillCount=Array.isArray(candidate.skills)?candidate.skills.filter(Boolean).length:0;
+    score+=Math.min(6,skillCount)*4;
+    if(deficit>0)score+=Math.min(50,(deficit/Math.max(1,target))*100);
+    else score-=Math.min(35,Math.abs(deficit)*1.5);
+    if(activeNow(candidate.id,dateStr))score+=22;
+    if(!p || !(typeof isRhWorkStatus==='function'&&isRhWorkStatus(p.status))){
+      score+=28;
+    }else{
+      const services=service==='day'?['lunch','dinner']:[service];
+      const already=services.some(s=>typeof assistantDayWorksService==='function'&&assistantDayWorksService(p,s));
+      if(already)score-=18;
+      else score+=8;
+    }
+    const cost=Number(candidate.hourlyCost||0);
+    score-=cost*0.08;
+    return score;
+  }
+  function suggestionsFor(evt){
+    const dir=(typeof getDir==='function'?getDir():[]);
+    const affected=dir.find(s=>String(s.id)===String(evt.staffId));
+    if(!affected)return {error:'Collaborateur introuvable.'};
+    const plan=getDayPlan(affected.id,evt.date);
+    const dept=String(plan?.poste||affected.dept||'salle').toLowerCase();
+    const service=serviceFromPlan(plan,evt.service);
+    const candidates=dir
+      .filter(c=>eligibleCandidate(c,affected,dept,evt.date,service))
+      .map(c=>({
+        staff:c,
+        score:candidateScore(c,affected,dept,evt.date,service),
+        plan:getDayPlan(c.id,evt.date),
+        active:activeNow(c.id,evt.date)
+      }))
+      .sort((a,b)=>b.score-a.score)
+      .slice(0,cfg().maxSuggestions);
+    const critical=
+      dept==='cuisine' &&
+      candidates.length===0;
+    return {
+      affected,
+      plan,
+      dept,
+      service,
+      candidates,
+      critical
+    };
+  }
+  function formEvent(){
+    return {
+      staffId:document.getElementById('v134-staff')?.value||'',
+      type:document.getElementById('v134-type')?.value||'absence',
+      date:document.getElementById('v134-date')?.value||localDateKey(),
+      service:document.getElementById('v134-service')?.value||'auto',
+      delayMinutes:Math.max(0,Number(document.getElementById('v134-delay')?.value)||0),
+      note:String(document.getElementById('v134-note')?.value||'').trim()
+    };
+  }
+  function fillEvent(evt){
+    const set=(id,v)=>{const el=document.getElementById(id);if(el)el.value=v??''};
+    set('v134-staff',evt.staffId);
+    set('v134-type',evt.type);
+    set('v134-date',evt.date||localDateKey());
+    set('v134-service',evt.service||'auto');
+    set('v134-delay',evt.delayMinutes||0);
+    set('v134-note',evt.note||'');
+  }
+  function renderAnalysis(result,evt){
+    const root=document.getElementById('v134-result');
+    const apply=document.getElementById('v134-apply');
+    if(!root)return;
+    selectedCandidateId='';
+    if(apply)apply.disabled=true;
+    if(result.error){
+      root.innerHTML=`<div class="v134-critical">${esc(result.error)}</div>`;
+      return;
+    }
+    const typeLabel={
+      retard:'RETARD',
+      maladie:'MALADIE',
+      no_show:'ABSENCE / NO-SHOW',
+      accident:'ACCIDENT',
+      urgence:'URGENCE PERSONNELLE',
+      depart:'DÉPART / DÉMISSION',
+      transport:'PROBLÈME DE TRANSPORT',
+      autre:'AUTRE IMPRÉVU'
+    }[evt.type]||String(evt.type).toUpperCase();
+    const critical=result.critical
+      ? `<div class="v134-critical">
+           COUVERTURE CRITIQUE : aucun remplaçant qualifié n'est disponible pour ${esc(result.dept)}.
+           ${result.dept==='cuisine'
+             ? 'Si le service reste ouvert, la cuisine ne peut pas fonctionner correctement. Prévoir un remplaçant qualifié ou fermer / réduire le service concerné.'
+             : 'Le manager doit réduire l’activité, déplacer une compétence ou fermer le service concerné.'}
+         </div>`
+      : '';
+    root.innerHTML=`
+      <div class="v134-result-summary">
+        <strong>${esc(typeLabel)} · ${esc(result.affected.name)} · ${esc(result.dept.toUpperCase())}</strong>
+        <p>
+          Date : ${esc(evt.date)} · Service : ${esc(result.service.toUpperCase())}.
+          ${evt.type==='retard'&&evt.delayMinutes?` Retard déclaré : ${evt.delayMinutes} min.`:''}
+          iCHEF ne modifie rien tant que le manager n'a pas validé une action.
+        </p>
+      </div>
+      ${critical}
+      <div class="v134-candidates">
+        ${result.candidates.length
+          ? result.candidates.map(c=>`
+              <div class="v134-candidate" data-candidate-id="${esc(c.staff.id)}">
+                <b>${esc(c.staff.name)}</b>
+                <span>${c.active?'DÉJÀ SUR SITE · ':''}${esc(String(c.staff.dept||''))}</span>
+                <small>
+                  Score remplacement ${Math.round(c.score)} ·
+                  ${Number(staffMonthlyHours(c.staff.id,monthKey(evt.date))).toFixed(1)} h planifiées ce mois.
+                </small>
+              </div>
+            `).join('')
+          : '<div style="color:#7d8790;font-size:.56rem;padding:6px;">Aucun remplaçant compatible trouvé avec les contraintes disponibles.</div>'
+        }
+      </div>
+      <div class="v134-log-note">
+        Pour un retard, iCHEF propose un renfort sans supprimer le planning initial.
+        Pour maladie / absence / accident, le service touché peut être transféré au remplaçant.
+        Pour un départ immédiat, le collaborateur est retiré des futurs services après confirmation du manager.
+      </div>
+    `;
+    root.querySelectorAll('[data-candidate-id]').forEach(el=>{
+      el.addEventListener('click',()=>{
+        root.querySelectorAll('.v134-candidate').forEach(x=>x.classList.remove('selected'));
+        el.classList.add('selected');
+        selectedCandidateId=el.dataset.candidateId||'';
+        if(apply)apply.disabled=false;
+      });
+    });
+    if(result.critical && apply){
+      apply.disabled=true;
+    }else if(evt.type==='depart' && !result.candidates.length && apply){
+      // Le départ peut quand même être enregistré, même si le remplacement reste à résoudre.
+      apply.disabled=false;
+    }
+  }
+  function analyse(){
+    const evt=formEvent();
+    if(!evt.staffId)return;
+    currentAnalysis={
+      evt,
+      result:suggestionsFor(evt)
+    };
+    renderAnalysis(currentAnalysis.result,evt);
+  }
+  function clearService(plan,service,statusWhenEmpty){
+    if(!plan)return;
+    if(service==='lunch'){
+      plan.s1='';
+    }else if(service==='dinner'){
+      plan.s2='';
+    }else{
+      plan.s1='';
+      plan.s2='';
+    }
+    if(plan.s1||plan.s2){
+      plan.status=workStatusForRemaining(plan);
+    }else{
+      plan.status=statusWhenEmpty||'off';
+      plan.pause=0;
+    }
+  }
+  function ensureStaffDay(ts,staffId,dateStr){
+    const month=monthKey(dateStr);
+    const day=dayNum(dateStr);
+    ts[month]=ts[month]||{};
+    ts[month][staffId]=ts[month][staffId]||{};
+    ts[month][staffId][day]=ts[month][staffId][day]||{
+      status:'off',
+      s1:'',
+      s2:'',
+      pause:0,
+      poste:''
+    };
+    return ts[month][staffId][day];
+  }
+  function mappedStatus(type){
+    return {
+      maladie:'maladie',
+      no_show:'absence_injustifiee',
+      accident:'accident_travail',
+      urgence:'absence_autorisee',
+      transport:'absence_autorisee',
+      autre:'absence_autorisee'
+    }[type]||'absence_autorisee';
+  }
+  async function applyIncident(){
+    if(!currentAnalysis)return;
+    const {evt,result}=currentAnalysis;
+    const staff=result.affected;
+    if(!staff)return;
+    if(result.critical && evt.type!=='depart'){
+      alert(
+        'Aucun remplacement qualifié disponible.\\n\\n' +
+        'Le service ne doit pas être validé comme normalement ouvert sans couverture du poste critique.'
+      );
+      return;
+    }
+    const candidate=(typeof getDir==='function'?getDir():[])
+      .find(s=>String(s.id)===String(selectedCandidateId));
+    const ts=typeof getTs==='function'?getTs():{};
+    const affectedPlan=ensureStaffDay(ts,String(staff.id),evt.date);
+    const originalPlan=JSON.parse(JSON.stringify(affectedPlan||{}));
+    const service=serviceFromPlan(affectedPlan,evt.service);
+    const settings=typeof getRhSettings==='function'?getRhSettings():{};
+    if(evt.type==='retard'){
+      affectedPlan.obs=[
+        affectedPlan.obs,
+        `IMPRÉVU · retard ${evt.delayMinutes||0} min${evt.note?' · '+evt.note:''}`
+      ].filter(Boolean).join(' · ');
+      affectedPlan.lastMinuteEvent='retard';
+      affectedPlan.lastMinuteDelay=evt.delayMinutes||0;
+      if(candidate){
+        const cp=ensureStaffDay(ts,String(candidate.id),evt.date);
+        cp.managerNote=[
+          cp.managerNote,
+          `Renfort temporaire · retard de ${staff.name} · ${evt.delayMinutes||0} min`
+        ].filter(Boolean).join(' · ');
+        cp.tempCoverMinutes=Math.max(0,Number(evt.delayMinutes)||0);
+        cp.tempCoverDept=result.dept;
+      }
+    }else if(evt.type==='depart'){
+      const ok=confirm(
+        `Confirmer le départ immédiat de ${staff.name} à compter du ${evt.date} ?\\n\\n` +
+        `Ses futurs services planifiés seront retirés et devront être réattribués.`
+      );
+      if(!ok)return;
+      const dir=getDir();
+      const index=dir.findIndex(s=>String(s.id)===String(staff.id));
+      if(index>=0){
+        dir[index]={...dir[index],active:false,departureDate:evt.date,departureReason:'last_minute'};
+        if(typeof saveDir==='function')saveDir(dir);
+        try{await syncDirectoryMasterToCloud?.(dir)}catch(_){}
+      }
+      Object.entries(ts).forEach(([m,node])=>{
+        if(m<monthKey(evt.date))return;
+        const staffNode=node?.[staff.id]||node?.[String(staff.id)];
+        if(!staffNode)return;
+        Object.entries(staffNode).forEach(([dayKey,p])=>{
+          const d=Number(dayKey);
+          if(m===monthKey(evt.date) && d<dayNum(evt.date))return;
+          if(p && typeof isRhWorkStatus==='function' && isRhWorkStatus(p.status)){
+            staffNode[dayKey]={
+              ...p,
+              status:'off',
+              s1:'',
+              s2:'',
+              pause:0,
+              obs:[
+                p.obs,
+                'Départ collaborateur · replanification requise'
+              ].filter(Boolean).join(' · ')
+            };
+          }
+        });
+      });
+    }else{
+      const status=mappedStatus(evt.type);
+      clearService(affectedPlan,service,status);
+      affectedPlan.obs=[
+        affectedPlan.obs,
+        `IMPRÉVU · ${evt.type}${evt.note?' · '+evt.note:''}`
+      ].filter(Boolean).join(' · ');
+      affectedPlan.lastMinuteEvent=evt.type;
+      if(candidate){
+        const cp=ensureStaffDay(ts,String(candidate.id),evt.date);
+        const services=service==='day'
+          ? [
+              originalPlan.s1?'lunch':null,
+              originalPlan.s2?'dinner':null
+            ].filter(Boolean)
+          : [service];
+        services.forEach(srv=>{
+          if(typeof assistantSetService==='function'){
+            assistantSetService(
+              cp,
+              srv,
+              result.dept,
+              settings,
+              `Remplacement dernière minute · ${staff.name} · ${evt.type}`
+            );
+          }
+        });
+        cp.managerNote=[
+          cp.managerNote,
+          `Remplace ${staff.name} · ${evt.type}`
+        ].filter(Boolean).join(' · ');
+      }
+    }
+    const saved=await saveTs(ts);
+    const log={
+      id:`LM-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
+      at:new Date().toISOString(),
+      tenantID:typeof tenantID_JS!=='undefined'?tenantID_JS:'',
+      staffId:String(staff.id),
+      staffName:String(staff.name||''),
+      type:evt.type,
+      date:evt.date,
+      service,
+      delayMinutes:evt.delayMinutes||0,
+      note:evt.note||'',
+      replacementId:candidate?String(candidate.id):'',
+      replacementName:candidate?String(candidate.name||''):'',
+      dept:result.dept,
+      saved:Boolean(saved)
+    };
+    const all=events();
+    all.push(log);
+    saveEvents(all);
+    try{
+      recordRhChange?.({
+        type:'PLANNING_LAST_MINUTE_EVENT',
+        source:'DIRECTION_URGENCE',
+        staffId:String(staff.id),
+        staffName:String(staff.name||''),
+        date:evt.date,
+        reason:evt.note||evt.type,
+        message:
+          `Imprévu dernière minute · ${evt.type} · ${staff.name}` +
+          (candidate?` · remplacement ${candidate.name}`:'')
+      });
+    }catch(_){}
+    try{
+      loadMonthData?.();
+      loadPublicPlanning?.();
+    }catch(_){}
+    if(evt.type==='depart' && typeof generateAutomaticPlanning==='function'){
+      setTimeout(()=>{
+        try{generateAutomaticPlanning()}catch(_){}
+      },120);
+    }
+    alert(
+      saved
+        ? `Imprévu enregistré.${candidate?`\\nRemplacement proposé/appliqué : ${candidate.name}.`:''}`
+        : `Imprévu enregistré localement, mais la synchronisation serveur doit être reprise.`
+    );
+    closeEmergency();
+    refreshBadge();
+  }
+  function populateStaff(){
+    const select=document.getElementById('v134-staff');
+    if(!select)return;
+    const dir=(typeof getDir==='function'?getDir():[]).filter(s=>s.active!==false);
+    select.innerHTML=
+      '<option value="">Choisir…</option>'+
+      dir.map(s=>`<option value="${esc(s.id)}">${esc(s.name)} · ${esc(s.dept||'')}</option>`).join('');
+  }
+  function openEmergency(prefill){
+    const overlay=document.getElementById('v134-emergency-overlay');
+    if(!overlay)return;
+    populateStaff();
+    fillEvent(prefill||{
+      date:localDateKey(),
+      type:'maladie',
+      service:'auto',
+      delayMinutes:0
+    });
+    currentAnalysis=null;
+    selectedCandidateId='';
+    const result=document.getElementById('v134-result');
+    if(result)result.innerHTML='';
+    const apply=document.getElementById('v134-apply');
+    if(apply)apply.disabled=true;
+    renderRiskList();
+    overlay.classList.add('show');
+  }
+  function closeEmergency(){
+    document.getElementById('v134-emergency-overlay')?.classList.remove('show');
+  }
+  function refreshBadge(){
+    const badge=document.querySelector('#v134-emergency-btn .v134-alert-count');
+    if(badge)badge.textContent=String(detectRisks().length);
+  }
+  function installSettings(){
+    const box=document.querySelector('#ia-predictions-modal .v132-service-mode-box');
+    if(!box || document.getElementById('v134-emergency-settings'))return;
+    const c=cfg();
+    const node=document.createElement('div');
+    node.id='v134-emergency-settings';
+    node.className='v134-emergency-settings';
+    node.innerHTML=`
+      <div class="v134-emergency-settings-head">
+        <div>
+          <strong>IMPRÉVUS DE DERNIÈRE MINUTE</strong>
+          <small>Retard, maladie, absence / no-show, accident, urgence, problème de transport ou départ immédiat. Aucune modification n'est appliquée sans validation manager.</small>
+        </div>
+        <span class="v132-ai-badge">TEMPS RÉEL</span>
+      </div>
+
+      <div class="v134-emergency-settings-grid">
+        <label class="v134-setting-card v134-setting-check">
+          <span>
+            <strong>Gestion des imprévus</strong>
+            <small>Recherche un remplacement ciblé sans refaire inutilement tout le mois.</small>
+          </span>
+          <input id="v134-setting-enabled" type="checkbox" ${c.enabled?'checked':''}>
+        </label>
+
+        <label class="v134-setting-card v134-setting-check">
+          <span>
+            <strong>Détecter retards / non-pointés</strong>
+            <small>Utilise le planning et les pointages disponibles. Toujours « à vérifier » avant action.</small>
+          </span>
+          <input id="v134-setting-detect" type="checkbox" ${c.detectLate?'checked':''}>
+        </label>
+
+        <label class="v134-setting-card">
+          <strong>Seuil retard</strong>
+          <small>Alerte après X minutes.</small>
+          <input id="v134-setting-late" type="number" min="1" max="180" value="${c.lateMinutes}">
+        </label>
+
+        <label class="v134-setting-card">
+          <strong>Seuil non-pointé</strong>
+          <small>Alerte « à vérifier » après X minutes.</small>
+          <input id="v134-setting-noshow" type="number" min="5" max="240" value="${c.noShowMinutes}">
+        </label>
+      </div>
+    `;
+    box.appendChild(node);
+    const persist=()=>{
+      saveCfg({
+        enabled:document.getElementById('v134-setting-enabled')?.checked!==false,
+        detectLate:document.getElementById('v134-setting-detect')?.checked!==false,
+        lateMinutes:Number(document.getElementById('v134-setting-late')?.value)||10,
+        noShowMinutes:Number(document.getElementById('v134-setting-noshow')?.value)||20
+      });
+      refreshBadge();
+    };
+    node.querySelectorAll('input').forEach(el=>el.addEventListener('change',persist));
+  }
+  function installButton(){
+    const base=document.getElementById('v131-planning-tools-btn');
+    if(!base || document.getElementById('v134-emergency-btn'))return;
+    const btn=document.createElement('button');
+    btn.id='v134-emergency-btn';
+    btn.type='button';
+    btn.innerHTML=`
+      <span>
+        <strong>⚠ IMPRÉVU DERNIÈRE MINUTE</strong>
+        <small>Retard · maladie · absence · accident · urgence · transport · départ / démission</small>
+      </span>
+      <span class="v134-alert-count">0</span>
+    `;
+    base.insertAdjacentElement('afterend',btn);
+    btn.addEventListener('click',()=>openEmergency());
+    refreshBadge();
+  }
+  function installOverlay(){
+    if(document.getElementById('v134-emergency-overlay'))return;
+    const overlay=document.createElement('div');
+    overlay.id='v134-emergency-overlay';
+    overlay.innerHTML=`
+      <div id="v134-emergency-panel" role="dialog" aria-modal="true" aria-label="Gestion des imprévus RH">
+        <div id="v134-emergency-head">
+          <div>
+            <strong>IMPRÉVU DE DERNIÈRE MINUTE</strong>
+            <small>Analyse ciblée · remplacement compatible · validation manager obligatoire</small>
+          </div>
+          <button id="v134-emergency-close" type="button">×</button>
+        </div>
+
+        <div id="v134-emergency-body">
+          <div class="v134-risks">
+            <div class="v134-risks-head">
+              <strong>ALERTES À VÉRIFIER AUJOURD'HUI</strong>
+              <button id="v134-refresh-risks" type="button">ACTUALISER</button>
+            </div>
+            <div id="v134-risk-list"></div>
+          </div>
+
+          <div class="v134-form-grid">
+            <div class="v134-field">
+              <label>Collaborateur</label>
+              <select id="v134-staff"></select>
+            </div>
+
+            <div class="v134-field">
+              <label>Imprévu</label>
+              <select id="v134-type">
+                <option value="retard">Retard</option>
+                <option value="maladie">Maladie</option>
+                <option value="no_show">Absence / no-show</option>
+                <option value="accident">Accident</option>
+                <option value="urgence">Urgence personnelle</option>
+                <option value="transport">Problème de transport</option>
+                <option value="depart">Départ / démission immédiate</option>
+                <option value="autre">Autre imprévu</option>
+              </select>
+            </div>
+
+            <div class="v134-field">
+              <label>Date</label>
+              <input id="v134-date" type="date">
+            </div>
+
+            <div class="v134-field">
+              <label>Service touché</label>
+              <select id="v134-service">
+                <option value="auto">Détecter depuis le planning</option>
+                <option value="lunch">Midi</option>
+                <option value="dinner">Soir</option>
+                <option value="day">Journée / tous les services</option>
+              </select>
+            </div>
+
+            <div class="v134-field">
+              <label>Retard estimé · minutes</label>
+              <input id="v134-delay" type="number" min="0" max="720" value="0">
+            </div>
+
+            <div class="v134-field full">
+              <label>Note manager</label>
+              <textarea id="v134-note" placeholder="Ex. appel à 09:42, malade aujourd'hui, train supprimé, départ immédiat…"></textarea>
+            </div>
+          </div>
+
+          <div class="v134-analyse-row">
+            <button id="v134-analyse" type="button">ANALYSER & TROUVER UN REMPLAÇANT</button>
+            <button id="v134-apply" type="button" disabled>VALIDER L'ACTION</button>
+          </div>
+
+          <div id="v134-result"></div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('v134-emergency-close')?.addEventListener('click',closeEmergency);
+    document.getElementById('v134-refresh-risks')?.addEventListener('click',renderRiskList);
+    document.getElementById('v134-analyse')?.addEventListener('click',analyse);
+    document.getElementById('v134-apply')?.addEventListener('click',applyIncident);
+    overlay.addEventListener('click',e=>{
+      if(e.target===overlay)closeEmergency();
+    });
+    document.addEventListener('keydown',e=>{
+      if(e.key==='Escape'&&overlay.classList.contains('show'))closeEmergency();
+    });
+  }
+  function boot(){
+    installOverlay();
+    let attempts=0;
+    const timer=setInterval(()=>{
+      attempts++;
+      installSettings();
+      installButton();
+      if(
+        document.getElementById('v134-emergency-settings') &&
+        document.getElementById('v134-emergency-btn')
+      ){
+        clearInterval(timer);
+      }
+      if(attempts>30)clearInterval(timer);
+    },250);
+    // Surveillance légère : uniquement des alertes, jamais une modification automatique.
+    setInterval(()=>{
+      if(cfg().enabled && cfg().detectLate)refreshBadge();
+    },120000);
+  }
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',boot,{once:true});
+  }else{
+    boot();
+  }
+  window.openRhLastMinuteIncident=openEmergency;
+  window.refreshRhLastMinuteRisks=renderRiskList;
+  window.__ICHEF_RH_LAST_MINUTE_BUILD__='V134';
+})();
+
+
+
+
+;
+/* RH V264 - preserved script #45 */
+window.__ICHEF_RH_BUILD__='RH-V134-LAST-MINUTE-INCIDENTS';
+console.info('[iCHEF RH V134] retards / maladies / absences / accidents / départs + remplacement ciblé');
+
+
+;
+/* RH V264 - preserved script #46 */
+(() => {
+  'use strict';
+  function refreshClosureUi(){
+    if(typeof refreshRhServiceStrategyAdvice==='function'){
+      refreshRhServiceStrategyAdvice();
+    }
+  }
+  function bind(){
+    document
+      .querySelectorAll('[data-v135-closed-weekday]')
+      .forEach(input => {
+        input.addEventListener('change', refreshClosureUi);
+      });
+    document
+      .getElementById('rh-setting-exceptional-closures')
+      ?.addEventListener('change', refreshClosureUi);
+  }
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',bind,{once:true});
+  }else{
+    bind();
+  }
+  window.__ICHEF_RH_CLOSURE_BUILD__='V135';
+})();
+
+
+;
+/* RH V264 - preserved script #47 */
+window.__ICHEF_RH_BUILD__='RH-V135-RESTAURANT-CLOSURES';
+console.info('[iCHEF RH V135] jours fermeture = 0 service / 0 staff');
+
+
+;
+/* RH V264 - preserved script #48 */
+window.__ICHEF_RH_BUILD__='RH-V136-CLOSURE-HARD-GUARD';
+console.info('[iCHEF RH V136] fermeture établissement forcée après génération + cuisine ignore les jours fermés');
+
+
+;
+/* RH V264 - preserved script #49 */
+(() => {
+  'use strict';
+  function dateFr(d){
+    return [
+      String(d.getDate()).padStart(2,'0'),
+      String(d.getMonth()+1).padStart(2,'0'),
+      d.getFullYear()
+    ].join('/');
+  }
+  function sync(){
+    const preview =
+      document.getElementById(
+        'ia-planning-preview'
+      );
+    if(!preview) return;
+    let note =
+      document.getElementById(
+        'v137-horizon-note'
+      );
+    if(!note){
+      note =
+        document.createElement('div');
+      note.id =
+        'v137-horizon-note';
+      note.className =
+        'v137-horizon-note';
+      preview.insertAdjacentElement(
+        'beforebegin',
+        note
+      );
+    }
+    const now = new Date();
+    const currentMonth =
+      `${now.getFullYear()}-${String(
+        now.getMonth()+1
+      ).padStart(2,'0')}`;
+    const selected =
+      typeof getPlanningAssistantMonth ===
+        'function'
+        ? String(
+            getPlanningAssistantMonth() ||
+            ''
+          )
+        : currentMonth;
+    let desiredHtml='';
+    if(selected === currentMonth){
+      desiredHtml =
+        `<strong>MISE À JOUR À PARTIR D'AUJOURD'HUI · ${dateFr(now)}</strong>` +
+        ` · les jours précédents restent figés dans l'historique.`;
+    }else if(selected > currentMonth){
+      desiredHtml =
+        `<strong>MOIS FUTUR</strong>` +
+        ` · génération à partir du 1er jour du mois.`;
+    }else{
+      desiredHtml =
+        `<strong>HISTORIQUE</strong>` +
+        ` · ce mois n'est pas recalculé.`;
+    }
+    if(note.innerHTML !== desiredHtml){
+      note.innerHTML = desiredHtml;
+    }
+  }
+  function boot(){
+    sync();
+    /* V140 :
+       IMPORTANT — ne plus observer toute la modale.
+       L'ancienne version rappelait sync() après chaque mutation du planning,
+       alors que sync() modifiait lui-même le DOM : cela pouvait créer une
+       boucle de MutationObserver et bloquer complètement la page. */
+    const monthPicker =
+      document.getElementById('month-picker');
+    monthPicker?.addEventListener(
+      'change',
+      () => requestAnimationFrame(sync)
+    );
+    const monthTitle =
+      document.getElementById(
+        'assistant-month-title'
+      );
+    if(monthTitle){
+      new MutationObserver(() => {
+        requestAnimationFrame(sync);
+      }).observe(
+        monthTitle,
+        {
+          childList:true,
+          subtree:true,
+          characterData:true
+        }
+      );
+    }
+    const originalOpen =
+      window.openPlanningAssistant;
+    if(
+      typeof originalOpen === 'function' &&
+      !originalOpen.__v140HorizonWrapped
+    ){
+      const wrappedOpen = function(...args){
+        const result =
+          originalOpen.apply(this,args);
+        requestAnimationFrame(sync);
+        return result;
+      };
+      wrappedOpen.__v140HorizonWrapped = true;
+      window.openPlanningAssistant =
+        wrappedOpen;
+    }
+  }
+  if(
+    document.readyState ===
+    'loading'
+  ){
+    document.addEventListener(
+      'DOMContentLoaded',
+      boot,
+      {once:true}
+    );
+  }else{
+    boot();
+  }
+  window.__ICHEF_RH_TODAY_HORIZON_BUILD__ =
+    'V137';
+})();
+
+
+;
+/* RH V264 - preserved script #50 */
+window.__ICHEF_RH_BUILD__='RH-V137-TODAY-HORIZON';
+console.info('[iCHEF RH V137] faux FER corrigé · mise à jour aujourd’hui -> futur · passé figé');
+
+
+;
+/* RH V264 - preserved script #51 */
+
+(() => {
+  'use strict';
+  const V138_MESSAGE_KEY='ichef_rh_staff_messages_archive';
+  let v138StaffId='';
+  let v138Category='ALL';
+  let v138Rows=[];
+  let v138Documents=[];
+  function esc(v){
+    return typeof escapeRhHtml==='function'
+      ? escapeRhHtml(String(v??''))
+      : String(v??'')
+          .replace(/[&<>"']/g,c=>({
+            '&':'&amp;','<':'&lt;','>':'&gt;',
+            '"':'&quot;',"'":'&#39;'
+          }[c]));
+  }
+  function dateMs(row){
+    return Date.parse(
+      String(
+        row?.timestamp ||
+        row?.at ||
+        row?.createdAt ||
+        row?.updatedAt ||
+        row?.date ||
+        0
+      )
+    ) || 0;
+  }
+  function fmtDate(v){
+    const d=new Date(v);
+    return Number.isFinite(d.getTime())
+      ? d.toLocaleString('fr-FR')
+      : String(v||'');
+  }
+  function getStaffAny(staffId){
+    const current=(typeof getDir==='function'?getDir():[])
+      .find(s=>String(s.id)===String(staffId));
+    if(current) return current;
+    const hist=
+      (typeof getRhChangeHistory==='function'
+        ? getRhChangeHistory()
+        : [])
+      .filter(r=>String(r.staffId||'')===String(staffId))
+      .slice()
+      .reverse();
+    for(const row of hist){
+      const snap=row?.after||row?.before;
+      if(snap && String(snap.id||'')===String(staffId)){
+        return snap;
+      }
+    }
+    return {
+      id:staffId,
+      name:'Ancien collaborateur',
+      role:'',
+      dept:'',
+      active:false
+    };
+  }
+  function messageArchive(){
+    try{
+      const rows=JSON.parse(localStorage.getItem(V138_MESSAGE_KEY)||'[]');
+      return Array.isArray(rows)?rows:[];
+    }catch(_){
+      return [];
+    }
+  }
+  window.archiveRhStaffMessageV138=function(staffId,message,meta={}){
+    const rows=messageArchive();
+    const staff=getStaffAny(staffId);
+    rows.push({
+      id:`MSG-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
+      timestamp:new Date().toISOString(),
+      staffId:String(staffId||''),
+      staffName:String(staff?.name||meta.staffName||''),
+      message:String(message||''),
+      ...meta
+    });
+    localStorage.setItem(
+      V138_MESSAGE_KEY,
+      JSON.stringify(rows)
+    );
+    try{
+      API.update(
+        'RH_STAFF_MESSAGES_ARCHIVE',
+        rows
+      );
+    }catch(_){}
+    try{
+      recordRhChange?.({
+        staffId:String(staffId||''),
+        staffName:String(staff?.name||''),
+        type:'STAFF_MESSAGE',
+        category:'MESSAGE',
+        message:String(message||''),
+        meta
+      });
+    }catch(_){}
+  };
+  window.buildRhStaffArchiveIndexV138=function(){
+    const dir=
+      typeof getDir==='function'
+        ? getDir()
+        : [];
+    const history=
+      typeof getRhChangeHistory==='function'
+        ? getRhChangeHistory()
+        : [];
+    const ids=new Set();
+    dir.forEach(s=>ids.add(String(s.id)));
+    history.forEach(r=>{
+      if(r?.staffId) ids.add(String(r.staffId));
+    });
+    const out={};
+    ids.forEach(id=>{
+      const staff=getStaffAny(id);
+      out[id]={
+        staffId:id,
+        staffName:String(staff?.name||''),
+        role:String(staff?.role||''),
+        dept:String(staff?.dept||''),
+        active:staff?.active!==false,
+        historyCount:
+          history.filter(r=>String(r.staffId||'')===id).length,
+        updatedAt:new Date().toISOString()
+      };
+    });
+    return out;
+  };
+  function categoryOf(row){
+    const type=String(row?.type||'').toUpperCase();
+    const category=String(row?.category||'').toUpperCase();
+    const documentCategory=String(
+      row?.documentCategory ||
+      row?.raw?.category ||
+      ''
+    ).toUpperCase();
+    if(
+      category.includes('PAIE') ||
+      category.includes('FISC') ||
+      type.includes('PAYROLL') ||
+      type.includes('PAIE') ||
+      type.includes('SALARY_CERTIFICATE') ||
+      type.includes('TAX_') ||
+      type.includes('WITHHOLDING') ||
+      ['PAYSLIP','SALARY_CERTIFICATE','TAX_DOCUMENT','WITHHOLDING_TAX','SOCIAL_STATEMENT','PAYROLL_OTHER']
+        .includes(documentCategory)
+    ) return 'PAIE_FISCALITE';
+    if(
+      category.includes('DOCUMENT') ||
+      type.includes('DOCUMENT')
+    ) return 'DOCUMENT';
+    if(
+      category.includes('CONTRAT') ||
+      type.includes('STAFF_')
+    ) return 'CONTRAT';
+    if(
+      type.includes('PLANNING') ||
+      type.includes('TIMESHEET') ||
+      type.includes('POINTAGE') ||
+      type.includes('PUNCH')
+    ) return 'PLANNING';
+    if(
+      category.includes('MESSAGE') ||
+      type.includes('MESSAGE') ||
+      type.includes('REQUEST') ||
+      type.includes('DEMANDE')
+    ) return 'MESSAGE';
+    if(
+      type.includes('ABSENCE') ||
+      type.includes('LEAVE') ||
+      type.includes('CONGE')
+    ) return 'ABSENCE';
+    return 'AUTRE';
+  }
+  function requestRows(staffId){
+    const reqs=
+      typeof getReqs==='function'
+        ? getReqs()
+        : [];
+    return reqs
+      .filter(r =>
+        String(
+          r?.staffId ||
+          r?.employeeId ||
+          r?.userId ||
+          ''
+        )===String(staffId)
+      )
+      .map(r=>({
+        id:`REQ-${r.id||Math.random()}`,
+        timestamp:
+          r.createdAt ||
+          r.timestamp ||
+          r.updatedAt ||
+          r.startDate ||
+          new Date().toISOString(),
+        staffId:String(staffId),
+        type:'STAFF_REQUEST',
+        category:'MESSAGE',
+        message:
+          `${r.type||r.requestType||'Demande RH'} · ${r.status||'enregistrée'}`,
+        reason:
+          r.comment ||
+          r.reason ||
+          r.message ||
+          '',
+        raw:r
+      }));
+  }
+  function punchRows(staffId){
+    const punches=
+      typeof getPunches==='function'
+        ? getPunches()
+        : [];
+    return punches
+      .filter(p=>String(p?.staffId||'')===String(staffId))
+      .map(p=>({
+        id:`PUNCH-${p.id||p.timestamp||Math.random()}`,
+        timestamp:
+          new Date(
+            Number(
+              p.timestamp ||
+              p.clientTimestamp ||
+              Date.now()
+            )
+          ).toISOString(),
+        staffId:String(staffId),
+        type:'POINTAGE',
+        category:'PLANNING',
+        message:
+          `Pointage ${String(p.type||'').toUpperCase()}`,
+        reason:
+          p.note ||
+          p.reason ||
+          '',
+        raw:p
+      }));
+  }
+  function planningSnapshotRows(staffId){
+    const ts=
+      typeof getTs==='function'
+        ? getTs()
+        : {};
+    const rows=[];
+    Object.entries(ts||{}).forEach(([month,node])=>{
+      const staffNode=
+        node?.[staffId] ||
+        node?.[String(staffId)];
+      if(!staffNode) return;
+      rows.push({
+        id:`PLAN-SNAPSHOT-${staffId}-${month}`,
+        timestamp:`${month}-01T00:00:00`,
+        staffId:String(staffId),
+        type:'PLANNING_MONTH_SNAPSHOT',
+        category:'PLANNING',
+        message:
+          `Planning mensuel ${month}`,
+        raw:staffNode
+      });
+    });
+    return rows;
+  }
+  function currentContractRow(staff){
+    return [{
+      id:`CURRENT-${staff.id}`,
+      timestamp:new Date().toISOString(),
+      staffId:String(staff.id),
+      type:'CURRENT_STAFF_PROFILE',
+      category:'CONTRAT',
+      message:'Situation actuelle du collaborateur',
+      raw:{
+        name:staff.name,
+        role:staff.role,
+        dept:staff.dept,
+        contract:staff.contract,
+        annualLeaveDays:staff.annualLeaveDays,
+        leaveCarryover:staff.leaveCarryover,
+        recoveryBalance:staff.recoveryBalance,
+        grossSalaryMonthly:staff.grossSalaryMonthly,
+        hourlyCost:staff.hourlyCost,
+        skillLevel:staff.skillLevel,
+        skills:staff.skills,
+        availability:staff.availability,
+        minRestHours:staff.minRestHours,
+        maxConsecutiveDays:staff.maxConsecutiveDays,
+        active:staff.active
+      }
+    }];
+  }
+  function payrollTaxRows(staffId){
+    const rows=[];
+    let runs={};
+    let profiles={};
+    let variables={};
+    let locks={};
+    try{runs=JSON.parse(localStorage.getItem('ichef_payroll_runs_v1')||'{}')||{}}catch(_){}
+    try{profiles=JSON.parse(localStorage.getItem('ichef_payroll_profiles_v2')||'{}')||{}}catch(_){}
+    try{variables=JSON.parse(localStorage.getItem('ichef_payroll_variables_v2')||'{}')||{}}catch(_){}
+    try{locks=JSON.parse(localStorage.getItem('ichef_payroll_locks_v2')||'{}')||{}}catch(_){}
+    const profile=profiles?.[staffId]||profiles?.[String(staffId)];
+    if(profile){
+      rows.push({
+        id:`PAYROLL-PROFILE-${staffId}`,
+        timestamp:new Date().toISOString(),
+        staffId:String(staffId),
+        type:'PAYROLL_PROFILE_CURRENT',
+        category:'PAIE_FISCALITE',
+        message:'Profil paie / fiscalité actuel',
+        reason:[
+          profile.payrollId?`Matricule ${profile.payrollId}`:'',
+          profile.mode?`Mode ${profile.mode}`:'',
+          profile.contractType?`Contrat ${profile.contractType}`:'',
+          profile.frPasSubject===true?`PAS ${Number(profile.frPasRate||0).toFixed(2)} %`:'',
+          profile.chQstSubject===true?`Impôt à la source ${profile.chQstTariff||''}`:'',
+          profile.chAvsStatus?`AVS ${profile.chAvsStatus}`:'',
+          profile.chLppStatus?`LPP ${profile.chLppStatus}`:''
+        ].filter(Boolean).join(' · '),
+        raw:profile
+      });
+    }
+    Object.entries(runs||{}).forEach(([period,run])=>{
+      const emp=(run?.employees||[]).find(
+        e=>String(e?.id||'')===String(staffId)
+      );
+      if(!emp)return;
+      const fiscalBits=[];
+      if(run?.country==='FR'){
+        fiscalBits.push('France');
+      }else if(run?.country==='CH'){
+        fiscalBits.push('Suisse');
+      }
+      if(emp?.variables?.withholding){
+        fiscalBits.push(`Retenue ${Number(emp.variables.withholding||0).toFixed(2)} ${run?.currency||''}`);
+      }
+      rows.push({
+        id:`PAYRUN-${staffId}-${period}`,
+        timestamp:
+          run.generatedAt ||
+          `${period}-01T00:00:00`,
+        staffId:String(staffId),
+        type:'PAYROLL_PREPARATION',
+        category:'PAIE_FISCALITE',
+        period,
+        message:
+          `Préparation paie ${period} · ${Number(emp.hours||0).toFixed(2)} h · brut ${Number(emp.gross||0).toFixed(2)} ${run?.currency||''} · net estimé ${Number(emp.netEstimated||0).toFixed(2)} ${run?.currency||''}`,
+        reason:[
+          ...fiscalBits,
+          Number(emp.overtime||0)>0?`H. sup. ${Number(emp.overtime).toFixed(2)} h`:'',
+          Array.isArray(emp.anomalies)&&emp.anomalies.length?`${emp.anomalies.length} anomalie(s)`:'',
+          Array.isArray(emp.regulatoryBlockers)&&emp.regulatoryBlockers.length?`${emp.regulatoryBlockers.length} blocage(s) réglementaire(s)`:''
+        ].filter(Boolean).join(' · '),
+        raw:{
+          ...emp,
+          country:run?.country,
+          currency:run?.currency,
+          runStatus:run?.status
+        }
+      });
+    });
+    Object.entries(variables||{}).forEach(([period,node])=>{
+      const v=node?.[staffId]||node?.[String(staffId)];
+      if(!v)return;
+      rows.push({
+        id:`PAYVAR-${staffId}-${period}`,
+        timestamp:`${period}-28T12:00:00`,
+        staffId:String(staffId),
+        type:'PAYROLL_VARIABLES',
+        category:'PAIE_FISCALITE',
+        period,
+        message:`Variables de paie ${period}`,
+        reason:[
+          Number(v.bonus||0)?`Prime ${Number(v.bonus).toFixed(2)}`:'',
+          Number(v.allowances||0)?`Indemnités ${Number(v.allowances).toFixed(2)}`:'',
+          Number(v.deductions||0)?`Retenues ${Number(v.deductions).toFixed(2)}`:'',
+          Number(v.withholding||0)?`Retenue fiscale ${Number(v.withholding).toFixed(2)}`:'',
+          Number(v.frPasOverride||0)?`PAS forcé ${Number(v.frPasOverride).toFixed(2)}`:'',
+          v.chTimesheetSigned===true?'Feuille d’heures signée':'',
+          Number(v.chThirteenthPayout||0)?`13e ${Number(v.chThirteenthPayout).toFixed(2)}`:''
+        ].filter(Boolean).join(' · '),
+        raw:v
+      });
+    });
+    Object.entries(locks||{}).forEach(([period,lock])=>{
+      rows.push({
+        id:`PAYLOCK-${staffId}-${period}`,
+        timestamp:
+          lock?.lockedAt ||
+          `${period}-28T23:00:00`,
+        staffId:String(staffId),
+        type:'PAYROLL_PERIOD_STATUS',
+        category:'PAIE_FISCALITE',
+        period,
+        message:
+          `Période de paie ${period} clôturée`,
+        reason:
+          lock?.country
+            ? `Pays ${lock.country}`
+            : '',
+        raw:lock
+      });
+    });
+    return rows;
+  }
+  function messageRows(staffId){
+    return messageArchive()
+      .filter(r=>String(r.staffId||'')===String(staffId))
+      .map(r=>({
+        ...r,
+        type:r.type||'STAFF_MESSAGE',
+        category:'MESSAGE'
+      }));
+  }
+  async function documentsFor(staffId){
+    // Liste sécurisée distante. Si indisponible, les preuves déjà
+    // enregistrées dans RH_CHANGE_HISTORY restent visibles.
+    try{
+      const pin=
+        typeof getRhDirectionAuthPin==='function'
+          ? String(getRhDirectionAuthPin()||'').trim()
+          : '';
+      if(!/^\d{4,12}$/.test(pin)) return [];
+      const base=
+        String(
+          window.SERVER_URL_JS ||
+          (typeof SERVER_URL_JS!=='undefined'
+            ? SERVER_URL_JS
+            : '')
+        ).replace(/\/$/,'');
+      const device=
+        String(
+          window.RH_DEVICE_ID ||
+          (typeof RH_DEVICE_ID!=='undefined'
+            ? RH_DEVICE_ID
+            : '') ||
+          localStorage.getItem('ichef_device_id') ||
+          ''
+        );
+      const sessionResp=await fetch(
+        `${base}/api/rh/documents/session`,
+        {
+          method:'POST',
+          credentials:'include',
+          cache:'no-store',
+          headers:{
+            'Content-Type':'application/json',
+            'Accept':'application/json',
+            'X-iCHEF-Tenant':tenantID_JS,
+            'X-iCHEF-Device':device
+          },
+          body:JSON.stringify({
+            tenantID:tenantID_JS,
+            pin,
+            deviceId:device
+          })
+        }
+      );
+      const sessionData=
+        await sessionResp.json().catch(()=>({}));
+      if(
+        !sessionResp.ok ||
+        !sessionData?.accessToken
+      ){
+        return [];
+      }
+      const r=await fetch(
+        `${base}/api/rh/documents/list?tenantID=${encodeURIComponent(tenantID_JS)}&staffId=${encodeURIComponent(String(staffId))}`,
+        {
+          credentials:'include',
+          cache:'no-store',
+          headers:{
+            'Accept':'application/json',
+            'X-iCHEF-Tenant':tenantID_JS,
+            'X-iCHEF-Device':device,
+            'Authorization':
+              `Bearer ${String(sessionData.accessToken)}`
+          }
+        }
+      );
+      const data=
+        await r.json().catch(()=>({}));
+      if(!r.ok) return [];
+      return (
+        Array.isArray(data.documents)
+          ? data.documents
+          : []
+      ).map(d=>({
+        id:`DOC-${d.documentId||d.id}`,
+        timestamp:
+          d.uploadedAt ||
+          d.issuedAt ||
+          d.createdAt ||
+          new Date().toISOString(),
+        staffId:String(staffId),
+        type:
+          ['PAYSLIP','SALARY_CERTIFICATE','TAX_DOCUMENT','WITHHOLDING_TAX','SOCIAL_STATEMENT','PAYROLL_OTHER']
+            .includes(String(d.category||'').toUpperCase())
+            ? 'PAYROLL_TAX_DOCUMENT'
+            : 'DOCUMENT_ARCHIVE',
+        category:
+          ['PAYSLIP','SALARY_CERTIFICATE','TAX_DOCUMENT','WITHHOLDING_TAX','SOCIAL_STATEMENT','PAYROLL_OTHER']
+            .includes(String(d.category||'').toUpperCase())
+            ? 'PAIE_FISCALITE'
+            : 'DOCUMENT',
+        documentCategory:String(d.category||''),
+        message:
+          d.title ||
+          d.fileName ||
+          'Document RH',
+        reason:[
+          d.category,
+          d.period,
+          d.proofId
+            ? `Preuve ${d.proofId}`
+            : ''
+        ].filter(Boolean).join(' · '),
+        raw:d
+      }));
+    }catch(error){
+      console.warn(
+        '[iCHEF RH V138] documents historique indisponibles',
+        error
+      );
+      return [];
+    }
+  }
+  function buildRows(staffId){
+    const history=
+      (typeof getRhChangeHistory==='function'
+        ? getRhChangeHistory()
+        : [])
+      .filter(r=>String(r.staffId||'')===String(staffId));
+    const staff=getStaffAny(staffId);
+    return [
+      ...history,
+      ...requestRows(staffId),
+      ...punchRows(staffId),
+      ...planningSnapshotRows(staffId),
+      ...currentContractRow(staff),
+      ...payrollTaxRows(staffId),
+      ...messageRows(staffId),
+      ...v138Documents
+    ]
+    .map(r=>({
+      ...r,
+      __category:categoryOf(r)
+    }))
+    .sort((a,b)=>dateMs(b)-dateMs(a));
+  }
+  function detailText(row){
+    const pieces=[];
+    if(row.message) pieces.push(String(row.message));
+    if(row.reason) pieces.push(String(row.reason));
+    if(row.by) pieces.push(`Par : ${row.by}`);
+    if(row.proofId) pieces.push(`Preuve : ${row.proofId}`);
+    if(row.before || row.after){
+      const before=row.before||null;
+      const after=row.after||null;
+      if(
+        before?.contract !== undefined ||
+        after?.contract !== undefined
+      ){
+        pieces.push(
+          `Contrat : ${before?.contract??'—'} h → ${after?.contract??'—'} h`
+        );
+      }
+      if(
+        before?.role !== undefined ||
+        after?.role !== undefined
+      ){
+        pieces.push(
+          `Fonction : ${before?.role??'—'} → ${after?.role??'—'}`
+        );
+      }
+      if(
+        before?.dept !== undefined ||
+        after?.dept !== undefined
+      ){
+        pieces.push(
+          `Département : ${before?.dept??'—'} → ${after?.dept??'—'}`
+        );
+      }
+    }
+    return pieces.filter(Boolean).join(' · ');
+  }
+  function render(){
+    const content=
+      document.getElementById(
+        'v138-history-content'
+      );
+    if(!content) return;
+    const q=
+      String(
+        document.getElementById(
+          'v138-history-search'
+        )?.value || ''
+      ).trim().toLowerCase();
+    const rows=v138Rows.filter(row=>{
+      if(
+        v138Category!=='ALL' &&
+        row.__category!==v138Category
+      ){
+        return false;
+      }
+      if(!q) return true;
+      return JSON.stringify(row)
+        .toLowerCase()
+        .includes(q);
+    });
+    if(!rows.length){
+      content.innerHTML=
+        '<div class="v138-empty">Aucun élément dans cette catégorie.</div>';
+      return;
+    }
+    content.innerHTML=
+      rows.map(row=>`
+        <div class="v138-event">
+          <time>${esc(fmtDate(
+            row.timestamp ||
+            row.at ||
+            row.date
+          ))}</time>
+          <div class="type">
+            ${esc(
+              row.__category
+            )}<br>
+            <span style="color:#748089;font-weight:700">
+              ${esc(row.type||'ÉVÉNEMENT')}
+            </span>
+          </div>
+          <div class="body">
+            ${esc(detailText(row)||row.type||'Événement RH')}
+            ${
+              row.raw
+                ? `<small>${esc(
+                    JSON.stringify(row.raw)
+                      .slice(0,900)
+                  )}</small>`
+                : ''
+            }
+          </div>
+        </div>
+      `).join('');
+  }
+  function updateKpis(staff){
+    const count=cat=>
+      v138Rows.filter(r=>r.__category===cat).length;
+    const set=(id,value)=>{
+      const el=document.getElementById(id);
+      if(el) el.textContent=String(value);
+    };
+    set('v138-kpi-total',v138Rows.length);
+    set('v138-kpi-planning',count('PLANNING'));
+    set('v138-kpi-contract',count('CONTRAT'));
+    set('v138-kpi-docs',count('DOCUMENT'));
+    set('v139-kpi-payroll',count('PAIE_FISCALITE'));
+    set('v138-kpi-msg',count('MESSAGE'));
+    set('v138-kpi-status',staff?.active===false?'ARCHIVÉ':'ACTIF');
+  }
+  async function syncArchive(staffId){
+    try{
+      const payload={
+        staffId:String(staffId),
+        staff:getStaffAny(staffId),
+        history:
+          v138Rows.map(r=>{
+            const copy={...r};
+            delete copy.__category;
+            return copy;
+          }),
+        archivedAt:new Date().toISOString()
+      };
+      localStorage.setItem(
+        `ichef_rh_staff_archive_${staffId}`,
+        JSON.stringify(payload)
+      );
+      await Promise.resolve(
+        API.update(
+          `RH_STAFF_ARCHIVE_${staffId}`,
+          payload
+        )
+      );
+    }catch(error){
+      console.warn(
+        '[iCHEF RH V138] archive staff locale uniquement',
+        error
+      );
+    }
+  }
+  function exportJson(){
+    const staff=getStaffAny(v138StaffId);
+    const payload={
+      exportedAt:new Date().toISOString(),
+      tenantID:
+        typeof tenantID_JS!=='undefined'
+          ? tenantID_JS
+          : '',
+      staff,
+      history:v138Rows
+    };
+    const blob=new Blob(
+      [JSON.stringify(payload,null,2)],
+      {type:'application/json;charset=utf-8'}
+    );
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download=
+      `iCHEF_Historique_${String(staff?.name||v138StaffId).replace(/[^\w-]+/g,'_')}.json`;
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(url),500);
+  }
+  function ensureModal(){
+    if(
+      document.getElementById(
+        'rh-staff-history-v138'
+      )
+    ){
+      return;
+    }
+    document.body.insertAdjacentHTML(
+      'beforeend',
+      `
+      <div id="rh-staff-history-v138">
+        <div class="v138-panel">
+          <div class="v138-head">
+            <div class="v138-title">
+              <strong id="v138-history-title">HISTORIQUE 360°</strong>
+              <small id="v138-history-subtitle"></small>
+            </div>
+
+            <div class="v138-head-actions">
+              <button class="gold" type="button" id="v138-history-sync">ARCHIVER MAINTENANT</button>
+              <button type="button" id="v138-history-export">EXPORT JSON</button>
+              <button type="button" id="v138-history-close">FERMER</button>
+            </div>
+          </div>
+
+          <div class="v138-meta">
+            <div class="v138-kpi"><small>TOTAL</small><strong id="v138-kpi-total">0</strong></div>
+            <div class="v138-kpi"><small>PLANNING</small><strong id="v138-kpi-planning">0</strong></div>
+            <div class="v138-kpi"><small>CONTRAT / PROFIL</small><strong id="v138-kpi-contract">0</strong></div>
+            <div class="v138-kpi"><small>DOCUMENTS</small><strong id="v138-kpi-docs">0</strong></div>
+            <div class="v138-kpi"><small>PAIE / FISCAL</small><strong id="v139-kpi-payroll">0</strong></div>
+            <div class="v138-kpi"><small>MESSAGES / DEMANDES</small><strong id="v138-kpi-msg">0</strong></div>
+            <div class="v138-kpi"><small>STATUT</small><strong id="v138-kpi-status">—</strong></div>
+          </div>
+
+          <div class="v138-tabs">
+            <button data-v138-cat="ALL" class="active">TOUT</button>
+            <button data-v138-cat="PLANNING">PLANNING & POINTAGES</button>
+            <button data-v138-cat="CONTRAT">CONTRAT & PROFIL</button>
+            <button data-v138-cat="DOCUMENT">DOCUMENTS RH</button>
+            <button data-v138-cat="PAIE_FISCALITE">PAIE & FISCALITÉ</button>
+            <button data-v138-cat="MESSAGE">MESSAGES & DEMANDES</button>
+            <button data-v138-cat="ABSENCE">ABSENCES</button>
+            <button data-v138-cat="AUTRE">AUTRES</button>
+          </div>
+
+          <div class="v138-tools">
+            <input id="v138-history-search" type="search" placeholder="Rechercher dans tout l'historique…">
+            <div class="v138-retention">ARCHIVE DURABLE · AUCUNE PURGE AUTOMATIQUE</div>
+          </div>
+
+          <div id="v138-history-content" class="v138-content"></div>
+        </div>
+      </div>
+      `
+    );
+    document
+      .getElementById('v138-history-close')
+      ?.addEventListener('click',close);
+    document
+      .getElementById('v138-history-export')
+      ?.addEventListener('click',exportJson);
+    document
+      .getElementById('v138-history-sync')
+      ?.addEventListener('click',async()=>{
+        await syncArchive(v138StaffId);
+        try{
+          showToast?.(
+            'Archive collaborateur synchronisée'
+          );
+        }catch(_){}
+      });
+    document
+      .getElementById('v138-history-search')
+      ?.addEventListener('input',render);
+    document
+      .querySelectorAll('[data-v138-cat]')
+      .forEach(btn=>{
+        btn.addEventListener('click',()=>{
+          document
+            .querySelectorAll('[data-v138-cat]')
+            .forEach(x=>x.classList.remove('active'));
+          btn.classList.add('active');
+          v138Category=
+            String(btn.dataset.v138Cat||'ALL');
+          render();
+        });
+      });
+    document
+      .getElementById('rh-staff-history-v138')
+      ?.addEventListener('click',event=>{
+        if(
+          event.target?.id ===
+          'rh-staff-history-v138'
+        ){
+          close();
+        }
+      });
+    document.addEventListener('keydown',event=>{
+      if(
+        event.key==='Escape' &&
+        document
+          .getElementById('rh-staff-history-v138')
+          ?.classList.contains('show')
+      ){
+        close();
+      }
+    });
+  }
+  function close(){
+    document
+      .getElementById('rh-staff-history-v138')
+      ?.classList.remove('show');
+  }
+  window.openRhStaffHistoryV138=async function(staffId){
+    ensureModal();
+    v138StaffId=String(staffId);
+    v138Category='ALL';
+    const staff=getStaffAny(staffId);
+    document.getElementById('v138-history-title').textContent=
+      `HISTORIQUE 360° · ${staff?.name||'COLLABORATEUR'}`;
+    document.getElementById('v138-history-subtitle').textContent=
+      `${staff?.role||''} · ${String(staff?.dept||'').toUpperCase()} · planning · contrat · bulletins de salaire · certificat de salaire · fiscalité salariale · documents · messages · demandes · pointages`;
+    document
+      .querySelectorAll('[data-v138-cat]')
+      .forEach(btn=>{
+        btn.classList.toggle(
+          'active',
+          btn.dataset.v138Cat==='ALL'
+        );
+      });
+    const search=
+      document.getElementById('v138-history-search');
+    if(search) search.value='';
+    document
+      .getElementById('rh-staff-history-v138')
+      ?.classList.add('show');
+    v138Documents=[];
+    v138Rows=buildRows(v138StaffId);
+    updateKpis(staff);
+    render();
+    // Charge ensuite les documents distants sans bloquer l'ouverture.
+    v138Documents=
+      await documentsFor(v138StaffId);
+    v138Rows=buildRows(v138StaffId);
+    updateKpis(staff);
+    render();
+    // Snapshot local immédiat.
+    syncArchive(v138StaffId);
+  };
+  function install(){
+    ensureModal();
+  }
+  if(document.readyState==='loading'){
+    document.addEventListener(
+      'DOMContentLoaded',
+      install,
+      {once:true}
+    );
+  }else{
+    install();
+  }
+  window.__ICHEF_RH_HISTORY_BUILD__='V138';
+})();
+
+
+
+
+;
+/* RH V264 - preserved script #52 */
+window.__ICHEF_RH_BUILD__='RH-V138-STAFF-HISTORY-360';
+console.info('[iCHEF RH V138] historique 360° staff · planning · contrat · documents · messages · demandes · pointages');
+
+
+;
+/* RH V264 - preserved script #53 */
+(() => {
+  'use strict';
+  function recordPayrollRun(run){
+    if(!run || !Array.isArray(run.employees)) return;
+    run.employees.forEach(emp=>{
+      try{
+        recordRhChange?.({
+          staffId:String(emp.id||''),
+          staffName:String(emp.name||''),
+          type:'PAYROLL_RUN_GENERATED',
+          category:'PAIE_FISCALITE',
+          period:String(run.period||''),
+          country:String(run.country||''),
+          currency:String(run.currency||''),
+          payrollId:String(emp.payrollId||''),
+          gross:Number(emp.gross||0),
+          netEstimated:Number(emp.netEstimated||0),
+          employeeDeductionsEstimated:Number(emp.employeeDeductionsEstimated||0),
+          employerCostEstimated:Number(emp.employerCostEstimated||0),
+          message:
+            `Préparation paie ${run.period||''} · ` +
+            `brut ${Number(emp.gross||0).toFixed(2)} ${run.currency||''} · ` +
+            `net estimé ${Number(emp.netEstimated||0).toFixed(2)} ${run.currency||''}`
+        });
+      }catch(_){}
+    });
+  }
+  function wrapPayrollRun(){
+    const original=window.iChefPayrollGenerateAutomaticRun;
+    if(typeof original!=='function' || original.__v139Wrapped) return false;
+    const wrapped=function(...args){
+      const run=original.apply(this,args);
+      try{recordPayrollRun(run)}catch(_){}
+      return run;
+    };
+    wrapped.__v139Wrapped=true;
+    window.iChefPayrollGenerateAutomaticRun=wrapped;
+    return true;
+  }
+  function wrapPayrollVariables(){
+    const original=window.savePayrollVariables;
+    if(typeof original!=='function' || original.__v139Wrapped) return false;
+    const wrapped=function(...args){
+      const id=String(document.getElementById('pv-staff-id')?.value||'');
+      const month=String(document.getElementById('payroll-month')?.value||'');
+      let before=null;
+      try{
+        const all=JSON.parse(localStorage.getItem('ichef_payroll_variables_v2')||'{}')||{};
+        before=all?.[month]?.[id]||null;
+      }catch(_){}
+      const result=original.apply(this,args);
+      try{
+        const all=JSON.parse(localStorage.getItem('ichef_payroll_variables_v2')||'{}')||{};
+        const after=all?.[month]?.[id]||null;
+        const staff=(typeof getDir==='function'?getDir():[])
+          .find(s=>String(s.id)===id);
+        recordRhChange?.({
+          staffId:id,
+          staffName:String(staff?.name||''),
+          type:'PAYROLL_VARIABLES_UPDATED',
+          category:'PAIE_FISCALITE',
+          period:month,
+          before,
+          after,
+          message:`Variables de paie mises à jour · ${month}`
+        });
+      }catch(_){}
+      return result;
+    };
+    wrapped.__v139Wrapped=true;
+    window.savePayrollVariables=wrapped;
+    return true;
+  }
+  function wrapPayrollProfile(){
+    const original=window.savePayrollProfile;
+    if(typeof original!=='function' || original.__v139Wrapped) return false;
+    const wrapped=function(...args){
+      const id=String(document.getElementById('pp-staff-id')?.value||'');
+      let before=null;
+      try{
+        const all=JSON.parse(localStorage.getItem('ichef_payroll_profiles_v2')||'{}')||{};
+        before=all?.[id]||null;
+      }catch(_){}
+      const result=original.apply(this,args);
+      try{
+        const all=JSON.parse(localStorage.getItem('ichef_payroll_profiles_v2')||'{}')||{};
+        const after=all?.[id]||null;
+        const staff=(typeof getDir==='function'?getDir():[])
+          .find(s=>String(s.id)===id);
+        recordRhChange?.({
+          staffId:id,
+          staffName:String(staff?.name||''),
+          type:'PAYROLL_PROFILE_UPDATED',
+          category:'PAIE_FISCALITE',
+          before,
+          after,
+          message:'Profil paie / fiscalité mis à jour'
+        });
+      }catch(_){}
+      return result;
+    };
+    wrapped.__v139Wrapped=true;
+    window.savePayrollProfile=wrapped;
+    return true;
+  }
+  function installPayrollNote(){
+    const modal=document.getElementById('rh-staff-history-v138');
+    const tools=modal?.querySelector('.v138-tools');
+    if(!modal || !tools || document.getElementById('v139-payroll-note')) return;
+    const note=document.createElement('div');
+    note.id='v139-payroll-note';
+    note.className='v139-payroll-note';
+    note.innerHTML=
+      `<strong>PAIE & FISCALITÉ SALARIALE</strong> · ` +
+      `bulletins de salaire, certificats de salaire, retenues fiscales/PAS, impôt à la source, ` +
+      `cotisations sociales, profils et variables de paie, préparations mensuelles et pièces justificatives. ` +
+      `Les transmissions fiscales/sociales officielles restent soumises aux connecteurs et validations réglementaires applicables.`;
+    tools.insertAdjacentElement('afterend',note);
+  }
+  function boot(){
+    let attempts=0;
+    const timer=setInterval(()=>{
+      attempts++;
+      const a=wrapPayrollRun();
+      const b=wrapPayrollVariables();
+      const c=wrapPayrollProfile();
+      installPayrollNote();
+      if((a||window.iChefPayrollGenerateAutomaticRun?.__v139Wrapped) &&
+         (b||window.savePayrollVariables?.__v139Wrapped) &&
+         (c||window.savePayrollProfile?.__v139Wrapped)){
+        clearInterval(timer);
+      }
+      if(attempts>40) clearInterval(timer);
+    },250);
+  }
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',boot,{once:true});
+  }else{
+    boot();
+  }
+  window.__ICHEF_RH_PAYROLL_HISTORY_BUILD__='V139';
+})();
+
+
+;
+/* RH V264 - preserved script #54 */
+window.__ICHEF_RH_BUILD__='RH-V139-STAFF-HISTORY-PAYROLL-TAX';
+console.info('[iCHEF RH V139] historique 360° + bulletins + certificat salaire + fiscalité salariale');
+
+
+;
+/* RH V264 - preserved script #55 */
+window.__ICHEF_RH_BUILD__='RH-V140-FREEZE-FIX';
+console.info('[iCHEF RH V140] correction blocage page · MutationObserver V137 sécurisé');
+
+
+;
+/* RH V264 - preserved script #56 */
+(() => {
+  'use strict';
+  const BUILD='RH-V141-FER-LEGACY-REPAIR';
+  function clone(v){
+    try{return JSON.parse(JSON.stringify(v));}
+    catch(_){return v&&typeof v==='object'?{...v}:v;}
+  }
+  function localDateKey(dateObj){
+    const y=dateObj.getFullYear();
+    const m=String(dateObj.getMonth()+1).padStart(2,'0');
+    const d=String(dateObj.getDate()).padStart(2,'0');
+    return `${y}-${m}-${d}`;
+  }
+  function safeWeekdays(settings){
+    const days=Array.from(new Set(
+      (Array.isArray(settings?.planningClosedWeekdays)
+        ? settings.planningClosedWeekdays
+        : [])
+      .map(Number)
+      .filter(v=>Number.isInteger(v)&&v>=0&&v<=6)
+    )).sort((a,b)=>a-b);
+    // V141 : 7 jours fermés par semaine est une ancienne valeur
+    // invalide pour ce moteur. Une fermeture longue doit être saisie
+    // comme fermeture exceptionnelle, pas comme fermeture hebdo 7/7.
+    return days.length>=7 ? [] : days;
+  }
+  function exceptionalDates(settings){
+    return Array.from(new Set(
+      (Array.isArray(settings?.planningExceptionalClosedDates)
+        ? settings.planningExceptionalClosedDates
+        : [])
+      .map(v=>String(v||'').trim())
+      .filter(v=>/^20\d{2}-\d{2}-\d{2}$/.test(v))
+    )).sort();
+  }
+  function isConfiguredClosed(dateObj,settings){
+    if(!(dateObj instanceof Date)||Number.isNaN(dateObj.getTime()))return false;
+    const weekly=safeWeekdays(settings);
+    if(weekly.includes(dateObj.getDay()))return true;
+    return exceptionalDates(settings).includes(localDateKey(dateObj));
+  }
+  function isLegacyFerCell(cell){
+    if(!cell||typeof cell!=='object')return false;
+    return (
+      cell.__restaurantClosed===true ||
+      String(cell.obs||'').trim()==='Établissement fermé'
+    );
+  }
+  function historyRows(){
+    try{
+      const rows=typeof getRhChangeHistory==='function'
+        ? getRhChangeHistory()
+        : JSON.parse(localStorage.getItem('ichef_rh_change_history')||'[]');
+      return Array.isArray(rows)?rows:[];
+    }catch(_){return [];}
+  }
+  function rowTime(row){
+    return Date.parse(String(
+      row?.timestamp||row?.at||row?.updatedAt||row?.createdAt||0
+    ))||0;
+  }
+  function recoverBeforeCell(staffId,month,day){
+    const rows=historyRows()
+      .filter(r=>
+        String(r?.staffId||'')===String(staffId) &&
+        String(r?.month||'')===String(month) &&
+        r?.before &&
+        typeof r.before==='object'
+      )
+      .sort((a,b)=>rowTime(b)-rowTime(a));
+    for(const row of rows){
+      const before=
+        row.before?.[day] ??
+        row.before?.[String(day)];
+      if(!before||typeof before!=='object')continue;
+      // On remonte jusqu'à la dernière version qui n'était pas
+      // elle-même une fermeture injectée par l'ancien bug.
+      if(!isLegacyFerCell(before)){
+        return clone(before);
+      }
+    }
+    return null;
+  }
+  function sanitizeSettings(){
+    let settings={};
+    try{settings=typeof getRhSettings==='function'?getRhSettings():{};}
+    catch(_){settings={};}
+    const rawDays=Array.isArray(settings?.planningClosedWeekdays)
+      ? settings.planningClosedWeekdays.map(Number)
+      : [];
+    if(rawDays.length<7){
+      return settings;
+    }
+    const clean={
+      ...settings,
+      planningClosedWeekdays:[]
+    };
+    try{
+      localStorage.setItem(
+        'ichef_rh_settings',
+        JSON.stringify(clean)
+      );
+    }catch(_){}
+    try{
+      Promise.resolve(
+        API?.update?.('RH_SETTINGS',clean)
+      ).catch(()=>{});
+    }catch(_){}
+    document
+      .querySelectorAll('[data-v135-closed-weekday]')
+      .forEach(input=>{input.checked=false;});
+    try{
+      recordRhChange?.({
+        type:'PLANNING_CLOSURE_SETTINGS_REPAIRED',
+        category:'PLANNING',
+        message:
+          'Ancienne fermeture hebdomadaire 7/7 supprimée automatiquement · jours réels à reconfigurer'
+      });
+    }catch(_){}
+    return clean;
+  }
+  async function repairMonth(monthStr,options={}){
+    const month=String(
+      monthStr ||
+      (typeof getPlanningAssistantMonth==='function'
+        ? getPlanningAssistantMonth()
+        : '')
+    ).trim();
+    if(!/^\d{4}-\d{2}$/.test(month)){
+      return {changed:0,recovered:0,cleared:0,month};
+    }
+    const settings=sanitizeSettings();
+    const [year,monthNumber]=month.split('-').map(Number);
+    const ts=typeof getTs==='function'?getTs():{};
+    const monthNode=ts?.[month];
+    if(!monthNode||typeof monthNode!=='object'){
+      return {changed:0,recovered:0,cleared:0,month};
+    }
+    const now=new Date();
+    const currentMonth=
+      `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+    let changed=0;
+    let recovered=0;
+    let cleared=0;
+    // Sauvegarde de sécurité avant toute réparation.
+    if(!localStorage.getItem(`ichef_v141_before_repair_${month}`)){
+      try{
+        localStorage.setItem(
+          `ichef_v141_before_repair_${month}`,
+          JSON.stringify(monthNode)
+        );
+      }catch(_){}
+    }
+    for(const [staffId,days] of Object.entries(monthNode)){
+      if(!days||typeof days!=='object')continue;
+      for(const [dayKey,cell] of Object.entries(days)){
+        const day=Number(dayKey);
+        if(!Number.isInteger(day)||day<1||day>31)continue;
+        if(!isLegacyFerCell(cell))continue;
+        const dateObj=new Date(year,monthNumber-1,day);
+        // Une vraie fermeture configurée reste FER.
+        if(isConfiguredClosed(dateObj,settings))continue;
+        const before=recoverBeforeCell(staffId,month,day);
+        if(before){
+          days[dayKey]={
+            ...before,
+            obs:
+              String(before.obs||'').trim()==='Établissement fermé'
+                ? ''
+                : String(before.obs||'')
+          };
+          changed++;
+          recovered++;
+          continue;
+        }
+        // Sans version antérieure fiable, on ne fabrique jamais un horaire.
+        // Pour aujourd'hui/futur : on remet la case à replanifier.
+        // Pour le passé : on retire uniquement la fausse étiquette FER.
+        if(month>currentMonth || (month===currentMonth && day>=now.getDate())){
+          days[dayKey]={
+            status:'off',
+            poste:String(cell?.poste||'salle'),
+            s1:'',
+            s2:'',
+            pause:0,
+            obs:'',
+            managerNote:String(cell?.managerNote||'').slice(0,40),
+            v141NeedsReplan:true
+          };
+        }else{
+          days[dayKey]={
+            ...cell,
+            __restaurantClosed:false,
+            obs:'',
+            v141LegacyFerCleared:true
+          };
+        }
+        changed++;
+        cleared++;
+      }
+    }
+    if(changed){
+      try{
+        await Promise.resolve(saveTs(ts));
+      }catch(error){
+        console.warn('[iCHEF RH V141] sauvegarde réparation FER',error);
+      }
+      try{
+        recordRhChange?.({
+          type:'PLANNING_LEGACY_FER_REPAIRED',
+          month,
+          category:'PLANNING',
+          message:
+            `Réparation faux FER · ${changed} case(s) · ${recovered} restaurée(s) depuis historique · ${cleared} nettoyée(s)`
+        });
+      }catch(_){}
+      try{
+        loadMonthData?.();
+        loadPublicPlanning?.();
+        refreshViews?.();
+      }catch(_){}
+    }
+    return {changed,recovered,cleared,month};
+  }
+  function draftSafety(draft){
+    const settings=sanitizeSettings();
+    if(!draft||!draft.proposal){
+      return {ok:false,reason:'Proposition de planning absente.'};
+    }
+    const [year,month]=String(draft.month||'').split('-').map(Number);
+    if(!year||!month){
+      return {ok:false,reason:'Mois de planning invalide.'};
+    }
+    let ferOutsideConfigured=0;
+    let totalGeneratedCells=0;
+    for(const days of Object.values(draft.proposal||{})){
+      for(const [dayKey,cell] of Object.entries(days||{})){
+        const day=Number(dayKey);
+        if(!Number.isInteger(day))continue;
+        const isFer=isLegacyFerCell(cell);
+        if(!isFer)continue;
+        totalGeneratedCells++;
+        const dateObj=new Date(year,month-1,day);
+        if(!isConfiguredClosed(dateObj,settings)){
+          ferOutsideConfigured++;
+        }
+      }
+    }
+    if(ferOutsideConfigured>0){
+      return {
+        ok:false,
+        reason:
+          `${ferOutsideConfigured} case(s) FER ne correspondent à aucun jour de fermeture configuré.`
+      };
+    }
+    const target=Number(draft.metrics?.totalTarget||0);
+    const planned=Number(draft.metrics?.totalPlanned||0);
+    const openDays=Object.values(draft.demand||{})
+      .filter(row=>row&&row.closed!==true).length;
+    if(target>0 && planned<=0.001 && openDays>0){
+      return {
+        ok:false,
+        reason:
+          'Le planning propose 0 heure alors que des jours sont ouverts. Application bloquée.'
+      };
+    }
+    return {ok:true,reason:''};
+  }
+  // assistantIsRestaurantClosed : refuse la contamination 7/7 même si
+  // une ancienne valeur se trouve encore en mémoire.
+  if(typeof window.assistantIsRestaurantClosed==='function'){
+    const original=window.assistantIsRestaurantClosed;
+    if(!original.__v141Wrapped){
+      const wrapped=function(dateObj,settings){
+        const safe={
+          ...(settings||{}),
+          planningClosedWeekdays:safeWeekdays(settings||{})
+        };
+        return original.call(this,dateObj,safe);
+      };
+      wrapped.__v141Wrapped=true;
+      window.assistantIsRestaurantClosed=wrapped;
+    }
+  }
+  // saveRhSettings : ne réenregistre jamais 7 jours hebdomadaires fermés.
+  if(typeof window.saveRhSettings==='function'){
+    const original=window.saveRhSettings;
+    if(!original.__v141Wrapped){
+      const wrapped=function(settings){
+        const source={...(settings||{})};
+        if(
+          Array.isArray(source.planningClosedWeekdays) &&
+          source.planningClosedWeekdays.length>=7
+        ){
+          source.planningClosedWeekdays=[];
+        }
+        return original.call(this,source);
+      };
+      wrapped.__v141Wrapped=true;
+      window.saveRhSettings=wrapped;
+    }
+  }
+  // Génération : réparation AVANT de produire une nouvelle proposition.
+  if(typeof window.generateAutomaticPlanning==='function'){
+    const original=window.generateAutomaticPlanning;
+    if(!original.__v141Wrapped){
+      const wrapped=async function(...args){
+        const month=
+          typeof getPlanningAssistantMonth==='function'
+            ? getPlanningAssistantMonth()
+            : '';
+        await repairMonth(month,{silent:true});
+        return await original.apply(this,args);
+      };
+      wrapped.__v141Wrapped=true;
+      window.generateAutomaticPlanning=wrapped;
+    }
+  }
+  // Application manuelle ET relève automatique :
+  // aucun draft incohérent ne peut être écrit dans le planning officiel.
+  if(typeof window.applyAutomaticPlanning==='function'){
+    const original=window.applyAutomaticPlanning;
+    if(!original.__v141Wrapped){
+      const wrapped=async function(...args){
+        const safety=draftSafety(
+          typeof planningAssistantDraft!=='undefined'
+            ? planningAssistantDraft
+            : null
+        );
+        if(!safety.ok){
+          console.error('[iCHEF RH V141] planning bloqué',safety.reason);
+          const auto=
+            args?.[0]===true ||
+            args?.[0]?.auto===true;
+          if(!auto){
+            alert(
+              'PLANNING BLOQUÉ PAR LE CONTRÔLE DE SÉCURITÉ\n\n' +
+              safety.reason +
+              '\n\nVérifiez les jours de fermeture puis régénérez le planning.'
+            );
+          }else{
+            try{
+              showToast?.(
+                'Relève IA bloquée · planning incohérent'
+              );
+            }catch(_){}
+          }
+          return false;
+        }
+        return await original.apply(this,args);
+      };
+      wrapped.__v141Wrapped=true;
+      window.applyAutomaticPlanning=wrapped;
+    }
+  }
+  async function autoRepairOnLoad(){
+    const settings=sanitizeSettings();
+    const month=
+      typeof getPlanningAssistantMonth==='function'
+        ? getPlanningAssistantMonth()
+        : `${new Date().getFullYear()}-${String(new Date().getMonth()+1).padStart(2,'0')}`;
+    const result=await repairMonth(month,{silent:true});
+    if(result.changed>0){
+      try{
+        showToast?.(
+          `Planning réparé · ${result.changed} faux FER supprimé(s)`
+        );
+      }catch(_){}
+      // Efface le vieux draft pour forcer une vraie régénération.
+      try{
+        if(typeof planningAssistantDraft!=='undefined'){
+          planningAssistantDraft=null;
+        }
+      }catch(_){}
+      try{
+        renderAutomaticPlanningDraft?.(null);
+      }catch(_){}
+    }
+    return result;
+  }
+  window.repairLegacyFerPlanningV141=repairMonth;
+  window.validatePlanningDraftV141=draftSafety;
+  if(document.readyState==='loading'){
+    document.addEventListener(
+      'DOMContentLoaded',
+      ()=>setTimeout(autoRepairOnLoad,300),
+      {once:true}
+    );
+  }else{
+    setTimeout(autoRepairOnLoad,300);
+  }
+  window.__ICHEF_RH_BUILD__=BUILD;
+  console.info('[iCHEF RH V141] faux FER persistants réparés + blocage sécurité draft');
+})();
+
+
+;
+/* RH V264 - preserved script #57 */
+console.info('[iCHEF RH V141] correction persistante FER + restauration historique + garde-fou autopilot');
+
+
+;
+/* RH V264 - preserved script #58 */
+(() => {
+  'use strict';
+  const VERSION='2026-09-27';
+  window.refreshLegalProfileV142=function(preferredType){
+    const countryEl=
+      document.getElementById(
+        'rh-setting-legal-country'
+      );
+    const typeEl=
+      document.getElementById(
+        'rh-setting-legal-establishment'
+      );
+    const rules=
+      document.getElementById(
+        'v142-legal-rules'
+      );
+    const badge=
+      document.getElementById(
+        'v142-legal-status'
+      );
+    const enforcement=
+      document.getElementById(
+        'rh-setting-legal-enforcement'
+      );
+    if(!countryEl || !typeEl) return;
+    const country=
+      countryEl.value==='FR'
+        ? 'FR'
+        : 'CH';
+    const current=
+      preferredType ||
+      typeEl.value ||
+      (
+        country==='FR'
+          ? 'permanent'
+          : 'standard'
+      );
+    typeEl.innerHTML=
+      country==='CH'
+        ? `
+          <option value="standard">Suisse · établissement standard · référence 42 h</option>
+          <option value="seasonal">Suisse · établissement saisonnier · référence 43,5 h</option>
+          <option value="small">Suisse · petit établissement · référence 45 h</option>
+        `
+        : `
+          <option value="permanent">France · établissement HCR permanent</option>
+          <option value="seasonal">France · établissement HCR saisonnier</option>
+        `;
+    const allowed=
+      [...typeEl.options]
+        .map(o=>o.value);
+    typeEl.value=
+      allowed.includes(current)
+        ? current
+        : (
+            country==='FR'
+              ? 'permanent'
+              : 'standard'
+          );
+    const settings={
+      ...(typeof getRhSettings==='function'
+        ? getRhSettings()
+        : {}),
+      planningLegalCountry:country,
+      planningLegalEstablishmentType:
+        typeEl.value
+    };
+    const profile=
+      typeof assistantLegalProfileV142==='function'
+        ? assistantLegalProfileV142(
+            settings,
+            {}
+          )
+        : null;
+    if(rules && profile){
+      const items=
+        country==='CH'
+          ? [
+              ['Référence CCNT',`${profile.weeklyReference} h`],
+              ['Maximum LTr',`${profile.weeklyMax} h`],
+              ['Repos quotidien',`${profile.dailyRestMin} h`],
+              ['Repos / semaine',`${profile.weeklyRestDays} jours`],
+              ['Amplitude jour/soir',`${profile.maxSpanHours} h max`],
+              ['Vacances','5 semaines'],
+              ['Jours fériés','6 / an'],
+              ['Planning', typeEl.value==='seasonal' ? '7 j avant' : '14 j avant'],
+              ['Pointage','validation mensuelle'],
+              ['7 jours', settings.planningSwissSevenDayException===true ? 'conditions strictes' : 'désactivé']
+            ]
+          : [
+              ['Durée légale','35 h'],
+              ['Référence HCR',`${profile.weeklyReference} h`],
+              ['Maximum hebdo',`${profile.weeklyMax} h`],
+              ['Moyenne 12 sem.',`${profile.rolling12AverageMax} h`],
+              ['Repos quotidien',`${profile.dailyRestMin} h`],
+              ['Repos / semaine',`${profile.weeklyRestDays} jours`],
+              ['Pause','20 min dès 6 h'],
+              ['Jours consécutifs',`${profile.maxConsecutiveDays} max.`],
+              ['Nuit HCR','22 h–07 h'],
+              ['Mode',settings.planningFranceWorkTimeMode==='annualized'?'1 607 h':'hebdo 39 h']
+            ];
+      rules.innerHTML=
+        items.map(([label,value])=>`
+          <div class="v142-rule">
+            <small>${label}</small>
+            <strong>${value}</strong>
+          </div>
+        `).join('');
+    }
+    if(badge){
+      badge.textContent=
+        enforcement?.checked===false
+          ? 'CONTRÔLE JURIDIQUE OFF'
+          : (
+              country==='CH'
+                ? 'SUISSE · CCNT + LTr + OLT 1/2'
+                : 'FRANCE · HCR IDCC 1979 + CODE DU TRAVAIL'
+            );
+    }
+    const currency=
+      document.getElementById(
+        'rh-setting-currency'
+      );
+    if(currency){
+      currency.value=
+        country==='CH'
+          ? 'CHF'
+          : 'EUR';
+    }
+  };
+  function tenantKey(){
+    return `ichef_rh_legal_${String(
+      typeof tenantID_JS!=='undefined'
+        ? tenantID_JS
+        : 'default'
+    )}`;
+  }
+  async function migrate(){
+    let legal={};
+    try{
+      legal=
+        JSON.parse(
+          localStorage.getItem(
+            tenantKey()
+          ) || '{}'
+        ) || {};
+    }catch(_){
+      legal={};
+    }
+    if(
+      String(
+        legal.planningLegalMigration ||
+        ''
+      ) === 'V142'
+    ){
+      return;
+    }
+    const settings=
+      typeof getRhSettings==='function'
+        ? getRhSettings()
+        : {};
+    const country=
+      String(settings.currency||'CHF')
+        .toUpperCase()==='EUR'
+        ? 'FR'
+        : 'CH';
+    // Nettoyage unique :
+    // on ne conserve pas les anciennes fermetures potentiellement
+    // contaminées. Le responsable doit confirmer les vrais jours.
+    const clean={
+      ...settings,
+      planningLegalCountry:country,
+      planningLegalFramework:
+        country==='FR'
+          ? 'FR_HCR'
+          : 'CH_CCNT',
+      planningLegalEstablishmentType:
+        country==='FR'
+          ? 'permanent'
+          : 'standard',
+      planningLegalEnforcement:true,
+      planningLegalReferenceDate:VERSION,
+      planningClosedWeekdays:[],
+      planningExceptionalClosedDates:[],
+      planningClosureConfirmedV142:false
+    };
+    try{
+      saveRhSettings?.(clean);
+    }catch(_){}
+    try{
+      const saved=
+        JSON.parse(
+          localStorage.getItem(
+            tenantKey()
+          ) || '{}'
+        ) || {};
+      localStorage.setItem(
+        tenantKey(),
+        JSON.stringify({
+          ...saved,
+          planningLegalMigration:'V142',
+          planningLegalCountry:
+            country,
+          planningLegalFramework:
+            clean.planningLegalFramework,
+          planningLegalEstablishmentType:
+            clean.planningLegalEstablishmentType,
+          planningLegalEnforcement:true,
+          planningLegalReferenceDate:
+            VERSION,
+          planningClosedWeekdays:[],
+          planningExceptionalClosedDates:[],
+          planningClosureConfirmedV142:false
+        })
+      );
+    }catch(_){}
+    // Répare immédiatement les faux FER déjà enregistrés.
+    try{
+      const month=
+        typeof getPlanningAssistantMonth==='function'
+          ? getPlanningAssistantMonth()
+          : '';
+      if(
+        typeof repairLegacyFerPlanningV141==='function'
+      ){
+        await repairLegacyFerPlanningV141(
+          month,
+          {silent:true}
+        );
+      }
+    }catch(error){
+      console.warn(
+        '[iCHEF RH V142] nettoyage FER',
+        error
+      );
+    }
+    // Supprime le draft contaminé en mémoire.
+    try{
+      if(
+        typeof planningAssistantDraft!=='undefined'
+      ){
+        planningAssistantDraft=null;
+      }
+      if(
+        typeof planningAssistantMultiMonths!=='undefined'
+      ){
+        planningAssistantMultiMonths=[];
+      }
+      renderAutomaticPlanningDraft?.(null);
+    }catch(_){}
+  }
+  function bindUi(){
+    const country=
+      document.getElementById(
+        'rh-setting-legal-country'
+      );
+    const enforcement=
+      document.getElementById(
+        'rh-setting-legal-enforcement'
+      );
+    country?.addEventListener(
+      'change',
+      ()=>refreshLegalProfileV142()
+    );
+    enforcement?.addEventListener(
+      'change',
+      ()=>refreshLegalProfileV142()
+    );
+    document
+      .getElementById(
+        'rh-setting-ch-seven-day-exception'
+      )
+      ?.addEventListener(
+        'change',
+        ()=>refreshLegalProfileV142()
+      );
+    refreshLegalProfileV142(
+      getRhSettings?.()
+        ?.planningLegalEstablishmentType
+    );
+  }
+  // Blocage ultime, y compris autopilot.
+  const originalApply=
+    window.applyAutomaticPlanning;
+  if(
+    typeof originalApply==='function' &&
+    !originalApply.__v142LegalWrapped
+  ){
+    const wrapped=async function(...args){
+      const draft=
+        typeof planningAssistantDraft!=='undefined'
+          ? planningAssistantDraft
+          : null;
+      const settings=
+        typeof getRhSettings==='function'
+          ? getRhSettings()
+          : {};
+      if(
+        draft &&
+        settings.planningLegalEnforcement !== false &&
+        Array.isArray(draft.legalIssues) &&
+        draft.legalIssues.length
+      ){
+        const auto=
+          args?.[0]===true ||
+          args?.[0]?.auto===true;
+        const message=
+          draft.legalIssues
+            .slice(0,6)
+            .join('\n');
+        console.error(
+          '[iCHEF RH V142] application bloquée',
+          draft.legalIssues
+        );
+        if(!auto){
+          alert(
+            'PLANNING BLOQUÉ · DROIT DU TRAVAIL\n\n' +
+            message +
+            '\n\nCorrigez le planning avant validation.'
+          );
+        }else{
+          try{
+            showToast?.(
+              'Autopilot bloqué · contraintes juridiques'
+            );
+          }catch(_){}
+        }
+        return false;
+      }
+      return await originalApply.apply(
+        this,
+        args
+      );
+    };
+    wrapped.__v142LegalWrapped=true;
+    window.applyAutomaticPlanning=
+      wrapped;
+  }
+  async function boot(){
+    await migrate();
+    hydrateRhSettingsForm?.();
+    bindUi();
+    try{
+      showToast?.(
+        'Profil juridique planning activé · vérifiez le pays et les vrais jours de fermeture'
+      );
+    }catch(_){}
+  }
+  if(document.readyState==='loading'){
+    document.addEventListener(
+      'DOMContentLoaded',
+      ()=>setTimeout(boot,350),
+      {once:true}
+    );
+  }else{
+    setTimeout(boot,350);
+  }
+  window.__ICHEF_RH_LEGAL_BUILD__=
+    'V142';
+})();
+
+
+;
+/* RH V264 - preserved script #59 */
+window.__ICHEF_RH_BUILD__='RH-V142-LEGAL-CH-FR';
+console.info('[iCHEF RH V142] planning juridique CH CCNT / FR HCR + purge FER hérités');
+
+
+;
+/* RH V264 - preserved script #60 */
+window.__ICHEF_RH_BUILD__='RH-V143-LEGAL-HARD';
+console.info('[iCHEF RH V143] France 46h/12 sem + pause 20 min hard-block · CH/FR legal engine');
+
+
+;
+/* RH V264 - preserved script #61 */
+window.__ICHEF_RH_BUILD__='RH-V144-CLEAR-LEGAL-UI';
+console.info('[iCHEF RH V144] paramètres juridiques réorganisés et simplifiés');
+
+
+;
+/* RH V264 - preserved script #62 */
+(() => {
+  'use strict';
+  const RULESET = Object.freeze({
+    version:'V145',
+    verifiedAt:'2026-09-27',
+    mode:'STRICT_FAIL_CLOSED',
+    CH:{
+      sources:[
+        'CCNT art. 15 · durée du travail / heures supplémentaires',
+        'CCNT art. 16 · jours de repos',
+        'LTr art. 9 · durée maximale hebdomadaire',
+        'LTr art. 10 · espace de 14 h',
+        'LTr art. 15a · repos quotidien'
+      ],
+      ordinaryWeeklyHours:{
+        standard:42,
+        seasonal:43.5,
+        small:45
+      },
+      weeklyMax:50,
+      dailyRestMin:11,
+      weeklyRestDays:2,
+      maxSpanHours:14,
+      automationPolicy:
+        'Aucune réduction automatique du repos quotidien et aucune dérogation 7 jours consécutifs.'
+    },
+    FR:{
+      sources:[
+        'Convention HCR · durées maximales journalières',
+        'Accord HCR · moyenne 46 h / 12 semaines et 48 h absolues',
+        'Code du travail L3121-16 · pause 20 min à partir de 6 h',
+        'Code du travail L3131-1 · repos quotidien 11 h'
+      ],
+      legalFullTimeReference:35,
+      weeklyMax:48,
+      rolling12AverageMax:46,
+      dailyRestMin:11,
+      weeklyRestDays:2,
+      dailyMax:{
+        adminOffsite:10,
+        cook:11,
+        other:11.5,
+        night:12,
+        reception:12
+      },
+      pauseAfter6h:20
+    }
+  });
+  window.ICHEF_LEGAL_RULESET_V145=RULESET;
+  function forceStrictUi(){
+    const toggle =
+      document.getElementById(
+        'rh-setting-legal-enforcement'
+      );
+    if(toggle){
+      toggle.checked=true;
+      toggle.disabled=true;
+    }
+    const badge =
+      document.getElementById(
+        'v142-legal-status'
+      );
+    if(badge){
+      const country =
+        document.getElementById(
+          'rh-setting-legal-country'
+        )?.value || 'CH';
+      badge.textContent =
+        country==='FR'
+          ? 'FRANCE · HCR · STRICT'
+          : 'SUISSE · CCNT · STRICT';
+    }
+  }
+  const originalRefresh =
+    window.refreshLegalProfileV142;
+  if(
+    typeof originalRefresh==='function' &&
+    !originalRefresh.__v145Wrapped
+  ){
+    const wrapped=function(...args){
+      const result =
+        originalRefresh.apply(this,args);
+      forceStrictUi();
+      const source =
+        document.querySelector(
+          '.v144-legal-source'
+        );
+      if(source){
+        source.innerHTML =
+          `Référentiel juridique iCHEF ${RULESET.version} · vérifié le ${RULESET.verifiedAt} · ` +
+          `mode strict : une règle obligatoire manquante ou une donnée indispensable absente bloque la publication. ` +
+          `Les dérogations ne sont jamais appliquées automatiquement.`;
+      }
+      return result;
+    };
+    wrapped.__v145Wrapped=true;
+    window.refreshLegalProfileV142=wrapped;
+  }
+  const originalSave =
+    window.saveRhSettings;
+  if(
+    typeof originalSave==='function' &&
+    !originalSave.__v145Wrapped
+  ){
+    const wrapped=function(source={}){
+      return originalSave.call(
+        this,
+        {
+          ...source,
+          planningLegalEnforcement:true
+        }
+      );
+    };
+    wrapped.__v145Wrapped=true;
+    window.saveRhSettings=wrapped;
+  }
+  const originalApply =
+    window.applyAutomaticPlanning;
+  if(
+    typeof originalApply==='function' &&
+    !originalApply.__v145Wrapped
+  ){
+    const wrapped=async function(...args){
+      const draft =
+        typeof planningAssistantDraft!=='undefined'
+          ? planningAssistantDraft
+          : null;
+      const issues =
+        Array.isArray(draft?.legalIssues)
+          ? draft.legalIssues
+          : [];
+      if(issues.length){
+        const auto =
+          args?.[0]===true ||
+          args?.[0]?.auto===true;
+        const message =
+          issues
+            .slice(0,8)
+            .join('\n');
+        try{
+          recordRhChange?.({
+            type:'LEGAL_PLANNING_BLOCKED',
+            category:'PLANNING_LEGAL',
+            country:
+              getRhSettings?.()
+                ?.planningLegalCountry || '',
+            ruleset:RULESET.version,
+            issues,
+            message:
+              `Publication bloquée · ${issues.length} anomalie(s) juridique(s)`
+          });
+        }catch(_){}
+        if(!auto){
+          alert(
+            'PLANNING NON CONFORME · PUBLICATION IMPOSSIBLE\n\n' +
+            message +
+            '\n\nCorrigez toutes les anomalies avant publication.'
+          );
+        }else{
+          try{
+            showToast?.(
+              'Autopilot bloqué · conformité juridique'
+            );
+          }catch(_){}
+        }
+        return false;
+      }
+      try{
+        recordRhChange?.({
+          type:'LEGAL_PLANNING_AUDIT_OK',
+          category:'PLANNING_LEGAL',
+          country:
+            getRhSettings?.()
+              ?.planningLegalCountry || '',
+          ruleset:RULESET.version,
+          verifiedAt:RULESET.verifiedAt,
+          month:draft?.month || '',
+          message:
+            'Audit juridique planning validé avant publication'
+        });
+      }catch(_){}
+      return await originalApply.apply(
+        this,
+        args
+      );
+    };
+    wrapped.__v145Wrapped=true;
+    window.applyAutomaticPlanning=wrapped;
+  }
+  function boot(){
+    forceStrictUi();
+    const country =
+      document.getElementById(
+        'rh-setting-legal-country'
+      );
+    country?.addEventListener(
+      'change',
+      forceStrictUi
+    );
+    console.info(
+      '[iCHEF RH V145] conformité juridique stricte active',
+      RULESET
+    );
+  }
+  if(document.readyState==='loading'){
+    document.addEventListener(
+      'DOMContentLoaded',
+      boot,
+      {once:true}
+    );
+  }else{
+    boot();
+  }
+  window.__ICHEF_RH_LEGAL_STRICT_BUILD__='V145';
+})();
+
+
+;
+/* RH V264 - preserved script #63 */
+window.__ICHEF_RH_BUILD__='RH-V145-LEGAL-STRICT-FAIL-CLOSED';
+console.info('[iCHEF RH V145] conformité juridique stricte CH/FR · publication fail-closed');
+
+
+;
+/* RH V264 - preserved script #64 */
+(() => {
+  'use strict';
+  function markForcedOffCells(){
+    const draft =
+      typeof planningAssistantDraft !== 'undefined'
+        ? planningAssistantDraft
+        : null;
+    const forced =
+      Array.isArray(draft?.forcedLegalOff)
+        ? draft.forcedLegalOff
+        : [];
+    if(!forced.length) return;
+    // Ne change aucune dimension du tableau.
+    forced.forEach(item => {
+      const row =
+        [...document.querySelectorAll(
+          '#ia-planning-preview tbody tr'
+        )]
+        .find(tr =>
+          tr.textContent
+            .toLowerCase()
+            .includes(
+              String(item.staffName||'')
+                .toLowerCase()
+            )
+        );
+      if(!row) return;
+      const cells =
+        row.querySelectorAll('td');
+      const target =
+        cells?.[Number(item.day)];
+      if(target){
+        target.classList.add(
+          'v146-forced-off'
+        );
+        target.title =
+          'OFF automatique · 6 jours travaillés consécutifs maximum';
+      }
+    });
+  }
+  const originalRender =
+    window.renderAutomaticPlanningDraft;
+  if(
+    typeof originalRender === 'function' &&
+    !originalRender.__v146Wrapped
+  ){
+    const wrapped=function(...args){
+      const result =
+        originalRender.apply(this,args);
+      requestAnimationFrame(
+        markForcedOffCells
+      );
+      return result;
+    };
+    wrapped.__v146Wrapped=true;
+    window.renderAutomaticPlanningDraft=
+      wrapped;
+  }
+  window.ICHEF_STATUS_RULES_V146 =
+    Object.freeze({
+      OFF:{
+        consumesVacation:false,
+        countsAsWork:false,
+        countsAsWeeklyRest:true
+      },
+      MALADIE:{
+        consumesVacation:false,
+        countsAsWork:false,
+        countsAsWeeklyRest:false,
+        vacationRights:'jurisdiction-specific'
+      },
+      CONGE:{
+        consumesVacation:true,
+        countsAsWork:false,
+        countsAsWeeklyRest:false
+      }
+    });
+  window.__ICHEF_RH_OFF_VACATION_BUILD__='V146';
+})();
+
+
+;
+/* RH V264 - preserved script #65 */
+window.__ICHEF_RH_BUILD__='RH-V146-6DAY-OFF-VACATION-SEPARATION';
+console.info('[iCHEF RH V146] 6 jours travaillés max · 7e non travaillé · OFF ≠ MALADIE ≠ CP');
+
+
+;
+/* RH V264 - preserved script #66 */
+window.__ICHEF_RH_OPTIMIZED_BUILD__='RH-V148-SAFE-OPTIMIZED';
+console.info('[iCHEF RH V148] optimisation sûre · connexions, sécurité et fonctions conservées');
+
+
+;
+/* RH V264 - preserved script #67 */
+window.__ICHEF_RH_BUILD__='RH-V149-STAFF-ALERTS-IN-BUTTON';
+console.info('[iCHEF RH V149] alertes staff déplacées dans les cellules collaborateurs');
+
+
+;
+/* RH V264 - preserved script #68 */
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V153_NAV__) return;
+  window.__ICHEF_RH_V153_NAV__ = true;
+  function scrollPlanning(){
+    const target =
+      document.getElementById('assistant-generate-btn')?.closest('div')?.parentElement ||
+      document.querySelector('#ia-predictions-modal .assistant-config-grid') ||
+      document.getElementById('ia-predictions-modal');
+    target?.scrollIntoView?.({
+      behavior:'smooth',
+      block:'start'
+    });
+  }
+  function scrollProposal(){
+    const target =
+      document.querySelector('#ia-predictions-modal .v113-plan-wrap') ||
+      document.getElementById('ia-planning-preview') ||
+      document.getElementById('ia-planning-draft-summary');
+    target?.scrollIntoView?.({
+      behavior:'smooth',
+      block:'start'
+    });
+  }
+  function install(){
+    const modal =
+      document.getElementById('ia-predictions-modal');
+    const content =
+      modal?.querySelector('.modal-content');
+    const header =
+      content?.querySelector('.header');
+    const settingsBtn =
+      document.getElementById('v131-planning-tools-btn');
+    const emergencyBtn =
+      document.getElementById('v134-emergency-btn');
+    if(!modal || !content || !header || !settingsBtn || !emergencyBtn){
+      return false;
+    }
+    let toolbar =
+      document.getElementById('v153-assistant-toolbar');
+    if(!toolbar){
+      toolbar = document.createElement('div');
+      toolbar.id = 'v153-assistant-toolbar';
+      toolbar.setAttribute(
+        'aria-label',
+        'Navigation planning iCHEF'
+      );
+      const planningBtn =
+        document.createElement('button');
+      planningBtn.id = 'v153-nav-planning';
+      planningBtn.type = 'button';
+      planningBtn.className = 'v153-primary';
+      planningBtn.innerHTML = `
+        <span class="v153-btn-copy">
+          <strong>PLANNING</strong>
+          <small>Création du planning</small>
+        </span>
+      `;
+      planningBtn.addEventListener(
+        'click',
+        () => {
+          if(typeof window.iChefAssistantShowOfficialV221 === 'function'){
+            window.iChefAssistantShowOfficialV221();
+          }else{
+            scrollPlanning();
+          }
+        }
+      );
+      const proposalBtn =
+        document.createElement('button');
+      proposalBtn.id = 'v153-nav-proposal';
+      proposalBtn.type = 'button';
+      proposalBtn.className = 'v153-proposal';
+      proposalBtn.innerHTML = `
+        <span class="v153-btn-copy">
+          <strong>PLANNING PROPOSÉ</strong>
+          <small>Voir la proposition iCHEF</small>
+        </span>
+      `;
+      proposalBtn.addEventListener(
+        'click',
+        () => {
+          if(typeof window.iChefAssistantShowProposalV221 === 'function'){
+            window.iChefAssistantShowProposalV221();
+          }else{
+            scrollProposal();
+          }
+        }
+      );
+      toolbar.appendChild(planningBtn);
+      toolbar.appendChild(proposalBtn);
+      header.insertAdjacentElement(
+        'afterend',
+        toolbar
+      );
+    }
+    /* On DÉPLACE les boutons originaux.
+       On ne clone rien : leurs listeners et fonctions restent connectés. */
+    if(settingsBtn.parentElement !== toolbar){
+      toolbar.appendChild(settingsBtn);
+    }
+    if(emergencyBtn.parentElement !== toolbar){
+      toolbar.insertBefore(
+        emergencyBtn,
+        settingsBtn
+      );
+    }
+    /* Texte compact, mais IDs + événements inchangés. */
+    settingsBtn.innerHTML = `
+      <span class="v131-tools-left">
+        <span class="v131-tools-icon">⚙</span>
+        <span class="v131-tools-copy">
+          <strong>PARAMÈTRES</strong>
+          <small>Équilibre & réglages planning</small>
+        </span>
+      </span>
+      <span class="v131-tools-arrow">›</span>
+    `;
+    emergencyBtn.innerHTML = `
+      <span>
+        <strong>IMPRÉVU</strong>
+        <small>Retard · maladie · absence</small>
+      </span>
+      <span class="v134-alert-count">0</span>
+    `;
+    try{
+      window.refreshRhLastMinuteRisks?.();
+    }catch(_){}
+    modal.dataset.v153Nav = '1';
+    return true;
+  }
+  function boot(){
+    if(install()) return;
+    /* Essais limités uniquement le temps que V131/V134 créent leurs boutons.
+       Pas de MutationObserver permanent. */
+    let attempts = 0;
+    const timer = setInterval(()=>{
+      attempts += 1;
+      if(install() || attempts >= 32){
+        clearInterval(timer);
+      }
+    },250);
+  }
+  if(document.readyState === 'loading'){
+    document.addEventListener(
+      'DOMContentLoaded',
+      boot,
+      {once:true}
+    );
+  }else{
+    boot();
+  }
+  console.info(
+    '[iCHEF RH V153] Planning · Planning proposé · Imprévu · Paramètres alignés'
+  );
+})();
+
+
+;
+/* RH V264 - preserved script #69 */
+window.__ICHEF_RH_BUILD__='RH-V153-PLANNING-NAV-COMPACT';
+
+
+;
+/* RH V264 - preserved script #70 */
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V154_TOOLBAR__) return;
+  window.__ICHEF_RH_V154_TOOLBAR__ = true;
+  function applyImportant(el, prop, value){
+    if(!el) return;
+    el.style.setProperty(prop, value, 'important');
+  }
+  function normalize(){
+    const toolbar =
+      document.getElementById('v153-assistant-toolbar');
+    const planning =
+      document.getElementById('v153-nav-planning');
+    const proposal =
+      document.getElementById('v153-nav-proposal');
+    const emergency =
+      document.getElementById('v134-emergency-btn');
+    const settings =
+      document.getElementById('v131-planning-tools-btn');
+    if(
+      !toolbar ||
+      !planning ||
+      !proposal ||
+      !emergency ||
+      !settings
+    ){
+      return false;
+    }
+    /* Ordre définitif */
+    [planning, proposal, emergency, settings]
+      .forEach(btn => {
+        if(btn.parentElement !== toolbar){
+          toolbar.appendChild(btn);
+        }
+      });
+    /* Sécurité visuelle contre les anciens styles très agressifs. */
+    applyImportant(toolbar,'display','grid');
+    applyImportant(toolbar,'grid-template-columns','repeat(4,minmax(0,1fr))');
+    applyImportant(toolbar,'gap','8px');
+    applyImportant(toolbar,'width','100%');
+    applyImportant(toolbar,'overflow','visible');
+    [planning, proposal, emergency, settings]
+      .forEach(btn => {
+        applyImportant(btn,'display','flex');
+        applyImportant(btn,'width','100%');
+        applyImportant(btn,'min-width','0');
+        applyImportant(btn,'max-width','none');
+        applyImportant(btn,'margin','0');
+      });
+    toolbar.dataset.v154 = '1';
+    return true;
+  }
+  function boot(){
+    if(normalize()) return;
+    let n = 0;
+    const timer = setInterval(() => {
+      n += 1;
+      if(normalize() || n >= 24){
+        clearInterval(timer);
+      }
+    }, 200);
+  }
+  if(document.readyState === 'loading'){
+    document.addEventListener(
+      'DOMContentLoaded',
+      boot,
+      {once:true}
+    );
+  } else {
+    boot();
+  }
+  console.info(
+    '[iCHEF RH V154] 4 boutons planning alignés sur une seule ligne'
+  );
+})();
+
+
+;
+/* RH V264 - preserved script #71 */
+window.__ICHEF_RH_BUILD__='RH-V154-FOUR-PLANNING-BUTTONS-ONE-LINE';
+
+
+;
+/* RH V264 - preserved script #72 */
+(() => {
+  'use strict';
+  if (window.__ICHEF_RH_V161_GLOBAL_SYNC__) return;
+  window.__ICHEF_RH_V161_GLOBAL_SYNC__ = true;
+  const tenant =
+    String(
+      typeof tenantID_JS !== 'undefined'
+        ? tenantID_JS
+        : ''
+    );
+  const CHANNEL_NAME =
+    `ichef-rh-sync-${tenant || 'default'}`;
+  let syncScheduled = false;
+  let lastUiSyncAt = 0;
+  let channel = null;
+  function safeCall(fn, ...args) {
+    try {
+      if (typeof fn === 'function') {
+        return fn(...args);
+      }
+    } catch (error) {
+      console.warn('[iCHEF RH V161]', error);
+    }
+  }
+  function parseTime(value) {
+    const n = Date.parse(
+      String(value || '')
+    );
+    return Number.isFinite(n)
+      ? n
+      : 0;
+  }
+  function currentSettings() {
+    try {
+      return typeof getRhSettings === 'function'
+        ? getRhSettings()
+        : (
+            JSON.parse(
+              localStorage.getItem(
+                'ichef_rh_settings'
+              ) || '{}'
+            ) || {}
+          );
+    } catch (_) {
+      return {};
+    }
+  }
+  function writeTenantLegalMirror(settings) {
+    try {
+      const key =
+        `ichef_rh_legal_${tenant || 'default'}`;
+      const previous =
+        JSON.parse(
+          localStorage.getItem(key) || '{}'
+        ) || {};
+      localStorage.setItem(
+        key,
+        JSON.stringify({
+          ...previous,
+          planningLegalCountry:
+            settings.planningLegalCountry,
+          planningLegalFramework:
+            settings.planningLegalFramework,
+          planningLegalEstablishmentType:
+            settings.planningLegalEstablishmentType,
+          planningLegalEnforcement:
+            settings.planningLegalEnforcement !== false,
+          planningLegalReferenceDate:
+            settings.planningLegalReferenceDate,
+          planningClosedWeekdays:
+            Array.isArray(
+              settings.planningClosedWeekdays
+            )
+              ? settings.planningClosedWeekdays
+              : [],
+          planningExceptionalClosedDates:
+            Array.isArray(
+              settings.planningExceptionalClosedDates
+            )
+              ? settings.planningExceptionalClosedDates
+              : [],
+          planningClosureConfirmedV142:
+            settings.planningClosureConfirmedV142 === true
+        })
+      );
+    } catch (_) {}
+  }
+  function applyRemoteSettings(settings, source = 'server') {
+    if (
+      !settings ||
+      typeof settings !== 'object'
+    ) {
+      return false;
+    }
+    const local = currentSettings();
+    const remoteAt =
+      parseTime(settings.updatedAt);
+    const localAt =
+      parseTime(local.updatedAt);
+    /* Un état serveur plus ancien ne remplace jamais
+       une modification locale plus récente. */
+    if (
+      remoteAt &&
+      localAt &&
+      remoteAt < localAt
+    ) {
+      return false;
+    }
+    try {
+      localStorage.setItem(
+        'ichef_rh_settings',
+        JSON.stringify(settings)
+      );
+      writeTenantLegalMirror(settings);
+      scheduleUiSync(
+        `remote:${source}`
+      );
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+  function syncVisibleViews(reason = 'local') {
+    const now = Date.now();
+    /* anti-rendu multiple lors d'une rafale socket */
+    if (now - lastUiSyncAt < 40) return;
+    lastUiSyncAt = now;
+    const settings = currentSettings();
+    /* PARAMÈTRES */
+    safeCall(
+      typeof hydrateRhSettingsForm !== 'undefined'
+        ? hydrateRhSettingsForm
+        : null
+    );
+    safeCall(
+      typeof populateRhLegalEstablishmentOptionsV142 !== 'undefined'
+        ? populateRhLegalEstablishmentOptionsV142
+        : null,
+      settings
+    );
+    safeCall(
+      typeof renderRhLegalRulesV142 !== 'undefined'
+        ? renderRhLegalRulesV142
+        : null,
+      settings
+    );
+    safeCall(
+      typeof hydrateRhClosedWeekdaysV135 !== 'undefined'
+        ? hydrateRhClosedWeekdaysV135
+        : null,
+      settings
+    );
+    safeCall(
+      typeof refreshRhServiceStrategyAdvice !== 'undefined'
+        ? refreshRhServiceStrategyAdvice
+        : null,
+      settings
+    );
+    /* ASSISTANT + PLANNING PROPOSÉ */
+    safeCall(
+      typeof renderPlanningAssistantLocal !== 'undefined'
+        ? renderPlanningAssistantLocal
+        : null
+    );
+    if (
+      document
+        .getElementById(
+          'ia-predictions-modal'
+        )
+        ?.classList
+        .contains('show')
+    ) {
+      safeCall(
+        typeof schedulePlanningAssistantAutoRefresh !== 'undefined'
+          ? schedulePlanningAssistantAutoRefresh
+          : null
+      );
+      if (
+        typeof planningAssistantDraft !== 'undefined' &&
+        planningAssistantDraft
+      ) {
+        safeCall(
+          typeof renderAutomaticPlanningDraft !== 'undefined'
+            ? renderAutomaticPlanningDraft
+            : null,
+          planningAssistantDraft
+        );
+      }
+    }
+    /* STAFF / PLANNING OFFICIEL */
+    if (
+      document
+        .getElementById(
+          'hr-interface'
+        )
+        ?.style.display === 'flex'
+    ) {
+      safeCall(
+        typeof renderStaffList !== 'undefined'
+          ? renderStaffList
+          : null
+      );
+      safeCall(
+        typeof loadMonthData !== 'undefined'
+          ? loadMonthData
+          : null
+      );
+      safeCall(
+        typeof updateDashboardStats !== 'undefined'
+          ? updateDashboardStats
+          : null
+      );
+    }
+    /* PORTAIL STAFF */
+    if (
+      document
+        .getElementById(
+          'employee-portal'
+        )
+        ?.style.display === 'flex' &&
+      typeof loggedInStaffId !== 'undefined' &&
+      loggedInStaffId !== null
+    ) {
+      safeCall(
+        typeof renderEmployeePortal !== 'undefined'
+          ? renderEmployeePortal
+          : null
+      );
+    }
+    /* DEMANDES / CONGÉS / ABSENCES */
+    safeCall(
+      typeof updateReqBadge !== 'undefined'
+        ? updateReqBadge
+        : null
+    );
+    if (
+      document
+        .getElementById(
+          'requests-interface'
+        )
+        ?.style.display === 'flex'
+    ) {
+      safeCall(
+        typeof renderDirectorRequests !== 'undefined'
+          ? renderDirectorRequests
+          : null
+      );
+    }
+    /* TEMPS RÉELS / PAIE */
+    if (
+      document
+        .getElementById(
+          'timesheets-interface'
+        )
+        ?.style.display === 'flex'
+    ) {
+      safeCall(
+        typeof renderRealTimesheets !== 'undefined'
+          ? renderRealTimesheets
+          : null
+      );
+    }
+    /* État de synchronisation visuel */
+    updateSyncBadge(
+      'ok',
+      reason
+    );
+  }
+  function scheduleUiSync(reason = 'change') {
+    if (syncScheduled) return;
+    syncScheduled = true;
+    requestAnimationFrame(() => {
+      syncScheduled = false;
+      syncVisibleViews(reason);
+    });
+  }
+  function ensureBadge() {
+    let badge =
+      document.getElementById(
+        'v161-rh-sync-badge'
+      );
+    if (badge) return badge;
+    badge =
+      document.createElement('div');
+    badge.id =
+      'v161-rh-sync-badge';
+    badge.innerHTML = `
+      <span class="v161-dot"></span>
+      <strong>SYNCHRONISÉ</strong>
+    `;
+    const host =
+      document.querySelector(
+        '.top-status'
+      ) ||
+      document.querySelector(
+        '.header-actions'
+      ) ||
+      document.body;
+    host.appendChild(badge);
+    return badge;
+  }
+  function updateSyncBadge(state, reason = '') {
+    const badge = ensureBadge();
+    badge.dataset.state = state;
+    const label =
+      badge.querySelector('strong');
+    if (!label) return;
+    label.textContent =
+      state === 'syncing'
+        ? 'SYNCHRONISATION...'
+        : state === 'offline'
+          ? 'LOCAL · HORS LIGNE'
+          : 'SYNCHRONISÉ';
+    badge.title =
+      reason
+        ? `Dernière synchronisation : ${reason}`
+        : '';
+  }
+  function broadcastSettings(settings, reason = 'save') {
+    try {
+      channel?.postMessage({
+        type: 'RH_SETTINGS',
+        tenant,
+        reason,
+        settings
+      });
+    } catch (_) {}
+  }
+  async function pullServerState(reason = 'refresh') {
+    if (!navigator.onLine) {
+      updateSyncBadge(
+        'offline',
+        reason
+      );
+      return null;
+    }
+    updateSyncBadge(
+      'syncing',
+      reason
+    );
+    try {
+      const state =
+        await API.getState();
+      if (
+        state?.activeOrders &&
+        typeof syncRhStaffFromState === 'function'
+      ) {
+        syncRhStaffFromState(state);
+      }
+      if (
+        state?.activeOrders &&
+        typeof syncRhOperationalState === 'function'
+      ) {
+        syncRhOperationalState(state);
+      }
+      const remoteSettings =
+        state?.activeOrders
+          ?.RH_SETTINGS
+          ?.data;
+      if (remoteSettings) {
+        applyRemoteSettings(
+          remoteSettings,
+          reason
+        );
+      } else {
+        scheduleUiSync(reason);
+      }
+      updateSyncBadge(
+        'ok',
+        reason
+      );
+      return state;
+    } catch (error) {
+      console.warn(
+        '[iCHEF RH V161] synchronisation serveur différée',
+        error
+      );
+      updateSyncBadge(
+        navigator.onLine
+          ? 'offline'
+          : 'offline',
+        reason
+      );
+      return null;
+    }
+  }
+  /* -------------------------------------------------------
+     1. saveRhSettings = source unique pour tout RH
+     ------------------------------------------------------- */
+  if (
+    typeof saveRhSettings === 'function' &&
+    !saveRhSettings.__v161Wrapped
+  ) {
+    const original =
+      saveRhSettings;
+    const wrapped =
+      function(settings) {
+        const saved =
+          original.call(
+            this,
+            settings
+          );
+        if (saved) {
+          writeTenantLegalMirror(saved);
+          window.dispatchEvent(
+            new CustomEvent(
+              'ichef:rh-settings-saved',
+              {
+                detail: {
+                  tenant,
+                  settings: saved
+                }
+              }
+            )
+          );
+          broadcastSettings(
+            saved,
+            'save'
+          );
+          scheduleUiSync(
+            'paramètres enregistrés'
+          );
+        }
+        return saved;
+      };
+    wrapped.__v161Wrapped = true;
+    saveRhSettings = wrapped;
+  }
+  /* -------------------------------------------------------
+     2. saveRhPlanningSettings : après sauvegarde, toutes
+        les vues utilisent immédiatement les mêmes valeurs.
+     ------------------------------------------------------- */
+  if (
+    typeof saveRhPlanningSettings === 'function' &&
+    !saveRhPlanningSettings.__v161Wrapped
+  ) {
+    const original =
+      saveRhPlanningSettings;
+    const wrapped =
+      function(...args) {
+        const saved =
+          original.apply(
+            this,
+            args
+          );
+        scheduleUiSync(
+          'planning settings'
+        );
+        return saved;
+      };
+    wrapped.__v161Wrapped = true;
+    saveRhPlanningSettings = wrapped;
+  }
+  /* -------------------------------------------------------
+     3. Toute réponse serveur / Socket passe aussi par
+        le même rafraîchissement UI.
+     ------------------------------------------------------- */
+  if (
+    typeof syncRhOperationalState === 'function' &&
+    !syncRhOperationalState.__v161Wrapped
+  ) {
+    const original =
+      syncRhOperationalState;
+    const wrapped =
+      function(state) {
+        const result =
+          original.call(
+            this,
+            state
+          );
+        const settings =
+          state?.activeOrders
+            ?.RH_SETTINGS
+            ?.data;
+        if (settings) {
+          applyRemoteSettings(
+            settings,
+            'socket/server'
+          );
+        } else {
+          scheduleUiSync(
+            'server state'
+          );
+        }
+        return result;
+      };
+    wrapped.__v161Wrapped = true;
+    syncRhOperationalState = wrapped;
+  }
+  /* -------------------------------------------------------
+     4. Synchronisation entre onglets du même navigateur
+     ------------------------------------------------------- */
+  window.addEventListener(
+    'storage',
+    event => {
+      if (
+        event.key ===
+        'ichef_rh_settings'
+      ) {
+        scheduleUiSync(
+          'autre onglet'
+        );
+      }
+      if (
+        [
+          'empire_hr_directory',
+          'empire_hr_timesheets',
+          'empire_hr_requests',
+          'ichef_rh_change_history'
+        ].includes(event.key)
+      ) {
+        scheduleUiSync(
+          'données RH autre onglet'
+        );
+      }
+    }
+  );
+  try {
+    channel =
+      new BroadcastChannel(
+        CHANNEL_NAME
+      );
+    channel.onmessage =
+      event => {
+        const msg =
+          event?.data;
+        if (
+          !msg ||
+          msg.tenant !== tenant
+        ) {
+          return;
+        }
+        if (
+          msg.type === 'RH_SETTINGS' &&
+          msg.settings
+        ) {
+          applyRemoteSettings(
+            msg.settings,
+            'broadcast'
+          );
+        }
+        if (
+          msg.type === 'RH_REFRESH'
+        ) {
+          pullServerState(
+            'broadcast refresh'
+          );
+        }
+      };
+  } catch (_) {
+    channel = null;
+  }
+  /* -------------------------------------------------------
+     5. Retour réseau / retour onglet = resynchronisation
+     ------------------------------------------------------- */
+  window.addEventListener(
+    'online',
+    () => {
+      pullServerState(
+        'retour réseau'
+      );
+    }
+  );
+  window.addEventListener(
+    'offline',
+    () => {
+      updateSyncBadge(
+        'offline',
+        'hors ligne'
+      );
+    }
+  );
+  document.addEventListener(
+    'visibilitychange',
+    () => {
+      if (
+        !document.hidden &&
+        navigator.onLine
+      ) {
+        pullServerState(
+          'retour écran'
+        );
+      }
+    }
+  );
+  window.addEventListener(
+    'focus',
+    () => {
+      if (
+        navigator.onLine
+      ) {
+        pullServerState(
+          'focus'
+        );
+      }
+    }
+  );
+  /* -------------------------------------------------------
+     6. Quand demandes / staff / planning changent, l'assistant
+        et les autres vues sont rafraîchis.
+     ------------------------------------------------------- */
+  window.addEventListener(
+    'ichef:rh-settings-saved',
+    () => {
+      scheduleUiSync(
+        'réglages RH'
+      );
+    }
+  );
+  /* -------------------------------------------------------
+     Initialisation
+     ------------------------------------------------------- */
+  function boot() {
+    ensureBadge();
+    scheduleUiSync(
+      'initialisation'
+    );
+    /* L'état serveur est la référence partagée entre appareils. */
+    setTimeout(
+      () => {
+        pullServerState(
+          'initialisation serveur'
+        );
+      },
+      350
+    );
+  }
+  if (
+    document.readyState === 'loading'
+  ) {
+    document.addEventListener(
+      'DOMContentLoaded',
+      boot,
+      { once:true }
+    );
+  } else {
+    boot();
+  }
+  window.refreshAllRhV161 =
+    pullServerState;
+  window.syncAllRhViewsV161 =
+    scheduleUiSync;
+  window.__ICHEF_RH_SYNC_BUILD__ =
+    'V161';
+  console.info(
+    '[iCHEF RH V161] synchronisation globale active'
+  );
+})();
+
+
+;
+/* RH V264 - preserved script #73 */
+window.__ICHEF_RH_BUILD__='RH-V161-GLOBAL-SYNC';
+
+
+;
+/* RH V264 - preserved script #74 */
+window.__ICHEF_RH_BUILD__='RH-V162-LIGHT-PARAMETERS';
+console.info('[iCHEF RH V162] Paramètres : fond blanc / police noire');
+
+
+;
+/* RH V264 - preserved script #75 */
+window.__ICHEF_RH_BUILD__='RH-V163-UNIFIED-PLANNING-TOOLBAR';
+console.info('[iCHEF RH V163] 4 boutons alignés · même fond');
+
+
+;
+/* RH V264 - preserved script #76 */
+window.__ICHEF_RH_BUILD__='RH-V164-BLACK-TEXT-PARAMETERS';
+console.info('[iCHEF RH V164] toutes les polices grises des paramètres sont noires');
+
+
+;
+/* RH V264 - preserved script #77 */
+window.__ICHEF_RH_BUILD__='RH-V165-WORK-START-SEPARATE-FROM-SERVICE';
+console.info('[iCHEF RH V165] début du travail distinct du début du service');
+
+
+;
+/* RH V264 - preserved script #78 */
+window.__ICHEF_RH_BUILD__='RH-V166-WORK-START-END-SEPARATE-FROM-SERVICE';
+console.info('[iCHEF RH V166] début + fin du travail distincts du service');
+
+
+;
+/* RH V264 - preserved script #79 */
+window.__ICHEF_RH_BUILD__='RH-V167-DAY-INITIAL-BESIDE-DATE';
+console.info('[iCHEF RH V167] première lettre du jour affichée à côté de la date sur tous les plannings');
+
+
+;
+/* RH V264 - preserved script #80 */
+window.__ICHEF_RH_BUILD__='RH-V168-SERVICE-BY-WEEKDAY';
+console.info('[iCHEF RH V168] services MIDI / SOIR sélectionnables du lundi au dimanche');
+
+
+;
+/* RH V264 - preserved script #81 */
+(() => {
+  'use strict';
+  if (window.__ICHEF_RH_V169_BRIGADE_UI__) return;
+  window.__ICHEF_RH_V169_BRIGADE_UI__ = true;
+  function bindV169() {
+    const select =
+      document.getElementById(
+        'rh-setting-establishment-profile'
+      );
+    const apply =
+      document.getElementById(
+        'v169-apply-profile'
+      );
+    if (select && select.dataset.v169Bound !== '1') {
+      select.dataset.v169Bound = '1';
+      select.addEventListener(
+        'change',
+        () => {
+          const current =
+            typeof getRhSettings === 'function'
+              ? getRhSettings()
+              : {};
+          renderRhBrigadeV169(
+            {
+              ...current,
+              planningEstablishmentProfile:
+                select.value
+            },
+            true
+          );
+        }
+      );
+    }
+    if (apply && apply.dataset.v169Bound !== '1') {
+      apply.dataset.v169Bound = '1';
+      apply.addEventListener(
+        'click',
+        () => {
+          applyRhEstablishmentProfileV169(
+            select?.value || 'restaurant',
+            true
+          );
+        }
+      );
+    }
+  }
+  const originalHydrate =
+    typeof hydrateRhSettingsForm === 'function'
+      ? hydrateRhSettingsForm
+      : null;
+  if (
+    originalHydrate &&
+    !originalHydrate.__v169Wrapped
+  ) {
+    const wrapped =
+      function(...args) {
+        const result =
+          originalHydrate.apply(this, args);
+        bindV169();
+        return result;
+      };
+    wrapped.__v169Wrapped = true;
+    hydrateRhSettingsForm = wrapped;
+  }
+  function boot() {
+    bindV169();
+    if (
+      typeof getRhSettings === 'function' &&
+      typeof renderRhBrigadeV169 === 'function'
+    ) {
+      renderRhBrigadeV169(
+        getRhSettings(),
+        false
+      );
+    }
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener(
+      'DOMContentLoaded',
+      boot,
+      { once:true }
+    );
+  } else {
+    boot();
+  }
+})();
+
+
+;
+/* RH V264 - preserved script #82 */
+window.__ICHEF_RH_BUILD__='RH-V169-ESTABLISHMENT-PROFILES-BRIGADES';
+console.info('[iCHEF RH V169] profils d’établissement et brigades actifs');
+
+
+;
+/* RH V264 - preserved script #83 */
+(() => {
+  'use strict';
+  if (window.__ICHEF_RH_V170_CASH_UI__) return;
+  window.__ICHEF_RH_V170_CASH_UI__ = true;
+  function bindCashV170() {
+    const month =
+      document.getElementById(
+        'month-selector'
+      );
+    if (
+      month &&
+      month.dataset.v170CashBound !== '1'
+    ) {
+      month.dataset.v170CashBound = '1';
+      month.addEventListener(
+        'change',
+        () => {
+          renderRhCashActivityV170(
+            'month-change'
+          );
+        }
+      );
+    }
+    const forecastToggle =
+      document.getElementById(
+        'rh-setting-use-cash-forecast'
+      );
+    if (
+      forecastToggle &&
+      forecastToggle.dataset.v171Bound !== '1'
+    ) {
+      forecastToggle.dataset.v171Bound = '1';
+      forecastToggle.addEventListener(
+        'change',
+        () => {
+          renderRhCashActivityV170(
+            'forecast-toggle'
+          );
+        }
+      );
+    }
+    const budget =
+      document.getElementById(
+        'rh-setting-labor-budget'
+      );
+    if (
+      budget &&
+      budget.dataset.v170CashBound !== '1'
+    ) {
+      budget.dataset.v170CashBound = '1';
+      budget.addEventListener(
+        'input',
+        () => {
+          // La valeur n'est persistée qu'avec ENREGISTRER.
+          // Pour l'aperçu on calcule avec la valeur actuellement affichée.
+          const settings =
+            getRhSettings();
+          const temp =
+            Number(
+              budget.value || 0
+            );
+          const old =
+            settings.laborBudgetPct;
+          try {
+            localStorage.setItem(
+              'ichef_rh_v170_budget_preview',
+              String(temp)
+            );
+            const monthStr =
+              typeof getPlanningAssistantMonth === 'function'
+                ? getPlanningAssistantMonth()
+                : '';
+            const forecast =
+              rhCashForecastMonthV170(
+                monthStr
+              );
+            const actual =
+              rhCashSummaryForMonthV170(
+                monthStr
+              );
+            const base =
+              forecast.ca > 0
+                ? forecast.ca
+                : actual.ca;
+            const el =
+              document.getElementById(
+                'rh-cash-budget-v170'
+              );
+            if (el) {
+              el.textContent =
+                base > 0
+                  ? rhCashMoneyV170(
+                      base * temp / 100,
+                      actual.currency ||
+                        settings.currency ||
+                        'CHF'
+                    )
+                  : '—';
+            }
+          } catch (_) {}
+        }
+      );
+    }
+  }
+  function boot() {
+    bindCashV170();
+    loadRhCashCacheV170();
+    renderRhCashActivityV170(
+      'boot'
+    );
+    // État complet serveur = référence réelle de la caisse.
+    setTimeout(
+      async () => {
+        try {
+          const state =
+            await API.getState();
+          if (state?.activeOrders) {
+            syncRhOperationalState(
+              state
+            );
+          }
+        } catch (_) {}
+      },
+      250
+    );
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener(
+      'DOMContentLoaded',
+      boot,
+      { once:true }
+    );
+  } else {
+    boot();
+  }
+})();
+
+
+;
+/* RH V264 - preserved script #84 */
+window.__ICHEF_RH_BUILD__='RH-V170-CASH-ACTIVITY-QUALITY-BUDGET';
+console.info('[iCHEF RH V170] RH connecté à FINANCIAL_HISTORY / caisse tactile');
+
+
+;
+/* RH V264 - preserved script #85 */
+(() => {
+  'use strict';
+  if (window.__ICHEF_RH_V171_UI__) return;
+  window.__ICHEF_RH_V171_UI__ = true;
+  function refreshV171(){
+    try{
+      const settings =
+        typeof getRhSettings === 'function'
+          ? getRhSettings()
+          : {};
+      if(typeof renderRhProfileCardsV171 === 'function'){
+        renderRhProfileCardsV171(
+          String(
+            document.getElementById(
+              'rh-setting-establishment-profile'
+            )?.value ||
+            settings.planningEstablishmentProfile ||
+            'restaurant'
+          )
+        );
+      }
+      if(typeof renderRhCashActivityV170 === 'function'){
+        renderRhCashActivityV170('v171-refresh');
+      }
+    }catch(error){
+      console.warn('[iCHEF RH V171]',error);
+    }
+  }
+  document.addEventListener(
+    'ichef:rh-settings-saved',
+    refreshV171
+  );
+  if(document.readyState === 'loading'){
+    document.addEventListener(
+      'DOMContentLoaded',
+      refreshV171,
+      {once:true}
+    );
+  }else{
+    refreshV171();
+  }
+})();
+
+
+;
+/* RH V264 - preserved script #86 */
+window.__ICHEF_RH_BUILD__='RH-V171-MOCKUP-PROFILES-BRIGADE-LOAD';
+console.info('[iCHEF RH V171] mockup + profils + effectifs + charge prévue');
+
+
+;
+/* RH V264 - preserved script #87 */
+(() => {
+  'use strict';
+  if (
+    window
+      .__ICHEF_RH_V172_SYMBIOSE_ADAPTER__
+  ) {
+    return;
+  }
+  window
+    .__ICHEF_RH_V172_SYMBIOSE_ADAPTER__ =
+    true;
+  function safePublishStaffing(reason) {
+    try {
+      if (
+        typeof publishRhStaffingV172 ===
+        'function'
+      ) {
+        publishRhStaffingV172(reason);
+      }
+    } catch (error) {
+      console.warn(
+        '[iCHEF RH V172] staffing',
+        error
+      );
+    }
+  }
+  function wrapAfter(name) {
+    const fn =
+      window[name];
+    if (
+      typeof fn !== 'function' ||
+      fn.__ichefV172SymbioseWrapped
+    ) {
+      return;
+    }
+    const wrapped =
+      function(...args) {
+        const result =
+          fn.apply(this, args);
+        Promise
+          .resolve(result)
+          .finally(
+            () =>
+              safePublishStaffing(
+                name
+              )
+          );
+        return result;
+      };
+    wrapped
+      .__ichefV172SymbioseWrapped =
+      true;
+    window[name] =
+      wrapped;
+  }
+  function wrapRhFunctions() {
+    [
+      'saveDir',
+      'saveTs',
+      'savePunches',
+      'saveReqs',
+      'syncStaffAccessToCloud'
+    ].forEach(wrapAfter);
+  }
+  window.addEventListener(
+    'ichef:rh-settings-saved',
+    event => {
+      try {
+        publishRhSettingsV172(
+          'rh-settings-saved'
+        );
+        safePublishStaffing(
+          'rh-settings-saved'
+        );
+      } catch (_) {}
+    }
+  );
+  window.addEventListener(
+    'ichef:connected',
+    () => {
+      wrapRhFunctions();
+      safePublishStaffing(
+        'connected'
+      );
+    }
+  );
+  /* Une vente caisse reçue par Symbiose peut modifier immédiatement
+     la charge / les prévisions affichées dans RH. */
+  window.addEventListener(
+    'ichef:payment.completed',
+    () => {
+      try {
+        scheduleRhStaffRefresh();
+        if (
+          typeof renderRhCashActivityV170 ===
+          'function'
+        ) {
+          renderRhCashActivityV170(
+            'symbiose-payment'
+          );
+        }
+      } catch (_) {}
+    }
+  );
+  window.addEventListener(
+    'ichef:rush.updated',
+    () => {
+      try {
+        if (
+          document
+            .getElementById(
+              'ia-predictions-modal'
+            )
+            ?.classList
+            .contains('show')
+        ) {
+          schedulePlanningAssistantAutoRefresh();
+        }
+      } catch (_) {}
+    }
+  );
+  function boot() {
+    ensureRhSymbioseBadgeV172();
+    wrapRhFunctions();
+    if (
+      typeof connectRhRealtimeSync ===
+      'function'
+    ) {
+      connectRhRealtimeSync();
+    }
+    setTimeout(
+      () => {
+        if (
+          typeof rhSocket !==
+            'undefined' &&
+          rhSocket?.connected
+        ) {
+          registerRhSymbioseV172();
+        }
+      },
+      500
+    );
+  }
+  window.addEventListener(
+    'online',
+    () => {
+      setRhSymbioseBadgeV172(
+        'connecting'
+      );
+      try {
+        scheduleRhStaffRefresh();
+      } catch (_) {}
+    }
+  );
+  window.addEventListener(
+    'offline',
+    () => {
+      setRhSymbioseBadgeV172(
+        'offline'
+      );
+    }
+  );
+  window.addEventListener(
+    'beforeunload',
+    () => {
+      try {
+        clearInterval(
+          rhSymbioseHeartbeatV172
+        );
+      } catch (_) {}
+    }
+  );
+  if (
+    document.readyState ===
+    'loading'
+  ) {
+    document.addEventListener(
+      'DOMContentLoaded',
+      boot,
+      { once:true }
+    );
+  } else {
+    boot();
+  }
+  window.ICHEF_RH_SYMBIOSE = {
+    publishStaffing:
+      safePublishStaffing,
+    publishSettings:
+      reason =>
+        publishRhSettingsV172(
+          reason || 'manual'
+        ),
+    refresh:
+      () =>
+        scheduleRhStaffRefresh(),
+    get presence() {
+      return (
+        typeof rhSymbiosePresenceV172 !==
+          'undefined'
+          ? rhSymbiosePresenceV172
+          : {}
+      );
+    },
+    get staffing() {
+      return (
+        typeof rhSymbioseStaffingSnapshotV172 ===
+          'function'
+          ? rhSymbioseStaffingSnapshotV172()
+          : {}
+      );
+    }
+  };
+})();
+
+
+;
+/* RH V264 - preserved script #88 */
+window.__ICHEF_RH_BUILD__='RH-V172-SYMBIOSE-REALTIME';
+console.info('[iCHEF RH V172] Symbiose temps réel active');
+
+
+;
+/* RH V264 - preserved script #89 */
+window.__ICHEF_RH_BUILD__='RH-V173-PROFILE-TITLES-READABLE';
+console.info('[iCHEF RH V173] cartes établissement : titres uniquement');
+
+
+;
+/* RH V264 - preserved script #90 */
+window.__ICHEF_RH_BUILD__='RH-V174-BRIGADES-READABLE-EXPANDABLE';
+console.info('[iCHEF RH V174] brigades lisibles + agrandir/réduire + apprenti/extra');
+
+
+;
+/* RH V264 - preserved script #91 */
+(() => {
+  'use strict';
+  if (window.__ICHEF_RH_V175_ESCAPE__) return;
+  window.__ICHEF_RH_V175_ESCAPE__ = true;
+  document.addEventListener(
+    'keydown',
+    event => {
+      if (event.key !== 'Escape') return;
+      document
+        .querySelectorAll(
+          '#v169-brigade-container [data-v169-department].is-expanded-v175'
+        )
+        .forEach(card => {
+          if (
+            typeof closeExpandedBrigadeV175 ===
+            'function'
+          ) {
+            closeExpandedBrigadeV175(card);
+          }
+        });
+    }
+  );
+})();
+
+
+;
+/* RH V264 - preserved script #92 */
+window.__ICHEF_RH_BUILD__='RH-V175-LONGPRESS-BRIGADE-ZOOM';
+console.info('[iCHEF RH V175] appui long 0,5 s brigade + X fermeture');
+
+
+;
+/* RH V264 - preserved script #93 */
+window.__ICHEF_RH_BUILD__='RH-V176-FIX-PROFILE-GHOST-BAR';
+console.info('[iCHEF RH V176] barre profil fantôme corrigée');
+
+
+;
+/* RH V264 - preserved script #94 */
+window.__ICHEF_RH_BUILD__='RH-V177-BRIGADE-HIGH-READABILITY';
+console.info('[iCHEF RH V177] brigades haute lisibilité');
+
+
+;
+/* RH V264 - preserved script #95 */
+window.__ICHEF_RH_BUILD__='RH-V178-PROFILE-FONT-X15';
+console.info('[iCHEF RH V178] titres catégories +50%');
+
+
+;
+/* RH V264 - preserved script #96 */
+window.__ICHEF_RH_BUILD__='RH-V179-NO-OVERFLOW-ROLE-RATIOS';
+console.info('[iCHEF RH V179] zéro dépassement + ratios par métier');
+
+
+;
+/* RH V264 - preserved script #97 */
+(() => {
+  'use strict';
+  if (window.__ICHEF_RH_V180_SWISS_LEGAL__) return;
+  window.__ICHEF_RH_V180_SWISS_LEGAL__ = true;
+  const SWISS_LEGAL_VERSION_V180 =
+    'CH-2026-09-29-CCNT-LTr-OLT1-OLT2';
+  const SWISS_CCNT_MINIMUMS_2026_V180 = Object.freeze({
+    monthly: {
+      IA:3713,
+      IB:3943,
+      II:4070,
+      IIIA:4528,
+      IIIB:4635,
+      IV:5293
+    },
+    hourly: {
+      standard: {
+        IA:20.40, IB:21.66, II:22.36,
+        IIIA:24.88, IIIB:25.47, IV:29.08
+      },
+      seasonal: {
+        IA:19.65, IB:20.86, II:21.53,
+        IIIA:23.96, IIIB:24.52, IV:28.01
+      },
+      small: {
+        IA:19.04, IB:20.22, II:20.87,
+        IIIA:23.22, IIIB:23.77, IV:27.14
+      }
+    }
+  });
+  function swissPayrollProfilesV180() {
+    try {
+      return JSON.parse(
+        localStorage.getItem(
+          'ichef_payroll_profiles_v2'
+        ) || '{}'
+      ) || {};
+    } catch (_) {
+      return {};
+    }
+  }
+  function swissPayrollVariablesV180() {
+    try {
+      return JSON.parse(
+        localStorage.getItem(
+          'ichef_payroll_variables_v2'
+        ) || '{}'
+      ) || {};
+    } catch (_) {
+      return {};
+    }
+  }
+  function swissProfileForV180(staff) {
+    const all =
+      swissPayrollProfilesV180();
+    return {
+      mode:'hourly',
+      monthlySalary:0,
+      hourlyRate:0,
+      birthDate:'',
+      contractType:'',
+      chLgavCategory:'',
+      chProtectionStatus:'none',
+      chPostpartumConsent:false,
+      chFamilyObligations:false,
+      chThirteenthMode:'annual',
+      ...(
+        all?.[staff?.id] ||
+        all?.[String(staff?.id)] ||
+        {}
+      )
+    };
+  }
+  function swissAgeAtV180(dateString, atDate = new Date()) {
+    if (!dateString) return null;
+    const birth =
+      new Date(
+        `${String(dateString).slice(0,10)}T12:00:00`
+      );
+    if (
+      !Number.isFinite(
+        birth.getTime()
+      )
+    ) {
+      return null;
+    }
+    let age =
+      atDate.getFullYear() -
+      birth.getFullYear();
+    const monthDiff =
+      atDate.getMonth() -
+      birth.getMonth();
+    if (
+      monthDiff < 0 ||
+      (
+        monthDiff === 0 &&
+        atDate.getDate() <
+          birth.getDate()
+      )
+    ) {
+      age--;
+    }
+    return age;
+  }
+  function swissIsApprenticeV180(staff) {
+    const p =
+      swissProfileForV180(staff);
+    const text =
+      `${p.contractType || ''} ${staff?.role || ''}`
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g,'')
+        .toLowerCase();
+    return (
+      /apprenti|apprentissage|apprenant/.test(
+        text
+      )
+    );
+  }
+  function swissProtectionStatusV180(staff) {
+    return String(
+      swissProfileForV180(staff)
+        .chProtectionStatus ||
+      'none'
+    ).toLowerCase();
+  }
+  function swissMinuteV180(value) {
+    const m =
+      /^(\d{1,2}):(\d{2})$/.exec(
+        String(value || '').trim()
+      );
+    if (!m) return null;
+    const h = Number(m[1]);
+    const min = Number(m[2]);
+    if (
+      !Number.isInteger(h) ||
+      !Number.isInteger(min) ||
+      h < 0 || h > 23 ||
+      min < 0 || min > 59
+    ) {
+      return null;
+    }
+    return h * 60 + min;
+  }
+  function swissSegmentsV180(plan) {
+    const rows = [];
+    [plan?.s1, plan?.s2]
+      .filter(Boolean)
+      .forEach(raw => {
+        const parts =
+          String(raw)
+            .split('-')
+            .map(x => x.trim());
+        if (parts.length !== 2) return;
+        const start =
+          swissMinuteV180(parts[0]);
+        let end =
+          swissMinuteV180(parts[1]);
+        if (
+          start === null ||
+          end === null
+        ) {
+          return;
+        }
+        if (end <= start) {
+          end += 1440;
+        }
+        rows.push({
+          start,
+          end
+        });
+      });
+    rows.sort(
+      (a,b) =>
+        a.start - b.start
+    );
+    return rows;
+  }
+  function swissPlanMetricsV180(plan) {
+    const segments =
+      swissSegmentsV180(plan);
+    if (!segments.length) {
+      return {
+        hours:0,
+        spanHours:0,
+        breakMinutes:0,
+        nightMinutes:0,
+        firstStart:null,
+        lastEnd:null
+      };
+    }
+    const workedMinutes =
+      segments.reduce(
+        (sum, row) =>
+          sum +
+          Math.max(
+            0,
+            row.end - row.start
+          ),
+        0
+      );
+    let internalBreak = 0;
+    for (
+      let i = 1;
+      i < segments.length;
+      i++
+    ) {
+      internalBreak +=
+        Math.max(
+          0,
+          segments[i].start -
+          segments[i-1].end
+        );
+    }
+    const explicitPause =
+      Math.max(
+        0,
+        Number(
+          plan?.pause || 0
+        )
+      );
+    const firstStart =
+      segments[0].start;
+    const lastEnd =
+      Math.max(
+        ...segments.map(
+          row => row.end
+        )
+      );
+    let nightMinutes = 0;
+    const nightWindows = [
+      [0, 360],
+      [1380, 1800],
+      [2820, 3240]
+    ];
+    segments.forEach(segment => {
+      nightWindows.forEach(
+        ([start, end]) => {
+          nightMinutes +=
+            Math.max(
+              0,
+              Math.min(
+                segment.end,
+                end
+              ) -
+              Math.max(
+                segment.start,
+                start
+              )
+            );
+        }
+      );
+    });
+    return {
+      hours:
+        Math.max(
+          0,
+          Number(
+            typeof calculateNet ===
+              'function'
+              ? calculateNet(plan)
+              : workedMinutes / 60
+          ) || 0
+        ),
+      rawWorkedHours:
+        workedMinutes / 60,
+      spanHours:
+        Math.max(
+          0,
+          lastEnd - firstStart
+        ) / 60,
+      breakMinutes:
+        internalBreak +
+        explicitPause,
+      nightMinutes,
+      firstStart,
+      lastEnd
+    };
+  }
+  function swissRequiredPauseV180(hours) {
+    const h =
+      Number(hours || 0);
+    if (h > 9) return 60;
+    if (h > 7) return 30;
+    if (h > 5.5) return 15;
+    return 0;
+  }
+  function swissAbsoluteDateTimeV180(
+    dateObj,
+    minuteValue
+  ) {
+    const d =
+      new Date(
+        dateObj.getFullYear(),
+        dateObj.getMonth(),
+        dateObj.getDate(),
+        0,0,0,0
+      );
+    d.setMinutes(
+      Number(minuteValue || 0)
+    );
+    return d;
+  }
+  function swissPlanForDateV180(
+    proposal,
+    staffId,
+    dateObj,
+    draftMonth
+  ) {
+    if (
+      typeof assistantLegalDatePlanV142 ===
+      'function'
+    ) {
+      return assistantLegalDatePlanV142(
+        proposal,
+        staffId,
+        dateObj,
+        draftMonth
+      );
+    }
+    const key =
+      `${dateObj.getFullYear()}-${String(
+        dateObj.getMonth()+1
+      ).padStart(2,'0')}`;
+    if (key === draftMonth) {
+      return (
+        proposal?.[staffId]?.[
+          dateObj.getDate()
+        ] ||
+        proposal?.[String(staffId)]?.[
+          dateObj.getDate()
+        ] ||
+        null
+      );
+    }
+    const ts =
+      typeof getTs === 'function'
+        ? getTs()
+        : {};
+    return (
+      ts?.[key]?.[staffId]?.[
+        dateObj.getDate()
+      ] ||
+      ts?.[key]?.[String(staffId)]?.[
+        dateObj.getDate()
+      ] ||
+      null
+    );
+  }
+  function swissActualWorkV180(plan) {
+    return Boolean(
+      plan &&
+      (
+        typeof assistantIsActualWorkDayV146 ===
+          'function'
+          ? assistantIsActualWorkDayV146(
+              plan
+            )
+          : (
+              plan.s1 ||
+              plan.s2
+            )
+      )
+    );
+  }
+  function swissRestAfterDateV180(
+    proposal,
+    staffId,
+    dateObj,
+    draftMonth,
+    maxLookAheadDays = 8
+  ) {
+    const current =
+      swissPlanForDateV180(
+        proposal,
+        staffId,
+        dateObj,
+        draftMonth
+      );
+    const currentMetrics =
+      swissPlanMetricsV180(
+        current
+      );
+    if (
+      !current ||
+      currentMetrics.lastEnd === null
+    ) {
+      return {
+        hours:Infinity,
+        verifiable:true,
+        nextDate:null
+      };
+    }
+    const end =
+      swissAbsoluteDateTimeV180(
+        dateObj,
+        currentMetrics.lastEnd
+      );
+    for (
+      let offset = 1;
+      offset <= maxLookAheadDays;
+      offset++
+    ) {
+      const nextDate =
+        new Date(dateObj);
+      nextDate.setDate(
+        nextDate.getDate() +
+        offset
+      );
+      const plan =
+        swissPlanForDateV180(
+          proposal,
+          staffId,
+          nextDate,
+          draftMonth
+        );
+      if (!plan) {
+        // Si on traverse un mois sans planning adjacent,
+        // la vérification n'est pas fiable.
+        const nextMonth =
+          `${nextDate.getFullYear()}-${String(
+            nextDate.getMonth()+1
+          ).padStart(2,'0')}`;
+        if (
+          nextMonth !== draftMonth
+        ) {
+          const ts =
+            typeof getTs ===
+              'function'
+              ? getTs()
+              : {};
+          if (
+            !(
+              ts?.[nextMonth]?.[staffId] ||
+              ts?.[nextMonth]?.[
+                String(staffId)
+              ]
+            )
+          ) {
+            return {
+              hours:null,
+              verifiable:false,
+              nextDate
+            };
+          }
+        }
+        continue;
+      }
+      if (!swissActualWorkV180(plan)) {
+        continue;
+      }
+      const metrics =
+        swissPlanMetricsV180(
+          plan
+        );
+      if (
+        metrics.firstStart === null
+      ) {
+        continue;
+      }
+      const nextStart =
+        swissAbsoluteDateTimeV180(
+          nextDate,
+          metrics.firstStart
+        );
+      return {
+        hours:
+          (
+            nextStart -
+            end
+          ) /
+          3600000,
+        verifiable:true,
+        nextDate
+      };
+    }
+    // Aucun travail trouvé dans la fenêtre :
+    // le repos est au moins supérieur à cette fenêtre.
+    return {
+      hours:
+        maxLookAheadDays *
+        24,
+      verifiable:true,
+      nextDate:null
+    };
+  }
+  function swissHoursRangeV180(
+    proposal,
+    staffId,
+    startDate,
+    days,
+    draftMonth
+  ) {
+    let total = 0;
+    let complete = true;
+    for (
+      let offset = 0;
+      offset < days;
+      offset++
+    ) {
+      const date =
+        new Date(startDate);
+      date.setDate(
+        date.getDate() +
+        offset
+      );
+      const plan =
+        swissPlanForDateV180(
+          proposal,
+          staffId,
+          date,
+          draftMonth
+        );
+      if (!plan) {
+        const monthKey =
+          `${date.getFullYear()}-${String(
+            date.getMonth()+1
+          ).padStart(2,'0')}`;
+        if (
+          monthKey !== draftMonth
+        ) {
+          const ts =
+            typeof getTs ===
+              'function'
+              ? getTs()
+              : {};
+          if (
+            !(
+              ts?.[monthKey]?.[staffId] ||
+              ts?.[monthKey]?.[
+                String(staffId)
+              ]
+            )
+          ) {
+            complete = false;
+          }
+        }
+        continue;
+      }
+      if (
+        swissActualWorkV180(
+          plan
+        )
+      ) {
+        total +=
+          Number(
+            typeof calculateNet ===
+              'function'
+              ? calculateNet(plan)
+              : 0
+          ) || 0;
+      }
+    }
+    return {
+      total,
+      complete
+    };
+  }
+  function swissConsecutiveRunEndingV180(
+    proposal,
+    staffId,
+    endDate,
+    draftMonth,
+    maxDays = 8
+  ) {
+    const dates = [];
+    for (
+      let offset = 0;
+      offset < maxDays;
+      offset++
+    ) {
+      const d =
+        new Date(endDate);
+      d.setDate(
+        d.getDate() -
+        offset
+      );
+      const plan =
+        swissPlanForDateV180(
+          proposal,
+          staffId,
+          d,
+          draftMonth
+        );
+      if (
+        !swissActualWorkV180(
+          plan
+        )
+      ) {
+        break;
+      }
+      dates.unshift(
+        new Date(d)
+      );
+    }
+    return dates;
+  }
+  function swissSevenDayRunValidV180(
+    proposal,
+    staff,
+    endDate,
+    draftMonth
+  ) {
+    const run =
+      swissConsecutiveRunEndingV180(
+        proposal,
+        staff.id,
+        endDate,
+        draftMonth,
+        8
+      );
+    if (
+      run.length !== 7
+    ) {
+      return {
+        valid:false,
+        reason:
+          run.length > 7
+            ? 'plus de 7 jours consécutifs'
+            : 'séquence de 7 jours absente'
+      };
+    }
+    for (const date of run) {
+      const plan =
+        swissPlanForDateV180(
+          proposal,
+          staff.id,
+          date,
+          draftMonth
+        );
+      const metrics =
+        swissPlanMetricsV180(
+          plan
+        );
+      if (
+        metrics.hours >
+        9 + 0.01
+      ) {
+        return {
+          valid:false,
+          reason:
+            `plus de 9 h/jour dans la séquence de 7 jours`
+        };
+      }
+    }
+    const rest =
+      swissRestAfterDateV180(
+        proposal,
+        staff.id,
+        endDate,
+        draftMonth,
+        8
+      );
+    if (!rest.verifiable) {
+      return {
+        valid:false,
+        reason:
+          'repos de 83 h impossible à vérifier faute de planning adjacent'
+      };
+    }
+    if (
+      Number(rest.hours) <
+      83 - 0.01
+    ) {
+      return {
+        valid:false,
+        reason:
+          `repos après le 7e jour ${Number(rest.hours).toFixed(1)} h < 83 h`
+      };
+    }
+    const fortnight =
+      swissHoursRangeV180(
+        proposal,
+        staff.id,
+        run[0],
+        14,
+        draftMonth
+      );
+    if (!fortnight.complete) {
+      return {
+        valid:false,
+        reason:
+          'moyenne sur 2 semaines impossible à vérifier faute d’historique adjacent'
+      };
+    }
+    if (
+      fortnight.total >
+      100 + 0.01
+    ) {
+      return {
+        valid:false,
+        reason:
+          `${fortnight.total.toFixed(1)} h sur 2 semaines > 100 h`
+      };
+    }
+    return {
+      valid:true,
+      run,
+      restHours:
+        rest.hours,
+      fortnightHours:
+        fortnight.total
+    };
+  }
+  window.assistantSwissWeekCoveredBySevenDayExceptionV180 =
+    function(
+      proposal,
+      staff,
+      monday,
+      draftMonth,
+      settings
+    ) {
+      if (
+        settings
+          ?.planningSwissSevenDayException !==
+        true
+      ) {
+        return false;
+      }
+      for (
+        let offset = -1;
+        offset <= 7;
+        offset++
+      ) {
+        const end =
+          new Date(monday);
+        end.setDate(
+          end.getDate() +
+          offset
+        );
+        const result =
+          swissSevenDayRunValidV180(
+            proposal,
+            staff,
+            end,
+            draftMonth
+          );
+        if (result.valid) {
+          const sunday =
+            new Date(monday);
+          sunday.setDate(
+            sunday.getDate() +
+            6
+          );
+          if (
+            result.run.some(
+              d =>
+                d >= monday &&
+                d <= sunday
+            )
+          ) {
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+  function swissAdultOrProtectedProfileV180(
+    settings,
+    staff
+  ) {
+    const type =
+      String(
+        settings
+          ?.planningLegalEstablishmentType ||
+        'standard'
+      ).toLowerCase();
+    const weeklyReference =
+      type === 'seasonal'
+        ? 43.5
+        : type === 'small'
+          ? 45
+          : 42;
+    const payroll =
+      swissProfileForV180(
+        staff
+      );
+    const age =
+      swissAgeAtV180(
+        payroll.birthDate
+      );
+    const young =
+      Number.isFinite(age) &&
+      age < 18;
+    const protection =
+      swissProtectionStatusV180(
+        staff
+      );
+    const pregnancyOrBreastfeeding =
+      [
+        'pregnant',
+        'pregnant_standing_4plus',
+        'pregnant_standing_6plus',
+        'pregnant_8plus',
+        'breastfeeding'
+      ].includes(
+        protection
+      );
+    const standing4plus =
+      [
+        'pregnant_standing_4plus',
+        'pregnant_standing_6plus'
+      ].includes(
+        protection
+      );
+    return {
+      country:'CH',
+      framework:
+        'CCNT + LTr + OLT 1/2',
+      legalRole:
+        'CH_HOSPITALITY',
+      weeklyReference,
+      weeklyMax:50,
+      rolling12AverageMax:null,
+      dailyMax:
+        protection ===
+          'postpartum_lt8w'
+          ? 0
+          : protection ===
+              'pregnant_standing_6plus'
+            ? 4
+            : (
+                young ||
+                pregnancyOrBreastfeeding
+                  ? 9
+                  : null
+              ),
+      dailyRestMin:
+        young ||
+        standing4plus
+          ? 12
+          : 11,
+      weeklyRestDays:2,
+      maxConsecutiveDays:
+        settings
+          ?.planningSwissSevenDayException ===
+        true
+          ? 7
+          : 6,
+      maxSpanHours:
+        young
+          ? 12
+          : 14,
+      minPauseMealMinutes:30,
+      scheduleNoticeDays:
+        type === 'seasonal'
+          ? 7
+          : 14,
+      establishmentType:type,
+      swissSevenDayException:
+        settings
+          ?.planningSwissSevenDayException ===
+        true,
+      young,
+      age,
+      apprentice:
+        swissIsApprenticeV180(
+          staff
+        ),
+      protection,
+      postpartumConsent:
+        payroll
+          .chPostpartumConsent ===
+        true,
+      familyObligations:
+        payroll
+          .chFamilyObligations ===
+        true
+    };
+  }
+  // Remplace uniquement la partie Suisse du profil légal.
+  const originalLegalProfileV180 =
+    window.assistantLegalProfileV142;
+  if (
+    typeof originalLegalProfileV180 ===
+    'function'
+  ) {
+    window.assistantLegalProfileV142 =
+      function(settings, staff) {
+        const country =
+          String(
+            settings
+              ?.planningLegalCountry ||
+            (
+              String(
+                settings?.currency || ''
+              ).toUpperCase() ===
+              'EUR'
+                ? 'FR'
+                : 'CH'
+            )
+          ).toUpperCase();
+        if (country === 'FR') {
+          return originalLegalProfileV180(
+            settings,
+            staff
+          );
+        }
+        return swissAdultOrProtectedProfileV180(
+          settings,
+          staff
+        );
+      };
+  }
+  function swissSpecificPlanIssuesV180(
+    staff,
+    plan,
+    dateObj,
+    settings
+  ) {
+    const blockers = [];
+    const warnings = [];
+    if (
+      !swissActualWorkV180(
+        plan
+      )
+    ) {
+      return {
+        blockers,
+        warnings
+      };
+    }
+    const profile =
+      assistantLegalProfileV142(
+        settings,
+        staff
+      );
+    const metrics =
+      swissPlanMetricsV180(
+        plan
+      );
+    const requiredPause =
+      swissRequiredPauseV180(
+        metrics.hours
+      );
+    if (
+      requiredPause > 0 &&
+      metrics.breakMinutes <
+        requiredPause
+    ) {
+      blockers.push(
+        `${staff.name} · ${dateObj.toLocaleDateString('fr-CH')} : pause ${Math.round(metrics.breakMinutes)} min < minimum ${requiredPause} min.`
+      );
+    }
+    // Travail de nuit : 9 h max dans un espace de 10 h.
+    if (
+      metrics.nightMinutes > 0
+    ) {
+      if (
+        metrics.hours >
+        9 + 0.01
+      ) {
+        blockers.push(
+          `${staff.name} · ${dateObj.toLocaleDateString('fr-CH')} : travail de nuit avec plus de 9 h de travail.`
+        );
+      }
+      if (
+        metrics.spanHours >
+        10 + 0.01
+      ) {
+        blockers.push(
+          `${staff.name} · ${dateObj.toLocaleDateString('fr-CH')} : travail de nuit dans une amplitude > 10 h.`
+        );
+      }
+      warnings.push(
+        `${staff.name} · ${dateObj.toLocaleDateString('fr-CH')} : travail de nuit détecté ; contrôler la compensation légale applicable (temporaire / régulier).`
+      );
+    }
+    if (profile.young) {
+      if (
+        metrics.hours >
+        9 + 0.01
+      ) {
+        blockers.push(
+          `${staff.name} · jeune travailleur : plus de 9 h/jour.`
+        );
+      }
+      if (
+        metrics.spanHours >
+        12 + 0.01
+      ) {
+        blockers.push(
+          `${staff.name} · jeune travailleur : journée, pauses comprises, > 12 h.`
+        );
+      }
+      const latestAllowed =
+        Number(profile.age) < 16
+          ? 20 * 60
+          : 22 * 60;
+      if (
+        metrics.lastEnd !== null &&
+        metrics.lastEnd >
+        latestAllowed
+      ) {
+        blockers.push(
+          `${staff.name} · jeune travailleur : fin prévue après ${Number(profile.age) < 16 ? '20h00' : '22h00'}.`
+        );
+      }
+    }
+    if (
+      profile.protection ===
+      'postpartum_lt8w'
+    ) {
+      blockers.push(
+        `${staff.name} · occupation interdite pendant les 8 semaines suivant l’accouchement.`
+      );
+    }
+    if (
+      profile.protection ===
+        'postpartum_8_16w' &&
+      profile.postpartumConsent !== true
+    ) {
+      blockers.push(
+        `${staff.name} · reprise 8–16 semaines après accouchement : consentement documenté requis.`
+      );
+    }
+    if (
+      [
+        'pregnant',
+        'pregnant_standing_4plus',
+        'pregnant_standing_6plus',
+        'pregnant_8plus',
+        'breastfeeding'
+      ].includes(
+        profile.protection
+      ) &&
+      metrics.hours >
+        9 + 0.01
+    ) {
+      blockers.push(
+        `${staff.name} · protection grossesse/allaitement : maximum 9 h/jour.`
+      );
+    }
+    if (
+      profile.protection ===
+        'pregnant_8plus'
+    ) {
+      if (
+        metrics.nightMinutes > 0 ||
+        (
+          metrics.firstStart !== null &&
+          metrics.firstStart <
+          6 * 60
+        ) ||
+        (
+          metrics.lastEnd !== null &&
+          metrics.lastEnd >
+          20 * 60
+        )
+      ) {
+        blockers.push(
+          `${staff.name} · grossesse dès le 8e mois : travail entre 20h00 et 06h00 interdit.`
+        );
+      }
+    }
+    if (
+      profile.protection ===
+        'pregnant_standing_6plus' &&
+      metrics.hours >
+        4 + 0.01
+    ) {
+      blockers.push(
+        `${staff.name} · grossesse dès le 6e mois avec activité principalement debout : maximum 4 h/jour.`
+      );
+    }
+    if (
+      profile.protection ===
+        'pregnant_standing_4plus'
+    ) {
+      warnings.push(
+        `${staff.name} · activité principalement debout dès le 4e mois : prévoir 10 min de pause supplémentaire toutes les 2 h et 12 h de repos quotidien.`
+      );
+    }
+    if (
+      profile.protection ===
+        'breastfeeding'
+    ) {
+      warnings.push(
+        `${staff.name} · allaitement : temps rémunéré à réserver selon la durée quotidienne de travail.`
+      );
+    }
+    return {
+      blockers,
+      warnings
+    };
+  }
+  function swissSalaryIssuesV180(
+    staff,
+    settings
+  ) {
+    const blockers = [];
+    const warnings = [];
+    const payroll =
+      swissProfileForV180(
+        staff
+      );
+    if (
+      swissIsApprenticeV180(
+        staff
+      )
+    ) {
+      warnings.push(
+        `${staff.name} · apprenti/apprenant : la CCNT standard ne s’applique pas comme à un collaborateur ordinaire ; appliquer les règles de formation professionnelle et de protection des jeunes.`
+      );
+      return {
+        blockers,
+        warnings
+      };
+    }
+    const category =
+      String(
+        payroll.chLgavCategory ||
+        ''
+      ).toUpperCase();
+    if (!category) {
+      warnings.push(
+        `${staff.name} · catégorie salariale CCNT Suisse non renseignée : minimum 2026 non vérifiable.`
+      );
+      return {
+        blockers,
+        warnings
+      };
+    }
+    const establishment =
+      String(
+        settings
+          ?.planningLegalEstablishmentType ||
+        'standard'
+      ).toLowerCase();
+    const minMonthly =
+      Number(
+        SWISS_CCNT_MINIMUMS_2026_V180
+          .monthly?.[category] ||
+        0
+      );
+    const minHourly =
+      Number(
+        SWISS_CCNT_MINIMUMS_2026_V180
+          .hourly?.[
+            ['standard','seasonal','small']
+              .includes(establishment)
+                ? establishment
+                : 'standard'
+          ]?.[category] ||
+        0
+      );
+    if (
+      payroll.mode === 'monthly'
+    ) {
+      const salary =
+        Number(
+          payroll.monthlySalary || 0
+        );
+      if (
+        salary > 0 &&
+        minMonthly > 0 &&
+        salary + 0.01 <
+          minMonthly
+      ) {
+        blockers.push(
+          `${staff.name} · salaire mensuel CHF ${salary.toFixed(2)} < minimum CCNT 2026 CHF ${minMonthly.toFixed(2)} (${category}).`
+        );
+      }
+      if (
+        salary <= 0
+      ) {
+        warnings.push(
+          `${staff.name} · salaire mensuel non renseigné : minimum CCNT non vérifiable.`
+        );
+      }
+    } else {
+      const rate =
+        Number(
+          payroll.hourlyRate || 0
+        );
+      if (
+        rate > 0 &&
+        minHourly > 0 &&
+        rate + 0.001 <
+          minHourly
+      ) {
+        blockers.push(
+          `${staff.name} · taux horaire CHF ${rate.toFixed(2)} < base minimale CCNT 2026 CHF ${minHourly.toFixed(2)} (${category}).`
+        );
+      }
+      if (
+        rate <= 0
+      ) {
+        warnings.push(
+          `${staff.name} · taux horaire non renseigné : minimum CCNT non vérifiable.`
+        );
+      }
+    }
+    return {
+      blockers,
+      warnings
+    };
+  }
+  function swissSevenDayIssuesV180(
+    draft,
+    staff,
+    settings
+  ) {
+    const blockers = [];
+    const warnings = [];
+    const [year, month] =
+      String(draft.month)
+        .split('-')
+        .map(Number);
+    const daysInMonth =
+      new Date(
+        year,
+        month,
+        0
+      ).getDate();
+    let consecutive = 0;
+    for (
+      let day = 1;
+      day <= daysInMonth;
+      day++
+    ) {
+      const date =
+        new Date(
+          year,
+          month - 1,
+          day
+        );
+      const plan =
+        swissPlanForDateV180(
+          draft.proposal,
+          staff.id,
+          date,
+          draft.month
+        );
+      if (
+        !swissActualWorkV180(
+          plan
+        )
+      ) {
+        consecutive = 0;
+        continue;
+      }
+      consecutive++;
+      if (
+        consecutive > 7
+      ) {
+        blockers.push(
+          `${staff.name} · plus de 7 jours de travail consécutifs.`
+        );
+        continue;
+      }
+      if (
+        consecutive === 7
+      ) {
+        if (
+          settings
+            ?.planningSwissSevenDayException !==
+          true
+        ) {
+          blockers.push(
+            `${staff.name} · 7e jour consécutif détecté alors que le régime exceptionnel 7 jours n’est pas activé.`
+          );
+          continue;
+        }
+        const result =
+          swissSevenDayRunValidV180(
+            draft.proposal,
+            staff,
+            date,
+            draft.month
+          );
+        if (!result.valid) {
+          blockers.push(
+            `${staff.name} · régime 7 jours non conforme : ${result.reason}.`
+          );
+        } else {
+          warnings.push(
+            `${staff.name} · régime 7 jours contrôlé : repos ${result.restHours.toFixed(1)} h après le 7e jour ; ${result.fortnightHours.toFixed(1)} h sur 2 semaines.`
+          );
+        }
+      }
+    }
+    return {
+      blockers,
+      warnings
+    };
+  }
+  function swissAuditV180(
+    draft,
+    staffList,
+    settings
+  ) {
+    const blockers = [];
+    const warnings = [];
+    if (
+      String(
+        settings
+          ?.planningLegalCountry ||
+        'CH'
+      ).toUpperCase() !==
+      'CH'
+    ) {
+      return {
+        blockers,
+        warnings
+      };
+    }
+    const [year, month] =
+      String(draft.month)
+        .split('-')
+        .map(Number);
+    const daysInMonth =
+      new Date(
+        year,
+        month,
+        0
+      ).getDate();
+    (staffList || [])
+      .forEach(staff => {
+        const profile =
+          assistantLegalProfileV142(
+            settings,
+            staff
+          );
+        const salary =
+          swissSalaryIssuesV180(
+            staff,
+            settings
+          );
+        blockers.push(
+          ...salary.blockers
+        );
+        warnings.push(
+          ...salary.warnings
+        );
+        if (
+          profile.apprentice &&
+          (
+            profile.age === null ||
+            !Number.isFinite(
+              profile.age
+            )
+          )
+        ) {
+          blockers.push(
+            `${staff.name} · apprenti/apprenant : date de naissance obligatoire pour contrôler la protection des jeunes.`
+          );
+        }
+        for (
+          let day = 1;
+          day <= daysInMonth;
+          day++
+        ) {
+          const dateObj =
+            new Date(
+              year,
+              month - 1,
+              day
+            );
+          const plan =
+            swissPlanForDateV180(
+              draft.proposal,
+              staff.id,
+              dateObj,
+              draft.month
+            );
+          const issues =
+            swissSpecificPlanIssuesV180(
+              staff,
+              plan,
+              dateObj,
+              settings
+            );
+          blockers.push(
+            ...issues.blockers
+          );
+          warnings.push(
+            ...issues.warnings
+          );
+        }
+        const sevenDay =
+          swissSevenDayIssuesV180(
+            draft,
+            staff,
+            settings
+          );
+        blockers.push(
+          ...sevenDay.blockers
+        );
+        warnings.push(
+          ...sevenDay.warnings
+        );
+      });
+    return {
+      blockers:
+        Array.from(
+          new Set(blockers)
+        ),
+      warnings:
+        Array.from(
+          new Set(warnings)
+        )
+    };
+  }
+  // Audit final = audit historique + audit Suisse V180.
+  const originalAuditV180 =
+    window.assistantLegalAuditDraftV142;
+  if (
+    typeof originalAuditV180 ===
+    'function'
+  ) {
+    window.assistantLegalAuditDraftV142 =
+      function(
+        draft,
+        staffList,
+        settings
+      ) {
+        const base =
+          originalAuditV180(
+            draft,
+            staffList,
+            settings
+          ) || {
+            blockers:[],
+            warnings:[]
+          };
+        if (
+          String(
+            settings
+              ?.planningLegalCountry ||
+            'CH'
+          ).toUpperCase() !==
+          'CH'
+        ) {
+          return base;
+        }
+        const swiss =
+          swissAuditV180(
+            draft,
+            staffList,
+            settings
+          );
+        return {
+          blockers:
+            Array.from(
+              new Set([
+                ...(base.blockers || []),
+                ...swiss.blockers
+              ])
+            ),
+          warnings:
+            Array.from(
+              new Set([
+                ...(base.warnings || []),
+                ...swiss.warnings
+              ])
+            )
+        };
+      };
+  }
+  // Contrôle en amont : l'IA ne doit pas proposer un service
+  // déjà incompatible avec une protection spéciale Suisse.
+  const originalServiceAllowsV180 =
+    window.assistantLegalServiceAllowsV142;
+  if (
+    typeof originalServiceAllowsV180 ===
+    'function'
+  ) {
+    window.assistantLegalServiceAllowsV142 =
+      function(
+        proposal,
+        staff,
+        day,
+        service,
+        dept,
+        settings,
+        year,
+        month
+      ) {
+        const base =
+          originalServiceAllowsV180(
+            proposal,
+            staff,
+            day,
+            service,
+            dept,
+            settings,
+            year,
+            month
+          );
+        if (!base?.ok) {
+          return base;
+        }
+        if (
+          String(
+            settings
+              ?.planningLegalCountry ||
+            'CH'
+          ).toUpperCase() !==
+          'CH'
+        ) {
+          return base;
+        }
+        const current =
+          proposal?.[staff.id]?.[day] ||
+          proposal?.[String(staff.id)]?.[day];
+        if (!current) {
+          return base;
+        }
+        const simulated =
+          typeof assistantClone ===
+            'function'
+            ? assistantClone(
+                current
+              )
+            : JSON.parse(
+                JSON.stringify(
+                  current
+                )
+              );
+        assistantSetService(
+          simulated,
+          service,
+          dept,
+          settings,
+          simulated.obs || ''
+        );
+        const dateObj =
+          new Date(
+            year,
+            month - 1,
+            day
+          );
+        const issues =
+          swissSpecificPlanIssuesV180(
+            staff,
+            simulated,
+            dateObj,
+            settings
+          );
+        if (
+          issues.blockers.length
+        ) {
+          return {
+            ok:false,
+            reason:
+              issues.blockers[0]
+          };
+        }
+        return base;
+      };
+  }
+  // Remplace la règle automatique "6 jours" par une règle
+  // CH/FR réellement contextuelle.
+  window.assistantEnforceSixDayOffV146 =
+    function(
+      proposal,
+      staffList,
+      monthStr,
+      settings
+    ) {
+      const [year, month] =
+        String(monthStr)
+          .split('-')
+          .map(Number);
+      const daysInMonth =
+        new Date(
+          year,
+          month,
+          0
+        ).getDate();
+      const horizon =
+        typeof assistantPlanningHorizon ===
+          'function'
+          ? assistantPlanningHorizon(
+              monthStr
+            )
+          : {
+              startDay:1
+            };
+      const country =
+        String(
+          settings
+            ?.planningLegalCountry ||
+          'CH'
+        ).toUpperCase();
+      const maxBeforeForcedOff =
+        country === 'CH' &&
+        settings
+          ?.planningSwissSevenDayException ===
+        true
+          ? 7
+          : 6;
+      const forced = [];
+      (staffList || [])
+        .forEach(staff => {
+          let consecutive =
+            typeof assistantPreviousMonthTailV146 ===
+              'function'
+              ? assistantPreviousMonthTailV146(
+                  staff.id,
+                  year,
+                  month,
+                  maxBeforeForcedOff
+                )
+              : 0;
+          for (
+            let day = 1;
+            day <= daysInMonth;
+            day++
+          ) {
+            const plan =
+              proposal?.[staff.id]?.[day] ||
+              proposal?.[String(staff.id)]?.[day];
+            if (!plan) {
+              consecutive = 0;
+              continue;
+            }
+            if (
+              day <
+              horizon.startDay
+            ) {
+              consecutive =
+                swissActualWorkV180(
+                  plan
+                )
+                  ? consecutive + 1
+                  : 0;
+              continue;
+            }
+            if (
+              !swissActualWorkV180(
+                plan
+              )
+            ) {
+              consecutive = 0;
+              continue;
+            }
+            if (
+              consecutive >=
+              maxBeforeForcedOff
+            ) {
+              const before =
+                JSON.parse(
+                  JSON.stringify(
+                    plan
+                  )
+                );
+              const target =
+                proposal?.[staff.id] ||
+                proposal?.[
+                  String(staff.id)
+                ];
+              if (target) {
+                target[day] = {
+                  ...plan,
+                  status:'off',
+                  s1:'',
+                  s2:'',
+                  pause:0,
+                  obs:
+                    country === 'CH'
+                      ? (
+                          maxBeforeForcedOff === 7
+                            ? 'OFF automatique · plus de 7 jours consécutifs interdits'
+                            : 'OFF automatique · régime 7 jours Suisse non activé'
+                        )
+                      : 'OFF automatique · limite de jours consécutifs',
+                  __legalForcedOff:true,
+                  __protected:true
+                };
+              }
+              forced.push({
+                staffId:
+                  String(staff.id),
+                staffName:
+                  String(
+                    staff.name || ''
+                  ),
+                day,
+                before
+              });
+              consecutive = 0;
+              continue;
+            }
+            consecutive++;
+          }
+        });
+      return forced;
+    };
+  function refreshSwissLegalUiV180() {
+    const country =
+      document.getElementById(
+        'rh-setting-legal-country'
+      )?.value || 'CH';
+    const options =
+      document.getElementById(
+        'v180-swiss-legal-options'
+      );
+    if (options) {
+      options.style.display =
+        country === 'CH'
+          ? ''
+          : 'none';
+    }
+    const checkbox =
+      document.getElementById(
+        'rh-setting-ch-seven-day-exception'
+      );
+    if (checkbox) {
+      checkbox.disabled =
+        country !== 'CH';
+    }
+    const badge =
+      document.getElementById(
+        'v142-legal-status'
+      );
+    if (
+      badge &&
+      country === 'CH'
+    ) {
+      badge.textContent =
+        'SUISSE · CCNT + LTr + OLT 1/2';
+    }
+  }
+  document
+    .getElementById(
+      'rh-setting-legal-country'
+    )
+    ?.addEventListener(
+      'change',
+      refreshSwissLegalUiV180
+    );
+  document
+    .getElementById(
+      'rh-setting-ch-seven-day-exception'
+    )
+    ?.addEventListener(
+      'change',
+      () => {
+        if (
+          typeof refreshLegalProfileV142 ===
+          'function'
+        ) {
+          refreshLegalProfileV142();
+        }
+      }
+    );
+  if (
+    document.readyState ===
+    'loading'
+  ) {
+    document.addEventListener(
+      'DOMContentLoaded',
+      refreshSwissLegalUiV180,
+      {
+        once:true
+      }
+    );
+  } else {
+    refreshSwissLegalUiV180();
+  }
+  window.ICHEF_SWISS_LEGAL_V180 = {
+    version:
+      SWISS_LEGAL_VERSION_V180,
+    minima2026:
+      SWISS_CCNT_MINIMUMS_2026_V180,
+    profileFor:
+      swissAdultOrProtectedProfileV180,
+    audit:
+      swissAuditV180,
+    sevenDayCheck:
+      swissSevenDayRunValidV180
+  };
+})();
+
+
+;
+/* RH V264 - preserved script #98 */
+window.__ICHEF_RH_BUILD__='RH-V180-SWISS-LEGAL-STRICT';
+console.info('[iCHEF RH V180] Suisse · CCNT + LTr + OLT 1/2 · conformité stricte');
+
+
+;
+/* RH V264 - preserved script #99 */
+(() => {
+  'use strict';
+  if (window.__ICHEF_RH_V181_FRANCE_LEGAL__) return;
+  window.__ICHEF_RH_V181_FRANCE_LEGAL__ = true;
+  const VERSION='FR-2026-09-29-HCR-IDCC1979-CODE-TRAVAIL';
+  function profiles(){try{return JSON.parse(localStorage.getItem('ichef_payroll_profiles_v2')||'{}')||{}}catch(_){return {}}}
+  function pp(staff){const all=profiles();return {birthDate:'',contractType:'',frProtectionStatus:'none',frYoungNightAuthorization:false,frNightWorkerStatus:'auto',frNightCompensationTracked:false,frFamilyNightConflict:false,frApprenticeshipYear:'',...(all?.[staff?.id]||all?.[String(staff?.id)]||{})}}
+  function age(staff,at=new Date()){const raw=pp(staff).birthDate;if(!raw)return null;const d=new Date(`${String(raw).slice(0,10)}T12:00:00`);if(Number.isNaN(d.getTime()))return null;let a=at.getFullYear()-d.getFullYear();const md=at.getMonth()-d.getMonth();if(md<0||(md===0&&at.getDate()<d.getDate()))a--;return a}
+  function apprentice(staff){return /APPRENT/i.test(`${pp(staff).contractType||''} ${staff?.role||''}`)}
+  function role(staff){const t=`${staff?.dept||''} ${staff?.role||''} ${staff?.poste||''}`.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();if(/administratif|admin|comptable|rh|bureau/.test(t)&&!/reception/.test(t))return {code:'ADMIN_OFFSITE',dailyMax:10};if(/cuis|chef|kitchen|plonge|patiss/.test(t))return {code:'COOK',dailyMax:11};if(/reception|front office/.test(t))return {code:'RECEPTION',dailyMax:12};if(/veilleur|night|nuit/.test(t))return {code:'NIGHT',dailyMax:12};if(t.trim())return {code:'OTHER_HCR',dailyMax:11.5};return {code:'UNKNOWN',dailyMax:10}}
+  function mins(v){const m=/^(\d{1,2}):(\d{2})$/.exec(String(v||'').trim());if(!m)return null;const h=+m[1],mm=+m[2];if(h<0||h>23||mm<0||mm>59)return null;return h*60+mm}
+  function segments(plan){const out=[];[plan?.s1,plan?.s2].filter(Boolean).forEach(raw=>{const x=String(raw).split('-').map(s=>s.trim());if(x.length!==2)return;const s=mins(x[0]);let e=mins(x[1]);if(s===null||e===null)return;if(e<=s)e+=1440;out.push({start:s,end:e})});return out.sort((a,b)=>a.start-b.start)}
+  function metrics(plan){const seg=segments(plan);if(!seg.length)return {hours:0,breakMinutes:0,nightMinutes:0,firstStart:null,lastEnd:null};let gaps=0;for(let i=1;i<seg.length;i++)gaps+=Math.max(0,seg[i].start-seg[i-1].end);let night=0;const windows=[[0,420],[1320,1860],[2760,3300]];seg.forEach(r=>windows.forEach(([a,b])=>night+=Math.max(0,Math.min(r.end,b)-Math.max(r.start,a))));return {hours:Number(typeof calculateNet==='function'?calculateNet(plan):0)||0,breakMinutes:gaps+Math.max(0,Number(plan?.pause||0)),nightMinutes:night,firstStart:seg[0].start,lastEnd:Math.max(...seg.map(x=>x.end))}}
+  function planFor(proposal,staffId,dateObj,draftMonth){return typeof assistantLegalDatePlanV142==='function'?assistantLegalDatePlanV142(proposal,staffId,dateObj,draftMonth):null}
+  function works(plan){return Boolean(plan&&(typeof assistantIsActualWorkDayV146==='function'?assistantIsActualWorkDayV146(plan):(plan.s1||plan.s2)))}
+  function legalProfile(settings,staff){const r=role(staff),p=pp(staff),a=age(staff),young=Number.isFinite(a)&&a<18,under16=Number.isFinite(a)&&a<16;return {country:'FR',framework:'HCR IDCC 1979 + Code du travail',legalRole:r.code,legalBaseHours:35,weeklyReference:39,weeklyMax:young?35:48,rolling12AverageMax:young?35:46,nightRolling12AverageMax:44,dailyMax:young?8:r.dailyMax,dailyRestMin:under16?14:young?12:11,weeklyRestDays:2,maxConsecutiveDays:young?5:6,maxSpanHours:null,minPauseAfterSixHours:20,scheduleNoticeDays:settings?.planningFranceWorkTimeMode==='annualized'?15:null,scheduleChangeNoticeDays:settings?.planningFranceWorkTimeMode==='annualized'?8:null,annualReferenceHours:settings?.planningFranceWorkTimeMode==='annualized'?1607:null,workTimeMode:settings?.planningFranceWorkTimeMode||'weekly',establishmentType:String(settings?.planningLegalEstablishmentType||'permanent').toLowerCase(),young,under16,age:a,apprentice:apprentice(staff),protection:String(p.frProtectionStatus||'none'),youngNightAuthorization:p.frYoungNightAuthorization===true,nightCompensationTracked:p.frNightCompensationTracked===true,familyNightConflict:p.frFamilyNightConflict===true}}
+  const priorProfile=window.assistantLegalProfileV142;
+  if(typeof priorProfile==='function')window.assistantLegalProfileV142=function(settings,staff){const c=String(settings?.planningLegalCountry||'CH').toUpperCase();return c==='FR'?legalProfile(settings,staff):priorProfile(settings,staff)};
+  function nightHours(plan){return metrics(plan).nightMinutes/60}
+  function isNightWorker(proposal,staff,dateObj,draftMonth){const p=pp(staff);if(p.frNightWorkerStatus==='yes')return true;if(p.frNightWorkerStatus==='no')return false;const monday=new Date(dateObj);monday.setDate(monday.getDate()-((monday.getDay()+6)%7));let n=0;for(let i=0;i<7;i++){const d=new Date(monday);d.setDate(d.getDate()+i);if(nightHours(planFor(proposal,staff.id,d,draftMonth))>=3-.001)n++}return n>=2}
+  function restHours(proposal,staff,prevDate,nextDate,draftMonth){const a=planFor(proposal,staff.id,prevDate,draftMonth),b=planFor(proposal,staff.id,nextDate,draftMonth);if(!works(a)||!works(b))return Infinity;const ma=metrics(a),mb=metrics(b);if(ma.lastEnd===null||mb.firstStart===null)return Infinity;const end=new Date(prevDate.getFullYear(),prevDate.getMonth(),prevDate.getDate());end.setMinutes(ma.lastEnd);const start=new Date(nextDate.getFullYear(),nextDate.getMonth(),nextDate.getDate());start.setMinutes(mb.firstStart);return (start-end)/3600000}
+  function dayAudit(draft,staff,dateObj,settings){const blockers=[],warnings=[],plan=planFor(draft.proposal,staff.id,dateObj,draft.month);if(!works(plan))return {blockers,warnings};const pr=legalProfile(settings,staff),m=metrics(plan);if(m.hours>pr.dailyMax+.01)blockers.push(`${staff.name} · ${dateObj.toLocaleDateString('fr-FR')} : ${m.hours.toFixed(1)} h > maximum journalier ${pr.dailyMax} h.`);if(m.hours>=6-.001&&m.breakMinutes<20-.001)blockers.push(`${staff.name} · ${dateObj.toLocaleDateString('fr-FR')} : pause ${Math.round(m.breakMinutes)} min < 20 min.`);
+    if(pr.young){if(m.hours>8+.01)blockers.push(`${staff.name} · moins de 18 ans : plus de 8 h/jour.`);if(pr.under16){if((m.firstStart!==null&&m.firstStart<6*60)||(m.lastEnd!==null&&m.lastEnd>20*60))blockers.push(`${staff.name} · moins de 16 ans : travail entre 20h00 et 06h00 interdit.`)}else{if((m.firstStart!==null&&m.firstStart<6*60)||(m.lastEnd!==null&&m.lastEnd>22*60&&pr.youngNightAuthorization!==true))blockers.push(`${staff.name} · 16–17 ans : travail de nuit interdit sans dérogation documentée.`);if(pr.youngNightAuthorization===true&&m.lastEnd!==null&&m.lastEnd>23*60+30)blockers.push(`${staff.name} · dérogation jeune HCR : fin après 23h30 interdite.`)}}
+    if(pr.protection==='postpartum_lt6w')blockers.push(`${staff.name} · moins de 6 semaines après l’accouchement : emploi interdit.`);
+    if(['pregnant_night_day_request','pregnant_night_medical'].includes(pr.protection)&&m.nightMinutes>0)blockers.push(`${staff.name} · grossesse : affectation de jour requise, travail de nuit planifié.`);
+    if(pr.protection==='pregnant'&&m.nightMinutes>0)warnings.push(`${staff.name} · grossesse + travail de nuit : contrôler le droit à affectation de jour et l’avis de la médecine du travail.`);
+    if(pr.protection==='breastfeeding')warnings.push(`${staff.name} · allaitement : réserver le temps légal d’allaitement pendant la première année de l’enfant.`);
+    if(isNightWorker(draft.proposal,staff,dateObj,draft.month)&&m.nightMinutes>0){if(m.hours>8+.01&&pr.nightCompensationTracked!==true)blockers.push(`${staff.name} · travailleur de nuit : journée > 8 h sans repos équivalent suivi.`);if(pr.familyNightConflict)warnings.push(`${staff.name} · obligations familiales incompatibles avec la nuit déclarées : demande d’affectation de jour à traiter.`)}
+    return {blockers,warnings};
+  }
+  function isolatedRestAudit(draft,staff,dateObj){const cur=planFor(draft.proposal,staff.id,dateObj,draft.month);if(works(cur))return null;const prev=new Date(dateObj),next=new Date(dateObj);prev.setDate(prev.getDate()-1);next.setDate(next.getDate()+1);const a=planFor(draft.proposal,staff.id,prev,draft.month),b=planFor(draft.proposal,staff.id,next,draft.month);if(!works(a)||!works(b))return null;const h=restHours(draft.proposal,staff,prev,next,draft.month);return h<35-.01?`${staff.name} · ${dateObj.toLocaleDateString('fr-FR')} : repos isolé ${h.toFixed(1)} h < 35 h consécutives.`:null}
+  function audit(draft,staffList,settings){const blockers=[],warnings=[];if(String(settings?.planningLegalCountry||'').toUpperCase()!=='FR')return {blockers,warnings};if(settings?.planningFranceWorkTimeMode==='annualized'){if(settings?.planningFranceAnnualizationValidated!==true)blockers.push('France HCR · aménagement > 4 semaines : accord / période de référence non validés.');if(settings?.planningFranceNoticeValidated!==true)blockers.push('France HCR · aménagement > 4 semaines : prévenance du planning non validée.');warnings.push('France HCR · aménagement du temps de travail : plafond de référence 1 607 h à suivre sur la période complète.')}const [y,m]=String(draft.month).split('-').map(Number),days=new Date(y,m,0).getDate();(staffList||[]).forEach(staff=>{const pr=legalProfile(settings,staff);if(pr.legalRole==='UNKNOWN')blockers.push(`${staff.name} · fonction/poste insuffisamment renseigné pour appliquer le maximum journalier HCR.`);if((pr.young||pr.apprentice)&&!Number.isFinite(pr.age))blockers.push(`${staff.name} · jeune/apprenti : date de naissance obligatoire.`);for(let day=1;day<=days;day++){const d=new Date(y,m-1,day),z=dayAudit(draft,staff,d,settings);blockers.push(...z.blockers);warnings.push(...z.warnings);const rest=isolatedRestAudit(draft,staff,d);if(rest)blockers.push(rest)}for(let day=1;day<=days;day++){const d=new Date(y,m-1,day);if(d.getDay()!==1||!isNightWorker(draft.proposal,staff,d,draft.month))continue;if(typeof assistantLegalHasReliableHistoryV145==='function'&&!assistantLegalHasReliableHistoryV145(staff,d,12)){blockers.push(`${staff.name} · travailleur de nuit : historique insuffisant pour vérifier la moyenne de 44 h sur 12 semaines.`);continue}if(typeof assistantLegalRolling12AverageV143==='function'){const avg=assistantLegalRolling12AverageV143(draft.proposal,staff.id,d.getFullYear(),d.getMonth()+1,d.getDate());if(Number.isFinite(avg)&&avg>44+.01)blockers.push(`${staff.name} · travailleur de nuit : moyenne ${avg.toFixed(1)} h sur 12 semaines > 44 h.`)}}});return {blockers:[...new Set(blockers)],warnings:[...new Set(warnings)]}}
+  const priorAudit=window.assistantLegalAuditDraftV142;
+  if(typeof priorAudit==='function')window.assistantLegalAuditDraftV142=function(draft,staffList,settings){const base=priorAudit(draft,staffList,settings)||{blockers:[],warnings:[]};if(String(settings?.planningLegalCountry||'').toUpperCase()!=='FR')return base;const fr=audit(draft,staffList,settings);return {blockers:[...new Set([...(base.blockers||[]),...fr.blockers])],warnings:[...new Set([...(base.warnings||[]),...fr.warnings])]}};
+  const priorAllows=window.assistantLegalServiceAllowsV142;
+  if(typeof priorAllows==='function')window.assistantLegalServiceAllowsV142=function(proposal,staff,day,service,dept,settings,year,month){const base=priorAllows(proposal,staff,day,service,dept,settings,year,month);if(!base?.ok||String(settings?.planningLegalCountry||'').toUpperCase()!=='FR')return base;const current=proposal?.[staff.id]?.[day]||proposal?.[String(staff.id)]?.[day];if(!current)return base;const sim=typeof assistantClone==='function'?assistantClone(current):JSON.parse(JSON.stringify(current));assistantSetService(sim,service,dept,settings,sim.obs||'');const fake={month:`${year}-${String(month).padStart(2,'0')}`,proposal:{...proposal,[staff.id]:{...(proposal?.[staff.id]||{}),[day]:sim}}};const z=dayAudit(fake,staff,new Date(year,month-1,day),settings);return z.blockers.length?{ok:false,reason:z.blockers[0]}:base};
+  function refresh(){const country=document.getElementById('rh-setting-legal-country')?.value||'CH',fr=country==='FR';const frO=document.getElementById('v181-france-legal-options'),frR=document.getElementById('v181-france-status-rules'),chO=document.getElementById('v180-swiss-legal-options'),chR=document.getElementById('v180-swiss-status-rules');if(frO)frO.hidden=!fr;if(frR)frR.hidden=!fr;if(chO)chO.hidden=fr;if(chR)chR.hidden=fr;const badge=document.getElementById('v142-legal-status');if(badge&&fr)badge.textContent='FRANCE · HCR IDCC 1979 + CODE DU TRAVAIL'}
+  ['rh-setting-legal-country','rh-setting-fr-worktime-mode','rh-setting-fr-annualization-validated','rh-setting-fr-notice-validated'].forEach(id=>document.getElementById(id)?.addEventListener('change',()=>{refresh();if(typeof refreshLegalProfileV142==='function')refreshLegalProfileV142()}));
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',refresh,{once:true});else refresh();
+  window.ICHEF_FRANCE_LEGAL_V181={version:VERSION,profile:legalProfile,audit};
+})();
+
+
+;
+/* RH V264 - preserved script #100 */
+window.__ICHEF_RH_BUILD__='RH-V181-FRANCE-HCR-LEGAL-STRICT';
+console.info('[iCHEF RH V181] France · HCR IDCC 1979 + Code du travail · conformité stricte');
+
+
+;
+/* RH V264 - preserved script #101 */
+window.__ICHEF_RH_BUILD__='RH-V182-GLOBAL-READABILITY';
+console.info('[iCHEF RH V182] lisibilité et confort global des paramètres');
+
+
+;
+/* RH V264 - preserved script #102 */
+window.__ICHEF_RH_BUILD__='RH-V183-RATIOS-VISIBLE';
+console.info('[iCHEF RH V183] ratios et brigades rendus pleinement visibles');
+
+
+;
+/* RH V264 - preserved script #103 */
+window.__ICHEF_RH_BUILD__='RH-V184-CARDS-ORDER-1-6';
+console.info('[iCHEF RH V184] cartes en ordre croissant 1 à 6');
+
+
+;
+/* RH V264 - preserved script #104 */
+(() => {
+  'use strict';
+  if (window.__ICHEF_RH_V185_AUTO_COUNTRY__) return;
+  window.__ICHEF_RH_V185_AUTO_COUNTRY__ = true;
+  const VERSION = 'RH-V189-SALARY-HOURLY-INFO';
+  let applying = false;
+  let lastDetected = null;
+  const SOURCES = {
+    CH: [
+      {
+        label: 'CCNT hôtels, restaurants et cafés · Convention actuelle',
+        authority: 'Office de contrôle de la CCNT / L-GAV',
+        url: 'https://l-gav.ch/fr/convention-actuelle'
+      },
+      {
+        label: 'Durée du travail et du repos · LTr / OLT',
+        authority: 'SECO · Confédération suisse',
+        url: 'https://www.seco.admin.ch/fr/duree-du-travail-et-du-repos'
+      },
+      {
+        label: 'Protection des jeunes travailleurs',
+        authority: 'SECO · Confédération suisse',
+        url: 'https://www.seco.admin.ch/fr/faq-protection-des-jeunes-travailleurs'
+      },
+      {
+        label: 'Maternité / protection de la grossesse',
+        authority: 'SECO · Confédération suisse',
+        url: 'https://www.seco.admin.ch/fr/maternite'
+      }
+    ],
+    FR: [
+      {
+        label: 'Convention collective HCR · IDCC 1979',
+        authority: 'Légifrance',
+        url: 'https://www.legifrance.gouv.fr/conv_coll/id/KALICONT000005635534'
+      },
+      {
+        label: 'Durée et aménagement du temps de travail HCR',
+        authority: 'Légifrance · Convention HCR',
+        url: 'https://www.legifrance.gouv.fr/conv_coll/id/KALISCTA000005747435'
+      },
+      {
+        label: 'Durée et temps de travail',
+        authority: 'Ministère du Travail',
+        url: 'https://travail-emploi.gouv.fr/droit-du-travail/duree-et-temps-de-travail'
+      },
+      {
+        label: 'Travail de nuit',
+        authority: 'Ministère du Travail',
+        url: 'https://travail-emploi.gouv.fr/le-travail-de-nuit'
+      },
+      {
+        label: 'Jeunes de moins de 18 ans',
+        authority: 'Ministère du Travail',
+        url: 'https://travail-emploi.gouv.fr/le-temps-de-travail-des-jeunes-de-moins-de-18-ans'
+      }
+    ]
+  };
+  function normalizeCountry(value) {
+    const raw = String(value ?? '')
+      .trim()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g,'')
+      .toUpperCase();
+    if (!raw) return '';
+    if (
+      raw === 'FR' ||
+      raw === 'FRA' ||
+      raw === 'FRANCE' ||
+      raw.includes('FRANCE')
+    ) {
+      return 'FR';
+    }
+    if (
+      raw === 'CH' ||
+      raw === 'CHE' ||
+      raw === 'SUISSE' ||
+      raw === 'SWITZERLAND' ||
+      raw === 'SCHWEIZ' ||
+      raw === 'SVIZZERA' ||
+      raw.includes('SUISSE') ||
+      raw.includes('SWITZERLAND') ||
+      raw.includes('SCHWEIZ')
+    ) {
+      return 'CH';
+    }
+    return '';
+  }
+  function normalizeCurrency(value) {
+    const raw = String(value ?? '').trim().toUpperCase();
+    if (raw === 'EUR' || raw === '€') return 'FR';
+    if (raw === 'CHF') return 'CH';
+    return '';
+  }
+  function valueByKeys(obj, keys) {
+    if (!obj || typeof obj !== 'object') return '';
+    for (const key of keys) {
+      if (Object.prototype.hasOwnProperty.call(obj, key)) {
+        const country = normalizeCountry(obj[key]);
+        if (country) return country;
+      }
+    }
+    return '';
+  }
+  function currencyByKeys(obj, keys) {
+    if (!obj || typeof obj !== 'object') return '';
+    for (const key of keys) {
+      if (Object.prototype.hasOwnProperty.call(obj, key)) {
+        const country = normalizeCurrency(obj[key]);
+        if (country) return country;
+      }
+    }
+    return '';
+  }
+  function detectFromConfigObject(obj, label) {
+    if (!obj || typeof obj !== 'object') return null;
+    const countryKeys = [
+      'countryCode','country_code','country','pays',
+      'companyCountry','company_country',
+      'establishmentCountry','establishment_country',
+      'businessCountry','business_country',
+      'clientCountry','client_country',
+      'tenantCountry','tenant_country',
+      'legalCountry','legal_country'
+    ];
+    const currencyKeys = [
+      'currency','devise','currencyCode','currency_code'
+    ];
+    const direct = valueByKeys(obj, countryKeys);
+    if (direct) {
+      return {
+        country: direct,
+        source: label + ' · pays'
+      };
+    }
+    const currency = currencyByKeys(obj, currencyKeys);
+    if (currency) {
+      return {
+        country: currency,
+        source: label + ' · devise'
+      };
+    }
+    return null;
+  }
+  function detectFromLiveState(state) {
+    if (!state || typeof state !== 'object') return null;
+    const directObjects = [
+      ['État client', state],
+      ['Tenant', state.tenant],
+      ['Client', state.client],
+      ['Établissement', state.establishment],
+      ['Entreprise', state.company],
+      ['Business', state.business],
+      ['Configuration', state.settings],
+      ['Profil', state.profile]
+    ];
+    for (const [label, obj] of directObjects) {
+      const found = detectFromConfigObject(obj, label);
+      if (found) return found;
+    }
+    const active = state.activeOrders || {};
+    const likelyKeys = Object.keys(active).filter(key =>
+      /(CLIENT|TENANT|BUSINESS|COMPANY|ESTABLISH|SETTING|CONFIG|PROFILE|VENUE|RESTAURANT|HOTEL)/i
+        .test(String(key))
+    );
+    for (const key of likelyKeys) {
+      const node = active[key];
+      const payload =
+        node && typeof node === 'object' && 'data' in node
+          ? node.data
+          : node;
+      const found = detectFromConfigObject(
+        payload,
+        `Serveur · ${key}`
+      );
+      if (found) return found;
+    }
+    return null;
+  }
+  function detectFromLocalClientConfig() {
+    const countryKeys = [
+      'ichef_client_country',
+      'ichef_establishment_country',
+      'ichef_company_country',
+      'ichef_business_country',
+      'ichef_country',
+      'client_country',
+      'establishment_country'
+    ];
+    for (const key of countryKeys) {
+      const value = localStorage.getItem(key);
+      const country = normalizeCountry(value);
+      if (country) {
+        return {
+          country,
+          source: `Fiche client locale · ${key}`
+        };
+      }
+    }
+    // Paramètres paie = configuration entreprise, meilleure source que la devise RH.
+    try {
+      const payroll =
+        JSON.parse(
+          localStorage.getItem(
+            'ichef_payroll_settings_v2'
+          ) || '{}'
+        ) || {};
+      const direct = normalizeCountry(payroll.country);
+      if (direct) {
+        return {
+          country: direct,
+          source: 'Configuration entreprise / paie'
+        };
+      }
+      const byCurrency = normalizeCurrency(payroll.currency);
+      if (byCurrency) {
+        return {
+          country: byCurrency,
+          source: 'Configuration entreprise / paie · devise'
+        };
+      }
+    } catch (_) {}
+    return null;
+  }
+  function detectFromCashState(state) {
+    try {
+      const rows =
+        state?.activeOrders?.FINANCIAL_HISTORY?.data;
+      if (!Array.isArray(rows)) return null;
+      const currencies = rows
+        .slice(-100)
+        .map(tx =>
+          tx?.currency ||
+          tx?.details?.currency ||
+          tx?.payment?.currency
+        )
+        .filter(Boolean);
+      const eur = currencies.filter(v => normalizeCurrency(v) === 'FR').length;
+      const chf = currencies.filter(v => normalizeCurrency(v) === 'CH').length;
+      if (eur > chf && eur > 0) {
+        return {
+          country:'FR',
+          source:'Caisse iCHEF · devise EUR'
+        };
+      }
+      if (chf > eur && chf > 0) {
+        return {
+          country:'CH',
+          source:'Caisse iCHEF · devise CHF'
+        };
+      }
+    } catch (_) {}
+    return null;
+  }
+  function detectFallback() {
+    const settings =
+      typeof getRhSettings === 'function'
+        ? getRhSettings()
+        : {};
+    const currency =
+      normalizeCurrency(settings.currency);
+    if (currency) {
+      return {
+        country:currency,
+        source:'Paramètres établissement · devise (secours)'
+      };
+    }
+    const saved =
+      normalizeCountry(settings.planningLegalCountry);
+    if (saved) {
+      return {
+        country:saved,
+        source:'Droit précédemment enregistré (secours)'
+      };
+    }
+    return {
+      country:'CH',
+      source:'Valeur de secours · Suisse'
+    };
+  }
+  function detectClientCountry(state) {
+    return (
+      detectFromLiveState(state) ||
+      detectFromLocalClientConfig() ||
+      detectFromCashState(state) ||
+      detectFallback()
+    );
+  }
+  function sourceLabel(country) {
+    return country === 'FR'
+      ? 'FRANCE · HCR IDCC 1979 + CODE DU TRAVAIL'
+      : 'SUISSE · CCNT + LTr + OLT 1/2';
+  }
+  function renderSources(country, detectedSource) {
+    const title =
+      document.getElementById(
+        'v185-legal-source-country'
+      );
+    const list =
+      document.getElementById(
+        'v185-legal-source-list'
+      );
+    const detection =
+      document.getElementById(
+        'v185-legal-detection-source'
+      );
+    if (title) {
+      title.textContent =
+        country === 'FR'
+          ? 'Client France · références françaises actives'
+          : 'Client Suisse · références suisses actives';
+    }
+    if (list) {
+      list.innerHTML =
+        (SOURCES[country] || [])
+          .map(item => `
+            <a
+              class="v185-source-card"
+              href="${item.url}"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <strong>${item.label}</strong>
+              <span>${item.authority}</span>
+            </a>
+          `)
+          .join('');
+    }
+    if (detection) {
+      detection.innerHTML =
+        `<b>Pays appliqué automatiquement :</b> ` +
+        `${country === 'FR' ? 'France' : 'Suisse'} · ` +
+        `<span>source de détection : ${String(detectedSource || 'configuration client')}</span>`;
+    }
+  }
+  function renderAutoBadge(country, source) {
+    const badge =
+      document.getElementById(
+        'v185-country-auto-badge'
+      );
+    if (!badge) return;
+    badge.dataset.country = country;
+    badge.textContent =
+      country === 'FR'
+        ? 'AUTO · CLIENT FRANCE'
+        : 'AUTO · CLIENT SUISSE';
+    badge.title =
+      `Détecté depuis : ${source || 'configuration client'}`;
+  }
+  function syncPayrollCountry(country) {
+    try {
+      const key = 'ichef_payroll_settings_v2';
+      const current =
+        JSON.parse(
+          localStorage.getItem(key) || '{}'
+        ) || {};
+      const desiredCurrency =
+        country === 'FR'
+          ? 'EUR'
+          : 'CHF';
+      const next = {
+        ...current,
+        country,
+        currency:
+          current.currency &&
+          ['EUR','CHF'].includes(
+            String(current.currency).toUpperCase()
+          )
+            ? (
+                String(current.country || '').toUpperCase() === country
+                  ? current.currency
+                  : desiredCurrency
+              )
+            : desiredCurrency,
+        autoCountryFromTenant:true,
+        autoCountryUpdatedAt:
+          new Date().toISOString()
+      };
+      localStorage.setItem(
+        key,
+        JSON.stringify(next)
+      );
+    } catch (_) {}
+  }
+  function compatibleEstablishmentType(country, current) {
+    const value = String(current || '').toLowerCase();
+    if (country === 'FR') {
+      return ['permanent','seasonal'].includes(value)
+        ? value
+        : 'permanent';
+    }
+    return ['standard','seasonal','small'].includes(value)
+      ? value
+      : 'standard';
+  }
+  function applyCountry(country, source, options = {}) {
+    if (applying) return;
+    const safeCountry =
+      country === 'FR'
+        ? 'FR'
+        : 'CH';
+    const select =
+      document.getElementById(
+        'rh-setting-legal-country'
+      );
+    const type =
+      document.getElementById(
+        'rh-setting-legal-establishment'
+      );
+    if (!select) return;
+    const previous = select.value;
+    select.value = safeCountry;
+    select.disabled = true;
+    select.setAttribute('aria-disabled','true');
+    renderAutoBadge(
+      safeCountry,
+      source
+    );
+    renderSources(
+      safeCountry,
+      source
+    );
+    const badge =
+      document.getElementById(
+        'v142-legal-status'
+      );
+    if (badge) {
+      badge.textContent =
+        sourceLabel(safeCountry);
+    }
+    if (
+      typeof refreshLegalProfileV142 === 'function'
+    ) {
+      refreshLegalProfileV142(
+        compatibleEstablishmentType(
+          safeCountry,
+          type?.value
+        )
+      );
+    }
+    // Les scripts historiques peuvent essayer de réécrire le pays :
+    // on réimpose toujours le pays du client après le refresh.
+    select.value = safeCountry;
+    select.disabled = true;
+    if (
+      previous !== safeCountry ||
+      options.forcePersist === true
+    ) {
+      applying = true;
+      try {
+        const settings =
+          typeof getRhSettings === 'function'
+            ? getRhSettings()
+            : {};
+        const newType =
+          compatibleEstablishmentType(
+            safeCountry,
+            type?.value ||
+            settings.planningLegalEstablishmentType
+          );
+        if (type) {
+          type.value = newType;
+        }
+        if (
+          typeof saveRhSettings === 'function'
+        ) {
+          saveRhSettings({
+            ...settings,
+            planningLegalCountry:
+              safeCountry,
+            planningLegalFramework:
+              safeCountry === 'FR'
+                ? 'FR_HCR'
+                : 'CH_CCNT',
+            planningLegalEstablishmentType:
+              newType,
+            planningLegalCountryAuto:
+              true,
+            planningLegalCountrySource:
+              String(source || 'tenant'),
+            planningLegalReferenceDate:
+              '2026-09-29'
+          });
+        }
+        syncPayrollCountry(
+          safeCountry
+        );
+        try {
+          localStorage.setItem(
+            `ichef_client_country_detected_v185_${String(
+              typeof tenantID_JS !== 'undefined'
+                ? tenantID_JS
+                : 'default'
+            )}`,
+            JSON.stringify({
+              country:safeCountry,
+              source,
+              updatedAt:
+                new Date().toISOString()
+            })
+          );
+        } catch (_) {}
+      } finally {
+        applying = false;
+      }
+    }
+    lastDetected = {
+      country:safeCountry,
+      source
+    };
+  }
+  async function detectAndApply(state, options = {}) {
+    const detected =
+      detectClientCountry(
+        state ||
+        window.ICHEF_LIVE_STATE
+      );
+    applyCountry(
+      detected.country,
+      detected.source,
+      options
+    );
+    return detected;
+  }
+  async function refreshFromServer() {
+    try {
+      if (
+        typeof API !== 'undefined' &&
+        API &&
+        typeof API.getState === 'function'
+      ) {
+        const state =
+          await API.getState();
+        if (state) {
+          window.ICHEF_LIVE_STATE =
+            state;
+          return await detectAndApply(
+            state,
+            {
+              forcePersist:true
+            }
+          );
+        }
+      }
+    } catch (error) {
+      console.warn(
+        '[iCHEF RH V185] détection pays serveur indisponible, utilisation configuration locale.',
+        error?.message || error
+      );
+    }
+    return await detectAndApply(
+      null,
+      {
+        forcePersist:true
+      }
+    );
+  }
+  // Bloque les changements manuels : le pays suit le client.
+  function lockCountryControl() {
+    const select =
+      document.getElementById(
+        'rh-setting-legal-country'
+      );
+    if (!select) return;
+    select.disabled = true;
+    select.setAttribute(
+      'aria-disabled',
+      'true'
+    );
+    select.title =
+      'Automatique : le droit applicable suit le pays de l’établissement client.';
+  }
+  // Si un ancien script change le select, on restaure le pays client.
+  document.addEventListener(
+    'change',
+    event => {
+      if (
+        event.target?.id ===
+        'rh-setting-legal-country'
+      ) {
+        event.preventDefault();
+        if (lastDetected) {
+          applyCountry(
+            lastDetected.country,
+            lastDetected.source
+          );
+        }
+      }
+    },
+    true
+  );
+  window.addEventListener(
+    'ichef:updateState',
+    event => {
+      detectAndApply(
+        event.detail
+      );
+    }
+  );
+  window.addEventListener(
+    'ichef:connected',
+    () => {
+      setTimeout(
+        refreshFromServer,
+        250
+      );
+    }
+  );
+  window.addEventListener(
+    'focus',
+    () => {
+      detectAndApply();
+    }
+  );
+  document.addEventListener(
+    'ichef:rh-settings-saved',
+    () => {
+      if (
+        !applying &&
+        lastDetected
+      ) {
+        setTimeout(
+          () =>
+            applyCountry(
+              lastDetected.country,
+              lastDetected.source
+            ),
+          0
+        );
+      }
+    }
+  );
+  function boot() {
+    lockCountryControl();
+    detectAndApply(
+      window.ICHEF_LIVE_STATE
+    );
+    setTimeout(
+      refreshFromServer,
+      450
+    );
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener(
+      'DOMContentLoaded',
+      boot,
+      {
+        once:true
+      }
+    );
+  } else {
+    boot();
+  }
+  window.ICHEF_CLIENT_COUNTRY_V185 = {
+    detect:
+      detectAndApply,
+    refresh:
+      refreshFromServer,
+    get current() {
+      return lastDetected;
+    }
+  };
+  window.__ICHEF_RH_BUILD__ = VERSION;
+  console.info(
+    '[iCHEF RH V185] pays client automatique + références juridiques officielles'
+  );
+})();
+
+
+;
+/* RH V264 - preserved script #105 */
+window.__ICHEF_RH_BUILD__='RH-V185-AUTO-COUNTRY-LEGAL-SOURCES';
+console.info('[iCHEF RH V185] droit automatiquement lié au pays client');
+
+;
+
+;
+/* RH V264 - preserved script #106 */
+
+(() => {
+  'use strict';
+  if (window.__ICHEF_RH_V194_COMMAND_CENTER__) return;
+  window.__ICHEF_RH_V194_COMMAND_CENTER__ = true;
+  const VERIFIED_AT='2026-09-29';
+  const SOURCES={
+    FR:[
+      {key:'worktime',authority:'LÉGIFRANCE',title:'HCR IDCC 1979 · durée du travail, majorations et maxima',url:'https://www.legifrance.gouv.fr/conv_coll/id/KALISCTA000005713679'},
+      {key:'leave',authority:'CODE DU TRAVAIL NUMÉRIQUE',title:'Congés payés · 2,5 jours ouvrables/mois · maladie',url:'https://code.travail.gouv.fr/fiche-service-public/conges-payes'},
+      {key:'wages',authority:'CODE DU TRAVAIL NUMÉRIQUE',title:'HCR · salaire minimum conventionnel et SMIC',url:'https://code.travail.gouv.fr/contribution/1979-quel-est-le-salaire-minimum'},
+      {key:'agreement',authority:'LÉGIFRANCE',title:'Convention collective HCR · IDCC 1979',url:'https://www.legifrance.gouv.fr/conv_coll/id/KALITEXT000005670080'}
+    ],
+    CH:[
+      {key:'worktime',authority:'CCNT',title:'Art. 15 · durée du travail / heures supplémentaires',url:'https://l-gav.ch/fr/convention-actuelle/iv-duree-du-travail-et-repos/art-15-duree-du-travail-/-heures-supplementaires'},
+      {key:'rest',authority:'CCNT',title:'Art. 16 · deux jours de repos hebdomadaires',url:'https://l-gav.ch/fr/convention-actuelle/iv-duree-du-travail-et-repos/art-16-jours-de-repos'},
+      {key:'leave',authority:'CCNT',title:'Art. 17 · 5 semaines / 35 jours civils',url:'https://l-gav.ch/fr/convention-actuelle/iv-duree-du-travail-et-repos/art-17-vacances'},
+      {key:'holiday',authority:'CCNT',title:'Art. 18 · 6 jours fériés / 0,5 jour par mois',url:'https://l-gav.ch/fr/convention-actuelle/iv-duree-du-travail-et-repos/art-18-jours-feries'},
+      {key:'records',authority:'CCNT',title:'Art. 21 · horaire et enregistrement du temps de travail',url:'https://l-gav.ch/fr/convention-actuelle/iv-duree-du-travail-et-repos/art-21-horaire-de-travail-/-enregistrement-de-la-duree-du-temps-de-travail-/-controle-de-la-duree-du-travail'},
+      {key:'13th',authority:'CCNT',title:'Art. 12 · 13e salaire',url:'https://l-gav.ch/fr/convention-actuelle/iii-salaire/art-12-13e-salaire'},
+      {key:'wages',authority:'CCNT',title:'Art. 10 · salaires minimums',url:'https://l-gav.ch/fr/convention-actuelle/iii-salaire/art-10-salaires-minimums'},
+      {key:'ltr',authority:'SECO',title:'Loi sur le travail · durée du travail et du repos',url:'https://www.seco.admin.ch/fr/duree-du-travail-et-du-repos'}
+    ]
+  };
+  window.ICHEF_RH_LEGAL_SOURCE_REGISTRY_V194=Object.freeze({verifiedAt:VERIFIED_AT,FR:SOURCES.FR,CH:SOURCES.CH});
+
+  const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const jget=(k,f)=>{try{return JSON.parse(localStorage.getItem(k)||'null')??f}catch(_){return f}};
+  const month=()=>document.getElementById('month-selector')?.value || (()=>{const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`})();
+  const settings=()=>{try{return typeof getRhSettings==='function'?getRhSettings():{}}catch(_){return {}}};
+  const staff=()=>{try{return typeof getDir==='function'?(getDir()||[]).filter(s=>s.active!==false):[]}catch(_){return []}};
+  const payrollProfiles=()=>jget('ichef_payroll_profiles_v2',{});
+  const payrollVars=()=>jget('ichef_payroll_variables_v2',{});
+  const payrollSettingsSafe=()=>{try{return typeof payrollSettings==='function'?payrollSettings():{...{country:'CH',canton:''},...jget('ichef_payroll_settings_v2',{})}}catch(_){return jget('ichef_payroll_settings_v2',{})}};
+  const country=()=>String(settings()?.planningLegalCountry||payrollSettingsSafe()?.country||'').toUpperCase()==='FR'?'FR':'CH';
+  const framework=()=>country()==='FR'?'HCR · IDCC 1979 + Code du travail':'CCNT hôtels-restaurants-cafés + LTr / OLT';
+  const set=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v};
+  function hash(str){let h=2166136261;for(let i=0;i<str.length;i++){h^=str.charCodeAt(i);h=Math.imul(h,16777619)}return ('00000000'+(h>>>0).toString(16)).slice(-8).toUpperCase()}
+  function rulesHash(){return `V194-${hash(JSON.stringify({country:country(),settings:settings(),sources:SOURCES[country()],verifiedAt:VERIFIED_AT}))}`}
+  function planAudit(){
+    const m=month(), list=staff(), st=settings();
+    const proposal=(typeof getTs==='function'?getTs():{})?.[m]||{};
+    if(typeof assistantLegalAuditDraftV142!=='function')return {blockers:['Moteur de contrôle planning indisponible.'],warnings:[]};
+    try{return assistantLegalAuditDraftV142({month:m,proposal},list,st)||{blockers:[],warnings:[]}}catch(e){return {blockers:[`Contrôle impossible : ${e.message||e}`],warnings:[]}}
+  }
+  function dossier(st){
+    const p=payrollProfiles()?.[st.id]||payrollProfiles()?.[String(st.id)]||{};
+    const miss=[];
+    if(!String(st.name||'').trim())miss.push('identité');
+    if(!String(st.title||st.role||'').trim())miss.push('poste');
+    if(!(Number(st.contract)>0))miss.push('heures contrat');
+    if(!String(st.contractType||p.contractType||'').trim())miss.push('type contrat');
+    if(!String(st.startDate||p.startDate||'').trim())miss.push('date entrée');
+    const ct=String(st.contractType||p.contractType||'');
+    if(/APPRENT|MINEUR/i.test(ct)&&!String(st.birthDate||p.birthDate||'').trim())miss.push('date naissance');
+    if(country()==='FR'){
+      if(!String(p.hcrLevel||'').trim()||!String(p.hcrEchelon||'').trim())miss.push('classification HCR');
+    }else{
+      if(!String(p.chLgavCategory||'').trim())miss.push('catégorie CCNT');
+    }
+    return {staff:st,profile:p,missing:miss,complete:miss.length===0};
+  }
+  function dossiers(){return staff().map(dossier)}
+
+  // V245 : lecture seule du même dossier utilisé par le moteur légal V194.
+  // Évite de maintenir deux logiques divergentes de "dossier incomplet".
+  window.getRhLegalDossierV245=function(staffId){
+    const row=staff().find(x=>String(x.id)===String(staffId));
+    if(!row)return null;
+    return {
+      ...dossier(row),
+      country:country(),
+      framework:framework()
+    };
+  };
+
+  function timeProof(){
+    const m=month(), list=staff();
+    if(country()==='CH'){
+      const vars=payrollVars()?.[m]||{};
+      const signed=list.filter(st=>Boolean(vars?.[st.id]?.chTimesheetSigned||vars?.[String(st.id)]?.chTimesheetSigned)).length;
+      return {value:`${signed}/${list.length||0}`,detail:'signatures mensuelles déclarées'};
+    }
+    let validated=0;
+    try{const rs=typeof getRealTimesheets==='function'?getRealTimesheets():jget('ichef_rh_timesheet_real',{months:{}});const node=rs?.months?.[m]?.staff||{};validated=list.filter(st=>['VALIDATED','LOCKED'].includes(String(node?.[String(st.id)]?.status||node?.[st.id]?.status||'').toUpperCase())).length}catch(_){ }
+    return {value:`${validated}/${list.length||0}`,detail:'feuilles validées / verrouillées'};
+  }
+  function publicationState(a){const status=String(settings()?.planningStatus||'draft').toLowerCase();if(a.blockers?.length)return {label:'BLOQUÉE',detail:'corriger avant publication',cls:'block'};if(status==='published')return {label:'PUBLIÉ',detail:'audit à revalider après modification',cls:'ok'};return {label:'PRÊTE',detail:'sous réserve des alertes',cls:a.warnings?.length?'warn':'ok'}}
+  function health(){
+    const ds=dossiers(), total=ds.length, complete=ds.filter(x=>x.complete).length, cov=total?Math.round(complete/total*100):0;
+    const audit=planAudit(), proof=timeProof(), pub=publicationState(audit);
+    return {ds,total,complete,cov,audit,proof,pub};
+  }
+  function ruleCards(){
+    if(country()==='FR')return [
+      ['Temps de travail HCR','39 h conventionnelles ; heures au-delà de 35 h traitées selon les majorations HCR 10 % / 20 % / 50 %. Maxima HCR contrôlés par rôle : 10 h à 12 h par jour ; 46 h en moyenne sur 12 semaines ; 48 h absolues.','AUTO','worktime'],
+      ['Repos','Repos quotidien et repos hebdomadaire contrôlés avant publication ; les situations jeunes / nuit / dérogations doivent être correctement renseignées.','AUTO','worktime'],
+      ['Congés payés','2,5 jours ouvrables par mois, 30 jours ouvrables pour une année complète. Le décompte en jours ouvrés doit rester au moins équivalent. Maladie non professionnelle : acquisition spécifique prévue par la loi.','AUTO + DONNÉES','leave'],
+      ['Jours fériés HCR','Compteur distinct des congés et des OFF. Les droits dépendent notamment du régime HCR, de l’ancienneté et du caractère permanent / saisonnier de l’établissement.','DONNÉES REQUISES','agreement'],
+      ['Salaire minimum','Le moteur compare le minimum conventionnel HCR au SMIC applicable au mois de paie. V194 conserve la chronologie 2026 au lieu de réécrire les mois antérieurs.','AUTO','wages'],
+      ['Accords d’entreprise / clauses','Annualisation, 13e mois, dispositions plus favorables, dérogations et usages doivent être documentés : iCHEF ne les invente pas.','VALIDATION HUMAINE','agreement']
+    ];
+    return [
+      ['Durée du travail CCNT','42 h/semaine en principe ; 43,5 h pour établissement saisonnier ; 45 h pour petit établissement lorsque les conditions CCNT sont remplies.','AUTO + PROFIL','worktime'],
+      ['Repos','2 jours de repos hebdomadaires, si possible consécutifs, dont au moins un jour entier. Exception 7 jours uniquement sous conditions CCNT strictes.','AUTO','rest'],
+      ['Vacances','5 semaines = 35 jours civils/an = 2,92 jours civils/mois. Les jours de repos ne se cumulent pas pendant les vacances.','AUTO','leave'],
+      ['Jours fériés','6 jours payés/an = 0,5 jour/mois ; compteur distinct des vacances et du repos.','AUTO','holiday'],
+      ['13e salaire','100 % d’un salaire mensuel brut ; prorata si année incomplète ; 8,33 % si versé mensuellement / avec le salaire horaire.','AUTO','13th'],
+      ['Temps & preuve','Planning écrit à l’avance selon le type d’établissement ; enregistrement du temps sous responsabilité employeur ; signature mensuelle prévue par la CCNT.','DONNÉES + PREUVE','records'],
+      ['Minimums 2026','Catégorie CCNT requise. Le moteur applique les minima 2026 configurés ; les règles cantonales/locales doivent être prises en compte lorsqu’elles sont plus favorables.','AUTO + CANTON','wages'],
+      ['LTr / OLT','Repos quotidien, nuit, dimanche, jeunes, maternité et dispositions spéciales OLT 2 restent superposés à la CCNT.','AUTO + SITUATION','ltr']
+    ];
+  }
+  function sourceByKey(k){return SOURCES[country()].find(x=>x.key===k)||SOURCES[country()][0]}
+  function renderOverview(h){
+    const o=document.getElementById('rh-v194-tab-overview');if(!o)return;
+    const localLayer=country()==='CH'?`Canton paie : ${esc(payrollSettingsSafe()?.canton||'NON RENSEIGNÉ')}`:'Accord entreprise / usages : à documenter si applicables';
+    const issues=[...(h.audit.blockers||[]).map(x=>['block','BLOQUANT',x]),...(h.audit.warnings||[]).map(x=>['warn','À VÉRIFIER',x])];
+    o.innerHTML=`<div class="rh-v194-health-grid">
+      <article class="rh-v194-health-card ${h.audit.blockers.length?'block':'good'}"><small>Planning légal</small><strong>${h.audit.blockers.length?`${h.audit.blockers.length} blocage(s)`:'Aucun blocage détecté'}</strong><p>Contrôle du mois ${esc(month())} avec le moteur pays / établissement.</p></article>
+      <article class="rh-v194-health-card ${h.complete===h.total?'good':'warn'}"><small>Dossiers collaborateurs</small><strong>${h.complete}/${h.total} complets</strong><p>Contrat, dates, classification et données nécessaires au référentiel.</p></article>
+      <article class="rh-v194-health-card ${country()==='CH'&&!payrollSettingsSafe()?.canton?'warn':'good'}"><small>Couche locale</small><strong>${localLayer}</strong><p>Les règles plus favorables ou locales doivent être paramétrées, pas déduites au hasard.</p></article>
+      <article class="rh-v194-health-card"><small>Barèmes France 2026</small><strong>${country()==='FR'?'SMIC daté par mois':'Non applicable'}</strong><p>${country()==='FR'?'Jan–mai : 12,02 €/h · dès juin : 12,31 €/h. Minimum garanti : 4,25 € puis 4,35 €.':'Le moteur actif utilise les minima CCNT suisses 2026.'}</p></article>
+      <article class="rh-v194-health-card"><small>Preuves de temps</small><strong>${esc(h.proof.value)}</strong><p>${esc(h.proof.detail)} · le temps réel doit rester traçable.</p></article>
+      <article class="rh-v194-health-card"><small>Référentiel</small><strong>${esc(rulesHash())}</strong><p>Empreinte technique du jeu de règles + paramètres utilisés, pas une signature juridique.</p></article>
+    </div>${issues.length?`<div class="rh-v194-issue-list">${issues.slice(0,40).map(x=>`<div class="rh-v194-issue-row ${x[0]}"><b>${x[1]}</b><span>${esc(x[2])}</span></div>`).join('')}</div>`:`<div class="rh-v194-issue-list"><div class="rh-v194-issue-row good"><b>OK</b><span>Aucune anomalie de planning détectée par les règles actuellement configurées. Cela n’atteste pas qu’aucune règle externe ou accord non renseigné n’existe.</span></div></div>`}`;
+  }
+  function renderPeople(h){const o=document.getElementById('rh-v194-tab-people');if(!o)return;o.innerHTML=`<table class="rh-v194-people-table"><thead><tr><th>Collaborateur</th><th>Contrat</th><th>Classification</th><th>Dossier</th><th>À compléter</th></tr></thead><tbody>${h.ds.map(x=>{const p=x.profile||{};const cls=country()==='FR'?`${p.hcrLevel||'—'} / ${p.hcrEchelon||'—'}`:(p.chLgavCategory||'—');const staffKey=encodeURIComponent(String(x.staff.id||''));return `<tr><td><strong>${esc(x.staff.name||'Sans nom')}</strong><br><small>${esc(x.staff.title||x.staff.role||'')}</small></td><td>${esc(x.staff.contractType||p.contractType||'—')}<br>${Number(x.staff.contract||0)||'—'} h/sem.</td><td>${esc(cls)}</td><td><button type="button" class="rh-v194-chip ${x.complete?'good':'warn'} rh-v245-dossier-open" data-rh-v245-staff="${esc(staffKey)}">${x.complete?'COMPLET':'À COMPLÉTER'}</button></td><td>${x.missing.length?esc(x.missing.join(' · ')):'—'}</td></tr>`}).join('')}</tbody></table>`}
+  function renderRules(){const o=document.getElementById('rh-v194-tab-rules');if(!o)return;o.innerHTML=`<div class="rh-v194-rule-grid">${ruleCards().map(r=>{const src=sourceByKey(r[3]);return `<article class="rh-v194-rule-card"><div class="rh-v194-rule-card-head"><h4>${esc(r[0])}</h4><span class="rh-v194-chip ${r[2].includes('HUMAINE')||r[2].includes('DONNÉES')||r[2].includes('CANTON')?'warn':'good'}">${esc(r[2])}</span></div><p>${esc(r[1])}</p><a href="${esc(src.url)}" target="_blank" rel="noopener">${esc(src.authority)} · source officielle ↗</a></article>`}).join('')}</div>`}
+  function renderSources(){const o=document.getElementById('rh-v194-tab-sources');if(!o)return;o.innerHTML=`<div class="rh-v194-source-list">${SOURCES[country()].map(x=>`<div class="rh-v194-source"><small>${esc(x.authority)}</small><strong>${esc(x.title)}</strong><a href="${esc(x.url)}" target="_blank" rel="noopener">OUVRIR ↗</a></div>`).join('')}</div><div class="rh-v194-issue-list"><div class="rh-v194-issue-row warn"><b>IMPORTANT</b><span>Sources vérifiées le ${VERIFIED_AT}. Une veille juridique reste nécessaire : les lois, conventions, avenants, salaires minimums et règles cantonales peuvent évoluer.</span></div></div>`}
+  function snapshot(h,kind){
+    const key='ichef_rh_legal_snapshots_v194', arr=jget(key,[]);arr.push({at:new Date().toISOString(),kind,month:month(),country:country(),framework:framework(),rulesHash:rulesHash(),blockers:h.audit.blockers||[],warnings:h.audit.warnings||[],coverage:h.cov,settings:{establishment:settings()?.planningLegalEstablishmentType||'',canton:payrollSettingsSafe()?.canton||''}});while(arr.length>120)arr.shift();localStorage.setItem(key,JSON.stringify(arr));return arr[arr.length-1]
+  }
+  window.refreshRhLegalCommandCenterV194=function(){
+    const h=health();
+    set('rh-v194-country',country()==='FR'?'🇫🇷 FRANCE':'🇨🇭 SUISSE');set('rh-v194-framework',framework());set('rh-v194-coverage',h.total?`${h.cov}%`:'—');set('rh-v194-coverage-detail',h.total?`${h.complete}/${h.total} dossiers complets`:'aucun collaborateur');set('rh-v194-blockers',String(h.audit.blockers?.length||0));set('rh-v194-warnings',String(h.audit.warnings?.length||0));set('rh-v194-timeproof',h.proof.value);set('rh-v194-timeproof-detail',h.proof.detail);set('rh-v194-publish',h.pub.label);set('rh-v194-publish-detail',h.pub.detail);
+    const st=document.getElementById('rh-v194-command-status');if(st){st.className=`rh-v194-command-status ${h.audit.blockers?.length?'block':(h.audit.warnings?.length||h.complete<h.total)?'warn':'ok'}`;st.textContent=h.audit.blockers?.length?'PUBLICATION BLOQUÉE':(h.audit.warnings?.length||h.complete<h.total)?'DOSSIER À COMPLÉTER':'CONTRÔLES ACTIFS'}
+    set('rh-v194-modal-framework',`${country()} · ${framework()}`);set('rh-v194-modal-month',month());set('rh-v194-modal-hash',rulesHash());set('rh-v194-modal-gate',h.pub.label);
+    renderOverview(h);renderPeople(h);renderRules();renderSources();return h;
+  };
+  window.openRhLegalCommandCenterV194=function(){const m=document.getElementById('rh-v194-legal-modal');if(!m)return;refreshRhLegalCommandCenterV194();m.classList.add('show');m.setAttribute('aria-hidden','false')};
+  window.closeRhLegalCommandCenterV194=function(){const m=document.getElementById('rh-v194-legal-modal');if(m){m.classList.remove('show');m.setAttribute('aria-hidden','true')}};
+  window.setRhLegalTabV194=function(name,btn){document.querySelectorAll('#rh-v194-legal-modal .rh-v194-tab').forEach(x=>x.classList.remove('active'));document.getElementById(`rh-v194-tab-${name}`)?.classList.add('active');document.querySelectorAll('#rh-v194-legal-modal .rh-v194-tabbar button').forEach(x=>x.classList.remove('active'));btn?.classList.add('active')};
+
+  // V194 · aucune publication manuelle ne contourne le même audit que l'assistant.
+  const previousPublish=window.publishRhPlanningToStaff;
+  if(typeof previousPublish==='function'){
+    window.publishRhPlanningToStaff=function(){
+      const h=refreshRhLegalCommandCenterV194();
+      const incomplete=h.ds.filter(x=>!x.complete);
+      const hard=[...(h.audit.blockers||[])];
+      // Les données indispensables au moteur sont fail-closed ; la classification paie reste visible mais n'empêche pas le planning si le moteur horaire dispose déjà du rôle/contrat.
+      incomplete.forEach(x=>{
+        const critical=x.missing.filter(v=>['identité','poste','heures contrat','type contrat','date entrée','date naissance'].includes(v));
+        if(critical.length)hard.push(`${x.staff.name||'Collaborateur'} : dossier incomplet (${critical.join(', ')}).`)
+      });
+      if(hard.length){snapshot({...h,audit:{...h.audit,blockers:hard}},'PUBLICATION_BLOCKED');try{typeof recordRhChange==='function'&&recordRhChange({type:'LEGAL_PUBLICATION_BLOCKED_V194',month:month(),country:country(),rulesHash:rulesHash(),blockers:hard,warnings:h.audit.warnings||[]})}catch(_){};openRhLegalCommandCenterV194();alert(`Publication bloquée par le contrôle RH légal.\n\n${hard.slice(0,8).map((x,i)=>`${i+1}. ${x}`).join('\n')}${hard.length>8?`\n… +${hard.length-8} autre(s)`:''}`);return false}
+      snapshot(h,'PUBLICATION_OK');try{typeof recordRhChange==='function'&&recordRhChange({type:'LEGAL_PUBLICATION_AUDIT_OK_V194',month:month(),country:country(),rulesHash:rulesHash(),warnings:h.audit.warnings||[]})}catch(_){};return previousPublish.apply(this,arguments)
+    };
+  }
+  const rerender=()=>setTimeout(()=>{try{refreshRhLegalCommandCenterV194()}catch(_){}},50);
+  document.addEventListener('change',e=>{if(['month-selector','staff-contract-type','staff-start-date','staff-birth-date'].includes(e.target?.id))rerender()},true);
+  document.addEventListener('ichef:rh-settings-saved',rerender);
+  window.addEventListener('ichef:updateState',rerender);
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',rerender,{once:true});else rerender();
+  window.__ICHEF_RH_BUILD__='RH-V194-LEGAL-COMMAND-CENTER';
+  console.info('[iCHEF RH V194] Legal Command Center · official-source registry · fail-closed manual publication · dated FR 2026 rates');
+})();
+
+
+
+;
+/* RH V264 - preserved script #107 */
+
+(()=>{'use strict';
+  let opening=false;
+  function tenant(){
+    try{return String(new URLSearchParams(location.search).get('tenantID')||
+      (typeof tenantID_JS!=='undefined'?tenantID_JS:'')||
+      localStorage.getItem('ichef_tenant_id')||'').trim();}catch(_){return '';}
+  }
+  function device(){
+    const key='ichef_planning_device_v1';
+    let value='';try{value=localStorage.getItem(key)||'';}catch(_){}
+    if(!value){value=crypto.randomUUID?crypto.randomUUID():('rh_'+Date.now().toString(36));
+      try{localStorage.setItem(key,value);}catch(_){}}
+    return value;
+  }
+  function base(){
+    try{return typeof SERVER_URL_JS==='string' ? SERVER_URL_JS.replace(/\/$/,'') :
+      ((location.hostname==='localhost'||location.hostname==='127.0.0.1')?'http://localhost:10000':'https://tableau-system.onrender.com');}
+    catch(_){return 'https://tableau-system.onrender.com';}
+  }
+  function pin(){
+    try{return typeof getRhDirectionAuthPin==='function'?String(getRhDirectionAuthPin()||'').trim():'';}
+    catch(_){return '';}
+  }
+  function url(t){return '/planning-rh/?tenantID='+encodeURIComponent(t);}
+  async function openPremium(){
+    if(opening)return;opening=true;
+    const t=tenant();
+    if(!/^[a-zA-Z0-9_-]{2,80}$/.test(t)){
+      opening=false;alert('Établissement non reconnu. Reconnectez-vous dans RH.');return;
+    }
+    // Reprendre une session de planning signée déjà active : inutile de redemander
+    // une authentification à chaque retour RH -> Premium. Le serveur recontrôle
+    // le token lors des lectures/écritures ; aucune donnée ou droit n'est créé ici.
+    const d=device();
+    try{
+      const previous=JSON.parse(sessionStorage.getItem('ichef_planning_premium_auth_v1')||'null');
+      if(previous && previous.tenant===t && previous.device===d &&
+         typeof previous.token==='string' && previous.token.length>30 &&
+         Number(previous.exp)>Date.now()+30000){
+        location.assign(url(t));return;
+      }
+    }catch(_){ /* pas de session réutilisable */ }
+    const pinCode=pin();
+    // Une session RH autorisée n'est JAMAIS inventée localement.
+    // Si le PIN n'est pas en mémoire, l'application réaffiche sa connexion normale.
+    if(!/^\d{4,12}$/.test(pinCode)){location.assign(url(t));return;}
+    const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),8000);
+    try{
+      const r=await fetch(base()+'/api/rh/planning/session',{
+        method:'POST',credentials:'include',cache:'no-store',signal:ctrl.signal,
+        headers:{'Content-Type':'application/json','Accept':'application/json',
+          'X-iCHEF-Tenant':t,'X-iCHEF-Device':d},
+        body:JSON.stringify({tenantID:t,pin:pinCode,deviceId:d})
+      });
+      const data=await r.json().catch(()=>({}));
+      if(!r.ok||data.success!==true||typeof data.accessToken!=='string'||!data.accessToken){
+        // Droits insuffisants : pas de session premium / pas de contournement.
+        alert(data.error||'Accès Planning RH non autorisé par le serveur.');return;
+      }
+      const exp=Date.now()+Math.min(7200,Math.max(60,Number(data.expiresInSeconds||7200)))*1000-10000;
+      try{sessionStorage.setItem('ichef_planning_premium_auth_v1',JSON.stringify({
+        tenant:t,device:d,token:data.accessToken,actor:data.actor||null,exp
+      }));}catch(_){/* le login normal reste disponible */}
+      location.assign(url(t));
+    }catch(e){
+      alert(e?.name==='AbortError'?'Serveur RH trop lent. Réessayez la connexion.':
+        'Connexion serveur indisponible. Aucun accès au planning n’a été accordé.');
+    }finally{clearTimeout(timer);opening=false;}
+  }
+  window.iChefOpenPlanningPremiumV257=openPremium;
+  // Interception seulement de l'entrée Planning, sans couper Équipe, IA, paie ou absences.
+  document.addEventListener('click',event=>{
+    const b=event.target.closest?.('#rh-v226-sidebar [data-v226-nav="planning"]');
+    const old=event.target.closest?.('#director-hub .rh-cockpit-nav button[onclick]');
+    if(!b&&!(old&&old.textContent?.trim()==='Planning'&&old.getAttribute('onclick')?.includes('openInterface')))return;
+    event.preventDefault();event.stopImmediatePropagation();void openPremium();
+  },true);
+})();
+
+
+;
+
+;
+/* RH V264 - preserved script #108 */
+window.__ICHEF_RH_BUILD__='RH-V106-DOCUMENTS-FAST-PROOF-SECURE';
+
+
+;
+/* RH V264 - preserved script #109 */
+(() => {
+  'use strict';
+  if (window.__ICHEF_RH_V186_AUTO_CURRENCY_AGREEMENT__) return;
+  window.__ICHEF_RH_V186_AUTO_CURRENCY_AGREEMENT__ = true;
+  const VERSION = 'RH-V186-AUTO-CURRENCY-CONVENTION';
+  const RH_SETTINGS_KEY = 'ichef_rh_settings';
+  const PAYROLL_KEY = 'ichef_payroll_settings_v2';
+  function jsonGet(key, fallback = {}) {
+    try {
+      const value = JSON.parse(localStorage.getItem(key) || 'null');
+      return value && typeof value === 'object' ? value : fallback;
+    } catch (_) {
+      return fallback;
+    }
+  }
+  function jsonSet(key, value) {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch (_) {}
+  }
+  function normalizeCountry(value) {
+    const raw = String(value || '').trim().toUpperCase();
+    if (['FR','FRA','FRANCE'].includes(raw)) return 'FR';
+    if (['CH','CHE','SUISSE','SWITZERLAND','SCHWEIZ','SVIZZERA'].includes(raw)) return 'CH';
+    return '';
+  }
+  function detectedCountryRecord() {
+    try {
+      const tenant = String(
+        typeof tenantID_JS !== 'undefined'
+          ? tenantID_JS
+          : (typeof tenantID !== 'undefined' ? tenantID : 'default')
+      );
+      return jsonGet(`ichef_client_country_detected_v185_${tenant}`, {});
+    } catch (_) {
+      return {};
+    }
+  }
+  function resolveCountry() {
+    const fromV185 = normalizeCountry(
+      window.ICHEF_CLIENT_COUNTRY_V185?.current?.country
+    );
+    if (fromV185) return fromV185;
+    const record = detectedCountryRecord();
+    const fromRecord = normalizeCountry(record?.country);
+    if (fromRecord) return fromRecord;
+    try {
+      if (typeof getRhSettings === 'function') {
+        const settings = getRhSettings() || {};
+        const fromRh = normalizeCountry(settings.planningLegalCountry);
+        if (fromRh) return fromRh;
+        if (String(settings.currency || '').toUpperCase() === 'EUR') return 'FR';
+        if (String(settings.currency || '').toUpperCase() === 'CHF') return 'CH';
+      }
+    } catch (_) {}
+    const payroll = jsonGet(PAYROLL_KEY, {});
+    const fromPayroll = normalizeCountry(payroll.country);
+    if (fromPayroll) return fromPayroll;
+    if (String(payroll.currency || '').toUpperCase() === 'EUR') return 'FR';
+    if (String(payroll.currency || '').toUpperCase() === 'CHF') return 'CH';
+    return 'CH';
+  }
+  function profile(country) {
+    if (country === 'FR') {
+      return {
+        country: 'FR',
+        currency: 'EUR',
+        symbol: '€',
+        agreement: 'Convention collective HCR · IDCC 1979',
+        legalFramework: 'FR_HCR',
+        frRegime: 'HCR'
+      };
+    }
+    return {
+      country: 'CH',
+      currency: 'CHF',
+      symbol: 'CHF',
+      agreement: 'CCNT hôtels, restaurants & cafés (L-GAV)',
+      legalFramework: 'CH_CCNT',
+      chRegime: 'LGAV'
+    };
+  }
+  function syncRhSettings(country) {
+    const p = profile(country);
+    const current = jsonGet(RH_SETTINGS_KEY, {});
+    const next = {
+      ...current,
+      currency: p.currency,
+      planningLegalCountry: p.country,
+      planningLegalFramework: p.legalFramework,
+      planningLegalCountryAuto: true,
+      planningCurrencyAuto: true,
+      planningCurrencySource: 'client-country',
+      planningCurrencyUpdatedAt: new Date().toISOString()
+    };
+    if (
+      current.currency !== next.currency ||
+      current.planningLegalCountry !== next.planningLegalCountry ||
+      current.planningLegalFramework !== next.planningLegalFramework ||
+      current.planningCurrencyAuto !== true
+    ) {
+      jsonSet(RH_SETTINGS_KEY, next);
+    }
+  }
+  function syncPayroll(country) {
+    const p = profile(country);
+    const current = jsonGet(PAYROLL_KEY, {});
+    const needsUpdate =
+      current.country !== p.country ||
+      current.currency !== p.currency ||
+      current.agreement !== p.agreement ||
+      current.autoCountryFromTenant !== true ||
+      current.autoCurrencyFromCountry !== true ||
+      current.autoAgreementFromCountry !== true ||
+      (country === 'FR' && current.frRegime !== 'HCR') ||
+      (country === 'CH' && current.chRegime !== 'LGAV');
+    if (!needsUpdate) return;
+    const now = new Date().toISOString();
+    const next = {
+      ...current,
+      country: p.country,
+      currency: p.currency,
+      agreement: p.agreement,
+      autoCountryFromTenant: true,
+      autoCurrencyFromCountry: true,
+      autoAgreementFromCountry: true,
+      autoCountryUpdatedAt: now,
+      autoCurrencyUpdatedAt: now,
+      autoAgreementUpdatedAt: now
+    };
+    if (country === 'FR') {
+      next.frRegime = 'HCR';
+    } else {
+      next.chRegime = 'LGAV';
+    }
+    jsonSet(PAYROLL_KEY, next);
+  }
+  function setLockedSelect(id, value, title) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.value = value;
+    el.disabled = true;
+    el.setAttribute('aria-disabled', 'true');
+    el.title = title;
+    el.style.cursor = 'not-allowed';
+    el.style.opacity = '0.82';
+  }
+  function setReadOnlyInput(id, value, title) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.value = value;
+    el.readOnly = true;
+    el.setAttribute('aria-readonly', 'true');
+    el.title = title;
+    el.style.cursor = 'default';
+    el.style.opacity = '0.9';
+  }
+  function lockPayrollCountryButtons(country) {
+    document
+      .querySelectorAll('#payroll-country-segment button')
+      .forEach(button => {
+        button.disabled = true;
+        button.setAttribute('aria-disabled', 'true');
+        button.title = 'Automatique : le pays suit la fiche de l’établissement client.';
+        button.classList.toggle('active', button.dataset.country === country);
+        button.style.cursor = 'not-allowed';
+      });
+  }
+  function syncUi(country) {
+    const p = profile(country);
+    setLockedSelect(
+      'rh-setting-currency',
+      p.currency,
+      `Automatique selon le pays client : ${p.symbol}`
+    );
+    setLockedSelect(
+      'ps-country',
+      p.country,
+      'Automatique : le pays suit la fiche de l’établissement client.'
+    );
+    setLockedSelect(
+      'ps-currency',
+      p.currency,
+      `Automatique selon le pays client : ${p.symbol}`
+    );
+    setReadOnlyInput(
+      'ps-agreement',
+      p.agreement,
+      'Automatique : convention de travail déterminée par le pays client.'
+    );
+    if (country === 'FR') {
+      setLockedSelect(
+        'ps-fr-regime',
+        'HCR',
+        'Automatique : Convention collective HCR · IDCC 1979.'
+      );
+    } else {
+      setLockedSelect(
+        'ps-ch-regime',
+        'LGAV',
+        'Automatique : CCNT hôtels, restaurants & cafés (L-GAV).'
+      );
+    }
+    lockPayrollCountryButtons(country);
+  }
+  function syncAll() {
+    const country = resolveCountry();
+    syncRhSettings(country);
+    syncPayroll(country);
+    syncUi(country);
+    return country;
+  }
+  // Les anciens boutons France/Suisse ne peuvent plus désynchroniser le client.
+  const previousSetPayrollCountry = window.setPayrollCountry;
+  window.setPayrollCountry = function() {
+    const country = syncAll();
+    if (typeof window.renderPayrollCenter === 'function') {
+      window.renderPayrollCenter();
+    } else if (typeof previousSetPayrollCountry === 'function') {
+      // Secours uniquement si le rendu n'est pas encore chargé.
+      previousSetPayrollCountry(country);
+      syncAll();
+    }
+  };
+  const previousOpenPayrollSettings = window.openPayrollSettings;
+  if (typeof previousOpenPayrollSettings === 'function') {
+    window.openPayrollSettings = function(...args) {
+      syncAll();
+      const result = previousOpenPayrollSettings.apply(this, args);
+      setTimeout(syncAll, 0);
+      return result;
+    };
+  }
+  const previousSavePayrollSettings = window.savePayrollSettingsFromModal;
+  if (typeof previousSavePayrollSettings === 'function') {
+    window.savePayrollSettingsFromModal = function(...args) {
+      const country = resolveCountry();
+      const p = profile(country);
+      const countryEl = document.getElementById('ps-country');
+      const currencyEl = document.getElementById('ps-currency');
+      const agreementEl = document.getElementById('ps-agreement');
+      const frRegimeEl = document.getElementById('ps-fr-regime');
+      const chRegimeEl = document.getElementById('ps-ch-regime');
+      if (countryEl) countryEl.value = p.country;
+      if (currencyEl) currencyEl.value = p.currency;
+      if (agreementEl) agreementEl.value = p.agreement;
+      if (frRegimeEl && country === 'FR') frRegimeEl.value = 'HCR';
+      if (chRegimeEl && country === 'CH') chRegimeEl.value = 'LGAV';
+      const result = previousSavePayrollSettings.apply(this, args);
+      syncAll();
+      return result;
+    };
+  }
+  const previousRenderPayrollCenter = window.renderPayrollCenter;
+  if (typeof previousRenderPayrollCenter === 'function') {
+    window.renderPayrollCenter = function(...args) {
+      const country = resolveCountry();
+      syncRhSettings(country);
+      syncPayroll(country);
+      const result = previousRenderPayrollCenter.apply(this, args);
+      syncUi(country);
+      return result;
+    };
+  }
+  window.rhAutoCurrencySymbolV186 = function(currency) {
+    return String(currency || '').toUpperCase() === 'EUR' ? '€' : 'CHF';
+  };
+  window.ICHEF_AUTO_CURRENCY_CONVENTION_V186 = {
+    sync: syncAll,
+    get country() { return resolveCountry(); },
+    get profile() { return profile(resolveCountry()); }
+  };
+  window.addEventListener('ichef:updateState', () => {
+    setTimeout(syncAll, 0);
+    setTimeout(syncAll, 500);
+  });
+  window.addEventListener('ichef:connected', () => {
+    setTimeout(syncAll, 350);
+    setTimeout(syncAll, 900);
+  });
+  window.addEventListener('focus', () => {
+    setTimeout(syncAll, 0);
+  });
+  document.addEventListener('ichef:rh-settings-saved', () => {
+    setTimeout(syncAll, 0);
+  });
+  function boot() {
+    syncAll();
+    // La détection serveur V185 peut arriver juste après le démarrage.
+    setTimeout(syncAll, 550);
+    setTimeout(syncAll, 1200);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot, { once: true });
+  } else {
+    boot();
+  }
+  window.__ICHEF_RH_BUILD__ = VERSION;
+  console.info('[iCHEF RH V186] devise + convention automatiques selon le pays client');
+})();
+
+
+;
+/* RH V264 - preserved script #110 */
+window.__ICHEF_RH_BUILD__='RH-V186-AUTO-CURRENCY-CONVENTION';
+console.info('[iCHEF RH V186] € / CHF + convention de travail automatiques');
+
+
+;
+/* RH V264 - preserved script #111 */
+(() => {
+  'use strict';
+  if (window.__ICHEF_RH_V187_BRIGADE_LIVE_SYNC__) return;
+  window.__ICHEF_RH_V187_BRIGADE_LIVE_SYNC__ = true;
+  const VERSION = 'RH-V187-BRIGADE-LIVE-SYNC';
+  const BRIGADE_ROOT = '#v169-brigade-container';
+  let timer = null;
+  let syncing = false;
+  let rerun = false;
+  let queuedReason = 'brigade';
+  const safeCall = (fn, ...args) => {
+    try {
+      return typeof fn === 'function' ? fn(...args) : undefined;
+    } catch (error) {
+      console.warn('[iCHEF RH V187] appel non bloquant', error);
+      return undefined;
+    }
+  };
+  function setSyncState(state, reason) {
+    try {
+      if (typeof updateSyncBadge === 'function') {
+        updateSyncBadge(state, reason || 'brigade');
+      }
+    } catch (_) {}
+  }
+  function brigadeSnapshot(settings) {
+    const profile = String(
+      document.getElementById('rh-setting-establishment-profile')?.value ||
+      settings?.planningEstablishmentProfile ||
+      'restaurant'
+    );
+    const roles = typeof readBrigadeRolesFormV169 === 'function'
+      ? readBrigadeRolesFormV169()
+      : Array.from(document.querySelectorAll('[data-v169-brigade-role]:checked'))
+          .map(el => String(el.dataset.v169BrigadeRole || ''))
+          .filter(Boolean);
+    const counts = typeof readBrigadeRoleCountsV171 === 'function'
+      ? readBrigadeRoleCountsV171()
+      : {};
+    const ratios = typeof readBrigadeRoleRatiosV179 === 'function'
+      ? readBrigadeRoleRatiosV179()
+      : {};
+    const departments = {};
+    roles.forEach(key => {
+      const parts = String(key).split('::');
+      const dept = parts.shift() || 'autre';
+      const role = parts.join('::');
+      if (!departments[dept]) departments[dept] = [];
+      departments[dept].push({
+        key,
+        role,
+        headcount: Math.max(0, Number(counts[key] || 0)),
+        ratio: Object.prototype.hasOwnProperty.call(ratios, key)
+          ? Math.max(1, Number(ratios[key] || 1))
+          : null
+      });
+    });
+    let directory = [];
+    try {
+      directory = typeof getDir === 'function'
+        ? getDir().filter(staff => staff?.active !== false)
+        : [];
+    } catch (_) {
+      directory = [];
+    }
+    return {
+      schema: 'ICHEF_RH_BRIGADE_V187',
+      tenantID: String(
+        typeof tenantID_JS !== 'undefined'
+          ? tenantID_JS
+          : (typeof tenantID !== 'undefined' ? tenantID : '')
+      ),
+      profile,
+      roles,
+      roleCounts: counts,
+      roleRatios: ratios,
+      departments,
+      activeStaffCount: directory.length,
+      serviceLevel: settings?.planningServiceLevel || 'standard',
+      currency: settings?.currency || document.getElementById('rh-setting-currency')?.value || 'CHF',
+      legalCountry: settings?.planningLegalCountry || 'CH',
+      updatedAt: new Date().toISOString(),
+      source: 'RH_BRIGADE'
+    };
+  }
+  function refreshConnectedViews(settings) {
+    safeCall(
+      typeof refreshRhServiceStrategyAdvice !== 'undefined'
+        ? refreshRhServiceStrategyAdvice
+        : null,
+      settings
+    );
+    safeCall(
+      typeof renderRhCashActivityV170 !== 'undefined'
+        ? renderRhCashActivityV170
+        : null,
+      'brigade-live'
+    );
+    safeCall(
+      typeof renderPlanningAssistantLocal !== 'undefined'
+        ? renderPlanningAssistantLocal
+        : null
+    );
+    if (
+      document.getElementById('ia-predictions-modal')?.classList.contains('show')
+    ) {
+      safeCall(
+        typeof schedulePlanningAssistantAutoRefresh !== 'undefined'
+          ? schedulePlanningAssistantAutoRefresh
+          : null
+      );
+    }
+  }
+  async function syncBrigadeNow(reason = 'brigade-live') {
+    if (syncing) {
+      rerun = true;
+      queuedReason = reason;
+      return;
+    }
+    syncing = true;
+    setSyncState(navigator.onLine ? 'syncing' : 'offline', reason);
+    try {
+      // Source unique : on sauvegarde exactement les valeurs visibles.
+      const settings = typeof saveRhPlanningSettings === 'function'
+        ? saveRhPlanningSettings(true)
+        : (typeof getRhSettings === 'function' ? getRhSettings() : {});
+      const snapshot = brigadeSnapshot(settings || {});
+      const tasks = [];
+      // Noeud serveur dédié : les autres modules peuvent lire la brigade
+      // sans avoir à décoder toute la configuration RH.
+      if (window.API && typeof window.API.update === 'function') {
+        tasks.push(
+          Promise.resolve(
+            window.API.update('RH_BRIGADE_MASTER', snapshot)
+          )
+        );
+      }
+      // Bus temps réel iCHEF : planning, portail staff, administration, etc.
+      if (typeof publishRhSymbioseV172 === 'function') {
+        tasks.push(
+          Promise.resolve(
+            publishRhSymbioseV172(
+              'rh.brigade.updated',
+              snapshot,
+              'all'
+            )
+          )
+        );
+      }
+      safeCall(
+        typeof publishRhSettingsV172 !== 'undefined'
+          ? publishRhSettingsV172
+          : null,
+        reason
+      );
+      safeCall(
+        typeof publishRhStaffingV172 !== 'undefined'
+          ? publishRhStaffingV172
+          : null,
+        reason
+      );
+      window.dispatchEvent(
+        new CustomEvent('ichef:brigadeUpdated', {
+          detail: snapshot
+        })
+      );
+      let failed = !navigator.onLine;
+      if (tasks.length) {
+        const results = await Promise.allSettled(tasks);
+        failed = failed || results.some(result => {
+          if (result.status === 'rejected') return true;
+          return result.value?.success === false;
+        });
+      }
+      refreshConnectedViews(settings || {});
+      // Le wrapper V161 resynchronise déjà les vues après saveRhPlanningSettings.
+      // Ici on garde aussi un signal explicite pour les modules qui écoutent V187.
+      safeCall(
+        typeof scheduleUiSync !== 'undefined'
+          ? scheduleUiSync
+          : null,
+        'brigade connectée'
+      );
+      setSyncState(
+        failed ? 'offline' : 'ok',
+        failed
+          ? 'brigade enregistrée localement · serveur en attente'
+          : 'brigade synchronisée'
+      );
+    } catch (error) {
+      console.error('[iCHEF RH V187] synchronisation brigade', error);
+      setSyncState('offline', 'brigade en attente de synchronisation');
+    } finally {
+      syncing = false;
+      if (rerun) {
+        rerun = false;
+        const nextReason = queuedReason;
+        setTimeout(() => syncBrigadeNow(nextReason), 80);
+      }
+    }
+  }
+  function queueBrigadeSync(reason = 'brigade-live', delay = 180) {
+    queuedReason = reason;
+    clearTimeout(timer);
+    timer = setTimeout(() => syncBrigadeNow(queuedReason), delay);
+  }
+  function isBrigadeField(target) {
+    if (!(target instanceof Element)) return false;
+    return Boolean(
+      target.matches('[data-v169-brigade-role]') ||
+      target.matches('[data-v171-brigade-count]') ||
+      target.matches('[data-v179-brigade-ratio]') ||
+      target.matches('#rh-setting-server-ratio') ||
+      target.matches('#rh-setting-kitchen-ratio') ||
+      target.matches('#rh-setting-bar-ratio') ||
+      target.matches('#rh-setting-kitchen-min')
+    );
+  }
+  // Les champs métier/effectif/ratio deviennent réellement connectés.
+  document.addEventListener('change', event => {
+    const target = event.target;
+    if (!isBrigadeField(target)) return;
+    // Cohérence métier <-> effectif.
+    if (target.matches('[data-v171-brigade-count]')) {
+      const key = String(target.dataset.v171BrigadeCount || '');
+      const root = document.querySelector(BRIGADE_ROOT);
+      const check = root?.querySelector(
+        `[data-v169-brigade-role="${CSS.escape(key)}"]`
+      );
+      const count = Math.max(0, Math.round(Number(target.value) || 0));
+      target.value = String(count);
+      if (check) check.checked = count > 0;
+    }
+    if (target.matches('[data-v179-brigade-ratio]')) {
+      const ratio = Math.max(1, Math.min(999, Math.round(Number(target.value) || 1)));
+      target.value = String(ratio);
+    }
+    queueBrigadeSync('brigade · valeur modifiée', 100);
+  }, true);
+  // TOUT / profil / appliquer brigade modifient plusieurs champs par code :
+  // on synchronise juste après que leur gestionnaire historique a terminé.
+  document.addEventListener('click', event => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) return;
+    if (
+      target.closest('[data-v169-toggle-dept]') ||
+      target.closest('[data-v171-profile]') ||
+      target.closest('#v169-apply-profile')
+    ) {
+      setTimeout(
+        () => queueBrigadeSync('brigade · profil/équipe modifié', 80),
+        0
+      );
+    }
+  }, true);
+  // Si le personnel ou les réglages changent ailleurs, l'assistant et
+  // les vues de couverture sont recalculés avec la brigade courante.
+  window.addEventListener('ichef:staffingUpdated', () => {
+    const settings = typeof getRhSettings === 'function' ? getRhSettings() : {};
+    refreshConnectedViews(settings);
+  });
+  window.addEventListener('ichef:updateState', event => {
+    const remote = event?.detail?.activeOrders?.RH_BRIGADE_MASTER?.data;
+    if (!remote || typeof remote !== 'object') return;
+    // RH_SETTINGS reste la source de vérité. Ce noeud sert de diffusion
+    // inter-modules ; on rafraîchit seulement les vues quand il arrive.
+    const settings = typeof getRhSettings === 'function' ? getRhSettings() : {};
+    refreshConnectedViews(settings);
+  });
+  window.ICHEF_RH_BRIGADE_V187 = {
+    sync: syncBrigadeNow,
+    snapshot: () => brigadeSnapshot(
+      typeof getRhSettings === 'function' ? getRhSettings() : {}
+    )
+  };
+  window.__ICHEF_RH_BUILD__ = VERSION;
+  console.info('[iCHEF RH V187] brigade connectée : métiers + effectifs + ratios + planning + serveur');
+})();
+
+
+;
+/* RH V264 - preserved script #112 */
+window.__ICHEF_RH_BUILD__='RH-V187-BRIGADE-LIVE-SYNC';
+console.info('[iCHEF RH V187] brigade synchronisée en temps réel');
+
+
+;
+/* RH V264 - preserved script #113 */
+(() => {
+  'use strict';
+  const VERSION = 'RH-V188-GROSS-SALARY-HOURLY-AUTO';
+  function refreshSalaryUi() {
+    try {
+      if (typeof updateStaffGrossHourlyCost === 'function') {
+        updateStaffGrossHourlyCost();
+      }
+    } catch (error) {
+      console.warn('[iCHEF RH V188] rafraîchissement salaire non bloquant', error);
+    }
+  }
+  window.addEventListener('ichef:updateState', () => setTimeout(refreshSalaryUi, 0));
+  window.addEventListener('ichef:connected', () => setTimeout(refreshSalaryUi, 200));
+  document.addEventListener('ichef:rh-settings-saved', () => setTimeout(refreshSalaryUi, 0));
+  window.addEventListener('focus', refreshSalaryUi);
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', refreshSalaryUi, { once: true });
+  } else {
+    refreshSalaryUi();
+  }
+  window.__ICHEF_RH_BUILD__ = VERSION;
+  console.info('[iCHEF RH V188] salaire brut mensuel -> coût horaire brut automatique + devise auto');
+})();
+
+
+;
+/* RH V264 - preserved script #114 */
+window.__ICHEF_RH_BUILD__='RH-V188-GROSS-SALARY-HOURLY-AUTO';
+
+
+;
+/* RH V264 - preserved script #115 */
+
+window.__ICHEF_RH_BUILD__='RH-V192-FR-CH-13TH-SALARY';
+console.info('[iCHEF RH V192] 13e salaire France/Suisse · source juridique · annuel/mensualisé · paie/export');
+
+
+
+;
+/* RH V264 - preserved script #116 */
+
+(() => {
+  'use strict';
+  if (window.__ICHEF_RH_V193_PRO_LEGAL__) return;
+  window.__ICHEF_RH_V193_PRO_LEGAL__ = true;
+
+  const REF_DATE = '2026-09-29';
+
+  function settings(){
+    try { return typeof getRhSettings === 'function' ? getRhSettings() : {}; }
+    catch (_) { return {}; }
+  }
+  function payrollProfile(staffId){
+    try {
+      const all = JSON.parse(localStorage.getItem('ichef_payroll_profiles_v2') || '{}') || {};
+      return all?.[staffId] || all?.[String(staffId)] || {};
+    } catch (_) { return {}; }
+  }
+  function currentStaff(pin){
+    try {
+      if (!pin || typeof getDir !== 'function') return null;
+      return (getDir() || []).find(s => String(s.pin || '') === String(pin)) || null;
+    } catch (_) { return null; }
+  }
+  function annualStatus(staffId,statuses){
+    if (!staffId || typeof countAnnualStatusDays !== 'function') return null;
+    try { return Number(countAnnualStatusDays(staffId,new Date().getFullYear(),statuses)) || 0; }
+    catch (_) { return null; }
+  }
+  function setText(id,value){
+    const el=document.getElementById(id);
+    if(el) el.textContent=value;
+  }
+  function legalModel(){
+    const s=settings();
+    const country=String(s?.planningLegalCountry||'CH').toUpperCase()==='FR'?'FR':'CH';
+    if(country==='FR'){
+      return {
+        country:'FR',
+        countryLabel:'FRANCE',
+        framework:'HCR · IDCC 1979 + Code du travail',
+        leaveDays:25,
+        leaveTitle:'5 semaines / an',
+        leaveDetail:'Décompte iCHEF : 25 jours ouvrés équivalents. Référence légale : 30 jours ouvrables / 2,5 jours ouvrables par mois ; un décompte en jours ouvrés est admis s’il garantit un droit au moins équivalent.',
+        holidayTitle:'1er Mai + régime HCR',
+        holidayDetail:'En établissement permanent : 10 jours fériés en plus du 1er Mai après les conditions d’ancienneté HCR, dont 6 garantis. Le calcul dépend de l’ancienneté et du statut de l’établissement.',
+        holidayRule:'6 garantis*',
+        offTitle:'2 jours de repos HCR',
+        offDetail:'Repos hebdomadaire distinct des congés et des jours fériés. Maximum planifié contrôlé avant publication.',
+        restMin:'11 h',
+        maxDays:'6 max.',
+        note:'France HCR : vacances, jours fériés, repos hebdomadaire et récupération sont des compteurs distincts. Les situations particulières (maladie, mineur, apprentissage, nuit, maternité, accord d’entreprise) sont contrôlées selon les données renseignées.',
+        thirteenthDefault:'Selon contrat / accord / usage',
+        thirteenthDetail:'Le 13e mois n’est pas activé uniquement du fait de la convention HCR : iCHEF conserve sa source juridique dans le profil paie.'
+      };
+    }
+    return {
+      country:'CH',
+      countryLabel:'SUISSE',
+      framework:'CCNT hôtels-restaurants-cafés + LTr + OLT 1/2',
+      leaveDays:35,
+      leaveTitle:'5 semaines · 35 jours civils / an',
+      leaveDetail:'CCNT : 35 jours civils par année, soit 2,92 jours civils par mois. Les jours de repos ne se cumulent pas avec les jours de vacances.',
+      holidayTitle:'6 jours fériés payés / an',
+      holidayDetail:'CCNT : 0,5 jour par mois. Les jours fériés sont indépendants des vacances et des jours de repos.',
+      holidayRule:'0,5 j/mois',
+      offTitle:'2 jours de repos / semaine',
+      offDetail:'Au moins un jour entier. Le régime exceptionnel 7 jours n’est utilisé que s’il est explicitement activé et contrôlé.',
+      restMin:'11 h',
+      maxDays:(settings()?.planningSwissSevenDayException===true?'7* max.':'6 max.'),
+      note:'Suisse CCNT : un jour doit être enregistré comme repos, vacances ou jour férié ; plusieurs avoirs ne doivent pas être consommés simultanément.',
+      thirteenthDefault:'13e salaire · 100 %',
+      thirteenthDetail:'CCNT : 100 % d’un salaire mensuel brut, au prorata si l’année est incomplète ; 8,33 % lorsqu’il est versé mensuellement ou avec le salaire horaire.'
+    };
+  }
+
+  function thirteenthFor(model,profile,staff){
+    const shownInEditor=document.getElementById('staff-modal')?.classList.contains('show');
+    const selected=shownInEditor
+      ? document.querySelector('input[name="staff-13th-mode"]:checked')?.value
+      : '';
+    const mode = (selected || staff?.thirteenthMode ||
+      (model.country==='CH' ? profile?.chThirteenthMode : profile?.frThirteenthMode)) === 'monthly'
+        ? 'monthly' : 'annual';
+    const payment=mode==='monthly'?'Mensuel (1/12 séparé)':'Annuel (versement distinct)';
+    if(model.country==='CH'){
+      return {
+        title:`13e salaire · ${payment}`,
+        detail:`Salaire brut mensuel hors 13e. ${model.thirteenthDetail}`,
+        badge:'CCNT'
+      };
+    }
+    const source=String(profile?.frThirteenthSource||'none');
+    const labels={
+      contract:'Contrat de travail',
+      agreement:'Accord collectif / entreprise',
+      usage:'Usage d’entreprise',
+      employer:'Engagement employeur',
+      none:'Non configuré'
+    };
+    if(source==='none'){
+      return {
+        title:'Selon contrat / accord / usage',
+        detail:'Aucun droit au 13e mois n’est actuellement identifié dans le profil paie de ce collaborateur.',
+        badge:'À CONFIGURER'
+      };
+    }
+    const pct=Math.max(0,Number(profile?.frThirteenthPct||100));
+    return {
+      title:`Oui · ${pct.toLocaleString('fr-FR',{maximumFractionDigits:2})} % d’un mois`,
+      detail:`Source : ${labels[source]||source} · versement ${payment.toLowerCase()}.`,
+      badge:'DROIT IDENTIFIÉ'
+    };
+  }
+
+  function updateChecklist(model,staff,profile){
+    const checks=[...document.querySelectorAll('#staff-legal-checklist .staff-pro-check')];
+    const contractType=(document.getElementById('staff-contract-type')?.value||profile?.contractType||'').trim();
+    const startDate=(document.getElementById('staff-start-date')?.value||profile?.startDate||'').trim();
+    const birthDate=(document.getElementById('staff-birth-date')?.value||profile?.birthDate||'').trim();
+    const minRest=Number(document.getElementById('staff-min-rest')?.value||0);
+    const maxDays=Number(document.getElementById('staff-max-consecutive')?.value||0);
+    const maxAllowed=model.country==='CH'&&settings()?.planningSwissSevenDayException===true?7:6;
+
+    const rows=[
+      {ok:true,text:`${model.country} · ${model.framework}`},
+      {ok:Boolean(contractType&&startDate),warn:!contractType||!startDate,text:contractType&&startDate?'Contrat + date d’entrée renseignés':'Type de contrat ou date d’entrée manquant'},
+      {ok:true,text:'Vacances / fériés / OFF / récupération séparés'},
+      {ok:minRest>=11&&maxDays<=maxAllowed,block:minRest<11||maxDays>maxAllowed,text:minRest>=11&&maxDays<=maxAllowed?'Garde-fous internes compatibles':'Repos ou jours consécutifs à corriger'}
+    ];
+    if(/APPRENT/i.test(contractType)&&!birthDate){
+      rows[1]={ok:false,warn:true,text:'Apprentissage : date de naissance à renseigner'};
+    }
+    checks.forEach((el,i)=>{
+      const r=rows[i]||{};
+      el.classList.remove('ok','warn','block');
+      el.classList.add(r.block?'block':r.ok?'ok':'warn');
+      const b=el.querySelector('b');
+      const s=el.querySelector('span');
+      if(b) b.textContent=r.block?'BLOQUANT':r.ok?'OK':'À COMPLÉTER';
+      if(s) s.textContent=r.text;
+    });
+
+    const status=document.getElementById('staff-legal-status-pill');
+    if(status){
+      const hasBlock=rows.some(r=>r.block);
+      const hasWarn=rows.some(r=>!r.ok&&!r.block);
+      status.className=`staff-pro-status ${hasBlock?'block':hasWarn?'warn':'ok'}`;
+      status.textContent=hasBlock?'À CORRIGER':hasWarn?'DOSSIER À COMPLÉTER':'RÉFÉRENTIEL ACTIF';
+    }
+  }
+
+  window.updateStaffProfessionalLegalUIV193=function(pin=null){
+    const model=legalModel();
+    const staff=currentStaff(pin||document.getElementById('staff-edit-original-pin')?.value);
+    const profile=payrollProfile(staff?.id);
+    const leaveInput=document.getElementById('staff-leave-days');
+    if(leaveInput) leaveInput.value=String(model.leaveDays);
+
+    setText('staff-legal-country-badge',model.countryLabel);
+    setText('staff-legal-framework',model.framework);
+    setText('staff-legal-reference',`Référentiel vérifié · ${REF_DATE}`);
+    setText('staff-right-leave-title',model.leaveTitle);
+    setText('staff-right-leave-detail',model.leaveDetail);
+    setText('staff-right-holiday-title',model.holidayTitle);
+    setText('staff-right-holiday-detail',model.holidayDetail);
+    setText('staff-right-holiday-rule',model.holidayRule);
+    setText('staff-right-off-title',model.offTitle);
+    setText('staff-right-off-detail',model.offDetail);
+    setText('staff-right-rest-min',model.restMin);
+    setText('staff-right-max-days',model.maxDays);
+    setText('staff-rights-legal-note',model.note);
+
+    const leaveUsed=annualStatus(staff?.id,['conge']);
+    const holidayUsed=annualStatus(staff?.id,['ferie']);
+    const carry=Math.max(0,Number(document.getElementById('staff-leave-carryover')?.value||0));
+    setText('staff-right-leave-used',leaveUsed===null?'—':`${leaveUsed.toLocaleString('fr-FR',{maximumFractionDigits:1})} j`);
+    setText('staff-right-leave-remaining',leaveUsed===null?'—':`${Math.max(0,model.leaveDays+carry-leaveUsed).toLocaleString('fr-FR',{maximumFractionDigits:1})} j`);
+    setText('staff-right-holiday-used',holidayUsed===null?'—':`${holidayUsed.toLocaleString('fr-FR',{maximumFractionDigits:1})} j`);
+
+    const t=thirteenthFor(model,profile,staff);
+    setText('staff-right-13th-title',t.title);
+    setText('staff-right-13th-detail',t.detail);
+    setText('staff-right-13th-badge',t.badge);
+
+    updateChecklist(model,staff,profile);
+  };
+
+  document.addEventListener('input',e=>{
+    if(['staff-contract-type','staff-start-date','staff-end-date','staff-birth-date','staff-leave-carryover','staff-min-rest','staff-max-consecutive'].includes(e.target?.id)){
+      updateStaffProfessionalLegalUIV193(document.getElementById('staff-edit-original-pin')?.value||null);
+    }
+  },true);
+  document.addEventListener('change',e=>{
+    if(['staff-contract-type','staff-start-date','staff-end-date','staff-birth-date'].includes(e.target?.id)){
+      updateStaffProfessionalLegalUIV193(document.getElementById('staff-edit-original-pin')?.value||null);
+    }
+  },true);
+  document.addEventListener('ichef:rh-settings-saved',()=>setTimeout(()=>updateStaffProfessionalLegalUIV193(document.getElementById('staff-edit-original-pin')?.value||null),0));
+  window.addEventListener('ichef:updateState',()=>setTimeout(()=>updateStaffProfessionalLegalUIV193(document.getElementById('staff-edit-original-pin')?.value||null),0));
+
+  window.__ICHEF_RH_BUILD__='RH-V193-PRO-LEGAL';
+  console.info('[iCHEF RH V193] fiche RH professionnelle · droits séparés · contrat synchronisé paie · référentiel légal visible');
+})();
+
+
+
+;
+/* RH V264 - preserved script #117 */
+
+(() => {
+  window.__ICHEF_RH_BUILD__='RH-V195-LIGHT-PRO';
+  document.documentElement.dataset.ichefTheme='light-pro';
+  console.info('[iCHEF RH V195] Light Pro · fond blanc · police noire · logique métier conservée');
+})();
+
+
+
+;
+/* RH V264 - preserved script #118 */
+
+(() => {
+  'use strict';
+  if (window.__ICHEF_RH_V196_AUTO_CURRENCY_ZONE__) return;
+  window.__ICHEF_RH_V196_AUTO_CURRENCY_ZONE__ = true;
+
+  const VERSION = 'RH-V196-AUTO-EUR-CHF';
+  const RH_SETTINGS_KEY = 'ichef_rh_settings';
+  const PAYROLL_KEY = 'ichef_payroll_settings_v2';
+
+  const safeJson = (raw, fallback={}) => {
+    try { return JSON.parse(raw || '') || fallback; }
+    catch (_) { return fallback; }
+  };
+  const getJson = (key, fallback={}) => safeJson(localStorage.getItem(key), fallback);
+  const setJson = (key, value) => {
+    try { localStorage.setItem(key, JSON.stringify(value)); return true; }
+    catch (_) { return false; }
+  };
+
+  function normCountry(value){
+    const raw = String(value ?? '').trim().toUpperCase();
+    if (!raw) return '';
+    if (
+      raw === 'FR' || raw === 'FRA' || raw === 'FRANCE' ||
+      raw.includes('FRANCE')
+    ) return 'FR';
+    if (
+      raw === 'CH' || raw === 'CHE' || raw === 'SUISSE' ||
+      raw === 'SWITZERLAND' || raw === 'SCHWEIZ' || raw === 'SVIZZERA' ||
+      raw.includes('SUISSE') || raw.includes('SWITZERLAND') ||
+      raw.includes('SCHWEIZ') || raw.includes('SVIZZERA')
+    ) return 'CH';
+    return '';
+  }
+
+  function normCurrency(value){
+    const raw = String(value ?? '').trim().toUpperCase();
+    if (raw === 'EUR' || raw === '€') return 'FR';
+    if (raw === 'CHF') return 'CH';
+    return '';
+  }
+
+  function profile(country){
+    return country === 'FR'
+      ? {
+          country:'FR',
+          countryLabel:'France',
+          currency:'EUR',
+          symbol:'€',
+          agreement:'Convention collective HCR · IDCC 1979',
+          legalFramework:'FR_HCR'
+        }
+      : {
+          country:'CH',
+          countryLabel:'Suisse',
+          currency:'CHF',
+          symbol:'CHF',
+          agreement:'CCNT hôtels, restaurants & cafés (L-GAV)',
+          legalFramework:'CH_CCNT'
+        };
+  }
+
+  function readObjectCountry(obj){
+    if (!obj || typeof obj !== 'object') return '';
+    const countryKeys = [
+      'countryCode','country_code','country','pays',
+      'companyCountry','company_country',
+      'establishmentCountry','establishment_country',
+      'businessCountry','business_country',
+      'clientCountry','client_country',
+      'tenantCountry','tenant_country',
+      'legalCountry','legal_country'
+    ];
+    for (const key of countryKeys) {
+      if (Object.prototype.hasOwnProperty.call(obj,key)) {
+        const c = normCountry(obj[key]);
+        if (c) return c;
+      }
+    }
+    const currencyKeys = ['currency','devise','currencyCode','currency_code'];
+    for (const key of currencyKeys) {
+      if (Object.prototype.hasOwnProperty.call(obj,key)) {
+        const c = normCurrency(obj[key]);
+        if (c) return c;
+      }
+    }
+    return '';
+  }
+
+  function detectFromState(){
+    const state = window.ICHEF_LIVE_STATE;
+    if (!state || typeof state !== 'object') return null;
+
+    const candidates = [
+      ['Établissement', state.establishment],
+      ['Entreprise', state.company],
+      ['Tenant', state.tenant],
+      ['Client', state.client],
+      ['Business', state.business],
+      ['Configuration', state.settings],
+      ['Profil', state.profile],
+      ['État client', state]
+    ];
+    for (const [source,obj] of candidates) {
+      const country = readObjectCountry(obj);
+      if (country) return {country,source:`${source} connecté`};
+    }
+
+    const orders = state.activeOrders || {};
+    const keys = Object.keys(orders).filter(k =>
+      /(ESTABLISH|COMPANY|TENANT|CLIENT|BUSINESS|SETTING|CONFIG|PROFILE|VENUE|RESTAURANT|HOTEL)/i.test(String(k))
+    );
+    for (const key of keys) {
+      const node = orders[key];
+      const payload = node && typeof node === 'object' && 'data' in node ? node.data : node;
+      const country = readObjectCountry(payload);
+      if (country) return {country,source:`Serveur · ${key}`};
+    }
+    return null;
+  }
+
+  function detectCountry(){
+    // 1. Détection automatique déjà faite par le moteur établissement V185.
+    const v185 = normCountry(window.ICHEF_CLIENT_COUNTRY_V185?.current?.country);
+    if (v185) {
+      return {
+        country:v185,
+        source:window.ICHEF_CLIENT_COUNTRY_V185?.current?.source || 'Détection établissement iCHEF'
+      };
+    }
+
+    // 2. État connecté du client / établissement.
+    const live = detectFromState();
+    if (live) return live;
+
+    // 3. Fiche locale explicite de l'établissement.
+    const localCountryKeys = [
+      'ichef_establishment_country',
+      'ichef_client_country',
+      'ichef_company_country',
+      'ichef_business_country',
+      'ichef_country',
+      'establishment_country',
+      'client_country'
+    ];
+    for (const key of localCountryKeys) {
+      const c = normCountry(localStorage.getItem(key));
+      if (c) return {country:c,source:`Fiche établissement · ${key}`};
+    }
+
+    // 4. Référentiel RH déjà enregistré.
+    try {
+      if (typeof getRhSettings === 'function') {
+        const s = getRhSettings() || {};
+        const c = normCountry(s.planningLegalCountry) || normCurrency(s.currency);
+        if (c) return {country:c,source:'Référentiel RH enregistré'};
+      }
+    } catch (_) {}
+
+    // 5. Profil paie entreprise.
+    const pay = getJson(PAYROLL_KEY,{});
+    const pc = normCountry(pay.country) || normCurrency(pay.currency);
+    if (pc) return {country:pc,source:'Configuration paie entreprise'};
+
+    // 6. Dernière détection V185 par tenant.
+    try {
+      const tenant =
+        typeof tenantID_JS !== 'undefined' && tenantID_JS
+          ? String(tenantID_JS)
+          : 'default';
+      const saved = getJson(`ichef_client_country_detected_v185_${tenant}`,{});
+      const c = normCountry(saved.country);
+      if (c) return {country:c,source:saved.source || 'Dernière détection établissement'};
+    } catch (_) {}
+
+    // Compatibilité historique : iCHEF était initialement configuré Suisse.
+    return {country:'CH',source:'Configuration de secours iCHEF'};
+  }
+
+  function persistCountryAndCurrency(detected){
+    const p = profile(detected.country);
+
+    // RH : ne jamais réécrire / renvoyer RH_SETTINGS si la valeur utile
+    // est déjà correcte. V196 pouvait auparavant déclencher API.update()
+    // sur de simples mutations d'interface.
+    let rh = {};
+    try {
+      rh = typeof getRhSettings === 'function'
+        ? (getRhSettings() || {})
+        : getJson(RH_SETTINGS_KEY,{});
+    } catch (_) {
+      rh = getJson(RH_SETTINGS_KEY,{});
+    }
+
+    const stableSource = String(
+      rh.planningLegalCountrySource ||
+      detected.source ||
+      'établissement'
+    );
+
+    const rhNeedsWrite =
+      String(rh.currency || '') !== p.currency ||
+      String(rh.planningLegalCountry || '').toUpperCase() !== p.country ||
+      String(rh.planningLegalFramework || '') !== p.legalFramework ||
+      rh.planningLegalCountryAuto !== true ||
+      !String(rh.planningLegalCountrySource || '').trim();
+
+    if (rhNeedsWrite) {
+      const nextRh = {
+        ...rh,
+        currency:p.currency,
+        planningLegalCountry:p.country,
+        planningLegalFramework:p.legalFramework,
+        planningLegalCountryAuto:true,
+        planningLegalCountrySource:stableSource
+      };
+      if (typeof saveRhSettings === 'function') {
+        try { saveRhSettings(nextRh); }
+        catch (_) { setJson(RH_SETTINGS_KEY,nextRh); }
+      } else {
+        setJson(RH_SETTINGS_KEY,nextRh);
+      }
+    }
+
+    // Paie : même principe, écriture locale uniquement si une valeur change.
+    const pay = getJson(PAYROLL_KEY,{});
+    const expectedRegime = p.country === 'FR' ? 'HCR' : 'LGAV';
+    const currentRegime = p.country === 'FR' ? pay.frRegime : pay.chRegime;
+    const payNeedsWrite =
+      String(pay.country || '').toUpperCase() !== p.country ||
+      String(pay.currency || '').toUpperCase() !== p.currency ||
+      String(pay.agreement || '') !== p.agreement ||
+      currentRegime !== expectedRegime ||
+      pay.autoCountryFromTenant !== true ||
+      pay.autoCurrencyFromCountry !== true ||
+      pay.autoAgreementFromCountry !== true;
+
+    if (payNeedsWrite) {
+      const now = new Date().toISOString();
+      const nextPay = {
+        ...pay,
+        country:p.country,
+        currency:p.currency,
+        agreement:p.agreement,
+        autoCountryFromTenant:true,
+        autoCurrencyFromCountry:true,
+        autoAgreementFromCountry:true,
+        autoCountryUpdatedAt:now,
+        autoCurrencyUpdatedAt:now,
+        autoAgreementUpdatedAt:now
+      };
+      if (p.country === 'FR') nextPay.frRegime = 'HCR';
+      else nextPay.chRegime = 'LGAV';
+      setJson(PAYROLL_KEY,nextPay);
+    }
+
+    return p;
+  }
+
+  function lockSelect(id,value,title){
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.value = value;
+    el.disabled = true;
+    el.setAttribute('aria-disabled','true');
+    el.title = title;
+    el.style.cursor = 'not-allowed';
+  }
+
+  function setText(id,value){
+    const el = document.getElementById(id);
+    const next = String(value ?? '');
+    if (el && el.textContent !== next) el.textContent = next;
+  }
+
+  function updateCurrencyLabels(p){
+    // Fiche employé
+    setText('staff-gross-currency-label',p.symbol);
+    setText('staff-hourly-currency-label',p.symbol);
+    setText('staff-actual-cost-currency-label',p.symbol);
+
+    // Paramètres RH / Paie
+    lockSelect(
+      'rh-setting-currency',
+      p.currency,
+      `Automatique : ${p.countryLabel} = ${p.currency} (${p.symbol})`
+    );
+    lockSelect(
+      'ps-country',
+      p.country,
+      `Automatique : établissement ${p.countryLabel}`
+    );
+    lockSelect(
+      'ps-currency',
+      p.currency,
+      `Automatique : ${p.countryLabel} = ${p.currency} (${p.symbol})`
+    );
+
+    const agreement = document.getElementById('ps-agreement');
+    if (agreement) {
+      agreement.value = p.agreement;
+      agreement.readOnly = true;
+      agreement.setAttribute('aria-readonly','true');
+      agreement.title = 'Automatique selon le pays de l’établissement.';
+    }
+
+    document.querySelectorAll('#payroll-country-segment button').forEach(btn => {
+      btn.disabled = true;
+      btn.setAttribute('aria-disabled','true');
+      btn.classList.toggle('active',String(btn.dataset.country||'').toUpperCase()===p.country);
+      btn.title = `Pays automatique : ${p.countryLabel}`;
+    });
+
+    // Bouton d'optimisation : symbole cohérent partout.
+    document.querySelectorAll('[data-v109-mode="cost"]').forEach(btn => {
+      const small = btn.querySelector('small');
+      const detail = small?.textContent || 'Optimise les effectifs sans ignorer les contraintes';
+      const nextHtml = `${p.symbol} Réduire les coûts<small>${detail}</small>`;
+      if (btn.innerHTML !== nextHtml) btn.innerHTML = nextHtml;
+    });
+
+    // Badge visible de la détection.
+    const badge = document.getElementById('v185-country-auto-badge');
+    if (badge) {
+      const nextBadge = p.country === 'FR'
+        ? 'AUTO · FRANCE · €'
+        : 'AUTO · SUISSE · CHF';
+      if (badge.textContent !== nextBadge) badge.textContent = nextBadge;
+    }
+
+    // Command Center
+    setText('staff-legal-country-badge',p.country === 'FR' ? 'FRANCE · €' : 'SUISSE · CHF');
+  }
+
+  function updateKnownMoneySuffixes(p){
+    // Certains éléments sont recréés dynamiquement. On ne remplace JAMAIS
+    // les montants légaux spécifiques à un pays ; uniquement les unités
+    // explicitement marquées comme devise de l'établissement.
+    document.querySelectorAll('[data-ichef-currency-symbol]').forEach(el => {
+      if (el.textContent !== p.symbol) el.textContent = p.symbol;
+    });
+    document.querySelectorAll('[data-ichef-currency-code]').forEach(el => {
+      if (el.textContent !== p.currency) el.textContent = p.currency;
+    });
+  }
+
+  let applying = false;
+  let lastKey = '';
+
+  function apply(reason='sync'){
+    if (applying) return null;
+    applying = true;
+    try {
+      const detected = detectCountry();
+      const p = persistCountryAndCurrency(detected);
+      updateCurrencyLabels(p);
+      updateKnownMoneySuffixes(p);
+
+      const key = `${p.country}|${p.currency}|${detected.source}`;
+      if (key !== lastKey) {
+        lastKey = key;
+        window.dispatchEvent(new CustomEvent('ichef:currency-country-applied',{
+          detail:{
+            version:VERSION,
+            country:p.country,
+            countryLabel:p.countryLabel,
+            currency:p.currency,
+            symbol:p.symbol,
+            source:detected.source,
+            reason,
+            at:new Date().toISOString()
+          }
+        }));
+      }
+
+      window.ICHEF_AUTO_CURRENCY_V196 = {
+        country:p.country,
+        currency:p.currency,
+        symbol:p.symbol,
+        source:detected.source,
+        version:VERSION
+      };
+      return window.ICHEF_AUTO_CURRENCY_V196;
+    } finally {
+      applying = false;
+    }
+  }
+
+  // Rendre les helpers accessibles aux autres modules.
+  window.iChefCurrencyProfile = function(){
+    const d = detectCountry();
+    return {...profile(d.country),source:d.source};
+  };
+  window.iChefCurrencySymbol = function(){
+    return window.iChefCurrencyProfile().symbol;
+  };
+  window.iChefCurrencyCode = function(){
+    return window.iChefCurrencyProfile().currency;
+  };
+  window.iChefApplyAutoCurrency = apply;
+
+  // Renforcer les anciens points d'entrée sans changer leur comportement métier.
+  const priorRenderPayroll = window.renderPayrollCenter;
+  if (typeof priorRenderPayroll === 'function') {
+    window.renderPayrollCenter = function(...args){
+      apply('before-payroll-render');
+      const result = priorRenderPayroll.apply(this,args);
+      queueMicrotask(() => apply('after-payroll-render'));
+      return result;
+    };
+  }
+
+  const priorOpenStaff = window.openStaffModal;
+  if (typeof priorOpenStaff === 'function') {
+    window.openStaffModal = function(...args){
+      apply('before-staff-modal');
+      const result = priorOpenStaff.apply(this,args);
+      queueMicrotask(() => apply('after-staff-modal'));
+      return result;
+    };
+  }
+
+  // Les composants peuvent être reconstruits dynamiquement : resynchroniser
+  // les libellés sans toucher aux calculs.
+  let mutationTimer = null;
+  const relevantCurrencySelector = [
+    '#staff-modal',
+    '#payroll-interface',
+    '#payroll-settings-modal',
+    '#payroll-profile-modal',
+    '#rh-ai-settings-v103',
+    '[data-ichef-currency-symbol]',
+    '[data-ichef-currency-code]'
+  ].join(',');
+
+  const observer = new MutationObserver(mutations => {
+    const relevant = mutations.some(mutation =>
+      [...(mutation.addedNodes || [])].some(node =>
+        node?.nodeType === 1 &&
+        (
+          node.matches?.(relevantCurrencySelector) ||
+          node.querySelector?.(relevantCurrencySelector)
+        )
+      )
+    );
+    if (!relevant) return;
+    clearTimeout(mutationTimer);
+    mutationTimer = setTimeout(() => apply('ui-structure'),120);
+  });
+
+  function boot(){
+    apply('boot');
+    if (document.body) {
+      observer.observe(document.body,{childList:true,subtree:true});
+    }
+    // Un seul fallback léger. Les vrais changements serveur déclenchent
+    // déjà ichef:connected / ichef:updateState.
+    setTimeout(() => apply('boot-fallback'),650);
+  }
+
+  window.addEventListener('ichef:updateState',() => setTimeout(() => apply('state-update'),0));
+  window.addEventListener('ichef:connected',() => setTimeout(() => apply('connected'),250));
+  window.addEventListener('focus',() => setTimeout(() => apply('focus'),0));
+  document.addEventListener('ichef:rh-settings-saved',() => setTimeout(() => apply('rh-settings'),0));
+  window.addEventListener('storage',e => {
+    if (
+      e.key === RH_SETTINGS_KEY ||
+      e.key === PAYROLL_KEY ||
+      /country/i.test(String(e.key||''))
+    ) {
+      setTimeout(() => apply('storage'),0);
+    }
+  });
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded',boot,{once:true});
+  } else {
+    boot();
+  }
+
+  window.__ICHEF_RH_BUILD__ = VERSION;
+  console.info('[iCHEF RH V196] France = EUR (€) · Suisse = CHF · détection automatique établissement');
+})();
+
+
+
+;
+/* RH V264 - preserved script #119 */
+
+window.__ICHEF_RH_BUILD__='RH-V196-AUTO-EUR-CHF';
+console.info('[iCHEF RH V196] devise automatique FR € / CH CHF');
+
+
+
+;
+/* RH V264 - preserved script #120 */
+
+window.__ICHEF_RH_BUILD__='RH-V197-GLOBAL-LIGHT-FIX';
+document.documentElement.dataset.ichefTheme='light-monochrome-pro';
+console.info('[iCHEF RH V197] fond blanc · cadres blancs/gris · bordures noires · texte noir');
+
+
+
+;
+/* RH V264 - preserved script #121 */
+
+(() => {
+  'use strict';
+  if (window.__ICHEF_RH_V198_LIGHT_LAYOUT__) return;
+  window.__ICHEF_RH_V198_LIGHT_LAYOUT__ = true;
+
+  function syncPlanningLayoutV198(){
+    const hr = document.getElementById('hr-interface');
+    const globalView = document.getElementById('global-view-container');
+    if (!hr || !globalView) return;
+    const globalVisible =
+      globalView.style.display === 'block' ||
+      getComputedStyle(globalView).display === 'block';
+    hr.classList.toggle('rh-v198-global-fit', globalVisible);
+  }
+
+  const globalView = document.getElementById('global-view-container');
+  if (globalView) {
+    new MutationObserver(syncPlanningLayoutV198).observe(globalView,{
+      attributes:true,attributeFilter:['style','class']
+    });
+  }
+  const hr = document.getElementById('hr-interface');
+  if (hr) {
+    new MutationObserver(syncPlanningLayoutV198).observe(hr,{
+      attributes:true,attributeFilter:['style']
+    });
+  }
+
+  document.addEventListener('click',event => {
+    if (
+      event.target?.closest?.('#btn-toggle-view') ||
+      event.target?.closest?.('[onclick*="selectStaff"]') ||
+      event.target?.closest?.('[onclick*="openInterface"]')
+    ) setTimeout(syncPlanningLayoutV198,0);
+  },true);
+
+  window.syncPlanningLayoutV198=syncPlanningLayoutV198;
+  window.addEventListener('resize',syncPlanningLayoutV198);
+  document.addEventListener('DOMContentLoaded',syncPlanningLayoutV198);
+  setTimeout(syncPlanningLayoutV198,50);
+  setTimeout(syncPlanningLayoutV198,500);
+
+  window.__ICHEF_RH_BUILD__='RH-V198-LIGHT-LAYOUT-FIX';
+  console.info('[iCHEF RH V198] couleurs résiduelles corrigées + planning plein écran optimisé');
+})();
+
+
+
+;
+/* RH V264 - preserved script #122 */
+
+window.__ICHEF_RH_BUILD__='RH-V198-LIGHT-LAYOUT-FIX';
+
+
+
+;
+/* RH V264 - preserved script #123 */
+
+(() => {
+  'use strict';
+  if (window.__ICHEF_RH_V199_ASSISTANCE_FIX__) return;
+  window.__ICHEF_RH_V199_ASSISTANCE_FIX__ = true;
+
+  function repairModal(id){
+    const modal=document.getElementById(id);
+    if(!modal) return;
+
+    const content=modal.querySelector('.modal-content');
+    if(content){
+      content.style.removeProperty('transform');
+      content.style.removeProperty('top');
+      content.style.removeProperty('left');
+      content.style.removeProperty('right');
+      content.style.removeProperty('bottom');
+      content.style.removeProperty('position');
+    }
+
+    /* Si la modale est ouverte, elle reste dans le viewport. */
+    const visible =
+      modal.classList.contains('show') ||
+      getComputedStyle(modal).display !== 'none';
+
+    if(visible && content){
+      requestAnimationFrame(() => {
+        try{
+          const r=content.getBoundingClientRect();
+          if(r.top < 0 || r.left < -2 || r.right > innerWidth + 2){
+            content.scrollIntoView({block:'start',inline:'nearest'});
+          }
+        }catch(_){}
+      });
+    }
+  }
+
+  function repairAll(){
+    repairModal('ia-predictions-modal');
+    repairModal('rh-ai-settings-v103');
+  }
+
+  /* Répare après les fonctions historiques qui construisent les réglages IA. */
+  const previousPlanningSettings=window.openRhPlanningSettingsV103;
+  if(typeof previousPlanningSettings==='function'){
+    window.openRhPlanningSettingsV103=function(...args){
+      const result=previousPlanningSettings.apply(this,args);
+      requestAnimationFrame(repairAll);
+      return result;
+    };
+  }
+
+  const previousAssistant=window.openPlanningAssistant;
+  if(typeof previousAssistant==='function'){
+    window.openPlanningAssistant=function(...args){
+      const result=previousAssistant.apply(this,args);
+      requestAnimationFrame(repairAll);
+      return result;
+    };
+  }
+
+  /* Les deux interfaces sont très dynamiques : surveiller seulement leurs
+     attributs et enfants, sans relancer les calculs métier. */
+  function observe(id){
+    const el=document.getElementById(id);
+    if(!el) return;
+    let frame=0;
+    new MutationObserver(mutations => {
+      const relevant=mutations.some(m =>
+        m.type==='childList' ||
+        (m.type==='attributes' && m.target===el && m.attributeName==='class')
+      );
+      if(!relevant || frame) return;
+      frame=requestAnimationFrame(()=>{
+        frame=0;
+        repairModal(id);
+      });
+    }).observe(el,{attributes:true,childList:true,subtree:true,attributeFilter:['class']});
+  }
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',()=>{
+      observe('ia-predictions-modal');
+      observe('rh-ai-settings-v103');
+      repairAll();
+    },{once:true});
+  }else{
+    observe('ia-predictions-modal');
+    observe('rh-ai-settings-v103');
+    repairAll();
+  }
+
+  window.__ICHEF_RH_BUILD__='RH-V199-ASSISTANCE-LIGHT-MODAL-FIX';
+  console.info('[iCHEF RH V199] assistance planning claire + modales au premier plan');
+})();
+
+
+
+;
+/* RH V264 - preserved script #124 */
+
+window.__ICHEF_RH_BUILD__='RH-V199-ASSISTANCE-LIGHT-MODAL-FIX';
+
+
+
+;
+/* RH V264 - preserved script #125 */
+
+(() => {
+  'use strict';
+  if (window.__ICHEF_RH_V200_FAST_MANUAL__) return;
+  window.__ICHEF_RH_V200_FAST_MANUAL__ = true;
+
+  const VERSION = 'RH-V200-FAST-MANUAL-PLANNING';
+  const selected = new Set();
+  const STATUS_WORK = new Set(['present','off_matin','off_soir','ferie']);
+  let selectionMode = false;
+  let brushMode = false;
+  let drawerCtx = null;
+  let drawerScope = 'day';
+  let clipboard = null;
+  let lastSelected = null;
+  let currentToolbarStatus = 'present';
+  let currentToolbarTemplate = 'coupure';
+
+  const esc = v => String(v ?? '').replace(/[&<>"']/g,c=>({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+
+  function toast(message){
+    let el=document.getElementById('rh-v200-toast');
+    if(!el){
+      el=document.createElement('div');
+      el.id='rh-v200-toast';
+      document.body.appendChild(el);
+    }
+    el.textContent=String(message||'');
+    el.classList.add('show');
+    clearTimeout(el._t);
+    el._t=setTimeout(()=>el.classList.remove('show'),1700);
+  }
+
+  function monthValue(){
+    return String(document.getElementById('month-selector')?.value||'');
+  }
+
+  function dateStringFromDay(day){
+    const month=monthValue();
+    return month ? `${month}-${String(Number(day)).padStart(2,'0')}` : '';
+  }
+
+  function keyOf(staffId,dateStr){
+    return `${String(staffId)}|${String(dateStr)}`;
+  }
+
+  function parseKey(key){
+    const idx=String(key).indexOf('|');
+    return {
+      staffId:String(key).slice(0,idx),
+      dateStr:String(key).slice(idx+1)
+    };
+  }
+
+  function staffById(id){
+    try{
+      return typeof getDir==='function'
+        ? (getDir()||[]).find(s=>String(s.id)===String(id))
+        : null;
+    }catch(_){ return null; }
+  }
+
+  function getPlan(staffId,dateStr){
+    const [y,m,d]=String(dateStr).split('-').map(Number);
+    const month=`${y}-${String(m).padStart(2,'0')}`;
+    const ts=typeof getTs==='function'?getTs():{};
+    const staff=staffById(staffId);
+    const raw=ts?.[month]?.[String(staffId)]?.[d]
+      || ts?.[month]?.[String(staffId)]?.[String(d)]
+      || ts?.[month]?.[staffId]?.[d]
+      || {};
+    return {
+      month,day:d,staff,
+      plan:{
+        status:'off',
+        poste:staff?.dept||'salle',
+        s1:'',
+        s2:'',
+        pause:0,
+        obs:'',
+        managerNote:'',
+        ...raw
+      }
+    };
+  }
+
+  function settings(){
+    try{return typeof getRhSettings==='function'?(getRhSettings()||{}):{}}
+    catch(_){return{}}
+  }
+
+  function defaultTemplates(){
+    const s=settings();
+    const lunchStart=String(s.lunchWorkStart||s.lunchStart||'10:00');
+    const lunchEnd=String(s.lunchWorkEnd||s.lunchEnd||'14:45');
+    const dinnerStart=String(s.dinnerWorkStart||s.dinnerStart||'18:00');
+    const dinnerEnd=String(s.dinnerWorkEnd||s.dinnerEnd||'22:45');
+    return [
+      {id:'matin',name:'Matin',status:'off_soir',s1:`${lunchStart}-${lunchEnd}`,s2:'',pause:0},
+      {id:'soir',name:'Soir',status:'off_matin',s1:'',s2:`${dinnerStart}-${dinnerEnd}`,pause:0},
+      {id:'coupure',name:'Coupure',status:'present',s1:`${lunchStart}-${lunchEnd}`,s2:`${dinnerStart}-${dinnerEnd}`,pause:30},
+      {id:'journee',name:'Journée',status:'present',s1:'08:00-16:00',s2:'',pause:30},
+      {id:'fermeture',name:'Fermeture',status:'present',s1:'',s2:'16:00-23:00',pause:30}
+    ];
+  }
+
+  function templateStorageKey(){
+    let tenant='default';
+    try{
+      tenant=String(
+        (typeof tenantID_JS!=='undefined'&&tenantID_JS) ||
+        (typeof tenantID!=='undefined'&&tenantID) ||
+        localStorage.getItem('ichef_tenant_id') ||
+        'default'
+      );
+    }catch(_){}
+    return `ichef_rh_shift_templates_v200_${tenant}`;
+  }
+
+  function getTemplates(){
+    const defs=defaultTemplates();
+    try{
+      const custom=JSON.parse(localStorage.getItem(templateStorageKey())||'[]');
+      return Array.isArray(custom)?[...defs,...custom]:defs;
+    }catch(_){return defs}
+  }
+
+  function saveCustomTemplate(tpl){
+    try{
+      const key=templateStorageKey();
+      const current=JSON.parse(localStorage.getItem(key)||'[]');
+      const list=Array.isArray(current)?current:[];
+      list.push(tpl);
+      localStorage.setItem(key,JSON.stringify(list.slice(-20)));
+      return true;
+    }catch(_){return false}
+  }
+
+  function templateById(id){
+    return getTemplates().find(t=>String(t.id)===String(id)) || getTemplates()[0];
+  }
+
+  function planFromTemplate(id,base={}){
+    const t=templateById(id);
+    return {
+      ...base,
+      status:t?.status||'present',
+      poste:base.poste||'salle',
+      s1:String(t?.s1||''),
+      s2:String(t?.s2||''),
+      pause:Number(t?.pause||0)
+    };
+  }
+
+  function normalizedCandidate(base,next){
+    let p={...base,...next};
+    p.status=String(p.status||'off');
+    p.categoryId=String(p.categoryId||base.categoryId||p.status||'off');
+    p.poste=String(p.poste||base.poste||'salle');
+    p.s1=String(p.s1||'').trim();
+    p.s2=String(p.s2||'').trim();
+    p.pause=Math.max(0,Math.min(240,Number(p.pause)||0));
+    p.obs=String(p.obs||'').trim().slice(0,500);
+    p.managerNote=String(p.managerNote||'').trim().slice(0,40);
+
+    if(!STATUS_WORK.has(p.status)){
+      p.s1='';p.s2='';p.pause=0;
+    }
+    if(p.status==='off_soir') p.s2='';
+    if(p.status==='off_matin') p.s1='';
+    return p;
+  }
+
+  function comparable(n){
+    return JSON.stringify({
+      status:String(n?.status||'off'),
+      categoryId:String(n?.categoryId||n?.status||'off'),
+      poste:String(n?.poste||''),
+      s1:String(n?.s1||''),
+      s2:String(n?.s2||''),
+      pause:Number(n?.pause||0),
+      obs:String(n?.obs||''),
+      managerNote:String(n?.managerNote||'')
+    });
+  }
+
+  function validatePlan(p){
+    const pat=/^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/;
+    if(p.s1&&!pat.test(p.s1)) return 'Horaire matin invalide. Exemple : 10:00-14:45';
+    if(p.s2&&!pat.test(p.s2)) return 'Horaire soir invalide. Exemple : 18:00-22:45';
+    return '';
+  }
+
+  function actor(){
+    try{
+      if(typeof window.rhAuditActorV94==='function') return window.rhAuditActorV94();
+    }catch(_){}
+    return 'Direction / RH';
+  }
+
+  function planningWindow(dateStr,before,after){
+    try{
+      if(typeof window.rhPlanningChangeWindowV102==='function'){
+        return window.rhPlanningChangeWindowV102(dateStr,before,after);
+      }
+    }catch(_){}
+    const dt=new Date(`${dateStr}T12:00:00`);
+    return dt.getTime()<=Date.now()
+      ? {needsReason:true,kind:'STARTED_OR_PAST'}
+      : {needsReason:false,kind:'NORMAL'};
+  }
+
+  function ensureEditable(){
+    const s=settings();
+    if(String(s.planningStatus||'draft')!=='locked') return true;
+    const ok=confirm('Ce planning est verrouillé. Voulez-vous le repasser en BROUILLON pour le modifier ?');
+    if(!ok) return false;
+    try{saveRhSettings?.({...s,planningStatus:'draft'});}catch(_){}
+    return true;
+  }
+
+  function horizonAccepts(dateStr){
+    try{
+      const h=window.getRhPlanningHorizonEnd?.();
+      if(!h) return true;
+      const d=new Date(`${dateStr}T12:00:00`);
+      return Number.isNaN(d.getTime()) || d.getTime()<=h.getTime();
+    }catch(_){return true}
+  }
+
+  async function applyToTargets(targets,producer,source='DIRECTION_QUICK_EDIT'){
+    if(!targets?.length) return false;
+    if(!ensureEditable()) return false;
+
+    const unique=[];
+    const seen=new Set();
+    targets.forEach(t=>{
+      const k=keyOf(t.staffId,t.dateStr);
+      if(!seen.has(k)){seen.add(k);unique.push({staffId:String(t.staffId),dateStr:String(t.dateStr)});}
+    });
+
+    const over=unique.find(t=>!horizonAccepts(t.dateStr));
+    if(over){
+      alert(`La date ${over.dateStr} dépasse l’horizon de préparation autorisé.`);
+      return false;
+    }
+
+    const ts=typeof getTs==='function'?getTs():{};
+    const changes=[];
+    let reasonNeeded=false;
+
+    for(const target of unique){
+      const data=getPlan(target.staffId,target.dateStr);
+      const before=JSON.parse(JSON.stringify(data.plan||{}));
+      const nextRaw=typeof producer==='function'
+        ? producer({target,before,data})
+        : producer;
+      const after=normalizedCandidate(before,nextRaw||{});
+      const error=validatePlan(after);
+      if(error){alert(error);return false;}
+      if(comparable(before)===comparable(after)) continue;
+
+      const windowInfo=planningWindow(target.dateStr,before,after);
+      if(windowInfo?.needsReason) reasonNeeded=true;
+
+      changes.push({
+        ...target,
+        month:data.month,
+        day:data.day,
+        staff:data.staff,
+        before,after,
+        windowInfo
+      });
+    }
+
+    if(!changes.length){
+      toast('Aucune modification');
+      return true;
+    }
+
+    let reason='';
+    if(reasonNeeded){
+      reason=String(prompt(
+        'Une ou plusieurs modifications concernent un service dans moins de 5 h, déjà commencé ou une date passée.\n\nMotif obligatoire pour la traçabilité :'
+      )||'').trim().slice(0,180);
+      if(!reason) return false;
+    }
+
+    const auditAt=new Date().toISOString();
+    const auditBy=actor();
+
+    changes.forEach(c=>{
+      if(!ts[c.month]) ts[c.month]={};
+      if(!ts[c.month][String(c.staffId)]) ts[c.month][String(c.staffId)]={};
+
+      const perChangeReason=c.windowInfo?.needsReason?reason:'';
+      ts[c.month][String(c.staffId)][c.day]={
+        ...c.after,
+        lastChangeReason:perChangeReason,
+        lastChangeAt:auditAt,
+        lastChangeBy:auditBy,
+        planningChangeKind:c.windowInfo?.kind||'NORMAL',
+        planningUrgent:c.windowInfo?.kind==='URGENT_5H',
+        updatedAt:auditAt
+      };
+
+      try{
+        recordRhChange?.({
+          type:'PLANNING_MANUAL_EDIT',
+          source,
+          staffId:String(c.staffId),
+          staffName:String(c.staff?.name||''),
+          date:c.dateStr,
+          month:c.month,
+          day:Number(c.day),
+          reason:perChangeReason,
+          changeKind:c.windowInfo?.kind||'NORMAL',
+          managerNote:String(c.after.managerNote||''),
+          by:auditBy,
+          before:c.before,
+          after:JSON.parse(JSON.stringify(ts[c.month][String(c.staffId)][c.day])),
+          message:perChangeReason
+            ? `Planning modifié · ${c.dateStr} · ${perChangeReason}`
+            : `Planning modifié · ${c.dateStr} · édition rapide iCHEF`
+        });
+      }catch(_){}
+    });
+
+    let ok=true;
+    try{
+      if(typeof saveTs==='function'){
+        const first=changes[0];
+        window.iChefV201SaveState?.('saving',changes.length);
+        const syncPromise=saveTs(ts,{
+          source,
+          reason,
+          staffId:String(first.staffId),
+          date:first.dateStr
+        });
+        // saveTs enregistre déjà le snapshot local AVANT l'appel réseau.
+        // L'édition peut donc continuer immédiatement sans attendre le serveur.
+        ok=true;
+        window.iChefV201SaveState?.('local',changes.length);
+        Promise.resolve(syncPromise)
+          .then(syncOk=>{
+            window.iChefV201SaveState?.(syncOk===false?'pending':'synced',changes.length);
+          })
+          .catch(err=>{
+            console.warn('[iCHEF RH V201] synchronisation planning différée',err);
+            window.iChefV201SaveState?.('pending',changes.length);
+          });
+      }else{
+        localStorage.setItem('empire_hr_timesheets',JSON.stringify(ts));
+        window.iChefV201SaveState?.('local',changes.length);
+      }
+    }catch(e){
+      console.error('[iCHEF RH V201] save local',e);
+      ok=false;
+      window.iChefV201SaveState?.('pending',changes.length);
+    }
+
+    // V217 : toutes les vues planning passent par le même bus.
+    // On évite plusieurs rerenders concurrents (source de clignotements et
+    // d'écrans momentanément désynchronisés).
+    try{
+      if(typeof window.iChefPlanningMasterSyncV217==='function'){
+        window.iChefPlanningMasterSyncV217({
+          source,
+          snapshot:ts,
+          local:true
+        });
+      }else{
+        loadMonthData?.();
+        requestAnimationFrame(()=>{ try{ renderRhCockpit?.(); }catch(_){} });
+        setTimeout(()=>{ try{ loadPublicPlanning?.(); }catch(_){} },120);
+      }
+      setTimeout(()=>{
+        try{ Promise.resolve(broadcastStaffingLevels?.()).catch(()=>{}); }catch(_){}
+      },120);
+    }catch(_){}
+
+    setTimeout(reapplySelection,30);
+    toast(ok
+      ? `${changes.length} case${changes.length>1?'s':''} enregistrée${changes.length>1?'s':''}`
+      : 'Enregistré localement · synchronisation en attente'
+    );
+    return ok;
+  }
+
+  function visibleTargets(){
+    const month=monthValue();
+    const result=[];
+
+    [...selected].forEach(key=>{
+      const target=parseKey(key);
+      const validDate=/^\d{4}-\d{2}-\d{2}$/.test(target.dateStr);
+      const sameMonth=validDate && target.dateStr.startsWith(`${month}-`);
+      const day=sameMonth ? Number(target.dateStr.slice(-2)) : 0;
+
+      // La cible doit appartenir au mois actuellement affiché ET exister
+      // encore dans la matrice visible. Cela élimine les sélections fantômes
+      // après changement de mois / rerender.
+      const visibleCell = sameMonth && day
+        ? [...document.querySelectorAll('#global-view-container .rh-status-quick-btn')].some(btn =>
+            String(btn.dataset.rhStaff||'')===String(target.staffId) &&
+            Number(btn.dataset.rhDay||0)===day
+          )
+        : false;
+
+      if(!sameMonth || !visibleCell){
+        selected.delete(key);
+        return;
+      }
+      result.push(target);
+    });
+
+    return result;
+  }
+
+  function toolbarPlan(){
+    const template=templateById(currentToolbarTemplate);
+    const categoryId=String(document.getElementById('rh-v200-toolbar-status')?.value||currentToolbarStatus||'present');
+    const category=window.iChefPlanningCategoryByIdV202?.(categoryId);
+    const status=String(category?.legalType||categoryId||'present');
+    let p={
+      status,
+      categoryId:category?.id||categoryId||status,
+      s1:template?.s1||'',
+      s2:template?.s2||'',
+      pause:Number(template?.pause||0)
+    };
+    if(status==='off') p={...p,status:'off',s1:'',s2:'',pause:0};
+    if(status==='conge') p={...p,status:'conge',s1:'',s2:'',pause:0};
+    if(status==='recup') p={...p,status:'recup',s1:'',s2:'',pause:0};
+    if(status==='maladie') p={...p,status:'maladie',s1:'',s2:'',pause:0};
+    if(status==='formation') p={...p,status:'formation',s1:'',s2:'',pause:0};
+    return p;
+  }
+
+  function refreshToolbar(){
+    const count=document.querySelector('#rh-v200-fastbar .rh-v200-count');
+    if(count){
+      const visibleCount=visibleTargets().length;
+      if(typeof window.iChefV216UpdateMonthSlot==='function'){
+        window.iChefV216UpdateMonthSlot(count,visibleCount);
+      }else{
+        count.textContent=visibleCount
+          ? `${visibleCount} case${visibleCount>1?'s':''} sélectionnée${visibleCount>1?'s':''}`
+          : 'Aucune case sélectionnée';
+      }
+    }
+    document.querySelector('#rh-v200-fastbar .rh-v200-select-mode')?.classList.toggle('active',selectionMode);
+    document.querySelector('#rh-v200-fastbar .rh-v200-brush')?.classList.toggle('active',brushMode);
+    document.querySelectorAll('#global-view-container .rh-status-quick-btn')
+      .forEach(btn=>btn.classList.toggle('rh-v200-brush-ready',brushMode));
+  }
+
+  function reapplySelection(){
+    document.querySelectorAll('#global-view-container .rh-status-quick-btn').forEach(btn=>{
+      const dateStr=dateStringFromDay(btn.dataset.rhDay);
+      const key=keyOf(btn.dataset.rhStaff,dateStr);
+      btn.classList.toggle('rh-v200-selected',selected.has(key));
+      btn.classList.toggle('rh-v200-brush-ready',brushMode);
+    });
+    refreshToolbar();
+    window.iChefV201RefreshTouchState?.();
+  }
+
+  function selectRange(staffId,fromDate,toDate){
+    const a=new Date(`${fromDate}T12:00:00`);
+    const b=new Date(`${toDate}T12:00:00`);
+    if(Number.isNaN(a.getTime())||Number.isNaN(b.getTime())) return;
+    const start=a<=b?a:b;
+    const end=a<=b?b:a;
+    const month=monthValue();
+    for(let d=new Date(start);d<=end;d.setDate(d.getDate()+1)){
+      const ds=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+      if(ds.startsWith(month)) selected.add(keyOf(staffId,ds));
+    }
+  }
+
+  function toggleSelection(staffId,dateStr,event){
+    const key=keyOf(staffId,dateStr);
+    if(event?.shiftKey && lastSelected?.staffId===String(staffId)){
+      selectRange(String(staffId),lastSelected.dateStr,dateStr);
+    }else if(selected.has(key)){
+      selected.delete(key);
+    }else{
+      selected.add(key);
+    }
+    lastSelected={staffId:String(staffId),dateStr:String(dateStr)};
+    reapplySelection();
+  }
+
+  function clearSelection(){
+    selected.clear();
+    lastSelected=null;
+    reapplySelection();
+  }
+
+  // V205 · API tactile publique.
+  // Elle réutilise EXACTEMENT le moteur V200 (validation, historique,
+  // motif si modification tardive, sauvegarde locale + synchro serveur).
+  async function applyCategoryToSelectionV205(categoryId,{clearAfter=true}={}){
+    const targets=visibleTargets();
+    if(!targets.length){
+      toast('Sélectionnez d’abord les jours');
+      return false;
+    }
+
+    const category=window.iChefPlanningCategoryByIdV202?.(String(categoryId||''));
+    if(!category){
+      toast('Catégorie planning introuvable');
+      return false;
+    }
+
+    const toolbarCategory=document.getElementById('rh-v200-toolbar-status');
+
+    const template=templateById(currentToolbarTemplate);
+    const legalStatus=String(category.legalType||'off');
+
+    const ok=await applyToTargets(
+      targets,
+      ({before})=>{
+        const next={
+          ...before,
+          status:legalStatus,
+          categoryId:category.id
+        };
+
+        // Pour TRAVAIL / MATIN / SOIR :
+        // conserver l'horaire existant si la case en possède déjà un.
+        // Sinon utiliser le modèle sélectionné dans la barre rapide.
+        if(legalStatus==='present'){
+          if(!String(before.s1||'').trim() && !String(before.s2||'').trim()){
+            next.s1=String(template?.s1||'');
+            next.s2=String(template?.s2||'');
+            next.pause=Number(template?.pause||0);
+          }
+        }else if(legalStatus==='off_soir'){
+          next.s1=String(before.s1||templateById('matin')?.s1||'');
+          next.s2='';
+          next.pause=0;
+        }else if(legalStatus==='off_matin'){
+          next.s1='';
+          next.s2=String(before.s2||templateById('soir')?.s2||'');
+          next.pause=0;
+        }else if(legalStatus==='ferie'){
+          // Un férié peut être travaillé ou non selon la situation.
+          // On conserve donc les horaires déjà présents, sans en inventer.
+          next.s1=String(before.s1||'');
+          next.s2=String(before.s2||'');
+          next.pause=Number(before.pause||0);
+        }else{
+          // Repos, congé, récupération, maladie, formation, etc.
+          next.s1='';
+          next.s2='';
+          next.pause=0;
+        }
+
+        return next;
+      },
+      'DIRECTION_TOUCH_CATEGORY'
+    );
+
+    if(ok){
+      if(toolbarCategory){
+        toolbarCategory.value=category.id;
+        currentToolbarStatus=category.id;
+        toolbarCategory.dispatchEvent(new Event('change',{bubbles:true}));
+      }
+      toast(`${targets.length} case${targets.length>1?'s':''} → ${category.short||category.label}`);
+      if(clearAfter) clearSelection();
+    }
+    return ok;
+  }
+
+  window.ICHEF_FAST_PLANNING_V205={
+    getSelectedTargets:()=>visibleTargets().map(x=>({...x})),
+    getSelectionCount:()=>selected.size,
+    clearSelection,
+    applyCategory:applyCategoryToSelectionV205,
+    setCategory(categoryId){
+      const category=window.iChefPlanningCategoryByIdV202?.(String(categoryId||''));
+      const select=document.getElementById('rh-v200-toolbar-status');
+      if(!category||!select) return false;
+      select.value=category.id;
+      currentToolbarStatus=category.id;
+      select.dispatchEvent(new Event('change',{bubbles:true}));
+      return true;
+    }
+  };
+
+  function ensureFastUi(){
+    const global=document.getElementById('global-view-container');
+    if(!global) return;
+
+    if(!document.getElementById('rh-v200-fastbar')){
+      const bar=document.createElement('div');
+      bar.id='rh-v200-fastbar';
+      bar.innerHTML=`
+        <div class="rh-v200-count">Aucune case sélectionnée</div>
+        <button type="button" class="rh-v200-select-mode">☑ SÉLECTION</button>
+        <select id="rh-v200-toolbar-status" title="Statut à appliquer">
+          <option value="present">TRAVAIL</option>
+          <option value="off">REPOS / OFF</option>
+          <option value="conge">CONGÉ</option>
+          <option value="recup">RÉCUP.</option>
+          <option value="maladie">MALADIE</option>
+          <option value="formation">FORMATION</option>
+        </select>
+        <select id="rh-v200-toolbar-template" title="Modèle d'horaire"></select>
+        <button type="button" class="rh-v200-copy">⧉ COPIER</button>
+        <button type="button" class="rh-v200-paste">COLLER</button>
+        <button type="button" class="rh-v200-apply">APPLIQUER</button>
+        <button type="button" class="rh-v200-brush">✎ PINCEAU</button>
+        <button type="button" class="rh-v200-tools-toggle">OUTILS ▾</button>
+        <button type="button" class="rh-v200-clear">EFFACER SÉLECTION</button>
+        <div class="rh-v200-spacer"></div>
+        <div class="rh-v200-draft">Brouillon · publication séparée</div>`;
+      global.insertBefore(bar,global.firstChild);
+
+      bar.querySelector('.rh-v200-select-mode').onclick=()=>{
+        selectionMode=!selectionMode;
+        if(selectionMode) brushMode=false;
+        refreshToolbar();
+      };
+      bar.querySelector('#rh-v200-toolbar-status').onchange=e=>{
+        currentToolbarStatus=e.target.value;
+      };
+      bar.querySelector('#rh-v200-toolbar-template').onchange=e=>{
+        currentToolbarTemplate=e.target.value;
+      };
+      bar.querySelector('.rh-v200-copy').onclick=copySelected;
+      bar.querySelector('.rh-v200-paste').onclick=pasteSelected;
+      bar.querySelector('.rh-v200-apply').onclick=()=>{
+        const targets=visibleTargets();
+        if(!targets.length){toast('Sélectionnez au moins une case');return;}
+        applyToTargets(targets,()=>toolbarPlan(),'DIRECTION_QUICK_BULK');
+      };
+      bar.querySelector('.rh-v200-brush').onclick=()=>{
+        brushMode=!brushMode;
+        if(brushMode) selectionMode=false;
+        refreshToolbar();
+        toast(brushMode?'Pinceau activé · cliquez les cases':'Pinceau désactivé');
+      };
+      bar.querySelector('.rh-v200-tools-toggle').onclick=()=>{
+        document.getElementById('rh-v200-tools-deck')?.classList.toggle('show');
+      };
+      bar.querySelector('.rh-v200-clear').onclick=clearSelection;
+    }
+
+    if(!document.getElementById('rh-v200-tools-deck')){
+      const deck=document.createElement('div');
+      deck.id='rh-v200-tools-deck';
+      deck.innerHTML=`
+        <section class="rh-v200-tool-card">
+          <div class="rh-v200-tool-head"><span>MODÈLES D'HORAIRES</span><button type="button" id="rh-v200-new-template" style="width:auto;margin:0;padding:0 8px">+ NOUVEAU</button></div>
+          <div id="rh-v200-template-list" class="rh-v200-template-list"></div>
+        </section>
+        <section class="rh-v200-tool-card">
+          <div class="rh-v200-tool-head"><span>COPIER / COLLER</span></div>
+          <select id="rh-v200-copy-mode">
+            <option value="previous-week">Semaine précédente</option>
+          </select>
+          <button type="button" id="rh-v200-copy-week">DUPLIQUER LA SEMAINE</button>
+          <button type="button" id="rh-v200-fill-selection">REMPLIR AVEC LA 1re CASE</button>
+        </section>
+        <section class="rh-v200-tool-card">
+          <div class="rh-v200-tool-head"><span>OUTILS RAPIDES</span></div>
+          <div class="rh-v200-four-tools">
+            <button type="button" id="rh-v200-brush-card">✎<br>PINCEAU</button>
+            <button type="button" id="rh-v200-off-card">OFF<br>REPOS</button>
+            <button type="button" id="rh-v200-copy-card">⧉<br>COPIER</button>
+            <button type="button" id="rh-v200-paste-card">↳<br>COLLER</button>
+          </div>
+        </section>
+        <section class="rh-v200-tool-card">
+          <div class="rh-v200-tool-head"><span>RÉPÉTER CE RYTHME</span></div>
+          <div class="rh-v200-cycle-grid">
+            <label>Travail<input id="rh-v200-cycle-work" type="number" min="1" max="14" value="3"></label>
+            <label>Repos<input id="rh-v200-cycle-off" type="number" min="1" max="14" value="2"></label>
+          </div>
+          <label style="display:block;color:#555;font-size:.49rem;font-weight:800;text-transform:uppercase;margin-top:4px">Sur</label>
+          <select id="rh-v200-cycle-weeks">
+            <option value="2">2 semaines</option>
+            <option value="4" selected>4 semaines</option>
+            <option value="6">6 semaines</option>
+            <option value="8">8 semaines</option>
+          </select>
+          <button type="button" id="rh-v200-cycle-apply">APPLIQUER LE CYCLE</button>
+        </section>`;
+      global.insertBefore(deck,document.getElementById('rh-v200-fastbar')?.nextSibling || global.firstChild);
+
+      deck.querySelector('#rh-v200-new-template').onclick=saveCurrentAsTemplate;
+      deck.querySelector('#rh-v200-copy-week').onclick=duplicatePreviousWeek;
+      deck.querySelector('#rh-v200-fill-selection').onclick=fillSelectionFromFirst;
+      deck.querySelector('#rh-v200-brush-card').onclick=()=>{
+        document.querySelector('#rh-v200-fastbar .rh-v200-brush')?.click();
+      };
+      deck.querySelector('#rh-v200-off-card').onclick=()=>{
+        currentToolbarStatus='off';
+        const sel=document.getElementById('rh-v200-toolbar-status');
+        if(sel) sel.value='off';
+        const targets=visibleTargets();
+        if(!targets.length){toast('Sélectionnez des cases');return;}
+        applyToTargets(targets,{status:'off',s1:'',s2:'',pause:0},'DIRECTION_QUICK_OFF');
+      };
+      deck.querySelector('#rh-v200-copy-card').onclick=copySelected;
+      deck.querySelector('#rh-v200-paste-card').onclick=pasteSelected;
+      deck.querySelector('#rh-v200-cycle-apply').onclick=applyCycle;
+    }
+
+    populateTemplateUi();
+    reapplySelection();
+  }
+
+  function populateTemplateUi(){
+    const templates=getTemplates();
+    const select=document.getElementById('rh-v200-toolbar-template');
+    if(select){
+      const old=select.value||currentToolbarTemplate;
+      select.innerHTML=templates.map(t=>
+        `<option value="${esc(t.id)}">${esc(t.name)}${t.s1||t.s2?' · '+esc([t.s1,t.s2].filter(Boolean).join(' / ')):''}</option>`
+      ).join('');
+      if(templates.some(t=>String(t.id)===String(old))) select.value=old;
+      currentToolbarTemplate=select.value||templates[0]?.id||'coupure';
+    }
+    const list=document.getElementById('rh-v200-template-list');
+    if(list){
+      list.innerHTML=templates.slice(0,9).map((t,i)=>`
+        <div class="rh-v200-template-row" data-template="${esc(t.id)}">
+          <i class="rh-v200-template-dot"></i>
+          <strong>${esc(t.name)}</strong>
+          <small>${esc([t.s1,t.s2].filter(Boolean).join(' / ')||String(t.status||''))}</small>
+        </div>`).join('');
+      list.querySelectorAll('[data-template]').forEach(row=>{
+        row.onclick=()=>{
+          currentToolbarTemplate=row.dataset.template;
+          const sel=document.getElementById('rh-v200-toolbar-template');
+          if(sel) sel.value=currentToolbarTemplate;
+          toast(`Modèle : ${templateById(currentToolbarTemplate)?.name||''}`);
+        };
+      });
+    }
+  }
+
+  function ensureDrawer(){
+    let drawer=document.getElementById('rh-v200-quick-drawer');
+    if(drawer) return drawer;
+    drawer=document.createElement('aside');
+    drawer.id='rh-v200-quick-drawer';
+    document.body.appendChild(drawer);
+    return drawer;
+  }
+
+  function drawerPlan(){
+    if(!drawerCtx) return {};
+    const activeCategory=document.querySelector('#rh-v200-quick-drawer [data-status].active');
+    return normalizedCandidate(drawerCtx.base,{
+      status:activeCategory?.dataset.status||drawerCtx.base.status||'off',
+      categoryId:activeCategory?.dataset.categoryId||drawerCtx.base.categoryId||activeCategory?.dataset.status||drawerCtx.base.status||'off',
+      poste:document.getElementById('rh-v200-drawer-poste')?.value||drawerCtx.base.poste||'salle',
+      s1:document.getElementById('rh-v200-drawer-s1')?.value||'',
+      s2:document.getElementById('rh-v200-drawer-s2')?.value||'',
+      pause:Number(document.getElementById('rh-v200-drawer-pause')?.value)||0,
+      managerNote:document.getElementById('rh-v200-drawer-note')?.value||''
+    });
+  }
+
+  function setDrawerStatus(statusOrCategory){
+    let selectedButton=null;
+    document.querySelectorAll('#rh-v200-quick-drawer [data-status]').forEach(b=>{
+      const selected=
+        String(b.dataset.categoryId||'')===String(statusOrCategory||'') ||
+        (!b.dataset.categoryId && String(b.dataset.status||'')===String(statusOrCategory||''));
+      b.classList.toggle('active',selected);
+      if(selected&&!selectedButton) selectedButton=b;
+    });
+    if(!selectedButton){
+      selectedButton=[...document.querySelectorAll('#rh-v200-quick-drawer [data-status]')]
+        .find(b=>String(b.dataset.status||'')===String(statusOrCategory||''))||null;
+      if(selectedButton) selectedButton.classList.add('active');
+    }
+    const legalStatus=String(selectedButton?.dataset.status||statusOrCategory||'off');
+    const plan=drawerPlan();
+    if(!STATUS_WORK.has(legalStatus)){
+      setDrawerTimes('','',0);
+    }else if(legalStatus==='present'&&!plan.s1&&!plan.s2){
+      applyDrawerPreset('coupure');
+    }
+  }
+
+  function setDrawerTimes(s1,s2,pause){
+    const a=document.getElementById('rh-v200-drawer-s1');
+    const b=document.getElementById('rh-v200-drawer-s2');
+    const p=document.getElementById('rh-v200-drawer-pause');
+    if(a)a.value=s1||'';
+    if(b)b.value=s2||'';
+    if(p)p.value=Number(pause||0);
+  }
+
+  function applyDrawerPreset(id){
+    const t=templateById(id);
+    if(!t)return;
+    setDrawerTimes(t.s1,t.s2,t.pause);
+    setDrawerStatus(t.categoryId||t.status||'present');
+    document.querySelectorAll('#rh-v200-quick-drawer [data-preset]').forEach(b=>{
+      b.classList.toggle('active',b.dataset.preset===id);
+    });
+  }
+
+  function openDrawer(staffId,dateStr){
+    const data=getPlan(staffId,dateStr);
+    if(!data.staff){toast('Collaborateur introuvable');return;}
+    drawerCtx={staffId:String(staffId),dateStr:String(dateStr),base:data.plan,staff:data.staff};
+    drawerScope='day';
+
+    const d=new Date(`${dateStr}T12:00:00`);
+    const dateLabel=d.toLocaleDateString('fr-FR',{weekday:'short',day:'2-digit',month:'2-digit'});
+    const drawer=ensureDrawer();
+    const p=data.plan;
+
+    drawer.innerHTML=`
+      <div class="rh-v200-drawer-head">
+        <div><strong>${esc(data.staff.name||'Collaborateur')} · ${esc(dateLabel)}</strong><small>Édition rapide · double clic = fiche complète</small></div>
+        <button type="button" class="rh-v200-close" aria-label="Fermer">×</button>
+      </div>
+      <div class="rh-v200-drawer-body">
+        <div class="rh-v200-kicker">Statut</div>
+        <div class="rh-v200-status-grid">
+          ${window.iChefPlanningCategoryButtonsV202?.(p.categoryId||p.status) || [
+            ['present','TRAVAIL'],['off','REPOS'],['conge','CONGÉ'],
+            ['recup','RÉCUP.'],['maladie','MALADIE'],['formation','FORMATION']
+          ].map(([v,l])=>`<button type="button" data-status="${v}" data-category-id="${v}" class="${String(p.status)===v?'active':''}">${l}</button>`).join('')}
+        </div>
+
+        <div class="rh-v200-field">
+          <label>Poste</label>
+          <select id="rh-v200-drawer-poste">
+            ${[['salle','Salle'],['cuisine','Cuisine'],['patisserie','Pâtisserie'],['bar','Bar'],['admin','Admin']]
+              .map(([v,l])=>`<option value="${v}" ${String(p.poste||data.staff.dept||'salle')===v?'selected':''}>${l}</option>`).join('')}
+          </select>
+        </div>
+
+        <div class="rh-v200-kicker">Horaire rapide</div>
+        <div class="rh-v200-presets">
+          <button type="button" data-preset="matin">MATIN</button>
+          <button type="button" data-preset="soir">SOIR</button>
+          <button type="button" data-preset="coupure">COUPURE</button>
+          <button type="button" data-preset="journee">JOURNÉE</button>
+          <button type="button" data-preset="fermeture">FERMETURE</button>
+        </div>
+
+        <div class="rh-v200-time-grid">
+          <div class="rh-v200-field"><label>Matin (S1)</label><input id="rh-v200-drawer-s1" value="${esc(p.s1||'')}" placeholder="10:00-14:45"></div>
+          <div class="rh-v200-field"><label>Soir (S2)</label><input id="rh-v200-drawer-s2" value="${esc(p.s2||'')}" placeholder="18:00-22:45"></div>
+        </div>
+
+        <div class="rh-v200-field"><label>Pause (minutes)</label><input id="rh-v200-drawer-pause" type="number" min="0" max="240" step="5" value="${Number(p.pause)||0}"></div>
+        <div class="rh-v200-field"><label>Note visible dans la case · optionnel</label><input id="rh-v200-drawer-note" maxlength="40" value="${esc(p.managerNote||'')}" placeholder="Ex. Remplace Paul à 18h"></div>
+
+        <div class="rh-v200-drawer-tools">
+          <button type="button" id="rh-v200-drawer-detail">+ OPTIONS AVANCÉES</button>
+          <button type="button" id="rh-v200-drawer-save-template">ENREGISTRER COMME MODÈLE</button>
+          <button type="button" id="rh-v200-drawer-copy">⧉ COPIER</button>
+        </div>
+
+        <div class="rh-v200-kicker">Appliquer à</div>
+        <div class="rh-v200-scope">
+          <button type="button" data-scope="day" class="active">CE JOUR</button>
+          <button type="button" data-scope="week">SEMAINE</button>
+          <button type="button" data-scope="selected">JOURS SÉLECTIONNÉS</button>
+        </div>
+      </div>
+      <div class="rh-v200-drawer-actions">
+        <button type="button" class="rh-v200-drawer-cancel">FERMER</button>
+        <button type="button" class="primary rh-v200-drawer-apply">APPLIQUER</button>
+      </div>`;
+
+    drawer.querySelector('.rh-v200-close').onclick=closeDrawer;
+    drawer.querySelector('.rh-v200-drawer-cancel').onclick=closeDrawer;
+    drawer.querySelectorAll('[data-status]').forEach(btn=>{
+      btn.onclick=()=>setDrawerStatus(btn.dataset.categoryId||btn.dataset.status);
+    });
+    drawer.querySelectorAll('[data-preset]').forEach(btn=>{
+      btn.onclick=()=>applyDrawerPreset(btn.dataset.preset);
+    });
+    drawer.querySelectorAll('[data-scope]').forEach(btn=>{
+      btn.onclick=()=>{
+        drawerScope=btn.dataset.scope;
+        drawer.querySelectorAll('[data-scope]').forEach(x=>x.classList.toggle('active',x===btn));
+      };
+    });
+    drawer.querySelector('#rh-v200-drawer-detail').onclick=()=>{
+      closeDrawer();
+      window.openRhCockpitShiftEditor?.(staffId,dateStr);
+    };
+    drawer.querySelector('#rh-v200-drawer-save-template').onclick=saveCurrentAsTemplate;
+    drawer.querySelector('#rh-v200-drawer-copy').onclick=()=>{
+      clipboard={...drawerPlan()};
+      toast('Horaire copié');
+    };
+    drawer.querySelector('.rh-v200-drawer-apply').onclick=applyDrawer;
+
+    drawer.classList.add('show');
+  }
+
+  function closeDrawer(){
+    document.getElementById('rh-v200-quick-drawer')?.classList.remove('show');
+    drawerCtx=null;
+  }
+
+  function datesOfWeek(dateStr){
+    const d=new Date(`${dateStr}T12:00:00`);
+    const day=(d.getDay()+6)%7; // lundi=0
+    d.setDate(d.getDate()-day);
+    return Array.from({length:7},(_,i)=>{
+      const x=new Date(d);
+      x.setDate(d.getDate()+i);
+      return `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,'0')}-${String(x.getDate()).padStart(2,'0')}`;
+    });
+  }
+
+  async function applyDrawer(){
+    if(!drawerCtx)return;
+    const plan=drawerPlan();
+    let targets=[];
+    if(drawerScope==='week'){
+      targets=datesOfWeek(drawerCtx.dateStr).map(dateStr=>({staffId:drawerCtx.staffId,dateStr}));
+    }else if(drawerScope==='selected'){
+      targets=visibleTargets();
+      if(!targets.length) targets=[{staffId:drawerCtx.staffId,dateStr:drawerCtx.dateStr}];
+    }else{
+      targets=[{staffId:drawerCtx.staffId,dateStr:drawerCtx.dateStr}];
+    }
+    const ok=await applyToTargets(targets,()=>plan,'DIRECTION_QUICK_DRAWER');
+    if(ok){
+      closeDrawer();
+      clearSelection();
+    }
+  }
+
+  function copySelected(){
+    const targets=visibleTargets();
+    const first=targets[0] || (drawerCtx?{staffId:drawerCtx.staffId,dateStr:drawerCtx.dateStr}:null);
+    if(!first){toast('Sélectionnez une case');return;}
+    clipboard=JSON.parse(JSON.stringify(getPlan(first.staffId,first.dateStr).plan));
+    toast('Horaire copié');
+  }
+
+  function pasteSelected(){
+    if(!clipboard){toast('Aucun horaire copié');return;}
+    const targets=visibleTargets();
+    if(!targets.length){toast('Sélectionnez les cases à remplir');return;}
+    applyToTargets(targets,({before})=>({...before,...clipboard}),'DIRECTION_QUICK_PASTE');
+  }
+
+  function fillSelectionFromFirst(){
+    const targets=visibleTargets();
+    if(targets.length<2){toast('Sélectionnez au moins 2 cases');return;}
+    const source=getPlan(targets[0].staffId,targets[0].dateStr).plan;
+    applyToTargets(targets.slice(1),({before})=>({...before,...source}),'DIRECTION_QUICK_FILL');
+  }
+
+  function duplicatePreviousWeek(){
+    const targets=visibleTargets();
+    const anchor=targets[0] || (drawerCtx?{staffId:drawerCtx.staffId,dateStr:drawerCtx.dateStr}:null);
+    if(!anchor){toast('Sélectionnez une case de la semaine cible');return;}
+
+    const staffIds=[...new Set((targets.length?targets:[anchor]).map(t=>String(t.staffId)))];
+    const week=datesOfWeek(anchor.dateStr);
+    const operations=[];
+
+    staffIds.forEach(staffId=>{
+      week.forEach(targetDate=>{
+        const td=new Date(`${targetDate}T12:00:00`);
+        const sourceDate=new Date(td);
+        sourceDate.setDate(sourceDate.getDate()-7);
+        const sourceStr=`${sourceDate.getFullYear()}-${String(sourceDate.getMonth()+1).padStart(2,'0')}-${String(sourceDate.getDate()).padStart(2,'0')}`;
+        const sourcePlan=getPlan(staffId,sourceStr).plan;
+        operations.push({staffId,targetDate,sourcePlan});
+      });
+    });
+
+    applyToTargets(
+      operations.map(x=>({staffId:x.staffId,dateStr:x.targetDate})),
+      ({target,before})=>{
+        const op=operations.find(x=>String(x.staffId)===String(target.staffId)&&x.targetDate===target.dateStr);
+        return {...before,...(op?.sourcePlan||{})};
+      },
+      'DIRECTION_DUPLICATE_PREVIOUS_WEEK'
+    );
+  }
+
+  function saveCurrentAsTemplate(){
+    let plan=null;
+    if(drawerCtx) plan=drawerPlan();
+    else{
+      const t=visibleTargets()[0];
+      if(t) plan=getPlan(t.staffId,t.dateStr).plan;
+    }
+    if(!plan){toast('Ouvrez une case ou sélectionnez-en une');return;}
+    const name=String(prompt('Nom du modèle d’horaire :','Mon modèle')||'').trim().slice(0,30);
+    if(!name)return;
+    const tpl={
+      id:`custom_${Date.now()}`,
+      name,
+      status:String(plan.status||'present'),
+      s1:String(plan.s1||''),
+      s2:String(plan.s2||''),
+      pause:Number(plan.pause||0)
+    };
+    if(saveCustomTemplate(tpl)){
+      populateTemplateUi();
+      currentToolbarTemplate=tpl.id;
+      const sel=document.getElementById('rh-v200-toolbar-template');
+      if(sel)sel.value=tpl.id;
+      toast('Modèle enregistré');
+    }
+  }
+
+  function applyCycle(){
+    const targets=visibleTargets();
+    const anchor=targets[0] || (drawerCtx?{staffId:drawerCtx.staffId,dateStr:drawerCtx.dateStr}:null);
+    if(!anchor){toast('Sélectionnez la première case du cycle');return;}
+    const work=Math.max(1,Math.min(14,Number(document.getElementById('rh-v200-cycle-work')?.value)||3));
+    const off=Math.max(1,Math.min(14,Number(document.getElementById('rh-v200-cycle-off')?.value)||2));
+    const weeks=Math.max(1,Math.min(12,Number(document.getElementById('rh-v200-cycle-weeks')?.value)||4));
+    const cycle=work+off;
+    const total=weeks*7;
+    const start=new Date(`${anchor.dateStr}T12:00:00`);
+    const items=[];
+
+    for(let i=0;i<total;i++){
+      const d=new Date(start);
+      d.setDate(start.getDate()+i);
+      const dateStr=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+      const isWork=(i%cycle)<work;
+      items.push({
+        staffId:anchor.staffId,
+        dateStr,
+        plan:isWork?toolbarPlan():{status:'off',s1:'',s2:'',pause:0}
+      });
+    }
+
+    applyToTargets(
+      items.map(x=>({staffId:x.staffId,dateStr:x.dateStr})),
+      ({target,before})=>{
+        const item=items.find(x=>x.dateStr===target.dateStr&&String(x.staffId)===String(target.staffId));
+        return {...before,...(item?.plan||{})};
+      },
+      'DIRECTION_REPEAT_CYCLE'
+    );
+  }
+
+  // Remplace le vieux petit menu de statut par le nouveau panneau rapide.
+  window.openRhQuickStatus=function(event,staffId,day){
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+
+    const dateStr=dateStringFromDay(day);
+    if(!dateStr)return;
+
+    if(brushMode){
+      applyToTargets(
+        [{staffId:String(staffId),dateStr}],
+        ()=>toolbarPlan(),
+        'DIRECTION_BRUSH'
+      );
+      return;
+    }
+
+    if(selectionMode || event?.ctrlKey || event?.metaKey || event?.shiftKey){
+      toggleSelection(String(staffId),dateStr,event);
+      return;
+    }
+
+    openDrawer(String(staffId),dateStr);
+  };
+
+  // Double clic = fenêtre complète existante.
+  document.addEventListener('dblclick',event=>{
+    const btn=event.target?.closest?.('.rh-status-quick-btn');
+    if(!btn)return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeDrawer();
+    const dateStr=dateStringFromDay(btn.dataset.rhDay);
+    window.openRhCockpitShiftEditor?.(btn.dataset.rhStaff,dateStr);
+  },true);
+
+  // Raccourcis clavier copier/coller pour les cases sélectionnées.
+  document.addEventListener('keydown',event=>{
+    const tag=String(event.target?.tagName||'').toLowerCase();
+    if(['input','textarea','select'].includes(tag))return;
+
+    if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='c'&&selected.size){
+      event.preventDefault();
+      copySelected();
+    }
+    if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='v'&&selected.size){
+      event.preventDefault();
+      pasteSelected();
+    }
+    if(event.key==='Escape'){
+      if(drawerCtx)closeDrawer();
+      if(selectionMode||brushMode){
+        selectionMode=false;brushMode=false;refreshToolbar();
+      }
+    }
+  });
+
+  // Recréer la barre après les re-rendus du planning, au maximum
+  // une fois par frame même si le tableau injecte beaucoup de cellules.
+  const global=document.getElementById('global-view-container');
+  if(global){
+    let renderFrame=0;
+    new MutationObserver(mutations=>{
+      const relevant=
+        !document.getElementById('rh-v200-fastbar') ||
+        mutations.some(m => [...(m.addedNodes||[])].some(n =>
+          n?.nodeType===1 && (
+            n.matches?.('.global-table,tbody,tr,.rh-status-quick-btn,#rh-v200-fastbar') ||
+            n.querySelector?.('.rh-status-quick-btn,#rh-v200-fastbar')
+          )
+        ));
+      if(!relevant || renderFrame) return;
+      renderFrame=requestAnimationFrame(()=>{
+        renderFrame=0;
+        if(!document.getElementById('rh-v200-fastbar')) ensureFastUi();
+        reapplySelection();
+      });
+    }).observe(global,{childList:true,subtree:true});
+  }
+
+  const oldLoad=window.loadMonthData;
+  if(typeof oldLoad==='function'){
+    window.loadMonthData=function(...args){
+      const result=oldLoad.apply(this,args);
+      setTimeout(()=>{ensureFastUi();reapplySelection();},0);
+      return result;
+    };
+  }
+
+  window.addEventListener('resize',()=>{
+    if(drawerCtx && innerWidth<760){
+      const drawer=document.getElementById('rh-v200-quick-drawer');
+      if(drawer)drawer.scrollTop=0;
+    }
+  });
+
+  document.addEventListener('DOMContentLoaded',()=>setTimeout(ensureFastUi,0));
+  setTimeout(ensureFastUi,140);
+
+  window.__ICHEF_RH_BUILD__=VERSION;
+  console.info('[iCHEF RH V200] planning manuel rapide · multi-sélection · modèles · copier/coller · pinceau · cycles');
+})();
+
+
+
+
+;
+/* RH V264 - preserved script #126 */
+
+window.__ICHEF_RH_BUILD__='RH-V200-FAST-MANUAL-PLANNING';
+
+
+
+;
+/* RH V264 - preserved script #127 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V201_STATUS_TOUCH__) return;
+  window.__ICHEF_RH_V201_STATUS_TOUCH__=true;
+
+  const STATUS_COLORS={
+    present:{label:'TRAVAIL',bg:'#dff6e7',border:'#278a52'},
+    off_soir:{label:'MATIN',bg:'#e4f1ff',border:'#4d82b8'},
+    off_matin:{label:'SOIR',bg:'#eee8ff',border:'#7657b2'},
+    off:{label:'REPOS',bg:'#eeeeee',border:'#777777'},
+    conge:{label:'CONGÉ',bg:'#fff1bd',border:'#b48200'},
+    recup:{label:'RÉCUP.',bg:'#dff4fb',border:'#29879e'},
+    maladie:{label:'MALADIE',bg:'#fde1e1',border:'#bd4242'},
+    accident_travail:{label:'ACCIDENT',bg:'#ffd6d6',border:'#a72f2f'},
+    maternite:{label:'MATERNITÉ',bg:'#f8e2f0',border:'#a45182'},
+    paternite:{label:'PATERNITÉ',bg:'#f8e2f0',border:'#a45182'},
+    parental:{label:'PARENTAL',bg:'#f8e2f0',border:'#a45182'},
+    enfant_malade:{label:'PROCHE',bg:'#f8e2f0',border:'#a45182'},
+    evenement_familial:{label:'ÉVÉN.',bg:'#f8e2f0',border:'#a45182'},
+    deces:{label:'DEUIL',bg:'#f8e2f0',border:'#a45182'},
+    formation:{label:'FORMATION',bg:'#eee6ff',border:'#7652a8'},
+    sans_solde:{label:'SANS SOLDE',bg:'#f2e7da',border:'#8a6846'},
+    absence_autorisee:{label:'ABSENCE',bg:'#ffe6cf',border:'#b65e24'},
+    absence_injustifiee:{label:'ABSENCE !',bg:'#ffe6cf',border:'#b65e24'},
+    ferie:{label:'FÉRIÉ',bg:'#ffe9c9',border:'#b66b10'}
+  };
+  window.ICHEF_RH_STATUS_COLORS_V201=STATUS_COLORS;
+
+  /* -------------------------------------------------------
+     ENREGISTREMENT RAPIDE
+     L'état local est immédiat. La synchronisation serveur
+     continue en arrière-plan via saveTs.
+     ------------------------------------------------------- */
+  window.iChefV201SaveState=function(state,count=0){
+    const el=document.querySelector('#rh-v200-fastbar .rh-v200-draft');
+    if(!el) return;
+    el.dataset.saveState=state;
+    const labels={
+      saving:'Enregistrement…',
+      local:'✓ Enregistré · synchro…',
+      synced:'✓ Synchronisé',
+      pending:'⚠ Local · serveur en attente'
+    };
+    el.textContent=labels[state]||'Brouillon';
+    el.title=count?`${count} modification${count>1?'s':''}`:'État de sauvegarde du planning';
+  };
+
+  /* -------------------------------------------------------
+     LÉGENDE COULEUR
+     ------------------------------------------------------- */
+  function ensureLegend(){
+    const global=document.getElementById('global-view-container');
+    const bar=document.getElementById('rh-v200-fastbar');
+    if(!global||!bar) return;
+
+    if(!document.getElementById('rh-v201-legend')){
+      const legend=document.createElement('div');
+      legend.id='rh-v201-legend';
+      legend.innerHTML=`
+        <button type="button" class="rh-v201-legend-chip work rh-v205-category-action" data-rh-category="present"><i></i>TRAVAIL</button>
+        <button type="button" class="rh-v201-legend-chip rest rh-v205-category-action" data-rh-category="off"><i></i>REPOS</button>
+        <button type="button" class="rh-v201-legend-chip leave rh-v205-category-action" data-rh-category="conge"><i></i>CONGÉ</button>
+        <button type="button" class="rh-v201-legend-chip recup rh-v205-category-action" data-rh-category="recup"><i></i>RÉCUP.</button>
+        <button type="button" class="rh-v201-legend-chip sick rh-v205-category-action" data-rh-category="maladie"><i></i>MALADIE</button>
+        <button type="button" class="rh-v201-legend-chip training rh-v205-category-action" data-rh-category="formation"><i></i>FORMATION</button>
+        <button type="button" class="rh-v201-legend-chip holiday rh-v205-category-action" data-rh-category="ferie"><i></i>FÉRIÉ</button>`;
+      bar.insertAdjacentElement('afterend',legend);
+    }
+
+    if(!document.getElementById('rh-v201-touch-help')){
+      const hint=document.createElement('span');
+      hint.id='rh-v201-touch-help';
+      hint.innerHTML='<b>☝</b> Tactile : activez SÉLECTION puis glissez sur plusieurs jours · appui long fonctionne aussi';
+      bar.appendChild(hint);
+    }
+
+    const selectBtn=bar.querySelector('.rh-v200-select-mode');
+    if(selectBtn){
+      selectBtn.textContent='☝ MULTI / TACTILE';
+      selectBtn.title='Sur écran tactile : activez puis glissez sur plusieurs cases. Un appui long sur une case active aussi ce mode.';
+    }
+
+    const save=bar.querySelector('.rh-v200-draft');
+    if(save&&!save.dataset.saveState){
+      save.dataset.saveState='synced';
+      save.textContent='✓ Synchronisé';
+    }
+  }
+
+  /* -------------------------------------------------------
+     COLORER LES COMPOSANTS DYNAMIQUES QUI NE PORTENT PAS
+     ENCORE UNE CLASSE CSS DE STATUT.
+     ------------------------------------------------------- */
+  function paintDynamicStatusControls(root=document){
+    root.querySelectorAll('[data-status]').forEach(el=>{
+      const status=String(el.dataset.status||'');
+      const c=STATUS_COLORS[status];
+      if(!c) return;
+      if(
+        el.classList.contains('rh-cse-status-action') ||
+        el.closest('#rh-v200-quick-drawer')
+      ){
+        el.style.setProperty('--rh-v201-bg',c.bg);
+        el.style.setProperty('--rh-v201-border',c.border);
+      }
+    });
+
+    const toolbarStatus=document.getElementById('rh-v200-toolbar-status');
+    if(toolbarStatus){
+      const c=STATUS_COLORS[String(toolbarStatus.value||'present')]||STATUS_COLORS.present;
+      toolbarStatus.style.background=c.bg;
+      toolbarStatus.style.borderColor=c.border;
+      toolbarStatus.style.color='#111111';
+    }
+  }
+
+  /* -------------------------------------------------------
+     DÉCORER LES EN-TÊTES DE JOUR
+     Permet un tap sur un jour pour sélectionner toute la
+     colonne lorsque le mode multi-sélection est actif.
+     ------------------------------------------------------- */
+  function decorateDayHeaders(){
+    const head=document.querySelectorAll('#global-thead th');
+    if(!head.length) return;
+    head.forEach((th,index)=>{
+      if(index===0||index===head.length-1) return;
+      th.dataset.rhDay=String(index);
+      th.classList.add('rh-v201-day-selectable');
+      th.title='Mode MULTI : toucher pour sélectionner/désélectionner toute cette journée';
+    });
+  }
+
+  function selectionButton(){
+    return document.querySelector('#rh-v200-fastbar .rh-v200-select-mode');
+  }
+
+  function selectionIsActive(){
+    return selectionButton()?.classList.contains('active')===true;
+  }
+
+  function activateSelection(){
+    const btn=selectionButton();
+    if(btn&&!btn.classList.contains('active')) btn.click();
+    syncTouchMode();
+  }
+
+  function syncTouchMode(){
+    const global=document.getElementById('global-view-container');
+    if(!global) return;
+    global.classList.toggle('rh-v201-touch-mode',selectionIsActive());
+  }
+
+  function monthValue(){
+    return String(document.getElementById('month-selector')?.value||'');
+  }
+
+  function selectCellIfNeeded(btn){
+    if(!btn||btn.classList.contains('rh-v200-selected')) return false;
+    const staff=btn.dataset.rhStaff;
+    const day=btn.dataset.rhDay;
+    if(!staff||!day) return false;
+    window.openRhQuickStatus?.(
+      {
+        preventDefault(){},
+        stopPropagation(){},
+        ctrlKey:false,
+        metaKey:false,
+        shiftKey:false
+      },
+      staff,
+      Number(day)
+    );
+    return true;
+  }
+
+  function deselectCellIfNeeded(btn){
+    if(!btn||!btn.classList.contains('rh-v200-selected')) return false;
+    const staff=btn.dataset.rhStaff;
+    const day=btn.dataset.rhDay;
+    if(!staff||!day) return false;
+    window.openRhQuickStatus?.(
+      {
+        preventDefault(){},
+        stopPropagation(){},
+        ctrlKey:false,
+        metaKey:false,
+        shiftKey:false
+      },
+      staff,
+      Number(day)
+    );
+    return true;
+  }
+
+  function toggleWholeDay(day){
+    if(!selectionIsActive()) activateSelection();
+    const cells=[...document.querySelectorAll(`#global-view-container .rh-status-quick-btn[data-rh-day="${CSS.escape(String(day))}"]`)];
+    if(!cells.length) return;
+    const allSelected=cells.every(x=>x.classList.contains('rh-v200-selected'));
+    cells.forEach(btn=>{
+      if(allSelected) deselectCellIfNeeded(btn);
+      else selectCellIfNeeded(btn);
+    });
+    updateDayHeaderSelection();
+  }
+
+  function updateDayHeaderSelection(){
+    document.querySelectorAll('#global-thead th[data-rh-day]').forEach(th=>{
+      const day=th.dataset.rhDay;
+      const cells=[...document.querySelectorAll(`#global-view-container .rh-status-quick-btn[data-rh-day="${CSS.escape(day)}"]`)];
+      th.classList.toggle('rh-v201-day-selected',cells.length>0&&cells.every(x=>x.classList.contains('rh-v200-selected')));
+    });
+  }
+
+  /* -------------------------------------------------------
+     SÉLECTION TACTILE PAR GLISSER
+     - si MULTI est actif : toucher + glisser immédiatement
+     - sinon : appui long ~330 ms puis glisser
+     ------------------------------------------------------- */
+  let gesture=null;
+  let suppressClickUntil=0;
+
+  function cellAtPoint(x,y){
+    const el=document.elementFromPoint(x,y);
+    return el?.closest?.('#global-view-container .rh-status-quick-btn')||null;
+  }
+
+  function autoScroll(x,y){
+    const scroller=document.getElementById('global-view-container');
+    if(!scroller) return;
+    const r=scroller.getBoundingClientRect();
+    const edge=42;
+    if(x>r.right-edge) scroller.scrollLeft+=28;
+    else if(x<r.left+edge) scroller.scrollLeft-=28;
+    if(y>r.bottom-edge) scroller.scrollTop+=24;
+    else if(y<r.top+edge) scroller.scrollTop-=24;
+  }
+
+  function startGesture(btn,event,longPress=false){
+    activateSelection();
+    const visited=new Set();
+    gesture={
+      pointerId:event.pointerId,
+      visited,
+      active:true,
+      longPress,
+      startX:event.clientX,
+      startY:event.clientY
+    };
+    const key=`${btn.dataset.rhStaff}|${btn.dataset.rhDay}`;
+    visited.add(key);
+    selectCellIfNeeded(btn);
+    suppressClickUntil=Date.now()+800;
+    try{navigator.vibrate?.(12)}catch(_){}
+  }
+
+  function onPointerDown(event){
+    if(!['touch','pen'].includes(String(event.pointerType||''))) return;
+    const btn=event.target?.closest?.('#global-view-container .rh-status-quick-btn');
+    if(!btn) return;
+
+    const base={
+      pointerId:event.pointerId,
+      btn,
+      startX:event.clientX,
+      startY:event.clientY,
+      moved:false,
+      active:false,
+      timer:null
+    };
+
+    if(selectionIsActive()){
+      startGesture(btn,event,false);
+      gesture.pointerId=event.pointerId;
+      event.preventDefault();
+      return;
+    }
+
+    gesture=base;
+    gesture.timer=setTimeout(()=>{
+      if(gesture&&gesture.pointerId===event.pointerId&&!gesture.moved){
+        startGesture(btn,event,true);
+      }
+    },330);
+  }
+
+  function onPointerMove(event){
+    if(!gesture||gesture.pointerId!==event.pointerId) return;
+
+    const dx=Math.abs(event.clientX-gesture.startX);
+    const dy=Math.abs(event.clientY-gesture.startY);
+
+    if(!gesture.active){
+      if(dx>9||dy>9){
+        gesture.moved=true;
+        clearTimeout(gesture.timer);
+        gesture.timer=null;
+      }
+      return;
+    }
+
+    event.preventDefault();
+    autoScroll(event.clientX,event.clientY);
+
+    const btn=cellAtPoint(event.clientX,event.clientY);
+    if(!btn) return;
+    const key=`${btn.dataset.rhStaff}|${btn.dataset.rhDay}`;
+    if(gesture.visited.has(key)) return;
+    gesture.visited.add(key);
+    selectCellIfNeeded(btn);
+    updateDayHeaderSelection();
+  }
+
+  function finishGesture(event){
+    if(!gesture||gesture.pointerId!==event.pointerId) return;
+    clearTimeout(gesture.timer);
+    if(gesture.active){
+      suppressClickUntil=Date.now()+700;
+      updateDayHeaderSelection();
+    }
+    gesture=null;
+  }
+
+  document.addEventListener('pointerdown',onPointerDown,{capture:true,passive:false});
+  document.addEventListener('pointermove',onPointerMove,{capture:true,passive:false});
+  document.addEventListener('pointerup',finishGesture,true);
+  document.addEventListener('pointercancel',finishGesture,true);
+
+  // Empêche le click synthétique après un geste tactile déjà traité.
+  document.addEventListener('click',event=>{
+    const btn=event.target?.closest?.('#global-view-container .rh-status-quick-btn');
+    if(btn&&Date.now()<suppressClickUntil){
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      event.stopPropagation();
+      return;
+    }
+
+    const th=event.target?.closest?.('#global-thead th[data-rh-day]');
+    if(th&&selectionIsActive()){
+      event.preventDefault();
+      event.stopPropagation();
+      toggleWholeDay(th.dataset.rhDay);
+    }
+
+    if(event.target?.closest?.('#rh-v200-fastbar .rh-v200-select-mode')){
+      setTimeout(syncTouchMode,0);
+    }
+  },true);
+
+  /* La sélection peut être changée par le code V200 : synchroniser les headers. */
+  window.iChefV201RefreshTouchState=function(){
+    syncTouchMode();
+    updateDayHeaderSelection();
+  };
+
+  const global=document.getElementById('global-view-container');
+  if(global){
+    let touchFrame=0;
+    new MutationObserver(mutations=>{
+      const relevant=mutations.some(m => [...(m.addedNodes||[])].some(n =>
+        n?.nodeType===1 && (
+          n.matches?.('.global-table,thead,tbody,tr,.rh-status-quick-btn,#rh-v201-legend') ||
+          n.querySelector?.('.rh-status-quick-btn,#rh-v201-legend')
+        )
+      ));
+      if(!relevant || touchFrame) return;
+      touchFrame=requestAnimationFrame(()=>{
+        touchFrame=0;
+        ensureLegend();
+        decorateDayHeaders();
+        paintDynamicStatusControls(global);
+        syncTouchMode();
+        updateDayHeaderSelection();
+      });
+    }).observe(global,{childList:true,subtree:true});
+  }
+
+  document.addEventListener('change',event=>{
+    if(event.target?.id==='rh-v200-toolbar-status'){
+      paintDynamicStatusControls();
+    }
+  });
+
+  function boot(){
+    ensureLegend();
+    decorateDayHeaders();
+    paintDynamicStatusControls();
+    syncTouchMode();
+    updateDayHeaderSelection();
+  }
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',boot,{once:true});
+  }else{
+    boot();
+  }
+  setTimeout(boot,180);
+
+  window.__ICHEF_RH_BUILD__='RH-V201-COLOR-TOUCH-FASTSAVE';
+  console.info('[iCHEF RH V201] code couleur global + sauvegarde immédiate + sélection tactile multi-jours');
+})();
+
+
+
+;
+/* RH V264 - preserved script #128 */
+
+window.__ICHEF_RH_BUILD__='RH-V201-COLOR-TOUCH-FASTSAVE';
+
+
+
+;
+/* RH V264 - preserved script #129 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V202_CLIENT_CATEGORIES__) return;
+  window.__ICHEF_RH_V202_CLIENT_CATEGORIES__=true;
+
+  const VERSION='RH-V202-CLIENT-CATEGORIES';
+
+  const LEGAL_TYPES=[
+    ['present','Travail / service travaillé'],
+    ['off_soir','Travail matin uniquement'],
+    ['off_matin','Travail soir uniquement'],
+    ['off','Repos / OFF'],
+    ['conge','Congé payé / vacances'],
+    ['recup','Récupération'],
+    ['maladie','Maladie'],
+    ['accident_travail','Accident du travail'],
+    ['maternite','Maternité'],
+    ['paternite','Paternité'],
+    ['parental','Congé parental'],
+    ['enfant_malade','Enfant / proche malade'],
+    ['evenement_familial','Événement familial'],
+    ['deces','Décès / deuil'],
+    ['formation','Formation'],
+    ['sans_solde','Sans solde'],
+    ['absence_autorisee','Absence autorisée'],
+    ['absence_injustifiee','Absence injustifiée'],
+    ['ferie','Jour férié']
+  ];
+
+  const DEFAULTS=[
+    ['present','TRAVAIL','TRAV','#dff6e7','present','Temps de travail planifié et comptabilisé.'],
+    ['off_soir','MATIN SEUL','MATIN','#e4f1ff','off_soir','Travail uniquement sur le service du matin.'],
+    ['off_matin','SOIR SEUL','SOIR','#eee8ff','off_matin','Travail uniquement sur le service du soir.'],
+    ['off','REPOS / OFF','REPOS','#eeeeee','off','Repos planifié. Ne consomme pas les vacances.'],
+    ['conge','CONGÉ PAYÉ','CP','#fff1bd','conge','Vacances / congé payé. Consomme le compteur de congés selon le référentiel applicable.'],
+    ['recup','RÉCUPÉRATION','RÉCUP','#dff4fb','recup','Repos ou récupération issu du compteur prévu par l’établissement.'],
+    ['maladie','MALADIE','MAL','#fde1e1','maladie','Absence pour maladie.'],
+    ['accident_travail','ACCIDENT TRAVAIL','AT','#ffd6d6','accident_travail','Absence liée à un accident du travail.'],
+    ['maternite','MATERNITÉ','MAT.','#f8e2f0','maternite','Congé maternité.'],
+    ['paternite','PATERNITÉ','PAT.','#f8e2f0','paternite','Congé paternité.'],
+    ['parental','CONGÉ PARENTAL','PAR.','#f8e2f0','parental','Congé parental.'],
+    ['enfant_malade','ENFANT / PROCHE MALADE','PROCHE','#f8e2f0','enfant_malade','Absence liée à un enfant ou proche malade.'],
+    ['evenement_familial','ÉVÉNEMENT FAMILIAL','ÉVÉN.','#f8e2f0','evenement_familial','Absence pour événement familial.'],
+    ['deces','DÉCÈS / DEUIL','DEUIL','#f8e2f0','deces','Absence liée à un décès / deuil.'],
+    ['formation','FORMATION','FORM.','#eee6ff','formation','Temps ou absence consacrée à une formation.'],
+    ['sans_solde','SANS SOLDE','S/SOLDE','#f2e7da','sans_solde','Absence sans solde.'],
+    ['absence_autorisee','ABSENCE AUTORISÉE','ABS.','#ffe6cf','absence_autorisee','Absence autorisée par l’employeur.'],
+    ['absence_injustifiee','ABSENCE INJUSTIFIÉE','ABS !','#ffe6cf','absence_injustifiee','Absence non justifiée.'],
+    ['ferie','JOUR FÉRIÉ','FÉRIÉ','#ffe9c9','ferie','Jour férié, traité selon le pays et la convention.']
+  ].map((r,i)=>({
+    id:r[0],label:r[1],short:r[2],color:r[3],legalType:r[4],
+    meaning:r[5],active:true,builtin:true,order:i
+  }));
+
+  const legalSet=new Set(LEGAL_TYPES.map(x=>x[0]));
+
+  const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+
+  const normHex=v=>/^#[0-9a-f]{6}$/i.test(String(v||''))?String(v).toLowerCase():'#eeeeee';
+
+  function darken(hex,amount=.28){
+    const h=normHex(hex).slice(1);
+    const n=parseInt(h,16);
+    const r=Math.max(0,Math.round(((n>>16)&255)*(1-amount)));
+    const g=Math.max(0,Math.round(((n>>8)&255)*(1-amount)));
+    const b=Math.max(0,Math.round((n&255)*(1-amount)));
+    return '#'+[r,g,b].map(x=>x.toString(16).padStart(2,'0')).join('');
+  }
+
+  function cleanId(v,fallback){
+    return String(v||fallback||'categorie')
+      .toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+      .replace(/[^a-z0-9_-]+/g,'_')
+      .replace(/^_+|_+$/g,'')
+      .slice(0,48)||fallback||'categorie';
+  }
+
+  function normalize(input){
+    const source=Array.isArray(input)?input:[];
+    const byId=new Map(source.map(c=>[String(c?.id||''),c]));
+    const out=[];
+
+    DEFAULTS.forEach(def=>{
+      const custom=byId.get(def.id);
+      out.push({
+        ...def,
+        ...(custom||{}),
+        id:def.id,
+        legalType:def.legalType,
+        builtin:true,
+        color:normHex(custom?.color||def.color),
+        active:custom?.active!==false,
+        order:Number.isFinite(Number(custom?.order))?Number(custom.order):def.order
+      });
+      byId.delete(def.id);
+    });
+
+    let nextOrder=DEFAULTS.length;
+    for(const raw of byId.values()){
+      if(out.length>=40) break;
+      const id=cleanId(raw?.id,`custom_${nextOrder}`);
+      if(out.some(x=>x.id===id)) continue;
+      out.push({
+        id,
+        label:String(raw?.label||'Catégorie personnalisée').trim().slice(0,42)||'Catégorie personnalisée',
+        short:String(raw?.short||raw?.label||'CAT').trim().slice(0,12)||'CAT',
+        color:normHex(raw?.color),
+        legalType:legalSet.has(String(raw?.legalType||''))?String(raw.legalType):'off',
+        meaning:String(raw?.meaning||'').trim().slice(0,180),
+        active:raw?.active!==false,
+        builtin:false,
+        order:Number.isFinite(Number(raw?.order))?Number(raw.order):nextOrder++
+      });
+    }
+    return out.sort((a,b)=>Number(a.order||0)-Number(b.order||0));
+  }
+
+  function settings(){
+    try{return typeof getRhSettings==='function'?(getRhSettings()||{}):{}}
+    catch(_){return{}}
+  }
+
+  function getCatalog(){
+    return normalize(settings().planningStatusCatalogV202);
+  }
+
+  function saveCatalog(catalog){
+    const normalized=normalize(catalog);
+    const active=normalized.filter(x=>x.active!==false);
+    if(!active.some(x=>['present','off_soir','off_matin'].includes(x.legalType))){
+      alert('Il faut conserver au moins une catégorie active qui correspond à du TRAVAIL.');
+      return false;
+    }
+    if(!active.some(x=>x.legalType==='off')){
+      alert('Il faut conserver au moins une catégorie active qui correspond à du REPOS / OFF.');
+      return false;
+    }
+
+    try{
+      if(typeof saveRhSettings==='function'){
+        saveRhSettings({...settings(),planningStatusCatalogV202:normalized});
+      }else{
+        const s=settings();
+        localStorage.setItem('ichef_rh_settings',JSON.stringify({...s,planningStatusCatalogV202:normalized}));
+      }
+      try{
+        recordRhChange?.({
+          type:'PLANNING_CATEGORY_SETTINGS',
+          source:'DIRECTION_RH',
+          by:typeof window.rhAuditActorV94==='function'?window.rhAuditActorV94():'Direction / RH',
+          count:normalized.length,
+          activeCount:active.length,
+          message:'Catégories et couleurs du planning mises à jour'
+        });
+      }catch(_){}
+      applyCatalogEverywhere();
+      return true;
+    }catch(error){
+      console.error('[iCHEF RH V202] sauvegarde catalogue',error);
+      alert('Impossible d’enregistrer les catégories.');
+      return false;
+    }
+  }
+
+  function byId(id){
+    return getCatalog().find(x=>x.id===String(id||''))||null;
+  }
+
+  function categoryForPlan(plan){
+    const status=String(plan?.status||'off');
+    const wanted=String(plan?.categoryId||status);
+    return byId(wanted) || byId(status) || {
+      id:status,label:status.toUpperCase(),short:status.slice(0,8).toUpperCase(),
+      color:'#eeeeee',legalType:status,meaning:'',active:true,builtin:true
+    };
+  }
+
+  window.iChefPlanningCategoryCatalogV202=getCatalog;
+  window.iChefPlanningCategoryByIdV202=byId;
+  window.iChefPlanningMetaV202=categoryForPlan;
+  window.iChefLegalTypeLabelV202=type=>LEGAL_TYPES.find(x=>x[0]===String(type||''))?.[1]||String(type||'');
+
+  window.iChefPlanningCategoryOptionsV202=function(selected){
+    const catalog=getCatalog().filter(x=>x.active!==false || x.id===String(selected||''));
+    return catalog.map(c=>`<option value="${esc(c.id)}" ${c.id===String(selected||'')?'selected':''}>${esc(c.label)}</option>`).join('');
+  };
+
+  window.iChefPlanningCategoryButtonsV202=function(selected){
+    const catalog=getCatalog().filter(x=>x.active!==false || x.id===String(selected||''));
+    return catalog.map(c=>`
+      <button
+        type="button"
+        data-status="${esc(c.legalType)}"
+        data-category-id="${esc(c.id)}"
+        title="${esc(c.meaning||window.iChefLegalTypeLabelV202(c.legalType))}"
+        style="background:${esc(c.color)};border-color:${esc(darken(c.color))}"
+        class="${c.id===String(selected||'')?'active':''}">
+        ${esc(c.short||c.label)}
+      </button>`).join('');
+  };
+
+  function ensureDefaultsSaved(){
+    // Les catégories par défaut existent déjà dans le code via normalize().
+    // On ne déclenche donc plus saveRhSettings/API.update au démarrage.
+    // Elles ne sont persistées que lorsque le client personnalise le catalogue.
+    const s=settings();
+    return Array.isArray(s.planningStatusCatalogV202) && s.planningStatusCatalogV202.length > 0;
+  }
+
+  function dynamicCss(){
+    const styleId='rh-v202-dynamic-category-css';
+    let style=document.getElementById(styleId);
+    if(!style){
+      style=document.createElement('style');
+      style.id=styleId;
+      document.head.appendChild(style);
+    }
+
+    style.textContent=getCatalog().map(c=>{
+      const id=CSS.escape(c.id);
+      const bg=normHex(c.color);
+      const border=darken(bg);
+      return `
+        [data-rh-category="${id}"],
+        [data-category-id="${id}"]{
+          --rh-v202-category-color:${bg};
+          background-color:${bg}!important;
+          border-color:${border}!important;
+          color:#111!important;
+        }`;
+    }).join('\n');
+  }
+
+  function updateToolbar(){
+    const bar=document.getElementById('rh-v200-fastbar');
+    if(!bar) return;
+    const select=document.getElementById('rh-v200-toolbar-status');
+    if(select){
+      const old=String(select.value||'present');
+      const catalog=getCatalog().filter(x=>x.active!==false);
+      const signature=catalog.map(c=>`${c.id}:${c.short||c.label}`).join('|');
+      if(select.dataset.v202Signature!==signature){
+        select.innerHTML=catalog.map(c=>`<option value="${esc(c.id)}">${esc(c.short||c.label)}</option>`).join('');
+        select.dataset.v202Signature=signature;
+      }
+      select.value=catalog.some(c=>c.id===old)?old:(catalog.find(c=>c.legalType==='present')?.id||catalog[0]?.id||'present');
+      const current=byId(select.value);
+      if(current){
+        select.style.background=current.color;
+        select.style.borderColor=darken(current.color);
+      }
+    }
+
+    if(!bar.querySelector('.rh-v202-categories-btn')){
+      const btn=document.createElement('button');
+      btn.type='button';
+      btn.className='rh-v202-categories-btn';
+      btn.textContent='CATÉGORIES / COULEURS';
+      btn.title='Choisir les couleurs, noms, sens et catégories du planning';
+      btn.addEventListener('click',openManager);
+      const tools=bar.querySelector('.rh-v200-tools-toggle');
+      if(tools) tools.insertAdjacentElement('beforebegin',btn);
+      else bar.appendChild(btn);
+    }
+
+    const selected=byId(select?.value);
+    bar.style.setProperty('--rh-v202-current-color',selected?.color||'#777777');
+  }
+
+  function updateLegend(){
+    const legend=document.getElementById('rh-v201-legend');
+    if(!legend) return;
+    const active=getCatalog().filter(x=>x.active!==false);
+    const signature=active.map(c=>`${c.id}:${c.short||c.label}:${c.color}:${c.meaning}`).join('|');
+    if(legend.dataset.v202Signature===signature) return;
+    legend.innerHTML=active.map(c=>`
+      <button type="button"
+              class="rh-v201-legend-chip rh-v205-category-action"
+              data-rh-category="${esc(c.id)}"
+              title="Appliquer ${esc(c.label)} aux jours sélectionnés · ${esc(c.meaning||window.iChefLegalTypeLabelV202(c.legalType))}">
+        <i style="background:${esc(darken(c.color))}"></i>${esc(c.short||c.label)}
+      </button>`).join('');
+    legend.dataset.v202Signature=signature;
+  }
+
+  function planFromEditChip(chip){
+    const sid=String(chip?.dataset?.rhEditStaff||'');
+    const dateStr=String(chip?.dataset?.rhEditDate||'');
+    if(!sid||!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return null;
+    const [y,m,d]=dateStr.split('-').map(Number);
+    const mk=`${y}-${String(m).padStart(2,'0')}`;
+    try{
+      const ts=typeof getTs==='function'?getTs():{};
+      return ts?.[mk]?.[sid]?.[d] || ts?.[mk]?.[sid]?.[String(d)] || {status:'off'};
+    }catch(_){return null}
+  }
+
+  function colorRenderedPlanning(){
+    document.querySelectorAll('#global-view-container .rh-status-quick-btn').forEach(btn=>{
+      const sid=String(btn.dataset.rhStaff||'');
+      const day=Number(btn.dataset.rhDay||0);
+      const month=String(document.getElementById('month-selector')?.value||'');
+      if(!sid||!day||!/^\d{4}-\d{2}$/.test(month)) return;
+      let p=null;
+      try{
+        const ts=typeof getTs==='function'?getTs():{};
+        p=ts?.[month]?.[sid]?.[day] || ts?.[month]?.[sid]?.[String(day)] || {status:'off'};
+      }catch(_){p={status:'off'}}
+      const cat=categoryForPlan(p);
+      btn.dataset.rhCategory=cat.id;
+      btn.style.backgroundColor=cat.color;
+      btn.style.borderColor=darken(cat.color);
+      btn.title=[cat.label,cat.meaning,btn.closest('td')?.title].filter(Boolean).join(' · ');
+      const statusEl=btn.querySelector('.rh-cell-status');
+      const nextStatusText=cat.short||cat.label;
+      if(statusEl && statusEl.textContent!==nextStatusText) statusEl.textContent=nextStatusText;
+    });
+
+    document.querySelectorAll('.rh-cockpit-edit-chip[data-rh-edit-staff][data-rh-edit-date]').forEach(chip=>{
+      const p=planFromEditChip(chip);
+      if(!p) return;
+      const cat=categoryForPlan(p);
+      chip.dataset.rhCategory=cat.id;
+      chip.style.backgroundColor=cat.color;
+      chip.style.borderColor=darken(cat.color);
+      chip.title=[cat.label,cat.meaning,chip.title].filter(Boolean).join(' · ');
+      if(chip.classList.contains('rh-month-mini')){
+        const nextChipText=cat.short||cat.label;
+        if(chip.textContent!==nextChipText) chip.textContent=nextChipText;
+      }
+    });
+
+    const categorySelect=document.getElementById('rh-cse-category');
+    if(categorySelect){
+      const cat=byId(categorySelect.value);
+      if(cat){
+        categorySelect.style.background=cat.color;
+        categorySelect.style.borderColor=darken(cat.color);
+      }
+    }
+
+    document.querySelectorAll('#rh-v200-quick-drawer [data-category-id]').forEach(btn=>{
+      const cat=byId(btn.dataset.categoryId);
+      if(cat){
+        btn.style.background=cat.color;
+        btn.style.borderColor=darken(cat.color);
+      }
+    });
+  }
+
+  function applyCatalogEverywhere(){
+    dynamicCss();
+    updateToolbar();
+    updateLegend();
+    colorRenderedPlanning();
+    try{loadMonthData?.();}catch(_){}
+    try{renderRhCockpit?.();}catch(_){}
+    setTimeout(colorRenderedPlanning,30);
+    window.dispatchEvent(new CustomEvent('ichef:planning-categories-updated',{
+      detail:{version:VERSION,count:getCatalog().length,at:new Date().toISOString()}
+    }));
+  }
+
+  function ensureModal(){
+    let modal=document.getElementById('rh-v202-category-modal');
+    if(modal) return modal;
+    modal=document.createElement('div');
+    modal.id='rh-v202-category-modal';
+    modal.setAttribute('role','dialog');
+    modal.setAttribute('aria-modal','true');
+    modal.innerHTML=`
+      <div class="rh-v202-category-panel">
+        <div class="rh-v202-category-head">
+          <div>
+            <h3>Catégories & couleurs du planning</h3>
+            <p>Chaque client peut choisir son vocabulaire et ses couleurs. Le « comportement légal » reste séparé afin que les calculs RH, les compteurs et les contrôles continuent de fonctionner correctement.</p>
+          </div>
+          <button type="button" class="rh-v202-category-close" aria-label="Fermer">×</button>
+        </div>
+        <div class="rh-v202-category-body">
+          <div class="rh-v202-category-note">
+            <strong>Exemple :</strong> vous pouvez créer « ÉCOLE » en violet et lui donner le comportement légal « Formation », ou « REPOS COMP. » en bleu avec le comportement « Récupération ». Masquer une catégorie standard ne supprime jamais les anciennes données du planning.
+          </div>
+          <div class="rh-v202-category-labels">
+            <span>Actif</span><span>Couleur</span><span>Nom</span><span>Court</span>
+            <span class="meaning-label">Signification pour votre équipe</span>
+            <span class="legal-label">Comportement légal iCHEF</span><span>Action</span>
+          </div>
+          <div id="rh-v202-category-list"></div>
+        </div>
+        <div class="rh-v202-category-actions">
+          <div class="rh-v202-category-actions-left">
+            <button type="button" id="rh-v202-add-category">+ AJOUTER UNE CATÉGORIE</button>
+            <button type="button" id="rh-v202-reset-categories">RÉINITIALISER</button>
+          </div>
+          <div class="rh-v202-category-actions-right">
+            <button type="button" class="rh-v202-category-cancel">ANNULER</button>
+            <button type="button" class="primary" id="rh-v202-save-categories">ENREGISTRER</button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+
+    modal.addEventListener('click',e=>{
+      if(e.target!==modal) return;
+      const handler=window.iChefCategoryManagerCloseV209;
+      if(typeof handler==='function') handler('cancel');
+      else closeManager();
+    });
+    modal.querySelector('.rh-v202-category-close').addEventListener('click',()=>{
+      const handler=window.iChefCategoryManagerCloseV209;
+      if(typeof handler==='function') handler('save');
+      else saveManager();
+    });
+    modal.querySelector('.rh-v202-category-cancel').addEventListener('click',()=>{
+      const handler=window.iChefCategoryManagerCloseV209;
+      if(typeof handler==='function') handler('cancel');
+      else closeManager();
+    });
+    modal.querySelector('#rh-v202-add-category').addEventListener('click',addRow);
+    modal.querySelector('#rh-v202-reset-categories').addEventListener('click',()=>{
+      if(confirm('Réinitialiser toutes les catégories et couleurs par défaut ?')){
+        renderRows(DEFAULTS);
+      }
+    });
+    modal.querySelector('#rh-v202-save-categories').addEventListener('click',saveManager);
+    return modal;
+  }
+
+  function legalOptions(selected,builtin=false){
+    return LEGAL_TYPES.map(([v,l])=>`<option value="${esc(v)}" ${v===selected?'selected':''}>${esc(l)}</option>`).join('');
+  }
+
+  function rowHtml(c,index){
+    const border=darken(c.color);
+    return `
+      <div class="rh-v202-category-row ${c.active===false?'inactive':''}" data-id="${esc(c.id)}" data-builtin="${c.builtin?'1':'0'}">
+        <label class="rh-v202-active"><input type="checkbox" class="rh-v202-enabled" ${c.active!==false?'checked':''}><span>Actif</span></label>
+        <input type="color" class="rh-v202-color" value="${esc(normHex(c.color))}" title="Couleur">
+        <input type="text" class="rh-v202-label" maxlength="42" value="${esc(c.label)}" placeholder="Nom">
+        <input type="text" class="rh-v202-short" maxlength="12" value="${esc(c.short)}" placeholder="Court">
+        <input type="text" class="rh-v202-meaning rh-v202-meaning" maxlength="180" value="${esc(c.meaning||'')}" placeholder="Ex. Jour école / présence non opérationnelle">
+        <select class="rh-v202-legal" ${c.builtin?'disabled title="Le comportement légal d’une catégorie standard est protégé."':''}>${legalOptions(c.legalType,c.builtin)}</select>
+        <button type="button" class="rh-v202-remove">${c.builtin?'MASQUER':'SUPPRIMER'}</button>
+        <div class="rh-v202-preview" style="display:none;background:${esc(c.color)};border-color:${esc(border)}">${esc(c.short||c.label)}</div>
+      </div>`;
+  }
+
+  function renderRows(catalog){
+    const list=document.getElementById('rh-v202-category-list');
+    if(!list) return;
+    list.innerHTML=normalize(catalog).map(rowHtml).join('');
+
+    list.querySelectorAll('.rh-v202-category-row').forEach(row=>{
+      const enabled=row.querySelector('.rh-v202-enabled');
+      const color=row.querySelector('.rh-v202-color');
+      const label=row.querySelector('.rh-v202-label');
+      const short=row.querySelector('.rh-v202-short');
+      const remove=row.querySelector('.rh-v202-remove');
+
+      enabled?.addEventListener('change',()=>row.classList.toggle('inactive',!enabled.checked));
+      color?.addEventListener('input',()=>{
+        row.style.borderColor=darken(color.value);
+        const preview=row.querySelector('.rh-v202-preview');
+        if(preview) preview.style.background=color.value;
+      });
+      label?.addEventListener('input',()=>{
+        if(!short?.dataset?.manual){
+          short.value=String(label.value||'CAT').slice(0,10).toUpperCase();
+        }
+      });
+      short?.addEventListener('input',()=>{short.dataset.manual='1';});
+      remove?.addEventListener('click',()=>{
+        const builtin=row.dataset.builtin==='1';
+        if(builtin){
+          enabled.checked=false;
+          row.classList.add('inactive');
+        }else{
+          row.remove();
+        }
+      });
+    });
+  }
+
+  function collectRows(){
+    const rows=[...document.querySelectorAll('#rh-v202-category-list .rh-v202-category-row')];
+    const used=new Set();
+    return rows.map((row,index)=>{
+      const builtin=row.dataset.builtin==='1';
+      let id=cleanId(row.dataset.id,builtin?row.dataset.id:`custom_${index+1}`);
+      while(used.has(id)) id=`${id}_${index+1}`;
+      used.add(id);
+      const legal=builtin
+        ? (DEFAULTS.find(x=>x.id===id)?.legalType||'off')
+        : String(row.querySelector('.rh-v202-legal')?.value||'off');
+      return {
+        id,
+        label:String(row.querySelector('.rh-v202-label')?.value||'Catégorie').trim().slice(0,42)||'Catégorie',
+        short:String(row.querySelector('.rh-v202-short')?.value||'CAT').trim().slice(0,12)||'CAT',
+        color:normHex(row.querySelector('.rh-v202-color')?.value),
+        legalType:legalSet.has(legal)?legal:'off',
+        meaning:String(row.querySelector('.rh-v202-meaning')?.value||'').trim().slice(0,180),
+        active:row.querySelector('.rh-v202-enabled')?.checked!==false,
+        builtin,
+        order:index
+      };
+    });
+  }
+
+  function addRow(){
+    const list=document.getElementById('rh-v202-category-list');
+    if(!list) return;
+    const n=[...list.children].filter(x=>x.dataset.builtin!=='1').length+1;
+    const cat={
+      id:`custom_${Date.now()}_${n}`,
+      label:'NOUVELLE CATÉGORIE',
+      short:'NOUV.',
+      color:'#e6f0ff',
+      legalType:'off',
+      meaning:'Décrivez ce que cette catégorie signifie pour votre équipe.',
+      active:true,builtin:false,order:list.children.length
+    };
+    list.insertAdjacentHTML('beforeend',rowHtml(cat,list.children.length));
+    renderRows(collectRows());
+    list.lastElementChild?.scrollIntoView({block:'nearest'});
+  }
+
+  function openManager(){
+    const modal=ensureModal();
+    renderRows(getCatalog());
+    modal.classList.add('show');
+    window.iChefCategoryManagerOpenedV209?.();
+  }
+
+  function closeManager(){
+    document.getElementById('rh-v202-category-modal')?.classList.remove('show');
+  }
+
+  function saveManager(){
+    const catalog=collectRows();
+    if(saveCatalog(catalog)){
+      window.iChefCategoryManagerSavedV209?.();
+      closeManager();
+      try{showToast?.('Catégories planning enregistrées');}catch(_){}
+    }
+  }
+
+  window.openPlanningCategoryManagerV202=openManager;
+
+  /* Bouton et select peuvent être recréés par V200. */
+  document.addEventListener('change',e=>{
+    if(e.target?.id==='rh-v200-toolbar-status'){
+      const c=byId(e.target.value);
+      if(c){
+        e.target.style.background=c.color;
+        e.target.style.borderColor=darken(c.color);
+        document.getElementById('rh-v200-fastbar')?.style.setProperty('--rh-v202-current-color',c.color);
+      }
+    }
+    if(e.target?.id==='rh-cse-category'){
+      setTimeout(colorRenderedPlanning,0);
+    }
+  },true);
+
+  let refreshFrame=0;
+  function scheduleV202Refresh(){
+    if(refreshFrame) return;
+    refreshFrame=requestAnimationFrame(()=>{
+      refreshFrame=0;
+      updateToolbar();
+      updateLegend();
+      colorRenderedPlanning();
+    });
+  }
+
+  const observer=new MutationObserver(mutations=>{
+    const relevant=mutations.some(m =>
+      [...(m.addedNodes||[])].some(n =>
+        n?.nodeType===1 && (
+          n.matches?.('#rh-v200-fastbar,#rh-v201-legend,.rh-status-quick-btn,.rh-cockpit-edit-chip') ||
+          n.querySelector?.('#rh-v200-fastbar,#rh-v201-legend,.rh-status-quick-btn,.rh-cockpit-edit-chip')
+        )
+      )
+    );
+    if(relevant) scheduleV202Refresh();
+  });
+
+  function boot(){
+    ensureDefaultsSaved();
+    dynamicCss();
+    updateToolbar();
+    updateLegend();
+    colorRenderedPlanning();
+
+    // Observer uniquement les zones réellement concernées par les catégories.
+    // Plus de scan de tout document.body à chaque mutation.
+    const roots=[
+      document.getElementById('global-view-container'),
+      document.getElementById('director-hub')
+    ].filter(Boolean);
+    roots.forEach(root=>observer.observe(root,{childList:true,subtree:true}));
+  }
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',boot,{once:true});
+  }else{
+    boot();
+  }
+
+  window.__ICHEF_RH_BUILD__=VERSION;
+  console.info('[iCHEF RH V202] catégories/couleurs client · sens personnalisé · comportement légal séparé');
+})();
+
+
+
+
+;
+/* RH V264 - preserved script #130 */
+
+window.__ICHEF_RH_BUILD__='RH-V202-CLIENT-CATEGORIES';
+
+
+
+;
+/* RH V264 - preserved script #131 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V203_PIN_FIX__) return;
+  window.__ICHEF_RH_V203_PIN_FIX__=true;
+
+  window.setStaffPinStatusV203=function(type='neutral',message=''){
+    const el=document.getElementById('rh-v203-pin-status');
+    if(!el) return;
+    el.className=`rh-v203-pin-status ${String(type||'neutral')}`;
+    el.textContent=String(message||'');
+  };
+
+  window.testStaffPinV203=async function(){
+    const input=document.getElementById('staff-pin');
+    const btn=document.getElementById('rh-v203-test-pin');
+    const pin=String(input?.value||'').replace(/\D+/g,'').slice(0,12);
+    if(input) input.value=pin;
+
+    if(!/^\d{4,12}$/.test(pin)){
+      setStaffPinStatusV203('error','PIN invalide · 4 à 12 chiffres');
+      return false;
+    }
+
+    // Si le PIN vient d'être modifié mais pas encore enregistré, prévenir
+    // clairement : le serveur ne peut pas connaître une valeur non sauvegardée.
+    const original=String(document.getElementById('staff-edit-original-pin')?.value||'').trim();
+    const existing=(()=>{
+      try{return getDir().find(s=>String(s.pin||'')===original)||null}
+      catch(_){return null}
+    })();
+
+    if(existing && pin!==String(existing.pin||'')){
+      setStaffPinStatusV203('warn','PIN modifié · enregistrez la fiche avant de le tester');
+      return false;
+    }
+
+    if(!existing && !original){
+      setStaffPinStatusV203('warn','Nouveau collaborateur · enregistrez d’abord la fiche');
+      return false;
+    }
+
+    if(btn){btn.disabled=true;btn.textContent='TEST…';}
+    setStaffPinStatusV203('syncing','Vérification sécurisée avec le serveur…');
+
+    try{
+      const auth=await verifyPinWithServer(pin);
+      if(auth?.success){
+        const role=String(auth.role||auth.dept||'accès').trim();
+        setStaffPinStatusV203('ok',`✓ PIN reconnu${role?` · ${role}`:''}`);
+        return true;
+      }
+      setStaffPinStatusV203('error',auth?.error||'PIN non reconnu par le serveur');
+      return false;
+    }catch(error){
+      setStaffPinStatusV203('error',error?.message||'Serveur PIN indisponible');
+      return false;
+    }finally{
+      if(btn){btn.disabled=false;btn.textContent='TESTER LE PIN';}
+    }
+  };
+
+  // Nettoyage automatique : uniquement des chiffres dans la fiche employé.
+  document.addEventListener('input',event=>{
+    if(event.target?.id!=='staff-pin') return;
+    const clean=String(event.target.value||'').replace(/\D+/g,'').slice(0,12);
+    if(event.target.value!==clean) event.target.value=clean;
+  },true);
+
+  window.__ICHEF_RH_BUILD__='RH-V203-PIN-FIX-SYNC-TEST';
+  console.info('[iCHEF RH V203] PIN : validation serveur renforcée · sync prioritaire · test intégré');
+})();
+
+
+
+;
+/* RH V264 - preserved script #132 */
+
+window.__ICHEF_RH_BUILD__='RH-V203-PIN-FIX-SYNC-TEST';
+
+
+
+;
+/* RH V264 - preserved script #133 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V204_PERF__) return;
+  window.__ICHEF_RH_V204_PERF__=true;
+
+  const started=performance.now();
+
+  // Expose un diagnostic léger pour support, sans données personnelles.
+  window.ICHEF_RH_PERF_V204={
+    version:'RH-V204-PERFORMANCE-SAFE-CLEANUP',
+    startedAt:Date.now(),
+    idleSupported:'requestIdleCallback' in window,
+    mark(name){
+      try{performance.mark(`ichef-rh-v204:${String(name||'mark')}`)}catch(_){}
+    }
+  };
+
+  const markReady=()=>{
+    window.ICHEF_RH_PERF_V204.readyMs=Math.round(performance.now()-started);
+    window.ICHEF_RH_PERF_V204.mark('ready');
+  };
+
+  if(document.readyState==='complete') markReady();
+  else window.addEventListener('load',markReady,{once:true});
+
+  window.__ICHEF_RH_BUILD__='RH-V204-PERFORMANCE-SAFE-CLEANUP';
+  console.info('[iCHEF RH V204] nettoyage performance sûr · connexions/sécurité/fonctions conservées');
+})();
+
+
+
+;
+/* RH V264 - preserved script #134 */
+
+window.__ICHEF_RH_BUILD__='RH-V204-PERFORMANCE-SAFE-CLEANUP';
+
+
+
+;
+/* RH V264 - preserved script #135 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V205_TOUCH_CATEGORY__) return;
+  window.__ICHEF_RH_V205_TOUCH_CATEGORY__=true;
+
+  let applying=false;
+
+  function legend(){
+    return document.getElementById('rh-v201-legend');
+  }
+
+  function count(){
+    try{
+      return Number(window.ICHEF_FAST_PLANNING_V205?.getSelectionCount?.()||0);
+    }catch(_){
+      return document.querySelectorAll('#global-view-container .rh-v200-selected').length;
+    }
+  }
+
+  function ensureTip(){
+    const el=legend();
+    if(!el || document.getElementById('rh-v205-touch-tip')) return;
+    const tip=document.createElement('span');
+    tip.id='rh-v205-touch-tip';
+    tip.innerHTML='<strong>☝</strong> Touchez maintenant la catégorie à appliquer';
+    el.appendChild(tip);
+  }
+
+  function refresh(){
+    const el=legend();
+    if(!el) return;
+    ensureTip();
+
+    const n=count();
+    el.classList.toggle('rh-v205-has-selection',n>0);
+    el.dataset.selectionLabel=n
+      ? `${n} case${n>1?'s':''} sélectionnée${n>1?'s':''}`
+      : '';
+
+    const current=String(document.getElementById('rh-v200-toolbar-status')?.value||'');
+    el.querySelectorAll('.rh-v205-category-action').forEach(btn=>{
+      btn.classList.toggle('rh-v205-ready',String(btn.dataset.rhCategory||'')===current);
+      btn.setAttribute(
+        'aria-label',
+        n
+          ? `Appliquer ${btn.textContent.trim()} aux ${n} cases sélectionnées`
+          : `Choisir ${btn.textContent.trim()} puis sélectionner des cases`
+      );
+    });
+  }
+
+  async function applyCategory(categoryId){
+    const api=window.ICHEF_FAST_PLANNING_V205;
+    if(!api?.applyCategory) return false;
+
+    const n=count();
+    if(!n){
+      api.setCategory?.(categoryId);
+      try{showToast?.('Catégorie choisie · sélectionnez maintenant les cases');}catch(_){}
+      refresh();
+      return false;
+    }
+
+    if(applying) return false;
+    applying=true;
+
+    const el=legend();
+    el?.classList.add('rh-v205-applying');
+
+    try{
+      // clearAfter=true : exactement le flux tactile demandé.
+      // 2 jours → FÉRIÉ, la sélection s'efface ;
+      // puis 4 autres jours → TRAVAIL.
+      return await api.applyCategory(categoryId,{clearAfter:true});
+    }finally{
+      applying=false;
+      el?.classList.remove('rh-v205-applying');
+      refresh();
+    }
+  }
+
+  document.addEventListener('click',event=>{
+    const btn=event.target?.closest?.('#rh-v201-legend .rh-v205-category-action[data-rh-category]');
+    if(!btn) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    applyCategory(String(btn.dataset.rhCategory||''));
+  },true);
+
+  // Sur tactile, click est déjà produit après pointerup ; pas de double handler.
+  // On donne simplement un retour visuel dès le contact.
+  document.addEventListener('pointerdown',event=>{
+    const btn=event.target?.closest?.('#rh-v201-legend .rh-v205-category-action[data-rh-category]');
+    if(!btn) return;
+    if(['touch','pen'].includes(String(event.pointerType||''))){
+      btn.style.transform='scale(.96)';
+    }
+  },true);
+
+  document.addEventListener('pointerup',event=>{
+    const btn=event.target?.closest?.('#rh-v201-legend .rh-v205-category-action[data-rh-category]');
+    if(btn) btn.style.removeProperty('transform');
+  },true);
+
+  document.addEventListener('pointercancel',event=>{
+    const btn=event.target?.closest?.('#rh-v201-legend .rh-v205-category-action[data-rh-category]');
+    if(btn) btn.style.removeProperty('transform');
+  },true);
+
+  // La sélection change souvent sans reconstruction DOM.
+  // On se branche donc sur l'API de rafraîchissement tactile V201.
+  const oldRefresh=window.iChefV201RefreshTouchState;
+  window.iChefV201RefreshTouchState=function(...args){
+    const result=typeof oldRefresh==='function'
+      ? oldRefresh.apply(this,args)
+      : undefined;
+    requestAnimationFrame(refresh);
+    return result;
+  };
+
+  // Si la légende est reconstruite par les catégories client V202.
+  const global=document.getElementById('global-view-container');
+  if(global){
+    let frame=0;
+    new MutationObserver(mutations=>{
+      const relevant=mutations.some(m =>
+        [...(m.addedNodes||[])].some(n =>
+          n?.nodeType===1 && (
+            n.id==='rh-v201-legend' ||
+            n.matches?.('.rh-v201-legend-chip') ||
+            n.querySelector?.('#rh-v201-legend')
+          )
+        )
+      );
+      if(!relevant || frame) return;
+      frame=requestAnimationFrame(()=>{
+        frame=0;
+        refresh();
+      });
+    }).observe(global,{childList:true,subtree:true});
+  }
+
+  document.addEventListener('change',event=>{
+    if(event.target?.id==='rh-v200-toolbar-status') refresh();
+  },true);
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',refresh,{once:true});
+  }else{
+    refresh();
+  }
+  setTimeout(refresh,180);
+
+  window.__ICHEF_RH_BUILD__='RH-V205-TOUCH-APPLY-CATEGORY';
+  console.info('[iCHEF RH V205] sélection tactile → catégorie en un tap');
+})();
+
+
+
+;
+/* RH V264 - preserved script #136 */
+
+window.__ICHEF_RH_BUILD__='RH-V205-TOUCH-APPLY-CATEGORY';
+
+
+
+;
+/* RH V264 - preserved script #137 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V206_BUGFIX__) return;
+  window.__ICHEF_RH_V206_BUGFIX__=true;
+
+  const HOUR_LIMIT=5;
+
+  function parseCalendarDate(dateStr){
+    const m=String(dateStr||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if(!m) return null;
+    const y=Number(m[1]), mo=Number(m[2]), d=Number(m[3]);
+    const test=new Date(y,mo-1,d,12,0,0,0);
+    if(
+      test.getFullYear()!==y ||
+      test.getMonth()!==mo-1 ||
+      test.getDate()!==d
+    ) return null;
+    return {y,mo,d};
+  }
+
+  function firstStartV206(plan){
+    const p=plan&&typeof plan==='object'?plan:{};
+    const starts=[p.s1,p.s2]
+      .map(v=>String(v||'').match(/^(\d{1,2}):(\d{2})/)?.slice(1,3))
+      .filter(Boolean)
+      .map(([h,m])=>({h:Number(h),m:Number(m)}))
+      .filter(x=>x.h>=0&&x.h<=23&&x.m>=0&&x.m<=59)
+      .sort((a,b)=>(a.h*60+a.m)-(b.h*60+b.m));
+
+    if(starts.length) return starts[0];
+
+    const s=typeof getRhSettings==='function'?(getRhSettings()||{}):{};
+    const st=String(p.status||'').toLowerCase();
+    let raw='';
+    if(st==='off_matin') raw=String(s.dinnerWorkStart||s.dinnerStart||'18:00');
+    else if(['present','off_soir','ferie'].includes(st)) raw=String(s.lunchWorkStart||s.lunchStart||'10:00');
+    else return null;
+
+    const mm=raw.match(/^(\d{1,2}):(\d{2})/);
+    if(!mm) return null;
+    return {h:Number(mm[1]),m:Number(mm[2])};
+  }
+
+  /* Remplace seulement le calcul de fenêtre temporelle.
+     La sécurité, le motif obligatoire et la sauvegarde signée V102 restent actifs. */
+  const previousWindow=window.rhPlanningChangeWindowV102;
+  window.rhPlanningChangeWindowV102=function(dateStr,before,after){
+    const cal=parseCalendarDate(dateStr);
+    if(!cal){
+      console.warn('[iCHEF RH V206] date planning invalide ignorée',dateStr);
+      return {needsReason:false,kind:'INVALID_DATE',start:'',hours:null};
+    }
+
+    const start=firstStartV206(after)||firstStartV206(before);
+
+    // Pour une absence/repos sans horaire explicite :
+    // on utilise midi comme V102, mais avec construction locale numérique
+    // pour éviter toute ambiguïté de parsing navigateur.
+    const dt=start
+      ? new Date(cal.y,cal.mo-1,cal.d,start.h,start.m,0,0)
+      : new Date(cal.y,cal.mo-1,cal.d,12,0,0,0);
+
+    const hours=(dt.getTime()-Date.now())/3600000;
+
+    if(hours<=0){
+      return {
+        needsReason:true,
+        kind:'STARTED_OR_PAST',
+        start:start?`${String(start.h).padStart(2,'0')}:${String(start.m).padStart(2,'0')}`:'',
+        hours
+      };
+    }
+    if(start && hours<=HOUR_LIMIT){
+      return {
+        needsReason:true,
+        kind:'URGENT_5H',
+        start:`${String(start.h).padStart(2,'0')}:${String(start.m).padStart(2,'0')}`,
+        hours
+      };
+    }
+    return {
+      needsReason:false,
+      kind:'NORMAL',
+      start:start?`${String(start.h).padStart(2,'0')}:${String(start.m).padStart(2,'0')}`:'',
+      hours
+    };
+  };
+  window.rhPlanningChangeWindowV102.__v206Fixed=true;
+  window.__rhPlanningChangeWindowBeforeV206=previousWindow;
+
+  function clearPlanningSelection(reason=''){
+    const api=window.ICHEF_FAST_PLANNING_V205;
+    try{api?.clearSelection?.();}catch(_){}
+    document.querySelectorAll('#global-view-container .rh-v200-selected')
+      .forEach(el=>el.classList.remove('rh-v200-selected'));
+
+    const legend=document.getElementById('rh-v201-legend');
+    if(legend){
+      legend.classList.remove('rh-v205-has-selection');
+      legend.dataset.selectionLabel='';
+    }
+
+    if(reason){
+      console.info('[iCHEF RH V206] sélection planning effacée',reason);
+    }
+  }
+
+  /* Changement manuel de mois. */
+  document.getElementById('month-selector')?.addEventListener('change',()=>{
+    clearPlanningSelection('month-change');
+  },true);
+
+  /* Flèches mois précédent/suivant : changeMonth appelle handleMonthChange
+     sans déclencher nécessairement l'événement change. */
+  const previousChangeMonth=window.changeMonth;
+  if(typeof previousChangeMonth==='function'&&!previousChangeMonth.__v206Wrapped){
+    const wrapped=function(...args){
+      clearPlanningSelection('month-navigation');
+      return previousChangeMonth.apply(this,args);
+    };
+    wrapped.__v206Wrapped=true;
+    window.changeMonth=wrapped;
+  }
+
+  const previousHandleMonth=window.handleMonthChange;
+  if(typeof previousHandleMonth==='function'&&!previousHandleMonth.__v206Wrapped){
+    const wrapped=function(...args){
+      clearPlanningSelection('month-render');
+      return previousHandleMonth.apply(this,args);
+    };
+    wrapped.__v206Wrapped=true;
+    window.handleMonthChange=wrapped;
+  }
+
+  /* Si le mois est modifié par l'IA/autopilote de façon programmatique,
+     détecter uniquement la valeur du sélecteur, pas tout le DOM. */
+  const selector=document.getElementById('month-selector');
+  let lastMonth=String(selector?.value||'');
+  const checkMonth=()=>{
+    const current=String(selector?.value||'');
+    if(current!==lastMonth){
+      lastMonth=current;
+      clearPlanningSelection('programmatic-month-change');
+    }
+  };
+  if(selector){
+    selector.addEventListener('input',checkMonth,true);
+    selector.addEventListener('change',checkMonth,true);
+  }
+
+  /* Avant toute action de catégorie, enlever un éventuel transform tactile
+     resté après un pointercancel. */
+  document.addEventListener('pointercancel',()=>{
+    document.querySelectorAll('#rh-v201-legend .rh-v205-category-action')
+      .forEach(btn=>btn.style.removeProperty('transform'));
+  },true);
+
+  /* Petit test interne non intrusif : décembre 2026 doit être futur depuis
+     septembre 2026 et ne doit donc jamais demander un motif par erreur. */
+  window.ICHEF_RH_V206_TESTS={
+    planningWindow(dateStr,before={},after={}){
+      return window.rhPlanningChangeWindowV102(dateStr,before,after);
+    },
+    clearSelection:clearPlanningSelection
+  };
+
+  window.__ICHEF_RH_BUILD__='RH-V206-BUGFIX-TACTILE-SELECTION';
+  console.info('[iCHEF RH V206] bugs sélection fantôme / changement de mois / motif futur corrigés');
+})();
+
+
+
+;
+/* RH V264 - preserved script #138 */
+
+window.__ICHEF_RH_BUILD__='RH-V206-BUGFIX-TACTILE-SELECTION';
+
+
+
+;
+/* RH V264 - preserved script #139 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V207_FOCUS__) return;
+  window.__ICHEF_RH_V207_FOCUS__=true;
+
+  const HOLD_MS=500;
+  const MOVE_CANCEL_PX=12;
+  let hold=null;
+  let suppressClickUntil=0;
+  let savedScroll={globalLeft:0,globalTop:0};
+  let hintTimer=0;
+
+  const monthView=()=>document.getElementById('month-view-container');
+  const globalView=()=>document.getElementById('global-view-container');
+
+  function isFocus(){
+    return document.body.classList.contains('rh-v207-focus-open');
+  }
+
+  function showHint(message){
+    let hint=document.getElementById('rh-v207-focus-hint');
+    if(!hint){
+      hint=document.createElement('div');
+      hint.id='rh-v207-focus-hint';
+      document.body.appendChild(hint);
+    }
+    hint.textContent=String(message||'');
+    hint.classList.add('show');
+    clearTimeout(hintTimer);
+    hintTimer=setTimeout(()=>hint.classList.remove('show'),1900);
+  }
+
+  function updateButton(){
+    const btn=document.getElementById('rh-v207-focus-toggle');
+    if(!btn) return;
+    if(isFocus()){
+      btn.innerHTML='× QUITTER PLEIN ÉCRAN';
+      btn.title='Revenir à l’écran RH complet';
+    }else{
+      btn.innerHTML='⛶ VUE ÉQUIPE';
+      btn.title='Plein écran planning · ou maintenir 0,5 s sur le cadre';
+    }
+  }
+
+  function ensureButton(){
+    const bar=document.getElementById('rh-v200-fastbar');
+    if(!bar) return;
+
+    let btn=document.getElementById('rh-v207-focus-toggle');
+    if(!btn){
+      btn=document.createElement('button');
+      btn.type='button';
+      btn.id='rh-v207-focus-toggle';
+
+      const firstAction=bar.querySelector('.rh-v200-select-mode');
+      if(firstAction) firstAction.insertAdjacentElement('beforebegin',btn);
+      else bar.prepend(btn);
+
+      btn.addEventListener('click',event=>{
+        event.preventDefault();
+        event.stopPropagation();
+        toggleFocus('button');
+      });
+    }
+    updateButton();
+  }
+
+  function saveScrollPosition(){
+    const global=globalView();
+    if(global){
+      savedScroll.globalLeft=global.scrollLeft;
+      savedScroll.globalTop=global.scrollTop;
+    }
+  }
+
+  function restoreScrollPosition(){
+    requestAnimationFrame(()=>{
+      const global=globalView();
+      if(global){
+        global.scrollLeft=savedScroll.globalLeft||0;
+        global.scrollTop=savedScroll.globalTop||0;
+      }
+    });
+  }
+
+  function enterFocus(source='touch'){
+    if(isFocus()) return;
+
+    const mv=monthView();
+    if(!mv) return;
+
+    saveScrollPosition();
+
+    // Fermer les éléments qui mangeraient de la place,
+    // sans modifier leur contenu ni leur état métier.
+    document.getElementById('rh-v200-tools-deck')?.classList.remove('show');
+    document.getElementById('rh-v200-quick-drawer')?.classList.remove('show');
+
+    document.body.classList.add('rh-v207-focus-open');
+    mv.classList.remove('rh-v207-holding');
+    updateButton();
+    restoreScrollPosition();
+
+    try{navigator.vibrate?.(18)}catch(_){}
+    showHint('Vue équipe plein écran · appui 0,5 s sur le cadre pour quitter');
+
+    window.dispatchEvent(new CustomEvent('ichef:planning-focus-change',{
+      detail:{open:true,source,at:new Date().toISOString()}
+    }));
+  }
+
+  function exitFocus(source='touch'){
+    if(!isFocus()) return;
+
+    saveScrollPosition();
+    document.body.classList.remove('rh-v207-focus-open');
+    monthView()?.classList.remove('rh-v207-holding');
+    updateButton();
+    restoreScrollPosition();
+
+    try{navigator.vibrate?.(10)}catch(_){}
+    showHint('Retour à l’écran RH');
+
+    window.dispatchEvent(new CustomEvent('ichef:planning-focus-change',{
+      detail:{open:false,source,at:new Date().toISOString()}
+    }));
+  }
+
+  function toggleFocus(source='touch'){
+    if(isFocus()) exitFocus(source);
+    else enterFocus(source);
+  }
+
+  /* Zones à NE PAS utiliser pour l'appui 0,5 s :
+     - cases : leur appui long sert déjà à la sélection tactile
+     - boutons/champs : leurs actions doivent rester normales
+     - catégories : un tap applique la catégorie
+     - scrollbar / drawer / modales
+  */
+  function isExcludedTarget(target){
+    if(!target?.closest) return true;
+    return !!target.closest([
+      '.rh-status-quick-btn',
+      'button',
+      'select',
+      'input',
+      'textarea',
+      'a',
+      '[contenteditable="true"]',
+      '#rh-v200-fastbar',
+      '#rh-v201-legend',
+      '#rh-v200-tools-deck',
+      '#rh-v200-quick-drawer',
+      '.modal',
+      '[role="dialog"]'
+    ].join(','));
+  }
+
+  function eligibleTarget(target){
+    const mv=monthView();
+    if(!mv || !mv.contains(target)) return false;
+    if(isExcludedTarget(target)) return false;
+
+    // Très pratique sur tablette :
+    // nom collaborateur, en-tête du jour, bordure ou zone blanche.
+    return !!target.closest(
+      '#global-view-container, #table-container-individual, #annual-view-container, #month-view-container'
+    );
+  }
+
+  function cancelHold(){
+    if(!hold) return;
+    clearTimeout(hold.timer);
+    monthView()?.classList.remove('rh-v207-holding');
+    hold=null;
+  }
+
+  function startHold(event){
+    if(event.button != null && event.button !== 0) return;
+    if(!['touch','pen','mouse'].includes(String(event.pointerType||'mouse'))) return;
+    if(!eligibleTarget(event.target)) return;
+
+    cancelHold();
+
+    const mv=monthView();
+    hold={
+      pointerId:event.pointerId,
+      startX:event.clientX,
+      startY:event.clientY,
+      target:event.target,
+      timer:setTimeout(()=>{
+        if(!hold || hold.pointerId!==event.pointerId) return;
+        suppressClickUntil=Date.now()+850;
+        mv?.classList.remove('rh-v207-holding');
+        toggleFocus('long-press-500ms');
+        hold=null;
+      },HOLD_MS)
+    };
+
+    // Montrer que l'appui est bien détecté sans bloquer le scroll tout de suite.
+    setTimeout(()=>{
+      if(hold && hold.pointerId===event.pointerId){
+        mv?.classList.add('rh-v207-holding');
+      }
+    },250);
+  }
+
+  function moveHold(event){
+    if(!hold || hold.pointerId!==event.pointerId) return;
+    const dx=Math.abs(event.clientX-hold.startX);
+    const dy=Math.abs(event.clientY-hold.startY);
+
+    // Un geste de scroll ne doit jamais déclencher le plein écran.
+    if(dx>MOVE_CANCEL_PX || dy>MOVE_CANCEL_PX){
+      cancelHold();
+    }
+  }
+
+  function finishHold(event){
+    if(!hold || hold.pointerId!==event.pointerId) return;
+    cancelHold();
+  }
+
+  document.addEventListener('pointerdown',startHold,true);
+  document.addEventListener('pointermove',moveHold,true);
+  document.addEventListener('pointerup',finishHold,true);
+  document.addEventListener('pointercancel',finishHold,true);
+
+  // Supprime le clic synthétique qui suit un appui long réussi.
+  document.addEventListener('click',event=>{
+    if(Date.now()>=suppressClickUntil) return;
+    if(!monthView()?.contains(event.target)) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+  },true);
+
+  // ESC sur ordinateur / clavier tablette.
+  document.addEventListener('keydown',event=>{
+    if(event.key==='Escape' && isFocus()){
+      event.preventDefault();
+      exitFocus('escape');
+    }
+  },true);
+
+  // Si on quitte complètement le module RH, ne pas laisser l'overlay.
+  document.addEventListener('click',event=>{
+    const nav=event.target?.closest?.('[onclick*="openInterface"], [onclick*="goHome"], .btn-accueil-ia');
+    if(nav && isFocus()){
+      exitFocus('navigation');
+    }
+  },true);
+
+  // Le fastbar est injecté dynamiquement par V200.
+  const mv=monthView();
+  if(mv){
+    let frame=0;
+    new MutationObserver(()=>{
+      if(frame) return;
+      frame=requestAnimationFrame(()=>{
+        frame=0;
+        ensureButton();
+      });
+    }).observe(mv,{childList:true,subtree:true});
+  }
+
+  function boot(){
+    ensureButton();
+    updateButton();
+  }
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',boot,{once:true});
+  }else{
+    boot();
+  }
+  setTimeout(boot,160);
+
+  window.ICHEF_PLANNING_FOCUS_V207={
+    enter:enterFocus,
+    exit:exitFocus,
+    toggle:toggleFocus,
+    isOpen:isFocus,
+    holdMs:HOLD_MS
+  };
+
+  window.__ICHEF_RH_BUILD__='RH-V207-PLANNING-FOCUS-TOUCH';
+  console.info('[iCHEF RH V207] appui 0,5 s planning → vue équipe plein écran');
+})();
+
+
+
+;
+/* RH V264 - preserved script #140 */
+
+window.__ICHEF_RH_BUILD__='RH-V207-PLANNING-FOCUS-TOUCH';
+
+
+
+;
+/* RH V264 - preserved script #141 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V208_HOLIDAYS__) return;
+  window.__ICHEF_RH_V208_HOLIDAYS__=true;
+
+  const VERSION='RH-V208-HOLIDAY-SYMBIOSIS';
+  const SOURCE_VERSION='SECO-2024-12-12__FR-L3133-1-2026__LGAV-ART18';
+
+  /* ---------------------------------------------------------
+     1. JURIDICTIONS
+     --------------------------------------------------------- */
+  const CANTONS=[
+    ['AG','Argovie'],['AI','Appenzell Rhodes-Intérieures'],
+    ['AR','Appenzell Rhodes-Extérieures'],['BE','Berne'],
+    ['BL','Bâle-Campagne'],['BS','Bâle-Ville'],
+    ['FR','Fribourg'],['GE','Genève'],['GL','Glaris'],
+    ['GR','Grisons'],['JU','Jura'],['LU','Lucerne'],
+    ['NE','Neuchâtel'],['NW','Nidwald'],['OW','Obwald'],
+    ['SG','Saint-Gall'],['SH','Schaffhouse'],['SO','Soleure'],
+    ['SZ','Schwyz'],['TG','Thurgovie'],['TI','Tessin'],
+    ['UR','Uri'],['VD','Vaud'],['VS','Valais'],
+    ['ZG','Zoug'],['ZH','Zurich']
+  ];
+
+  const CANTON_NAMES=Object.fromEntries(CANTONS);
+
+  const LOCAL_PROFILES={
+    AG:[
+      ['','— Sélection locale obligatoire —'],
+      ['AG_AARAU','Aarau / Brugg / Kulm / Lenzburg / Zofingue + Bergdietikon'],
+      ['AG_BADEN','Autres communes du district de Baden'],
+      ['AG_BREMGARTEN','District de Bremgarten'],
+      ['AG_LAUFENBURG_MURI','Districts de Laufenburg et Muri'],
+      ['AG_RHEINFELDEN_A','Rheinfelden · Hellikon/Mumpf/Obermumpf/Schupfart/Stein/Wegenstetten'],
+      ['AG_RHEINFELDEN_B','Rheinfelden · Kaiseraugst/Magden/Möhlin/Olsberg/Rheinfelden/Wallbach/Zeiningen/Zuzgen'],
+      ['AG_ZURZACH','District de Zurzach']
+    ],
+    FR:[
+      ['','— Sélection communale obligatoire —'],
+      ['FR_CATHOLIC','Commune à population majoritairement catholique romaine'],
+      ['FR_REFORMED','Commune à population majoritairement évangélique réformée']
+    ],
+    NE:[
+      ['','— Sélection locale obligatoire —'],
+      ['NE_GENERAL','Canton de Neuchâtel · hors Le Landeron'],
+      ['NE_LANDERON','Commune du Landeron']
+    ],
+    SO:[
+      ['','— Sélection locale obligatoire —'],
+      ['SO_GENERAL','Canton de Soleure · hors district de Bucheggberg'],
+      ['SO_BUCHEGGBERG','District de Bucheggberg']
+    ]
+  };
+
+  const FR_ZONES=[
+    ['','— Sélection de la zone obligatoire —'],
+    ['GENERAL','France métropolitaine · cas général · 11 fêtes légales'],
+    ['ALSACE_MOSELLE','Alsace-Moselle · 12 + Vendredi saint si commune concernée'],
+    ['GUADELOUPE','Guadeloupe · 11 + abolition de l’esclavage'],
+    ['GUYANE','Guyane · 11 + abolition de l’esclavage'],
+    ['MARTINIQUE','Martinique · 11 + abolition de l’esclavage'],
+    ['MAYOTTE','Mayotte · 11 + abolition de l’esclavage'],
+    ['REUNION','La Réunion · 11 + abolition de l’esclavage'],
+    ['SAINT_BARTHELEMY','Saint-Barthélemy · 11 + abolition de l’esclavage'],
+    ['SAINT_MARTIN','Saint-Martin · 11 + abolition de l’esclavage']
+  ];
+
+  const EURO_AREA_2026=new Set([
+    'AT','BE','BG','HR','CY','EE','FI','FR','DE','GR','IE',
+    'IT','LV','LT','LU','MT','NL','PT','SK','SI','ES'
+  ]);
+
+  const NAME_TO_ISO={
+    'FRANCE':'FR','SUISSE':'CH','SWITZERLAND':'CH','SCHWEIZ':'CH',
+    'AUSTRIA':'AT','AUTRICHE':'AT','BELGIUM':'BE','BELGIQUE':'BE',
+    'BULGARIA':'BG','BULGARIE':'BG','CROATIA':'HR','CROATIE':'HR',
+    'CYPRUS':'CY','CHYPRE':'CY','ESTONIA':'EE','ESTONIE':'EE',
+    'FINLAND':'FI','FINLANDE':'FI','GERMANY':'DE','ALLEMAGNE':'DE',
+    'GREECE':'GR','GRECE':'GR','GRÈCE':'GR','IRELAND':'IE','IRLANDE':'IE',
+    'ITALY':'IT','ITALIE':'IT','LATVIA':'LV','LETTONIE':'LV',
+    'LITHUANIA':'LT','LITUANIE':'LT','LUXEMBOURG':'LU',
+    'MALTA':'MT','MALTE':'MT','NETHERLANDS':'NL','PAYS-BAS':'NL',
+    'PORTUGAL':'PT','SLOVAKIA':'SK','SLOVAQUIE':'SK',
+    'SLOVENIA':'SI','SLOVENIE':'SI','SLOVÉNIE':'SI',
+    'SPAIN':'ES','ESPAGNE':'ES'
+  };
+
+  /* ---------------------------------------------------------
+     2. OUTILS DATE
+     --------------------------------------------------------- */
+  const pad=n=>String(n).padStart(2,'0');
+
+  function isoDate(y,m,d){
+    return `${y}-${pad(m)}-${pad(d)}`;
+  }
+
+  function localDate(y,m,d){
+    return new Date(Number(y),Number(m)-1,Number(d),12,0,0,0);
+  }
+
+  function dateIso(date){
+    return isoDate(date.getFullYear(),date.getMonth()+1,date.getDate());
+  }
+
+  function addDays(date,days){
+    const d=new Date(date.getFullYear(),date.getMonth(),date.getDate(),12,0,0,0);
+    d.setDate(d.getDate()+Number(days||0));
+    return d;
+  }
+
+  // Meeus/Jones/Butcher · Pâques grégorienne.
+  function easterSunday(year){
+    const y=Number(year);
+    const a=y%19;
+    const b=Math.floor(y/100);
+    const c=y%100;
+    const d=Math.floor(b/4);
+    const e=b%4;
+    const f=Math.floor((b+8)/25);
+    const g=Math.floor((b-f+1)/3);
+    const h=(19*a+b-d-g+15)%30;
+    const i=Math.floor(c/4);
+    const k=c%4;
+    const l=(32+2*e+2*i-h-k)%7;
+    const m=Math.floor((a+11*h+22*l)/451);
+    const month=Math.floor((h+l-7*m+114)/31);
+    const day=((h+l-7*m+114)%31)+1;
+    return localDate(y,month,day);
+  }
+
+  function firstWeekdayOfMonth(year,month,weekday){
+    const first=localDate(year,month,1);
+    const shift=(weekday-first.getDay()+7)%7;
+    return addDays(first,shift);
+  }
+
+  function nthWeekdayOfMonth(year,month,weekday,n){
+    return addDays(firstWeekdayOfMonth(year,month,weekday),(Number(n)-1)*7);
+  }
+
+  function holiday(key,name,date,extra={}){
+    return {
+      key,
+      name,
+      date:dateIso(date),
+      fraction:1,
+      official:true,
+      ...extra
+    };
+  }
+
+  function fixed(year,key,name,month,day,extra={}){
+    return holiday(key,name,localDate(year,month,day),extra);
+  }
+
+  function movable(year,key,name,offset,extra={}){
+    return holiday(key,name,addDays(easterSunday(year),offset),extra);
+  }
+
+  function naefelserFahrt(year){
+    let d=firstWeekdayOfMonth(year,4,4); // jeudi
+    const easter=easterSunday(year);
+    const diff=Math.round((easter.getTime()-d.getTime())/86400000);
+    if(diff>=1 && diff<=6) d=addDays(d,7);
+    return holiday(
+      'FAHRTSFEST',
+      'Näfelser Fahrt',
+      d,
+      {source:'Canton de Glaris',sundayEquivalent:true}
+    );
+  }
+
+  function genevaFast(year){
+    const firstSunday=firstWeekdayOfMonth(year,9,0);
+    return holiday(
+      'GENEVA_FAST',
+      'Jeûne genevois',
+      addDays(firstSunday,4),
+      {sundayEquivalent:true}
+    );
+  }
+
+  function vaudFastMonday(year){
+    const thirdSunday=nthWeekdayOfMonth(year,9,0,3);
+    return holiday(
+      'VAUD_FAST_MON',
+      'Lundi du Jeûne fédéral',
+      addDays(thirdSunday,1),
+      {sundayEquivalent:true}
+    );
+  }
+
+  /* ---------------------------------------------------------
+     3. FRANCE
+     --------------------------------------------------------- */
+  function franceBase(year){
+    return [
+      fixed(year,'NY','Jour de l’An',1,1),
+      movable(year,'EASTER_MON','Lundi de Pâques',1),
+      fixed(year,'MAY1','Fête du Travail',5,1,{mandatoryRestGeneral:true}),
+      fixed(year,'MAY8','Victoire 1945',5,8),
+      movable(year,'ASCENSION','Ascension',39),
+      movable(year,'WHIT_MON','Lundi de Pentecôte',50),
+      fixed(year,'JUL14','Fête nationale',7,14),
+      fixed(year,'ASSUMPTION','Assomption',8,15),
+      fixed(year,'ALL_SAINTS','Toussaint',11,1),
+      fixed(year,'NOV11','Armistice 1918',11,11),
+      fixed(year,'XMAS','Noël',12,25)
+    ].map(x=>({
+      ...x,
+      country:'FR',
+      classification:'FÊTE LÉGALE · Code du travail L3133-1',
+      sundayEquivalent:false
+    }));
+  }
+
+  const FR_EXTRA={
+    GUADELOUPE:[5,27,'Commémoration de l’abolition de l’esclavage'],
+    GUYANE:[6,10,'Commémoration de l’abolition de l’esclavage'],
+    MARTINIQUE:[5,22,'Commémoration de l’abolition de l’esclavage'],
+    MAYOTTE:[4,27,'Commémoration de l’abolition de l’esclavage'],
+    REUNION:[12,20,'Commémoration de l’abolition de l’esclavage'],
+    SAINT_BARTHELEMY:[10,9,'Commémoration de l’abolition de l’esclavage'],
+    SAINT_MARTIN:[5,27,'Commémoration de l’abolition de l’esclavage']
+  };
+
+  function franceCalendar(year,config){
+    const zone=String(config?.frZone||'');
+    if(!zone){
+      return {
+        complete:false,
+        blockers:['France · sélectionnez la zone du calendrier des jours fériés.'],
+        days:[],
+        statutoryCount:null,
+        summary:'Zone France non confirmée.'
+      };
+    }
+
+    let days=franceBase(year);
+
+    if(zone==='ALSACE_MOSELLE'){
+      days.push(
+        fixed(year,'ST_STEPHEN','Saint-Étienne · 26 décembre',12,26,{
+          country:'FR',
+          classification:'Alsace-Moselle · fête légale locale'
+        })
+      );
+      if(config?.frGoodFriday===true){
+        days.push(
+          movable(year,'GOOD_FRIDAY','Vendredi saint',-2,{
+            country:'FR',
+            classification:'Alsace-Moselle · commune concernée'
+          })
+        );
+      }
+    }else if(FR_EXTRA[zone]){
+      const [m,d,name]=FR_EXTRA[zone];
+      days.push(
+        fixed(year,`FR_${zone}_ABOLITION`,name,m,d,{
+          country:'FR',
+          classification:'Jour férié local · outre-mer'
+        })
+      );
+    }
+
+    days.sort((a,b)=>a.date.localeCompare(b.date));
+    return {
+      complete:true,
+      blockers:[],
+      days,
+      statutoryCount:days.length,
+      summary:
+        zone==='GENERAL'
+          ? `${days.length} fêtes légales · France cas général`
+          : zone==='ALSACE_MOSELLE'
+            ? `${days.length} fêtes légales configurées · Alsace-Moselle`
+            : `${days.length} fêtes légales configurées · ${FR_ZONES.find(x=>x[0]===zone)?.[1]||zone}`
+    };
+  }
+
+  /* ---------------------------------------------------------
+     4. SUISSE · SECO ART. 20a LTr
+     Les listes ci-dessous représentent les jours que le SECO
+     indique comme assimilés au dimanche. Le 1er août est ajouté
+     partout. Les cantons AG / FR / NE / SO exigent un profil local.
+     --------------------------------------------------------- */
+  const CH_ROW_SETS={
+    NY:new Set(CANTONS.map(x=>x[0])),
+    BERCH:new Set(['AG','BE','FR','NE','TG','VD']),
+    EPIPHANY:new Set(['TI']),
+    NE_REPUBLIC:new Set(['NE']),
+    JOSEPH:new Set(['SZ','VS']),
+    FAHRTSFEST:new Set(['GL']),
+    GOOD_FRIDAY:new Set(['AG','AI','AR','BE','BL','BS','FR','GE','GL','GR','JU','LU','NE','NW','OW','SG','SH','SO','SZ','TG','UR','VD','ZG','ZH']),
+    EASTER_MON:new Set(['AG','AI','AR','BE','BL','BS','FR','GE','GL','GR','JU','SG','SH','TG','TI','VD','ZH']),
+    MAY1:new Set(['BL','BS','JU','NE','SH','SO','ZH']),
+    ASCENSION:new Set(CANTONS.map(x=>x[0])),
+    WHIT_MON:new Set(['AG','AI','AR','BE','BL','BS','FR','GE','GR','JU','SG','SH','TG','VD','ZH']),
+    CORPUS:new Set(['AG','AI','FR','JU','LU','NE','NW','OW','SO','SZ','UR','VS','ZG']),
+    AUG1:new Set(CANTONS.map(x=>x[0])),
+    ASSUMPTION:new Set(['AG','FR','LU','NW','OW','SO','SZ','TI','UR','VS','ZG']),
+    GENEVA_FAST:new Set(['GE']),
+    VAUD_FAST_MON:new Set(['VD']),
+    ALL_SAINTS:new Set(['AG','FR','GL','LU','NW','OW','SG','SO','SZ','TI','UR','VS','ZG']),
+    IMMACULATE:new Set(['AG','FR','NW','OW','UR','VS','ZG']),
+    XMAS:new Set(CANTONS.map(x=>x[0])),
+    ST_STEPHEN:new Set(['AG','AI','AR','BE','BL','BS','FR','GL','GR','LU','NE','SG','SH','TG','TI','ZH']),
+    GE_RESTORATION:new Set(['GE'])
+  };
+
+  function chEvent(year,key){
+    const common={
+      country:'CH',
+      classification:'Assimilé au dimanche · art. 20a LTr / SECO',
+      sundayEquivalent:true
+    };
+    switch(key){
+      case 'NY': return fixed(year,key,'Nouvel an',1,1,common);
+      case 'BERCH': return fixed(year,key,'Saint-Berchtold',1,2,common);
+      case 'EPIPHANY': return fixed(year,key,'Épiphanie',1,6,common);
+      case 'NE_REPUBLIC': return fixed(year,key,'Instauration de la République de Neuchâtel',3,1,common);
+      case 'JOSEPH': return fixed(year,key,'Saint-Joseph',3,19,common);
+      case 'FAHRTSFEST': return {...naefelserFahrt(year),...common};
+      case 'GOOD_FRIDAY': return movable(year,key,'Vendredi saint',-2,common);
+      case 'EASTER_MON': return movable(year,key,'Lundi de Pâques',1,common);
+      case 'MAY1': return fixed(year,key,'Fête du Travail',5,1,common);
+      case 'ASCENSION': return movable(year,key,'Ascension',39,common);
+      case 'WHIT_MON': return movable(year,key,'Lundi de Pentecôte',50,common);
+      case 'CORPUS': return movable(year,key,'Fête-Dieu',60,common);
+      case 'AUG1': return fixed(year,key,'Fête nationale suisse',8,1,{
+        ...common,
+        classification:'Jour férié fédéral payé · assimilé au dimanche'
+      });
+      case 'ASSUMPTION': return fixed(year,key,'Assomption',8,15,common);
+      case 'GENEVA_FAST': return {...genevaFast(year),...common};
+      case 'VAUD_FAST_MON': return {...vaudFastMonday(year),...common};
+      case 'ALL_SAINTS': return fixed(year,key,'Toussaint',11,1,common);
+      case 'IMMACULATE': return fixed(year,key,'Immaculée Conception',12,8,common);
+      case 'XMAS': return fixed(year,key,'Noël',12,25,common);
+      case 'ST_STEPHEN': return fixed(year,key,'Saint-Étienne',12,26,common);
+      case 'GE_RESTORATION': return fixed(year,key,'Restauration de la République',12,31,common);
+      default: return null;
+    }
+  }
+
+  const PROFILE_KEYS={
+    AG_AARAU:['NY','BERCH','GOOD_FRIDAY','EASTER_MON','ASCENSION','WHIT_MON','XMAS','ST_STEPHEN'],
+    AG_BADEN:['NY','GOOD_FRIDAY','EASTER_MON','ASCENSION','WHIT_MON','CORPUS','XMAS','ST_STEPHEN'],
+    AG_BREMGARTEN:['NY','GOOD_FRIDAY','ASCENSION','CORPUS','ASSUMPTION','ALL_SAINTS','XMAS','ST_STEPHEN'],
+    AG_LAUFENBURG_MURI:['NY','GOOD_FRIDAY','ASCENSION','CORPUS','ASSUMPTION','ALL_SAINTS','IMMACULATE','XMAS'],
+    AG_RHEINFELDEN_A:['NY','GOOD_FRIDAY','ASCENSION','CORPUS','ASSUMPTION','ALL_SAINTS','IMMACULATE','XMAS'],
+    AG_RHEINFELDEN_B:['NY','GOOD_FRIDAY','EASTER_MON','ASCENSION','WHIT_MON','ALL_SAINTS','XMAS','ST_STEPHEN'],
+    AG_ZURZACH:['NY','BERCH','GOOD_FRIDAY','ASCENSION','CORPUS','ALL_SAINTS','XMAS','ST_STEPHEN'],
+
+    FR_CATHOLIC:['NY','GOOD_FRIDAY','ASCENSION','CORPUS','ASSUMPTION','ALL_SAINTS','IMMACULATE','XMAS'],
+    FR_REFORMED:['NY','BERCH','GOOD_FRIDAY','EASTER_MON','ASCENSION','WHIT_MON','XMAS','ST_STEPHEN'],
+
+    NE_GENERAL:['NY','BERCH','NE_REPUBLIC','GOOD_FRIDAY','MAY1','ASCENSION','XMAS'],
+    NE_LANDERON:['NY','BERCH','NE_REPUBLIC','GOOD_FRIDAY','MAY1','ASCENSION','CORPUS','XMAS'],
+
+    SO_GENERAL:['NY','GOOD_FRIDAY','MAY1','ASCENSION','CORPUS','ASSUMPTION','ALL_SAINTS','XMAS'],
+    SO_BUCHEGGBERG:['NY','GOOD_FRIDAY','MAY1','ASCENSION','XMAS']
+  };
+
+  function aiStephenAllowed(year){
+    // La règle SECO: Saint-Étienne uniquement s'il ne crée pas
+    // trois jours de repos consécutifs. Avec Noël + dimanche,
+    // le cas se produit lorsque Noël tombe un lundi ou un vendredi.
+    const dow=localDate(year,12,25).getDay();
+    return ![1,5].includes(dow);
+  }
+
+  function arStephenAllowed(year){
+    // SECO: pas de Saint-Étienne lorsque Noël tombe lundi ou vendredi.
+    return ![1,5].includes(localDate(year,12,25).getDay());
+  }
+
+  function neConditional(year,key){
+    const d=chEvent(year,key);
+    return d && localDate(year,Number(d.date.slice(5,7)),Number(d.date.slice(8,10))).getDay()===1;
+  }
+
+  function chCalendar(year,config){
+    const canton=String(config?.chCanton||'').toUpperCase();
+    if(!CANTON_NAMES[canton]){
+      return {
+        complete:false,
+        blockers:['Suisse · sélectionnez obligatoirement le canton de l’établissement.'],
+        days:[chEvent(year,'AUG1')],
+        count:null,
+        summary:'Canton suisse non sélectionné.'
+      };
+    }
+
+    const blockers=[];
+    const profile=String(config?.chLocalProfile||'');
+    if(LOCAL_PROFILES[canton] && !profile){
+      blockers.push(
+        `${CANTON_NAMES[canton]} · sélectionnez le profil local/communal requis par le référentiel SECO.`
+      );
+    }
+
+    let keys=[];
+    if(LOCAL_PROFILES[canton]){
+      keys=[...(PROFILE_KEYS[profile]||[])];
+    }else if(canton==='AI'){
+      keys=['NY','GOOD_FRIDAY','EASTER_MON','ASCENSION','WHIT_MON','CORPUS','XMAS'];
+      if(aiStephenAllowed(year)) keys.push('ST_STEPHEN');
+    }else if(canton==='AR'){
+      keys=['NY','GOOD_FRIDAY','EASTER_MON','ASCENSION','WHIT_MON','XMAS'];
+      if(arStephenAllowed(year)) keys.push('ST_STEPHEN');
+    }else{
+      keys=Object.entries(CH_ROW_SETS)
+        .filter(([key,set])=>key!=='AUG1' && set.has(canton))
+        .map(([key])=>key);
+    }
+
+    if(canton==='NE' && profile){
+      if(neConditional(year,'BERCH')) {
+        if(!keys.includes('BERCH')) keys.push('BERCH');
+      } else {
+        keys=keys.filter(k=>k!=='BERCH');
+      }
+      if(neConditional(year,'ST_STEPHEN')) keys.push('ST_STEPHEN');
+    }
+
+    if(canton==='SO'){
+      // Le SECO indique la Fête du Travail l'après-midi.
+      // La journée reste signalée mais avec fraction 0,5.
+    }
+
+    if(!keys.includes('AUG1')) keys.push('AUG1');
+
+    const days=keys
+      .map(k=>chEvent(year,k))
+      .filter(Boolean)
+      .map(day=>{
+        if(canton==='SO' && day.key==='MAY1'){
+          return {...day,fraction:.5,name:'Fête du Travail · après-midi'};
+        }
+        return day;
+      })
+      .sort((a,b)=>a.date.localeCompare(b.date));
+
+    return {
+      complete:blockers.length===0,
+      blockers,
+      days,
+      count:days.length,
+      summary:blockers.length
+        ? blockers[0]
+        : `${days.length} date${days.length>1?'s':''} assimilée${days.length>1?'s':''} au dimanche configurée${days.length>1?'s':''} · ${CANTON_NAMES[canton]}`
+    };
+  }
+
+  /* ---------------------------------------------------------
+     5. STOCKAGE / SYMBIOSE
+     --------------------------------------------------------- */
+  function settings(){
+    try{return typeof getRhSettings==='function'?(getRhSettings()||{}):{}}
+    catch(_){return{}}
+  }
+
+  function payroll(){
+    try{
+      return JSON.parse(localStorage.getItem('ichef_payroll_settings_v2')||'{}')||{};
+    }catch(_){return{}}
+  }
+
+  function normalizeDateList(value){
+    return [...new Set(
+      (Array.isArray(value)?value:String(value||'').split(/[\s,;]+/))
+        .map(v=>String(v||'').trim())
+        .filter(v=>/^20\d{2}-\d{2}-\d{2}$/.test(v))
+    )].sort();
+  }
+
+  function config(){
+    const s=settings();
+    const p=payroll();
+    return {
+      country:String(s.planningLegalCountry||p.country||'CH').toUpperCase()==='FR'?'FR':'CH',
+      chCanton:String(s.planningHolidayCanton||p.canton||'').toUpperCase(),
+      chLocalProfile:String(s.planningHolidayLocalProfile||''),
+      chLocality:String(s.planningHolidayLocality||'').trim(),
+      frZone:String(s.planningFranceHolidayZone||''),
+      frGoodFriday:s.planningFranceGoodFridayApplicable===true,
+      addDates:normalizeDateList(s.planningHolidayAddDates),
+      removeDates:normalizeDateList(s.planningHolidayRemoveDates),
+      confirmed:s.planningHolidayJurisdictionConfirmed===true,
+      sourceVersion:String(s.planningHolidaySourceVersion||SOURCE_VERSION)
+    };
+  }
+
+  function calendarResult(year=Number(String(document.getElementById('month-selector')?.value||'').slice(0,4))||new Date().getFullYear()){
+    const c=config();
+    let result=c.country==='FR'
+      ? franceCalendar(year,c)
+      : chCalendar(year,c);
+
+    const removed=new Set(c.removeDates);
+    let days=(result.days||[]).filter(d=>!removed.has(d.date));
+    const existing=new Set(days.map(d=>d.date));
+
+    c.addDates.forEach(date=>{
+      if(String(date).startsWith(`${year}-`) && !existing.has(date)){
+        days.push({
+          key:`MANUAL_${date}`,
+          name:'Jour férié local ajouté',
+          date,
+          fraction:1,
+          official:true,
+          manual:true,
+          classification:'Ajustement local validé par l’établissement',
+          sundayEquivalent:c.country==='CH'
+        });
+      }
+    });
+
+    days.sort((a,b)=>a.date.localeCompare(b.date));
+    result={...result,days,count:days.length};
+    return result;
+  }
+
+  window.iChefHolidayCalendarV208=year=>calendarResult(Number(year)||new Date().getFullYear()).days;
+  window.iChefHolidayForDateV208=function(dateStr){
+    const y=Number(String(dateStr||'').slice(0,4));
+    if(!y) return null;
+    return calendarResult(y).days.find(d=>d.date===String(dateStr))||null;
+  };
+  window.iChefHolidayJurisdictionV208=config;
+  window.iChefHolidayAuditV208=function(year){
+    const result=calendarResult(Number(year)||new Date().getFullYear());
+    const c=config();
+    const blockers=[...(result.blockers||[])];
+
+    if(!c.confirmed){
+      blockers.push(
+        c.country==='CH'
+          ? 'Suisse · canton / profil jours fériés non confirmé par la Direction.'
+          : 'France · zone des jours fériés non confirmée par la Direction.'
+      );
+    }
+    return {
+      country:c.country,
+      complete:blockers.length===0,
+      blockers:[...new Set(blockers)],
+      count:result.days.length,
+      days:result.days,
+      summary:result.summary
+    };
+  };
+
+  function saveHolidaySettings(){
+    const s=settings();
+    const country=String(s.planningLegalCountry||'CH').toUpperCase()==='FR'?'FR':'CH';
+
+    const canton=String(document.getElementById('rh-v208-canton')?.value||'').toUpperCase();
+    const localProfile=String(document.getElementById('rh-v208-local-profile')?.value||'');
+    const locality=String(document.getElementById('rh-v208-locality')?.value||'').trim().slice(0,120);
+    const frZone=String(document.getElementById('rh-v208-fr-zone')?.value||'');
+    const frGoodFriday=document.getElementById('rh-v208-fr-good-friday')?.checked===true;
+    const addDates=normalizeDateList(document.getElementById('rh-v208-add-dates')?.value||'');
+    const removeDates=normalizeDateList(document.getElementById('rh-v208-remove-dates')?.value||'');
+
+    if(country==='CH'){
+      if(!CANTON_NAMES[canton]){
+        alert('Sélectionnez le canton suisse de l’établissement.');
+        return false;
+      }
+      if(LOCAL_PROFILES[canton]&&!localProfile){
+        alert('Ce canton comporte des différences locales. Sélectionnez le profil communal / district.');
+        return false;
+      }
+    }else if(!frZone){
+      alert('Sélectionnez la zone France applicable à l’établissement.');
+      return false;
+    }
+
+    const next=saveRhSettings({
+      ...s,
+      planningHolidayCanton:canton,
+      planningHolidayLocalProfile:country==='CH'?localProfile:'',
+      planningHolidayLocality:country==='CH'?locality:'',
+      planningFranceHolidayZone:country==='FR'?frZone:'',
+      planningFranceGoodFridayApplicable:country==='FR'&&frZone==='ALSACE_MOSELLE'&&frGoodFriday,
+      planningHolidayAddDates:addDates,
+      planningHolidayRemoveDates:removeDates,
+      planningHolidayJurisdictionConfirmed:true,
+      planningHolidaySourceVersion:SOURCE_VERSION,
+      planningHolidayUpdatedAt:new Date().toISOString()
+    });
+
+    // Symbiose paie : le canton est une donnée unique.
+    if(country==='CH'){
+      const p=payroll();
+      const nextP={...p,country:'CH',currency:'CHF',canton};
+      localStorage.setItem('ichef_payroll_settings_v2',JSON.stringify(nextP));
+      const ps=document.getElementById('ps-canton');
+      if(ps) ps.value=canton;
+    }
+
+    try{
+      recordRhChange?.({
+        type:'HOLIDAY_JURISDICTION_SETTINGS',
+        source:'DIRECTION_RH',
+        by:typeof window.rhAuditActorV94==='function'?window.rhAuditActorV94():'Direction / RH',
+        country,
+        canton:country==='CH'?canton:'',
+        localProfile:country==='CH'?localProfile:'',
+        franceZone:country==='FR'?frZone:'',
+        message:'Référentiel territorial des jours fériés confirmé'
+      });
+    }catch(_){}
+
+    refreshAll();
+    try{showToast?.('Jours fériés · juridiction enregistrée et connectée');}catch(_){}
+    return next;
+  }
+
+  /* ---------------------------------------------------------
+     6. INTERFACE
+     --------------------------------------------------------- */
+  function cantonOptions(selected=''){
+    return [
+      '<option value="">— Sélectionner le canton —</option>',
+      ...CANTONS.map(([code,name])=>
+        `<option value="${code}" ${code===selected?'selected':''}>${code} · ${name}</option>`
+      )
+    ].join('');
+  }
+
+  function frOptions(selected=''){
+    return FR_ZONES.map(([value,label])=>
+      `<option value="${value}" ${value===selected?'selected':''}>${label}</option>`
+    ).join('');
+  }
+
+  function ensureLegalUi(){
+    const anchor=document.querySelector('.v185-auto-country-row');
+    if(!anchor || document.getElementById('rh-v208-holiday-jurisdiction')) return;
+
+    const box=document.createElement('div');
+    box.id='rh-v208-holiday-jurisdiction';
+    box.className='rh-v208-full';
+    box.innerHTML=`
+      <div class="rh-v208-head">
+        <div>
+          <strong>JOURS FÉRIÉS · JURIDICTION TERRITORIALE</strong>
+          <small>Le pays est automatique. La région/canton reste une donnée Direction obligatoire pour éviter d’appliquer un calendrier erroné.</small>
+        </div>
+        <span id="rh-v208-zone-badge">DÉTECTION…</span>
+      </div>
+
+      <div id="rh-v208-ch-fields" class="rh-v208-grid">
+        <div class="input-group">
+          <label>Canton suisse · obligatoire</label>
+          <select id="rh-v208-canton" class="input-full"></select>
+        </div>
+        <div class="input-group" id="rh-v208-local-profile-group" hidden>
+          <label>Profil local / commune · obligatoire</label>
+          <select id="rh-v208-local-profile" class="input-full"></select>
+        </div>
+        <div class="input-group rh-v208-full">
+          <label>Commune / district · information de preuve</label>
+          <input id="rh-v208-locality" class="input-full" placeholder="Ex. Lausanne, Genève, Le Landeron, district de Bremgarten…">
+        </div>
+      </div>
+
+      <div id="rh-v208-fr-fields" class="rh-v208-grid" hidden>
+        <div class="input-group rh-v208-full">
+          <label>Zone France · obligatoire</label>
+          <select id="rh-v208-fr-zone" class="input-full"></select>
+        </div>
+        <label id="rh-v208-good-friday-row" class="rh-v208-check rh-v208-full" hidden>
+          <input id="rh-v208-fr-good-friday" type="checkbox">
+          <span><b>Vendredi saint applicable</b><br>À cocher uniquement pour une commune d’Alsace-Moselle dans laquelle le Vendredi saint est légalement férié.</span>
+        </label>
+      </div>
+
+      <details style="margin-top:9px">
+        <summary style="cursor:pointer;font-size:.58rem;font-weight:900">AJUSTEMENTS LOCAUX OFFICIELS · AVANCÉ</summary>
+        <div class="rh-v208-grid" style="margin-top:8px">
+          <div class="input-group">
+            <label>Ajouter des dates officielles</label>
+            <input id="rh-v208-add-dates" class="input-full" placeholder="2026-09-10, 2026-12-31">
+          </div>
+          <div class="input-group">
+            <label>Retirer des dates du référentiel</label>
+            <input id="rh-v208-remove-dates" class="input-full" placeholder="YYYY-MM-DD">
+          </div>
+        </div>
+        <small class="rh-v208-source">Utiliser uniquement avec un fondement officiel local. Ces corrections sont tracées dans les réglages RH.</small>
+      </details>
+
+      <div id="rh-v208-summary"></div>
+
+      <div class="rh-v208-actions">
+        <span class="rh-v208-source">Sources : SECO · art. 20a LTr · état tableau 12.12.2024 · L-GAV art. 18 · France Code du travail L3133-1.</span>
+        <div style="display:flex;gap:6px">
+          <button type="button" id="rh-v208-preview-btn">VOIR LE CALENDRIER</button>
+          <button type="button" class="primary" id="rh-v208-save-btn">ENREGISTRER & CONNECTER</button>
+        </div>
+      </div>
+      <div id="rh-v208-calendar-preview"></div>
+    `;
+
+    anchor.insertAdjacentElement('afterend',box);
+
+    box.querySelector('#rh-v208-canton')?.addEventListener('change',()=>{
+      refreshLocalProfile();
+      refreshSummary();
+    });
+    box.querySelector('#rh-v208-local-profile')?.addEventListener('change',refreshSummary);
+    box.querySelector('#rh-v208-fr-zone')?.addEventListener('change',()=>{
+      refreshFranceGoodFriday();
+      refreshSummary();
+    });
+    box.querySelector('#rh-v208-fr-good-friday')?.addEventListener('change',refreshSummary);
+    box.querySelector('#rh-v208-preview-btn')?.addEventListener('click',()=>{
+      const preview=document.getElementById('rh-v208-calendar-preview');
+      preview?.classList.toggle('show');
+      renderPreview();
+    });
+    box.querySelector('#rh-v208-save-btn')?.addEventListener('click',saveHolidaySettings);
+
+    hydrateHolidayUi();
+  }
+
+  function refreshLocalProfile(){
+    const canton=String(document.getElementById('rh-v208-canton')?.value||'').toUpperCase();
+    const group=document.getElementById('rh-v208-local-profile-group');
+    const select=document.getElementById('rh-v208-local-profile');
+    const profiles=LOCAL_PROFILES[canton];
+
+    if(!group||!select) return;
+    group.hidden=!profiles;
+
+    if(profiles){
+      const current=select.value;
+      select.innerHTML=profiles.map(([v,l])=>`<option value="${v}">${l}</option>`).join('');
+      if(profiles.some(x=>x[0]===current)) select.value=current;
+    }else{
+      select.innerHTML='<option value="">Non requis pour ce canton</option>';
+      select.value='';
+    }
+  }
+
+  function refreshFranceGoodFriday(){
+    const zone=String(document.getElementById('rh-v208-fr-zone')?.value||'');
+    const row=document.getElementById('rh-v208-good-friday-row');
+    if(row) row.hidden=zone!=='ALSACE_MOSELLE';
+  }
+
+  function hydrateHolidayUi(){
+    const c=config();
+    const s=settings();
+    const country=String(s.planningLegalCountry||c.country||'CH').toUpperCase()==='FR'?'FR':'CH';
+
+    const ch=document.getElementById('rh-v208-ch-fields');
+    const fr=document.getElementById('rh-v208-fr-fields');
+    if(ch) ch.hidden=country!=='CH';
+    if(fr) fr.hidden=country!=='FR';
+
+    const canton=document.getElementById('rh-v208-canton');
+    if(canton){
+      canton.innerHTML=cantonOptions(c.chCanton);
+      canton.value=CANTON_NAMES[c.chCanton]?c.chCanton:'';
+    }
+
+    const frZone=document.getElementById('rh-v208-fr-zone');
+    if(frZone){
+      frZone.innerHTML=frOptions(c.frZone);
+      frZone.value=FR_ZONES.some(x=>x[0]===c.frZone)?c.frZone:'';
+    }
+
+    refreshLocalProfile();
+    const local=document.getElementById('rh-v208-local-profile');
+    if(local && [...local.options].some(o=>o.value===c.chLocalProfile)){
+      local.value=c.chLocalProfile;
+    }
+
+    const locality=document.getElementById('rh-v208-locality');
+    if(locality) locality.value=c.chLocality||'';
+
+    const gf=document.getElementById('rh-v208-fr-good-friday');
+    if(gf) gf.checked=c.frGoodFriday===true;
+
+    const add=document.getElementById('rh-v208-add-dates');
+    if(add) add.value=c.addDates.join(', ');
+    const rem=document.getElementById('rh-v208-remove-dates');
+    if(rem) rem.value=c.removeDates.join(', ');
+
+    refreshFranceGoodFriday();
+    refreshSummary();
+  }
+
+  function yearFromPlanning(){
+    const y=Number(String(document.getElementById('month-selector')?.value||'').slice(0,4));
+    return y||new Date().getFullYear();
+  }
+
+  function configFromUiForPreview(){
+    const base=config();
+    const country=String(settings().planningLegalCountry||base.country||'CH').toUpperCase()==='FR'?'FR':'CH';
+    return {
+      ...base,
+      country,
+      chCanton:String(document.getElementById('rh-v208-canton')?.value||base.chCanton||'').toUpperCase(),
+      chLocalProfile:String(document.getElementById('rh-v208-local-profile')?.value||base.chLocalProfile||''),
+      chLocality:String(document.getElementById('rh-v208-locality')?.value||base.chLocality||'').trim(),
+      frZone:String(document.getElementById('rh-v208-fr-zone')?.value||base.frZone||''),
+      frGoodFriday:document.getElementById('rh-v208-fr-good-friday')?.checked===true,
+      addDates:normalizeDateList(document.getElementById('rh-v208-add-dates')?.value||base.addDates),
+      removeDates:normalizeDateList(document.getElementById('rh-v208-remove-dates')?.value||base.removeDates)
+    };
+  }
+
+  function previewResult(){
+    const y=yearFromPlanning();
+    const c=configFromUiForPreview();
+    let result=c.country==='FR'?franceCalendar(y,c):chCalendar(y,c);
+    const remove=new Set(c.removeDates||[]);
+    let days=(result.days||[]).filter(d=>!remove.has(d.date));
+    const set=new Set(days.map(d=>d.date));
+    (c.addDates||[]).forEach(date=>{
+      if(date.startsWith(`${y}-`)&&!set.has(date)){
+        days.push({
+          name:'Jour férié local ajouté',
+          date,
+          fraction:1,
+          classification:'Ajustement local officiel',
+          manual:true
+        });
+      }
+    });
+    days.sort((a,b)=>a.date.localeCompare(b.date));
+    return {...result,days,count:days.length};
+  }
+
+  function refreshSummary(){
+    const s=settings();
+    const country=String(s.planningLegalCountry||'CH').toUpperCase()==='FR'?'FR':'CH';
+    const c=configFromUiForPreview();
+    const result=previewResult();
+    const summary=document.getElementById('rh-v208-summary');
+    const badge=document.getElementById('rh-v208-zone-badge');
+
+    if(badge){
+      badge.textContent=country==='CH'
+        ? `SUISSE · CHF${c.chCanton?` · ${c.chCanton}`:''}`
+        : `ZONE EURO · € · FRANCE`;
+    }
+
+    if(!summary) return;
+
+    const missing=result.blockers?.length>0;
+    summary.className=missing?'block':(config().confirmed?'ok':'warn');
+
+    if(missing){
+      summary.innerHTML=`
+        <strong>CONFIGURATION OBLIGATOIRE AVANT PUBLICATION</strong>
+        <span>${result.blockers.join(' ')}</span>`;
+    }else{
+      const rights=country==='CH'
+        ? 'CCNT : 6 jours fériés payés/an (0,5/mois) · droit distinct du calendrier cantonal.'
+        : 'France : le calendrier légal est distinct de la décision de chômage/travail des jours fériés et des règles conventionnelles HCR.';
+      summary.innerHTML=`
+        <strong>${result.summary} · année ${yearFromPlanning()}</strong>
+        <span>${rights}${config().confirmed?' · Juridiction confirmée.':' · Cliquez ENREGISTRER & CONNECTER pour confirmer.'}</span>`;
+    }
+
+    renderPublicationState();
+  }
+
+  function renderPreview(){
+    const box=document.getElementById('rh-v208-calendar-preview');
+    if(!box) return;
+    const result=previewResult();
+    if(result.blockers?.length){
+      box.innerHTML=`<div class="rh-v208-source">${result.blockers.join('<br>')}</div>`;
+      return;
+    }
+    box.innerHTML=result.days.map(day=>{
+      const date=new Date(`${day.date}T12:00:00`);
+      const label=date.toLocaleDateString('fr-FR',{weekday:'short',day:'2-digit',month:'2-digit',year:'numeric'});
+      return `
+        <div class="rh-v208-day">
+          <b>${label}</b>
+          <span>${day.name}<small>${day.classification?` · ${day.classification}`:''}</small></span>
+          <em>${day.fraction===.5?'½ JOUR':'FÉRIÉ'}</em>
+        </div>`;
+    }).join('');
+  }
+
+  function renderPublicationState(){
+    const publish=document.querySelector('.rh-panel-actions .publish, button.publish[onclick*="publishRhPlanningToStaff"]');
+    if(!publish) return;
+    let badge=document.getElementById('rh-v208-publication-state');
+    if(!badge){
+      badge=document.createElement('span');
+      badge.id='rh-v208-publication-state';
+      publish.insertAdjacentElement('afterend',badge);
+    }
+    const audit=window.iChefHolidayAuditV208?.(yearFromPlanning());
+    const ok=audit?.complete===true;
+    badge.className=ok?'ok':'';
+    badge.textContent=ok?'FÉRIÉS · OK':'FÉRIÉS · À CONFIGURER';
+    badge.title=ok
+      ? `${audit.count} dates dans le calendrier territorial`
+      : (audit?.blockers||[]).join(' ');
+  }
+
+  /* ---------------------------------------------------------
+     7. PLANNING
+     --------------------------------------------------------- */
+  function applyHolidayHeaders(){
+    const month=String(document.getElementById('month-selector')?.value||'');
+    if(!/^\d{4}-\d{2}$/.test(month)) return;
+
+    const year=Number(month.slice(0,4));
+    const audit=window.iChefHolidayAuditV208?.(year);
+    const byDate=new Map((audit?.days||[]).map(day=>[day.date,day]));
+
+    document.querySelectorAll('#global-thead th[data-rh-day]').forEach(th=>{
+      th.classList.remove('rh-v208-holiday-head','rh-v208-half');
+      th.querySelector('.rh-v208-holiday-badge')?.remove();
+
+      const day=Number(th.dataset.rhDay||0);
+      if(!day) return;
+      const date=`${month}-${pad(day)}`;
+      const holiday=byDate.get(date);
+      if(!holiday) return;
+
+      th.classList.add('rh-v208-holiday-head');
+      if(holiday.fraction===.5) th.classList.add('rh-v208-half');
+      const badge=document.createElement('span');
+      badge.className='rh-v208-holiday-badge';
+      badge.textContent=holiday.name;
+      th.appendChild(badge);
+      th.title=`${holiday.name} · ${holiday.classification||'Jour férié'}`;
+    });
+  }
+
+  /* ---------------------------------------------------------
+     8. PAIE / CANTON
+     --------------------------------------------------------- */
+  function ensurePayrollCantonSelect(){
+    const old=document.getElementById('ps-canton');
+    if(!old) return null;
+
+    if(old.tagName==='SELECT'){
+      const value=String(old.value||payroll().canton||config().chCanton||'').toUpperCase();
+      old.innerHTML=cantonOptions(value);
+      if(CANTON_NAMES[value]) old.value=value;
+      return old;
+    }
+
+    const select=document.createElement('select');
+    select.id='ps-canton';
+    select.className=old.className||'input-full';
+    select.innerHTML=cantonOptions(String(payroll().canton||config().chCanton||'').toUpperCase());
+    select.setAttribute('aria-label','Canton suisse');
+    old.replaceWith(select);
+    return select;
+  }
+
+  function syncFromPayrollCanton(canton){
+    const code=String(canton||'').toUpperCase();
+    if(!CANTON_NAMES[code]) return;
+
+    const s=settings();
+    if(
+      String(s.planningLegalCountry||'CH').toUpperCase()==='CH' &&
+      String(s.planningHolidayCanton||'').toUpperCase()!==code
+    ){
+      saveRhSettings({
+        ...s,
+        planningHolidayCanton:code,
+        planningHolidayLocalProfile:
+          String(s.planningHolidayCanton||'').toUpperCase()===code
+            ? s.planningHolidayLocalProfile
+            : '',
+        planningHolidayJurisdictionConfirmed:false,
+        planningHolidaySourceVersion:SOURCE_VERSION,
+        planningHolidayUpdatedAt:new Date().toISOString()
+      });
+    }
+  }
+
+  const previousOpenPayroll=window.openPayrollSettings;
+  if(typeof previousOpenPayroll==='function'){
+    window.openPayrollSettings=function(...args){
+      ensurePayrollCantonSelect();
+      const result=previousOpenPayroll.apply(this,args);
+      requestAnimationFrame(()=>{
+        const select=ensurePayrollCantonSelect();
+        const c=config();
+        if(select && CANTON_NAMES[c.chCanton]) select.value=c.chCanton;
+      });
+      return result;
+    };
+  }
+
+  const previousSavePayroll=window.savePayrollSettingsFromModal;
+  if(typeof previousSavePayroll==='function'){
+    window.savePayrollSettingsFromModal=function(...args){
+      const canton=String(document.getElementById('ps-canton')?.value||'').toUpperCase();
+      const result=previousSavePayroll.apply(this,args);
+      if(canton) syncFromPayrollCanton(canton);
+      refreshAll();
+      return result;
+    };
+  }
+
+  /* ---------------------------------------------------------
+     9. FICHE SALARIÉ · DROIT ≠ CALENDRIER
+     --------------------------------------------------------- */
+  function refreshStaffHolidayRights(){
+    const s=settings();
+    const country=String(s.planningLegalCountry||'CH').toUpperCase()==='FR'?'FR':'CH';
+    const result=calendarResult(yearFromPlanning());
+
+    if(country==='CH'){
+      const title=document.getElementById('staff-right-holiday-title');
+      const rule=document.getElementById('staff-right-holiday-rule');
+      if(title) title.textContent='CCNT · 6 j fériés payés/an';
+      if(rule) rule.textContent='0,5 j/mois · indépendant du calendrier cantonal';
+    }else{
+      const title=document.getElementById('staff-right-holiday-title');
+      const rule=document.getElementById('staff-right-holiday-rule');
+      if(title) title.textContent=`France · ${result.days.length||11} fêtes légales calendrier`;
+      if(rule) rule.textContent='Calendrier légal ≠ automatiquement jour chômé';
+    }
+
+    const container=document.getElementById('staff-right-holiday-rule')?.parentElement?.parentElement;
+    if(container && !container.querySelector('.rh-v208-rights-note')){
+      const note=document.createElement('div');
+      note.className='rh-v208-rights-note';
+      note.textContent=country==='CH'
+        ? 'CCNT art. 18 : 6 jours fériés payés/an, indépendants des jours fériés cantonaux officiels.'
+        : 'France : 11 fêtes légales au cas général ; adaptations territoriales selon la zone sélectionnée.';
+      container.appendChild(note);
+    }
+  }
+
+  const previousOpenStaff=window.openStaffModal;
+  if(typeof previousOpenStaff==='function'){
+    window.openStaffModal=function(...args){
+      const result=previousOpenStaff.apply(this,args);
+      setTimeout(refreshStaffHolidayRights,0);
+      return result;
+    };
+  }
+
+  /* ---------------------------------------------------------
+     10. DEVISE / ZONE
+     --------------------------------------------------------- */
+  function normIso(value){
+    const raw=String(value||'').trim().toUpperCase();
+    if(/^[A-Z]{2}$/.test(raw)) return raw;
+    return NAME_TO_ISO[raw]||'';
+  }
+
+  function detectRawEstablishmentIso(){
+    const candidates=[];
+    try{
+      const live=window.ICHEF_LIVE_STATE||{};
+      [
+        live.establishment?.country,
+        live.company?.country,
+        live.tenant?.country,
+        live.client?.country,
+        live.business?.country,
+        live.settings?.country,
+        live.profile?.country
+      ].forEach(v=>candidates.push(v));
+    }catch(_){}
+
+    [
+      'ichef_establishment_country',
+      'ichef_client_country',
+      'ichef_company_country',
+      'ichef_business_country',
+      'ichef_country',
+      'establishment_country',
+      'client_country'
+    ].forEach(key=>{
+      try{candidates.push(localStorage.getItem(key));}catch(_){}
+    });
+
+    for(const value of candidates){
+      const iso=normIso(value);
+      if(iso) return iso;
+    }
+
+    const legal=String(settings().planningLegalCountry||'').toUpperCase();
+    return legal==='FR'||legal==='CH'?legal:'';
+  }
+
+  function syncCurrencyZone(){
+    const iso=detectRawEstablishmentIso();
+    const s=settings();
+
+    let expectedCurrency='';
+    let label='';
+    if(iso==='CH'){
+      expectedCurrency='CHF';
+      label='AUTO · SUISSE · CHF';
+    }else if(EURO_AREA_2026.has(iso)){
+      expectedCurrency='EUR';
+      label=iso==='FR'
+        ? 'AUTO · ZONE EURO · € · FRANCE'
+        : `AUTO · ZONE EURO · € · ${iso} · PACK JURIDIQUE PAYS NON ACTIVÉ`;
+    }
+
+    if(expectedCurrency && String(s.currency||'').toUpperCase()!==expectedCurrency){
+      saveRhSettings({...s,currency:expectedCurrency});
+    }
+
+    const currency=document.getElementById('rh-setting-currency');
+    if(currency && expectedCurrency) currency.value=expectedCurrency;
+
+    const badge=document.getElementById('v185-country-auto-badge');
+    if(badge && label) badge.textContent=label;
+
+    return {iso,currency:expectedCurrency,legalSupported:iso==='CH'||iso==='FR'};
+  }
+
+  window.iChefCurrencyJurisdictionV208=syncCurrencyZone;
+
+  /* ---------------------------------------------------------
+     11. PUBLICATION BLOQUÉE SI TERRITOIRE NON CONFIRMÉ
+     --------------------------------------------------------- */
+  const previousPublish=window.publishRhPlanningToStaff;
+  if(typeof previousPublish==='function'){
+    window.publishRhPlanningToStaff=function(...args){
+      const currencyZone=syncCurrencyZone();
+      if(currencyZone.iso && EURO_AREA_2026.has(currencyZone.iso) && currencyZone.iso!=='FR'){
+        alert(
+          `Établissement détecté en zone euro (${currencyZone.iso}). La devise € est correcte, mais le pack juridique des jours fériés de ce pays n’est pas activé dans cette version. Publication bloquée pour éviter d’appliquer le droit français par défaut.`
+        );
+        return false;
+      }
+
+      const audit=window.iChefHolidayAuditV208?.(yearFromPlanning());
+      if(!audit?.complete){
+        alert(
+          `Jours fériés : juridiction territoriale incomplète.\n\n${(audit?.blockers||['Configuration requise']).join('\n')}\n\nOuvrez Réglages IA RH → Droit du travail et sélectionnez la zone/canton.`
+        );
+        try{openRhPlanningSettingsV103?.();}catch(_){}
+        setTimeout(()=>document.getElementById('rh-v208-holiday-jurisdiction')?.scrollIntoView({behavior:'smooth',block:'center'}),120);
+        return false;
+      }
+      return previousPublish.apply(this,args);
+    };
+  }
+
+  /* ---------------------------------------------------------
+     12. RAFRAÎCHISSEMENT
+     --------------------------------------------------------- */
+  function refreshAll(){
+    ensureLegalUi();
+    ensurePayrollCantonSelect();
+    hydrateHolidayUi();
+    syncCurrencyZone();
+    applyHolidayHeaders();
+    renderPublicationState();
+    refreshStaffHolidayRights();
+    if(document.getElementById('rh-v208-calendar-preview')?.classList.contains('show')){
+      renderPreview();
+    }
+
+    window.dispatchEvent(new CustomEvent('ichef:holiday-jurisdiction-updated',{
+      detail:{
+        version:VERSION,
+        config:config(),
+        year:yearFromPlanning(),
+        count:calendarResult(yearFromPlanning()).days.length,
+        at:new Date().toISOString()
+      }
+    }));
+  }
+
+  document.getElementById('month-selector')?.addEventListener('change',()=>{
+    requestAnimationFrame(()=>{
+      applyHolidayHeaders();
+      refreshSummary();
+      renderPreview();
+    });
+  },true);
+
+  window.addEventListener('ichef:planning-categories-updated',()=>setTimeout(applyHolidayHeaders,0));
+  window.addEventListener('ichef:updateState',()=>setTimeout(syncCurrencyZone,80));
+  window.addEventListener('ichef:connected',()=>setTimeout(syncCurrencyZone,80));
+
+  // Le tableau est reconstruit régulièrement : observer uniquement son THEAD.
+  const head=document.getElementById('global-thead');
+  if(head){
+    let frame=0;
+    new MutationObserver(()=>{
+      if(frame) return;
+      frame=requestAnimationFrame(()=>{
+        frame=0;
+        applyHolidayHeaders();
+      });
+    }).observe(head,{childList:true,subtree:true});
+  }
+
+  // Si la paie avait déjà un canton, le proposer au RH sans le confirmer silencieusement.
+  function bootstrapCanton(){
+    const s=settings();
+    const p=payroll();
+    const payrollCanton=String(p.canton||'').toUpperCase();
+    if(
+      String(s.planningLegalCountry||'CH').toUpperCase()==='CH' &&
+      !String(s.planningHolidayCanton||'').trim() &&
+      CANTON_NAMES[payrollCanton]
+    ){
+      saveRhSettings({
+        ...s,
+        planningHolidayCanton:payrollCanton,
+        planningHolidayJurisdictionConfirmed:false,
+        planningHolidaySourceVersion:SOURCE_VERSION
+      });
+    }
+  }
+
+  function boot(){
+    bootstrapCanton();
+    ensureLegalUi();
+    ensurePayrollCantonSelect();
+    refreshAll();
+  }
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',boot,{once:true});
+  }else{
+    boot();
+  }
+  setTimeout(boot,180);
+
+  window.__ICHEF_RH_BUILD__=VERSION;
+  console.info('[iCHEF RH V208] jours fériés FR/CH · canton/zone obligatoire · devise et paie synchronisées');
+})();
+
+
+
+
+;
+/* RH V264 - preserved script #142 */
+
+window.__ICHEF_RH_BUILD__='RH-V208-HOLIDAY-SYMBIOSIS';
+
+
+
+;
+/* RH V264 - preserved script #143 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V209_CATEGORY_FIX__) return;
+  window.__ICHEF_RH_V209_CATEGORY_FIX__=true;
+
+  let snapshot=null;
+  let dirty=false;
+  let previewStyle=null;
+  let previewFrame=0;
+
+  const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+
+  function darken(hex,amount=.28){
+    const h=/^#[0-9a-f]{6}$/i.test(String(hex||''))?String(hex).slice(1):'eeeeee';
+    const n=parseInt(h,16);
+    const r=Math.max(0,Math.round(((n>>16)&255)*(1-amount)));
+    const g=Math.max(0,Math.round(((n>>8)&255)*(1-amount)));
+    const b=Math.max(0,Math.round((n&255)*(1-amount)));
+    return '#'+[r,g,b].map(x=>x.toString(16).padStart(2,'0')).join('');
+  }
+
+  function ensureStateBadge(){
+    const actions=document.querySelector('.rh-v202-category-actions-left');
+    if(!actions) return null;
+
+    let badge=document.getElementById('rh-v209-category-state');
+    if(!badge){
+      badge=document.createElement('span');
+      badge.id='rh-v209-category-state';
+      badge.textContent='Aucun changement';
+      actions.appendChild(badge);
+    }
+    return badge;
+  }
+
+  function setState(type,message){
+    const badge=ensureStateBadge();
+    if(!badge) return;
+    badge.className=String(type||'');
+    badge.textContent=String(message||'');
+  }
+
+  function getSavedCatalog(){
+    try{
+      return JSON.parse(JSON.stringify(
+        window.iChefPlanningCategoryCatalogV202?.() || []
+      ));
+    }catch(_){
+      return [];
+    }
+  }
+
+  function collectPreviewCatalog(){
+    const rows=[...document.querySelectorAll('#rh-v202-category-list .rh-v202-category-row')];
+    return rows.map((row,index)=>{
+      const current=window.iChefPlanningCategoryByIdV202?.(row.dataset.id)||{};
+      const builtin=row.dataset.builtin==='1';
+      const color=String(row.querySelector('.rh-v202-color')?.value||current.color||'#eeeeee');
+      return {
+        ...current,
+        id:String(row.dataset.id||current.id||`cat_${index}`),
+        label:String(row.querySelector('.rh-v202-label')?.value||current.label||'Catégorie').trim(),
+        short:String(row.querySelector('.rh-v202-short')?.value||current.short||'CAT').trim(),
+        color:/^#[0-9a-f]{6}$/i.test(color)?color:'#eeeeee',
+        meaning:String(row.querySelector('.rh-v202-meaning')?.value||current.meaning||'').trim(),
+        legalType:String(row.querySelector('.rh-v202-legal')?.value||current.legalType||'off'),
+        active:row.querySelector('.rh-v202-enabled')?.checked!==false,
+        builtin,
+        order:index
+      };
+    });
+  }
+
+  function applyPreviewCatalog(catalog){
+    if(!previewStyle){
+      previewStyle=document.createElement('style');
+      previewStyle.id='rh-v209-category-preview-css';
+      document.head.appendChild(previewStyle);
+    }
+
+    previewStyle.textContent=catalog.map(c=>{
+      const id=CSS.escape(String(c.id||''));
+      const bg=/^#[0-9a-f]{6}$/i.test(String(c.color||''))?c.color:'#eeeeee';
+      return `
+        [data-rh-category="${id}"],
+        [data-category-id="${id}"]{
+          background-color:${bg}!important;
+          border-color:${darken(bg)}!important;
+          color:#111!important;
+        }`;
+    }).join('\n');
+
+    // Appliquer aussi directement aux cases déjà rendues.
+    document.querySelectorAll('#global-view-container [data-rh-category]').forEach(el=>{
+      const c=catalog.find(x=>String(x.id)===String(el.dataset.rhCategory||''));
+      if(!c) return;
+      el.style.setProperty('background-color',c.color,'important');
+      el.style.setProperty('border-color',darken(c.color),'important');
+    });
+
+    // Légende
+    document.querySelectorAll('#rh-v201-legend [data-rh-category]').forEach(el=>{
+      const c=catalog.find(x=>String(x.id)===String(el.dataset.rhCategory||''));
+      if(!c) return;
+      el.style.setProperty('background-color',c.color,'important');
+      el.style.setProperty('border-color',darken(c.color),'important');
+    });
+  }
+
+  function schedulePreview(){
+    if(previewFrame) return;
+    previewFrame=requestAnimationFrame(()=>{
+      previewFrame=0;
+      applyPreviewCatalog(collectPreviewCatalog());
+      setState('preview','Aperçu en direct · fermeture = enregistrement');
+    });
+  }
+
+  function markDirty(row){
+    dirty=true;
+    row?.classList.add('rh-v209-dirty');
+    setState('dirty','Modifications non encore enregistrées');
+    schedulePreview();
+  }
+
+  function clearPreview(){
+    previewStyle?.remove();
+    previewStyle=null;
+    document.getElementById('rh-v209-category-preview-css')?.remove();
+  }
+
+  function restoreSavedView(){
+    clearPreview();
+    try{
+      const catalog=getSavedCatalog();
+      // Redonner la couleur réellement enregistrée.
+      document.querySelectorAll('#global-view-container [data-rh-category]').forEach(el=>{
+        const c=catalog.find(x=>String(x.id)===String(el.dataset.rhCategory||''));
+        if(!c) return;
+        el.style.setProperty('background-color',c.color,'important');
+        el.style.setProperty('border-color',darken(c.color),'important');
+      });
+    }catch(_){}
+  }
+
+  function clickSaveButton(){
+    const btn=document.getElementById('rh-v202-save-categories');
+    if(!btn) return false;
+    btn.click();
+    return true;
+  }
+
+  window.iChefCategoryManagerOpenedV209=function(){
+    snapshot=getSavedCatalog();
+    dirty=false;
+    clearPreview();
+    document.body.classList.add('rh-v209-category-open');
+    document.querySelectorAll('.rh-v202-category-row').forEach(r=>r.classList.remove('rh-v209-dirty'));
+    setState('saved','Couleurs enregistrées · aperçu en direct');
+  };
+
+  window.iChefCategoryManagerSavedV209=function(){
+    snapshot=getSavedCatalog();
+    dirty=false;
+    clearPreview();
+    document.body.classList.remove('rh-v209-category-open');
+    setState('saved','✓ Enregistré');
+  };
+
+  window.iChefCategoryManagerCloseV209=function(mode='save'){
+    const modal=document.getElementById('rh-v202-category-modal');
+    if(!modal) return;
+
+    if(mode==='cancel'){
+      dirty=false;
+      clearPreview();
+      document.body.classList.remove('rh-v209-category-open');
+      modal.classList.remove('show');
+      restoreSavedView();
+      try{showToast?.('Modifications annulées');}catch(_){}
+      return;
+    }
+
+    if(!dirty){
+      document.body.classList.remove('rh-v209-category-open');
+      modal.classList.remove('show');
+      return;
+    }
+
+    // Le X = enregistrer + fermer.
+    // Le vrai saveManager V202 continue à faire toutes les validations,
+    // la synchro RH et la mise à jour du planning.
+    clickSaveButton();
+  };
+
+  // Toutes les modifications sont prévisualisées immédiatement.
+  document.addEventListener('input',event=>{
+    if(!event.target?.closest?.('#rh-v202-category-modal')) return;
+    if(!event.target.matches(
+      '.rh-v202-color,.rh-v202-label,.rh-v202-short,.rh-v202-meaning'
+    )) return;
+
+    markDirty(event.target.closest('.rh-v202-category-row'));
+  },true);
+
+  document.addEventListener('change',event=>{
+    if(!event.target?.closest?.('#rh-v202-category-modal')) return;
+    if(!event.target.matches(
+      '.rh-v202-color,.rh-v202-label,.rh-v202-short,.rh-v202-meaning,.rh-v202-enabled,.rh-v202-legal'
+    )) return;
+
+    markDirty(event.target.closest('.rh-v202-category-row'));
+  },true);
+
+  // MASQUER / SUPPRIMER / AJOUTER / RESET doivent aussi marquer dirty.
+  document.addEventListener('click',event=>{
+    if(!event.target?.closest?.('#rh-v202-category-modal')) return;
+    if(
+      event.target.closest('.rh-v202-remove') ||
+      event.target.closest('#rh-v202-add-category') ||
+      event.target.closest('#rh-v202-reset-categories')
+    ){
+      setTimeout(()=>{
+        dirty=true;
+        setState('dirty','Modifications non encore enregistrées');
+        schedulePreview();
+      },0);
+    }
+  },true);
+
+  // Echap = annuler, car c'est le comportement le moins risqué.
+  document.addEventListener('keydown',event=>{
+    if(event.key!=='Escape') return;
+    const modal=document.getElementById('rh-v202-category-modal');
+    if(!modal?.classList.contains('show')) return;
+
+    event.preventDefault();
+    window.iChefCategoryManagerCloseV209('cancel');
+  },true);
+
+  // Si le modal est fermé autrement, ne jamais laisser le planning
+  // bloqué par pointer-events:none.
+  const modal=document.getElementById('rh-v202-category-modal');
+  if(modal){
+    new MutationObserver(()=>{
+      if(!modal.classList.contains('show')){
+        document.body.classList.remove('rh-v209-category-open');
+      }
+    }).observe(modal,{attributes:true,attributeFilter:['class']});
+  }
+
+  window.__ICHEF_RH_BUILD__='RH-V209-CATEGORY-BUGFIX';
+  console.info('[iCHEF RH V209] couleurs catégorie : aperçu live + X=enregistrer + annuler réel');
+})();
+
+
+
+;
+/* RH V264 - preserved script #144 */
+
+window.__ICHEF_RH_BUILD__='RH-V209-CATEGORY-BUGFIX';
+
+
+
+;
+/* RH V264 - preserved script #145 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V214_FULLSCREEN_FIX__) return;
+  window.__ICHEF_RH_V214_FULLSCREEN_FIX__=true;
+
+  function globalView(){
+    return document.getElementById('global-view-container');
+  }
+
+  function normalizeBars(){
+    const global=globalView();
+    if(!global) return;
+
+    const bar=document.getElementById('rh-v200-fastbar');
+    const legend=document.getElementById('rh-v201-legend');
+    const tools=document.getElementById('rh-v200-tools-deck');
+
+    // Les barres restent dans le même conteneur que la matrice.
+    // C'est le point qui évite la perte de boutons constatée dans la capture.
+    if(bar && bar.parentElement!==global){
+      global.insertBefore(bar,global.firstChild);
+    }
+
+    if(legend && legend.parentElement!==global){
+      if(bar?.nextSibling) global.insertBefore(legend,bar.nextSibling);
+      else global.appendChild(legend);
+    }
+
+    if(tools && tools.parentElement!==global){
+      if(legend?.nextSibling) global.insertBefore(tools,legend.nextSibling);
+      else global.appendChild(tools);
+    }
+
+    // Ordre garanti : barre 1 > catégories > outils > table.
+    if(bar && global.firstElementChild!==bar){
+      global.insertBefore(bar,global.firstChild);
+    }
+    if(legend && bar && bar.nextElementSibling!==legend){
+      bar.insertAdjacentElement('afterend',legend);
+    }
+    if(tools && legend && legend.nextElementSibling!==tools){
+      legend.insertAdjacentElement('afterend',tools);
+    }
+
+    // Nettoyage de l'ancien chrome V210/211/212.
+    document.getElementById('rh-v210-focus-chrome')?.remove();
+    document.documentElement.classList.remove('rh-v212-focus');
+    document.documentElement.style.removeProperty('--rh-v211-chrome-height');
+    document.documentElement.style.removeProperty('--rh-v212-chrome-height');
+
+    // Les barres doivent toujours démarrer à gauche.
+    if(bar) bar.scrollLeft=0;
+    if(legend) legend.scrollLeft=0;
+  }
+
+  function refresh(){
+    normalizeBars();
+    requestAnimationFrame(normalizeBars);
+  }
+
+  // V207 reste le moteur officiel d'entrée/sortie plein écran.
+  window.addEventListener('ichef:planning-focus-change',refresh);
+
+  // Si le planning est reconstruit dynamiquement, on garde la structure saine.
+  const month=document.getElementById('month-view-container');
+  if(month){
+    let frame=0;
+    new MutationObserver(()=>{
+      if(frame) return;
+      frame=requestAnimationFrame(()=>{
+        frame=0;
+        normalizeBars();
+      });
+    }).observe(month,{childList:true,subtree:false});
+  }
+
+  // Compatibilité : si une autre partie du code appelle encore les anciennes API.
+  window.ICHEF_RH_V210_FOCUS_FIX={
+    mount:normalizeBars,
+    restore:normalizeBars,
+    sync:normalizeBars,
+    isMounted:()=>false
+  };
+  window.ICHEF_RH_V211_FULLWIDTH={
+    refresh:normalizeBars,
+    height:()=>0
+  };
+  window.ICHEF_RH_V212_BARS={
+    refresh:normalizeBars,
+    resetScroll(){
+      const bar=document.getElementById('rh-v200-fastbar');
+      const legend=document.getElementById('rh-v201-legend');
+      if(bar) bar.scrollLeft=0;
+      if(legend) legend.scrollLeft=0;
+    },
+    isFocus:()=>document.body.classList.contains('rh-v207-focus-open')
+  };
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',refresh,{once:true});
+  }else{
+    refresh();
+  }
+  setTimeout(refresh,180);
+
+  window.__ICHEF_RH_BUILD__='RH-V214-FULLSCREEN-INPLACE-BARS';
+  console.info('[iCHEF RH V214] plein écran corrigé : mêmes barres que la vue normale');
+})();
+
+
+
+;
+/* RH V264 - preserved script #146 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V215_COLORS_WEEKEND__) return;
+  window.__ICHEF_RH_V215_COLORS_WEEKEND__=true;
+
+  let frame=0;
+
+  function validHex(value){
+    return /^#[0-9a-f]{6}$/i.test(String(value||''));
+  }
+
+  function darken(hex,amount=.34){
+    const safe=validHex(hex)?hex:'#eeeeee';
+    const n=parseInt(safe.slice(1),16);
+    const r=Math.max(0,Math.round(((n>>16)&255)*(1-amount)));
+    const g=Math.max(0,Math.round(((n>>8)&255)*(1-amount)));
+    const b=Math.max(0,Math.round((n&255)*(1-amount)));
+    return '#'+[r,g,b].map(v=>v.toString(16).padStart(2,'0')).join('');
+  }
+
+  function catalog(){
+    try{
+      return window.iChefPlanningCategoryCatalogV202?.() || [];
+    }catch(_){
+      return [];
+    }
+  }
+
+  function categoryById(id){
+    try{
+      return window.iChefPlanningCategoryByIdV202?.(String(id||'')) || null;
+    }catch(_){
+      return null;
+    }
+  }
+
+  function paintCategoryButtons(){
+    const cats=catalog();
+
+    document.querySelectorAll(
+      '#rh-v201-legend [data-rh-category], #rh-v200-quick-drawer [data-category-id]'
+    ).forEach(btn=>{
+      const id=String(btn.dataset.rhCategory||btn.dataset.categoryId||'');
+      const cat=cats.find(c=>String(c.id)===id) || categoryById(id);
+      if(!cat) return;
+
+      const color=validHex(cat.color)?String(cat.color):'#eeeeee';
+      const border=darken(color);
+
+      btn.style.setProperty('--rh-v215-category-color',color);
+      btn.style.setProperty('--rh-v215-category-border',border);
+      btn.style.setProperty('background-color',color,'important');
+      btn.style.setProperty('border-color',border,'important');
+      btn.style.setProperty('color','#111','important');
+    });
+
+    const select=document.getElementById('rh-v200-toolbar-status');
+    if(select){
+      const cat=categoryById(select.value);
+      if(cat){
+        const color=validHex(cat.color)?String(cat.color):'#eeeeee';
+        const border=darken(color);
+        select.style.setProperty('--rh-v215-toolbar-color',color);
+        select.style.setProperty('--rh-v215-toolbar-border',border);
+        select.style.setProperty('background-color',color,'important');
+        select.style.setProperty('border-color',border,'important');
+      }
+    }
+  }
+
+  function monthValue(){
+    return String(document.getElementById('month-selector')?.value||'');
+  }
+
+  function dateForDay(day){
+    const month=monthValue();
+    if(!/^\d{4}-\d{2}$/.test(month)) return null;
+    const [y,m]=month.split('-').map(Number);
+    const d=Number(day);
+    if(!d) return null;
+
+    const date=new Date(y,m-1,d,12,0,0,0);
+    if(
+      date.getFullYear()!==y ||
+      date.getMonth()!==m-1 ||
+      date.getDate()!==d
+    ) return null;
+    return date;
+  }
+
+  function paintWeekendColumns(){
+    // V216 : mise à jour idempotente pour éviter le flash visuel
+    // retrait/remise des couleurs à chaque frame.
+    document.querySelectorAll('#global-thead th[data-rh-day]').forEach(th=>{
+      const date=dateForDay(th.dataset.rhDay);
+      const dow=date?.getDay();
+      th.classList.toggle('rh-v215-saturday',dow===6);
+      th.classList.toggle('rh-v215-sunday',dow===0);
+    });
+
+    document.querySelectorAll(
+      '#global-view-container .rh-status-quick-btn[data-rh-day]'
+    ).forEach(btn=>{
+      const date=dateForDay(btn.dataset.rhDay);
+      const td=btn.closest('td');
+      if(!td) return;
+      const dow=date?.getDay();
+
+      td.classList.toggle('rh-v215-saturday',dow===6);
+      td.classList.toggle('rh-v215-sunday',dow===0);
+      btn.classList.toggle('rh-v215-saturday-button',dow===6);
+      btn.classList.toggle('rh-v215-sunday-button',dow===0);
+    });
+  }
+
+  function refresh(){
+    if(frame) return;
+    frame=requestAnimationFrame(()=>{
+      frame=0;
+      paintCategoryButtons();
+      paintWeekendColumns();
+    });
+  }
+
+  document.addEventListener('change',event=>{
+    if(event.target?.id==='rh-v200-toolbar-status'){
+      refresh();
+    }
+    if(event.target?.id==='month-selector'){
+      refresh();
+    }
+  },true);
+
+  window.addEventListener('ichef:planning-categories-updated',refresh);
+  window.addEventListener('ichef:planning-focus-change',refresh);
+  window.addEventListener('ichef:holiday-jurisdiction-updated',refresh);
+
+  // Rerenders du planning / légende.
+  const global=document.getElementById('global-view-container');
+  if(global){
+    new MutationObserver(mutations=>{
+      const relevant=mutations.some(m =>
+        [...(m.addedNodes||[])].some(n =>
+          n?.nodeType===1 && (
+            n.matches?.('thead,tbody,tr,.rh-status-quick-btn,#rh-v201-legend') ||
+            n.querySelector?.('.rh-status-quick-btn,#rh-v201-legend')
+          )
+        )
+      );
+      if(relevant) refresh();
+    }).observe(global,{
+      childList:true,
+      subtree:true
+    });
+  }
+
+  // API légère si une autre partie du système veut forcer la mise à jour.
+  window.ICHEF_RH_V215_COLORS={
+    refresh,
+    paintCategories:paintCategoryButtons,
+    paintWeekend:paintWeekendColumns
+  };
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',refresh,{once:true});
+  }else{
+    refresh();
+  }
+  setTimeout(refresh,180);
+
+  window.__ICHEF_RH_BUILD__='RH-V215-COLORS-WEEKEND';
+  console.info('[iCHEF RH V215] couleurs catégories sur touches + samedi/dimanche distincts');
+})();
+
+
+
+;
+/* RH V264 - preserved script #147 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V216_MONTH_MOUSE__) return;
+  window.__ICHEF_RH_V216_MONTH_MOUSE__=true;
+
+  let monthPlaceholder=null;
+  let mouseGesture=null;
+  let suppressMouseClickUntil=0;
+  let refreshFrame=0;
+
+  function monthNav(){
+    return document.getElementById('rh-v216-main-month-nav');
+  }
+
+  function ensureMonthSlot(count){
+    if(!count) return;
+    let slot=document.getElementById('rh-v216-month-slot');
+
+    if(!slot){
+      count.textContent='';
+      slot=document.createElement('div');
+      slot.id='rh-v216-month-slot';
+      count.appendChild(slot);
+
+      const badge=document.createElement('span');
+      badge.id='rh-v216-selection-badge';
+      count.appendChild(badge);
+    }
+
+    const nav=monthNav();
+    if(nav && nav.parentElement!==slot){
+      if(!monthPlaceholder){
+        monthPlaceholder=document.createComment('V216:month-nav-home');
+        nav.parentNode?.insertBefore(monthPlaceholder,nav);
+      }
+      slot.appendChild(nav);
+    }
+  }
+
+  window.iChefV216UpdateMonthSlot=function(count,visibleCount=0){
+    ensureMonthSlot(count);
+
+    const badge=document.getElementById('rh-v216-selection-badge');
+    if(badge){
+      const n=Number(visibleCount||0);
+      badge.textContent=n ? `${n} sélectionnée${n>1?'s':''}` : '';
+      badge.classList.toggle('show',n>0);
+    }
+  };
+
+  function installMonth(){
+    const count=document.querySelector('#rh-v200-fastbar .rh-v200-count');
+    if(!count) return;
+    const n=Number(window.ICHEF_FAST_PLANNING_V205?.getSelectionCount?.()||0);
+    window.iChefV216UpdateMonthSlot(count,n);
+  }
+
+  function multiActive(){
+    return document.querySelector('#rh-v200-fastbar .rh-v200-select-mode')
+      ?.classList.contains('active')===true;
+  }
+
+  function btnAt(x,y){
+    return document.elementFromPoint(x,y)
+      ?.closest?.('#global-view-container .rh-status-quick-btn') || null;
+  }
+
+  function selectMouseCell(btn){
+    if(!btn || btn.classList.contains('rh-v200-selected')) return;
+    const staff=String(btn.dataset.rhStaff||'');
+    const day=Number(btn.dataset.rhDay||0);
+    if(!staff || !day) return;
+
+    window.openRhQuickStatus?.(
+      {
+        preventDefault(){},
+        stopPropagation(){},
+        ctrlKey:false,
+        metaKey:false,
+        shiftKey:false
+      },
+      staff,
+      day
+    );
+  }
+
+  function mouseDown(event){
+    if(event.pointerType!=='mouse' || event.button!==0 || !multiActive()) return;
+    const btn=event.target?.closest?.('#global-view-container .rh-status-quick-btn');
+    if(!btn) return;
+
+    event.preventDefault();
+    mouseGesture={
+      pointerId:event.pointerId,
+      visited:new Set()
+    };
+
+    document.getElementById('global-view-container')
+      ?.classList.add('rh-v216-mouse-drag');
+
+    const key=`${btn.dataset.rhStaff}|${btn.dataset.rhDay}`;
+    mouseGesture.visited.add(key);
+    selectMouseCell(btn);
+    suppressMouseClickUntil=Date.now()+700;
+  }
+
+  function mouseMove(event){
+    if(!mouseGesture || event.pointerId!==mouseGesture.pointerId) return;
+    event.preventDefault();
+
+    const btn=btnAt(event.clientX,event.clientY);
+    if(!btn) return;
+
+    const key=`${btn.dataset.rhStaff}|${btn.dataset.rhDay}`;
+    if(mouseGesture.visited.has(key)) return;
+
+    mouseGesture.visited.add(key);
+    selectMouseCell(btn);
+  }
+
+  function mouseEnd(event){
+    if(!mouseGesture || event.pointerId!==mouseGesture.pointerId) return;
+    suppressMouseClickUntil=Date.now()+500;
+    mouseGesture=null;
+    document.getElementById('global-view-container')
+      ?.classList.remove('rh-v216-mouse-drag');
+  }
+
+  document.addEventListener('pointerdown',mouseDown,{capture:true,passive:false});
+  document.addEventListener('pointermove',mouseMove,{capture:true,passive:false});
+  document.addEventListener('pointerup',mouseEnd,true);
+  document.addEventListener('pointercancel',mouseEnd,true);
+
+  document.addEventListener('click',event=>{
+    if(Date.now()>=suppressMouseClickUntil) return;
+    const btn=event.target?.closest?.('#global-view-container .rh-status-quick-btn');
+    if(!btn) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    event.stopPropagation();
+  },true);
+
+  function schedule(){
+    if(refreshFrame) return;
+    refreshFrame=requestAnimationFrame(()=>{
+      refreshFrame=0;
+      installMonth();
+    });
+  }
+
+  const global=document.getElementById('global-view-container');
+  if(global){
+    new MutationObserver(mutations=>{
+      const useful=mutations.some(m=>
+        [...(m.addedNodes||[])].some(n=>
+          n?.nodeType===1 &&
+          (n.id==='rh-v200-fastbar' || n.querySelector?.('#rh-v200-fastbar'))
+        )
+      );
+      if(useful) schedule();
+    }).observe(global,{childList:true,subtree:true});
+  }
+
+  window.addEventListener('ichef:planning-focus-change',schedule);
+  document.getElementById('month-selector')?.addEventListener('change',schedule,true);
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',schedule,{once:true});
+  }else{
+    schedule();
+  }
+  setTimeout(schedule,120);
+
+  window.ICHEF_RH_V216={
+    refresh:schedule,
+    installMonth,
+    mouseDrag:true,
+    touchDrag:true
+  };
+
+  window.__ICHEF_RH_BUILD__='RH-V216-MONTH-MENU-MOUSE-STABLE';
+  console.info('[iCHEF RH V216] mois dans barre planning · menu aligné · doigt+souris · anti-clignotement');
+})();
+
+
+
+;
+/* RH V264 - preserved script #148 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V217_PLANNING_SYMBIOSIS__) return;
+  window.__ICHEF_RH_V217_PLANNING_SYMBIOSIS__=true;
+
+  const STORAGE_KEY='empire_hr_timesheets';
+  const tenant=String(
+    window.tenantID_JS ||
+    (typeof tenantID_JS!=='undefined'?tenantID_JS:'') ||
+    localStorage.getItem('ichef_tenant_id') ||
+    'MASTER_STATE'
+  );
+  const CHANNEL_NAME=`ichef-rh-planning-${tenant}`;
+
+  let bc=null;
+  let frame=0;
+  let pendingSources=new Set();
+  let pendingSnapshot=null;
+  let lastRenderedSignature='';
+  let pendingForceRender=false;
+  let lastBroadcastSignature='';
+  let lastBroadcastAt=0;
+
+  function clone(value){
+    try{return JSON.parse(JSON.stringify(value||{}));}
+    catch(_){return value||{}}
+  }
+
+  function signature(value){
+    try{
+      if(typeof rhPlanningSignature==='function') return rhPlanningSignature(value);
+    }catch(_){}
+    try{return JSON.stringify(value&&typeof value==='object'?value:{});}
+    catch(_){return ''}
+  }
+
+  function currentMaster(){
+    try{
+      if(typeof getTs==='function') return getTs()||{};
+    }catch(_){}
+    try{return JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}')||{};}
+    catch(_){return{}}
+  }
+
+  function sourceIsAiApply(source){
+    return /ASSISTANCE_PLANNING/i.test(String(source||''));
+  }
+
+  function markAssistantDraftStale(source,snapshot){
+    if(sourceIsAiApply(source)) return;
+
+    try{
+      if(typeof planningAssistantDraft==='undefined' || !planningAssistantDraft) return;
+
+      const currentSig=signature(snapshot||currentMaster());
+      const draftSig=String(window.__ICHEF_PLANNING_DRAFT_MASTER_SIG_V217||'');
+
+      if(draftSig && currentSig && draftSig!==currentSig){
+        window.__ICHEF_PLANNING_DRAFT_STALE_V217=true;
+
+        const apply=document.getElementById('assistant-apply-btn');
+        if(apply){
+          apply.disabled=true;
+          apply.title='Planning officiel modifié · régénérez la proposition avant application';
+        }
+
+        const warnings=document.getElementById('ia-planning-draft-warnings');
+        if(warnings){
+          const message='PLANNING OFFICIEL MODIFIÉ · Régénérez la proposition avant de l’appliquer.';
+          if(!String(warnings.innerText||'').includes(message)){
+            warnings.innerText=message;
+            warnings.style.display='';
+          }
+        }
+      }
+    }catch(error){
+      console.warn('[iCHEF RH V217] contrôle brouillon IA',error);
+    }
+  }
+
+  function syncPlanningMonthControls(){
+    const main=String(document.getElementById('month-selector')?.value||'');
+    if(!/^\d{4}-\d{2}$/.test(main)) return;
+
+    // Les écrans liés au planning doivent ouvrir le même mois.
+    // On ne touche pas aux champs si l'utilisateur est en train de les éditer.
+    ['real-timesheet-month'].forEach(id=>{
+      const el=document.getElementById(id);
+      if(!el || document.activeElement===el) return;
+      if(el.value!==main) el.value=main;
+    });
+  }
+
+  function refreshEveryPlanningSurface(source='master'){
+    syncPlanningMonthControls();
+
+    try{
+      if(typeof window.refreshPlanningScreensAfterSync==='function'){
+        window.refreshPlanningScreensAfterSync(source);
+      }else{
+        if(typeof loadMonthData==='function') loadMonthData();
+        if(typeof window.renderRhCockpit==='function') window.renderRhCockpit();
+        if(typeof loadPublicPlanning==='function') loadPublicPlanning();
+      }
+    }catch(error){
+      console.warn('[iCHEF RH V217] refresh principal',error);
+    }
+
+    // Les modules visibles ont déjà été rafraîchis par
+    // refreshPlanningScreensAfterSync(). On évite de les rendre une 2e fois.
+
+    // Les badges/couleurs/feriés/fullscreen lisent eux aussi le même master.
+    try{window.ICHEF_RH_V215_COLORS?.refresh?.();}catch(_){}
+    try{window.ICHEF_RH_V216?.refresh?.();}catch(_){}
+    try{window.ICHEF_RH_V212_BARS?.refresh?.();}catch(_){}
+    try{applyHolidayHeaders?.();}catch(_){}
+
+    window.dispatchEvent(new CustomEvent('ichef:planning-symbiosis',{
+      detail:{
+        source:String(source||'master'),
+        month:String(document.getElementById('month-selector')?.value||''),
+        signature:lastRenderedSignature,
+        at:new Date().toISOString()
+      }
+    }));
+  }
+
+  function flush(){
+    frame=0;
+    const snapshot=pendingSnapshot||currentMaster();
+    pendingSnapshot=null;
+
+    const sig=signature(snapshot);
+    const source=[...pendingSources].join(' + ')||'master';
+    pendingSources.clear();
+
+    markAssistantDraftStale(source,snapshot);
+
+    // Même snapshot reçu plusieurs fois (local + ack + socket) :
+    // un seul rendu suffit, sauf ouverture explicite d'une vue.
+    const force=pendingForceRender;
+    pendingForceRender=false;
+    if(sig && sig===lastRenderedSignature && !force){
+      syncPlanningMonthControls();
+      return;
+    }
+
+    lastRenderedSignature=sig;
+    refreshEveryPlanningSurface(source);
+  }
+
+  function schedule(source='master',snapshot=null,forceRender=false){
+    pendingSources.add(String(source||'master'));
+    if(snapshot&&typeof snapshot==='object') pendingSnapshot=clone(snapshot);
+    if(forceRender) pendingForceRender=true;
+
+    if(frame) return;
+    frame=requestAnimationFrame(flush);
+  }
+
+  function broadcast(source,snapshot){
+    if(!bc) return;
+    const sig=signature(snapshot);
+    const now=Date.now();
+
+    if(sig && sig===lastBroadcastSignature && now-lastBroadcastAt<500) return;
+    lastBroadcastSignature=sig;
+    lastBroadcastAt=now;
+
+    try{
+      bc.postMessage({
+        type:'PLANNING_MASTER_CHANGED',
+        tenant,
+        source:String(source||'master'),
+        signature:sig,
+        at:now
+      });
+    }catch(_){}
+  }
+
+  window.iChefPlanningMasterSyncV217=function(payload={}){
+    const source=String(payload.source||'master');
+    const snapshot=payload.snapshot&&typeof payload.snapshot==='object'
+      ? payload.snapshot
+      : currentMaster();
+
+    schedule(
+      source,
+      snapshot,
+      payload.renderOnly===true || payload.forceRender===true
+    );
+
+    if(payload.renderOnly!==true){
+      broadcast(source,snapshot);
+    }
+
+    return true;
+  };
+
+  // Autres onglets RH du même navigateur.
+  try{
+    if('BroadcastChannel' in window){
+      bc=new BroadcastChannel(CHANNEL_NAME);
+      bc.addEventListener('message',event=>{
+        const data=event.data||{};
+        if(data.type!=='PLANNING_MASTER_CHANGED'||String(data.tenant)!==tenant) return;
+        schedule(`broadcast:${String(data.source||'other-tab')}`,currentMaster());
+      });
+    }
+  }catch(_){bc=null;}
+
+  // Fallback standard multi-onglets.
+  window.addEventListener('storage',event=>{
+    if(event.key!==STORAGE_KEY) return;
+    schedule('storage-event',currentMaster());
+  });
+
+  // Synchroniser le mois des écrans planning à chaque navigation de mois.
+  document.getElementById('month-selector')?.addEventListener('change',()=>{
+    syncPlanningMonthControls();
+    schedule('month-change',currentMaster());
+  },true);
+
+  // Le mois d'une feuille d'heures peut aussi piloter le planning si
+  // l'utilisateur le choisit explicitement dans cet écran.
+  document.getElementById('real-timesheet-month')?.addEventListener('change',event=>{
+    const month=String(event.target?.value||'');
+    const main=document.getElementById('month-selector');
+    if(main && /^\d{4}-\d{2}$/.test(month) && main.value!==month){
+      main.value=month;
+      try{handleMonthChange?.();}catch(_){schedule('timesheet-month-change',currentMaster());}
+    }
+  },true);
+
+  // Quand un nouveau brouillon IA vient d'être généré, il devient la
+  // proposition basée sur le master courant.
+  window.addEventListener('ichef-multimonth-update',()=>{
+    try{
+      if(typeof planningAssistantDraft!=='undefined' && planningAssistantDraft){
+        window.__ICHEF_PLANNING_DRAFT_STALE_V217=false;
+        window.__ICHEF_PLANNING_DRAFT_MASTER_SIG_V217=signature(currentMaster());
+      }
+    }catch(_){}
+  });
+
+  window.addEventListener('online',()=>schedule('online',currentMaster()));
+  window.addEventListener('focus',()=>schedule('focus',currentMaster()));
+
+  // Premier alignement sans écrire sur le serveur.
+  lastRenderedSignature='';
+  schedule('boot',currentMaster());
+
+  window.ICHEF_PLANNING_SYMBIOSIS_V217={
+    refresh:()=>schedule('manual-refresh',currentMaster()),
+    master:()=>clone(currentMaster()),
+    signature:()=>signature(currentMaster()),
+    channel:CHANNEL_NAME,
+    version:'RH-V217-PLANNING-SYMBIOSIS'
+  };
+
+  window.__ICHEF_RH_BUILD__='RH-V217-PLANNING-SYMBIOSIS';
+  console.info('[iCHEF RH V217] TIMESHEETS_MASTER = source unique de tous les plannings');
+})();
+
+
+
+;
+/* RH V264 - preserved script #149 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V218_STABILITY__) return;
+  window.__ICHEF_RH_V218_STABILITY__=true;
+
+  const diagnostics={
+    version:'RH-V218-GLOBAL-STABILITY',
+    errors:[],
+    rejections:[],
+    startedAt:new Date().toISOString()
+  };
+
+  function pushLimited(list,value){
+    list.push(value);
+    if(list.length>20) list.shift();
+  }
+
+  window.addEventListener('error',event=>{
+    pushLimited(diagnostics.errors,{
+      message:String(event.message||'Erreur JavaScript'),
+      source:String(event.filename||''),
+      line:Number(event.lineno||0),
+      at:new Date().toISOString()
+    });
+  });
+
+  window.addEventListener('unhandledrejection',event=>{
+    pushLimited(diagnostics.rejections,{
+      message:String(event.reason?.message||event.reason||'Promesse rejetée'),
+      at:new Date().toISOString()
+    });
+  });
+
+  // Une seule API de rafraîchissement support pour éviter de forcer
+  // manuellement plusieurs moteurs différents.
+  window.iChefRefreshAllVisibleV218=function(source='manual'){
+    try{
+      window.iChefPlanningMasterSyncV217?.({
+        source:`V218:${source}`,
+        snapshot:window.ICHEF_PLANNING_SYMBIOSIS_V217?.master?.(),
+        renderOnly:true,
+        forceRender:true
+      });
+    }catch(_){}
+
+    try{window.ICHEF_RH_V215_COLORS?.refresh?.();}catch(_){}
+    try{window.ICHEF_RH_V216?.refresh?.();}catch(_){}
+
+    window.dispatchEvent(new CustomEvent('ichef:ui-stable-refresh',{
+      detail:{source:String(source||'manual'),at:new Date().toISOString()}
+    }));
+  };
+
+  // Nettoyer une éventuelle classe de transaction restée après une
+  // interruption navigateur.
+  window.addEventListener('pageshow',()=>{
+    document.documentElement.classList.remove('rh-v218-view-switching');
+  });
+
+  window.ICHEF_RH_DIAGNOSTICS_V218=diagnostics;
+  window.__ICHEF_RH_BUILD__='RH-V218-GLOBAL-STABILITY';
+  console.info('[iCHEF RH V218] stabilité globale · observers filtrés · vues coalescées · modales sans flash');
+})();
+
+
+
+;
+/* RH V264 - preserved script #150 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V222_PIN_ACTIVE__) return;
+  window.__ICHEF_RH_V222_PIN_ACTIVE__=true;
+
+  const state={
+    version:'RH-V222-PIN-ACTIF-SECURISE',
+    lastAction:'',
+    lastError:'',
+    lastOkAt:'',
+    endpoint:''
+  };
+
+  function cleanPin(value){
+    return String(value||'').replace(/\D+/g,'').slice(0,12);
+  }
+
+  function validPin(value){
+    return /^\d{4,12}$/.test(cleanPin(value));
+  }
+
+  function setGatewayStatusSafe(message,type='ok'){
+    try{
+      if(typeof window.setOfficialGatewayStatus==='function'){
+        window.setOfficialGatewayStatus(message,type);
+        return;
+      }
+    }catch(_){}
+    const text=document.getElementById('official-gateway-status-text');
+    if(text) text.textContent=String(message||'');
+  }
+
+  // Exposer explicitement les fonctions du gateway qui étaient auparavant
+  // seulement des déclarations globales historiques.
+  [
+    'appendOfficialGatewayPin',
+    'deleteOfficialGatewayPin',
+    'clearOfficialGatewayPin',
+    'submitOfficialGatewayPin',
+    'openOfficialAccessCenter',
+    'closeOfficialAccessCenter'
+  ].forEach(name=>{
+    try{
+      if(typeof globalThis[name]==='function') window[name]=globalThis[name];
+    }catch(_){}
+  });
+
+  // Contrôleur délégué : le PIN continue de fonctionner même si un ancien
+  // onclick inline est neutralisé par le navigateur ou par une couche UI.
+  document.addEventListener('click',event=>{
+    const target=event.target?.closest?.('button');
+    if(!target) return;
+
+    // Porte d'entrée officielle
+    if(target.closest('#landing-portal')){
+      if(target.classList.contains('gateway-key')){
+        event.preventDefault();
+        event.stopImmediatePropagation();
+
+        const txt=String(target.textContent||'').trim();
+        if(/^\d$/.test(txt)){
+          window.appendOfficialGatewayPin?.(txt);
+        }else if(/EFFACER/i.test(txt)){
+          window.clearOfficialGatewayPin?.();
+        }else{
+          window.deleteOfficialGatewayPin?.();
+        }
+        return;
+      }
+
+      if(target.id==='official-gateway-submit'){
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        window.submitOfficialGatewayPin?.();
+        return;
+      }
+    }
+
+    // Ancien pad Direction / RH
+    if(target.closest('#pin-modal') && target.classList.contains('pin-btn')){
+      event.preventDefault();
+      event.stopImmediatePropagation();
+
+      const txt=String(target.textContent||'').trim();
+      if(/^\d$/.test(txt)){
+        window.appendPin?.(txt);
+      }else if(/^X$/i.test(txt)){
+        window.cancelPin?.();
+      }else if(/^OK$/i.test(txt)){
+        window.submitPin?.();
+      }
+    }
+  },true);
+
+  // Clavier physique pour le pad Direction secondaire.
+  document.addEventListener('keydown',event=>{
+    const modal=document.getElementById('pin-modal');
+    if(!modal || getComputedStyle(modal).display==='none') return;
+
+    if(/^\d$/.test(event.key)){
+      event.preventDefault();
+      window.appendPin?.(event.key);
+    }else if(event.key==='Backspace'){
+      event.preventDefault();
+      try{
+        currentPin=String(currentPin||'').slice(0,-1);
+        const d=document.getElementById('pin-display');
+        if(d) d.innerText='●'.repeat(currentPin.length);
+      }catch(_){}
+    }else if(event.key==='Enter'){
+      event.preventDefault();
+      window.submitPin?.();
+    }else if(event.key==='Escape'){
+      event.preventDefault();
+      window.cancelPin?.();
+    }
+  },true);
+
+  window.activateStaffPinV222=async function(){
+    const input=document.getElementById('staff-pin');
+    const button=document.getElementById('rh-v222-activate-pin');
+    const pin=cleanPin(input?.value);
+    if(input) input.value=pin;
+
+    if(!validPin(pin)){
+      window.setStaffPinStatusV203?.('error','PIN invalide · 4 à 12 chiffres');
+      input?.focus?.();
+      return false;
+    }
+
+    if(typeof window.saveStaff!=='function' && typeof saveStaff!=='function'){
+      window.setStaffPinStatusV203?.('error','Fonction d’enregistrement indisponible');
+      return false;
+    }
+
+    if(button){
+      button.disabled=true;
+      button.textContent='ACTIVATION…';
+    }
+    window.setStaffPinStatusV203?.('syncing','Enregistrement et activation du PIN…');
+
+    try{
+      const saver=typeof window.saveStaff==='function' ? window.saveStaff : saveStaff;
+      const ok=await saver();
+      if(ok){
+        state.lastOkAt=new Date().toISOString();
+        window.setStaffPinStatusV203?.('ok','✓ PIN actif et reconnu par le serveur');
+        return true;
+      }
+      return false;
+    }catch(error){
+      state.lastError=String(error?.message||error||'Erreur activation PIN');
+      window.setStaffPinStatusV203?.('error',state.lastError);
+      return false;
+    }finally{
+      if(button){
+        button.disabled=false;
+        button.textContent='ACTIVER LE PIN';
+      }
+    }
+  };
+
+  // Test serveur direct avec diagnostic lisible.
+  const previousTest=window.testStaffPinV203;
+  window.testStaffPinV203=async function(){
+    const input=document.getElementById('staff-pin');
+    const btn=document.getElementById('rh-v203-test-pin');
+    const pin=cleanPin(input?.value);
+    if(input) input.value=pin;
+
+    if(!validPin(pin)){
+      window.setStaffPinStatusV203?.('error','PIN invalide · 4 à 12 chiffres');
+      return false;
+    }
+
+    const original=String(document.getElementById('staff-edit-original-pin')?.value||'').trim();
+    let savedStaff=null;
+    try{
+      savedStaff=(typeof getDir==='function'?getDir():[])
+        .find(s=>String(s.pin||'')===String(original||pin))||null;
+    }catch(_){}
+
+    if(!savedStaff || pin!==String(savedStaff.pin||'')){
+      window.setStaffPinStatusV203?.(
+        'warn',
+        'PIN pas encore synchronisé · cliquez ACTIVER LE PIN'
+      );
+      return false;
+    }
+
+    if(btn){
+      btn.disabled=true;
+      btn.textContent='TEST…';
+    }
+    window.setStaffPinStatusV203?.('syncing','Vérification sécurisée avec le serveur…');
+
+    try{
+      const verifier=window.verifyPinWithServer;
+      if(typeof verifier!=='function') throw new Error('Moteur PIN non chargé');
+
+      const auth=await verifier(pin);
+      state.endpoint=String(auth?.endpoint||'');
+      if(auth?.success){
+        state.lastOkAt=new Date().toISOString();
+        const role=String(auth.role||auth.dept||'accès').trim();
+        window.setStaffPinStatusV203?.(
+          'ok',
+          `✓ PIN actif${role?` · ${role}`:''}`
+        );
+        return true;
+      }
+
+      state.lastError=String(auth?.error||'PIN non reconnu');
+      window.setStaffPinStatusV203?.('error',state.lastError);
+      return false;
+    }catch(error){
+      state.lastError=String(error?.message||'Serveur PIN indisponible');
+      window.setStaffPinStatusV203?.('error',state.lastError);
+      return false;
+    }finally{
+      if(btn){
+        btn.disabled=false;
+        btn.textContent='TESTER LE PIN';
+      }
+    }
+  };
+
+  // Input PIN : toujours interactif.
+  document.addEventListener('input',event=>{
+    if(event.target?.id!=='staff-pin') return;
+    const cleaned=cleanPin(event.target.value);
+    if(event.target.value!==cleaned) event.target.value=cleaned;
+
+    const original=String(document.getElementById('staff-edit-original-pin')?.value||'');
+    if(validPin(cleaned)){
+      window.setStaffPinStatusV203?.(
+        cleaned===original ? 'neutral' : 'warn',
+        cleaned===original
+          ? 'PIN enregistré · vous pouvez le tester'
+          : 'PIN modifié · cliquez ACTIVER LE PIN'
+      );
+    }else{
+      window.setStaffPinStatusV203?.('warn','4 chiffres minimum');
+    }
+  },true);
+
+  window.ICHEF_RH_PIN_V222={
+    state,
+    verify:pin=>window.verifyPinWithServer?.(pin),
+    activate:()=>window.activateStaffPinV222(),
+    test:()=>window.testStaffPinV203(),
+    valid:validPin
+  };
+
+  window.__ICHEF_RH_BUILD__='RH-V222-PIN-ACTIF-SECURISE';
+  console.info('[iCHEF RH V222] PIN actif · clavier/tactile · activation serveur · aucun fallback local');
+})();
+
+
+
+;
+/* RH V264 - preserved script #151 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V223_ASSISTANT_MENU_COLORS__) return;
+  window.__ICHEF_RH_V223_ASSISTANT_MENU_COLORS__=true;
+
+  let frame=0;
+  let openWrapped=false;
+
+  function modal(){
+    return document.getElementById('ia-predictions-modal');
+  }
+
+  function content(){
+    return modal()?.querySelector('.modal-content') || null;
+  }
+
+  function ensureNavButton(id, title, subtitle, action){
+    let btn=document.getElementById(id);
+    if(btn) return btn;
+
+    btn=document.createElement('button');
+    btn.id=id;
+    btn.type='button';
+    btn.innerHTML=`
+      <span class="v153-btn-copy">
+        <strong>${title}</strong>
+        <small>${subtitle}</small>
+      </span>
+    `;
+    btn.addEventListener('click',action);
+    return btn;
+  }
+
+  function ensureToolbar(){
+    const m=modal();
+    const c=content();
+    const header=c?.querySelector(':scope > .header') || c?.querySelector('.header');
+    if(!m || !c || !header) return false;
+
+    let host=document.getElementById('v223-assistant-top-stack');
+    if(!host){
+      host=document.createElement('div');
+      host.id='v223-assistant-top-stack';
+      header.insertAdjacentElement('afterend',host);
+    }else if(host.parentElement!==c){
+      header.insertAdjacentElement('afterend',host);
+    }
+
+    const period=document.getElementById('v128-period-actions-row');
+    if(period && period.parentElement!==host){
+      host.appendChild(period);
+    }
+
+    let toolbar=document.getElementById('v153-assistant-toolbar');
+    if(!toolbar){
+      toolbar=document.createElement('div');
+      toolbar.id='v153-assistant-toolbar';
+      toolbar.setAttribute('aria-label','Navigation planning iCHEF');
+    }
+
+    const planning=ensureNavButton(
+      'v153-nav-planning',
+      'PLANNING OFFICIEL',
+      'Planning synchronisé',
+      ()=>window.iChefAssistantShowOfficialV221?.()
+    );
+    planning.classList.add('v153-primary');
+
+    const proposal=ensureNavButton(
+      'v153-nav-proposal',
+      'PLANNING PROPOSÉ',
+      'Proposition iCHEF',
+      ()=>window.iChefAssistantShowProposalV221?.()
+    );
+    proposal.classList.add('v153-proposal');
+
+    const emergency=document.getElementById('v134-emergency-btn');
+    const settings=document.getElementById('v131-planning-tools-btn');
+
+    [planning,proposal,emergency,settings].filter(Boolean).forEach(btn=>{
+      if(btn.parentElement!==toolbar) toolbar.appendChild(btn);
+    });
+
+    if(toolbar.parentElement!==host){
+      host.appendChild(toolbar);
+    }
+
+    // Ordre définitif, sans clone : fonctions existantes conservées.
+    [planning,proposal,emergency,settings].filter(Boolean).forEach(btn=>{
+      toolbar.appendChild(btn);
+    });
+
+    toolbar.hidden=false;
+    toolbar.removeAttribute('aria-hidden');
+
+    m.dataset.v223Toolbar='1';
+    return true;
+  }
+
+  function refresh(){
+    if(frame) return;
+    frame=requestAnimationFrame(()=>{
+      frame=0;
+      ensureToolbar();
+    });
+  }
+
+  function resetModalScroll(){
+    const c=content();
+    if(c) c.scrollTop=0;
+  }
+
+  function wrapOpen(){
+    if(openWrapped || typeof window.openPlanningAssistant!=='function') return;
+    const original=window.openPlanningAssistant;
+    if(original.__v223) {
+      openWrapped=true;
+      return;
+    }
+
+    const wrapped=function(...args){
+      const result=original.apply(this,args);
+      requestAnimationFrame(()=>{
+        ensureToolbar();
+        resetModalScroll();
+      });
+      setTimeout(()=>{
+        ensureToolbar();
+        resetModalScroll();
+      },80);
+      return result;
+    };
+    wrapped.__v223=true;
+    window.openPlanningAssistant=wrapped;
+    openWrapped=true;
+  }
+
+  window.addEventListener('ichef:planning-categories-updated',()=>{
+    try{window.iChefAssistantRefreshColorsV223?.();}catch(_){}
+    refresh();
+  });
+
+  window.addEventListener('ichef:planning-symbiosis',()=>{
+    if(modal()?.classList.contains('show')){
+      try{window.iChefAssistantRefreshColorsV223?.();}catch(_){}
+    }
+  });
+
+  const m=modal();
+  if(m){
+    new MutationObserver(mutations=>{
+      const relevant=mutations.some(x =>
+        [...(x.addedNodes||[])].some(n =>
+          n?.nodeType===1 && (
+            n.id==='v128-period-actions-row' ||
+            n.id==='v153-assistant-toolbar' ||
+            n.id==='v131-planning-tools-btn' ||
+            n.id==='v134-emergency-btn' ||
+            n.querySelector?.('#v128-period-actions-row,#v153-assistant-toolbar,#v131-planning-tools-btn,#v134-emergency-btn')
+          )
+        )
+      );
+      if(relevant) refresh();
+    }).observe(m,{childList:true,subtree:true});
+  }
+
+  function boot(){
+    wrapOpen();
+    refresh();
+    setTimeout(()=>{wrapOpen();refresh();},120);
+    setTimeout(refresh,450);
+  }
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',boot,{once:true});
+  }else{
+    boot();
+  }
+
+  window.ICHEF_RH_V223={
+    repairAssistant:refresh,
+    refreshColors:()=>window.iChefAssistantRefreshColorsV223?.()
+  };
+
+  window.__ICHEF_RH_BUILD__='RH-V223-IA-COLORS-MENU-FIX';
+  console.info('[iCHEF RH V223] assistance visible + mêmes couleurs/libellés que le planning');
+})();
+
+
+
+;
+/* RH V264 - preserved script #152 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V226_TARGET__) return;
+  window.__ICHEF_RH_V226_TARGET__=true;
+
+  const hub=document.getElementById('director-hub');
+  if(!hub) return;
+
+  const oldSidebar=hub.querySelector(':scope > .rh-cockpit-sidebar');
+  const oldMain=hub.querySelector(':scope > .rh-cockpit-main');
+
+  let frame=0;
+  let observer=null;
+
+  const esc=s=>String(s??'')
+    .replaceAll('&','&amp;')
+    .replaceAll('<','&lt;')
+    .replaceAll('>','&gt;')
+    .replaceAll('"','&quot;');
+
+  function q(sel,root=document){return root.querySelector(sel);}
+  function qa(sel,root=document){return [...root.querySelectorAll(sel)];}
+
+  function originalNav(label){
+    if(!oldSidebar) return null;
+    return qa('button',oldSidebar).find(btn=>
+      String(btn.textContent||'').trim().toLowerCase().includes(String(label).toLowerCase())
+    )||null;
+  }
+
+  function clickOriginal(label){
+    const btn=originalNav(label);
+    if(btn){btn.click();return true;}
+    return false;
+  }
+
+  function clickOriginalPlanningAction(selector,text=''){
+    const root=oldMain;
+    if(!root) return false;
+    let btn=selector?q(selector,root):null;
+    if(!btn && text){
+      btn=qa('button',root).find(b=>String(b.textContent||'').toLowerCase().includes(text.toLowerCase()));
+    }
+    if(btn){btn.click();return true;}
+    return false;
+  }
+
+  function makeShell(){
+    if(document.getElementById('rh-v226-shell')) return;
+
+    const shell=document.createElement('div');
+    shell.id='rh-v226-shell';
+    shell.innerHTML=`
+      <aside id="rh-v226-sidebar">
+        <div id="rh-v226-brand">
+          <div class="brand-main">iCHEF <span class="brand-os">OS</span></div>
+          <div class="brand-sub">Ressources Humaines</div>
+        </div>
+
+        <span class="rh-v226-nav-label">PILOTER</span>
+        <button class="rh-v226-nav-btn active" data-v226-nav="dashboard"><span class="ico">⌂</span><span>Tableau de bord</span></button>
+        <button class="rh-v226-nav-btn" data-v226-nav="planning" title="Ouvrir le Planning Premium PWA"><span class="ico">▦</span><span>Planning Premium</span></button>
+        <button class="rh-v226-nav-btn" data-v226-nav="equipe"><span class="ico">♙</span><span>Équipe</span></button>
+
+        <span class="rh-v226-nav-label">TEMPS</span>
+        <button class="rh-v226-nav-btn" data-v226-nav="heures"><span class="ico">◷</span><span>Heures</span></button>
+        <button class="rh-v226-nav-btn" data-v226-nav="demandes"><span class="ico">▤</span><span>Demandes</span><span id="rh-v226-request-badge" class="badge"></span></button>
+        <button class="rh-v226-nav-btn" data-v226-nav="conges"><span class="ico">♢</span><span>Congés & absences</span></button>
+
+        <span class="rh-v226-nav-label">ADMINISTRER</span>
+        <button class="rh-v226-nav-btn" data-v226-nav="contrats"><span class="ico">▣</span><span>Contrats</span></button>
+        <button class="rh-v226-nav-btn" data-v226-nav="documents"><span class="ico">▱</span><span>Documents</span></button>
+        <button class="rh-v226-nav-btn" data-v226-nav="legal"><span class="ico">⚖</span><span>Dossier légal</span></button>
+
+        <span class="rh-v226-nav-label">INTELLIGENCE</span>
+        <button class="rh-v226-nav-btn" data-v226-nav="assistant"><span class="ico">✧</span><span>Assistance planning</span></button>
+        <button class="rh-v226-nav-btn" data-v226-nav="ia"><span class="ico">⚙</span><span>Réglages IA</span></button>
+
+        <span class="rh-v226-nav-label">PARAMÈTRES</span>
+        <button class="rh-v226-nav-btn" data-v226-nav="etablissement"><span class="ico">▥</span><span>Établissement</span></button>
+        <button class="rh-v226-nav-btn" data-v226-nav="couleurs"><span class="ico">◉</span><span>Catégories & couleurs</span></button>
+        <button class="rh-v226-nav-btn" data-v226-nav="utilisateurs"><span class="ico">♙</span><span>Utilisateurs</span></button>
+
+        <div id="rh-v226-side-bottom"><span>◩</span><strong>iCHEF</strong><small>V226</small></div>
+      </aside>
+
+      <main id="rh-v226-main">
+        <header id="rh-v226-topbar">
+          <div id="rh-v226-venue"><strong>iCHEF Établissement</strong><small>Établissement principal</small></div>
+          <label id="rh-v226-search-wrap"><span>⌕</span><input id="rh-v226-search" type="search" placeholder="Rechercher un collaborateur…"></label>
+          <div id="rh-v226-sync"><span class="dot"></span><div><strong>Synchronisé</strong><small id="rh-v226-sync-time">Dernière synchronisation</small></div></div>
+          <div id="rh-v226-direction"><div id="rh-v226-bell">♧<span id="rh-v226-bell-badge" class="badge"></span></div><div id="rh-v226-avatar">D</div><strong>Direction⌄</strong></div>
+        </header>
+
+        <div id="rh-v226-content">
+          <section id="rh-v226-kpis">
+            <article class="rh-v226-kpi staff"><div class="icon">♙</div><div><div id="rh-v226-total" class="value">0</div><div class="label">collaborateurs</div><div id="rh-v226-active-sub" class="sub">0 actifs</div></div></article>
+            <article class="rh-v226-kpi hours"><div class="icon">◷</div><div><div class="value"><span id="rh-v226-planned">0 h</span> <small>/ <span id="rh-v226-target">0 h</span></small></div><div class="label">heures planifiées</div><div class="rh-v226-progress"><i id="rh-v226-progress-bar"></i></div><div id="rh-v226-percent" class="sub">0 %</div></div></article>
+            <article class="rh-v226-kpi requests"><div class="icon">▤</div><div><div id="rh-v226-requests" class="value">0</div><div class="label">demande à traiter</div><div id="rh-v226-request-sub" class="sub">Aucune demande</div></div></article>
+            <article class="rh-v226-kpi alerts"><div class="icon">△</div><div><div id="rh-v226-alerts" class="value">0</div><div class="label">alertes</div><div id="rh-v226-alert-sub" class="sub">Aucune alerte prioritaire</div></div></article>
+          </section>
+
+          <section id="rh-v226-primary">
+            <article class="rh-v226-card">
+              <div id="rh-v226-planning-head">
+                <div id="rh-v226-plan-title">PLANNING DE LA SEMAINE</div>
+                <div id="rh-v226-week">Semaine en cours</div>
+                <div id="rh-v226-tabs">
+                  <button class="rh-v226-tab" data-v226-tab="today">Aujourd’hui</button>
+                  <button class="rh-v226-tab active" data-v226-tab="week">Semaine</button>
+                  <button class="rh-v226-tab" data-v226-tab="month">Mois</button>
+                </div>
+                <div id="rh-v226-plan-actions">
+                  <button class="rh-v226-action" data-v226-action="analyse">▥ Analyser</button>
+                  <button class="rh-v226-action" data-v226-action="holidays">▣ Fériés</button>
+                  <button class="rh-v226-action publish" data-v226-action="publish">➤ PUBLIER AU STAFF</button>
+                </div>
+              </div>
+              <div id="rh-v226-plan-table-wrap"></div>
+              <button id="rh-v226-plan-full">OUVRIR LE PLANNING COMPLET →</button>
+            </article>
+
+            <article class="rh-v226-card">
+              <div id="rh-v226-todo-head"><span>À FAIRE MAINTENANT</span><span id="rh-v226-todo-count" class="rh-v226-count">0</span></div>
+              <div id="rh-v226-todo-list"></div>
+              <button id="rh-v226-todo-all">VOIR TOUTES LES ALERTES →</button>
+            </article>
+          </section>
+
+          <section id="rh-v226-analytics">
+            <article class="rh-v226-card">
+              <div class="rh-v226-analytics-head">ÉQUILIBRE HEURES</div>
+              <div id="rh-v226-balance-body" class="rh-v226-analytics-body">
+                <div id="rh-v226-donut"><div id="rh-v226-donut-text"><strong>0 h</strong><small>planifiées</small></div></div>
+                <div>
+                  <div class="rh-v226-statline"><span>Heures planifiées</span><strong id="rh-v226-stat-planned">0 h</strong></div>
+                  <div class="rh-v226-statline"><span>Heures prévues</span><strong id="rh-v226-stat-target">0 h</strong></div>
+                  <div class="rh-v226-statline"><span>Écart</span><strong id="rh-v226-gap">0 h</strong></div>
+                  <div class="rh-v226-statline"><span>Taux de couverture</span><strong id="rh-v226-rate">0 %</strong></div>
+                </div>
+              </div>
+            </article>
+
+            <article class="rh-v226-card">
+              <div class="rh-v226-analytics-head">COÛT & PRODUCTIVITÉ</div>
+              <div id="rh-v226-productivity" class="rh-v226-analytics-body">
+                <div class="big"><span class="ico">▥</span><div><strong id="rh-v226-prod-rate">0 %</strong><small>couverture<br>des heures</small></div></div>
+                <div>
+                  <div class="rh-v226-statline"><span>Heures planifiées</span><strong id="rh-v226-prod-planned">0 h</strong></div>
+                  <div class="rh-v226-statline"><span>Objectif</span><strong id="rh-v226-prod-target">0 h</strong></div>
+                  <div class="rh-v226-statline"><span>Écart</span><strong id="rh-v226-prod-gap">0 h</strong></div>
+                  <div class="rh-v226-statline"><span>Synchronisation</span><strong>LIVE</strong></div>
+                </div>
+              </div>
+            </article>
+
+            <article id="rh-v226-alerts-card" class="rh-v226-card">
+              <div class="rh-v226-analytics-head"><span>ALERTES LÉGALES & OPÉRATIONNELLES</span><span id="rh-v226-alert-count2" class="rh-v226-count">0</span></div>
+              <div id="rh-v226-alert-list"></div>
+            </article>
+          </section>
+
+          <div id="rh-v226-version">V226 · Dashboard cible · fonctions et sécurité conservées</div>
+        </div>
+      </main>
+    `;
+    hub.appendChild(shell);
+
+    wireActions();
+  }
+
+  function hiddenText(sel,fallback=''){
+    return String(q(sel,oldMain)?.textContent||fallback).trim();
+  }
+
+  function numFromText(value){
+    const m=String(value||'').replace(',','.').match(/-?\d+(?:\.\d+)?/);
+    return m?Number(m[0]):0;
+  }
+
+  function cloneRows(sourceSelector,targetId,limit=6){
+    const source=q(sourceSelector,oldMain);
+    const target=document.getElementById(targetId);
+    if(!target) return [];
+
+    const rows=source?qa('.rh-list-item',source).slice(0,limit):[];
+    const signature=rows.map(r=>String(r.textContent||'').replace(/\s+/g,' ').trim()).join('||');
+
+    if(target.__v236RowsSignature===signature){
+      return rows;
+    }
+    target.__v236RowsSignature=signature;
+    target.innerHTML='';
+
+    if(!rows.length){
+      target.innerHTML='<div class="rh-v226-list-row"><span class="ico">✓</span><div><strong>Rien à traiter</strong><small>Le tableau est à jour.</small></div></div>';
+      return [];
+    }
+
+    rows.forEach((row,index)=>{
+      const strong=q('strong',row)?.textContent?.trim() || q('.rh-list-main',row)?.textContent?.trim() || 'Action à traiter';
+      const small=q('small',row)?.textContent?.trim() || '';
+      const originalBtn=q('button',row);
+
+      const v=document.createElement('div');
+      v.className='rh-v226-list-row';
+      v.innerHTML=`
+        <span class="ico">${index===0?'!':'△'}</span>
+        <div><strong>${esc(strong)}</strong><small>${esc(small)}</small></div>
+        ${originalBtn?'<button type="button">VOIR</button>':''}
+      `;
+      const btn=q('button',v);
+      if(btn) btn.addEventListener('click',()=>originalBtn?.click());
+      target.appendChild(v);
+    });
+    return rows;
+  }
+
+  function syncPlanning(){
+    const oldTable=q('.rh-planning-table',oldMain);
+    const wrap=document.getElementById('rh-v226-plan-table-wrap');
+    if(!wrap) return;
+
+    if(!oldTable){
+      const loading='<div style="padding:40px;text-align:center;color:#6c7782;font-size:10px">Planning en cours de chargement…</div>';
+      if(wrap.innerHTML!==loading) wrap.innerHTML=loading;
+      return;
+    }
+
+    const sourceSignature=oldTable.innerHTML;
+    if(wrap.__v236PlanningSignature===sourceSignature){
+      return;
+    }
+    wrap.__v236PlanningSignature=sourceSignature;
+
+    const clone=oldTable.cloneNode(true);
+    clone.removeAttribute('id');
+    qa('[id]',clone).forEach(el=>el.removeAttribute('id'));
+    wrap.replaceChildren(clone);
+
+    // Le clic visible déclenche exactement le bouton historique correspondant.
+    clone.addEventListener('click',event=>{
+      const btn=event.target.closest?.('[data-rh-edit-staff][data-rh-edit-date]');
+      if(!btn) return;
+      event.preventDefault();
+      const original=q(
+        `[data-rh-edit-staff="${CSS.escape(btn.dataset.rhEditStaff)}"][data-rh-edit-date="${CSS.escape(btn.dataset.rhEditDate)}"]`,
+        oldTable
+      );
+      original?.click();
+    });
+
+    const heads=qa('thead th',clone);
+    const oldCells=qa('tbody tr:first-child [data-rh-edit-date]',clone);
+    oldCells.forEach((cell,i)=>{
+      const date=new Date(`${cell.dataset.rhEditDate}T12:00:00`);
+      const th=heads[i+1];
+      if(!th||Number.isNaN(date.getTime())) return;
+      if(date.getDay()===6) th.classList.add('v226-sat');
+      if(date.getDay()===0) th.classList.add('v226-sun');
+    });
+
+    const weekText=hiddenText('.rh-week-controls strong','Semaine en cours');
+    const week=document.getElementById('rh-v226-week');
+    if(week) week.textContent=weekText;
+  }
+
+  function syncData(){
+    makeShell();
+
+    const total=hiddenText('#stat-total-staff','0');
+    const active=hiddenText('#stat-active-staff','0');
+    const plannedText=hiddenText('#rh-cockpit-planned','0 h');
+    const targetText=hiddenText('#rh-cockpit-target','0 h');
+    const pctText=hiddenText('#rh-cockpit-percent','0 %');
+    const reqText=hiddenText('#stat-pending-req','0');
+
+    const planned=numFromText(plannedText);
+    const target=numFromText(targetText);
+    const pct=Math.max(0,Math.min(100,numFromText(pctText) || (target?planned/target*100:0)));
+    const gap=planned-target;
+
+    const set=(id,val)=>{
+      const el=document.getElementById(id);
+      const next=String(val);
+      if(el && el.textContent!==next) el.textContent=next;
+    };
+    set('rh-v226-total',total);
+    set('rh-v226-active-sub',`${active} actifs`);
+    set('rh-v226-planned',plannedText);
+    set('rh-v226-target',targetText);
+    set('rh-v226-percent',`${Math.round(pct)} %`);
+    set('rh-v226-requests',reqText);
+    set('rh-v226-request-sub',Number(reqText)?`${reqText} décision${Number(reqText)>1?'s':''} à prendre`:'Aucune demande');
+
+    const progress=document.getElementById('rh-v226-progress-bar');
+    if(progress)progress.style.width=`${pct}%`;
+
+    const todoRows=cloneRows('#rh-cockpit-todo','rh-v226-todo-list',5);
+    const alertRows=cloneRows('#rh-cockpit-alerts','rh-v226-alert-list',4);
+    const alertCount=alertRows.length;
+
+    set('rh-v226-todo-count',String(todoRows.length));
+    set('rh-v226-alerts',String(alertCount));
+    set('rh-v226-alert-count2',String(alertCount));
+    set('rh-v226-alert-sub',alertCount?`${alertCount} point${alertCount>1?'s':''} à vérifier`:'Aucune alerte prioritaire');
+
+    const requestBadge=document.getElementById('rh-v226-request-badge');
+    if(requestBadge){
+      requestBadge.textContent=reqText;
+      requestBadge.classList.toggle('show',Number(reqText)>0);
+    }
+    const bellBadge=document.getElementById('rh-v226-bell-badge');
+    if(bellBadge){
+      bellBadge.textContent=String(alertCount);
+      bellBadge.classList.toggle('show',alertCount>0);
+    }
+
+    set('rh-v226-stat-planned',plannedText);
+    set('rh-v226-stat-target',targetText);
+    set('rh-v226-gap',`${gap>=0?'+':''}${gap.toFixed(1)} h`);
+    set('rh-v226-rate',`${Math.round(pct)} %`);
+    set('rh-v226-prod-rate',`${Math.round(pct)} %`);
+    set('rh-v226-prod-planned',plannedText);
+    set('rh-v226-prod-target',targetText);
+    set('rh-v226-prod-gap',`${gap>=0?'+':''}${gap.toFixed(1)} h`);
+
+    const donut=document.getElementById('rh-v226-donut');
+    if(donut)donut.style.setProperty('--pct',`${pct*3.6}deg`);
+    const donutText=q('#rh-v226-donut-text strong');
+    if(donutText)donutText.textContent=plannedText;
+
+    const oldVenue=q('.rh-cockpit-venue',oldMain);
+    const vStrong=q('#rh-v226-venue strong');
+    const vSmall=q('#rh-v226-venue small');
+    if(oldVenue){
+      if(vStrong)vStrong.textContent=q('strong',oldVenue)?.textContent?.trim()||'iCHEF Établissement';
+      if(vSmall)vSmall.textContent=q('small',oldVenue)?.textContent?.trim()||'Établissement principal';
+    }
+
+    const oldOnline=q('.rh-cockpit-online',oldMain);
+    const syncStrong=q('#rh-v226-sync strong');
+    if(syncStrong && oldOnline)syncStrong.textContent=oldOnline.textContent?.trim()||'Synchronisé';
+
+    const footerText=hiddenText('.rh-cockpit-footer','');
+    const syncTime=q('#rh-v226-sync-time');
+    if(syncTime){
+      const m=footerText.match(/Dernière synchronisation\s*:?\s*([^|]+)/i);
+      syncTime.textContent=m?`Dernière sync. ${m[1].trim()}`:'Dernière synchronisation';
+    }
+
+    syncPlanning();
+  }
+
+  function schedule(){
+    if(frame)return;
+    frame=requestAnimationFrame(()=>{
+      frame=0;
+      syncData();
+    });
+  }
+
+  function wireActions(){
+    const byNav={
+      planning:()=>clickOriginal('planning'),
+      equipe:()=>clickOriginal('équipe'),
+      heures:()=>clickOriginal('heures'),
+      demandes:()=>clickOriginal('demandes'),
+      conges:()=>clickOriginal('congés'),
+      contrats:()=>clickOriginal('contrats'),
+      documents:()=>clickOriginal('documents'),
+      assistant:()=>window.openPlanningAssistant?.(),
+      ia:()=>clickOriginal('réglages ia'),
+      legal:()=>window.openRhLegalCommandCenterV194?.(),
+      etablissement:()=>window.openRhPlanningSettingsV103?.(),
+      couleurs:()=>{
+        const visible=document.querySelector('.rh-v202-categories-btn');
+        if(visible){visible.click();return;}
+        clickOriginal('planning');
+        setTimeout(()=>document.querySelector('.rh-v202-categories-btn')?.click(),120);
+      },
+      utilisateurs:()=>{
+        clickOriginal('équipe');
+        setTimeout(()=>window.openStaffModal?.(),160);
+      },
+      dashboard:()=>{}
+    };
+
+    qa('[data-v226-nav]',document.getElementById('rh-v226-shell')).forEach(btn=>{
+      btn.addEventListener('click',()=>byNav[btn.dataset.v226Nav]?.());
+    });
+
+    document.getElementById('rh-v226-plan-full')?.addEventListener('click',()=>clickOriginal('planning'));
+
+    qa('[data-v226-tab]').forEach(btn=>{
+      btn.addEventListener('click',()=>{
+        const map={today:"aujourd",week:"semaine",month:"mois"};
+        clickOriginalPlanningAction(null,map[btn.dataset.v226Tab]);
+      });
+    });
+
+    q('[data-v226-action="analyse"]')?.addEventListener('click',()=>window.openPlanningAssistant?.());
+    q('[data-v226-action="holidays"]')?.addEventListener('click',()=>{
+      if(!clickOriginalPlanningAction(null,'féri')) window.openRhPlanningSettingsV103?.();
+    });
+    q('[data-v226-action="publish"]')?.addEventListener('click',()=>{
+      if(!clickOriginalPlanningAction('.publish')) window.publishRhPlanningToStaff?.();
+    });
+    document.getElementById('rh-v226-todo-all')?.addEventListener('click',()=>clickOriginal('demandes'));
+
+    const input=document.getElementById('rh-v226-search');
+    const oldInput=q('.rh-cockpit-search input',oldMain);
+    input?.addEventListener('input',()=>{
+      if(oldInput){
+        oldInput.value=input.value;
+        oldInput.dispatchEvent(new Event('input',{bubbles:true}));
+      }
+    });
+  }
+
+  makeShell();
+
+  if(oldMain){
+    observer=new MutationObserver(mutations=>{
+      const relevant=mutations.some(m=>
+        m.type==='childList' &&
+        (
+          m.target?.closest?.('.rh-planning-panel,.rh-cockpit-bottom-grid,.rh-ops-overview') ||
+          [...(m.addedNodes||[])].some(n=>
+            n?.nodeType===1 &&
+            (
+              n.matches?.('table,tbody,tr,.rh-list-item') ||
+              n.querySelector?.('table,tbody,tr,.rh-list-item')
+            )
+          )
+        )
+      );
+      if(relevant)schedule();
+    });
+    observer.observe(oldMain,{childList:true,subtree:true});
+  }
+
+  if(oldSidebar){
+    oldSidebar.dataset.v237ObserverDisabled='1';
+  }
+
+  window.addEventListener('ichef:planning-symbiosis',schedule);
+  window.addEventListener('ichef:planning-categories-updated',schedule);
+  window.addEventListener('ichef:planning-views-refreshed',schedule);
+  window.addEventListener('focus',schedule);
+
+  // Après chaque rendu historique, la nouvelle présentation se resynchronise.
+  if(typeof window.renderRhCockpit==='function' && !window.renderRhCockpit.__v226){
+    const original=window.renderRhCockpit;
+    const wrapped=function(...args){
+      const result=original.apply(this,args);
+      schedule();
+      return result;
+    };
+    wrapped.__v226=true;
+    window.renderRhCockpit=wrapped;
+  }
+
+  schedule();
+  setTimeout(schedule,120);
+  setTimeout(schedule,500);
+
+  window.ICHEF_RH_V226_DASHBOARD={refresh:schedule,version:'RH-V226-DASHBOARD-CIBLE'};
+  window.__ICHEF_RH_BUILD__='RH-V226-DASHBOARD-CIBLE';
+  console.info('[iCHEF RH V226] dashboard cible actif · ancien moteur conservé');
+})();
+
+
+
+;
+/* RH V264 - preserved script #153 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V227_DASHBOARD_FIX__) return;
+  window.__ICHEF_RH_V227_DASHBOARD_FIX__=true;
+
+  let frame=0;
+  let firstVisible=true;
+
+  const q=(sel,root=document)=>root.querySelector(sel);
+  const qa=(sel,root=document)=>[...root.querySelectorAll(sel)];
+
+  function n(value){
+    const m=String(value??'').replace(',','.').match(/-?\d+(?:\.\d+)?/);
+    return m?Number(m[0]):0;
+  }
+
+  function categoryMeta(plan){
+    try{
+      const catalog=window.iChefPlanningCategoryCatalogV202?.()||[];
+      const byId=id=>catalog.find(c=>String(c.id)===String(id))||null;
+
+      if(plan?.categoryId && byId(plan.categoryId)) return byId(plan.categoryId);
+
+      const status=String(plan?.status||'off');
+      if((status==='present'||status==='off')&&(plan?.s1||plan?.s2)){
+        if(plan.s1&&plan.s2){
+          return catalog.find(c=>c.legalType==='present')||byId('present');
+        }
+        if(plan.s1){
+          return catalog.find(c=>c.legalType==='off_soir')||byId('off_soir');
+        }
+        if(plan.s2){
+          return catalog.find(c=>c.legalType==='off_matin')||byId('off_matin');
+        }
+      }
+
+      return byId(status) || window.iChefPlanningMetaV202?.(plan) || null;
+    }catch(_){
+      return null;
+    }
+  }
+
+  function getPlan(staffId,dateStr){
+    try{
+      const month=String(dateStr||'').slice(0,7);
+      const day=Number(String(dateStr||'').slice(8,10));
+      const ts=typeof getTs==='function'?getTs():{};
+      return ts?.[month]?.[staffId]?.[day] ??
+             ts?.[month]?.[String(staffId)]?.[day] ??
+             null;
+    }catch(_){
+      return null;
+    }
+  }
+
+  function cleanTime(value){
+    return String(value||'')
+      .replace(/\s+/g,'')
+      .replace(/-/g,'–');
+  }
+
+  function shortLabel(plan,meta){
+    if(plan?.__restaurantClosed===true || plan?.obs==='Établissement fermé') return 'FERMÉ';
+    if(meta?.short) return String(meta.short).toUpperCase();
+    if(meta?.label) return String(meta.label).toUpperCase().slice(0,9);
+
+    const status=String(plan?.status||'off').toLowerCase();
+    const fallbacks={
+      present:'TRAV',
+      off:'REPOS',
+      conge:'CP',
+      recup:'RÉCUP',
+      maladie:'MAL',
+      formation:'FORM.',
+      ferie:'FÉRIÉ'
+    };
+    if(plan?.s1&&plan?.s2) return 'TRAV';
+    if(plan?.s1) return 'MATIN';
+    if(plan?.s2) return 'SOIR';
+    return fallbacks[status]||status.toUpperCase().slice(0,9)||'REPOS';
+  }
+
+  function rewritePlanningCells(){
+    const table=q('#rh-v226-plan-table-wrap table');
+    if(!table) return;
+
+    qa('[data-rh-edit-staff][data-rh-edit-date]',table).forEach(btn=>{
+      const staffId=btn.dataset.rhEditStaff;
+      const dateStr=btn.dataset.rhEditDate;
+      const plan=getPlan(staffId,dateStr);
+      const meta=categoryMeta(plan);
+      const label=shortLabel(plan,meta);
+
+      const s1=cleanTime(plan?.s1);
+      const s2=cleanTime(plan?.s2);
+
+      let timeHtml='';
+      if(s1&&s2){
+        timeHtml=`<span>${s1}</span><span>${s2}</span>`;
+      }else if(s1||s2){
+        timeHtml=`<span>${s1||s2}</span>`;
+      }
+
+      btn.dataset.v227Cell='1';
+      btn.innerHTML=
+        `<strong class="v227-cell-main">${label}</strong>` +
+        (timeHtml?`<small class="v227-cell-time">${timeHtml}</small>`:'');
+
+      // Color = same catalog as the rest of the system.
+      const color=/^#[0-9a-f]{6}$/i.test(String(meta?.color||'')) ? String(meta.color) : '';
+      if(color){
+        btn.style.setProperty('background-color',color,'important');
+      }
+
+      // Force containment even if historical inline rules try to win.
+      btn.style.setProperty('overflow','hidden','important');
+      btn.style.setProperty('white-space','normal','important');
+      btn.style.setProperty('max-width','100%','important');
+      btn.style.setProperty('min-width','0','important');
+    });
+  }
+
+  function pendingRequests(){
+    try{
+      const rows=typeof getReqs==='function'?getReqs():[];
+      return (Array.isArray(rows)?rows:[]).filter(r=>{
+        const s=String(r?.status||'pending').toLowerCase();
+        return ![
+          'approved','accepte','accepté','valide','validé',
+          'rejected','refuse','refusé'
+        ].includes(s);
+      });
+    }catch(_){
+      return [];
+    }
+  }
+
+  function syncKpis(){
+    const set=(id,val)=>{
+      const el=document.getElementById(id);
+      if(el) el.textContent=String(val);
+    };
+
+    // Collaborators: "active" = enabled staff, not currently clocked-in.
+    try{
+      const dir=typeof getDir==='function'?getDir():[];
+      const active=(Array.isArray(dir)?dir:[]).filter(s=>s?.active!==false);
+      set('rh-v226-total',active.length);
+      set('rh-v226-active-sub',`${active.length} actifs`);
+    }catch(_){}
+
+    // Requests: use the real request master, not a stale dashboard label.
+    const pending=pendingRequests();
+    set('rh-v226-requests',pending.length);
+    set(
+      'rh-v226-request-sub',
+      pending.length
+        ? `${pending.length} décision${pending.length>1?'s':''} à prendre`
+        : 'Aucune demande'
+    );
+
+    const badge=document.getElementById('rh-v226-request-badge');
+    if(badge){
+      badge.textContent=String(pending.length);
+      badge.classList.toggle('show',pending.length>0);
+    }
+
+    // Remove the unnecessary .0 on target when it is an integer.
+    const target=document.getElementById('rh-v226-target');
+    if(target){
+      const val=n(target.textContent);
+      if(Number.isFinite(val)){
+        target.textContent=`${Number.isInteger(val)?val:val.toFixed(1)} h`;
+      }
+    }
+  }
+
+  function resetSidebar(){
+    const sidebar=document.getElementById('rh-v226-sidebar');
+    if(!sidebar) return;
+    sidebar.classList.add('v227-reset-scroll');
+
+    const hub=document.getElementById('director-hub');
+    const visible=hub && getComputedStyle(hub).display!=='none';
+
+    if(visible && (firstVisible || sidebar.scrollTop>0)){
+      sidebar.scrollTop=0;
+      firstVisible=false;
+    }
+  }
+
+  function fixTopbar(){
+    const input=document.getElementById('rh-v226-search');
+    if(input){
+      input.style.setProperty('border','0','important');
+      input.style.setProperty('outline','0','important');
+      input.style.setProperty('box-shadow','none','important');
+    }
+  }
+
+  function refresh(){
+    if(frame) return;
+    frame=requestAnimationFrame(()=>{
+      frame=0;
+      fixTopbar();
+      syncKpis();
+      rewritePlanningCells();
+      resetSidebar();
+
+      const version=document.getElementById('rh-v226-version');
+      if(version){
+        version.textContent='V227 · Dashboard corrigé · fonctions et sécurité conservées';
+      }
+      const sideVersion=q('#rh-v226-side-bottom small');
+      if(sideVersion) sideVersion.textContent='V227';
+    });
+  }
+
+  // V226 rebuilds the visible planning from the hidden synchronized table.
+  // Run after its refresh event and after DOM changes.
+  const wrap=document.getElementById('rh-v226-plan-table-wrap');
+  if(wrap){
+    new MutationObserver(refresh).observe(wrap,{childList:true,subtree:true});
+  }
+
+  window.addEventListener('ichef:planning-symbiosis',refresh);
+  window.addEventListener('ichef:planning-categories-updated',refresh);
+  window.addEventListener('ichef:planning-views-refreshed',refresh);
+  window.addEventListener('focus',refresh);
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',refresh,{once:true});
+  }else{
+    refresh();
+  }
+  setTimeout(refresh,120);
+  setTimeout(refresh,550);
+
+  window.ICHEF_RH_V227_DASHBOARD={
+    refresh,
+    rewritePlanningCells,
+    version:'RH-V227-DASHBOARD-BUGFIX'
+  };
+
+  window.__ICHEF_RH_BUILD__='RH-V227-DASHBOARD-BUGFIX';
+  console.info('[iCHEF RH V227] planning sans chevauchement + KPI cohérents + sidebar stabilisée');
+})();
+
+
+;
+
+;
+/* RH V264 - preserved script #154 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V228_FINAL__) return;
+  window.__ICHEF_RH_V228_FINAL__=true;
+
+  let frame=0;
+  const q=(sel,root=document)=>root.querySelector(sel);
+  const qa=(sel,root=document)=>[...root.querySelectorAll(sel)];
+
+  function copyActionRow(sourceRow){
+    const strong=q('strong',sourceRow)?.textContent?.trim() ||
+                 q('.rh-list-main',sourceRow)?.textContent?.trim() ||
+                 'Action à traiter';
+    const small=q('small',sourceRow)?.textContent?.trim() || '';
+    const sourceButton=q('button',sourceRow);
+
+    const row=document.createElement('div');
+    row.className='rh-v226-list-row';
+    row.dataset.v228Generated='1';
+    row.innerHTML=`
+      <span class="ico">△</span>
+      <div>
+        <strong></strong>
+        <small></small>
+      </div>
+      ${sourceButton?'<button type="button">VOIR</button>':''}
+    `;
+    q('strong',row).textContent=strong;
+    q('small',row).textContent=small;
+    q('button',row)?.addEventListener('click',()=>sourceButton?.click());
+    return row;
+  }
+
+  function enrichTodoWithRealAlerts(){
+    const todo=document.getElementById('rh-v226-todo-list');
+    const alerts=document.getElementById('rh-v226-alert-list');
+    if(!todo || !alerts) return;
+
+    // Remove only our previous generated copies.
+    qa('[data-v228-generated="1"]',todo).forEach(el=>el.remove());
+
+    const existingTexts=new Set(
+      qa('.rh-v226-list-row strong',todo).map(el=>String(el.textContent||'').trim())
+    );
+
+    const alertRows=qa('.rh-v226-list-row',alerts);
+    for(const alertRow of alertRows){
+      if(qa('.rh-v226-list-row',todo).length>=4) break;
+      const title=String(q('strong',alertRow)?.textContent||'').trim();
+      if(!title || existingTexts.has(title)) continue;
+
+      // Use the already-connected V226 alert row as the action source.
+      const copy=copyActionRow(alertRow);
+      todo.appendChild(copy);
+      existingTexts.add(title);
+    }
+
+    const count=qa('.rh-v226-list-row',todo).length;
+    const badge=document.getElementById('rh-v226-todo-count');
+    if(badge) badge.textContent=String(count);
+  }
+
+  function normalizePlanningHead(){
+    const title=document.getElementById('rh-v226-plan-title');
+    if(title) title.textContent='PLANNING DE LA SEMAINE';
+
+    const week=document.getElementById('rh-v226-week');
+    if(week && !String(week.textContent||'').trim()){
+      week.textContent='Semaine en cours';
+    }
+  }
+
+  function ensureActiveDashboard(){
+    qa('#rh-v226-sidebar .rh-v226-nav-btn').forEach(btn=>{
+      btn.classList.toggle('active',btn.dataset.v226Nav==='dashboard');
+    });
+  }
+
+  function resetScrolls(){
+    const sidebar=document.getElementById('rh-v226-sidebar');
+    if(sidebar) sidebar.scrollTop=0;
+  }
+
+  function refresh(){
+    if(frame) return;
+    frame=requestAnimationFrame(()=>{
+      frame=0;
+      normalizePlanningHead();
+      ensureActiveDashboard();
+      enrichTodoWithRealAlerts();
+      resetScrolls();
+
+      const version=document.getElementById('rh-v226-version');
+      if(version){
+        version.textContent='V228 · Dashboard finalisé · moteur RH inchangé';
+      }
+      const side=q('#rh-v226-side-bottom small');
+      if(side) side.textContent='V228';
+    });
+  }
+
+  window.addEventListener('ichef:planning-symbiosis',refresh);
+  window.addEventListener('ichef:planning-views-refreshed',refresh);
+  window.addEventListener('ichef:planning-categories-updated',refresh);
+  window.addEventListener('focus',refresh);
+
+  const shell=document.getElementById('rh-v226-shell');
+  if(shell){
+    new MutationObserver(mutations=>{
+      const useful=mutations.some(m =>
+        [...(m.addedNodes||[])].some(n =>
+          n?.nodeType===1 &&
+          (
+            n.matches?.('.rh-v226-list-row,[data-rh-edit-staff]') ||
+            n.querySelector?.('.rh-v226-list-row,[data-rh-edit-staff]')
+          )
+        )
+      );
+      if(useful) refresh();
+    }).observe(shell,{childList:true,subtree:true});
+  }
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',refresh,{once:true});
+  }else{
+    refresh();
+  }
+  setTimeout(refresh,150);
+  setTimeout(refresh,600);
+
+  window.ICHEF_RH_V228={refresh,version:'RH-V228-DASHBOARD-FINALISE'};
+  window.__ICHEF_RH_BUILD__='RH-V228-DASHBOARD-FINALISE';
+  console.info('[iCHEF RH V228] présentation finale appliquée en dernier');
+})();
+
+
+;
+
+;
+/* RH V264 - preserved script #155 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V232_STAFF_CLICK__) return;
+  window.__ICHEF_RH_V232_STAFF_CLICK__=true;
+
+  const wrap=document.getElementById('rh-v226-plan-table-wrap');
+  if(!wrap) return;
+
+  let frame=0;
+  let busy=false;
+  let lastOpenAt=0;
+  let lastStaffId='';
+
+  function q(sel,root=document){ return root.querySelector(sel); }
+  function qa(sel,root=document){ return [...root.querySelectorAll(sel)]; }
+
+  function resolveStaffId(raw){
+    const key=String(raw||'').trim();
+    if(!key) return null;
+    try{
+      const dir=typeof getDir==='function' ? getDir() : [];
+      const staff=(Array.isArray(dir)?dir:[])
+        .find(s=>String(s.id)===key);
+      return staff?.id ?? key;
+    }catch(_){
+      return key;
+    }
+  }
+
+  // IMPORTANT V232:
+  // V231 avait supprimé le script V229 qui faisait cette décoration.
+  // Sans data-v229-staff-id / classe sur la première cellule,
+  // aucun clic ne pouvait être reconnu.
+  function decorateStaffCells(){
+    const table=q('table',wrap);
+    if(!table) return;
+
+    qa('tbody tr',table).forEach(row=>{
+      const first=row.querySelector('td:first-child');
+      const anyPlanningCell=row.querySelector('[data-rh-edit-staff]');
+      if(!first || !anyPlanningCell) return;
+
+      const staffId=String(anyPlanningCell.dataset.rhEditStaff||'').trim();
+      if(!staffId) return;
+
+      first.dataset.v232StaffId=staffId;
+      first.classList.add('v232-staff-cell');
+      first.setAttribute('role','button');
+      first.setAttribute('tabindex','0');
+
+      const name=
+        first.querySelector('.rh-plan-person strong')?.textContent?.trim() ||
+        first.querySelector('strong')?.textContent?.trim() ||
+        'ce collaborateur';
+
+      first.setAttribute('aria-label',`Ouvrir le planning de ${name}`);
+      first.setAttribute('title',`Ouvrir le planning de ${name}`);
+
+      const content=
+        first.querySelector('.rh-plan-person > div') ||
+        first.querySelector('.rh-plan-person') ||
+        first;
+
+      if(content && !content.querySelector('.v232-open-hint')){
+        const hint=document.createElement('small');
+        hint.className='v232-open-hint';
+        hint.textContent='OUVRIR LE PLANNING';
+        content.appendChild(hint);
+      }
+    });
+  }
+
+  function cellFrom(target){
+    return target?.closest?.(
+      '#rh-v226-plan-table-wrap td.v232-staff-cell[data-v232-staff-id]'
+    ) || null;
+  }
+
+  function openStaffPlanning(rawId,cell=null){
+    const id=resolveStaffId(rawId);
+    if(id===null || id===undefined || id==='') return false;
+
+    const now=Date.now();
+    if(busy || (String(id)===String(lastStaffId) && now-lastOpenAt<650)){
+      return true;
+    }
+    busy=true;
+    lastOpenAt=now;
+    lastStaffId=String(id);
+    cell?.classList.add('v232-opening');
+
+    try{
+      // Utilise directement le vrai moteur RH.
+      if(typeof window.openInterface==='function'){
+        window.openInterface('hr');
+      }else if(typeof openInterface==='function'){
+        openInterface('hr');
+      }else{
+        throw new Error("openInterface('hr') indisponible");
+      }
+
+      // Laisser une frame à openInterface pour afficher le vrai écran,
+      // puis sélectionner le collaborateur dans ce même moteur.
+      requestAnimationFrame(()=>{
+        requestAnimationFrame(()=>{
+          try{
+            if(typeof window.selectStaff==='function'){
+              window.selectStaff(id);
+            }else if(typeof selectStaff==='function'){
+              selectStaff(id);
+            }else if(typeof window.openStaffPlanning==='function'){
+              window.openStaffPlanning(id);
+            }else{
+              throw new Error('selectStaff indisponible');
+            }
+
+            const hub=document.getElementById('director-hub');
+            const hr=document.getElementById('hr-interface');
+
+            if(hub) hub.style.display='none';
+            if(hr){
+              hr.style.display='flex';
+              hr.style.visibility='visible';
+              hr.style.opacity='1';
+            }
+
+            // Renforcer la vue individuelle si une ancienne vue globale
+            // était encore mémorisée.
+            try{
+              if(typeof currentStaffId!=='undefined') currentStaffId=id;
+              if(typeof isGlobalView!=='undefined') isGlobalView=false;
+              if(typeof isAnnualView!=='undefined') isAnnualView=false;
+              if(typeof toggleViewDisplay==='function') toggleViewDisplay();
+              if(typeof loadMonthData==='function') loadMonthData();
+            }catch(_){}
+
+            requestAnimationFrame(()=>{
+              try{
+                hr?.scrollTo?.({top:0,left:0,behavior:'auto'});
+              }catch(_){}
+            });
+
+            window.dispatchEvent(new CustomEvent(
+              'ichef:dashboard-staff-planning-open',
+              {detail:{staffId:id,source:'V232',at:new Date().toISOString()}}
+            ));
+          }catch(error){
+            console.warn('[iCHEF RH V232] sélection collaborateur',error);
+          }finally{
+            busy=false;
+            cell?.classList.remove('v232-opening');
+          }
+        });
+      });
+
+      return true;
+    }catch(error){
+      busy=false;
+      cell?.classList.remove('v232-opening');
+      console.warn('[iCHEF RH V232] ouverture planning',error);
+      return false;
+    }
+  }
+
+  // UN seul listener pour souris + tactile.
+  wrap.addEventListener('click',event=>{
+    const cell=cellFrom(event.target);
+    if(!cell) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+
+    openStaffPlanning(cell.dataset.v232StaffId,cell);
+  },true);
+
+  // Clavier.
+  wrap.addEventListener('keydown',event=>{
+    if(!['Enter',' '].includes(event.key)) return;
+    const cell=cellFrom(event.target);
+    if(!cell) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+
+    openStaffPlanning(cell.dataset.v232StaffId,cell);
+  },true);
+
+  // V226 reconstruit le tableau à chaque synchronisation :
+  // on remet donc les zones cliquables après chaque reconstruction.
+  new MutationObserver(mutations=>{
+    const useful=mutations.some(m =>
+      [...(m.addedNodes||[])].some(n =>
+        n?.nodeType===1 &&
+        (
+          n.matches?.('table,tbody,tr,td,[data-rh-edit-staff]') ||
+          n.querySelector?.('[data-rh-edit-staff]')
+        )
+      )
+    );
+    if(!useful || frame) return;
+    frame=requestAnimationFrame(()=>{
+      frame=0;
+      decorateStaffCells();
+    });
+  }).observe(wrap,{childList:true,subtree:true});
+
+  [
+    'ichef:planning-symbiosis',
+    'ichef:planning-views-refreshed',
+    'ichef:planning-categories-updated'
+  ].forEach(name=>window.addEventListener(name,()=>{
+    requestAnimationFrame(decorateStaffCells);
+  }));
+
+  decorateStaffCells();
+  setTimeout(decorateStaffCells,120);
+  setTimeout(decorateStaffCells,550);
+
+  window.iChefOpenStaffPlanningFromDashboardV232=openStaffPlanning;
+  window.ICHEF_RH_V232={
+    decorate:decorateStaffCells,
+    openStaffPlanning,
+    version:'RH-V232-CLIC-COLLABORATEUR-REPARE'
+  };
+
+  window.__ICHEF_RH_BUILD__='RH-V232-CLIC-COLLABORATEUR-REPARE';
+  console.info('[iCHEF RH V232] première colonne décorée + clic/tactile -> planning individuel');
+})();
+
+
+
+;
+/* RH V264 - preserved script #156 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V236__) return;
+  window.__ICHEF_RH_V236__=true;
+
+  let frame=0;
+  const q=(sel,root=document)=>root.querySelector(sel);
+  const qa=(sel,root=document)=>[...root.querySelectorAll(sel)];
+
+  function text(id,fallback='0'){
+    return String(document.getElementById(id)?.textContent||fallback).trim();
+  }
+
+  function currentStaffIdFromDom(){
+    const explicit=String(window.__ICHEF_V239_SELECTED_STAFF_ID__||'').trim();
+    if(explicit) return explicit;
+
+    try{
+      if(typeof currentStaffId!=='undefined' && currentStaffId!==null && currentStaffId!==''){
+        return String(currentStaffId).trim();
+      }
+    }catch(_){}
+
+    return String(
+      q('#staff-list-render .rh-v220-staff-card.active[data-staff-id]')?.dataset.staffId || ''
+    ).trim();
+  }
+
+  function currentStaff(){
+    const id=currentStaffIdFromDom();
+    if(!id) return null;
+    try{
+      const dir=typeof getDir==='function'?getDir():[];
+      return (Array.isArray(dir)?dir:[]).find(s=>String(s.id)===String(id))||null;
+    }catch(_){ return null; }
+  }
+
+  function initials(name){
+    const p=String(name||'').trim().split(/\s+/).filter(Boolean);
+    return p.length?p.slice(0,2).map(x=>x[0].toUpperCase()).join(''):'?';
+  }
+
+  function monthLabel(value){
+    if(!/^\d{4}-\d{2}$/.test(String(value||''))) return 'Mois';
+    const [y,m]=String(value).split('-').map(Number);
+    return new Date(y,m-1,1,12).toLocaleDateString('fr-FR',{month:'long',year:'numeric'})
+      .replace(/^./,c=>c.toUpperCase());
+  }
+
+  function ensureShell(){
+    if(document.getElementById('rh-v236-individual-shell')) return;
+    const hr=document.getElementById('hr-interface');
+    if(!hr) return;
+
+    const shell=document.createElement('div');
+    shell.id='rh-v236-individual-shell';
+    shell.innerHTML=`
+      <aside id="rh-v236-side">
+        <div id="rh-v236-brand">
+          <div class="main">iCHEF <b>OS</b></div>
+          <div class="sub">Ressources Humaines</div>
+        </div>
+
+        <span class="rh-v236-nav-label">PILOTER</span>
+        <button class="rh-v236-nav" data-v236-nav="dashboard"><span class="ico">⌂</span><span>Tableau de bord</span></button>
+        <button class="rh-v236-nav active" data-v236-nav="planning"><span class="ico">▦</span><span>Planning</span></button>
+        <button class="rh-v236-nav" data-v236-nav="equipe"><span class="ico">♙</span><span>Équipe</span></button>
+
+        <span class="rh-v236-nav-label">TEMPS</span>
+        <button class="rh-v236-nav" data-v236-nav="heures"><span class="ico">◷</span><span>Heures</span></button>
+        <button class="rh-v236-nav" data-v236-nav="demandes"><span class="ico">▤</span><span>Demandes</span></button>
+        <button class="rh-v236-nav" data-v236-nav="conges"><span class="ico">◇</span><span>Congés & absences</span></button>
+
+        <span class="rh-v236-nav-label">ADMINISTRER</span>
+        <button class="rh-v236-nav" data-v236-nav="contrats"><span class="ico">▣</span><span>Contrats</span></button>
+        <button class="rh-v236-nav" data-v236-nav="documents"><span class="ico">▱</span><span>Documents</span></button>
+        <button class="rh-v236-nav" data-v236-nav="legal"><span class="ico">⚖</span><span>Dossier légal</span></button>
+
+        <span class="rh-v236-nav-label">INTELLIGENCE</span>
+        <button class="rh-v236-nav" data-v236-nav="assistant"><span class="ico">✧</span><span>Assistance planning</span></button>
+        <button class="rh-v236-nav" data-v236-nav="ia"><span class="ico">⚙</span><span>Réglages IA</span></button>
+
+        <span class="rh-v236-nav-label">PARAMÈTRES</span>
+        <button class="rh-v236-nav" data-v236-nav="etablissement"><span class="ico">▥</span><span>Établissement</span></button>
+        <button class="rh-v236-nav" data-v236-nav="couleurs"><span class="ico">◉</span><span>Catégories & couleurs</span></button>
+        <button class="rh-v236-nav" data-v236-nav="utilisateurs"><span class="ico">♙</span><span>Utilisateurs</span></button>
+
+        <div id="rh-v236-side-bottom"><span>◩</span><strong>iCHEF OS</strong><small>V239</small></div>
+      </aside>
+
+      <main id="rh-v236-main">
+        <header id="rh-v236-top">
+          <div id="rh-v236-venue"><strong>iCHEF Établissement</strong><small>RH Direction · DIRECTION</small></div>
+          <label id="rh-v236-searchbox">
+            <span>⌕</span>
+            <input id="rh-v236-search" list="rh-v236-staff-list" type="search" placeholder="Rechercher un collaborateur…">
+            <datalist id="rh-v236-staff-list"></datalist>
+          </label>
+          <div id="rh-v236-sync"><span class="dot"></span><div><strong>EN LIGNE · SYNCHRONISÉ</strong><small id="rh-v236-sync-time">Synchronisation active</small></div></div>
+          <div id="rh-v236-user"><div class="avatar">D</div><strong>Direction⌄</strong></div>
+        </header>
+
+        <div id="rh-v236-content">
+          <section id="rh-v236-profile">
+            <div id="rh-v236-profile-avatar">?</div>
+            <div id="rh-v236-profile-copy">
+              <div id="rh-v236-name-line">
+                <strong id="rh-v236-name">Collaborateur</strong>
+                <span id="rh-v236-active">Actif</span>
+              </div>
+              <div id="rh-v236-role">—</div>
+              <div id="rh-v236-meta"></div>
+            </div>
+            <div id="rh-v236-profile-actions">
+              <button type="button" id="rh-v248-prev-profile" class="rh-v248-profile-nav" aria-label="Profil précédent" title="Profil précédent">‹ Profil</button>
+              <button type="button" data-v236-profile="contact">☎ Contacter</button>
+              <button type="button" data-v236-profile="detail">▣ Fiche</button>
+              <button type="button" data-v236-profile="edit">✎ Modifier</button>
+              <button type="button" data-v236-profile="history">⟳ Historique</button>
+              <button type="button" id="rh-v248-next-profile" class="rh-v248-profile-nav" aria-label="Profil suivant" title="Profil suivant">Profil ›</button>
+            </div>
+          </section>
+
+          <section id="rh-v236-kpis">
+            <article class="rh-v236-kpi blue"><div class="ico">▤</div><div><div id="rh-v236-contract" class="value">0 h</div><div class="label">Contrat</div><div id="rh-v236-contract-sub" class="sub">0 h/sem</div></div></article>
+            <article class="rh-v236-kpi green"><div class="ico">✓</div><div><div id="rh-v236-planned" class="value">0 h</div><div class="label">Heures planifiées</div><div id="rh-v236-planned-sub" class="sub">Ce mois</div></div></article>
+            <article class="rh-v236-kpi purple"><div class="ico">◷</div><div><div id="rh-v236-due" class="value">0 h</div><div class="label">Heures dues</div><div class="sub">Ce mois</div></div></article>
+            <article class="rh-v236-kpi orange"><div class="ico">＋</div><div><div id="rh-v236-done" class="value">0 h</div><div class="label">Heures accomplies</div><div class="sub">Pointages du mois</div></div></article>
+            <article class="rh-v236-kpi gray"><div class="ico">▥</div><div><div id="rh-v236-extra" class="value">0 h</div><div class="label">Heures sup.</div><div class="sub">Ce mois</div></div></article>
+          </section>
+
+          <section id="rh-v236-kpis-secondary">
+            <article class="rh-v236-kpi small red"><div class="ico">▥</div><div><div id="rh-v236-rcr" class="value">0 h</div><div class="label">RCR (banque)</div></div></article>
+            <article class="rh-v236-kpi small blue"><div class="ico">▣</div><div><div id="rh-v236-off" class="value">0 j</div><div class="label">Jours off dus</div></div></article>
+            <article class="rh-v236-kpi small purple"><div class="ico">✈</div><div><div id="rh-v236-cp-rest" class="value">0 j</div><div class="label">CP restants</div></div></article>
+            <article class="rh-v236-kpi small green"><div class="ico">☀</div><div><div id="rh-v236-holidays" class="value">0 j</div><div class="label">Fériés pris</div></div></article>
+            <article class="rh-v236-kpi small orange"><div class="ico">☼</div><div><div id="rh-v236-vacation" class="value">0 j</div><div class="label">Vacances prises</div></div></article>
+            <article class="rh-v236-kpi small red"><div class="ico">♡</div><div><div id="rh-v236-sick" class="value">0 j</div><div class="label">Maladie</div></div></article>
+          </section>
+
+          <section id="rh-v236-planning-card">
+            <div id="rh-v236-planning-head">
+              <strong id="rh-v236-planning-title">Planning individuel</strong>
+              <button type="button" class="rh-v236-month-btn" data-v236-month="-1">‹</button>
+              <strong id="rh-v236-month-label">Mois</strong>
+              <button type="button" class="rh-v236-month-btn" data-v236-month="1">›</button>
+              <button type="button" id="rh-v236-today">▣ Aujourd’hui</button>
+
+              <div id="rh-v236-planning-actions">
+                <button type="button" id="rh-v236-annual">▣ Vue annuelle (CP)</button>
+                <button type="button" id="rh-v236-history">⟳ Historique & corrections</button>
+              </div>
+            </div>
+            <div id="rh-v236-table-host"></div>
+          </section>
+        </div>
+      </main>
+    `;
+    hr.appendChild(shell);
+
+    const host=q('#rh-v236-table-host',shell);
+    const individual=document.getElementById('table-container-individual');
+    const annual=document.getElementById('annual-view-container');
+    if(individual && host) host.appendChild(individual);
+    if(annual && host) host.appendChild(annual);
+
+    wireShell();
+  }
+
+  function setTxt(id,value){
+    const el=document.getElementById(id);
+    const next=String(value??'');
+    if(el && el.textContent!==next) el.textContent=next;
+  }
+
+  function updateDatalist(){
+    const dl=document.getElementById('rh-v236-staff-list');
+    if(!dl) return;
+    let dir=[];
+    try{dir=typeof getDir==='function'?getDir():[]}catch(_){}
+    const next=(Array.isArray(dir)?dir:[])
+      .filter(s=>s?.active!==false)
+      .map(s=>`<option value="${String(s.name||'').replaceAll('"','&quot;')}"></option>`)
+      .join('');
+    if(dl.innerHTML!==next) dl.innerHTML=next;
+  }
+
+  function actualHours(staffId,month){
+    try{
+      const a=typeof getActualHoursSummary==='function'?getActualHoursSummary(staffId,month):null;
+      return Number(a?.total||0);
+    }catch(_){ return 0; }
+  }
+
+  function colorStatuses(){
+    qa('#timesheet-body .status-sel').forEach(select=>{
+      const value=String(select.value||'off');
+      let meta=null;
+      try{
+        const catalog=window.iChefPlanningCategoryCatalogV202?.()||[];
+        meta=catalog.find(c=>String(c.id)===value||String(c.legalType)===value)||null;
+      }catch(_){}
+      const color=String(meta?.color||'');
+      if(/^#[0-9a-f]{6}$/i.test(color)){
+        select.style.setProperty('background-color',color,'important');
+        select.style.setProperty('color','#111','important');
+      }
+    });
+  }
+
+  function updateIndividualShell(){
+    ensureShell();
+
+    const hr=document.getElementById('hr-interface');
+    const individual=document.getElementById('table-container-individual');
+    const annual=document.getElementById('annual-view-container');
+    const staff=currentStaff();
+
+    const hrVisible=Boolean(hr && getComputedStyle(hr).display!=='none' && getComputedStyle(hr).visibility!=='hidden');
+    const annualVisible=Boolean(annual && getComputedStyle(annual).display!=='none');
+    const shouldShow=Boolean(hrVisible && staff);
+
+    hr?.classList.toggle('rh-v236-individual-mode',shouldShow);
+    if(!shouldShow) return;
+
+    updateDatalist();
+
+    setTxt('rh-v236-profile-avatar',initials(staff.name));
+    setTxt('rh-v236-name',staff.name||'Collaborateur');
+    setTxt('rh-v236-active',staff.active===false?'Désactivé':'Actif');
+    setTxt('rh-v236-role',`${staff.role||'Collaborateur'} · ${String(staff.dept||'').replaceAll('_',' ')}`);
+
+    const meta=[];
+    if(staff.contract) meta.push(`▣ ${Number(staff.contract)} h/sem`);
+    if(staff.dept) meta.push(`♙ Équipe : ${String(staff.dept).replaceAll('_',' ')}`);
+    setTxt('rh-v236-meta',meta.join('   '));
+
+    const selector=document.getElementById('month-selector');
+    const month=selector?.value||new Date().toISOString().slice(0,7);
+    setTxt('rh-v236-month-label',monthLabel(month));
+
+    setTxt('rh-v236-contract',text('stat-expected','0h').replace(/h$/,' h'));
+    setTxt('rh-v236-contract-sub',`${Number(staff.contract||0)} h/sem`);
+    setTxt('rh-v236-planned',text('stat-actual','0h').replace(/h$/,' h'));
+    setTxt('rh-v236-planned-sub',`Objectif ${text('stat-expected','0h').replace(/h$/,' h')}`);
+    setTxt('rh-v236-due',text('stat-h-due','0h').replace(/h$/,' h'));
+    setTxt('rh-v236-extra',text('stat-sup','0h').replace(/h$/,' h'));
+    setTxt('rh-v236-rcr',text('stat-recup','0h').replace(/h$/,' h'));
+    setTxt('rh-v236-off',text('stat-off-due','0j'));
+    setTxt('rh-v236-cp-rest',text('stat-cp-rest','0j'));
+    setTxt('rh-v236-holidays',text('stat-ferie','0j'));
+    setTxt('rh-v236-vacation',text('stat-cp','0j'));
+    setTxt('rh-v236-sick',text('stat-maladie','0j'));
+    setTxt('rh-v236-done',`${actualHours(staff.id,month).toFixed(1)} h`);
+
+    const oldSync=
+      document.getElementById('v189-rh-connection-badge')?.textContent ||
+      document.getElementById('v161-rh-sync-badge')?.textContent ||
+      'Synchronisé';
+    setTxt('rh-v236-sync-time',String(oldSync).replace(/\s+/g,' ').trim());
+
+    const annualBtn=document.getElementById('rh-v236-annual');
+    if(annualBtn) annualBtn.textContent=annualVisible?'▣ Vue mensuelle':'▣ Vue annuelle (CP)';
+
+    colorStatuses();
+  }
+
+  function wireShell(){
+    const shell=document.getElementById('rh-v236-individual-shell');
+    if(!shell || shell.dataset.bound==='1') return;
+    shell.dataset.bound='1';
+
+    const nav={
+      dashboard:()=>window.backToHub?.(),
+      planning:()=>window.openInterface?.('hr'),
+      equipe:()=>window.openInterface?.('hr'),
+      heures:()=>window.openInterface?.('timesheets'),
+      demandes:()=>window.openInterface?.('requests'),
+      conges:()=>window.openInterface?.('requests'),
+      contrats:()=>{
+        const s=currentStaff();
+        if(s) window.openStaffModal?.(s.pin);
+      },
+      documents:()=>{
+        const s=currentStaff();
+        if(s) window.openStaffDocumentsV103?.(s.id);
+      },
+      legal:()=>window.openRhLegalCommandCenterV194?.(),
+      assistant:()=>window.openPlanningAssistant?.(),
+      ia:()=>window.openRhPlanningSettingsV103?.(),
+      etablissement:()=>window.openRhPlanningSettingsV103?.(),
+      couleurs:()=>document.querySelector('.rh-v202-categories-btn')?.click(),
+      utilisateurs:()=>window.openInterface?.('hr')
+    };
+
+    qa('[data-v236-nav]',shell).forEach(btn=>{
+      btn.addEventListener('click',()=>nav[btn.dataset.v236Nav]?.());
+    });
+
+    qa('[data-v236-month]',shell).forEach(btn=>{
+      btn.addEventListener('click',()=>{
+        if(typeof changeMonth==='function') changeMonth(Number(btn.dataset.v236Month||0));
+        requestAnimationFrame(updateIndividualShell);
+      });
+    });
+
+    q('#rh-v236-today',shell)?.addEventListener('click',()=>{
+      const selector=document.getElementById('month-selector');
+      if(selector){
+        const now=new Date();
+        selector.value=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+        if(typeof handleMonthChange==='function') handleMonthChange();
+      }
+      requestAnimationFrame(updateIndividualShell);
+    });
+
+    q('#rh-v236-annual',shell)?.addEventListener('click',()=>{
+      if(typeof toggleAnnualView==='function') toggleAnnualView();
+      requestAnimationFrame(updateIndividualShell);
+    });
+
+    q('#rh-v236-history',shell)?.addEventListener('click',()=>{
+      const s=currentStaff();
+      if(s) window.openRhStaffHistoryV138?.(s.id);
+    });
+
+    qa('[data-v236-profile]',shell).forEach(btn=>{
+      btn.addEventListener('click',()=>{
+        const s=currentStaff();
+        if(!s) return;
+        const action=btn.dataset.v236Profile;
+
+        if(action==='detail'){
+          window.openStaffDetail?.(s.id);
+        }else if(action==='edit'){
+          window.openStaffModal?.(s.pin);
+        }else if(action==='history'){
+          window.openRhStaffHistoryV138?.(s.id);
+        }else if(action==='contact'){
+          const phone=String(s.phone||s.telephone||'').trim();
+          const email=String(s.email||'').trim();
+          if(phone) window.location.href=`tel:${phone.replace(/\s+/g,'')}`;
+          else if(email) window.location.href=`mailto:${email}`;
+          else window.showToast?.('Aucun téléphone ou e-mail renseigné');
+        }
+      });
+    });
+
+    q('#rh-v236-search',shell)?.addEventListener('change',event=>{
+      const value=String(event.target.value||'').trim().toLowerCase();
+      if(!value) return;
+      let dir=[];
+      try{dir=typeof getDir==='function'?getDir():[]}catch(_){}
+      const s=(Array.isArray(dir)?dir:[]).find(x=>String(x.name||'').trim().toLowerCase()===value);
+      if(s) window.selectStaff?.(s.id);
+    });
+  }
+
+  let cockpitLastSignature='';
+  let cockpitForce=true;
+
+  function cockpitSignature(query=''){
+    return [
+      String(query||''),
+      localStorage.getItem('empire_hr_timesheets')||'',
+      localStorage.getItem('empire_hr_directory')||'',
+      localStorage.getItem('empire_hr_requests')||'',
+      String(document.getElementById('rh-cockpit-search')?.value||'')
+    ].join('\u241F');
+  }
+
+  function installCockpitGuard(){
+    if(typeof window.renderRhCockpit!=='function' || window.renderRhCockpit.__v236) return;
+
+    const original=window.renderRhCockpit;
+    const guarded=function(query=''){
+      const sig=cockpitSignature(query);
+      const hubVisible=document.getElementById('director-hub')?.style.display==='flex';
+      if(hubVisible && !cockpitForce && cockpitLastSignature===sig) return;
+
+      cockpitForce=false;
+      const result=original.apply(this,arguments);
+      cockpitLastSignature=cockpitSignature(query);
+      return result;
+    };
+    guarded.__v236=true;
+    window.renderRhCockpit=guarded;
+
+    ['rhCockpitSetPlanView','rhCockpitMoveWeek','rhCockpitToday','rhCockpitGoToHorizon']
+      .forEach(name=>{
+        const fn=window[name];
+        if(typeof fn!=='function' || fn.__v236) return;
+        const wrapped=function(){
+          cockpitForce=true;
+          return fn.apply(this,arguments);
+        };
+        wrapped.__v236=true;
+        window[name]=wrapped;
+      });
+
+    window.iChefStableCockpitTickV236=()=>{
+      const query=document.getElementById('rh-cockpit-search')?.value||'';
+      const sig=cockpitSignature(query);
+      if(sig!==cockpitLastSignature){
+        cockpitForce=true;
+        window.renderRhCockpit?.(query);
+      }
+    };
+  }
+
+  function schedule(){
+    if(frame) return;
+    frame=requestAnimationFrame(()=>{
+      frame=0;
+      installCockpitGuard();
+      updateIndividualShell();
+    });
+  }
+
+  ensureShell();
+  installCockpitGuard();
+
+  if(typeof window.selectStaff==='function' && !window.selectStaff.__v239){
+    const originalSelectStaff=window.selectStaff;
+    const wrappedSelectStaff=function(...args){
+      if(args.length && args[0]!==undefined && args[0]!==null){
+        window.__ICHEF_V239_SELECTED_STAFF_ID__=String(args[0]);
+      }
+
+      const result=originalSelectStaff.apply(this,args);
+
+      requestAnimationFrame(()=>{
+        requestAnimationFrame(schedule);
+      });
+      return result;
+    };
+    wrappedSelectStaff.__v239=true;
+    window.selectStaff=wrappedSelectStaff;
+  }
+
+  const hr=document.getElementById('hr-interface');
+  if(hr){
+    new MutationObserver(mutations=>{
+      const useful=mutations.some(m=>
+        (m.type==='attributes' && m.target===hr && m.attributeName==='style') ||
+        [...(m.addedNodes||[])].some(n=>
+          n?.nodeType===1 &&
+          (
+            n.id==='table-container-individual' ||
+            n.id==='annual-view-container' ||
+            n.matches?.('.rh-v220-staff-card') ||
+            n.querySelector?.('#table-container-individual,#annual-view-container,.rh-v220-staff-card')
+          )
+        )
+      );
+      if(useful) schedule();
+    }).observe(hr,{
+      attributes:true,
+      attributeFilter:['style'],
+      childList:true,
+      subtree:true
+    });
+  }
+
+  window.addEventListener('ichef:staff-selected',event=>{
+    const id=String(event?.detail?.staffId||'').trim();
+    if(id) window.__ICHEF_V239_SELECTED_STAFF_ID__=id;
+    schedule();
+  });
+  window.addEventListener('ichef:planning-symbiosis',schedule);
+  window.addEventListener('ichef:planning-views-refreshed',schedule);
+  window.addEventListener('focus',schedule);
+
+  schedule();
+  setTimeout(schedule,120);
+  setTimeout(schedule,500);
+
+  window.ICHEF_RH_V236={
+    refresh:schedule,
+    updateIndividual:updateIndividualShell,
+    version:'RH-V240-AUTO-STYLE-SELF-HEAL'
+  };
+  window.__ICHEF_RH_BUILD__='RH-V240-AUTO-STYLE-SELF-HEAL';
+  console.info('[iCHEF RH V239] planning individuel cible activé · bundle réellement versionné');
+})();
+
+
+
+;
+/* RH V264 - preserved script #157 */
+
+window.__ICHEF_RH_BUILD__='RH-V240-AUTO-STYLE-SELF-HEAL';
+
+
+
+;
+/* RH V264 - preserved script #158 */
+
+(() => {
+  'use strict';
+  const CSS="/* ===== SOURCE: ichef-rh-v236-source-reelle-stable ===== */\nhtml body #director-hub,\nhtml body #hr-interface,\nhtml body #requests-interface,\nhtml body #timesheets-interface,\nhtml body #logs-interface,\nhtml body #employee-portal,\nhtml body #rh-v226-shell,\nhtml body #rh-v236-individual-shell,\nhtml body .rh-cockpit-panel,\nhtml body .rh-v226-card,\nhtml body .rh-v226-kpi,\nhtml body .table-container,\nhtml body table,\nhtml body tr,\nhtml body td,\nhtml body th,\nhtml body .staff-card,\nhtml body .stat-box,\nhtml body .modal,\nhtml body .modal-content{\n  animation:none!important;\n  -webkit-animation:none!important;\n  transition:none!important;\n}\nhtml body #rh-v226-plan-table-wrap,\nhtml body #table-container-individual{\n  scrollbar-gutter:stable;\n  backface-visibility:hidden;\n  -webkit-backface-visibility:hidden;\n}\n#hr-interface.rh-v236-individual-mode{\n  padding:0!important;\n  background:#f6f8fa!important;\n  overflow:hidden!important;\n}\n#hr-interface.rh-v236-individual-mode > .header,\n#hr-interface.rh-v236-individual-mode > #rh-v194-command-strip,\n#hr-interface.rh-v236-individual-mode > #planning-pro-summary,\n#hr-interface.rh-v236-individual-mode > #dashboard-stats-panel,\n#hr-interface.rh-v236-individual-mode > .main-container{\n  display:none!important;\n}\n#rh-v236-individual-shell{\n  width:100%;\n  height:100vh;\n  min-height:100vh;\n  display:none;\n  grid-template-columns:230px minmax(0,1fr);\n  background:#f6f8fa;\n  color:#111;\n  overflow:hidden;\n  font-family:Inter,Arial,sans-serif;\n}\n#hr-interface.rh-v236-individual-mode #rh-v236-individual-shell{\n  display:grid!important;\n}\n#rh-v236-side{\n  height:100vh;\n  overflow-y:auto;\n  overflow-x:hidden;\n  padding:18px 14px 14px;\n  box-sizing:border-box;\n  background:#fff;\n  border-right:1px solid #dfe4e8;\n}\n#rh-v236-brand{padding:0 10px 18px}\n#rh-v236-brand .main{\n  display:flex;align-items:flex-end;gap:5px;\n  font-size:30px;line-height:1;font-weight:950;color:#111;\n}\n#rh-v236-brand .main b{font-size:14px;font-weight:500;transform:translateY(-2px)}\n#rh-v236-brand .sub{margin-top:6px;font-size:11px;font-weight:850;color:#111}\n.rh-v236-nav-label{\n  display:block;margin:16px 10px 6px;\n  font-size:8px;font-weight:950;letter-spacing:1.15px;color:#111;\n}\n.rh-v236-nav{\n  width:100%;min-height:42px;\n  display:grid;grid-template-columns:27px 1fr auto;align-items:center;gap:6px;\n  margin:2px 0;padding:8px 10px;border:0;border-radius:9px;\n  background:transparent;color:#111;text-align:left;font-size:11px;font-weight:740;cursor:pointer;\n}\n.rh-v236-nav:hover{background:#f0f3f6!important}\n.rh-v236-nav.active{background:#111820!important;color:#fff!important}\n.rh-v236-nav .ico{text-align:center;font-size:16px}\n#rh-v236-side-bottom{\n  margin-top:18px;padding:11px 13px;border-radius:10px;\n  background:#111820;color:#fff;display:flex;gap:8px;align-items:center;\n  font-size:11px;font-weight:900;\n}\n#rh-v236-side-bottom small{margin-left:auto;color:#cbd3da;font-size:8px}\n#rh-v236-main{min-width:0;height:100vh;display:flex;flex-direction:column;overflow:hidden}\n#rh-v236-top{\n  min-height:72px;display:grid;\n  grid-template-columns:280px minmax(320px,1fr) 220px 170px;\n  align-items:center;gap:14px;padding:0 22px;box-sizing:border-box;\n  background:#fff;border-bottom:1px solid #dfe4e8;\n}\n#rh-v236-venue strong{display:block;font-size:12px;font-weight:950}\n#rh-v236-venue small{display:block;margin-top:3px;color:#68747f;font-size:9px}\n#rh-v236-searchbox{\n  height:44px;display:flex;align-items:center;gap:9px;padding:0 13px;\n  border:1px solid #dfe4e8;border-radius:12px;background:#fff;\n  box-shadow:0 3px 10px rgba(20,30,40,.04);\n}\n#rh-v236-search{\n  flex:1;min-width:0;height:100%;border:0!important;outline:0!important;\n  box-shadow:none!important;background:transparent!important;color:#111!important;font-size:11px!important;\n}\n#rh-v236-sync{\n  height:48px;display:flex;align-items:center;justify-content:center;gap:9px;\n  border-radius:12px;background:#f0f7f4;color:#17694b;\n}\n#rh-v236-sync .dot{width:11px;height:11px;border-radius:50%;background:#0b9f70}\n#rh-v236-sync strong{display:block;color:#17694b;font-size:11px}\n#rh-v236-sync small{display:block;margin-top:2px;color:#60766c;font-size:8px}\n#rh-v236-user{display:flex;align-items:center;justify-content:flex-end;gap:10px}\n#rh-v236-user .avatar{\n  width:34px;height:34px;display:grid;place-items:center;border-radius:50%;\n  background:#e6eaed;font-size:11px;font-weight:950;\n}\n#rh-v236-user strong{font-size:10px}\n#rh-v236-content{flex:1;min-height:0;overflow:auto;padding:12px 14px 16px;box-sizing:border-box}\n#rh-v236-profile{\n  min-height:112px;display:flex;align-items:center;gap:18px;padding:14px 18px;margin-bottom:10px;\n  border:1px solid #dfe4e8;border-radius:15px;background:#fff;\n  box-shadow:0 4px 15px rgba(20,30,40,.025);\n}\n#rh-v236-profile-avatar{\n  width:72px;height:72px;min-width:72px;display:grid;place-items:center;position:relative;\n  border-radius:50%;background:linear-gradient(145deg,#eef1f4,#d9dee3);\n  color:#111;font-size:30px;font-weight:950;\n}\n#rh-v236-profile-avatar::after{\n  content:\"\";position:absolute;right:3px;bottom:3px;width:14px;height:14px;\n  border:3px solid #fff;border-radius:50%;background:#15a367;\n}\n#rh-v236-profile-copy{min-width:0;flex:1}\n#rh-v236-name-line{display:flex;align-items:center;gap:10px;flex-wrap:wrap}\n#rh-v236-name{font-size:25px;line-height:1;font-weight:950;color:#111}\n#rh-v236-active{\n  padding:5px 12px;border-radius:999px;background:#d9f8e7;color:#117549;\n  font-size:10px;font-weight:900;\n}\n#rh-v236-role{margin-top:7px;color:#111;font-size:12px;font-weight:800}\n#rh-v236-meta{margin-top:8px;display:flex;gap:18px;flex-wrap:wrap;color:#61707b;font-size:9px}\n#rh-v236-profile-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}\n#rh-v236-profile-actions button{\n  min-height:38px;padding:7px 12px;border:1px solid #ccd3d8;border-radius:8px;\n  background:#fff;color:#111;font-size:9px;font-weight:900;cursor:pointer;\n}\n#rh-v236-kpis{\n  display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:9px;margin-bottom:9px;\n}\n#rh-v236-kpis-secondary{\n  display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:9px;margin-bottom:10px;\n}\n.rh-v236-kpi{\n  min-height:91px;display:flex;align-items:center;gap:12px;padding:11px 13px;\n  box-sizing:border-box;border:1px solid #dfe4e8;border-radius:13px;background:#fff;\n}\n.rh-v236-kpi.small{min-height:78px}\n.rh-v236-kpi .ico{\n  width:44px;height:44px;min-width:44px;display:grid;place-items:center;\n  border-radius:12px;font-size:20px;\n}\n.rh-v236-kpi.small .ico{width:39px;height:39px;min-width:39px;font-size:17px}\n.rh-v236-kpi.blue .ico{background:#dcecff;color:#286fc0}\n.rh-v236-kpi.green .ico{background:#ddf6e8;color:#11824f}\n.rh-v236-kpi.purple .ico{background:#ece3ff;color:#6f3bd0}\n.rh-v236-kpi.orange .ico{background:#fff0d8;color:#d37a00}\n.rh-v236-kpi.red .ico{background:#ffe4e4;color:#d84343}\n.rh-v236-kpi.gray .ico{background:#edf0f2;color:#5b6670}\n.rh-v236-kpi .value{color:#111;font-size:20px;line-height:1.05;font-weight:950}\n.rh-v236-kpi.small .value{font-size:17px}\n.rh-v236-kpi .label{margin-top:4px;color:#111;font-size:10px;font-weight:800}\n.rh-v236-kpi .sub{margin-top:3px;color:#68747f;font-size:8px}\n#rh-v236-planning-card{\n  min-width:0;overflow:hidden;border:1px solid #dfe4e8;border-radius:15px;background:#fff;\n}\n#rh-v236-planning-head{\n  min-height:66px;display:flex;align-items:center;gap:10px;padding:9px 14px;\n  border-bottom:1px solid #dfe4e8;\n}\n#rh-v236-planning-title{margin-right:10px;font-size:18px;font-weight:950;white-space:nowrap}\n.rh-v236-month-btn,#rh-v236-today,#rh-v236-annual,#rh-v236-history{\n  min-height:36px;padding:7px 11px;border:1px solid #cbd2d7;border-radius:8px;\n  background:#fff;color:#111;font-size:9px;font-weight:900;cursor:pointer;\n}\n.rh-v236-month-btn{width:36px;padding:0;font-size:18px}\n#rh-v236-month-label{min-width:135px;text-align:center;font-size:13px;font-weight:950}\n#rh-v236-planning-actions{margin-left:auto;display:flex;gap:7px;align-items:center}\n#rh-v236-table-host{min-width:0}\n#rh-v236-table-host #table-container-individual,\n#rh-v236-table-host #annual-view-container{\n  width:100%!important;max-height:calc(100vh - 445px)!important;min-height:310px!important;\n  overflow:auto!important;padding:0!important;background:#fff!important;\n}\n#rh-v236-table-host .table-detail{\n  width:100%!important;min-width:1060px!important;table-layout:fixed!important;\n  border-collapse:separate!important;border-spacing:0!important;background:#fff!important;\n}\n#rh-v236-table-host .table-detail thead{position:sticky!important;top:0!important;z-index:10!important}\n#rh-v236-table-host .table-detail th{\n  height:42px!important;padding:7px 8px!important;background:#f2f4f6!important;color:#4d5862!important;\n  border-right:1px solid #dfe4e8!important;border-bottom:1px solid #dfe4e8!important;\n  font-size:9px!important;font-weight:950!important;letter-spacing:.2px!important;text-align:center!important;\n}\n#rh-v236-table-host .table-detail th:first-child{position:sticky!important;left:0!important;z-index:12!important;width:105px!important}\n#rh-v236-table-host .table-detail th:nth-child(2){width:145px!important}\n#rh-v236-table-host .table-detail th:nth-child(3){width:145px!important}\n#rh-v236-table-host .table-detail th:nth-child(4),\n#rh-v236-table-host .table-detail th:nth-child(5){width:145px!important}\n#rh-v236-table-host .table-detail th:nth-child(6){width:90px!important}\n#rh-v236-table-host .table-detail th:nth-child(7){width:90px!important}\n#rh-v236-table-host .table-detail th:nth-child(8){width:auto!important}\n#rh-v236-table-host .table-detail td{\n  height:48px!important;padding:5px 8px!important;background:#fff!important;color:#111!important;\n  border-right:1px solid #edf0f2!important;border-bottom:1px solid #e8ecef!important;text-align:center!important;\n}\n#rh-v236-table-host .table-detail tbody tr:nth-child(even) td{background:#fbfcfd!important}\n#rh-v236-table-host .table-detail tbody tr.weekend td{background:#f7f9fb!important}\n#rh-v236-table-host .table-detail tbody tr:hover td{background:#eef5ff!important}\n#rh-v236-table-host .table-detail td:first-child{\n  position:sticky!important;left:0!important;z-index:5!important;font-weight:950!important;background:#fff!important;\n}\n#rh-v236-table-host .table-detail .status-sel,\n#rh-v236-table-host .table-detail .shift-inp,\n#rh-v236-table-host .table-detail .pause-inp,\n#rh-v236-table-host .table-detail .obs-inp{\n  width:100%!important;min-width:0!important;min-height:34px!important;padding:5px 7px!important;\n  border:1px solid #cbd2d7!important;border-radius:7px!important;background:#fff!important;color:#111!important;\n  box-shadow:none!important;font-size:10px!important;font-weight:750!important;\n}\n#rh-v236-table-host .table-detail .status-sel{font-weight:900!important}\n#rh-v236-table-host .table-detail input:disabled,\n#rh-v236-table-host .table-detail select:disabled{\n  background:#f0f2f3!important;color:#7f8991!important;opacity:1!important;\n}\n#rh-v236-table-host .v167-day-date{color:#111!important;font-size:10px!important;font-weight:950!important}\n@media(min-width:851px) and (min-height:760px){\n  #rh-v236-side{overflow-y:hidden!important;padding-top:10px!important}\n  #rh-v236-brand{padding-bottom:8px!important}\n  .rh-v236-nav-label{margin-top:9px!important;margin-bottom:3px!important}\n  .rh-v236-nav{min-height:32px!important;padding:4px 9px!important;font-size:9.5px!important}\n  #rh-v236-side-bottom{margin-top:8px!important;padding:8px 10px!important}\n}\n@media(max-width:1250px){\n  #rh-v236-individual-shell{grid-template-columns:205px minmax(0,1fr)}\n  #rh-v236-top{grid-template-columns:220px minmax(260px,1fr) 190px 145px}\n  #rh-v236-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}\n  #rh-v236-kpis-secondary{grid-template-columns:repeat(3,minmax(0,1fr))}\n}\n@media(max-width:850px){\n  #rh-v236-individual-shell{grid-template-columns:1fr}\n  #rh-v236-side{display:none!important}\n  #rh-v236-top{grid-template-columns:minmax(0,1fr) 180px}\n  #rh-v236-venue,#rh-v236-user{display:none!important}\n  #rh-v236-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}\n  #rh-v236-kpis-secondary{grid-template-columns:repeat(2,minmax(0,1fr))}\n}\n\n\n/* ===== iCHEF RH V237 \u00b7 STABILITE VISUELLE ===== */\nhtml body #director-hub *,html body #hr-interface *{animation-duration:0s!important;animation-delay:0s!important;}\nhtml body #director-hub #rh-v226-content,html body #hr-interface #rh-v236-content{overflow-anchor:none!important;}\nhtml body #director-hub #rh-v226-plan-table-wrap,html body #hr-interface #rh-v236-table-host{min-height:0!important;transform:translateZ(0);will-change:auto!important;}\nhtml body #hr-interface.rh-v236-individual-mode #rh-v236-individual-shell{display:grid!important;position:absolute!important;inset:0!important;z-index:50!important;background:#f6f8fa!important;}\nhtml body #rh-v236-individual-shell,html body #rh-v236-profile,html body #rh-v236-kpis,html body #rh-v236-kpis-secondary,html body #rh-v236-planning-card,html body #rh-v236-table-host{opacity:1!important;transition:none!important;}\n\n/* =========================================================\n   iCHEF RH V238 \u00b7 BUNDLE SYNCHRONIS\u00c9\n   Pr\u00e9sentation fonctionnelle identique \u00e0 V237.\n   ========================================================= */\n\n/* =========================================================\n   iCHEF RH V239 \u00b7 PLANNING INDIVIDUEL CIBLE\n   ========================================================= */\n\n#hr-interface{position:relative!important}\n\n#hr-interface.rh-v236-individual-mode #rh-v236-individual-shell{\n  display:grid!important;\n  position:absolute!important;\n  inset:0!important;\n  z-index:500!important;\n  width:100%!important;\n  height:100%!important;\n  min-height:100%!important;\n  background:#f5f7f9!important;\n}\n\n#rh-v236-individual-shell{\n  grid-template-columns:232px minmax(0,1fr)!important;\n  background:#f5f7f9!important;\n}\n\n#rh-v236-side{\n  padding:18px 14px 12px!important;\n  background:#fff!important;\n  border-right:1px solid #e1e5e8!important;\n}\n\n#rh-v236-brand{padding:0 10px 18px!important}\n\n#rh-v236-brand .main{\n  position:relative!important;\n  font-size:31px!important;\n  letter-spacing:-1.3px!important;\n}\n#rh-v236-brand .main::before{\n  content:\"\";\n  width:7px!important;height:7px!important;\n  border-radius:50%!important;\n  background:#ff5a1f!important;\n  position:absolute!important;\n  left:-2px!important;top:0!important;\n}\n\n.rh-v236-nav{\n  min-height:40px!important;\n  grid-template-columns:29px 1fr!important;\n  padding:7px 10px!important;\n  border-radius:9px!important;\n  font-size:10px!important;\n}\n.rh-v236-nav.active{background:#111820!important;color:#fff!important}\n\n#rh-v236-top{\n  min-height:72px!important;height:72px!important;\n  grid-template-columns:280px minmax(360px,1fr) 220px 190px!important;\n  padding:0 24px!important;\n  background:#fff!important;\n  border-bottom:1px solid #e1e5e8!important;\n}\n#rh-v236-searchbox{height:46px!important;border-radius:10px!important}\n\n#rh-v236-content{\n  padding:12px 20px 18px!important;\n  background:#f5f7f9!important;\n}\n\n#rh-v236-profile{\n  min-height:110px!important;\n  padding:14px 20px!important;\n  gap:20px!important;\n  border-radius:14px!important;\n  margin-bottom:10px!important;\n  background:#fff!important;\n}\n#rh-v236-profile-avatar{\n  width:74px!important;height:74px!important;min-width:74px!important;\n  font-size:29px!important;\n}\n#rh-v236-name{font-size:24px!important}\n#rh-v236-active{padding:5px 13px!important;font-size:10px!important}\n#rh-v236-role{font-size:12px!important}\n#rh-v236-meta{font-size:9px!important;gap:20px!important}\n#rh-v236-profile-actions button{\n  min-height:38px!important;padding:7px 13px!important;\n  border-radius:8px!important;background:#fff!important;font-size:9px!important;\n}\n\n#rh-v236-kpis{\n  grid-template-columns:repeat(5,minmax(0,1fr))!important;\n  gap:10px!important;margin-bottom:9px!important;\n}\n#rh-v236-kpis-secondary{\n  grid-template-columns:repeat(6,minmax(0,1fr))!important;\n  gap:10px!important;margin-bottom:10px!important;\n}\n.rh-v236-kpi{\n  min-height:96px!important;border-radius:13px!important;\n  padding:12px 14px!important;background:#fff!important;\n}\n.rh-v236-kpi.small{min-height:82px!important}\n.rh-v236-kpi .value{font-size:21px!important}\n.rh-v236-kpi.small .value{font-size:18px!important}\n.rh-v236-kpi .label{font-size:10px!important}\n.rh-v236-kpi .sub{font-size:8px!important}\n\n#rh-v236-planning-card{\n  border-radius:14px!important;\n  overflow:hidden!important;background:#fff!important;\n}\n#rh-v236-planning-head{\n  min-height:72px!important;padding:10px 14px!important;\n  gap:10px!important;\n}\n#rh-v236-planning-title{font-size:20px!important;margin-right:10px!important}\n#rh-v236-month-label{min-width:145px!important;font-size:14px!important}\n#rh-v236-planning-actions{margin-left:auto!important}\n\n#rh-v236-table-host #table-container-individual{\n  max-height:calc(100vh - 484px)!important;\n  min-height:310px!important;\n  overflow:auto!important;\n  background:#fff!important;\n}\n#rh-v236-table-host .table-detail{\n  min-width:1120px!important;\n  table-layout:fixed!important;\n}\n#rh-v236-table-host .table-detail th{\n  height:40px!important;padding:6px 8px!important;\n  background:#f4f6f8!important;color:#111!important;\n  font-size:9px!important;text-transform:none!important;\n}\n#rh-v236-table-host .table-detail td{\n  height:42px!important;padding:4px 7px!important;\n  font-size:10px!important;\n}\n#rh-v236-table-host .table-detail tbody tr.weekend td{\n  background:#f7f9fb!important;\n}\n#rh-v236-table-host .table-detail tbody tr:nth-child(7n+6) td{\n  background:#edf6ff!important;\n}\n#rh-v236-table-host .table-detail tbody tr:nth-child(7n) td{\n  background:#fff3f1!important;\n}\n#rh-v236-table-host .table-detail .status-sel,\n#rh-v236-table-host .table-detail .shift-inp,\n#rh-v236-table-host .table-detail .pause-inp,\n#rh-v236-table-host .table-detail .obs-inp{\n  min-height:32px!important;height:32px!important;\n  border-radius:6px!important;font-size:10px!important;\n}\n#rh-v236-table-host .table-detail .obs-inp{text-align:center!important}\n\n@media(min-width:1450px){\n  #rh-v236-table-host .table-detail{min-width:100%!important}\n}\n@media(max-width:1250px){\n  #rh-v236-individual-shell{\n    grid-template-columns:210px minmax(0,1fr)!important;\n  }\n}\n";
+
+  function ensureStyle() {
+    let style=document.getElementById('ichef-rh-v240-runtime-style');
+    if(!style) {
+      style=document.createElement('style');
+      style.id='ichef-rh-v240-runtime-style';
+      style.textContent=CSS;
+      document.head.appendChild(style);
+    }
+
+    const shell=document.getElementById('rh-v236-individual-shell');
+    if(shell) {
+      const expected=getComputedStyle(shell);
+      // Sans notre CSS, le shell apparaît en HTML brut. On force le minimum vital.
+      if(expected.position==='static' && expected.display!=='none') {
+        shell.style.display='none';
+      }
+    }
+  }
+
+  if(document.readyState==='loading') {
+    document.addEventListener('DOMContentLoaded',ensureStyle,{once:true});
+  } else {
+    ensureStyle();
+  }
+
+  setTimeout(ensureStyle,50);
+  setTimeout(ensureStyle,300);
+  window.addEventListener('focus',ensureStyle);
+})();
+
+
+
+;
+/* RH V264 - preserved script #159 */
+
+(() => {
+  'use strict';
+
+  function activeStaffId(){
+    const explicit=String(window.__ICHEF_V239_SELECTED_STAFF_ID__||'').trim();
+    if(explicit) return explicit;
+
+    try{
+      if(typeof currentStaffId!=='undefined' && currentStaffId!==null && currentStaffId!==''){
+        return String(currentStaffId);
+      }
+    }catch(_){}
+
+    const card=document.querySelector('#staff-list-render .rh-v220-staff-card.active[data-staff-id]');
+    return String(card?.dataset.staffId||'');
+  }
+
+  function apply(){
+    const hr=document.getElementById('hr-interface');
+    const shell=document.getElementById('rh-v236-individual-shell');
+    if(!hr || !shell) return;
+
+    const visible=getComputedStyle(hr).display!=='none';
+    const id=activeStaffId();
+
+    const show=Boolean(visible && id);
+    hr.classList.toggle('rh-v236-individual-mode',show);
+
+    if(show){
+      shell.style.removeProperty('display');
+      requestAnimationFrame(()=>{
+        try{ window.ICHEF_RH_V236?.updateIndividual?.(); }catch(_){}
+      });
+    }
+  }
+
+  // Capture even if another legacy script replaces selectStaff later.
+  document.addEventListener('click',event=>{
+    const card=event.target?.closest?.('[data-staff-id], [data-v226-staff-id], [data-v232-staff-id], [data-v233-staff-id]');
+    const id=String(
+      card?.dataset?.staffId ||
+      card?.dataset?.v226StaffId ||
+      card?.dataset?.v232StaffId ||
+      card?.dataset?.v233StaffId ||
+      ''
+    ).trim();
+    if(id){
+      window.__ICHEF_V239_SELECTED_STAFF_ID__=id;
+      setTimeout(apply,0);
+      setTimeout(apply,80);
+    }
+  },true);
+
+  window.addEventListener('ichef:staff-selected',event=>{
+    const id=String(event?.detail?.staffId||'').trim();
+    if(id) window.__ICHEF_V239_SELECTED_STAFF_ID__=id;
+    setTimeout(apply,0);
+    setTimeout(apply,80);
+  });
+
+  window.addEventListener('ichef:planning-views-refreshed',apply);
+  window.addEventListener('focus',apply);
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',()=>setTimeout(apply,120),{once:true});
+  }else{
+    setTimeout(apply,120);
+  }
+
+  window.iChefApplyIndividualShellV240=apply;
+})();
+
+
+;
+
+;
+/* RH V264 - preserved script #160 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V245_DOSSIER__) return;
+  window.__ICHEF_RH_V245_DOSSIER__=true;
+
+  let currentStaffId='';
+  let docsToken='';
+  let docsTokenExpires=0;
+  let openSequence=0;
+
+  const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+
+  function getDirRows(){
+    try{return typeof getDir==='function'?(getDir()||[]):[]}catch(_){return []}
+  }
+
+  function getStaff(id){
+    return getDirRows().find(x=>String(x?.id)===String(id))||null;
+  }
+
+  function jsonGet(key,fallback={}){
+    try{
+      const value=JSON.parse(localStorage.getItem(key)||'null');
+      return value&&typeof value==='object'?value:fallback;
+    }catch(_){return fallback}
+  }
+
+  function payrollProfile(id){
+    const rows=jsonGet('ichef_payroll_profiles_v2',{});
+    return rows?.[id]||rows?.[String(id)]||{};
+  }
+
+  function managerPin(){
+    try{
+      return typeof getRhDirectionAuthPin==='function'
+        ? String(getRhDirectionAuthPin()||'').trim()
+        : '';
+    }catch(_){return ''}
+  }
+
+  function currentDevice(){
+    try{
+      return String(
+        window.RH_DEVICE_ID ||
+        (typeof RH_DEVICE_ID!=='undefined'?RH_DEVICE_ID:'') ||
+        localStorage.getItem('ichef_device_id') ||
+        ''
+      ).trim();
+    }catch(_){
+      return String(localStorage.getItem('ichef_device_id')||'').trim();
+    }
+  }
+
+  function apiBase(){
+    try{
+      return String(
+        window.SERVER_URL_JS ||
+        (typeof SERVER_URL_JS!=='undefined'?SERVER_URL_JS:'')
+      ).replace(/\/$/,'');
+    }catch(_){return ''}
+  }
+
+  function value(...items){
+    for(const item of items){
+      if(item!==undefined && item!==null && String(item).trim()!==''){
+        return String(item).trim();
+      }
+    }
+    return '';
+  }
+
+  function dateLabel(v){
+    if(!v)return '—';
+    const d=new Date(v);
+    return Number.isFinite(d.getTime())
+      ? d.toLocaleDateString('fr-FR')
+      : String(v);
+  }
+
+  function countryOf(dossier){
+    return String(dossier?.country||'').toUpperCase()==='FR'?'FR':'CH';
+  }
+
+  function profileRows(staff,dossier){
+    const p=dossier?.profile||payrollProfile(staff?.id);
+    const country=countryOf(dossier);
+    const contractType=value(staff?.contractType,p?.contractType);
+    const birthRequired=/APPRENT|MINEUR/i.test(contractType);
+    const endRequired=/CDD|SAISON|TEMP|EXTRA/i.test(contractType);
+
+    const rows=[
+      ['Identité',value(staff?.name),'identité',true],
+      ['Poste / fonction',value(staff?.title,staff?.role,staff?.dept),'poste',true],
+      ['Email Staff',value(staff?.email,staff?.mail,staff?.emailAddress),'email',false],
+      ['WhatsApp / téléphone',value(staff?.whatsappPhone,staff?.phone,staff?.telephone),'whatsapp',false],
+      ['Type de contrat',contractType,'type contrat',true],
+      ['Heures contractuelles / semaine',Number(staff?.contract)>0?`${Number(staff.contract)} h`:'','heures contrat',true],
+      ['Date d’entrée',dateLabel(value(staff?.startDate,p?.startDate)),'date entrée',true],
+      ['Date de fin',dateLabel(value(staff?.endDate,p?.endDate)),'date fin',endRequired],
+      ['Date de naissance',dateLabel(value(staff?.birthDate,p?.birthDate)),'date naissance',birthRequired]
+    ];
+
+    if(country==='FR'){
+      rows.push([
+        'Classification HCR',
+        [value(p?.hcrLevel),value(p?.hcrEchelon)].filter(Boolean).join(' / '),
+        'classification HCR',
+        true
+      ]);
+    }else{
+      rows.push([
+        'Catégorie CCNT',
+        value(p?.chLgavCategory),
+        'catégorie CCNT',
+        true
+      ]);
+    }
+
+    const gross=Number(
+      p?.grossSalary ??
+      staff?.grossSalary ??
+      staff?.monthlySalary ??
+      0
+    );
+    rows.push([
+      'Salaire brut mensuel',
+      gross>0?String(gross):'',
+      'salaire brut',
+      false
+    ]);
+
+    return rows.map(([label,val,key,required])=>({
+      label,
+      value:val && val!=='—'?val:'',
+      key,
+      required:Boolean(required)
+    }));
+  }
+
+  function renderProfile(staff,dossier){
+    const target=document.getElementById('rh-v245-profile-grid');
+    if(!target)return;
+
+    const legalMissing=new Set(
+      Array.isArray(dossier?.missing)
+        ? dossier.missing.map(x=>String(x))
+        : []
+    );
+
+    target.innerHTML=profileRows(staff,dossier).map(row=>{
+      const missing=row.required && (
+        !row.value ||
+        legalMissing.has(row.key)
+      );
+      const state=missing
+        ? ['missing','MANQUANT']
+        : row.value
+          ? ['ok','RENSEIGNÉ']
+          : ['info','OPTIONNEL'];
+      return `<div class="rh-v245-row">
+        <label>${esc(row.label)}</label>
+        <strong>${esc(row.value||'—')}</strong>
+        <span class="rh-v245-state ${state[0]}">${state[1]}</span>
+      </div>`;
+    }).join('');
+  }
+
+  async function ensureDocsSession(force=false){
+    if(
+      !force &&
+      docsToken &&
+      Date.now()<docsTokenExpires-60000
+    ){
+      return docsToken;
+    }
+
+    const pin=managerPin();
+    if(!/^\d{4,12}$/.test(pin)){
+      const e=new Error(
+        'Reconnectez-vous avec un PIN Direction / Manager pour vérifier les pièces du coffre RH.'
+      );
+      e.code='RH_DOCS_AUTH_REQUIRED';
+      throw e;
+    }
+
+    const controller=new AbortController();
+    const timer=setTimeout(()=>controller.abort(),12000);
+
+    try{
+      const r=await fetch(
+        `${apiBase()}/api/rh/documents/session`,
+        {
+          method:'POST',
+          credentials:'include',
+          cache:'no-store',
+          headers:{
+            'Content-Type':'application/json',
+            'Accept':'application/json',
+            'X-iCHEF-Tenant':String(window.tenantID_JS||tenantID_JS||''),
+            'X-iCHEF-Device':currentDevice()
+          },
+          body:JSON.stringify({
+            tenantID:String(window.tenantID_JS||tenantID_JS||''),
+            pin,
+            deviceId:currentDevice()
+          }),
+          signal:controller.signal
+        }
+      );
+
+      const data=await r.json().catch(()=>({}));
+      if(!r.ok || !data?.accessToken){
+        const e=new Error(data.error||'Autorisation du coffre RH refusée.');
+        e.status=r.status;
+        throw e;
+      }
+
+      docsToken=String(data.accessToken);
+      docsTokenExpires=
+        Date.now()+
+        Math.max(
+          60000,
+          Number(data.expiresInSeconds||7200)*1000
+        );
+
+      return docsToken;
+    }catch(e){
+      if(e?.name==='AbortError'){
+        throw new Error('Le coffre RH met trop de temps à répondre.');
+      }
+      throw e;
+    }finally{
+      clearTimeout(timer);
+    }
+  }
+
+  async function fetchDocuments(staffId,retry=true){
+    const token=await ensureDocsSession(false);
+    const controller=new AbortController();
+    const timer=setTimeout(()=>controller.abort(),15000);
+
+    try{
+      const r=await fetch(
+        `${apiBase()}/api/rh/documents/list?tenantID=${encodeURIComponent(String(window.tenantID_JS||tenantID_JS||''))}&staffId=${encodeURIComponent(String(staffId))}`,
+        {
+          method:'GET',
+          credentials:'include',
+          cache:'no-store',
+          headers:{
+            'Accept':'application/json',
+            'X-iCHEF-Tenant':String(window.tenantID_JS||tenantID_JS||''),
+            'X-iCHEF-Device':currentDevice(),
+            'Authorization':`Bearer ${token}`
+          },
+          signal:controller.signal
+        }
+      );
+
+      if(r.status===401 && retry){
+        docsToken='';
+        docsTokenExpires=0;
+        await ensureDocsSession(true);
+        return fetchDocuments(staffId,false);
+      }
+
+      if(r.status===503 && retry){
+        await new Promise(resolve=>setTimeout(resolve,750));
+        return fetchDocuments(staffId,false);
+      }
+
+      const data=await r.json().catch(()=>({}));
+      if(!r.ok || data.success===false){
+        const e=new Error(data.error||`Coffre RH indisponible (${r.status}).`);
+        e.status=r.status;
+        throw e;
+      }
+
+      return Array.isArray(data.documents)
+        ? data.documents
+        : [];
+    }catch(e){
+      if(e?.name==='AbortError'){
+        throw new Error('Le coffre RH met trop de temps à répondre.');
+      }
+      throw e;
+    }finally{
+      clearTimeout(timer);
+    }
+  }
+
+  function docCategoryLabel(v){
+    return ({
+      PAYSLIP:'Bulletin de salaire',
+      SALARY_CERTIFICATE:'Certificat de salaire',
+      TAX_DOCUMENT:'Document fiscal',
+      WITHHOLDING_TAX:'Impôt / retenue fiscale',
+      SOCIAL_STATEMENT:'Cotisations / social',
+      PAYROLL_OTHER:'Autre document paie',
+      CONTRACT:'Contrat / avenant',
+      ATTESTATION:'Attestation de travail',
+      CERTIFICATE:'Certificat / formation',
+      OTHER:'Autre document'
+    })[String(v||'OTHER').toUpperCase()]||'Document';
+  }
+
+  function docExpiry(doc){
+    const raw=value(
+      doc?.expiresAt,
+      doc?.expiryDate,
+      doc?.validUntil,
+      doc?.expirationDate
+    );
+    if(!raw)return {label:'',expired:false};
+    const d=new Date(raw);
+    if(!Number.isFinite(d.getTime()))return {label:String(raw),expired:false};
+    return {
+      label:d.toLocaleDateString('fr-FR'),
+      expired:d.getTime()<Date.now()
+    };
+  }
+
+  function renderDocuments(docs,loadError=''){
+    const list=document.getElementById('rh-v245-doc-list');
+    const status=document.getElementById('rh-v245-doc-status');
+    const state=document.getElementById('rh-v245-doc-state');
+    const kpi=document.getElementById('rh-v245-kpi-docs');
+    if(!list||!status||!state||!kpi)return;
+
+    if(loadError){
+      kpi.textContent='NON VÉRIFIÉ';
+      state.className='rh-v245-state warn';
+      state.textContent='À VÉRIFIER';
+      status.textContent=loadError;
+      list.innerHTML='';
+      return;
+    }
+
+    kpi.textContent=String(docs.length);
+    const categories=new Map();
+    docs.forEach(doc=>{
+      const c=String(doc?.category||'OTHER').toUpperCase();
+      categories.set(c,(categories.get(c)||0)+1);
+    });
+
+    const hasContract=(categories.get('CONTRACT')||0)>0;
+    state.className=`rh-v245-state ${hasContract?'ok':'warn'}`;
+    state.textContent=hasContract?'COFFRE VÉRIFIÉ':'CONTRAT À VÉRIFIER';
+
+    status.innerHTML=
+      `${docs.length} pièce(s) enregistrée(s). `+
+      (hasContract
+        ? '<strong style="color:#8bd8b5">Contrat / avenant présent.</strong>'
+        : '<strong style="color:#f6c85f">Aucun document classé CONTRAT / AVENANT dans le coffre.</strong>');
+
+    if(!docs.length){
+      list.innerHTML=
+        '<div class="rh-v245-doc-status">Aucune pièce enregistrée dans le coffre RH de ce collaborateur.</div>';
+      return;
+    }
+
+    list.innerHTML=docs.map(doc=>{
+      const expiry=docExpiry(doc);
+      const title=value(doc?.title,doc?.fileName,'Document RH');
+      const meta=[
+        docCategoryLabel(doc?.category),
+        value(doc?.period),
+        dateLabel(value(doc?.issuedAt,doc?.uploadedAt,doc?.createdAt)),
+        doc?.proofId?`Preuve ${doc.proofId}`:''
+      ].filter(Boolean).join(' · ');
+
+      return `<div class="rh-v245-doc">
+        <div class="rh-v245-doc-code">${esc(String(doc?.category||'DOC').toUpperCase())}</div>
+        <div>
+          <strong>${esc(title)}</strong>
+          <small>${esc(meta)}</small>
+          ${expiry.label?`<small>Expiration : ${esc(expiry.label)}</small>`:''}
+        </div>
+        <span class="rh-v245-state ${expiry.expired?'missing':'ok'}">${expiry.expired?'EXPIRÉ':'PRÉSENT'}</span>
+      </div>`;
+    }).join('');
+  }
+
+  function renderMissing(staff,dossier,docsState){
+    const target=document.getElementById('rh-v245-missing-list');
+    const badge=document.getElementById('rh-v245-critical-state');
+    const kpi=document.getElementById('rh-v245-kpi-missing');
+    if(!target||!badge||!kpi)return;
+
+    const missing=Array.isArray(dossier?.missing)
+      ? [...dossier.missing]
+      : [];
+
+    if(docsState?.verified && !docsState.hasContract){
+      missing.push('pièce contrat / avenant');
+    }
+
+    const unique=[...new Set(missing.map(x=>String(x).trim()).filter(Boolean))];
+
+    kpi.textContent=String(unique.length);
+    badge.className=`rh-v245-state ${unique.length?'missing':'ok'}`;
+    badge.textContent=unique.length?`${unique.length} À COMPLÉTER`:'DOSSIER À JOUR';
+
+    target.innerHTML=unique.length
+      ? unique.map(x=>`<span class="rh-v245-missing-chip">${esc(x)}</span>`).join('')
+      : '<span class="rh-v245-missing-chip good">Aucun élément obligatoire manquant détecté dans les données actuellement suivies.</span>';
+  }
+
+  function setText(id,value){
+    const el=document.getElementById(id);
+    if(el)el.textContent=String(value??'');
+  }
+
+  async function refreshCurrent(){
+    const seq=++openSequence;
+    const staff=getStaff(currentStaffId);
+    const dossier=
+      typeof window.getRhLegalDossierV245==='function'
+        ? window.getRhLegalDossierV245(currentStaffId)
+        : null;
+
+    if(!staff || !dossier){
+      setText('rh-v245-subtitle','Collaborateur introuvable.');
+      return;
+    }
+
+    setText('rh-v245-name',staff.name||'Collaborateur');
+    setText(
+      'rh-v245-subtitle',
+      [
+        staff.title||staff.role||staff.dept||'',
+        `ID ${staff.id}`,
+        dossier.country||''
+      ].filter(Boolean).join(' · ')
+    );
+
+    setText(
+      'rh-v245-kpi-state',
+      dossier.complete?'COMPLET':'À COMPLÉTER'
+    );
+    setText(
+      'rh-v245-kpi-framework',
+      dossier.country==='FR'?'HCR':'CCNT'
+    );
+
+    renderProfile(staff,dossier);
+    renderMissing(staff,dossier,{verified:false,hasContract:false});
+
+    setText('rh-v245-kpi-docs','…');
+    const state=document.getElementById('rh-v245-doc-state');
+    if(state){
+      state.className='rh-v245-state info';
+      state.textContent='CHARGEMENT';
+    }
+    const status=document.getElementById('rh-v245-doc-status');
+    if(status)status.textContent='Connexion au coffre documentaire sécurisé…';
+    const list=document.getElementById('rh-v245-doc-list');
+    if(list)list.innerHTML='';
+
+    try{
+      const docs=await fetchDocuments(staff.id,true);
+      if(seq!==openSequence)return;
+
+      const hasContract=docs.some(
+        d=>String(d?.category||'').toUpperCase()==='CONTRACT'
+      );
+
+      renderDocuments(docs,'');
+      renderMissing(staff,dossier,{
+        verified:true,
+        hasContract
+      });
+    }catch(error){
+      if(seq!==openSequence)return;
+      renderDocuments(
+        [],
+        error?.message||
+        'Impossible de vérifier les pièces du coffre RH.'
+      );
+      // Ne jamais déclarer une pièce absente si le coffre n'a pas pu être interrogé.
+      renderMissing(staff,dossier,{
+        verified:false,
+        hasContract:false
+      });
+    }
+  }
+
+  window.openRhStaffDossierV245=function(staffId){
+    currentStaffId=String(staffId||'');
+    const modal=document.getElementById('rh-v245-dossier-modal');
+    if(!modal)return;
+
+    modal.classList.add('show');
+    modal.setAttribute('aria-hidden','false');
+    refreshCurrent().catch(error=>{
+      console.error('[iCHEF RH V245 dossier]',error);
+    });
+  };
+
+  window.closeRhStaffDossierV245=function(){
+    openSequence++;
+    currentStaffId='';
+    const modal=document.getElementById('rh-v245-dossier-modal');
+    if(modal){
+      modal.classList.remove('show');
+      modal.setAttribute('aria-hidden','true');
+    }
+  };
+
+  document.addEventListener('click',event=>{
+    const open=event.target.closest('.rh-v245-dossier-open');
+    if(open){
+      event.preventDefault();
+      const encoded=String(open.dataset.rhV245Staff||'');
+      let staffId='';
+      try{staffId=decodeURIComponent(encoded)}catch(_){staffId=encoded}
+      window.openRhStaffDossierV245(staffId);
+      return;
+    }
+
+    if(event.target.id==='rh-v245-close-btn'){
+      window.closeRhStaffDossierV245();
+      return;
+    }
+
+    if(event.target.id==='rh-v245-refresh-btn'){
+      refreshCurrent().catch(()=>{});
+      return;
+    }
+
+    if(event.target.id==='rh-v245-edit-btn'){
+      const staff=getStaff(currentStaffId);
+      if(!staff)return;
+      window.closeRhStaffDossierV245();
+      if(typeof window.openStaffModal==='function'){
+        window.openStaffModal(staff.pin);
+      }
+      return;
+    }
+
+    if(event.target.id==='rh-v245-docs-btn'){
+      const staff=getStaff(currentStaffId);
+      if(!staff)return;
+      window.closeRhStaffDossierV245();
+      if(typeof window.openStaffDocumentsV103==='function'){
+        window.openStaffDocumentsV103(staff.id);
+      }else if(typeof window.openStaffModal==='function'){
+        window.openStaffModal(staff.pin);
+      }
+    }
+  },true);
+
+  window.__ICHEF_RH_BUILD__='RH-V245-DOSSIER-COLLABORATEUR-CONNECTE-SECURE';
+  console.info('[iCHEF RH V245] Dossier collaborateur connecté · données + pièces manquantes · coffre RH sécurisé');
+})();
+
+
+;
+
+;
+/* RH V264 - preserved script #161 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V246_ALERTS__) return;
+  window.__ICHEF_RH_V246_ALERTS__=true;
+  const q=(s,r=document)=>r.querySelector(s), qa=(s,r=document)=>[...r.querySelectorAll(s)];
+
+  function rows(){
+    const v=qa('#rh-v226-alert-list .rh-v226-list-row').filter(r=>{
+      const t=String(q('strong',r)?.textContent||'').trim();
+      return t&&!/rien à traiter/i.test(t);
+    });
+    if(v.length)return v;
+    return qa('#rh-cockpit-alerts .rh-list-item').filter(r=>String(r.textContent||'').trim());
+  }
+  function data(){
+    return rows().map((r,i)=>({
+      i,
+      title:String(q('strong',r)?.textContent||q('.rh-list-main',r)?.textContent||'Alerte RH').trim(),
+      detail:String(q('small',r)?.textContent||'').trim()
+    }));
+  }
+  function render(){
+    const a=data(), n=a.length, list=q('#rh-v246-alert-list');
+    if(q('#rh-v246-count'))q('#rh-v246-count').textContent=String(n);
+    if(q('#rh-v246-summary-title'))q('#rh-v246-summary-title').textContent=n?`${n} alerte${n>1?'s':''} à vérifier`:'Aucune alerte prioritaire';
+    if(list){
+      list.innerHTML=n?a.map((x,i)=>`<div class="rh-v246-row" data-v246-row="${i}"><span class="ico">${i===0?'!':'△'}</span><div><strong></strong><small></small></div><button type="button" data-v246-action="${i}">VOIR / CORRIGER</button></div>`).join(''):'<div class="rh-v246-empty">✓ Aucune alerte à traiter.</div>';
+      a.forEach((x,i)=>{const r=q(`[data-v246-row="${i}"]`,list);if(r){q('strong',r).textContent=x.title;q('small',r).textContent=x.detail;}});
+    }
+    const bell=q('#rh-v226-bell-badge'); if(bell){bell.textContent=String(n);bell.classList.toggle('show',n>0);}
+    if(q('#rh-v226-alert-count2'))q('#rh-v226-alert-count2').textContent=String(n);
+    if(q('#rh-v226-alerts'))q('#rh-v226-alerts').textContent=String(n);
+    return a;
+  }
+  function open(){render();const m=q('#rh-v246-alert-modal');if(m){m.classList.add('show');m.setAttribute('aria-hidden','false');}}
+  function close(){const m=q('#rh-v246-alert-modal');if(m){m.classList.remove('show');m.setAttribute('aria-hidden','true');}}
+  function action(i){
+    const source=rows()[Number(i)], btn=source?q('button',source):null;
+    close();
+    if(btn){btn.click();return;}
+    window.openPlanningAssistant?.();
+  }
+  function wire(){
+    [q('#rh-v226-bell'),q('#rh-v226-alert-count2'),q('#rh-v226-kpis .rh-v226-kpi.alerts'),q('#rh-v226-alerts-card .rh-v226-analytics-head')].filter(Boolean).forEach(el=>{
+      if(el.dataset.v246==='1')return;
+      el.dataset.v246='1';el.setAttribute('role','button');el.setAttribute('tabindex','0');
+      el.addEventListener('click',open);
+      el.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open();}});
+    });
+  }
+  document.addEventListener('click',e=>{
+    if(e.target.id==='rh-v246-close')close();
+    else if(e.target.id==='rh-v246-refresh'){try{window.ICHEF_RH_V226_DASHBOARD?.refresh?.()}catch(_){};setTimeout(render,80);}
+    else if(e.target.id==='rh-v246-analyse'){close();window.openPlanningAssistant?.();}
+    else {const b=e.target.closest('[data-v246-action]');if(b)action(b.dataset.v246Action);}
+  },true);
+  function install(){wire();render();}
+  const shell=q('#rh-v226-shell'); if(shell)new MutationObserver(wire).observe(shell,{childList:true,subtree:true});
+  window.addEventListener('ichef:planning-symbiosis',()=>setTimeout(render,60));
+  window.addEventListener('ichef:planning-views-refreshed',()=>setTimeout(render,60));
+  window.addEventListener('focus',()=>setTimeout(render,60));
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(install,150),{once:true});else setTimeout(install,150);
+  setTimeout(install,500);
+  window.openRhAlertsV246=open;
+  window.__ICHEF_RH_BUILD__='RH-V246-ALERTES-CONNECTEES-SECURE';
+  console.info('[iCHEF RH V246] cloche + pastilles + KPI alertes connectés');
+})();
+
+
+;
+
+;
+/* RH V264 - preserved script #162 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V247_INDIVIDUAL__) return;
+  window.__ICHEF_RH_V247_INDIVIDUAL__=true;
+
+  let repairing=false;
+  let lastRepairAt=0;
+  let frame=0;
+
+  function selectedId(){
+    const explicit=String(window.__ICHEF_V239_SELECTED_STAFF_ID__||'').trim();
+    if(explicit) return explicit;
+
+    try{
+      if(typeof currentStaffId!=='undefined' && currentStaffId!==null && currentStaffId!==''){
+        return String(currentStaffId);
+      }
+    }catch(_){}
+
+    const card=document.querySelector('#staff-list-render .rh-v220-staff-card.active[data-staff-id]');
+    return String(card?.dataset.staffId||'').trim();
+  }
+
+  function ensureStatus(){
+    const head=document.getElementById('rh-v236-planning-head');
+    if(!head)return null;
+    let el=document.getElementById('rh-v247-plan-state');
+    if(!el){
+      el=document.createElement('span');
+      el.id='rh-v247-plan-state';
+      el.innerHTML='<span class="dot"></span><span class="txt">SYNCHRONISÉ · MODIFIABLE</span>';
+      const actions=document.getElementById('rh-v236-planning-actions');
+      if(actions) head.insertBefore(el,actions);
+      else head.appendChild(el);
+    }
+    return el;
+  }
+
+  function status(state,text){
+    const el=ensureStatus();
+    if(!el)return;
+    el.dataset.state=state||'ok';
+    const t=el.querySelector('.txt');
+    if(t)t.textContent=text||'SYNCHRONISÉ · MODIFIABLE';
+  }
+
+  function mount(){
+    const host=document.getElementById('rh-v236-table-host');
+    const individual=document.getElementById('table-container-individual');
+    const annual=document.getElementById('annual-view-container');
+    if(host&&individual&&individual.parentElement!==host)host.appendChild(individual);
+    if(host&&annual&&annual.parentElement!==host)host.appendChild(annual);
+    return {host,individual,annual};
+  }
+
+  function isEditing(){
+    const active=document.activeElement;
+    return Boolean(active?.closest?.('#table-container-individual') &&
+      active.matches?.('input,select,textarea'));
+  }
+
+  function makeVisible(){
+    const id=selectedId();
+    if(!id)return false;
+
+    const {individual,annual}=mount();
+    if(!individual)return false;
+
+    let annualMode=false;
+    try{
+      annualMode=(typeof isAnnualView!=='undefined' && Boolean(isAnnualView));
+    }catch(_){
+      annualMode=Boolean(annual&&getComputedStyle(annual).display!=='none');
+    }
+
+    const setImportantIfNeeded=(el,prop,value)=>{
+      if(!el)return;
+      const current=el.style.getPropertyValue(prop);
+      const priority=el.style.getPropertyPriority(prop);
+      if(current!==value || priority!=='important'){
+        el.style.setProperty(prop,value,'important');
+      }
+    };
+
+    if(!annualMode){
+      setImportantIfNeeded(individual,'display','block');
+      setImportantIfNeeded(individual,'visibility','visible');
+      setImportantIfNeeded(individual,'opacity','1');
+      if(annual)setImportantIfNeeded(annual,'display','none');
+    }
+
+    // Appel conservé pour compatibilité avec rh-core V249.
+    // V250 évite toutefois toute boucle MutationObserver <-> style.
+    window.iChefEnsureIndividualPlanningV247?.(id);
+    return true;
+  }
+
+  function refresh(reason='refresh',force=false){
+    if(frame)return;
+    frame=requestAnimationFrame(()=>{
+      frame=0;
+      const id=selectedId();
+      if(!id)return;
+      if(isEditing()&&!force)return;
+
+      makeVisible();
+      ensureStatus();
+
+      const body=document.getElementById('timesheet-body');
+      const hasRows=Boolean(body?.querySelector('tr'));
+
+      // Le moteur rh-core est la source officielle du tableau.
+      // On ne reconstruit pas une deuxième copie du planning.
+      try{
+        if(typeof loadMonthData==='function'){
+          loadMonthData();
+        }
+      }catch(error){
+        console.warn('[iCHEF RH V247] loadMonthData',reason,error);
+      }
+
+      makeVisible();
+
+      const rows=document.querySelectorAll('#timesheet-body tr').length;
+      if(rows){
+        status('ok','SYNCHRONISÉ · MODIFIABLE');
+        window.ICHEF_RH_V236?.updateIndividual?.();
+        return;
+      }
+
+      // Compatibilité : si un ancien core n'a pas reçu la sélection
+      // mais que le shell connaît déjà le collaborateur, resynchroniser
+      // via selectStaff une seule fois.
+      const now=Date.now();
+      if(!hasRows && !repairing && now-lastRepairAt>1200 && typeof window.selectStaff==='function'){
+        repairing=true;
+        lastRepairAt=now;
+        try{
+          window.selectStaff(id);
+        }catch(error){
+          console.warn('[iCHEF RH V247] resélection collaborateur',error);
+        }
+        setTimeout(()=>{
+          repairing=false;
+          try{makeVisible();window.ICHEF_RH_V236?.updateIndividual?.();}catch(_){}
+          const n=document.querySelectorAll('#timesheet-body tr').length;
+          status(n?'ok':'pending',n?'SYNCHRONISÉ · MODIFIABLE':'PLANNING À RECHARGER');
+        },120);
+      }else if(!rows){
+        status('pending','PLANNING À RECHARGER');
+      }
+    });
+  }
+
+  document.addEventListener('change',event=>{
+    const input=event.target?.closest?.(
+      '#table-container-individual .status-sel,'+
+      '#table-container-individual .shift-inp,'+
+      '#table-container-individual .pause-inp,'+
+      '#table-container-individual .obs-inp'
+    );
+    if(!input)return;
+
+    status('saving','ENREGISTREMENT…');
+
+    // updateData / saveTs existants conservent audit, motif, session Planning
+    // et synchronisation serveur. On ne remplace pas cette sécurité.
+    setTimeout(()=>refresh('edit-local',false),180);
+    setTimeout(()=>{
+      refresh('edit-server',false);
+      const n=document.querySelectorAll('#timesheet-body tr').length;
+      status(n?'ok':'pending',n?'SYNCHRONISÉ · MODIFIABLE':'SYNCHRO EN ATTENTE');
+    },1100);
+  },true);
+
+  window.addEventListener('ichef:staff-selected',()=>setTimeout(()=>refresh('staff-selected',true),0));
+  window.addEventListener('ichef:individual-planning-rendered',()=>setTimeout(()=>{makeVisible();status('ok','SYNCHRONISÉ · MODIFIABLE');window.ICHEF_RH_V236?.updateIndividual?.();},0));
+  window.addEventListener('ichef:planning-symbiosis',()=>setTimeout(()=>refresh('symbiosis',false),60));
+  window.addEventListener('ichef:planning-views-refreshed',()=>setTimeout(()=>refresh('views-refreshed',false),60));
+  window.addEventListener('focus',()=>setTimeout(()=>refresh('focus',false),100));
+
+  const host=document.getElementById('rh-v236-table-host');
+  if(host){
+    let hostRepairQueued=false;
+    new MutationObserver(mutations=>{
+      if(isEditing()||hostRepairQueued)return;
+      if(!mutations.some(m=>m.type==='childList'))return;
+      hostRepairQueued=true;
+      requestAnimationFrame(()=>{
+        hostRepairQueued=false;
+        // V250 : uniquement réparation structurelle.
+        // Aucun suivi des attributs style pour éviter la boucle infinie
+        // makeVisible() -> style mutation -> observer -> makeVisible().
+        mount();
+      });
+    }).observe(host,{childList:true,subtree:false});
+  }
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',()=>setTimeout(()=>refresh('dom-ready',true),180),{once:true});
+  }else{
+    setTimeout(()=>refresh('boot',true),180);
+  }
+  setTimeout(()=>refresh('boot-late',true),700);
+
+  window.iChefRefreshIndividualPlanningV247=refresh;
+  window.__ICHEF_RH_BUILD__='RH-V247-PLANNING-INDIVIDUEL-SYNC-MODIFIABLE';
+  console.info('[iCHEF RH V247] planning individuel visible · même source · édition + synchro conservées');
+})();
+
+
+;
+
+;
+/* RH V264 - preserved script #163 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V248_PROFILE_NAV__) return;
+  window.__ICHEF_RH_V248_PROFILE_NAV__=true;
+
+  function directory(){
+    try{
+      const rows=typeof getDir==='function' ? getDir() : [];
+      return (Array.isArray(rows)?rows:[])
+        .filter(s=>s && s.id!==undefined && s.id!==null && s.active!==false);
+    }catch(_){
+      return [];
+    }
+  }
+
+  function selectedId(){
+    const explicit=String(window.__ICHEF_V239_SELECTED_STAFF_ID__||'').trim();
+    if(explicit) return explicit;
+    try{
+      if(typeof currentStaffId!=='undefined' && currentStaffId!==null && currentStaffId!==''){
+        return String(currentStaffId);
+      }
+    }catch(_){}
+    return '';
+  }
+
+  function currentIndex(rows){
+    const id=selectedId();
+    return rows.findIndex(s=>String(s.id)===id);
+  }
+
+  function updateButtons(){
+    const rows=directory();
+    const prev=document.getElementById('rh-v248-prev-profile');
+    const next=document.getElementById('rh-v248-next-profile');
+    const disabled=rows.length<2;
+    if(prev) prev.disabled=disabled;
+    if(next) next.disabled=disabled;
+
+    if(!rows.length) return;
+    const idx=currentIndex(rows);
+    const safeIdx=idx>=0?idx:0;
+    const prevStaff=rows[(safeIdx-1+rows.length)%rows.length];
+    const nextStaff=rows[(safeIdx+1)%rows.length];
+
+    if(prev){
+      prev.title=disabled
+        ? 'Aucun autre profil actif'
+        : `Profil précédent : ${prevStaff?.name||'collaborateur'}`;
+      prev.setAttribute('aria-label',prev.title);
+    }
+    if(next){
+      next.title=disabled
+        ? 'Aucun autre profil actif'
+        : `Profil suivant : ${nextStaff?.name||'collaborateur'}`;
+      next.setAttribute('aria-label',next.title);
+    }
+  }
+
+  function navigate(step){
+    const rows=directory();
+    if(rows.length<2){
+      updateButtons();
+      return false;
+    }
+
+    const idx=currentIndex(rows);
+    const safeIdx=idx>=0?idx:0;
+    const target=rows[(safeIdx+step+rows.length)%rows.length];
+    if(!target) return false;
+
+    // Toute saisie en cours perd d'abord le focus : le onchange/updateData
+    // existant garde ainsi son audit/motif avant le changement de profil.
+    const active=document.activeElement;
+    if(active?.closest?.('#table-container-individual') &&
+       active.matches?.('input,select,textarea')){
+      try{active.blur()}catch(_){}
+    }
+
+    window.__ICHEF_V239_SELECTED_STAFF_ID__=String(target.id);
+
+    if(typeof window.selectStaff==='function'){
+      window.selectStaff(target.id);
+    }else if(typeof window.openStaffPlanning==='function'){
+      window.openStaffPlanning(target.id);
+    }else{
+      return false;
+    }
+
+    requestAnimationFrame(()=>{
+      window.ICHEF_RH_V236?.updateIndividual?.();
+      window.iChefRefreshIndividualPlanningV247?.('profile-navigation-v248',true);
+      updateButtons();
+    });
+
+    window.dispatchEvent(new CustomEvent('ichef:profile-navigation',{
+      detail:{
+        staffId:String(target.id),
+        name:String(target.name||''),
+        direction:step<0?'previous':'next',
+        at:new Date().toISOString()
+      }
+    }));
+    return true;
+  }
+
+  function bind(){
+    const prev=document.getElementById('rh-v248-prev-profile');
+    const next=document.getElementById('rh-v248-next-profile');
+
+    if(prev && prev.dataset.v248Bound!=='1'){
+      prev.dataset.v248Bound='1';
+      prev.addEventListener('click',()=>navigate(-1));
+    }
+    if(next && next.dataset.v248Bound!=='1'){
+      next.dataset.v248Bound='1';
+      next.addEventListener('click',()=>navigate(1));
+    }
+    updateButtons();
+  }
+
+  // Raccourci utile, sans voler les flèches normales d'un champ de saisie.
+  document.addEventListener('keydown',event=>{
+    if(!event.altKey || !['ArrowLeft','ArrowRight'].includes(event.key)) return;
+    if(event.target?.matches?.('input,textarea,select')) return;
+    event.preventDefault();
+    navigate(event.key==='ArrowLeft'?-1:1);
+  });
+
+  window.addEventListener('ichef:staff-selected',()=>setTimeout(updateButtons,0));
+  window.addEventListener('ichef:profile-navigation',()=>setTimeout(updateButtons,0));
+  window.addEventListener('ichef:planning-symbiosis',()=>setTimeout(updateButtons,40));
+
+  const shell=document.getElementById('rh-v236-individual-shell');
+  if(shell){
+    new MutationObserver(bind).observe(shell,{childList:true,subtree:true});
+  }
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',()=>setTimeout(bind,100),{once:true});
+  }else{
+    setTimeout(bind,100);
+  }
+  setTimeout(bind,500);
+
+  window.iChefPreviousProfileV248=()=>navigate(-1);
+  window.iChefNextProfileV248=()=>navigate(1);
+  window.__ICHEF_RH_BUILD__='RH-V248-NAVIGATION-PROFILS-ACTIVE-SECURE';
+  console.info('[iCHEF RH V248] navigation profil précédent / suivant activée et synchronisée');
+})();
+
+
+;
+
+;
+/* RH V264 - preserved script #164 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V249_TIMESHEET_ACTIONS__) return;
+  window.__ICHEF_RH_V249_TIMESHEET_ACTIONS__=true;
+
+  function closeProof(){
+    const modal=document.getElementById('rh-v249-proof-modal');
+    const img=document.getElementById('rh-v249-proof-image');
+    if(img) img.removeAttribute('src');
+    if(modal){
+      modal.classList.remove('show');
+      modal.style.display='none';
+      modal.setAttribute('aria-hidden','true');
+    }
+  }
+
+  window.openRhProofPhotoV249=function(src){
+    const value=String(src||'');
+    if(!value.startsWith('data:image/')){
+      alert('Aucune photo disponible pour cette preuve.');
+      return false;
+    }
+    const modal=document.getElementById('rh-v249-proof-modal');
+    const img=document.getElementById('rh-v249-proof-image');
+    if(!modal||!img) return false;
+    img.src=value;
+    modal.style.display='flex';
+    modal.classList.add('show');
+    modal.setAttribute('aria-hidden','false');
+    return true;
+  };
+
+  document.addEventListener('click',event=>{
+    if(event.target?.id==='rh-v249-proof-close'){
+      closeProof();
+      return;
+    }
+    if(event.target?.id==='rh-v249-proof-modal'){
+      closeProof();
+      return;
+    }
+
+    // Les photos des feuilles d'heures sont ouvertes dans iCHEF,
+    // sans popup/nouvel onglet potentiellement bloqué par Edge/Chrome.
+    const img=event.target?.closest?.(
+      '#staff-detail-planning-body .rh-day-proof-v97 img,'+
+      '#timesheet-correction-photos-v97 .rh-correct-v97-proof-card img'
+    );
+    if(img){
+      event.preventDefault();
+      event.stopPropagation();
+      window.openRhProofPhotoV249(img.currentSrc||img.src||'');
+    }
+  },true);
+
+  document.addEventListener('keydown',event=>{
+    if(event.key==='Escape' &&
+       document.getElementById('rh-v249-proof-modal')?.classList.contains('show')){
+      closeProof();
+    }
+  });
+
+  // Défense supplémentaire : les fonctions utilisées par les boutons
+  // doivent rester accessibles même après reconstruction dynamique des vues.
+  function expose(){
+    [
+      'validateRealTimesheet',
+      'correctRealTimesheetDay',
+      'saveTimesheetCorrectionV97',
+      'alignTimesheetCorrectionToPlanningV98',
+      'closeTimesheetCorrectionV97'
+    ].forEach(name=>{
+      try{
+        if(typeof window[name]!=='function'){
+          const fn=eval(`typeof ${name}==='function' ? ${name} : null`);
+          if(fn) window[name]=fn;
+        }
+      }catch(_){}
+    });
+  }
+
+  function activate(){
+    expose();
+    document.querySelectorAll(
+      '#real-timesheet-body button,'+
+      '#staff-detail-planning-body button,'+
+      '#timesheet-correction-modal-v97 button'
+    ).forEach(btn=>btn.classList.add('rh-v249-active-action'));
+  }
+
+  new MutationObserver(activate).observe(document.body,{childList:true,subtree:true});
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',()=>setTimeout(activate,100),{once:true});
+  }else{
+    setTimeout(activate,100);
+  }
+  setTimeout(activate,500);
+
+  window.__ICHEF_RH_BUILD__='RH-V249-HEURES-ACTIONS-PHOTO-ACTIVE-SECURE';
+  console.info('[iCHEF RH V249] validation heures + correction motivée + preuve photo activées');
+})();
+
+
+
+;
+/* RH V264 - preserved script #165 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V250_FREEZE_GUARD__) return;
+  window.__ICHEF_RH_V250_FREEZE_GUARD__=true;
+
+  let pending=0;
+  function stableRefresh(){
+    if(pending)return;
+    pending=requestAnimationFrame(()=>{
+      pending=0;
+      try{
+        window.ICHEF_RH_V236?.updateIndividual?.();
+      }catch(_){}
+    });
+  }
+
+  window.addEventListener('ichef:staff-selected',stableRefresh);
+  window.addEventListener('ichef:individual-planning-rendered',stableRefresh);
+
+  window.__ICHEF_RH_BUILD__='RH-V250-PAGE-FREEZE-FIX-STABLE';
+  console.info('[iCHEF RH V250] boucle MutationObserver/style supprimée · page stable');
+})();
+
+
+;
+
+;
+/* RH V264 - preserved script #166 */
+
+(() => {
+  'use strict';
+  if(window.__ICHEF_RH_V251_SIDEBAR__) return;
+  window.__ICHEF_RH_V251_SIDEBAR__=true;
+
+  function keepActiveVisible(sidebar){
+    if(!sidebar)return;
+    const active=sidebar.querySelector('.rh-v226-nav-btn.active,.rh-v236-nav.active');
+    if(!active)return;
+
+    const sb=sidebar.getBoundingClientRect();
+    const ar=active.getBoundingClientRect();
+    if(ar.top < sb.top || ar.bottom > sb.bottom){
+      active.scrollIntoView({block:'nearest',behavior:'auto'});
+    }
+  }
+
+  function refresh(){
+    keepActiveVisible(document.getElementById('rh-v226-sidebar'));
+    keepActiveVisible(document.getElementById('rh-v236-side'));
+  }
+
+  window.addEventListener('resize',()=>requestAnimationFrame(refresh));
+  window.addEventListener('ichef:staff-selected',()=>requestAnimationFrame(refresh));
+  document.addEventListener('click',event=>{
+    if(event.target?.closest?.('.rh-v226-nav-btn,.rh-v236-nav')){
+      setTimeout(refresh,0);
+    }
+  },true);
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',refresh,{once:true});
+  }else{
+    refresh();
+  }
+
+  window.__ICHEF_RH_BUILD__='RH-V251-MENU-LATERAL-COMPLET-VISIBLE';
+  console.info('[iCHEF RH V251] sidebar complète · scroll vertical · adaptation hauteur écran');
+})();
+
+
+;
+
+;
+/* RH V264 - preserved script #167 */
+
+(()=>{'use strict';
+ if(window.__ICHEF_RH_PREMIUM_ONLY_V258)return;
+ window.__ICHEF_RH_PREMIUM_ONLY_V258=true;
+ const tenant=()=>String(new URLSearchParams(location.search).get('tenantID')||
+   (typeof tenantID_JS!=='undefined'?tenantID_JS:'')||'').trim();
+ let refreshing=false,lastRefresh=0;
+ function go(){
+   if(typeof window.iChefOpenPlanningPremiumV257==='function')
+     return void window.iChefOpenPlanningPremiumV257();
+   const t=tenant(); if(t)location.assign('/planning-rh/?tenantID='+encodeURIComponent(t));
+ }
+ function placeBanner(host){
+   if(!host||host.querySelector('.ichef-v258-banner'))return;
+   const el=document.createElement('div');el.className='ichef-v258-banner';
+   const body=document.createElement('div');body.innerHTML='<strong>PLANNING OFFICIEL · CONSULTATION</strong><br><small>Modifier les horaires, repos, congés et publier uniquement depuis Planning Premium.</small>';
+   const btn=document.createElement('button');btn.type='button';btn.className='ichef-v258-open';
+   btn.textContent='OUVRIR PLANNING PREMIUM';btn.addEventListener('click',go);
+   el.append(body,btn);host.prepend(el);
+ }
+ function addBanners(){
+   placeBanner(document.getElementById('hr-interface'));
+   const main=document.querySelector('#director-hub .rh-planning-panel');
+   if(main)placeBanner(main);
+ }
+ function noEdit(event){
+   const target=event.target?.closest?.('#global-tbody,#timesheet-body,#annual-tbody,#rh-cockpit-plan-body');
+   if(!target)return;
+   // Les tableaux RH peuvent être consultés et déroulés, mais pas modifiés.
+   const input=event.target?.closest?.('button,input,select,textarea,[data-rh-edit-staff],[data-rh-staff]');
+   if(!input && !event.target?.closest?.('td[data-rh-edit],.rh-cockpit-chip'))return;
+   event.preventDefault();event.stopPropagation();event.stopImmediatePropagation();go();
+ }
+ document.addEventListener('click',noEdit,true);
+ document.addEventListener('change',event=>{
+   if(!event.target?.closest?.('#global-tbody,#timesheet-body,#annual-tbody'))return;
+   event.stopImmediatePropagation();event.preventDefault();
+   void refresh(true);go();
+ },true);
+ async function refresh(force=false){
+   if(refreshing||(!force&&Date.now()-lastRefresh<15000)||document.hidden)return;
+   if(typeof API==='undefined'||typeof API.getState!=='function')return;
+   refreshing=true;
+   try{
+     const data=await API.getState();
+     const node=data?.activeOrders?.TIMESHEETS_MASTER;
+     const timesheets=node?.data??node;
+     if(timesheets && typeof timesheets==='object'&&!Array.isArray(timesheets)){
+       localStorage.setItem('empire_hr_timesheets',JSON.stringify(timesheets));
+       lastRefresh=Date.now();
+       try{if(typeof loadMonthData==='function')loadMonthData();}catch(_){}
+       try{if(typeof renderRhCockpit==='function')renderRhCockpit();}catch(_){}
+       window.dispatchEvent(new CustomEvent('ichef:premium:rh-synced',
+         {detail:{tenant:tenant(),time:lastRefresh}}));
+     }
+   }catch(err){console.warn('[RH V258] aperçu en attente de synchronisation serveur',err?.message);}
+   finally{refreshing=false;}
+ }
+ window.iChefRhPremiumRefreshV258=refresh;
+ // Garder les fonctions d'analyse/contrats intactes : bloquer UNIQUEMENT les actions qui éditent le planning.
+ function installLegacyGuards(){
+   for(const name of ['openRhCockpitShiftEditor','rhApplyPlanningStatusV91','applyRhQuickStatus']){
+     if(typeof window[name]!=='function'||window[name].__premiumV258)continue;
+     const redirect=function(){go();return false;};redirect.__premiumV258=true;window[name]=redirect;
+   }
+   if(typeof window.publishRhPlanningToStaff==='function'&&!window.publishRhPlanningToStaff.__premiumV258){
+     const redirect=function(){go();return false;};redirect.__premiumV258=true;
+     window.publishRhPlanningToStaff=redirect;
+   }
+   if(typeof window.applyAutomaticPlanning==='function'&&!window.applyAutomaticPlanning.__premiumV258){
+     const guarded=function(){
+       const msg='Proposition IA préparée : validation et application uniquement dans Planning Premium.';
+       try{if(typeof showToast==='function')showToast(msg);}catch(_){}
+       return Promise.resolve(false);
+     };guarded.__premiumV258=true;window.applyAutomaticPlanning=guarded;
+   }
+ }
+ try{
+   const channel='BroadcastChannel' in window?new BroadcastChannel('ichef-planning-premium-events-v1'):null;
+   if(channel)channel.onmessage=event=>{
+     if(event?.data?.type==='PLANNING_CHANGED' && event.data.tenant===tenant()){
+       lastRefresh=0;void refresh(true);
+     }
+   };
+ }catch(_){}
+ document.addEventListener('visibilitychange',()=>{if(!document.hidden)void refresh(false);});
+ window.addEventListener('focus',()=>{void refresh(false);});
+ // En lecture : refléter les publications Premium même lorsque RH reste ouvert.
+ setInterval(()=>{installLegacyGuards();if(!document.hidden)void refresh(false);},30000);
+ document.addEventListener('DOMContentLoaded',()=>{addBanners();installLegacyGuards();setTimeout(()=>refresh(true),500);});
+ if(document.readyState!=='loading'){addBanners();installLegacyGuards();setTimeout(()=>refresh(true),500);}
+})();
+
+
+;
+
+;
+/* RH V264 - preserved script #168 */
+
+(()=>{'use strict';
+ if(window.__ICHEF_RH_PREMIUM_EXCLUSIVE_V259)return;
+ window.__ICHEF_RH_PREMIUM_EXCLUSIVE_V259=true;
+ const tenant=()=>String(new URLSearchParams(location.search).get('tenantID')||
+   (typeof tenantID_JS!=='undefined'?tenantID_JS:'')||'').trim();
+ function openPremium(){
+   if(typeof window.iChefOpenPlanningPremiumV257==='function'){
+     window.iChefOpenPlanningPremiumV257();return;
+   }
+   const id=tenant();
+   if(!id){console.warn('[RH V259] Établissement manquant, navigation refusée');return;}
+   location.assign('/planning-rh/?tenantID='+encodeURIComponent(id));
+ }
+ window.iChefRhOpenOfficialPlanningV259=openPremium;
+ const createEntry=()=>{
+   const el=document.createElement('section');el.className='rh-v259-entry';
+   el.setAttribute('aria-label','Planning officiel iCHEF Premium');
+   const body=document.createElement('div');
+   const kicker=document.createElement('small');kicker.textContent='PLANNING OFFICIEL · SOURCE UNIQUE';
+   const h=document.createElement('h3');h.textContent='Planning RH Premium';
+   const p=document.createElement('p');
+   p.textContent='Créer, modifier et publier les horaires exclusivement dans Planning Premium. RH, Pointeuse et Portail Staff consultent les données autorisées du même planning central.';
+   body.append(kicker,h,p);
+   const button=document.createElement('button');button.type='button';button.className='rh-v259-open';
+   button.textContent='OUVRIR PLANNING PREMIUM';button.addEventListener('click',openPremium);
+   el.append(body,button);return el;
+ };
+ function place(){
+   for(const [selector,position] of [
+     ['#rh-v226-primary','prepend'],
+     ['#hr-interface','append'],
+     ['#rh-v236-individual-shell #rh-v236-content','prepend']]){
+     const host=document.querySelector(selector);
+     if(!host||host.querySelector(':scope > .rh-v259-entry'))continue;
+     host[position](createEntry());
+   }
+   const old=document.querySelector('#rh-v236-side [data-v236-nav="planning"]');
+   if(old){old.setAttribute('aria-label','Ouvrir Planning Premium');
+     const label=old.querySelector('span:last-child');if(label)label.textContent='Planning Premium';}
+ }
+ // Les autres éléments RH (contrats, fiches, absences, historique, pointages)
+ // restent en place : seule l'ancienne interface de planning est retirée.
+ document.addEventListener('click',e=>{
+   const target=e.target.closest?.('[data-v236-nav="planning"], [data-v226-nav="planning"], #rh-v226-plan-table-wrap, #rh-v236-planning-card');
+   if(!target)return;
+   e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();openPremium();
+ },true);
+ // V260 : ne plus observer en continu TOUT le DOM RH.
+ // Seuls l'ouverture et le changement de vue RH justifient le contrôle des liens.
+ let placeTimer=0;
+ const later=()=>{
+   if(placeTimer)clearTimeout(placeTimer);
+   placeTimer=setTimeout(()=>{placeTimer=0;place();},100);
+ };
+ const start=()=>{
+   place();
+   document.addEventListener('click',event=>{
+     if(event.target?.closest?.('button,[data-v226-nav],[data-v236-nav],.rh-cockpit-nav'))later();
+   },false);
+   document.addEventListener('ichef:rh:view-changed',later);
+   window.addEventListener('pageshow',later);
+ };
+ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start,{once:true});
+ else start();
+})();
+
+
