@@ -1,3 +1,8 @@
+/* iCHEF RH V266 - rh-core.js, moteur d'origine complet + garde de diagnostic. */
+
+;
+/* RH V264 - preserved script #4 */
+
 const urlParamsJS = new URLSearchParams(window.location.search);
         const tenantID_JS = urlParamsJS.get('tenantID') || localStorage.getItem('ichef_tenant_id') || 'MASTER_STATE';
         const SERVER_URL_JS = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
@@ -17407,3 +17412,52 @@ window.__ICHEF_RH_CORE_BUILD__='RH-CORE-V250-BOUCLE-SYMBIOSE-CORRIGEE';
 
 // iCHEF RH CORE V252 · Choix du 13e salaire annuel/mensuel dans la fiche salarié.
 window.__ICHEF_RH_CORE_BUILD__='RH-CORE-V252-13E-ANNUEL-MENSUEL';
+
+
+
+
+;
+/* RH V264 - preserved script #5 */
+
+/* Vérification NON intrusive du moteur RH. Aucun droit d'accès n'est modifié. */
+(() => {
+  const missing = [];
+  if (typeof API === 'undefined') missing.push('API');
+  if (typeof window.verifyPinWithServer !== 'function') missing.push('verifyPinWithServer');
+  if (typeof window.getRhSettings !== 'function') missing.push('getRhSettings');
+  if (typeof window.hydrateRhSettingsForm !== 'function') missing.push('hydrateRhSettingsForm');
+  if (!missing.length) {
+    console.info('[iCHEF RH] Moteur RH chargé', window.__ICHEF_RH_CORE_BUILD__ || 'version non annoncée');
+    return;
+  }
+  console.error('[iCHEF RH] Le moteur RH intégré V263 est incomplet ou a rencontré une erreur JavaScript.', missing);
+  const render = () => {
+    if (document.getElementById('ichef-rh-core-error')) return;
+    const root = document.createElement('section');
+    root.id = 'ichef-rh-core-error';
+    root.setAttribute('role', 'alert');
+    root.style.cssText = 'position:fixed;inset:auto 12px 12px 12px;max-width:720px;margin:auto;z-index:2147483000;background:#161d25;color:#fff;padding:20px;border:2px solid #e6ad39;border-radius:14px;box-shadow:0 15px 50px #000b;font:14px/1.5 system-ui,sans-serif;text-align:left';
+    const title = document.createElement('strong');
+    title.textContent = 'Module RH incomplet : moteur de fonctions non chargé';
+    title.style.cssText = 'display:block;font-size:17px;margin-bottom:7px;color:#f3ce84';
+    root.appendChild(title);
+    const p = document.createElement('p');
+    p.textContent = 'Impossible d’utiliser la pointeuse RH et la fiche employé en sécurité. Vérifiez que le fichier rh.html V263 complète a été déployée et que sa réponse réseau est HTTP 200, puis rechargez cette page.';
+    p.style.cssText = 'margin:0 0 9px';
+    root.appendChild(p);
+    const details = document.createElement('small');
+    details.textContent = 'Fonctions indisponibles : ' + missing.join(', ');
+    details.style.cssText = 'display:block;color:#cbd5e1';
+    root.appendChild(details);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = 'Réessayer';
+    btn.style.cssText = 'background:#e6ad39;color:#111;border:0;border-radius:8px;padding:9px 16px;font-weight:800;margin-top:12px;cursor:pointer';
+    btn.addEventListener('click', () => location.reload());
+    root.appendChild(btn);
+    document.body.appendChild(root);
+  };
+  if (document.body) render();
+  else document.addEventListener('DOMContentLoaded', render, { once:true });
+})();
+
