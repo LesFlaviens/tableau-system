@@ -399,6 +399,9 @@ function ichefSecurityRateLimitForPath(pathname){
             .trim()
             .toLowerCase();
 
+    if(p === '/api/rh/planning/session'){
+        return {limit:12,windowMs:60_000,blockMs:5*60_000};
+    }
     if(p === '/panel-ichef'){
         return {
             limit:12,
@@ -14041,6 +14044,13 @@ app.post('/api/order-symbiose', async (req, res) => {
 });
 
 
+
+// V258 · Source unique : le Planning Premium est le seul éditeur humain autorisé.
+// ROLLBACK CONTRÔLÉ EN PRÉPRODUCTION UNIQUEMENT : ICHEF_PLANNING_PREMIUM_ONLY=false.
+// Ne change pas l'accès aux horaires en lecture, pointages ou contrats.
+const ICHEF_PLANNING_PREMIUM_ONLY =
+  !/^(0|false|no|off)$/i.test(String(process.env.ICHEF_PLANNING_PREMIUM_ONLY ?? 'true').trim());
+
 app.post('/update-order', async (req, res) => {
 try {
 const tenantID =
@@ -14061,6 +14071,14 @@ return res.status(400).json({ success: false, persisted: false, error: 'tenantID
 }
 if (!ichefValidStateKey(tableId)) {
 return res.status(400).json({ success: false, persisted: false, error: 'Clé de synchronisation invalide.' });
+}
+// V258 : empêcher un snapshot RH ancien d'écraser des cases Premium plus récentes.
+if (ICHEF_PLANNING_PREMIUM_ONLY &&
+    ['TIMESHEETS_MASTER','PLANNING_PUBLICATIONS_MASTER',
+     'PLANNING_VERSIONS_MASTER','PLANNING_NOTIFICATIONS_MASTER'].includes(String(tableId))) {
+  return res.status(409).json({success:false,persisted:false,
+    code:'PLANNING_PREMIUM_ONLY',
+    error:'Planning officiel modifiable exclusivement depuis Planning Premium.'});
 }
 if (order !== null && ichefJsonBytes(order) > ICHEF_MAX_STATE_NODE_BYTES) {
 return res.status(413).json({
@@ -14104,6 +14122,18 @@ const previousStateForHistory = await AppState
 .lean();
 const previousValueForHistory =
 previousStateForHistory?.activeOrders?.[tableId];
+// Empêcher une publication/dépublication obsolète via les réglages RH génériques.
+if (ICHEF_PLANNING_PREMIUM_ONLY && String(tableId) === 'RH_SETTINGS' && order !== null) {
+  const oldNode = previousValueForHistory?.data ?? previousValueForHistory ?? {};
+  const newNode = order?.data ?? order ?? {};
+  const oldStatus = String(oldNode?.planningStatus || 'draft').toLowerCase();
+  const newStatus = String(newNode?.planningStatus || oldStatus).toLowerCase();
+  if (newStatus !== oldStatus) {
+    return res.status(409).json({success:false,persisted:false,
+      code:'PLANNING_PUBLICATION_PREMIUM_ONLY',
+      error:'Publication du planning réservée au Planning Premium.'});
+  }
+}
 const actorForHistory = ichefHistoryActor(terminalAccess, req.body || {});
 let orderToPersist = order;
 if (
@@ -35201,15 +35231,16 @@ app.get('/api/rh/planning/premium/state', async(req,res)=>{
         const y=Number(input.slice(0,4)),m=Number(input.slice(5,7));
         if(y<2020||y>2100)return res.status(400).json({success:false,error:'Mois non autorisé.'});
         const months=[-1,0,1].map(offset=>ichefPremiumRhMonth(new Date(Date.UTC(y,m-1+offset,1))));
-        const projection={ 'activeOrders.DIRECTORY_MASTER':1,'activeOrders.STAFF_ACCESS':1,'activeOrders.RH_SETTINGS':1 };
+        const projection={ 'activeOrders.DIRECTORY_MASTER':1,'activeOrders.STAFF_ACCESS':1,'activeOrders.RH_SETTINGS':1,'activeOrders.PLANNING_PUBLICATIONS_MASTER':1 };
         for(const mm of months) projection[`activeOrders.TIMESHEETS_MASTER.data.${mm}`]=1;
         const row=await AppState.findOne({tenantID:auth.tenantID},projection).lean();
         if(!row)return res.status(404).json({success:false,error:'Établissement RH introuvable.'});
         const order=row.activeOrders||{},all=ichefPlanningNodeData(order,'TIMESHEETS_MASTER',{});
         const timesheets={};for(const mm of months)timesheets[mm]=ichefPlanningPlainObject(all?.[mm]);
+        const publication = ichefPlanningNodeData(order,'PLANNING_PUBLICATIONS_MASTER',{})?.[input] || null;
         return res.json({success:true,tenantID:auth.tenantID,staff:ichefPremiumRhStaffList(row),
             settings:{planningStatus:String(ichefPlanningNodeData(order,'RH_SETTINGS',{})?.planningStatus||'draft')},
-            months,timesheets,serverTime:new Date().toISOString()});
+            publication, months,timesheets,serverTime:new Date().toISOString()});
     }catch(e){console.error('[PLANNING PREMIUM READ]',e);return res.status(500).json({success:false,error:'Lecture sécurisée du planning indisponible.'});}
 });
 app.post('/api/rh/planning/premium/day', async(req,res)=>{
@@ -35228,7 +35259,7 @@ app.post('/api/rh/planning/premium/day', async(req,res)=>{
         const valid=ichefPremiumRhValidateDay(req.body.day);
         if(!valid.ok)return res.status(400).json({success:false,error:valid.error});
         const previousState=await AppState.findOne({tenantID:auth.tenantID},
-            {'activeOrders.TIMESHEETS_MASTER':1,'activeOrders.DIRECTORY_MASTER':1,'activeOrders.STAFF_ACCESS':1,'activeOrders.RH_SETTINGS':1}).lean();
+            {'activeOrders.TIMESHEETS_MASTER':1,'activeOrders.DIRECTORY_MASTER':1,'activeOrders.STAFF_ACCESS':1,'activeOrders.RH_SETTINGS':1,'activeOrders.PLANNING_PUBLICATIONS_MASTER':1}).lean();
         if(!previousState)return res.status(404).json({success:false,error:'Planning non trouvé.'});
         const orders=previousState.activeOrders||{};
         if(String(ichefPlanningNodeData(orders,'RH_SETTINGS',{})?.planningStatus||'').toLowerCase()==='locked')
@@ -35268,6 +35299,12 @@ app.post('/api/rh/planning/premium/day', async(req,res)=>{
             'activeOrders.PLANNING_NOTIFICATIONS_MASTER.updatedAt':now
         },$push:{'activeOrders.PLANNING_VERSIONS_MASTER.data':{$each:[version],$slice:-10000}}};
         if(after===null)changes.$unset={[key]:''};else changes.$set[key]=after;
+        // Une modification après publication demande une nouvelle validation du mois.
+        const pub = ichefPlanningNodeData(orders,'PLANNING_PUBLICATIONS_MASTER',{})?.[mm];
+        if(pub && pub.status === 'published') {
+            changes.$set[`activeOrders.PLANNING_PUBLICATIONS_MASTER.data.${mm}.status`] = 'to_review';
+            changes.$set[`activeOrders.PLANNING_PUBLICATIONS_MASTER.data.${mm}.editedAfterPublicationAt`] = now.toISOString();
+        }
         if(ichefPlanningDayHasContent(before||{}))changes.$push['activeOrders.PLANNING_NOTIFICATIONS_MASTER.data']={$each:[notification],$slice:-5000};
         const result=await AppState.updateOne(condition,changes);
         if(result.matchedCount!==1)return res.status(409).json({success:false,code:'PLANNING_CONFLICT',error:'La case a changé sur le serveur. Actualisez votre planning.'});
@@ -35281,12 +35318,68 @@ app.post('/api/rh/planning/premium/day', async(req,res)=>{
 // ============================================================================
 
 
+
+// V258 : publication officielle dans le Planning Premium, et non dans rh.html.
+app.post('/api/rh/planning/premium/publish', async(req,res)=>{
+  res.setHeader('Cache-Control','no-store, private');
+  try {
+    const auth=await ichefLoadRhPlanningManagerSession(req);
+    if(!auth.ok)return res.status(401).json({success:false,error:auth.error});
+    const mm=String(req.body?.month||'').trim();
+    if(!/^(20[2-9][0-9]|2100)-(0[1-9]|1[0-2])$/.test(mm))
+      return res.status(400).json({success:false,error:'Mois invalide.'});
+    if(req.body?.confirmed!==true)
+      return res.status(400).json({success:false,error:'Confirmation de publication nécessaire.'});
+    const row=await AppState.findOne({tenantID:auth.tenantID},
+      {'activeOrders.RH_SETTINGS':1,'activeOrders.TIMESHEETS_MASTER':1}).lean();
+    if(!row)return res.status(404).json({success:false,error:'Établissement introuvable.'});
+    const orders=row.activeOrders||{};
+    const settings=ichefPlanningNodeData(orders,'RH_SETTINGS',{});
+    if(String(settings?.planningStatus||'').toLowerCase()==='locked')
+      return res.status(423).json({success:false,error:'Planning RH clôturé / verrouillé.'});
+    const monthly=ichefPlanningPlainObject(ichefPlanningNodeData(orders,'TIMESHEETS_MASTER',{})?.[mm]);
+    const totalDays=Object.values(monthly).reduce((n,days)=>n+Object.values(ichefPlanningPlainObject(days))
+      .filter(d=>ichefPlanningDayHasContent(d)).length,0);
+    if(!totalDays)return res.status(409).json({success:false,code:'EMPTY_PLANNING',
+      error:'Planning vide : aucun service à publier pour ce mois.'});
+    const now=new Date().toISOString();
+    const actor=String(auth.claims?.actorName||'Direction / RH').slice(0,120);
+    const pub={month:mm,status:'published',publishedAt:now,publishedBy:actor,
+      plannedDays:totalDays,source:'PLANNING_PREMIUM_PWA'};
+    // Mise à jour partielle : ne réécrit ni les horaires ni les réglages RH existants.
+    // CAS : le mois ne doit pas avoir changé entre la vérification et la publication.
+    const oldMaster=orders.TIMESHEETS_MASTER||{};
+    const expectedMasterAt=oldMaster.updatedAt;
+    const publishQuery={tenantID:auth.tenantID};
+    if(expectedMasterAt===undefined)publishQuery['activeOrders.TIMESHEETS_MASTER.updatedAt']={$exists:false};
+    else publishQuery['activeOrders.TIMESHEETS_MASTER.updatedAt']=expectedMasterAt;
+    const result=await AppState.updateOne(publishQuery,{$set:{
+      [`activeOrders.PLANNING_PUBLICATIONS_MASTER.data.${mm}`]:pub,
+      'activeOrders.PLANNING_PUBLICATIONS_MASTER.updatedAt':now,
+      'activeOrders.RH_SETTINGS.data.planningStatus':'published',
+      'activeOrders.RH_SETTINGS.updatedAt':now
+    }});
+    if(result.matchedCount!==1)return res.status(409).json({success:false,
+      code:'PLANNING_CONFLICT',error:'Un horaire a été modifié pendant la publication. Actualisez et recommencez.'});
+    try{if(typeof ichefEmitStaffSyncRequired==='function')
+      ichefEmitStaffSyncRequired(auth.tenantID,{tableId:'TIMESHEETS_MASTER',source:'premium-publish',timestamp:now});}catch(_){}
+    io.to(auth.tenantID).emit('rhPlanningUpdated',{tenantID:auth.tenantID,
+      source:'PLANNING_PREMIUM_PUBLISHED',month:mm,changed:0,timestamp:now});
+    io.to(auth.tenantID).emit('staff-planning-notice',{tenantID:auth.tenantID,
+      source:'PLANNING_PREMIUM_PUBLISHED',month:mm,changed:0,timestamp:now});
+    return res.json({success:true,publication:pub,serverTime:now});
+  }catch(err){console.error('[PLANNING PREMIUM PUBLISH]',err);
+    return res.status(500).json({success:false,error:'Publication RH momentanément indisponible.'});}
+});
+
 app.post('/api/rh/planning/session', async (req,res) => {
     try {
         res.setHeader('Cache-Control','no-store');
         const tenantID = cleanString(req.body?.tenantID || req.headers?.['x-ichef-tenant']);
         const pin = String(req.body?.pin || '').trim();
         const deviceId = String(req.body?.deviceId || req.headers?.['x-ichef-device'] || '').trim().slice(0,180);
+        if(!/^[A-Za-z0-9_-]{12,180}$/.test(deviceId))
+            return res.status(400).json({success:false,error:'Identifiant appareil obligatoire et invalide.'});
         if (!tenantID || !/^\d{4,12}$/.test(pin)) return res.status(400).json({success:false,error:'Identification Direction / RH invalide.'});
         const access = await ichefAuthorizePin(tenantID,pin,{managerOnly:true});
         if (!access.ok) return res.status(access.status||403).json({success:false,error:access.error||'Accès Planning RH refusé.'});
@@ -35304,6 +35397,11 @@ app.post('/api/rh/planning/session', async (req,res) => {
 });
 
 app.post('/api/rh/planning/save', async (req,res) => {
+    // Ne jamais écraser un planning Premium avec une sauvegarde ancienne du mois entier.
+    if (ICHEF_PLANNING_PREMIUM_ONLY) return res.status(409).json({
+        success:false,code:'PLANNING_PREMIUM_ONLY',
+        error:'L’édition officielle se fait uniquement dans Planning Premium. Ouvrez la PWA.'
+    });
     try {
         res.setHeader('Cache-Control','no-store');
         const auth = await ichefLoadRhPlanningManagerSession(req);
