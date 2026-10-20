@@ -649,7 +649,7 @@
     document.addEventListener('DOMContentLoaded',()=>{updateBadge();setTimeout(()=>syncQueue(),900)});
     setInterval(()=>{if(navigator.onLine)syncQueue()},30000);
     if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost'||location.hostname==='127.0.0.1')){
-        window.addEventListener('load',()=>navigator.serviceWorker.register('/sw-rh.js?v=266',{scope:'/'}).catch(e=>console.warn('[iCHEF RH OFFLINE] Service Worker non installé',e?.message||e)));
+        window.addEventListener('load',()=>navigator.serviceWorker.register('/sw-rh.js?v=267',{scope:'/'}).catch(e=>console.warn('[iCHEF RH OFFLINE] Service Worker non installé',e?.message||e)));
     }
 })();
 
@@ -10684,6 +10684,7 @@ console.info('[iCHEF RH V185] droit automatiquement lié au pays client');
   }
   function url(t){return '/planning-rh/?tenantID='+encodeURIComponent(t);}
   async function openPremium(){
+    if(window.iChefRhPlanningBridgeV267?.openEditor){return void window.iChefRhPlanningBridgeV267.openEditor();}
     if(opening)return;opening=true;
     const t=tenant();
     if(!/^[a-zA-Z0-9_-]{2,80}$/.test(t)){
@@ -21105,7 +21106,7 @@ window.__ICHEF_RH_BUILD__='RH-V240-AUTO-STYLE-SELF-HEAL';
    if(!id){console.warn('[RH V259] Établissement manquant, navigation refusée');return;}
    location.assign('/planning-rh/?tenantID='+encodeURIComponent(id));
  }
- window.iChefRhOpenOfficialPlanningV259=openPremium;
+ window.iChefRhOpenOfficialPlanningV259=()=>{if(window.iChefRhPlanningBridgeV267?.openMirror) return window.iChefRhPlanningBridgeV267.openMirror();return openPremium();};
  const createEntry=()=>{
    const el=document.createElement('section');el.className='rh-v259-entry';
    el.setAttribute('aria-label','Planning officiel iCHEF Premium');
@@ -21137,7 +21138,8 @@ window.__ICHEF_RH_BUILD__='RH-V240-AUTO-STYLE-SELF-HEAL';
  document.addEventListener('click',e=>{
    const target=e.target.closest?.('[data-v236-nav="planning"], [data-v226-nav="planning"], #rh-v226-plan-table-wrap, #rh-v236-planning-card');
    if(!target)return;
-   e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();openPremium();
+   e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();
+   if(window.iChefRhPlanningBridgeV267?.openMirror)window.iChefRhPlanningBridgeV267.openMirror();else openPremium();
  },true);
  // V260 : ne plus observer en continu TOUT le DOM RH.
  // Seuls l'ouverture et le changement de vue RH justifient le contrôle des liens.
