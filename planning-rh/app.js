@@ -1,4 +1,4 @@
-/* V266: source fournie par le client, renommée en .js. */
+/* iCHEF OS Planning Premium V272 : affichage sans scroll + pagination. */
 /* iCHEF OS Planning Premium PWA · client connecté au TIMESHEETS_MASTER.
    Aucune donnée RH n'est stockée en cache ni dans localStorage. */
 (()=>{'use strict';
@@ -18,6 +18,7 @@ const monday=d=>{const a=new Date(d);a.setHours(12,0,0,0);a.setDate(a.getDate()-
 const month=d=>iso(new Date(d.getFullYear(),d.getMonth(),1,12)).slice(0,7);
 const empty=()=>({k:'O',status:'',start:'',end:'',s2:'',e2:'',pause:0,note:'',original:null});
 const types={M:'MATIN',S:'SOIR',C:'COUPURE',R:'REPOS',O:'+',CP:'CONGÉ',MAL:'MALADIE',RECUP:'RÉCUP',FERIE:'FÉRIÉ',FORM:'FORMATION',A:'ABSENCE',NJS:'ABS. INJUSTIFIÉE',ACC:'ACCIDENT',MAT:'MATERNITÉ',PAT:'PATERNITÉ',PAR:'PARENTAL',EFM:'ENFANT MALADE',EVF:'ÉVÉNEMENT',DEC:'DEUIL',SSL:'SANS SOLDE'};
+let staffPage=0,dayIndex=(TODAY.getDay()+6)%7,lastPageCapacity=0;
 let anchor=monday(TODAY),view='week',filter='ALL',focusedStaffId=null,selected=null,staff=[],state={},rhSettings={},publication=null,actor=null,tenant='',token='',device='',busy=false,readOnly=false,lastFetch=0;
 const premiumChannel=typeof BroadcastChannel!=='undefined'?new BroadcastChannel('ichef-planning-premium-events-v1'):null;
 function broadcastPlanningChange(mm){try{premiumChannel?.postMessage({type:'PLANNING_CHANGED',tenant,month:mm,at:Date.now()});}catch(_){}}
@@ -69,7 +70,7 @@ function openEmployee(staffId){
  focusedStaffId=String(p.id);
  anchor=view==='month'?monday(anchor):anchor;
  switchView('week');
- $('person-bar').scrollIntoView({block:'nearest',behavior:'smooth'});
+ staffPage=0;
 }
 function closeEmployee(){focusedStaffId=null;render();}
 function periodDays(){
@@ -94,26 +95,52 @@ function renderPersonBar(){
  const hrs=days.reduce((total,d)=>total+hours(get(person,d)),0);
  $('person-hours').textContent=`${hrs.toFixed(1).replace('.',',')} h ${view==='month'?'ce mois':'cette semaine'}`;
 }
+function capacity(){
+ const area=document.querySelector('.schedule-wrap');
+ const space=area?.clientHeight||300;
+ // Enough room for header and totals: never sacrifice legibility for a tiny cell.
+ const mobile=matchMedia('(max-width:600px)').matches;
+ const row=mobile?56:63;
+ return Math.max(1,Math.min(32,Math.floor(Math.max(30,space-74)/row)));
+}
+function updateDayPicker(){
+ const picker=$('day-picker');if(!picker)return;
+ const days=Array.from({length:7},(_,i)=>add(monday(anchor),i));
+ picker.innerHTML=days.map((d,i)=>`<button type="button" data-day-pick="${i}" class="${i===dayIndex?'selected':''}" aria-pressed="${i===dayIndex}" aria-label="${esc(fmt(d,{weekday:'long',day:'numeric',month:'long'}))}">${esc(fmt(d,{weekday:'short'}))}<small>${fmt(d,{day:'numeric'})}</small></button>`).join('');
+ picker.querySelectorAll('[data-day-pick]').forEach(b=>b.onclick=()=>{dayIndex=Number(b.dataset.dayPick);renderWeek();});
+}
 function renderWeek(){
  const people=visible(),days=Array.from({length:7},(_,i)=>add(monday(anchor),i));
+ lastPageCapacity=capacity();
+ const pages=Math.max(1,Math.ceil(people.length/lastPageCapacity));
+ staffPage=Math.max(0,Math.min(staffPage,pages-1));
+ const shown=people.slice(staffPage*lastPageCapacity,(staffPage+1)*lastPageCapacity);
  let h='<table class="schedule" aria-label="Planning semaine officiel"><thead><tr><th>COLLABORATEUR</th>';
- for(const d of days)h+=`<th class="${iso(d)===iso(TODAY)?'today':''}"><span class="weekday">${fmt(d,{weekday:'short'})}</span><span class="daynumber">${fmt(d,{day:'2-digit'})}</span></th>`;
+ for(let i=0;i<days.length;i++){
+  const d=days[i];h+=`<th data-dayindex="${i}" class="${iso(d)===iso(TODAY)?'today ':''}${i===dayIndex?'is-selected-day':''}"><span class="weekday">${fmt(d,{weekday:'short'})}</span><span class="daynumber">${fmt(d,{day:'2-digit'})}</span></th>`;
+ }
  h+='</tr></thead><tbody>';
- for(const p of people){
+ for(const p of shown){
   h+=`<tr><td><button type="button" class="staff-open" data-profile="${esc(p.id)}" aria-label="Voir le planning individuel de ${esc(p.name)}" title="Afficher le planning de ${esc(p.name)}"><span class="avatar">${esc(p.avatar)}</span><span class="staff-details"><span class="staff-name">${esc(p.name)}</span><span class="staff-role">${esc(p.role)}</span><span class="staff-hint">${focusedStaffId?'Profil sélectionné':'Voir son planning →'}</span></span></button></td>`;
-  for(const d of days){
-   const r=get(p,d),caption=[types[r.k]||'Absence',label(r)].filter(Boolean).join(' · ');
-   const enabled=!readOnly;
-   h+=`<td data-daylabel="${esc(fmt(d,{weekday:'short',day:'2-digit'}))}" class="${iso(d)===iso(TODAY)?'today':''}"><button class="entry ${(['M','S','C','R','O'].includes(r.k)?r.k:'A')}" type="button" data-person="${esc(p.id)}" data-date="${iso(d)}" ${enabled?'':'disabled'} title="${esc(caption)}" aria-label="${enabled?'Modifier':'Consulter'} le ${iso(d)} pour ${esc(p.name)} : ${esc(caption)}">${shiftMarkup(r)}</button></td>`;
+  for(let i=0;i<days.length;i++){
+   const d=days[i],r=get(p,d),caption=[types[r.k]||'Absence',label(r)].filter(Boolean).join(' · '),enabled=!readOnly;
+   h+=`<td data-dayindex="${i}" data-daylabel="${esc(fmt(d,{weekday:'short',day:'2-digit'}))}" class="${(iso(d)===iso(TODAY)?'today ':'')+(i===dayIndex?'is-selected-day':'')}"><button class="entry ${(['M','S','C','R','O'].includes(r.k)?r.k:'A')}" type="button" data-person="${esc(p.id)}" data-date="${iso(d)}" ${enabled?'':'disabled'} title="${esc(caption)}" aria-label="${enabled?'Modifier':'Consulter'} le ${iso(d)} pour ${esc(p.name)} : ${esc(caption)}">${shiftMarkup(r)}</button></td>`;
   }
   h+='</tr>';
  }
  h+='</tbody><tfoot><tr><td>TOTAL PRÉSENCES</td>';
- for(const d of days){const arr=people.map(p=>get(p,d)).filter(work);h+=`<td data-daylabel="${esc(fmt(d,{weekday:'short',day:'2-digit'}))}" class="day-summary">${arr.length} équipe<span>${arr.reduce((sum,r)=>sum+hours(r),0).toFixed(1)} h</span></td>`;}
+ // Totaux de TOUTE l'équipe, pas uniquement les collaborateurs de cette page.
+ for(let i=0;i<days.length;i++){const d=days[i],arr=people.map(p=>get(p,d)).filter(work);h+=`<td data-dayindex="${i}" data-daylabel="${esc(fmt(d,{weekday:'short',day:'2-digit'}))}" class="day-summary ${i===dayIndex?'is-selected-day':''}">${arr.length} équipe<span>${arr.reduce((sum,r)=>sum+hours(r),0).toFixed(1)} h</span></td>`;}
  h+='</tr></tfoot></table>';
  $('week-host').innerHTML=h;
  $('week-host').querySelectorAll('[data-profile]').forEach(b=>b.addEventListener('click',()=>openEmployee(b.dataset.profile)));
  $('week-host').querySelectorAll('[data-person]').forEach(b=>b.addEventListener('click',()=>openModal(b.dataset.person,b.dataset.date)));
+ const pager=$('staff-pager');
+ pager.hidden=!!focusedStaffId||view!=='week'||pages===1;
+ $('staff-page-label').textContent=people.length?`${staffPage*lastPageCapacity+1}–${Math.min(people.length,(staffPage+1)*lastPageCapacity)} / ${people.length} collaborateurs`:'Aucun collaborateur';
+ $('staff-prev').disabled=staffPage<=0;
+ $('staff-next').disabled=staffPage>=pages-1;
+ updateDayPicker();
 }
 function renderMonth(){
  const first=new Date(anchor.getFullYear(),anchor.getMonth(),1,12),shift=(first.getDay()+6)%7,last=new Date(first.getFullYear(),first.getMonth()+1,0).getDate();
@@ -155,7 +182,7 @@ function renderStats(){
  $('panel-range-label').textContent=view==='month'?'Ce mois':'Cette semaine';
  $('kpi-period-label').textContent=view==='month'?'Mois affiché':'Semaine affichée';
 }
-function render(){renderPersonBar();if(view==='week'){$('range').textContent=`${fmt(anchor,{day:'numeric',month:'short'})} – ${fmt(add(anchor,6),{day:'numeric',month:'short',year:'numeric'})}`;renderWeek();}else{$('range').textContent=fmt(anchor,{month:'long',year:'numeric'});renderMonth();}renderStats();}
+function render(){if(view!=='week'){$('staff-pager').hidden=true;$('day-picker').style.display='none';}else{$('day-picker').style.display='';}renderPersonBar();if(view==='week'){$('range').textContent=`${fmt(anchor,{day:'numeric',month:'short'})} – ${fmt(add(anchor,6),{day:'numeric',month:'short',year:'numeric'})}`;renderWeek();}else{$('range').textContent=fmt(anchor,{month:'long',year:'numeric'});renderMonth();}renderStats();}
 function switchView(v){view=v;for(const which of ['week','month']){$('view-'+which).classList.toggle('active',which===v);$('view-'+which).setAttribute('aria-pressed',String(which===v));$(which+'-host').classList.toggle('hide',which!==v);}render();}
 function updateDepartments(){const select=$('department'),old=filter;select.innerHTML='<option value="ALL">Tous les services</option>';[...new Set(staff.map(s=>s.dept).filter(Boolean))].sort().forEach(d=>{const o=document.createElement('option');o.value=d;o.textContent=d;select.appendChild(o);});filter=old==='ALL'||staff.some(s=>s.dept===old)?old:'ALL';select.value=filter;}
 async function refresh(force=false){if(!token||busy)return;if(!force&&Date.now()-lastFetch<3500)return;busy=true;setStatus('Synchronisation sécurisée en cours…');try{const m=month(anchor);const res=await jsonFetch(`/api/rh/planning/premium/state?tenantID=${encodeURIComponent(tenant)}&month=${m}`,{headers:authHeaders()});staff=(res.staff||[]).map(p=>({...p,id:String(p.id),dept:String(p.dept||'Sans secteur'),avatar:String(p.name||'?').split(/\s+/).slice(0,2).map(z=>z[0]).join('').toUpperCase()}));state={...state,...(res.timesheets||{})};rhSettings=res.settings||{};
@@ -182,8 +209,18 @@ async function save(){if(!selected||busy)return;const reason=$('reason').value.t
 if(publication?.status==='published'){$('publication-status').textContent='⚠ Horaire modifié · à republier';publication={...publication,status:'to_review'};}}
 catch(e){setStatus(e.message,true);if(e.status===409){notify('Planning modifié ailleurs : rechargement nécessaire avant de réessayer.');closeModal();lastFetch=0;}else if(e.status===401||e.status===403){forget();showAuth(e.message);}else notify('Enregistrement refusé : '+e.message);}
 finally{busy=false;btn.disabled=false;}}
+$('staff-prev').onclick=()=>{staffPage=Math.max(0,staffPage-1);renderWeek();};
+$('staff-next').onclick=()=>{staffPage+=1;renderWeek();};
+$('actions-toggle').onclick=()=>{const a=$('top-actions'),on=a.classList.toggle('actions-open');$('actions-toggle').setAttribute('aria-expanded',String(on));};
+$('mobile-menu-toggle').onclick=()=>{const s=document.querySelector('.sidebar'),on=s.classList.toggle('nav-open');$('mobile-menu-toggle').setAttribute('aria-expanded',String(on));};
+function closeOverview(){const p=$('overview-panel');p.classList.remove('panel-open');$('panel-toggle').setAttribute('aria-expanded','false');}
+$('panel-toggle').onclick=()=>{const p=$('overview-panel'),on=p.classList.toggle('panel-open');$('panel-toggle').setAttribute('aria-expanded',String(on));};
+$('panel-close').onclick=closeOverview;
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeOverview();$('top-actions').classList.remove('actions-open');document.querySelector('.sidebar').classList.remove('nav-open');}});
+let resizeTimer=0;
+window.addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>{if(view==='week'){if(capacity()!==lastPageCapacity)renderWeek();}else renderMonth();},100);});
 $('logout').onclick=()=>{forget();$('login-pin').value='';showAuth('Session fermée sur cet appareil.');};
-$('login-form').onsubmit=login;$('prev').onclick=()=>{anchor=view==='week'?add(anchor,-7):new Date(anchor.getFullYear(),anchor.getMonth()-1,1,12);render();refresh(true);};$('next').onclick=()=>{anchor=view==='week'?add(anchor,7):new Date(anchor.getFullYear(),anchor.getMonth()+1,1,12);render();refresh(true);};$('today').onclick=()=>{anchor=view==='week'?monday(TODAY):new Date(TODAY.getFullYear(),TODAY.getMonth(),1,12);render();refresh(true);};$('view-week').onclick=()=>switchView('week');$('view-month').onclick=()=>{anchor=new Date(anchor.getFullYear(),anchor.getMonth(),1,12);switchView('month');refresh(true);};$('department').onchange=e=>{filter=e.target.value;focusedStaffId=null;render();};$('team-return').onclick=closeEmployee;$('close').onclick=closeModal;$('cancel').onclick=closeModal;$('kind').onchange=updateForm;document.querySelectorAll('[data-preset]').forEach(b=>b.addEventListener('click',()=>{$('kind').value=b.dataset.preset;updateForm();}));$('remove').onclick=()=>{$('kind').value='O';save();};$('shift-form').onsubmit=e=>{e.preventDefault();save();};$('modal-backdrop').onclick=e=>{if(e.target===$('modal-backdrop'))closeModal();};document.addEventListener('keydown',e=>{if(e.key==='Escape'&&selected)closeModal();});$('reset').onclick=()=>refresh(true);
+$('login-form').onsubmit=login;$('prev').onclick=()=>{anchor=view==='week'?add(anchor,-7):new Date(anchor.getFullYear(),anchor.getMonth()-1,1,12);render();refresh(true);};$('next').onclick=()=>{anchor=view==='week'?add(anchor,7):new Date(anchor.getFullYear(),anchor.getMonth()+1,1,12);render();refresh(true);};$('today').onclick=()=>{dayIndex=(TODAY.getDay()+6)%7;anchor=view==='week'?monday(TODAY):new Date(TODAY.getFullYear(),TODAY.getMonth(),1,12);render();refresh(true);};$('view-week').onclick=()=>{staffPage=0;switchView('week');};$('view-month').onclick=()=>{anchor=new Date(anchor.getFullYear(),anchor.getMonth(),1,12);switchView('month');refresh(true);};$('department').onchange=e=>{filter=e.target.value;focusedStaffId=null;staffPage=0;render();};$('team-return').onclick=closeEmployee;$('close').onclick=closeModal;$('cancel').onclick=closeModal;$('kind').onchange=updateForm;document.querySelectorAll('[data-preset]').forEach(b=>b.addEventListener('click',()=>{$('kind').value=b.dataset.preset;updateForm();}));$('remove').onclick=()=>{$('kind').value='O';save();};$('shift-form').onsubmit=e=>{e.preventDefault();save();};$('modal-backdrop').onclick=e=>{if(e.target===$('modal-backdrop'))closeModal();};document.addEventListener('keydown',e=>{if(e.key==='Escape'&&selected)closeModal();});$('reset').onclick=()=>refresh(true);
 async function publishMonth(){
   if(!token||busy||readOnly)return;
   const m=month(anchor);
