@@ -649,7 +649,7 @@
     document.addEventListener('DOMContentLoaded',()=>{updateBadge();setTimeout(()=>syncQueue(),900)});
     setInterval(()=>{if(navigator.onLine)syncQueue()},30000);
     if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost'||location.hostname==='127.0.0.1')){
-        window.addEventListener('load',()=>navigator.serviceWorker.register('/sw-rh.js?v=267',{scope:'/'}).catch(e=>console.warn('[iCHEF RH OFFLINE] Service Worker non installé',e?.message||e)));
+        window.addEventListener('load',()=>navigator.serviceWorker.register('/sw-rh.js?v=266',{scope:'/'}).catch(e=>console.warn('[iCHEF RH OFFLINE] Service Worker non installé',e?.message||e)));
     }
 })();
 
@@ -10684,7 +10684,6 @@ console.info('[iCHEF RH V185] droit automatiquement lié au pays client');
   }
   function url(t){return '/planning-rh/?tenantID='+encodeURIComponent(t);}
   async function openPremium(){
-    if(window.iChefRhPlanningBridgeV267?.openEditor){return void window.iChefRhPlanningBridgeV267.openEditor();}
     if(opening)return;opening=true;
     const t=tenant();
     if(!/^[a-zA-Z0-9_-]{2,80}$/.test(t)){
@@ -18233,7 +18232,7 @@ window.__ICHEF_RH_BUILD__='RH-V209-CATEGORY-BUGFIX';
                   <div class="rh-v226-statline"><span>Heures planifiées</span><strong id="rh-v226-prod-planned">0 h</strong></div>
                   <div class="rh-v226-statline"><span>Objectif</span><strong id="rh-v226-prod-target">0 h</strong></div>
                   <div class="rh-v226-statline"><span>Écart</span><strong id="rh-v226-prod-gap">0 h</strong></div>
-                  <div class="rh-v226-statline"><span>Synchronisation</span><strong>LIVE</strong></div>
+                  <div class="rh-v226-statline"><span>Synchronisation</span><strong id="rh-v226-prod-sync">EN ATTENTE</strong></div>
                 </div>
               </div>
             </article>
@@ -18351,6 +18350,7 @@ window.__ICHEF_RH_BUILD__='RH-V209-CATEGORY-BUGFIX';
 
   function syncData(){
     makeShell();
+    const premiumOwns = window.ICHEF_RH_PREMIUM_MIRROR?.ownsPlanning === true;
 
     const total=hiddenText('#stat-total-staff','0');
     const active=hiddenText('#stat-active-staff','0');
@@ -18371,14 +18371,16 @@ window.__ICHEF_RH_BUILD__='RH-V209-CATEGORY-BUGFIX';
     };
     set('rh-v226-total',total);
     set('rh-v226-active-sub',`${active} actifs`);
-    set('rh-v226-planned',plannedText);
-    set('rh-v226-target',targetText);
-    set('rh-v226-percent',`${Math.round(pct)} %`);
+    if (!premiumOwns) {
+      set('rh-v226-planned',plannedText);
+      set('rh-v226-target',targetText);
+      set('rh-v226-percent',`${Math.round(pct)} %`);
+    }
     set('rh-v226-requests',reqText);
     set('rh-v226-request-sub',Number(reqText)?`${reqText} décision${Number(reqText)>1?'s':''} à prendre`:'Aucune demande');
 
     const progress=document.getElementById('rh-v226-progress-bar');
-    if(progress)progress.style.width=`${pct}%`;
+    if(progress && !premiumOwns)progress.style.width=`${pct}%`;
 
     const todoRows=cloneRows('#rh-cockpit-todo','rh-v226-todo-list',5);
     const alertRows=cloneRows('#rh-cockpit-alerts','rh-v226-alert-list',4);
@@ -18400,6 +18402,7 @@ window.__ICHEF_RH_BUILD__='RH-V209-CATEGORY-BUGFIX';
       bellBadge.classList.toggle('show',alertCount>0);
     }
 
+    if (!premiumOwns) {
     set('rh-v226-stat-planned',plannedText);
     set('rh-v226-stat-target',targetText);
     set('rh-v226-gap',`${gap>=0?'+':''}${gap.toFixed(1)} h`);
@@ -18414,6 +18417,8 @@ window.__ICHEF_RH_BUILD__='RH-V209-CATEGORY-BUGFIX';
     const donutText=q('#rh-v226-donut-text strong');
     if(donutText)donutText.textContent=plannedText;
 
+    }
+
     const oldVenue=q('.rh-cockpit-venue',oldMain);
     const vStrong=q('#rh-v226-venue strong');
     const vSmall=q('#rh-v226-venue small');
@@ -18424,16 +18429,16 @@ window.__ICHEF_RH_BUILD__='RH-V209-CATEGORY-BUGFIX';
 
     const oldOnline=q('.rh-cockpit-online',oldMain);
     const syncStrong=q('#rh-v226-sync strong');
-    if(syncStrong && oldOnline)syncStrong.textContent=oldOnline.textContent?.trim()||'Synchronisé';
+    if(!premiumOwns && syncStrong && oldOnline)syncStrong.textContent=oldOnline.textContent?.trim()||'Synchronisé';
 
     const footerText=hiddenText('.rh-cockpit-footer','');
     const syncTime=q('#rh-v226-sync-time');
-    if(syncTime){
+    if(syncTime && !premiumOwns){
       const m=footerText.match(/Dernière synchronisation\s*:?\s*([^|]+)/i);
       syncTime.textContent=m?`Dernière sync. ${m[1].trim()}`:'Dernière synchronisation';
     }
 
-    syncPlanning();
+    if (!premiumOwns) syncPlanning();
   }
 
   function schedule(){
@@ -18728,7 +18733,7 @@ window.__ICHEF_RH_BUILD__='RH-V209-CATEGORY-BUGFIX';
 
     // Remove the unnecessary .0 on target when it is an integer.
     const target=document.getElementById('rh-v226-target');
-    if(target){
+    if(target && window.ICHEF_RH_PREMIUM_MIRROR?.ownsPlanning !== true){
       const val=n(target.textContent);
       if(Number.isFinite(val)){
         target.textContent=`${Number.isInteger(val)?val:val.toFixed(1)} h`;
@@ -21106,7 +21111,7 @@ window.__ICHEF_RH_BUILD__='RH-V240-AUTO-STYLE-SELF-HEAL';
    if(!id){console.warn('[RH V259] Établissement manquant, navigation refusée');return;}
    location.assign('/planning-rh/?tenantID='+encodeURIComponent(id));
  }
- window.iChefRhOpenOfficialPlanningV259=()=>{if(window.iChefRhPlanningBridgeV267?.openMirror) return window.iChefRhPlanningBridgeV267.openMirror();return openPremium();};
+ window.iChefRhOpenOfficialPlanningV259=openPremium;
  const createEntry=()=>{
    const el=document.createElement('section');el.className='rh-v259-entry';
    el.setAttribute('aria-label','Planning officiel iCHEF Premium');
@@ -21138,8 +21143,7 @@ window.__ICHEF_RH_BUILD__='RH-V240-AUTO-STYLE-SELF-HEAL';
  document.addEventListener('click',e=>{
    const target=e.target.closest?.('[data-v236-nav="planning"], [data-v226-nav="planning"], #rh-v226-plan-table-wrap, #rh-v236-planning-card');
    if(!target)return;
-   e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();
-   if(window.iChefRhPlanningBridgeV267?.openMirror)window.iChefRhPlanningBridgeV267.openMirror();else openPremium();
+   e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();openPremium();
  },true);
  // V260 : ne plus observer en continu TOUT le DOM RH.
  // Seuls l'ouverture et le changement de vue RH justifient le contrôle des liens.
@@ -21160,4 +21164,223 @@ window.__ICHEF_RH_BUILD__='RH-V240-AUTO-STYLE-SELF-HEAL';
  else start();
 })();
 
+
+
+
+/* iCHEF RH V270 — lecture officielle Premium, sans écriture RH */
+(() => {
+  'use strict';
+  if (window.ICHEF_RH_PREMIUM_MIRROR?.version === '270') return;
+  const APP = window.ICHEF_RH_PREMIUM_MIRROR = {version:'270', ownsPlanning:true, verified:false, refresh};
+  const $ = id => document.getElementById(id);
+  const tenant = () => String(new URLSearchParams(location.search).get('tenantID') || '').trim();
+  const api = () => typeof SERVER_URL_JS === 'string' ? SERVER_URL_JS.replace(/\/$/,'') :
+    (['localhost','127.0.0.1'].includes(location.hostname) ? 'http://localhost:10000' : 'https://tableau-system.onrender.com');
+  const device = () => {
+    let id = ''; try { id = localStorage.getItem('ichef_planning_device_v1') || ''; } catch (_) {}
+    if (!id) {
+      id = crypto.randomUUID?.() || 'rh_'+Date.now()+'_'+Math.random().toString(36).slice(2);
+      try { localStorage.setItem('ichef_planning_device_v1',id); } catch (_) {}
+    }
+    return id;
+  };
+  const key = 'ichef_planning_premium_auth_v1';
+  const fmt = n => Number.isFinite(n) ? n.toFixed(1).replace('.',',')+' h' : '—';
+  const esc = s => String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const set = (id,text) => {const e=$(id);if(e && e.textContent!==String(text)) e.textContent=String(text);};
+  let last=0,inflight=null,selectedView='week',lastState=null,blockedUntil=0,authFail=false;
+  function displayStatus(message,ok=false,detail='') {
+    const strong=$('rh-v226-sync')?.querySelector('strong');
+    if(strong)strong.textContent=message;
+    set('rh-v226-sync-time',detail||'Planning Premium : vérification nécessaire');
+    set('rh-v226-prod-sync',ok?'PREMIUM':'NON VÉRIFIÉ');
+    const badge=$('rh-v226-sync');
+    if(badge){badge.setAttribute('title',detail||message);badge.dataset.premiumConnected=ok?'true':'false';}
+  }
+  function pending(reason){
+    APP.verified=false;
+    lastState=null;
+    displayStatus('PLANNING NON SYNCHRONISÉ',false,reason);
+    for(const id of ['rh-v226-planned','rh-v226-target','rh-v226-stat-planned','rh-v226-stat-target',
+      'rh-v226-gap','rh-v226-prod-planned','rh-v226-prod-target','rh-v226-prod-gap'])set(id,'—');
+    for(const id of ['rh-v226-percent','rh-v226-rate','rh-v226-prod-rate'])set(id,'—');
+    const p=$('rh-v226-progress-bar');if(p)p.style.width='0%';
+    const d=$('rh-v226-donut');if(d)d.style.setProperty('--pct','0deg');
+    const dt=$('rh-v226-donut-text')?.querySelector('strong');if(dt)dt.textContent='—';
+    const host=$('rh-v226-plan-table-wrap');
+    if(host)host.innerHTML='<div class="rh-premium-message" role="status">'+esc(reason)+
+      '<br><button type="button" data-premium-open>Ouvrir Planning Premium</button></div>';
+  }
+  function getAuth(t,d){
+    try {const a=JSON.parse(sessionStorage.getItem(key)||'null');
+      if(a?.tenant===t && a.device===d && Number(a.exp)>Date.now()+30000 &&
+         typeof a.token==='string' && a.token.length>30)return a.token;
+    }catch(_){}return '';
+  }
+  function getRhPin(){
+    try {const v=typeof getRhDirectionAuthPin==='function'?String(getRhDirectionAuthPin()||''):'';
+      return /^\d{4,12}$/.test(v)?v:'';
+    }catch(_){return '';}
+  }
+  async function fetchJson(path,options={}){
+    const c=new AbortController();const to=setTimeout(()=>c.abort(),10500);
+    try {
+      const r=await fetch(api()+path,{credentials:'include',cache:'no-store',signal:c.signal,...options});
+      const body=await r.json().catch(()=>({}));
+      if(!r.ok || body.success===false){const e=new Error(body.error||`HTTP ${r.status}`);e.status=r.status;throw e;}
+      return body;
+    }finally{clearTimeout(to);}
+  }
+  async function authorizedToken(t,d){
+    let tok=getAuth(t,d);if(tok)return tok;
+    if(authFail || Date.now()<blockedUntil)return '';
+    const pin=getRhPin();if(!pin)return '';
+    // Le même endpoint que la PWA : les permissions sont toujours vérifiées côté serveur.
+    try{
+      const data=await fetchJson('/api/rh/planning/session',{method:'POST',
+        headers:{'Content-Type':'application/json','X-iCHEF-Tenant':t,'X-iCHEF-Device':d},
+        body:JSON.stringify({tenantID:t,deviceId:d,pin})});
+      tok=String(data.accessToken||'');if(!tok)throw Error('Session Planning Premium non délivrée.');
+      try{sessionStorage.setItem(key,JSON.stringify({tenant:t,device:d,token:tok,actor:data.actor||null,
+        exp:Date.now()+Math.max(60,Math.min(7200,Number(data.expiresInSeconds)||7200))*1000-10000}));}catch(_){}
+      return tok;
+    }catch(e){
+      if([400,401,403,422].includes(e.status))authFail=true;
+      blockedUntil=Date.now()+([400,401,403,422].includes(e.status)?120000:20000);
+      throw e;
+    }
+  }
+  const working=d=>d && ['present','off_matin','off_soir'].includes(String(d.status||''));
+  function segment(s){
+    if(!/^\d{2}:\d{2}-\d{2}:\d{2}$/.test(String(s||'')))return 0;
+    const min=v=>Number(v.slice(0,2))*60+Number(v.slice(3,5));
+    const a=min(s.slice(0,5)),b=min(s.slice(6,11));
+    if(a>1439||b>1439)return 0;
+    return (b-a+1440)%1440;
+  }
+  function hours(day){if(!working(day))return 0;
+    return Math.max(0,(segment(day.s1)+segment(day.s2)-Math.max(0,Number(day.pause)||0))/60);
+  }
+  function currentWeek(){const d=new Date();d.setHours(12,0,0,0);d.setDate(d.getDate()-(d.getDay()+6)%7);return d;}
+  const iso=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  function monthsForWeek(start){const out=[];for(let i=0;i<7;i++){const d=new Date(start);d.setDate(d.getDate()+i);const m=iso(d).slice(0,7);if(!out.includes(m))out.push(m);}return out;}
+  const getDay=(root,id,date)=>root?.[date.slice(0,7)]?.[String(id)]?.[String(Number(date.slice(8)))]||null;
+  const label=d=>{
+    if(!d)return '—';
+    const names={off:'REPOS',conge:'CONGÉ',recup:'RÉCUP',maladie:'MALADIE',ferie:'FÉRIÉ',formation:'FORMATION',
+      absence_autorisee:'ABSENCE',absence_injustifiee:'ABSENCE',accident_travail:'ACCIDENT'};
+    if(working(d))return [d.s1||'',d.s2||''].filter(Boolean).join(' / ')||'SERVICE';
+    return names[d.status]||String(d.status||'—').toUpperCase().slice(0,25);
+  };
+  function paint(data,serverTime){
+    const start=currentWeek(),staff=Array.isArray(data.staff)?data.staff:[],root=data.timesheets||{};
+    const weekdays=[];for(let i=0;i<7;i++){const d=new Date(start);d.setDate(start.getDate()+i);weekdays.push(d);}
+    const today=iso(new Date());let days=weekdays;
+    if(selectedView==='today')days=weekdays.filter(d=>iso(d)===today);
+    if(selectedView==='month'){
+      const m=iso(new Date()).slice(0,7),[y,mo]=m.split('-').map(Number);
+      const count=new Date(y,mo,0).getDate();days=Array.from({length:count},(_,i)=>new Date(y,mo-1,i+1,12));
+    }
+    let sum=0;const contracts=[];
+    for(const p of staff){const h=weekdays.reduce((n,d)=>n+hours(getDay(root,p.id,iso(d))),0);sum+=h;
+      if(Number(p.contract)>0&&Number.isFinite(Number(p.contract)))contracts.push(Number(p.contract));}
+    // L'objectif n'est affiché que si tous les contrats sont renseignés par le serveur.
+    const target=staff.length&&contracts.length===staff.length?contracts.reduce((a,b)=>a+b,0):NaN;
+    const ratio=Number.isFinite(target)&&target>0?Math.max(0,Math.min(100,sum/target*100)):NaN;
+    const gap=Number.isFinite(target)?sum-target:NaN;
+    for(const id of ['rh-v226-planned','rh-v226-stat-planned','rh-v226-prod-planned'])set(id,fmt(sum));
+    for(const id of ['rh-v226-target','rh-v226-stat-target','rh-v226-prod-target'])set(id,fmt(target));
+    for(const id of ['rh-v226-gap','rh-v226-prod-gap'])set(id,Number.isFinite(gap)?(gap>0?'+':'')+fmt(gap):'—');
+    for(const id of ['rh-v226-percent','rh-v226-rate','rh-v226-prod-rate'])set(id,Number.isFinite(ratio)?Math.round(ratio)+' %':'—');
+    const progress=$('rh-v226-progress-bar');if(progress)progress.style.width=(Number.isFinite(ratio)?ratio:0)+'%';
+    const donut=$('rh-v226-donut');if(donut)donut.style.setProperty('--pct',(Number.isFinite(ratio)?ratio*3.6:0)+'deg');
+    const dt=$('rh-v226-donut-text')?.querySelector('strong');if(dt)dt.textContent=fmt(sum);
+    const t=$('rh-v226-plan-table-wrap');if(t){
+      let html='<div class="rh-premium-grid"><table aria-label="Planning officiel Premium - lecture seule"><thead><tr><th>Collaborateur</th>';
+      for(const d of days)html+='<th>'+esc(d.toLocaleDateString('fr-FR',{weekday:'short',day:'2-digit'}))+'</th>';
+      html+='</tr></thead><tbody>';
+      for(const p of staff){html+='<tr><th scope="row">'+esc(p.name||'Collaborateur')+'</th>';
+        for(const d of days){const value=getDay(root,p.id,iso(d));html+='<td><span class="rh-premium-cell">'+esc(label(value))+'</span></td>';}
+        html+='</tr>';}
+      if(!staff.length)html+='<tr><td colspan="'+(days.length+1)+'">Aucun collaborateur renvoyé par le serveur Premium.</td></tr>';
+      html+='</tbody></table></div>';t.innerHTML=html;
+    }
+    set('rh-v226-week',selectedView==='month'?'Mois en cours':selectedView==='today'?'Aujourd’hui':
+      `${weekdays[0].toLocaleDateString('fr-FR',{day:'2-digit',month:'short'})} — ${weekdays[6].toLocaleDateString('fr-FR',{day:'2-digit',month:'short'})}`);
+    const pub=String(data.settings?.planningStatus||'draft')==='published'?'Publié':'Brouillon / non publié';
+    const time=new Date(serverTime||Date.now()).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
+    APP.verified=true;
+    displayStatus('PLANNING PREMIUM · SYNCHRONISÉ',true,`État serveur ${time} · ${pub}`);
+  }
+  async function refresh(force=false){
+    if(inflight)return inflight;
+    if(!force&&Date.now()-last<20000)return;
+    if(document.hidden)return;
+    inflight=(async()=>{
+      const t=tenant();if(!/^[A-Za-z0-9_-]{2,80}$/.test(t)){pending('Établissement non reconnu.');return;}
+      const d=device();let tok;
+      try{tok=await authorizedToken(t,d);}catch(e){pending('Authentification Premium : '+(e.message||'accès refusé'));return;}
+      if(!tok){pending('Connectez-vous dans RH avec un compte Direction autorisé, ou ouvrez Planning Premium.');return;}
+      const m=iso(currentWeek()).slice(0,7);
+      try {
+        const result=await fetchJson(`/api/rh/planning/premium/state?tenantID=${encodeURIComponent(t)}&month=${m}`,
+          {headers:{Accept:'application/json',Authorization:'Bearer '+tok,'X-iCHEF-Tenant':t,'X-iCHEF-Device':d}});
+        if(result.tenantID!==t)throw Error('Réponse provenant d’un autre établissement : refusée.');
+        if(!result.timesheets || typeof result.timesheets!=='object' || !Array.isArray(result.staff))
+          throw Error('Réponse Planning Premium incomplète : impossible de confirmer la synchronisation.');
+        const time=result.serverTime;last=Date.now();lastState=result;paint(result,time);
+      }catch(e){
+        if(e.status===401||e.status===403){try{sessionStorage.removeItem(key);}catch(_){}authFail=true;}
+        pending('Lecture Premium indisponible : '+(e.message||'vérifier le serveur'));
+      }
+    })();try{await inflight;}finally{inflight=null;}
+  }
+  function openPremium(){if(typeof window.iChefOpenPlanningPremiumV257==='function')return window.iChefOpenPlanningPremiumV257();
+    const t=tenant();if(t)location.assign('/planning-rh/?tenantID='+encodeURIComponent(t));}
+  function init(){
+    if(!$('rh-v226-shell')){if((init.tries=(init.tries||0)+1)<50)setTimeout(init,750);return;}
+    if(!$('ichef-v268-premium-style')){
+      const style=document.createElement('style');style.id='ichef-v268-premium-style';
+      style.textContent=`
+#rh-v226-plan-table-wrap .rh-premium-grid {max-width:100%;overflow-x:auto;border:1px solid #dce3e9;border-radius:11px;background:#fff;color:#17212a}
+#rh-v226-plan-table-wrap .rh-premium-grid table {border-collapse:collapse;width:100%;min-width:640px;font:600 11px/1.4 Inter,system-ui,sans-serif}
+#rh-v226-plan-table-wrap .rh-premium-grid th,#rh-v226-plan-table-wrap .rh-premium-grid td {border-bottom:1px solid #e8edf0;padding:10px 8px;text-align:center;white-space:nowrap}
+#rh-v226-plan-table-wrap .rh-premium-grid th:first-child,#rh-v226-plan-table-wrap .rh-premium-grid td:first-child {position:sticky;left:0;z-index:1;background:#fff;text-align:left;min-width:145px}
+#rh-v226-plan-table-wrap .rh-premium-grid thead th {background:#f1f5f7;color:#15222b;font-weight:900}
+#rh-v226-plan-table-wrap .rh-premium-cell {display:block;max-width:180px;white-space:normal;overflow-wrap:anywhere;color:#25394a}
+#rh-v226-plan-table-wrap .rh-premium-message {padding:25px;text-align:center;background:#f7f9fb;color:#34495a;font-weight:700;line-height:1.8}
+#rh-v226-plan-table-wrap .rh-premium-message button {display:inline-block;margin:12px 0 0;padding:9px 14px;border-radius:8px;background:#111820;color:#fff;border:0;font-weight:800;cursor:pointer}
+#rh-v226-sync[data-premium-connected="false"] {background:#fff0eb!important;color:#923424!important}
+#rh-v226-sync[data-premium-connected="false"] .dot {background:#cd5b39!important}
+#rh-v226-sync[data-premium-connected="true"] {background:#ebf8f1!important;color:#166b4c!important}
+`;
+      document.head.appendChild(style);
+    }
+    pending('Connexion au Planning Premium en cours…');
+    document.addEventListener('click',e=>{
+      const tab=e.target?.closest?.('#rh-v226-tabs [data-v226-tab]');
+      if(tab){e.preventDefault();e.stopImmediatePropagation();selectedView=tab.dataset.v226Tab;
+        document.querySelectorAll('#rh-v226-tabs [data-v226-tab]').forEach(b=>b.classList.toggle('active',b===tab));
+        if(lastState)paint(lastState,lastState.serverTime);else refresh(true);return;}
+      if(e.target?.closest?.('#rh-v226-plan-full,#rh-v226-plan-table-wrap [data-premium-open],#rh-v226-plan-actions [data-v226-action="publish"]')){
+        e.preventDefault();e.stopImmediatePropagation();openPremium();}
+    },true);
+    try{if('BroadcastChannel' in window){const ch=new BroadcastChannel('ichef-planning-premium-events-v1');
+      ch.onmessage=e=>{if(e.data?.type==='PLANNING_CHANGED'&&e.data.tenant===tenant())refresh(true);};}}
+    catch(_){}
+    window.addEventListener('focus',()=>refresh(true));
+    document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh(true);});
+    window.addEventListener('ichef:premium:rh-synced',()=>refresh(true));
+    // Un PIN validé dans rh-core.js affiche le hub Direction : réagir immédiatement.
+    const hub=$('director-hub');
+    if(hub && typeof MutationObserver==='function'){
+      const observer=new MutationObserver(()=>{if(getRhPin()){authFail=false;blockedUntil=0;refresh(true);}});
+      observer.observe(hub,{attributes:true,attributeFilter:['style','class']});
+    }
+    // La connexion réseau est limitée à l'API Premium et seulement après PIN/session valide.
+    setInterval(()=>{if(!document.hidden)refresh(false);},30000);
+    refresh(true);
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init,{once:true});else init();
+})();
 
