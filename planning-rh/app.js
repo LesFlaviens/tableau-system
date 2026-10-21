@@ -1,4 +1,4 @@
-/* iCHEF OS Planning Premium V272 : affichage sans scroll + pagination. */
+/* iCHEF OS Planning Premium V273 : responsable uniquement + assistant local, sans quitter le planning. */
 /* iCHEF OS Planning Premium PWA · client connecté au TIMESHEETS_MASTER.
    Aucune donnée RH n'est stockée en cache ni dans localStorage. */
 (()=>{'use strict';
@@ -26,7 +26,7 @@ function mkDevice(){const key='ichef_planning_device_v1';let id='';try{id=localS
 device=mkDevice();let oldTenant='';try{oldTenant=localStorage.getItem('ichef_tenant_id')||'';}catch{}tenant=(query.get('tenantID')||oldTenant||'').trim().slice(0,80);$('login-tenant').value=tenant;
 function setStatus(text,error=false){$('board-status').textContent=(error?'● ':'● ')+text;$('board-status').style.color=error?'#b64140':'#357b66';}
 function notify(message){$('toast').textContent=message;$('toast').classList.remove('hide');clearTimeout(notify.timer);notify.timer=setTimeout(()=>$('toast').classList.add('hide'),4300);}
-function showAuth(error=''){token='';actor=null;focusedStaffId=null;staff=[];state={};publication=null;render();$('login-shield').classList.remove('hide');$('login-error').textContent=error;setStatus('Connexion requise',true);}
+function showAuth(error=''){closeAssistant();token='';actor=null;focusedStaffId=null;staff=[];state={};publication=null;render();$('login-shield').classList.remove('hide');$('login-error').textContent=error;setStatus('Connexion requise',true);}
 function authKey(){return 'ichef_planning_premium_auth_v1';}
 function forget(){try{sessionStorage.removeItem(authKey());}catch{}}
 function authHeaders(){return {'Accept':'application/json','Authorization':`Bearer ${token}`,'X-iCHEF-Tenant':tenant,'X-iCHEF-Device':device};}
@@ -219,7 +219,7 @@ $('panel-close').onclick=closeOverview;
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeOverview();$('top-actions').classList.remove('actions-open');document.querySelector('.sidebar').classList.remove('nav-open');}});
 let resizeTimer=0;
 window.addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>{if(view==='week'){if(capacity()!==lastPageCapacity)renderWeek();}else renderMonth();},100);});
-$('logout').onclick=()=>{forget();$('login-pin').value='';showAuth('Session fermée sur cet appareil.');};
+$('logout').onclick=()=>{closeAssistant();forget();$('login-pin').value='';showAuth('Session fermée sur cet appareil.');};
 $('login-form').onsubmit=login;$('prev').onclick=()=>{anchor=view==='week'?add(anchor,-7):new Date(anchor.getFullYear(),anchor.getMonth()-1,1,12);render();refresh(true);};$('next').onclick=()=>{anchor=view==='week'?add(anchor,7):new Date(anchor.getFullYear(),anchor.getMonth()+1,1,12);render();refresh(true);};$('today').onclick=()=>{dayIndex=(TODAY.getDay()+6)%7;anchor=view==='week'?monday(TODAY):new Date(TODAY.getFullYear(),TODAY.getMonth(),1,12);render();refresh(true);};$('view-week').onclick=()=>{staffPage=0;switchView('week');};$('view-month').onclick=()=>{anchor=new Date(anchor.getFullYear(),anchor.getMonth(),1,12);switchView('month');refresh(true);};$('department').onchange=e=>{filter=e.target.value;focusedStaffId=null;staffPage=0;render();};$('team-return').onclick=closeEmployee;$('close').onclick=closeModal;$('cancel').onclick=closeModal;$('kind').onchange=updateForm;document.querySelectorAll('[data-preset]').forEach(b=>b.addEventListener('click',()=>{$('kind').value=b.dataset.preset;updateForm();}));$('remove').onclick=()=>{$('kind').value='O';save();};$('shift-form').onsubmit=e=>{e.preventDefault();save();};$('modal-backdrop').onclick=e=>{if(e.target===$('modal-backdrop'))closeModal();};document.addEventListener('keydown',e=>{if(e.key==='Escape'&&selected)closeModal();});$('reset').onclick=()=>refresh(true);
 async function publishMonth(){
   if(!token||busy||readOnly)return;
@@ -240,6 +240,124 @@ async function publishMonth(){
   }finally{busy=false;b.disabled=false;}
 }
 $('publish').onclick=publishMonth;
+
+/* V273 — Moteur d'assistance décisionnelle utilisant exclusivement le planning
+   officiel chargé par la session RH. Pas de requête vers un fournisseur externe,
+   pas de clé IA dans le navigateur, pas de publication automatique. L'assistant
+   RH complet déjà présent dans l'interface parente est accessible si celle-ci
+   est embarquée sur le même domaine. */
+let assistantIssues=[],assistantPage=0,assistantVisible=3,assistantSnapshot='';
+function assistantIsOpen(){return !$('assistant-shield').classList.contains('hide');}
+function closeAssistant(){const m=$('assistant-shield');if(m)m.classList.add('hide');}
+function assistantDates(){return periodDays();}
+function assistantCount(){return innerHeight<580?2:innerHeight<740?3:innerHeight<900?4:5;}
+function assistantFindings(){
+ const people=visible(),days=assistantDates();
+ const issues=[];let totalHours=0,services=0,uncovered=0,unpaired=0,longRuns=0;
+ if(!days.length||!people.length)return {issues,summary:{people:people.length,hours:0,services:0,uncovered:0}};
+ const addIssue=(level,title,detail,person,date)=>issues.push({level,title,detail,person,date});
+ const dayClosed=new Set(Array.isArray(rhSettings?.planningClosedWeekdays)?rhSettings.planningClosedWeekdays.map(x=>Number(x)):[]);
+ for(const day of days){
+  const working=people.map(p=>({p,r:get(p,day)})).filter(x=>work(x.r));
+  const atMorning=working.filter(x=>x.r.k==='M'||x.r.k==='C').length;
+  const atEvening=working.filter(x=>x.r.k==='S'||x.r.k==='C').length;
+  for(const x of working){totalHours+=hours(x.r);services++;}
+  const date=iso(day),label=fmt(day,{weekday:'short',day:'numeric',month:'short'});
+  if(dayClosed.has(day.getDay()))continue; // pas d'alerte sur la fermeture configurée.
+  if(!working.length){uncovered++;addIssue('alert','Aucun service prévu · '+label,'Vérifier si le jour est fermé ou si une couverture doit être organisée.',null,date);}
+  else if(atMorning===0||atEvening===0){addIssue('warn','Couverture à vérifier · '+label,atMorning===0?'Aucun service matin saisi sur cette journée.':'Aucun service soir saisi sur cette journée.',null,date);}
+ }
+ for(const person of people){
+  const history=days.map(d=>({d,r:get(person,d)}));
+  let run=0,maxRun=0,stopDate=null;
+  for(const {d,r} of history){if(work(r)){run++;if(run>maxRun){maxRun=run;stopDate=iso(d);}}else run=0;}
+  if(maxRun>5){longRuns++;addIssue('alert',person.name+' · '+maxRun+' jours travaillés consécutifs','Point de vigilance (> 5 jours dans la période affichée). Contrôler les règles applicables et les journées limitrophes.',person.id,stopDate);}
+  let paired=0,single=0;
+  // Seulement à l'intérieur de la période affichée. Pas d'affirmation légale.
+  for(let i=0;i<history.length;i++){
+   if(history[i].r.k==='R'){
+    if(i+1<history.length&&history[i+1].r.k==='R'){paired++;i++;}
+    else single++;
+   }
+  }
+  if(single>0&&paired===0&&history.some(x=>work(x.r))){unpaired++;addIssue('info',person.name+' · repos isolés','Aucun bloc de deux jours de repos consécutifs visible. Vérifier les préférences et les jours voisins.',person.id,null);}
+  const hrs=history.reduce((acc,x)=>acc+hours(x.r),0);
+  if(view==='week'&&hrs>48)addIssue('warn',person.name+' · '+hrs.toFixed(1).replace('.',',')+' h cette semaine','Heures planifiées élevées. Examiner le contrat, les pauses, le cadre légal applicable et les pointages.',person.id,null);
+ }
+ if(issues.length===0)addIssue('info','Aucune alerte simple détectée','La couverture et les repos restent à valider selon les contrats, congés et contraintes de service. Cette analyse ne certifie pas la conformité.',null,null);
+ issues.sort((a,b)=>({alert:0,warn:1,info:2}[a.level]-{alert:0,warn:1,info:2}[b.level]));
+ return {issues,summary:{people:people.length,hours:totalHours,services,uncovered,longRuns,unpaired}};
+}
+function assistantNav(issue){
+ if(!issue?.date&&!issue?.person)return;
+ closeAssistant();
+ if(issue.person){focusedStaffId=String(issue.person);staffPage=0;}
+ if(issue.date){
+  const d=new Date(issue.date+'T12:00:00');
+  dayIndex=(d.getDay()+6)%7;anchor=monday(d);
+  switchView('week');
+  // Ne pas ouvrir une modification sans responsable ayant choisi le collaborateur.
+  if(issue.person&&!readOnly){openModal(String(issue.person),issue.date);}
+ }else{switchView('week');}
+ void refresh(true);
+}
+function renderAssistant(){
+ assistantVisible=assistantCount();
+ const sh=$('assistant-shield'),out=$('assistant-findings'),amount=assistantIssues.length;
+ sh.style.setProperty('--assistant-visible',String(assistantVisible));
+ const pages=Math.max(1,Math.ceil(amount/assistantVisible));assistantPage=Math.max(0,Math.min(assistantPage,pages-1));
+ const page=assistantIssues.slice(assistantPage*assistantVisible,(assistantPage+1)*assistantVisible);
+ out.replaceChildren();
+ for(const item of page){
+  const row=document.createElement('article');row.className='assistant-item';
+  const level=document.createElement('span');level.className='assistant-level '+(item.level==='info'?'':item.level);level.setAttribute('aria-hidden','true');
+  const info=document.createElement('div');info.className='assistant-item-info';
+  const title=document.createElement('strong');title.textContent=item.title;
+  const desc=document.createElement('p');desc.textContent=item.detail;
+  info.append(title,desc);row.append(level,info);
+  if(item.person||item.date){const b=document.createElement('button');b.type='button';b.className='btn small';b.textContent='Voir →';b.addEventListener('click',()=>assistantNav(item));row.append(b);}
+  out.append(row);
+ }
+ $('assistant-counter').textContent=`${assistantPage+1} / ${pages} · ${amount} point${amount>1?'s':''}`;
+ $('assistant-prev').disabled=assistantPage===0;
+ $('assistant-next').disabled=assistantPage>=pages-1;
+}
+function analyzeAssistant(){
+ if(!token){closeAssistant();notify('Accès réservé aux responsables RH et Direction.');return;}
+ const m=month(anchor),suffix=view==='week'?'semaine':'mois';
+ const {issues,summary}=assistantFindings();assistantIssues=issues;assistantPage=0;
+ $('assistant-period').textContent=`${suffix==='semaine'?'Semaine':'Mois'} · ${$('range').textContent} · ${filter==='ALL'?'Tous les services':filter}`;
+ $('assistant-status').textContent='Analyse de décision connectée au planning officiel · aucune modification effectuée.';
+ $('assistant-metrics').innerHTML=[
+  [summary.people,'Collaborateurs'],[summary.services,'Services prévus'],[summary.hours.toFixed(1).replace('.',',')+' h','Heures affichées'],[summary.uncovered,'Jours sans service']
+ ].map(x=>`<div class="assistant-metric"><b>${esc(x[0])}</b><span>${esc(x[1])}</span></div>`).join('');
+ renderAssistant();
+}
+function openAssistant(){
+ if(!token){notify('Connectez-vous avec une session responsable Direction / RH.');return;}
+ $('top-actions').classList.remove('actions-open');
+ document.querySelector('.sidebar').classList.remove('nav-open');
+ $('assistant-shield').classList.remove('hide');
+ const direct=window.parent!==window && (()=>{try{return location.origin===window.parent.location.origin&&typeof window.parent.openPlanningAssistant==='function';}catch{return false;}})();
+ $('assistant-rh-advanced').classList.toggle('hide',!direct);
+ analyzeAssistant();$('assistant-close').focus();
+}
+$('assistant-close').onclick=closeAssistant;$('assistant-done').onclick=closeAssistant;
+$('assistant-shield').addEventListener('click',e=>{if(e.target===$('assistant-shield'))closeAssistant();});
+$('assistant-prev').onclick=()=>{assistantPage=Math.max(0,assistantPage-1);renderAssistant();};
+$('assistant-next').onclick=()=>{assistantPage++;renderAssistant();};
+$('assistant-reanalyze').onclick=()=>{lastFetch=0;refresh(true).then(()=>{if(assistantIsOpen())analyzeAssistant();});};
+$('assistant-rh-advanced').onclick=()=>{
+ // Réutiliser l'assistance RH existante seulement si ouverte depuis RH
+ // même origine et sans transmettre PIN ni jeton entre fenêtres.
+ try{if(window.parent!==window&&location.origin===window.parent.location.origin&&typeof window.parent.openPlanningAssistant==='function'){
+  closeAssistant();window.parent.openPlanningAssistant();return;
+ }}catch(e){console.warn('Assistant RH complet indisponible',e);}
+ $('assistant-status').textContent='Assistant RH avancé non accessible depuis cette fenêtre. Analyse locale disponible.';
+};
+window.addEventListener('resize',()=>{if(assistantIsOpen())renderAssistant();});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&assistantIsOpen()){e.stopImmediatePropagation();closeAssistant();}});
+
 function returnToRh(){
  if(window.parent!==window && new URLSearchParams(location.search).get('rhEmbedded')==='1'){
    try{window.parent.postMessage({type:'ICHEF_PREMIUM_RETURN_RH'},location.origin);return;}catch(_){}
@@ -247,7 +365,7 @@ function returnToRh(){
  location.assign('/rh.html?tenantID='+encodeURIComponent(tenant));
 }
 $('return-rh').onclick=returnToRh;
-$('ai').onclick=$('ai-side').onclick=returnToRh;$('print').onclick=()=>window.print();document.querySelectorAll('[data-inactive]').forEach(b=>b.onclick=()=>{const key=b.dataset.inactive;const page=key==='Pointeuse'?'/pointeuse.html':key==='Portail Staff'?'/portail-staff.html':'/rh.html';location.assign(page+'?tenantID='+encodeURIComponent(tenant));});if(premiumChannel)premiumChannel.onmessage=e=>{
+$('ai').onclick=$('ai-side').onclick=openAssistant;$('print').onclick=()=>window.print();document.querySelectorAll('[data-inactive]').forEach(b=>b.onclick=()=>{const key=b.dataset.inactive;const page=key==='Pointeuse'?'/pointeuse.html':key==='Portail Staff'?'/portail-staff.html':'/rh.html';location.assign(page+'?tenantID='+encodeURIComponent(tenant));});if(premiumChannel)premiumChannel.onmessage=e=>{
   if(e?.data?.type==='PLANNING_CHANGED'&&e.data.tenant===tenant&&!selected){lastFetch=0;void refresh(true);}
 };
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!selected)refresh(true);});setInterval(()=>{if(!document.hidden&&!selected)refresh(true);},30000);
