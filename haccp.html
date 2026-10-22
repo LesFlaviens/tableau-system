@@ -10121,7 +10121,8 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
 #hv227-modal .hv248-pending-row b{font-size:12px;display:block;color:#223c2f}
 #hv227-modal .hv248-pending-row span{font-size:11px;color:#53715f}
 #hv227-modal .hv248-pending-row label{font-size:11px;font-weight:800;color:#446050}
-#hv227-modal .hv248-pending-row select{margin-top:5px}
+#hv227-modal .hv248-pending-row input{margin-top:5px}
+#hv227-modal .hv248-pending-row input:focus{outline:2px solid #247b52;outline-offset:1px}
 @media(max-width:900px){#hv227-modal .hv248-reset-box{flex-direction:column;align-items:stretch}#hv227-modal .hv248-pending-row{grid-template-columns:1fr}}
 
 #hv227-modal .hv227-type-manager{border:1px solid #cfdeeb;background:white;border-radius:14px;margin:13px 0;padding:13px 15px}
@@ -10309,6 +10310,8 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
       || (()=>{const name=catalog()[folder]?.[0]||'';return typeof classifyEquipmentType==='function'?classifyEquipmentType(name,folder):types().at(-1)})();
   };
   let saving=false;
+  // Conserver le texte saisi lors des actualisations du catalogue.
+  const pendingCategoryDrafts=new Map();
   const msg=(value,isError=false)=>{const s=$('hv227-status');if(s){s.textContent=value;s.style.color=isError?'#a8293c':'#406447'}};
   const keysList=()=>Object.keys(catalog()).filter(k=>!pendingKeys().includes(k));
   const validateName=(name,old='')=>{
@@ -10340,10 +10343,10 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
       const populated=pending.filter(k=>eq[k]?.length);
       box.hidden=!populated.length;
       box.dataset.keys=JSON.stringify(populated);
-      box.innerHTML=populated.length?`<h3>📦 Matériel conservé · À reclasser (${populated.reduce((n,k)=>n+eq[k].length,0)})</h3><p>Créez une catégorie avec le même type HACCP, puis affectez-y les équipements en un clic. Les relevés restent consultables pendant le reclassement.</p>${populated.map((k,idx)=>{
+      box.innerHTML=populated.length?`<h3>📦 Matériel conservé · À reclasser (${populated.reduce((n,k)=>n+eq[k].length,0)})</h3><p>Écrivez librement le nom de votre nouvelle catégorie et cliquez sur AFFECTER : elle sera créée et le matériel reclassé en une seule opération. Les règles HACCP et les relevés historiques sont conservés.</p>${populated.map((k,idx)=>{
         const t=folderType(k)?.id;
-        const destinations=keys.filter(name=>folderType(name)?.id===t);
-        return `<div class="hv248-pending-row"><div><b>${safe(types().find(x=>x.id===t)?.label||'Contrôle HACCP')} · ${eq[k].length} équipement(s)</b><span>${eq[k].map(safe).join(' · ')}</span></div><label>Ma nouvelle catégorie<select data-hv248-dest="${idx}"><option value="">Choisir…</option>${destinations.map(name=>`<option value="${safe(name)}">${safe(name)}</option>`).join('')}</select></label><button type="button" class="hv227-primary" data-hv248-move="${idx}" ${destinations.length?'':'disabled'}>AFFECTER</button></div>`;
+        const draft=pendingCategoryDrafts.get(k)||'';
+        return `<div class="hv248-pending-row"><div><b>${safe(types().find(x=>x.id===t)?.label||'Contrôle HACCP')} · ${eq[k].length} équipement(s)</b><span>${eq[k].map(safe).join(' · ')}</span></div><label>Nom de ma nouvelle catégorie<input type="text" data-hv248-dest="${idx}" maxlength="65" placeholder="Écrire ma propre catégorie…" value="${safe(draft)}" autocomplete="off" aria-label="Nom de la catégorie pour ${safe(types().find(x=>x.id===t)?.label||'contrôle HACCP')}"></label><button type="button" class="hv227-primary" data-hv248-move="${idx}">AFFECTER</button></div>`;
       }).join('')}`:'';
     }
   }
@@ -10405,15 +10408,37 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
       if(String(confirmation||'').trim().toUpperCase()!=='REPARTIR')return msg('Réinitialisation annulée. Aucune donnée modifiée.');
       await commit(null,'Anciennes catégories retirées. Créez et affectez maintenant vos propres catégories',{action:'RESET_CATEGORIES'});
     });
+    $('hv248-pending')?.addEventListener('input',e=>{
+      const input=e.target.closest('input[data-hv248-dest]');if(!input)return;
+      const idx=Number(input.dataset.hv248Dest);
+      const keys=JSON.parse($('hv248-pending')?.dataset.keys||'[]');
+      if(keys[idx])pendingCategoryDrafts.set(keys[idx],input.value);
+    });
+    $('hv248-pending')?.addEventListener('keydown',e=>{
+      if(e.key==='Enter'&&e.target.matches('input[data-hv248-dest]')){
+        e.preventDefault();
+        const idx=e.target.dataset.hv248Dest;
+        $('hv248-pending')?.querySelector(`button[data-hv248-move="${idx}"]`)?.click();
+      }
+    });
     $('hv248-pending')?.addEventListener('click',async e=>{
       const button=e.target.closest('button[data-hv248-move]');if(!button||!eligible()||saving)return;
+      if(!catalogReady)return msg('Connexion au serveur requise pour enregistrer votre catégorie.',true);
       const idx=Number(button.dataset.hv248Move);
       const keys=JSON.parse($('hv248-pending')?.dataset.keys||'[]');
-      const source=keys[idx],dest=$('hv248-pending')?.querySelector(`select[data-hv248-dest="${idx}"]`)?.value;
-      if(!source||!dest||!Array.isArray(catalog()[source])||!Array.isArray(catalog()[dest]))return msg('Choisissez votre nouvelle catégorie.',true);
-      if(folderType(source)?.id!==folderType(dest)?.id)return msg('Utilisez une catégorie de même type HACCP.',true);
-      if(!confirm(`Classer ${catalog()[source].length} équipement(s) dans « ${dest} » ?`))return;
-      await commit(null,'Matériel reclassé dans « '+dest+' »',{action:'MOVE_AND_DELETE_CATEGORY',name:source,target:dest});
+      const source=keys[idx];
+      const input=$('hv248-pending')?.querySelector(`input[data-hv248-dest="${idx}"]`);
+      if(!source||!pendingKeys().includes(source)||!Array.isArray(catalog()[source]))return msg('Matériel à reclasser introuvable : actualisez le catalogue.',true);
+      let dest;
+      try{dest=validateName(input?.value)}catch(err){msg(err.message,true);input?.focus();return}
+      if(norm(dest)===norm(source))return msg('Écrivez un nouveau nom de catégorie.',true);
+      button.disabled=true;
+      try{
+        const ok=await commit(null,'Catégorie « '+dest+' » créée et matériel reclassé',{
+          action:'CREATE_AND_ASSIGN_PENDING',name:source,target:dest
+        });
+        if(ok)pendingCategoryDrafts.delete(source);
+      }finally{button.disabled=false}
     });
     $('hv227-modal')?.addEventListener('click',e=>{if(e.target===$('hv227-modal'))close()});
     document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('hv227-modal')?.hidden)close()});
