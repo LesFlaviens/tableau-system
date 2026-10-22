@@ -1,4 +1,4 @@
-/* iCHEF OS Planning Premium V274 : sélection tactile groupée + assistant responsable, sans quitter le planning. */
+/* V266: source fournie par le client, renommée en .js. */
 /* iCHEF OS Planning Premium PWA · client connecté au TIMESHEETS_MASTER.
    Aucune donnée RH n'est stockée en cache ni dans localStorage. */
 (()=>{'use strict';
@@ -18,17 +18,14 @@ const monday=d=>{const a=new Date(d);a.setHours(12,0,0,0);a.setDate(a.getDate()-
 const month=d=>iso(new Date(d.getFullYear(),d.getMonth(),1,12)).slice(0,7);
 const empty=()=>({k:'O',status:'',start:'',end:'',s2:'',e2:'',pause:0,note:'',original:null});
 const types={M:'MATIN',S:'SOIR',C:'COUPURE',R:'REPOS',O:'+',CP:'CONGÉ',MAL:'MALADIE',RECUP:'RÉCUP',FERIE:'FÉRIÉ',FORM:'FORMATION',A:'ABSENCE',NJS:'ABS. INJUSTIFIÉE',ACC:'ACCIDENT',MAT:'MATERNITÉ',PAT:'PATERNITÉ',PAR:'PARENTAL',EFM:'ENFANT MALADE',EVF:'ÉVÉNEMENT',DEC:'DEUIL',SSL:'SANS SOLDE'};
-let staffPage=0,dayIndex=(TODAY.getDay()+6)%7,lastPageCapacity=0;
-let bulkMode=false,bulkSelected=new Map(),bulkLastCell=null,bulkSaving=false;
-const MAX_BULK_CELLS=210;
-let anchor=monday(TODAY),view='week',filter='ALL',focusedStaffId=null,selected=null,staff=[],state={},rhSettings={},publication=null,actor=null,tenant='',token='',device='',busy=false,readOnly=false,lastFetch=0;
+let anchor=monday(TODAY),view='week',filter='ALL',focusedStaffId=null,selected=null,staff=[],state={},actualMonths={},rhSettings={},publication=null,actor=null,tenant='',token='',device='',busy=false,readOnly=false,lastFetch=0;
 const premiumChannel=typeof BroadcastChannel!=='undefined'?new BroadcastChannel('ichef-planning-premium-events-v1'):null;
 function broadcastPlanningChange(mm){try{premiumChannel?.postMessage({type:'PLANNING_CHANGED',tenant,month:mm,at:Date.now()});}catch(_){}}
 function mkDevice(){const key='ichef_planning_device_v1';let id='';try{id=localStorage.getItem(key)||'';if(!id){id=crypto.randomUUID();localStorage.setItem(key,id);}}catch{ id=(crypto.randomUUID?.()||('pwa_'+Date.now())); }return id;}
 device=mkDevice();let oldTenant='';try{oldTenant=localStorage.getItem('ichef_tenant_id')||'';}catch{}tenant=(query.get('tenantID')||oldTenant||'').trim().slice(0,80);$('login-tenant').value=tenant;
 function setStatus(text,error=false){$('board-status').textContent=(error?'● ':'● ')+text;$('board-status').style.color=error?'#b64140':'#357b66';}
 function notify(message){$('toast').textContent=message;$('toast').classList.remove('hide');clearTimeout(notify.timer);notify.timer=setTimeout(()=>$('toast').classList.add('hide'),4300);}
-function showAuth(error=''){exitBulk();closeAssistant();token='';actor=null;focusedStaffId=null;staff=[];state={};publication=null;render();$('login-shield').classList.remove('hide');$('login-error').textContent=error;setStatus('Connexion requise',true);}
+function showAuth(error=''){token='';actor=null;focusedStaffId=null;staff=[];state={};actualMonths={};publication=null;render();$('login-shield').classList.remove('hide');$('login-error').textContent=error;setStatus('Connexion requise',true);}
 function authKey(){return 'ichef_planning_premium_auth_v1';}
 function forget(){try{sessionStorage.removeItem(authKey());}catch{}}
 function authHeaders(){return {'Accept':'application/json','Authorization':`Bearer ${token}`,'X-iCHEF-Tenant':tenant,'X-iCHEF-Device':device};}
@@ -58,6 +55,113 @@ function visible(){
  const matching=staff.filter(x=>filter==='ALL'||x.dept===filter);
  return focusedStaffId?staff.filter(x=>String(x.id)===focusedStaffId):matching;
 }
+// V272 — Heures réelles lues uniquement depuis une source RH/pointage renvoyée
+// par le serveur. Les horaires du planning ne sont JAMAIS assimilés aux pointages.
+function safeNumber(value){
+ if(value===null||value===undefined||value==='')return null;
+ if(typeof value==='string'&&!/^[+-]?\d+(?:[.,]\d+)?$/.test(value.trim()))return null;
+ const n=Number(String(value).replace(',','.'));
+ return Number.isFinite(n)?n:null;
+}
+function numberFrom(record,keys){
+ if(!record||typeof record!=='object')return null;
+ for(const key of keys){const n=safeNumber(record[key]);if(n!==null)return n;}
+ return null;
+}
+function displayHours(value){
+ if(value===null||!Number.isFinite(value))return '—';
+ return `${Math.round(value*10)/10}`.replace('.',',')+' h';
+}
+function signedHours(value){
+ if(value===null||!Number.isFinite(value))return '—';
+ const rounded=Math.round(value*10)/10;
+ return (rounded>0?'+':rounded<0?'−':'±')+displayHours(Math.abs(rounded));
+}
+function getWeeklyTarget(person){
+ // La durée contractuelle vient de la fiche RH; ne pas fixer 35/39 h en dur.
+ const direct=numberFrom(person,['contractHoursWeek','weeklyContractHours','hoursPerWeek','weeklyHours']);
+ if(direct!==null)return direct>=0?direct:null;
+ const contract=person?.contract;
+ if(contract&&typeof contract==='object')return numberFrom(contract,['hoursPerWeek','weeklyHours','hours','durationHours']);
+ const num=safeNumber(contract);
+ return num!==null&&num>=0?num:null;
+}
+function readRealMonth(res,mm){
+ // Convention RH: REAL_TIMESHEETS_MONTHS[mois].staff[id].days[jour].workedHours.
+ // Tolère différentes enveloppes de réponse, sans créer de nouvelles routes API.
+ const candidates=[res.realTimesheets,res.realTimeSheets,res.actualTimesheets,res.realHours,res.timeTracking];
+ for(const root of candidates){
+  if(!root||typeof root!=='object')continue;
+  const node=root.months?.[mm]||root[mm]||(root.month===mm?root:null);
+  if(node&&typeof node==='object'){
+   const all=node.staff||node.byStaff||node.employees||node;
+   if(all&&typeof all==='object')return all;
+  }
+ }
+ // Dans certaines réponses, un bloc d'heures réelles est déjà découpé par mois.
+ for(const key of ['realTimesheetsByStaff','actualSheetsByStaff']){
+  const data=res[key];
+  if(data&&typeof data==='object'&&(data.month===mm||data.period===mm))return data.staff||data.byStaff||null;
+ }
+ return null;
+}
+function realSheet(person,mm){
+ const monthData=actualMonths[mm];
+ return monthData?.[String(person.id)]||monthData?.[person.id]||null;
+}
+function realDayHours(person,date){
+ const sheet=realSheet(person,month(date));
+ if(!sheet||!sheet.days||typeof sheet.days!=='object')return null;
+ const d=date.getDate();
+ const day=sheet.days[String(d).padStart(2,'0')]??sheet.days[String(d)]??sheet.days[iso(date)];
+ if(day===undefined||day===null)return 0;
+ return numberFrom(day,['workedHours','manualWorkedHours','retainedHours','hours']);
+}
+function realHoursForPeriod(person,days){
+ if(!days.length)return null;
+ const mm=month(days[0]);
+ if(days.every(d=>month(d)===mm)){
+  const sheet=realSheet(person,mm);
+  // Pour une vue mensuelle, privilégier le total retenu/validé côté RH.
+  if(view==='month'&&sheet){
+   const total=numberFrom(sheet.totals,['workedHours','retainedHours']);
+   if(total!==null)return total;
+  }
+ }
+ let sum=0;
+ for(const day of days){
+  const actual=realDayHours(person,day);
+  if(actual===null)return null;
+  sum+=actual;
+ }
+ return Math.round(sum*100)/100;
+}
+function hoursSummary(person,days){
+ const planned=days.reduce((total,day)=>total+hours(get(person,day)),0);
+ const actual=realHoursForPeriod(person,days);
+ let target=null;
+ if(view==='week')target=getWeeklyTarget(person);
+ else {
+  const sheet=realSheet(person,month(days[0]));
+  target=numberFrom(sheet?.totals,['adjustedTarget','expectedHours','targetHours']);
+ }
+ // Écart indicatif heures effectuées moins objectif contractuel; ce n'est
+ // pas une qualification de majorations légales / heures supplémentaires payées.
+ const difference=actual!==null&&target!==null?actual-target:null;
+ return {planned:Math.round(planned*10)/10,actual,target,difference};
+}
+function metricMarkup(info){
+ const actual=info.actual!==null;
+ const actualLabel='Effectuées';
+ const first=info.actual;
+ const balanceClass=info.difference===null?'missing':info.difference>0.001?'positive':info.difference<-.001?'negative':'neutral';
+ const balance=info.difference===null?'—':signedHours(info.difference);
+ const summary=actual?'Pointage RH':'Planning uniquement, pointage indisponible';
+ const title=actual
+  ?`Heures effectuées : ${displayHours(info.actual)}. Contrat / objectif : ${displayHours(info.target)}. Écart : ${balance}. Prévu : ${displayHours(info.planned)}.`
+  :`Heures prévues : ${displayHours(info.planned)}. Heures réellement effectuées indisponibles dans la réponse serveur.`;
+ return `<span class="staff-metrics" title="${esc(title)}" aria-label="${esc(summary+'. '+title)}"><span class="staff-metric"><span class="metric-label">${actualLabel}</span><strong>${esc(displayHours(first))}</strong></span><span class="staff-metric staff-balance ${balanceClass}"><span class="metric-label">Écart</span><strong>${esc(balance)}</strong></span>${actual?'':`<span class="staff-plan-line">Prévues : ${esc(displayHours(info.planned))}</span>`}</span>`;
+}
 function shiftMarkup(r){
  if(r.k==='O')return '<span class="entry-label">+</span>';
  const heading=esc(types[r.k]||'ABSENCE');
@@ -72,7 +176,7 @@ function openEmployee(staffId){
  focusedStaffId=String(p.id);
  anchor=view==='month'?monday(anchor):anchor;
  switchView('week');
- staffPage=0;
+ $('person-bar').scrollIntoView({block:'nearest',behavior:'smooth'});
 }
 function closeEmployee(){focusedStaffId=null;render();}
 function periodDays(){
@@ -94,132 +198,31 @@ function renderPersonBar(){
  $('person-role').textContent=[person.role,person.dept].filter(Boolean).join(' · ');
  $('person-avatar').textContent=person.avatar||'?';
  const days=periodDays();
- const hrs=days.reduce((total,d)=>total+hours(get(person,d)),0);
- $('person-hours').textContent=`${hrs.toFixed(1).replace('.',',')} h ${view==='month'?'ce mois':'cette semaine'}`;
+ const summary=hoursSummary(person,days);
+ $('person-hours').textContent=`${summary.actual===null?'Prévues':'Effectuées'} ${displayHours(summary.actual===null?summary.planned:summary.actual)} · Écart ${signedHours(summary.difference)}`;
+ $('person-hours').title=summary.actual===null?'Heures de pointage indisponibles côté serveur. Seules les heures planifiées sont affichées.':'Écart indicatif entre les heures pointées et l’objectif communiqué par RH.';
 }
-function capacity(){
- const area=document.querySelector('.schedule-wrap');
- const space=area?.clientHeight||300;
- // Enough room for header and totals: never sacrifice legibility for a tiny cell.
- const mobile=matchMedia('(max-width:600px)').matches;
- const row=mobile?56:63;
- return Math.max(1,Math.min(32,Math.floor(Math.max(30,space-74)/row)));
-}
-function updateDayPicker(){
- const picker=$('day-picker');if(!picker)return;
- const days=Array.from({length:7},(_,i)=>add(monday(anchor),i));
- picker.innerHTML=days.map((d,i)=>`<button type="button" data-day-pick="${i}" class="${i===dayIndex?'selected':''}" aria-pressed="${i===dayIndex}" aria-label="${esc(fmt(d,{weekday:'long',day:'numeric',month:'long'}))}">${esc(fmt(d,{weekday:'short'}))}<small>${fmt(d,{day:'numeric'})}</small></button>`).join('');
- picker.querySelectorAll('[data-day-pick]').forEach(b=>b.onclick=()=>{dayIndex=Number(b.dataset.dayPick);renderWeek();});
-}
-
-/* V274 : sélection tactile. Toucher court = édition, maintenir 550 ms = sélection.
-   Mode groupé explicite également utilisable à la souris et au clavier. */
-function bulkKey(person,date){return `${person}||${date}`;}
-function clearBulkSelection(){bulkSelected.clear();bulkLastCell=null;bulkVisualRefresh();updateBulkBar();}
-function exitBulk(){if(bulkSaving)return;bulkMode=false;bulkSelected.clear();bulkLastCell=null;const sh=$('bulk-shield');if(sh)sh.classList.add('hide');if($('bulk-toggle'))$('bulk-toggle').setAttribute('aria-pressed','false');if($('bulk-bar'))$('bulk-bar').classList.add('hide');document.querySelector('.board')?.classList.remove('bulk-active');}
-function setBulkMode(on){if(bulkSaving||!token||readOnly){if(on)notify('Le planning est verrouillé ou la session n’est pas autorisée.');return;}bulkMode=on;if(!on){exitBulk();render();return;}$('bulk-toggle').setAttribute('aria-pressed','true');document.querySelector('.board')?.classList.add('bulk-active');$('bulk-bar').classList.remove('hide');render();updateBulkBar();}
-function bulkVisualRefresh(){document.querySelectorAll('button[data-person][data-date],button[data-edit-person][data-edit-date]').forEach(b=>{const p=b.dataset.person||b.dataset.editPerson,d=b.dataset.date||b.dataset.editDate,on=bulkSelected.has(bulkKey(p,d));b.classList.toggle('is-marked',on);b.setAttribute('aria-pressed',String(on));});document.querySelectorAll('button[data-month-day]').forEach(b=>{const people=visible(),d=b.dataset.monthDay;b.classList.toggle('is-marked',bulkMode&&people.length>0&&people.every(p=>bulkSelected.has(bulkKey(p.id,d))));});}
-function updateBulkBar(){if(!$('bulk-count'))return;const count=bulkSelected.size;$('bulk-count').textContent=count?`${count} case${count>1?'s':''}`:'0 case';$('bulk-open').disabled=bulkSaving||!count;$('bulk-clear').disabled=bulkSaving||!count;$('bulk-exit').disabled=bulkSaving;}
-function bulkChangeCell(person,date,on){const key=bulkKey(person,date);if(on===false){bulkSelected.delete(key);return;}if(on===true&&bulkSelected.has(key))return;if(on===undefined&&bulkSelected.has(key)){bulkSelected.delete(key);return;}if(bulkSelected.size>=MAX_BULK_CELLS){notify(`Maximum ${MAX_BULK_CELLS} cases par opération.`);return;}bulkSelected.set(key,{person,date});}
-function bulkToggle(person,date,e){if(!token||readOnly||bulkSaving)return;if(!staff.some(p=>p.id===person))return;if(e?.shiftKey&&bulkLastCell&&bulkLastCell.person===person){const a=bulkLastCell.date,b=date;if(/^\d{4}-\d\d-\d\d$/.test(a)&&/^\d{4}-\d\d-\d\d$/.test(b)){let d=new Date((a<b?a:b)+'T12:00:00'),end=a>b?a:b,steps=0;while(iso(d)<=end&&steps++<32){bulkChangeCell(person,iso(d),true);d=add(d,1);}}}else bulkChangeCell(person,date);bulkLastCell={person,date};bulkVisualRefresh();updateBulkBar();}
-function bulkToggleRow(person,days){if(readOnly||busy)return;const items=days.map(d=>iso(d)),all=items.every(d=>bulkSelected.has(bulkKey(person,d)));items.forEach(d=>bulkChangeCell(person,d,!all));bulkVisualRefresh();updateBulkBar();}
-function bulkToggleDay(date,people){if(readOnly||busy)return;if(people.length===0)return;const all=people.every(p=>bulkSelected.has(bulkKey(p.id,date)));people.forEach(p=>bulkChangeCell(p.id,date,!all));bulkVisualRefresh();updateBulkBar();}
-function bindBulkCells(host,personAttr,dateAttr){
- host.querySelectorAll(`[${personAttr}][${dateAttr}]`).forEach(b=>{
-  let timer=0,px=0,py=0,longFired=false;
-  const person=b.getAttribute(personAttr),date=b.getAttribute(dateAttr);
-  b.addEventListener('pointerdown',e=>{if(b.disabled||!e.isPrimary||e.button!==0||bulkMode)return;px=e.clientX;py=e.clientY;longFired=false;timer=setTimeout(()=>{timer=0;longFired=true;if(navigator.vibrate)try{navigator.vibrate(20);}catch(_){}setBulkMode(true);bulkToggle(person,date);},550);});
-  b.addEventListener('pointermove',e=>{if(Math.abs(e.clientX-px)>10||Math.abs(e.clientY-py)>10){clearTimeout(timer);timer=0;}});
-  for(const ev of ['pointerup','pointercancel','pointerleave'])b.addEventListener(ev,()=>{clearTimeout(timer);timer=0;});
-  b.addEventListener('contextmenu',e=>{if(longFired||bulkMode)e.preventDefault();});
-  b.addEventListener('click',e=>{if(longFired){e.preventDefault();e.stopPropagation();longFired=false;return;}if(bulkMode||e.ctrlKey||e.metaKey||e.shiftKey){e.preventDefault();if(!bulkMode)setBulkMode(true);bulkToggle(person,date,e);}else openModal(person,date);});
- });
-}
-function bindBulkTeamDates(host){
- host.querySelectorAll('[data-month-day]').forEach(b=>{
-  let timer=0,x=0,y=0;
-  b.addEventListener('pointerdown',e=>{if(bulkMode||e.button!==0||!e.isPrimary||readOnly)return;x=e.clientX;y=e.clientY;timer=setTimeout(()=>{timer=0;setBulkMode(true);bulkToggleDay(b.dataset.monthDay,visible());},550);});
-  b.addEventListener('pointermove',e=>{if(Math.abs(e.clientX-x)>10||Math.abs(e.clientY-y)>10)clearTimeout(timer);});
-  for(const ev of ['pointerup','pointercancel','pointerleave'])b.addEventListener(ev,()=>{clearTimeout(timer);timer=0;});
-  b.addEventListener('contextmenu',e=>{if(bulkMode)e.preventDefault();});
- });
-}
-function openBulkEditor(){if(!bulkMode||bulkSelected.size===0||readOnly||busy)return;const entries=[...bulkSelected.values()],people=new Set(entries.map(x=>x.person)),dates=entries.map(x=>x.date).sort();const replacing=entries.filter(x=>{const p=staff.find(s=>s.id===x.person);return p&&get(p,new Date(x.date+'T12:00:00')).k!=='O';}).length;
- $('bulk-summary').textContent=`${entries.length} case(s) · ${people.size} collaborateur(s) · du ${dates[0]} au ${dates.at(-1)} · ${replacing} case(s) déjà renseignée(s).`;
- $('bulk-kind').value='R';$('bulk-reason').value='';$('bulk-note').value='';$('bulk-progress').textContent='';$('bulk-shield').classList.remove('hide');$('bulk-kind').focus();}
-function closeBulkEditor(){if(bulkSaving)return;$('bulk-shield').classList.add('hide');$('bulk-open').focus();}
-async function saveBulk(e){e.preventDefault();if(bulkSaving||busy||readOnly||!token||!bulkSelected.size)return;const k=$('bulk-kind').value,reason=$('bulk-reason').value.trim(),note=$('bulk-note').value.trim().slice(0,500);
- const status={R:'off',CP:'conge',RECUP:'recup',FERIE:'ferie',FORM:'formation',A:'absence_autorisee',SSL:'sans_solde'}[k];if(!status)return void notify('Type de journée invalide.');if(reason.length<3)return void notify('Un motif de 3 caractères minimum est obligatoire.');
- const entries=[...bulkSelected.values()];if(!confirm(`Confirmer ${entries.length} modification(s) en « ${types[k]||k} » ?\n\nLes services existants seront remplacés. En cas d’échec, seules les cases validées par le serveur seront enregistrées.`))return;
- busy=true;bulkSaving=true;$('bulk-confirm').disabled=true;$('bulk-cancel').disabled=true;$('bulk-close').disabled=true;updateBulkBar();
- let saved=0,failed=0,stop=false,authLost=false,lastError='',affected=new Set();
- for(const item of entries){
-  if(!token){stop=true;break;}
-  const p=staff.find(x=>x.id===item.person);if(!p){failed++;continue;}
-  const base=get(p,new Date(item.date+'T12:00:00')).original||{};
-  const day={...base,status,s1:'',s2:'',pause:0,obs:note};
-  $('bulk-progress').textContent=`Enregistrement ${saved+failed+1} / ${entries.length} · ${saved} confirmé(s)…`;
-  try{
-   const res=await jsonFetch('/api/rh/planning/premium/day',{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenant,date:item.date,staffId:item.person,day,reason,baseRevision:base.planningVersionId||null})});
-   const m=item.date.slice(0,7),n=String(Number(item.date.slice(8)));
-   if(!state[m])state[m]={};if(!state[m][p.id])state[m][p.id]={};if(res.day)state[m][p.id][n]=res.day;
-   bulkSelected.delete(bulkKey(item.person,item.date));saved++;affected.add(m);
-  }catch(err){failed++;lastError=err.message||'Erreur serveur';authLost=[401,403].includes(err.status);stop=true;break;}
- }
- bulkSaving=false;busy=false;$('bulk-confirm').disabled=false;$('bulk-cancel').disabled=false;$('bulk-close').disabled=false;
- if(saved){$('audit-title').textContent=`Modification groupée · ${saved} case(s)`;$('audit-detail').textContent=`${reason} · statut ${types[k]}`;$('audit-date').textContent=fmt(new Date(),{hour:'2-digit',minute:'2-digit'});for(const m of affected)broadcastPlanningChange(m);lastFetch=0;if(publication?.status==='published'){publication={...publication,status:'to_review'};$('publication-status').textContent='⚠ Modifié · à republier';}}
- $('bulk-progress').textContent=`${saved} enregistrement(s) confirmé(s) · ${bulkSelected.size} case(s) restant à enregistrer${stop?' · opération interrompue':''}${lastError?' · '+lastError:''}`;
- if(failed){setStatus(`${saved} enregistrées, ${bulkSelected.size} encore à traiter · ${lastError}`,true);notify(`Sauvegarde partielle : ${saved} réussie(s), ${bulkSelected.size} restante(s). Les cases non enregistrées restent sélectionnées.`);}
- else{setStatus(`${saved} case(s) sauvegardée(s) sur le serveur`);notify(`${saved} case(s) enregistrée(s). Publication à vérifier.`);}
- if(authLost){forget();showAuth('Session expirée ou accès refusé.');return;}
- $('bulk-shield').classList.add('hide');render();updateBulkBar();
- if(saved&&!failed){exitBulk();render();void refresh(true);}
- // Important: pas de réessai automatique en cas de réseau incertain ou de conflit 409.
-}
-$('bulk-toggle').addEventListener('click',()=>setBulkMode(!bulkMode));
-$('bulk-clear').addEventListener('click',clearBulkSelection);
-$('bulk-exit').addEventListener('click',()=>{exitBulk();render();});
-$('bulk-open').addEventListener('click',openBulkEditor);
-$('bulk-close').addEventListener('click',closeBulkEditor);
-$('bulk-cancel').addEventListener('click',closeBulkEditor);
-$('bulk-form').addEventListener('submit',saveBulk);
-$('bulk-shield').addEventListener('click',e=>{if(e.target===$('bulk-shield'))closeBulkEditor();});
-document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('bulk-shield').classList.contains('hide')){e.stopImmediatePropagation();closeBulkEditor();}else if(e.key==='Escape'&&bulkMode){exitBulk();render();}});
-
 function renderWeek(){
  const people=visible(),days=Array.from({length:7},(_,i)=>add(monday(anchor),i));
- lastPageCapacity=capacity();
- const pages=Math.max(1,Math.ceil(people.length/lastPageCapacity));
- staffPage=Math.max(0,Math.min(staffPage,pages-1));
- const shown=people.slice(staffPage*lastPageCapacity,(staffPage+1)*lastPageCapacity);
  let h='<table class="schedule" aria-label="Planning semaine officiel"><thead><tr><th>COLLABORATEUR</th>';
- for(let i=0;i<days.length;i++){
-  const d=days[i];h+=`<th data-dayindex="${i}" class="${iso(d)===iso(TODAY)?'today ':''}${i===dayIndex?'is-selected-day':''}">${bulkMode?`<button class="bulk-all-day" type="button" data-day-all="${iso(d)}" title="Sélectionner cette date pour les collaborateurs affichés" aria-label="Sélectionner tous les collaborateurs visibles le ${iso(d)}"><span class="weekday">${fmt(d,{weekday:'short'})}</span><span class="daynumber">${fmt(d,{day:'2-digit'})}</span></button>`:`<span class="weekday">${fmt(d,{weekday:'short'})}</span><span class="daynumber">${fmt(d,{day:'2-digit'})}</span>`}</th>`;
- }
+ for(const d of days)h+=`<th class="${iso(d)===iso(TODAY)?'today':''}"><span class="weekday">${fmt(d,{weekday:'short'})}</span><span class="daynumber">${fmt(d,{day:'2-digit'})}</span></th>`;
  h+='</tr></thead><tbody>';
- for(const p of shown){
-  h+=`<tr><td><button type="button" class="staff-open" data-profile="${esc(p.id)}" aria-label="${bulkMode?'Sélectionner la semaine de':'Voir le planning individuel de'} ${esc(p.name)}" title="${bulkMode?'Sélectionner les sept jours de':'Afficher le planning de'} ${esc(p.name)}"><span class="avatar">${esc(p.avatar)}</span><span class="staff-details"><span class="staff-name">${esc(p.name)}</span><span class="staff-role">${esc(p.role)}</span><span class="staff-hint">${focusedStaffId?'Profil sélectionné':'Voir son planning →'}</span></span></button></td>`;
-  for(let i=0;i<days.length;i++){
-   const d=days[i],r=get(p,d),caption=[types[r.k]||'Absence',label(r)].filter(Boolean).join(' · '),enabled=!readOnly;
-   h+=`<td data-dayindex="${i}" data-daylabel="${esc(fmt(d,{weekday:'short',day:'2-digit'}))}" class="${(iso(d)===iso(TODAY)?'today ':'')+(i===dayIndex?'is-selected-day':'')}"><button class="entry ${(['M','S','C','R','O'].includes(r.k)?r.k:'A')} ${bulkSelected.has(bulkKey(p.id,iso(d)))?'is-marked':''}" type="button" data-person="${esc(p.id)}" data-date="${iso(d)}" ${enabled?'':'disabled'} title="${esc(caption)}" aria-pressed="${bulkSelected.has(bulkKey(p.id,iso(d)))}" aria-label="${bulkMode?'Sélectionner':'Modifier'} le ${iso(d)} pour ${esc(p.name)} : ${esc(caption)}">${shiftMarkup(r)}</button></td>`;
+ for(const p of people){
+  const summary=hoursSummary(p,days);
+  h+=`<tr><td><button type="button" class="staff-open" data-profile="${esc(p.id)}" aria-label="Voir le planning individuel de ${esc(p.name)}. Heures effectuées : ${esc(displayHours(summary.actual))}. Heures prévues : ${esc(displayHours(summary.planned))}. Écart : ${esc(signedHours(summary.difference))}" title="Afficher le planning de ${esc(p.name)}"><span class="avatar">${esc(p.avatar)}</span><span class="staff-details"><span class="staff-name">${esc(p.name)}</span><span class="staff-role">${esc(p.role)}</span>${metricMarkup(summary)}</span></button></td>`;
+  for(const d of days){
+   const r=get(p,d),caption=[types[r.k]||'Absence',label(r)].filter(Boolean).join(' · ');
+   const enabled=!readOnly;
+   h+=`<td class="${iso(d)===iso(TODAY)?'today':''}"><button class="entry ${(['M','S','C','R','O'].includes(r.k)?r.k:'A')}" type="button" data-person="${esc(p.id)}" data-date="${iso(d)}" ${enabled?'':'disabled'} title="${esc(caption)}" aria-label="${enabled?'Modifier':'Consulter'} le ${iso(d)} pour ${esc(p.name)} : ${esc(caption)}">${shiftMarkup(r)}</button></td>`;
   }
   h+='</tr>';
  }
  h+='</tbody><tfoot><tr><td>TOTAL PRÉSENCES</td>';
- // Totaux de TOUTE l'équipe, pas uniquement les collaborateurs de cette page.
- for(let i=0;i<days.length;i++){const d=days[i],arr=people.map(p=>get(p,d)).filter(work);h+=`<td data-dayindex="${i}" data-daylabel="${esc(fmt(d,{weekday:'short',day:'2-digit'}))}" class="day-summary ${i===dayIndex?'is-selected-day':''}">${arr.length} équipe<span>${arr.reduce((sum,r)=>sum+hours(r),0).toFixed(1)} h</span></td>`;}
+ for(const d of days){const arr=people.map(p=>get(p,d)).filter(work);h+=`<td class="day-summary">${arr.length} équipe<span>${arr.reduce((sum,r)=>sum+hours(r),0).toFixed(1)} h</span></td>`;}
  h+='</tr></tfoot></table>';
  $('week-host').innerHTML=h;
- $('week-host').querySelectorAll('[data-profile]').forEach(b=>b.addEventListener('click',()=>{if(bulkMode)bulkToggleRow(b.dataset.profile,days);else openEmployee(b.dataset.profile);}));
- bindBulkCells($('week-host'),'data-person','data-date');
- $('week-host').querySelectorAll('[data-day-all]').forEach(b=>b.addEventListener('click',()=>bulkToggleDay(b.dataset.dayAll,shown)));
- const pager=$('staff-pager');
- pager.hidden=!!focusedStaffId||view!=='week'||pages===1;
- $('staff-page-label').textContent=people.length?`${staffPage*lastPageCapacity+1}–${Math.min(people.length,(staffPage+1)*lastPageCapacity)} / ${people.length} collaborateurs`:'Aucun collaborateur';
- $('staff-prev').disabled=staffPage<=0;
- $('staff-next').disabled=staffPage>=pages-1;
- document.querySelector('.board').classList.toggle('pager-visible',!pager.hidden);
- updateDayPicker();
+ $('week-host').querySelectorAll('[data-profile]').forEach(b=>b.addEventListener('click',()=>openEmployee(b.dataset.profile)));
+ $('week-host').querySelectorAll('[data-person]').forEach(b=>b.addEventListener('click',()=>openModal(b.dataset.person,b.dataset.date)));
 }
 function renderMonth(){
  const first=new Date(anchor.getFullYear(),anchor.getMonth(),1,12),shift=(first.getDay()+6)%7,last=new Date(first.getFullYear(),first.getMonth()+1,0).getDate();
@@ -234,17 +237,17 @@ function renderMonth(){
   if(person){
     const r=get(person,date),caption=types[r.k]||'ABSENCE';
     const segments=[r.start&&r.end?`${r.start}–${r.end}`:'',r.s2&&r.e2?`${r.s2}–${r.e2}`:''].filter(Boolean);
-    h+=`<button class="monthday ${key===iso(TODAY)?'today':''} ${['M','S','C','R'].includes(r.k)?r.k:''} ${bulkSelected.has(bulkKey(person.id,key))?'is-marked':''}" data-edit-person="${esc(person.id)}" data-edit-date="${key}" type="button" ${readOnly?'disabled':''} aria-pressed="${bulkSelected.has(bulkKey(person.id,key))}" aria-label="${esc(person.name)} · ${key} · ${esc(caption)} · ${esc(segments.join(' et '))}"><b>${day}</b><span class="month-label">${esc(r.k==='O'?'Ajouter +':caption)}</span>${segments.map(t=>`<small class="month-time">${esc(t)}</small>`).join('')}</button>`;
+    h+=`<button class="monthday ${key===iso(TODAY)?'today':''} ${['M','S','C','R'].includes(r.k)?r.k:''}" data-edit-person="${esc(person.id)}" data-edit-date="${key}" type="button" ${readOnly?'disabled':''} aria-label="${esc(person.name)} · ${key} · ${esc(caption)} · ${esc(segments.join(' et '))}"><b>${day}</b><span class="month-label">${esc(r.k==='O'?'Ajouter +':caption)}</span>${segments.map(t=>`<small class="month-time">${esc(t)}</small>`).join('')}</button>`;
   }else{
     const n=visible().filter(p=>work(get(p,date))).length;
-    h+=`<button class="monthday ${key===iso(TODAY)?'today':''} ${bulkMode&&visible().length&&visible().every(p=>bulkSelected.has(bulkKey(p.id,key)))?'is-marked':''}" data-month-day="${key}" type="button" aria-label="Voir la semaine du ${key}"><b>${day}</b><small>${n} service${n>1?'s':''}</small><i></i></button>`;
+    h+=`<button class="monthday ${key===iso(TODAY)?'today':''}" data-month-day="${key}" type="button" aria-label="Voir la semaine du ${key}"><b>${day}</b><small>${n} service${n>1?'s':''}</small><i></i></button>`;
   }
  }
  h+='</div></div>';
+ $('month-host').style.setProperty('--planning-month-weeks',String(Math.ceil((last+shift)/7)));
  $('month-host').innerHTML=h;
- $('month-host').querySelectorAll('[data-month-day]').forEach(b=>b.addEventListener('click',()=>{if(bulkMode){bulkToggleDay(b.dataset.monthDay,visible());return;}anchor=monday(new Date(b.dataset.monthDay+'T12:00:00'));switchView('week');refresh(true);}));
- bindBulkCells($('month-host'),'data-edit-person','data-edit-date');
- bindBulkTeamDates($('month-host'));
+ $('month-host').querySelectorAll('[data-month-day]').forEach(b=>b.addEventListener('click',()=>{anchor=monday(new Date(b.dataset.monthDay+'T12:00:00'));switchView('week');refresh(true);}));
+ $('month-host').querySelectorAll('[data-edit-person]').forEach(b=>b.addEventListener('click',()=>openModal(b.dataset.editPerson,b.dataset.editDate)));
 }
 function renderStats(){
  const days=periodDays(),people=visible(),arr=people.flatMap(p=>days.map(d=>get(p,d)));
@@ -262,20 +265,40 @@ function renderStats(){
  $('panel-range-label').textContent=view==='month'?'Ce mois':'Cette semaine';
  $('kpi-period-label').textContent=view==='month'?'Mois affiché':'Semaine affichée';
 }
-function render(){if($('bulk-toggle'))$('bulk-toggle').disabled=readOnly||!token||bulkSaving;if(view!=='week'){$('staff-pager').hidden=true;$('day-picker').style.display='none';}else{$('day-picker').style.display='';}renderPersonBar();if(view==='week'){$('range').textContent=`${fmt(anchor,{day:'numeric',month:'short'})} – ${fmt(add(anchor,6),{day:'numeric',month:'short',year:'numeric'})}`;renderWeek();}else{$('range').textContent=fmt(anchor,{month:'long',year:'numeric'});renderMonth();}renderStats();}
+// Hauteur automatique des lignes pour conserver la grille visible dans un seul écran PC.
+// Si l'équipe est trop grande, défilement interne uniquement : aucun texte tronqué.
+let planningFitRaf=0;
+function fitPlanningToViewport(){
+ if(!window.matchMedia('(min-height:580px)').matches){
+  document.documentElement.style.removeProperty('--planning-row-height');return;
+ }
+ const wrap=document.querySelector('.schedule-wrap');
+ const rows=$('week-host').querySelectorAll('tbody tr').length;
+ if(!wrap||!rows)return;
+ const h=wrap.clientHeight;
+ if(!h)return;
+ // 36px d'en-tête + 31px de pied de tableau ; garder 32px min par salarié.
+ const mobile=window.innerWidth<1024;
+ const extra=mobile?49:69;
+ const size=Math.max(mobile?56:55,Math.min(72,Math.floor((h-extra)/rows)));
+ document.documentElement.style.setProperty('--planning-row-height',size+'px');
+}
+function queuePlanningFit(){cancelAnimationFrame(planningFitRaf);planningFitRaf=requestAnimationFrame(fitPlanningToViewport);}
+window.addEventListener('resize',queuePlanningFit,{passive:true});
+function render(){renderPersonBar();if(view==='week'){$('range').textContent=`${fmt(anchor,{day:'numeric',month:'short'})} – ${fmt(add(anchor,6),{day:'numeric',month:'short',year:'numeric'})}`;renderWeek();}else{$('range').textContent=fmt(anchor,{month:'long',year:'numeric'});renderMonth();}renderStats();queuePlanningFit();}
 function switchView(v){view=v;for(const which of ['week','month']){$('view-'+which).classList.toggle('active',which===v);$('view-'+which).setAttribute('aria-pressed',String(which===v));$(which+'-host').classList.toggle('hide',which!==v);}render();}
 function updateDepartments(){const select=$('department'),old=filter;select.innerHTML='<option value="ALL">Tous les services</option>';[...new Set(staff.map(s=>s.dept).filter(Boolean))].sort().forEach(d=>{const o=document.createElement('option');o.value=d;o.textContent=d;select.appendChild(o);});filter=old==='ALL'||staff.some(s=>s.dept===old)?old:'ALL';select.value=filter;}
-async function refresh(force=false){if(!token||busy)return;if(!force&&Date.now()-lastFetch<3500)return;busy=true;setStatus('Synchronisation sécurisée en cours…');try{const m=month(anchor);const res=await jsonFetch(`/api/rh/planning/premium/state?tenantID=${encodeURIComponent(tenant)}&month=${m}`,{headers:authHeaders()});staff=(res.staff||[]).map(p=>({...p,id:String(p.id),dept:String(p.dept||'Sans secteur'),avatar:String(p.name||'?').split(/\s+/).slice(0,2).map(z=>z[0]).join('').toUpperCase()}));state={...state,...(res.timesheets||{})};rhSettings=res.settings||{};
+async function refresh(force=false){if(!token||busy)return;if(!force&&Date.now()-lastFetch<3500)return;busy=true;setStatus('Synchronisation sécurisée en cours…');try{const m=month(anchor);const res=await jsonFetch(`/api/rh/planning/premium/state?tenantID=${encodeURIComponent(tenant)}&month=${m}`,{headers:authHeaders()});staff=(res.staff||[]).map(p=>({...p,id:String(p.id),dept:String(p.dept||'Sans secteur'),avatar:String(p.name||'?').split(/\s+/).slice(0,2).map(z=>z[0]).join('').toUpperCase()}));state={...state,...(res.timesheets||{})};actualMonths[m]=readRealMonth(res,m);rhSettings=res.settings||{};
 publication=res.publication||null;readOnly=rhSettings.planningStatus==='locked';lastFetch=Date.now();
 $('publication-status').textContent=publication?.status==='published'?'✓ Mois publié':
   publication?.status==='to_review'?'⚠ Modifié après publication · à revalider':'Publication : en attente';
-for(const [key,item] of bulkSelected){if(!staff.some(p=>p.id===item.person))bulkSelected.delete(key);}updateDepartments();render();updateBulkBar();setStatus(`Synchronisé · ${tenant} · ${new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}${readOnly?' · planning verrouillé':''}`);
+updateDepartments();render();setStatus(`Synchronisé · ${tenant} · ${new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}${readOnly?' · planning verrouillé':''}`);
  // En vue semaine à cheval sur deux mois, charger la seconde période sans bloquer le premier affichage.
  if(view==='week'){
   const extra=month(add(monday(anchor),6));
   if(extra!==m){
    void jsonFetch(`/api/rh/planning/premium/state?tenantID=${encodeURIComponent(tenant)}&month=${extra}`,{headers:authHeaders()})
-    .then(extraRes=>{state={...state,...(extraRes.timesheets||{})};if(month(add(monday(anchor),6))===extra)render();})
+    .then(extraRes=>{state={...state,...(extraRes.timesheets||{})};actualMonths[extra]=readRealMonth(extraRes,extra);if(month(add(monday(anchor),6))===extra)render();})
     .catch(e=>console.warn('[iCHEF Planning] mois adjacent indisponible',e?.message));
   }
  }}
@@ -289,18 +312,9 @@ async function save(){if(!selected||busy)return;const reason=$('reason').value.t
 if(publication?.status==='published'){$('publication-status').textContent='⚠ Horaire modifié · à republier';publication={...publication,status:'to_review'};}}
 catch(e){setStatus(e.message,true);if(e.status===409){notify('Planning modifié ailleurs : rechargement nécessaire avant de réessayer.');closeModal();lastFetch=0;}else if(e.status===401||e.status===403){forget();showAuth(e.message);}else notify('Enregistrement refusé : '+e.message);}
 finally{busy=false;btn.disabled=false;}}
-$('staff-prev').onclick=()=>{staffPage=Math.max(0,staffPage-1);renderWeek();};
-$('staff-next').onclick=()=>{staffPage+=1;renderWeek();};
-$('actions-toggle').onclick=()=>{const a=$('top-actions'),on=a.classList.toggle('actions-open');$('actions-toggle').setAttribute('aria-expanded',String(on));};
-$('mobile-menu-toggle').onclick=()=>{const s=document.querySelector('.sidebar'),on=s.classList.toggle('nav-open');$('mobile-menu-toggle').setAttribute('aria-expanded',String(on));};
-function closeOverview(){const p=$('overview-panel');p.classList.remove('panel-open');$('panel-toggle').setAttribute('aria-expanded','false');}
-$('panel-toggle').onclick=()=>{const p=$('overview-panel'),on=p.classList.toggle('panel-open');$('panel-toggle').setAttribute('aria-expanded',String(on));};
-$('panel-close').onclick=closeOverview;
-document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeOverview();$('top-actions').classList.remove('actions-open');document.querySelector('.sidebar').classList.remove('nav-open');}});
-let resizeTimer=0;
-window.addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>{if(view==='week'){if(capacity()!==lastPageCapacity)renderWeek();}else renderMonth();},100);});
-$('logout').onclick=()=>{closeAssistant();forget();$('login-pin').value='';showAuth('Session fermée sur cet appareil.');};
-$('login-form').onsubmit=login;$('prev').onclick=()=>{anchor=view==='week'?add(anchor,-7):new Date(anchor.getFullYear(),anchor.getMonth()-1,1,12);render();refresh(true);};$('next').onclick=()=>{anchor=view==='week'?add(anchor,7):new Date(anchor.getFullYear(),anchor.getMonth()+1,1,12);render();refresh(true);};$('today').onclick=()=>{dayIndex=(TODAY.getDay()+6)%7;anchor=view==='week'?monday(TODAY):new Date(TODAY.getFullYear(),TODAY.getMonth(),1,12);render();refresh(true);};$('view-week').onclick=()=>{staffPage=0;switchView('week');};$('view-month').onclick=()=>{anchor=new Date(anchor.getFullYear(),anchor.getMonth(),1,12);switchView('month');refresh(true);};$('department').onchange=e=>{filter=e.target.value;focusedStaffId=null;staffPage=0;render();};$('team-return').onclick=closeEmployee;$('close').onclick=closeModal;$('cancel').onclick=closeModal;$('kind').onchange=updateForm;document.querySelectorAll('[data-preset]').forEach(b=>b.addEventListener('click',()=>{$('kind').value=b.dataset.preset;updateForm();}));$('remove').onclick=()=>{$('kind').value='O';save();};$('shift-form').onsubmit=e=>{e.preventDefault();save();};$('modal-backdrop').onclick=e=>{if(e.target===$('modal-backdrop'))closeModal();};document.addEventListener('keydown',e=>{if(e.key==='Escape'&&selected)closeModal();});$('reset').onclick=()=>refresh(true);
+$('logout').onclick=()=>{forget();$('login-pin').value='';showAuth('Session fermée sur cet appareil.');if(window.parent!==window&&query.get('rhEmbedded')==='1'){window.parent.postMessage({type:'ICHEF_PREMIUM_LOGOUT'},location.origin);}};
+$('login-form').onsubmit=login;$('prev').onclick=()=>{anchor=view==='week'?add(anchor,-7):new Date(anchor.getFullYear(),anchor.getMonth()-1,1,12);render();refresh(true);};$('next').onclick=()=>{anchor=view==='week'?add(anchor,7):new Date(anchor.getFullYear(),anchor.getMonth()+1,1,12);render();refresh(true);};$('today').onclick=()=>{anchor=view==='week'?monday(TODAY):new Date(TODAY.getFullYear(),TODAY.getMonth(),1,12);render();refresh(true);};$('view-week').onclick=()=>switchView('week');$('view-month').onclick=()=>{anchor=new Date(anchor.getFullYear(),anchor.getMonth(),1,12);switchView('month');refresh(true);};$('department').onchange=e=>{filter=e.target.value;focusedStaffId=null;render();};$('team-return').onclick=closeEmployee;$('close').onclick=closeModal;$('cancel').onclick=closeModal;$('kind').onchange=updateForm;document.querySelectorAll('[data-preset]').forEach(b=>b.addEventListener('click',()=>{$('kind').value=b.dataset.preset;updateForm();}));$('remove').onclick=()=>{$('kind').value='O';save();};$('shift-form').onsubmit=e=>{e.preventDefault();save();};$('modal-backdrop').onclick=e=>{if(e.target===$('modal-backdrop'))closeModal();};document.addEventListener('keydown',e=>{if(e.key==='Escape'&&selected)closeModal();});$('reset').onclick=()=>refresh(true);
+$('panel-toggle').onclick=()=>{const on=document.querySelector('.board').classList.toggle('show-panel');$('panel-toggle').setAttribute('aria-expanded',String(on));$('panel-toggle').textContent=on?'× Fermer':'☷ Détails';};
 async function publishMonth(){
   if(!token||busy||readOnly)return;
   const m=month(anchor);
@@ -320,124 +334,6 @@ async function publishMonth(){
   }finally{busy=false;b.disabled=false;}
 }
 $('publish').onclick=publishMonth;
-
-/* V273 — Moteur d'assistance décisionnelle utilisant exclusivement le planning
-   officiel chargé par la session RH. Pas de requête vers un fournisseur externe,
-   pas de clé IA dans le navigateur, pas de publication automatique. L'assistant
-   RH complet déjà présent dans l'interface parente est accessible si celle-ci
-   est embarquée sur le même domaine. */
-let assistantIssues=[],assistantPage=0,assistantVisible=3,assistantSnapshot='';
-function assistantIsOpen(){return !$('assistant-shield').classList.contains('hide');}
-function closeAssistant(){const m=$('assistant-shield');if(m)m.classList.add('hide');}
-function assistantDates(){return periodDays();}
-function assistantCount(){return innerHeight<580?2:innerHeight<740?3:innerHeight<900?4:5;}
-function assistantFindings(){
- const people=visible(),days=assistantDates();
- const issues=[];let totalHours=0,services=0,uncovered=0,unpaired=0,longRuns=0;
- if(!days.length||!people.length)return {issues,summary:{people:people.length,hours:0,services:0,uncovered:0}};
- const addIssue=(level,title,detail,person,date)=>issues.push({level,title,detail,person,date});
- const dayClosed=new Set(Array.isArray(rhSettings?.planningClosedWeekdays)?rhSettings.planningClosedWeekdays.map(x=>Number(x)):[]);
- for(const day of days){
-  const working=people.map(p=>({p,r:get(p,day)})).filter(x=>work(x.r));
-  const atMorning=working.filter(x=>x.r.k==='M'||x.r.k==='C').length;
-  const atEvening=working.filter(x=>x.r.k==='S'||x.r.k==='C').length;
-  for(const x of working){totalHours+=hours(x.r);services++;}
-  const date=iso(day),label=fmt(day,{weekday:'short',day:'numeric',month:'short'});
-  if(dayClosed.has(day.getDay()))continue; // pas d'alerte sur la fermeture configurée.
-  if(!working.length){uncovered++;addIssue('alert','Aucun service prévu · '+label,'Vérifier si le jour est fermé ou si une couverture doit être organisée.',null,date);}
-  else if(atMorning===0||atEvening===0){addIssue('warn','Couverture à vérifier · '+label,atMorning===0?'Aucun service matin saisi sur cette journée.':'Aucun service soir saisi sur cette journée.',null,date);}
- }
- for(const person of people){
-  const history=days.map(d=>({d,r:get(person,d)}));
-  let run=0,maxRun=0,stopDate=null;
-  for(const {d,r} of history){if(work(r)){run++;if(run>maxRun){maxRun=run;stopDate=iso(d);}}else run=0;}
-  if(maxRun>5){longRuns++;addIssue('alert',person.name+' · '+maxRun+' jours travaillés consécutifs','Point de vigilance (> 5 jours dans la période affichée). Contrôler les règles applicables et les journées limitrophes.',person.id,stopDate);}
-  let paired=0,single=0;
-  // Seulement à l'intérieur de la période affichée. Pas d'affirmation légale.
-  for(let i=0;i<history.length;i++){
-   if(history[i].r.k==='R'){
-    if(i+1<history.length&&history[i+1].r.k==='R'){paired++;i++;}
-    else single++;
-   }
-  }
-  if(single>0&&paired===0&&history.some(x=>work(x.r))){unpaired++;addIssue('info',person.name+' · repos isolés','Aucun bloc de deux jours de repos consécutifs visible. Vérifier les préférences et les jours voisins.',person.id,null);}
-  const hrs=history.reduce((acc,x)=>acc+hours(x.r),0);
-  if(view==='week'&&hrs>48)addIssue('warn',person.name+' · '+hrs.toFixed(1).replace('.',',')+' h cette semaine','Heures planifiées élevées. Examiner le contrat, les pauses, le cadre légal applicable et les pointages.',person.id,null);
- }
- if(issues.length===0)addIssue('info','Aucune alerte simple détectée','La couverture et les repos restent à valider selon les contrats, congés et contraintes de service. Cette analyse ne certifie pas la conformité.',null,null);
- issues.sort((a,b)=>({alert:0,warn:1,info:2}[a.level]-{alert:0,warn:1,info:2}[b.level]));
- return {issues,summary:{people:people.length,hours:totalHours,services,uncovered,longRuns,unpaired}};
-}
-function assistantNav(issue){
- if(!issue?.date&&!issue?.person)return;
- closeAssistant();
- if(issue.person){focusedStaffId=String(issue.person);staffPage=0;}
- if(issue.date){
-  const d=new Date(issue.date+'T12:00:00');
-  dayIndex=(d.getDay()+6)%7;anchor=monday(d);
-  switchView('week');
-  // Ne pas ouvrir une modification sans responsable ayant choisi le collaborateur.
-  if(issue.person&&!readOnly){openModal(String(issue.person),issue.date);}
- }else{switchView('week');}
- void refresh(true);
-}
-function renderAssistant(){
- assistantVisible=assistantCount();
- const sh=$('assistant-shield'),out=$('assistant-findings'),amount=assistantIssues.length;
- sh.style.setProperty('--assistant-visible',String(assistantVisible));
- const pages=Math.max(1,Math.ceil(amount/assistantVisible));assistantPage=Math.max(0,Math.min(assistantPage,pages-1));
- const page=assistantIssues.slice(assistantPage*assistantVisible,(assistantPage+1)*assistantVisible);
- out.replaceChildren();
- for(const item of page){
-  const row=document.createElement('article');row.className='assistant-item';
-  const level=document.createElement('span');level.className='assistant-level '+(item.level==='info'?'':item.level);level.setAttribute('aria-hidden','true');
-  const info=document.createElement('div');info.className='assistant-item-info';
-  const title=document.createElement('strong');title.textContent=item.title;
-  const desc=document.createElement('p');desc.textContent=item.detail;
-  info.append(title,desc);row.append(level,info);
-  if(item.person||item.date){const b=document.createElement('button');b.type='button';b.className='btn small';b.textContent='Voir →';b.addEventListener('click',()=>assistantNav(item));row.append(b);}
-  out.append(row);
- }
- $('assistant-counter').textContent=`${assistantPage+1} / ${pages} · ${amount} point${amount>1?'s':''}`;
- $('assistant-prev').disabled=assistantPage===0;
- $('assistant-next').disabled=assistantPage>=pages-1;
-}
-function analyzeAssistant(){
- if(!token){closeAssistant();notify('Accès réservé aux responsables RH et Direction.');return;}
- const m=month(anchor),suffix=view==='week'?'semaine':'mois';
- const {issues,summary}=assistantFindings();assistantIssues=issues;assistantPage=0;
- $('assistant-period').textContent=`${suffix==='semaine'?'Semaine':'Mois'} · ${$('range').textContent} · ${filter==='ALL'?'Tous les services':filter}`;
- $('assistant-status').textContent='Analyse de décision connectée au planning officiel · aucune modification effectuée.';
- $('assistant-metrics').innerHTML=[
-  [summary.people,'Collaborateurs'],[summary.services,'Services prévus'],[summary.hours.toFixed(1).replace('.',',')+' h','Heures affichées'],[summary.uncovered,'Jours sans service']
- ].map(x=>`<div class="assistant-metric"><b>${esc(x[0])}</b><span>${esc(x[1])}</span></div>`).join('');
- renderAssistant();
-}
-function openAssistant(){
- if(!token){notify('Connectez-vous avec une session responsable Direction / RH.');return;}
- $('top-actions').classList.remove('actions-open');
- document.querySelector('.sidebar').classList.remove('nav-open');
- $('assistant-shield').classList.remove('hide');
- const direct=window.parent!==window && (()=>{try{return location.origin===window.parent.location.origin&&typeof window.parent.openPlanningAssistant==='function';}catch{return false;}})();
- $('assistant-rh-advanced').classList.toggle('hide',!direct);
- analyzeAssistant();$('assistant-close').focus();
-}
-$('assistant-close').onclick=closeAssistant;$('assistant-done').onclick=closeAssistant;
-$('assistant-shield').addEventListener('click',e=>{if(e.target===$('assistant-shield'))closeAssistant();});
-$('assistant-prev').onclick=()=>{assistantPage=Math.max(0,assistantPage-1);renderAssistant();};
-$('assistant-next').onclick=()=>{assistantPage++;renderAssistant();};
-$('assistant-reanalyze').onclick=()=>{lastFetch=0;refresh(true).then(()=>{if(assistantIsOpen())analyzeAssistant();});};
-$('assistant-rh-advanced').onclick=()=>{
- // Réutiliser l'assistance RH existante seulement si ouverte depuis RH
- // même origine et sans transmettre PIN ni jeton entre fenêtres.
- try{if(window.parent!==window&&location.origin===window.parent.location.origin&&typeof window.parent.openPlanningAssistant==='function'){
-  closeAssistant();window.parent.openPlanningAssistant();return;
- }}catch(e){console.warn('Assistant RH complet indisponible',e);}
- $('assistant-status').textContent='Assistant RH avancé non accessible depuis cette fenêtre. Analyse locale disponible.';
-};
-window.addEventListener('resize',()=>{if(assistantIsOpen())renderAssistant();});
-document.addEventListener('keydown',e=>{if(e.key==='Escape'&&assistantIsOpen()){e.stopImmediatePropagation();closeAssistant();}});
-
 function returnToRh(){
  if(window.parent!==window && new URLSearchParams(location.search).get('rhEmbedded')==='1'){
    try{window.parent.postMessage({type:'ICHEF_PREMIUM_RETURN_RH'},location.origin);return;}catch(_){}
@@ -445,10 +341,32 @@ function returnToRh(){
  location.assign('/rh.html?tenantID='+encodeURIComponent(tenant));
 }
 $('return-rh').onclick=returnToRh;
-$('ai').onclick=$('ai-side').onclick=openAssistant;$('print').onclick=()=>window.print();document.querySelectorAll('[data-inactive]').forEach(b=>b.onclick=()=>{const key=b.dataset.inactive;const page=key==='Pointeuse'?'/pointeuse.html':key==='Portail Staff'?'/portail-staff.html':'/rh.html';location.assign(page+'?tenantID='+encodeURIComponent(tenant));});if(premiumChannel)premiumChannel.onmessage=e=>{
+$('ai').onclick=$('ai-side').onclick=returnToRh;$('print').onclick=()=>window.print();document.querySelectorAll('[data-inactive]').forEach(b=>b.onclick=()=>{const key=b.dataset.inactive;if(window.parent!==window&&query.get('rhEmbedded')==='1'){window.parent.postMessage({type:'ICHEF_PREMIUM_RETURN_RH',target:key},location.origin);return;}const page=key==='Pointeuse'?'/pointeuse.html':key==='Portail Staff'?'/portail-staff.html':'/rh.html';location.assign(page+'?tenantID='+encodeURIComponent(tenant));});if(premiumChannel)premiumChannel.onmessage=e=>{
   if(e?.data?.type==='PLANNING_CHANGED'&&e.data.tenant===tenant&&!selected){lastFetch=0;void refresh(true);}
 };
-document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!selected)refresh(true);});setInterval(()=>{if(!document.hidden&&!selected)refresh(true);},30000);
+let rhEmbeddedPaused=false;
+async function resumeFromRh(){
+  rhEmbeddedPaused=false;
+  if(query.get('rhEmbedded')!=='1')return;
+  try{
+    const row=JSON.parse(sessionStorage.getItem(authKey())||'null');
+    if(!row||row.tenant!==tenant||row.device!==device||typeof row.token!=='string'||row.exp<Date.now()+10000){
+      forget();showAuth('Session expirée. Reconnectez-vous dans RH.');return;
+    }
+    token=row.token;actor=row.actor;$('login-shield').classList.add('hide');
+    lastFetch=0;await refresh(true);
+  }catch(e){showAuth('Connexion RH non disponible.');}
+}
+window.addEventListener('message',e=>{
+  if(e.origin!==location.origin||e.source!==window.parent||query.get('rhEmbedded')!=='1')return;
+  if(e.data?.type==='ICHEF_PREMIUM_PAUSE')rhEmbeddedPaused=true;
+  if(e.data?.type==='ICHEF_PREMIUM_RESUME')void resumeFromRh();
+  if(e.data?.type==='ICHEF_PREMIUM_PARENT_LOGOUT'){
+    rhEmbeddedPaused=true;forget();showAuth('Session RH fermée.');
+  }
+});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!rhEmbeddedPaused&&!selected)refresh(true);});
+setInterval(()=>{if(!document.hidden&&!rhEmbeddedPaused&&!selected)refresh(true);},30000);
 if('serviceWorker' in navigator&&location.protocol==='https:'){navigator.serviceWorker.register('./sw.js',{scope:'./'}).catch(e=>console.warn('PWA non installée',e));}
 render();restoreAuth();
 })();
