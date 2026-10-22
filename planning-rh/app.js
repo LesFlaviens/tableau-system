@@ -25,7 +25,7 @@ function mkDevice(){const key='ichef_planning_device_v1';let id='';try{id=localS
 device=mkDevice();let oldTenant='';try{oldTenant=localStorage.getItem('ichef_tenant_id')||'';}catch{}tenant=(query.get('tenantID')||oldTenant||'').trim().slice(0,80);$('login-tenant').value=tenant;
 function setStatus(text,error=false){$('board-status').textContent=(error?'● ':'● ')+text;$('board-status').style.color=error?'#b64140':'#357b66';}
 function notify(message){$('toast').textContent=message;$('toast').classList.remove('hide');clearTimeout(notify.timer);notify.timer=setTimeout(()=>$('toast').classList.add('hide'),4300);}
-function showAuth(error=''){token='';actor=null;focusedStaffId=null;staff=[];state={};actualMonths={};publication=null;render();$('login-shield').classList.remove('hide');$('login-error').textContent=error;setStatus('Connexion requise',true);}
+function showAuth(error=''){if(taskSelected)closeTaskModal();token='';actor=null;focusedStaffId=null;staff=[];state={};actualMonths={};publication=null;render();$('login-shield').classList.remove('hide');$('login-error').textContent=error;setStatus('Connexion requise',true);}
 function authKey(){return 'ichef_planning_premium_auth_v1';}
 function forget(){try{sessionStorage.removeItem(authKey());}catch{}}
 function authHeaders(){return {'Accept':'application/json','Authorization':`Bearer ${token}`,'X-iCHEF-Tenant':tenant,'X-iCHEF-Device':device};}
@@ -43,6 +43,31 @@ async function restoreAuth(){try{const row=JSON.parse(sessionStorage.getItem(aut
 function convert(day){if(!day||!Object.keys(day).length)return empty();const s=String(day.status||'');const p=String(day.s1||'').split('-'),q=String(day.s2||'').split('-');let k='A';if(s==='off')k='R';else if(s==='conge')k='CP';else if(s==='maladie')k='MAL';else if(s==='accident_travail')k='ACC';else if(s==='absence_injustifiee')k='NJS';else if(s==='maternite')k='MAT';else if(s==='paternite')k='PAT';else if(s==='parental')k='PAR';else if(s==='enfant_malade')k='EFM';else if(s==='evenement_familial')k='EVF';else if(s==='deces')k='DEC';else if(s==='sans_solde')k='SSL';else if(s==='recup')k='RECUP';else if(s==='ferie')k='FERIE';else if(s==='formation')k='FORM';else if(s==='present'||s==='off_matin'||s==='off_soir')k=(day.s1&&day.s2)?'C':(day.s1?'M':'S');return {k,status:s,start:p[0]||'',end:p[1]||'',s2:q[0]||'',e2:q[1]||'',pause:Number(day.pause||0),note:String(day.obs||''),original:day};}
 function get(p,date){const d=iso(date),m=d.slice(0,7),n=String(Number(d.slice(8)));return convert(state?.[m]?.[p.id]?.[n]);}
 function work(r){return ['M','S','C'].includes(r.k);}
+// Les tâches sont conservées dans le champ obs existant des journées RH.
+// Un texte lisible est utilisé pour rester compatible avec RH et Portail Staff.
+const TASK_TAG='Tâches à faire :';
+const MAX_TASKS=6,MAX_TASK_LENGTH=65,MAX_OBS_LENGTH=500;
+function splitDayTasks(raw){
+ const text=String(raw||'');
+ const marker='\n'+TASK_TAG+'\n';
+ const index=text.lastIndexOf(marker);
+ if(index<0){
+  if(text.startsWith(TASK_TAG+'\n'))return {note:'',tasks:text.slice(TASK_TAG.length+1).split('\n').filter(x=>x.startsWith('• ')).map(x=>x.slice(2).trim()).filter(Boolean)};
+  return {note:text,tasks:[]};
+ }
+ const lines=text.slice(index+marker.length).split('\n');
+ if(!lines.every(x=>!x.trim()||x.startsWith('• ')))return {note:text,tasks:[]};
+ return {note:text.slice(0,index),tasks:lines.filter(x=>x.startsWith('• ')).map(x=>x.slice(2).trim()).filter(Boolean)};
+}
+function packDayTasks(note,tasks){
+ const cleanNote=String(note||'').trim();
+ const list=tasks.map(x=>String(x||'').replace(/[\r\n]/g,' ').trim()).filter(Boolean);
+ const payload=cleanNote+(list.length?(cleanNote?'\n':'')+TASK_TAG+'\n'+list.map(x=>'• '+x).join('\n'):'');
+ if(payload.length>MAX_OBS_LENGTH)throw Error('Notes et tâches trop longues (500 caractères maximum au total).');
+ return payload;
+}
+function taskListFor(r){return splitDayTasks(r.note).tasks;}
+
 function mins(a,b){if(!a||!b)return 0;const t=x=>Number(x.slice(0,2))*60+Number(x.slice(3,5));return ((t(b)-t(a)+1440)%1440)/60;}
 function hours(r){return !work(r)?0:Math.max(0,mins(r.start,r.end)+mins(r.s2,r.e2)-r.pause/60);}
 function label(r){
@@ -141,6 +166,7 @@ function hoursSummary(person,days){
  const actual=realHoursForPeriod(person,days);
  let target=null;
  if(view==='week')target=getWeeklyTarget(person);
+ else if(view==='day')target=null;
  else {
   const sheet=realSheet(person,month(days[0]));
   target=numberFrom(sheet?.totals,['adjustedTarget','expectedHours','targetHours']);
@@ -180,6 +206,7 @@ function openEmployee(staffId){
 }
 function closeEmployee(){focusedStaffId=null;render();}
 function periodDays(){
+ if(view==='day')return [new Date(anchor)];
  if(view==='week')return Array.from({length:7},(_,i)=>add(monday(anchor),i));
  const first=new Date(anchor.getFullYear(),anchor.getMonth(),1,12);
  const n=new Date(first.getFullYear(),first.getMonth()+1,0).getDate();
@@ -189,7 +216,7 @@ function renderPersonBar(){
  const person=focusedStaffId?staff.find(x=>String(x.id)===focusedStaffId):null;
  $('person-bar').classList.toggle('hide',!person);
  document.querySelector('.board').classList.toggle('person-mode',Boolean(person));
- $('panel-view-title').textContent=person?'Ce collaborateur':'Vue d’ensemble';
+ $('panel-view-title').textContent=person?'Ce collaborateur':view==='day'?'Détail de la journée':'Vue d’ensemble';
  $('panel-view-subtitle').textContent=person?
   `Consultez et modifiez les journées de ${person.name} directement sur le planning officiel.`:
   'Planning officiel : lecture et modification directement sur iCHEF OS.';
@@ -205,7 +232,7 @@ function renderPersonBar(){
 function renderWeek(){
  const people=visible(),days=Array.from({length:7},(_,i)=>add(monday(anchor),i));
  let h='<table class="schedule" aria-label="Planning semaine officiel"><thead><tr><th>COLLABORATEUR</th>';
- for(const d of days)h+=`<th class="${iso(d)===iso(TODAY)?'today':''}"><span class="weekday">${fmt(d,{weekday:'short'})}</span><span class="daynumber">${fmt(d,{day:'2-digit'})}</span></th>`;
+ for(const d of days)h+=`<th class="${iso(d)===iso(TODAY)?'today':''}"><button type="button" class="week-day-button" data-open-day="${iso(d)}" aria-label="Voir le détail du ${iso(d)}"><span class="weekday">${fmt(d,{weekday:'short'})}</span><span class="daynumber">${fmt(d,{day:'2-digit'})}</span></button></th>`;
  h+='</tr></thead><tbody>';
  for(const p of people){
   const summary=hoursSummary(p,days);
@@ -221,8 +248,36 @@ function renderWeek(){
  for(const d of days){const arr=people.map(p=>get(p,d)).filter(work);h+=`<td class="day-summary">${arr.length} équipe<span>${arr.reduce((sum,r)=>sum+hours(r),0).toFixed(1)} h</span></td>`;}
  h+='</tr></tfoot></table>';
  $('week-host').innerHTML=h;
+ $('week-host').querySelectorAll('[data-open-day]').forEach(b=>b.addEventListener('click',()=>openDay(b.dataset.openDay)));
  $('week-host').querySelectorAll('[data-profile]').forEach(b=>b.addEventListener('click',()=>openEmployee(b.dataset.profile)));
  $('week-host').querySelectorAll('[data-person]').forEach(b=>b.addEventListener('click',()=>openModal(b.dataset.person,b.dataset.date)));
+}
+function openDay(date){
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(date))return;
+ anchor=new Date(date+'T12:00:00');
+ switchView('day');
+ lastFetch=0;void refresh(true);
+}
+function renderDay(){
+ const d=new Date(anchor),people=visible();
+ const order=people.slice().sort((a,b)=>Number(work(get(b,d)))-Number(work(get(a,d))));
+ const n=people.filter(p=>work(get(p,d))).length;
+ let h=`<div class="day-header"><strong>${esc(fmt(d,{weekday:'long',day:'numeric',month:'long',year:'numeric'}))}</strong><small>${n} service${n>1?'s':''} programmés · ${people.length} collaborateurs</small></div>`;
+ h+='<table class="day-table" aria-label="Détail de la journée, horaires et tâches"><thead><tr><th>Collaborateur</th><th>Horaire</th><th>Durée prévue</th><th>Tâches à faire</th><th>Modifier</th></tr></thead><tbody>';
+ for(const p of order){
+  const r=get(p,d),tk=taskListFor(r),k=['M','S','C','R'].includes(r.k)?r.k:'A';
+  const value=work(r)?displayHours(hours(r)):'—';
+  const hourLabel=label(r)||types[r.k]||'Non planifié';
+  h+=`<tr><td><div class="day-person"><span class="avatar">${esc(p.avatar)}</span><button type="button" data-profile="${esc(p.id)}"><strong>${esc(p.name)}</strong><small>${esc(p.role)}</small></button></div></td>`;
+  h+=`<td><button type="button" class="day-shift ${k}" data-edit-person="${esc(p.id)}" data-edit-date="${iso(d)}" ${readOnly?'disabled':''} title="Modifier cet horaire">${esc(types[r.k]||'ABSENCE')}<small>${esc(hourLabel)}</small></button></td>`;
+  h+=`<td class="day-duration">${esc(value)}</td><td><div class="day-tasks">${tk.length?tk.map(x=>`<span class="day-task-chip">${esc(x)}</span>`).join(''):'<span class="day-no-tasks">Aucune tâche ajoutée</span>'}</div></td>`;
+  h+=`<td class="day-action-cell"><button type="button" class="btn day-edit-task" data-task-person="${esc(p.id)}" data-task-date="${iso(d)}" ${(!work(r)||readOnly)?'disabled title="Tâches disponibles pour les journées travaillées uniquement"':''}>${tk.length?'✎ Tâches':'＋ Tâche'}</button></td></tr>`;
+ }
+ h+='</tbody></table>';
+ $('day-host').innerHTML=h;
+ $('day-host').querySelectorAll('[data-profile]').forEach(b=>b.addEventListener('click',()=>openEmployee(b.dataset.profile)));
+ $('day-host').querySelectorAll('[data-edit-person]').forEach(b=>b.addEventListener('click',()=>openModal(b.dataset.editPerson,b.dataset.editDate)));
+ $('day-host').querySelectorAll('[data-task-person]').forEach(b=>b.addEventListener('click',()=>openTaskModal(b.dataset.taskPerson,b.dataset.taskDate)));
 }
 function renderMonth(){
  const first=new Date(anchor.getFullYear(),anchor.getMonth(),1,12),shift=(first.getDay()+6)%7,last=new Date(first.getFullYear(),first.getMonth()+1,0).getDate();
@@ -237,16 +292,21 @@ function renderMonth(){
   if(person){
     const r=get(person,date),caption=types[r.k]||'ABSENCE';
     const segments=[r.start&&r.end?`${r.start}–${r.end}`:'',r.s2&&r.e2?`${r.s2}–${r.e2}`:''].filter(Boolean);
-    h+=`<button class="monthday ${key===iso(TODAY)?'today':''} ${['M','S','C','R'].includes(r.k)?r.k:''}" data-edit-person="${esc(person.id)}" data-edit-date="${key}" type="button" ${readOnly?'disabled':''} aria-label="${esc(person.name)} · ${key} · ${esc(caption)} · ${esc(segments.join(' et '))}"><b>${day}</b><span class="month-label">${esc(r.k==='O'?'Ajouter +':caption)}</span>${segments.map(t=>`<small class="month-time">${esc(t)}</small>`).join('')}</button>`;
+    h+=`<button class="monthday ${key===iso(TODAY)?'today':''} ${['M','S','C','R'].includes(r.k)?r.k:''}" data-edit-person="${esc(person.id)}" data-edit-date="${key}" type="button" ${readOnly?'disabled':''} aria-label="${esc(person.name)} · ${key} · ${esc(caption)} · ${esc(segments.join(' et '))}"><b>${day}</b><span class="month-label">${esc(r.k==='O'?'Ajouter +':caption)}</span>${segments.map(t=>`<small class="month-time">${esc(t)}</small>`).join('')}${taskListFor(r).length?`<small class="month-extra">${taskListFor(r).length} tâche${taskListFor(r).length>1?'s':''}</small>`:''}</button>`;
   }else{
-    const n=visible().filter(p=>work(get(p,date))).length;
-    h+=`<button class="monthday ${key===iso(TODAY)?'today':''}" data-month-day="${key}" type="button" aria-label="Voir la semaine du ${key}"><b>${day}</b><small>${n} service${n>1?'s':''}</small><i></i></button>`;
+    const shifts=visible().map(p=>({p,r:get(p,date)})).filter(x=>work(x.r));
+    const maxShown=window.innerWidth<680?1:window.innerHeight<740?2:3;
+    const shown=shifts.slice(0,maxShown);
+    const tooltip=shifts.map(({p,r})=>p.name+' '+label(r)).join(' | ');
+    const tags=shown.map(({p,r})=>`<span class="month-shift ${r.k}" title="${esc(p.name+' · '+label(r))}">${esc((p.name||'').split(/\s+/)[0])} ${esc(label(r))}</span>`).join('');
+    const overflow=shifts.length>shown.length?`<span class="month-extra">+${shifts.length-shown.length} autre${shifts.length-shown.length>1?'s':''}</span>`:'';
+    h+=`<button class="monthday ${key===iso(TODAY)?'today':''} ${shifts.length?'month-has-work':''}" data-month-day="${key}" type="button" title="${esc(tooltip||'Aucun horaire')}" aria-label="Voir le jour ${key}, ${shifts.length} services"><b>${day}</b><span class="month-shifts">${tags}${overflow}</span>${shifts.length?'':'<small>Repos</small>'}</button>`;
   }
  }
  h+='</div></div>';
  $('month-host').style.setProperty('--planning-month-weeks',String(Math.ceil((last+shift)/7)));
  $('month-host').innerHTML=h;
- $('month-host').querySelectorAll('[data-month-day]').forEach(b=>b.addEventListener('click',()=>{anchor=monday(new Date(b.dataset.monthDay+'T12:00:00'));switchView('week');refresh(true);}));
+ $('month-host').querySelectorAll('[data-month-day]').forEach(b=>b.addEventListener('click',()=>openDay(b.dataset.monthDay)));
  $('month-host').querySelectorAll('[data-edit-person]').forEach(b=>b.addEventListener('click',()=>openModal(b.dataset.editPerson,b.dataset.editDate)));
 }
 function renderStats(){
@@ -262,8 +322,8 @@ function renderStats(){
  const covered=days.filter(d=>people.some(p=>work(get(p,d)))).length;
  $('coverage').textContent=`${covered}/${days.length}`;
  $('coverage-bar').style.width=days.length?covered/days.length*100+'%':'0%';
- $('panel-range-label').textContent=view==='month'?'Ce mois':'Cette semaine';
- $('kpi-period-label').textContent=view==='month'?'Mois affiché':'Semaine affichée';
+ $('panel-range-label').textContent=view==='month'?'Ce mois':view==='day'?'Ce jour':'Cette semaine';
+ $('kpi-period-label').textContent=view==='month'?'Mois affiché':view==='day'?'Jour affiché':'Semaine affichée';
 }
 // Hauteur automatique des lignes pour conserver la grille visible dans un seul écran PC.
 // Si l'équipe est trop grande, défilement interne uniquement : aucun texte tronqué.
@@ -285,8 +345,8 @@ function fitPlanningToViewport(){
 }
 function queuePlanningFit(){cancelAnimationFrame(planningFitRaf);planningFitRaf=requestAnimationFrame(fitPlanningToViewport);}
 window.addEventListener('resize',queuePlanningFit,{passive:true});
-function render(){renderPersonBar();if(view==='week'){$('range').textContent=`${fmt(anchor,{day:'numeric',month:'short'})} – ${fmt(add(anchor,6),{day:'numeric',month:'short',year:'numeric'})}`;renderWeek();}else{$('range').textContent=fmt(anchor,{month:'long',year:'numeric'});renderMonth();}renderStats();queuePlanningFit();}
-function switchView(v){view=v;for(const which of ['week','month']){$('view-'+which).classList.toggle('active',which===v);$('view-'+which).setAttribute('aria-pressed',String(which===v));$(which+'-host').classList.toggle('hide',which!==v);}render();}
+function render(){renderPersonBar();if(view==='week'){$('range').textContent=`${fmt(anchor,{day:'numeric',month:'short'})} – ${fmt(add(anchor,6),{day:'numeric',month:'short',year:'numeric'})}`;renderWeek();}else if(view==='day'){$('range').textContent=fmt(anchor,{weekday:'short',day:'numeric',month:'short',year:'numeric'});renderDay();}else{$('range').textContent=fmt(anchor,{month:'long',year:'numeric'});renderMonth();}renderStats();queuePlanningFit();}
+function switchView(v){view=v;for(const which of ['day','week','month']){$('view-'+which).classList.toggle('active',which===v);$('view-'+which).setAttribute('aria-pressed',String(which===v));$(which+'-host').classList.toggle('hide',which!==v);}render();}
 function updateDepartments(){const select=$('department'),old=filter;select.innerHTML='<option value="ALL">Tous les services</option>';[...new Set(staff.map(s=>s.dept).filter(Boolean))].sort().forEach(d=>{const o=document.createElement('option');o.value=d;o.textContent=d;select.appendChild(o);});filter=old==='ALL'||staff.some(s=>s.dept===old)?old:'ALL';select.value=filter;}
 async function refresh(force=false){if(!token||busy)return;if(!force&&Date.now()-lastFetch<3500)return;busy=true;setStatus('Synchronisation sécurisée en cours…');try{const m=month(anchor);const res=await jsonFetch(`/api/rh/planning/premium/state?tenantID=${encodeURIComponent(tenant)}&month=${m}`,{headers:authHeaders()});staff=(res.staff||[]).map(p=>({...p,id:String(p.id),dept:String(p.dept||'Sans secteur'),avatar:String(p.name||'?').split(/\s+/).slice(0,2).map(z=>z[0]).join('').toUpperCase()}));state={...state,...(res.timesheets||{})};actualMonths[m]=readRealMonth(res,m);rhSettings=res.settings||{};
 publication=res.publication||null;readOnly=rhSettings.planningStatus==='locked';lastFetch=Date.now();
@@ -303,17 +363,74 @@ updateDepartments();render();setStatus(`Synchronisé · ${tenant} · ${new Date(
   }
  }}
 catch(e){setStatus(e.message,true);if(e.status===401||e.status===403){forget();showAuth(e.message);}else notify('Réseau indisponible. Les données ne sont pas modifiées.');}finally{busy=false;}}
-function openModal(person,date){if(!token||readOnly)return;const p=staff.find(x=>x.id===person);if(!p)return;const d=new Date(date+'T12:00:00'),r=get(p,d);selected={person,date,base:r.original};$('modal-sub').textContent=`${p.name} · ${fmt(d,{weekday:'long',day:'numeric',month:'long'})}`;$('kind').value=types[r.k]?r.k:'A';$('start').value=r.start||'08:00';$('end').value=r.end||'16:00';$('split-start').value=r.s2||'18:00';$('split-end').value=r.e2||'22:00';$('note').value=r.note;$('reason').value='';updateForm();$('modal-backdrop').classList.remove('hide');$('kind').focus();}
+function openModal(person,date){if(!token||readOnly)return;const p=staff.find(x=>x.id===person);if(!p)return;const d=new Date(date+'T12:00:00'),r=get(p,d);selected={person,date,base:r.original};$('modal-sub').textContent=`${p.name} · ${fmt(d,{weekday:'long',day:'numeric',month:'long'})}`;$('kind').value=types[r.k]?r.k:'A';$('start').value=r.start||'08:00';$('end').value=r.end||'16:00';$('split-start').value=r.s2||'18:00';$('split-end').value=r.e2||'22:00';$('note').value=splitDayTasks(r.note).note;$('reason').value='';updateForm();$('modal-backdrop').classList.remove('hide');$('kind').focus();}
 function closeModal(){selected=null;$('modal-backdrop').classList.add('hide');}
 function updateForm(){const k=$('kind').value;document.querySelectorAll('[data-preset]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.preset===k)));for(const id of ['time1','time2'])$(id).classList.toggle('hide',!['M','S','C'].includes(k));$('split-row').classList.toggle('hide',k!=='C');}
 function pair(a,b){return /^\d{2}:\d{2}$/.test(a)&&/^\d{2}:\d{2}$/.test(b)&&a!==b;}
-function getDraft(){const k=$('kind').value,original=selected?.base||{},note=$('note').value.trim().slice(0,500);let r={...original,status:'off',s1:'',s2:'',pause:0,obs:note};if(['M','S','C'].includes(k)){if(!pair($('start').value,$('end').value))throw Error('Horaires de service invalides.');r.status=k==='M'?'off_soir':k==='S'?'off_matin':'present';const s=`${$('start').value}-${$('end').value}`;if(k==='S')r.s2=s;else r.s1=s;if(k==='C'){if(!pair($('split-start').value,$('split-end').value))throw Error('Deuxième service invalide.');r.s2=`${$('split-start').value}-${$('split-end').value}`;}}else{r.status=({R:'off',CP:'conge',MAL:'maladie',RECUP:'recup',FERIE:'ferie',FORM:'formation',A:'absence_autorisee',NJS:'absence_injustifiee',ACC:'accident_travail',MAT:'maternite',PAT:'paternite',PAR:'parental',EFM:'enfant_malade',EVF:'evenement_familial',DEC:'deces',SSL:'sans_solde',O:'off'})[k]||'off';}return k==='O'?null:r;}
+function getDraft(){const k=$('kind').value,original=selected?.base||{},note=$('note').value.trim().slice(0,500);let r={...original,status:'off',s1:'',s2:'',pause:0,obs:packDayTasks(note,splitDayTasks(String(original.obs||'')).tasks)};if(['M','S','C'].includes(k)){if(!pair($('start').value,$('end').value))throw Error('Horaires de service invalides.');r.status=k==='M'?'off_soir':k==='S'?'off_matin':'present';const s=`${$('start').value}-${$('end').value}`;if(k==='S')r.s2=s;else r.s1=s;if(k==='C'){if(!pair($('split-start').value,$('split-end').value))throw Error('Deuxième service invalide.');r.s2=`${$('split-start').value}-${$('split-end').value}`;}}else{r.status=({R:'off',CP:'conge',MAL:'maladie',RECUP:'recup',FERIE:'ferie',FORM:'formation',A:'absence_autorisee',NJS:'absence_injustifiee',ACC:'accident_travail',MAT:'maternite',PAT:'paternite',PAR:'parental',EFM:'enfant_malade',EVF:'evenement_familial',DEC:'deces',SSL:'sans_solde',O:'off'})[k]||'off';}return k==='O'?null:r;}
 async function save(){if(!selected||busy)return;const reason=$('reason').value.trim();if(reason.length<3)return notify('Motif obligatoire (au moins 3 caractères).');let day;try{day=getDraft();}catch(e){return notify(e.message);}busy=true;setStatus('Enregistrement sur le serveur…');const btn=$('shift-form').querySelector('[type="submit"]');btn.disabled=true;try{const res=await jsonFetch('/api/rh/planning/premium/day',{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenant,date:selected.date,staffId:selected.person,day,reason,baseRevision:selected.base?selected.base.planningVersionId||'':null})});const m=selected.date.slice(0,7),n=String(Number(selected.date.slice(8)));if(!state[m])state[m]={};if(!state[m][selected.person])state[m][selected.person]={};if(res.day)state[m][selected.person][n]=res.day;else delete state[m][selected.person][n];$('audit-title').textContent=`Modifié · ${res.staffName||selected.person}`;$('audit-detail').textContent=`${selected.date} · ${reason}`;$('audit-date').textContent=fmt(new Date(),{hour:'2-digit',minute:'2-digit'});closeModal();render();setStatus('Enregistré sur le serveur central · RH et Staff informés');notify('Horaire sauvegardé et synchronisé.');broadcastPlanningChange(m);lastFetch=0;
 if(publication?.status==='published'){$('publication-status').textContent='⚠ Horaire modifié · à republier';publication={...publication,status:'to_review'};}}
 catch(e){setStatus(e.message,true);if(e.status===409){notify('Planning modifié ailleurs : rechargement nécessaire avant de réessayer.');closeModal();lastFetch=0;}else if(e.status===401||e.status===403){forget();showAuth(e.message);}else notify('Enregistrement refusé : '+e.message);}
 finally{busy=false;btn.disabled=false;}}
+// Éditeur de tâches du jour : utilise uniquement l'API RH officielle déjà autorisée.
+let taskSelected=null;
+function openTaskModal(person,date){
+ if(!token||readOnly)return;
+ const p=staff.find(x=>x.id===String(person));
+ if(!p)return;
+ const d=new Date(date+'T12:00:00'),r=get(p,d);
+ if(!work(r))return notify('Ajoutez d’abord un horaire travaillé à cette journée.');
+ taskSelected={person:String(person),date,base:r.original};
+ $('task-sub').textContent=p.name+' · '+fmt(d,{weekday:'long',day:'numeric',month:'long'});
+ $('task-reason').value='Mise à jour des tâches';$('task-error').textContent='';
+ $('task-fields').innerHTML='';
+ const tasks=taskListFor(r);
+ for(const item of tasks)addTaskField(item);
+ if(!tasks.length)addTaskField('');
+ $('task-backdrop').classList.remove('hide');
+ $('task-fields').querySelector('input')?.focus();
+}
+function addTaskField(value=''){
+ const fields=$('task-fields');
+ if(fields.children.length>=MAX_TASKS)return notify('6 tâches maximum par service.');
+ const row=document.createElement('div');row.className='task-row';
+ const input=document.createElement('input');input.type='text';input.maxLength=MAX_TASK_LENGTH;input.placeholder='Ex. Contrôler les températures HACCP';input.setAttribute('aria-label','Description de la tâche');input.value=value;
+ const remove=document.createElement('button');remove.type='button';remove.textContent='×';remove.title='Supprimer cette tâche';remove.setAttribute('aria-label','Supprimer cette tâche');
+ remove.addEventListener('click',()=>{row.remove();if(!fields.children.length)addTaskField('');});
+ row.append(input,remove);fields.append(row);
+}
+function closeTaskModal(){taskSelected=null;$('task-backdrop').classList.add('hide');}
+async function saveTasks(ev){
+ ev.preventDefault();if(!taskSelected||busy)return;
+ const tasks=Array.from($('task-fields').querySelectorAll('input')).map(x=>x.value.replace(/[\r\n]/g,' ').trim()).filter(Boolean);
+ const reason=$('task-reason').value.trim();
+ if(reason.length<3){$('task-error').textContent='Indiquez un motif de 3 caractères minimum.';return;}
+ if(tasks.some(t=>t.length>MAX_TASK_LENGTH)){$('task-error').textContent='Tâche limitée à 65 caractères.';return;}
+ const {person,date,base}=taskSelected;
+ const record=get(staff.find(p=>p.id===person),new Date(date+'T12:00:00'));
+ if(!record.original||!work(record)){$('task-error').textContent='Ce collaborateur ne possède pas de service travaillé à cette date.';return;}
+ let obs;
+ try{obs=packDayTasks(splitDayTasks(record.note).note,tasks);}catch(e){$('task-error').textContent=e.message;return;}
+ busy=true;const button=$('task-save');button.disabled=true;setStatus('Enregistrement des tâches…');
+ try{
+  const day={...record.original,obs};
+  const res=await jsonFetch('/api/rh/planning/premium/day',{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenant,date,staffId:person,day,reason,baseRevision:base?.planningVersionId||null})});
+  const m=date.slice(0,7),n=String(Number(date.slice(8)));
+  if(!state[m])state[m]={};if(!state[m][person])state[m][person]={};
+  state[m][person][n]=res.day||day;
+  $('audit-title').textContent='Tâches modifiées';$('audit-detail').textContent=date+' · '+reason;
+  $('audit-date').textContent=fmt(new Date(),{hour:'2-digit',minute:'2-digit'});
+  closeTaskModal();render();broadcastPlanningChange(m);lastFetch=0;
+  setStatus('Tâches enregistrées avec le planning RH');notify('Tâches enregistrées sur le serveur RH.');
+  if(publication?.status==='published'){$('publication-status').textContent='⚠ Journée modifiée · à republier';publication={...publication,status:'to_review'};}
+ }catch(e){$('task-error').textContent=e.message||'Enregistrement impossible.';setStatus(e.message,true);if(e.status===409){lastFetch=0;notify('Cette journée a changé. Actualisez puis réessayez.');}else if(e.status===401||e.status===403){forget();closeTaskModal();showAuth(e.message);}}
+ finally{busy=false;button.disabled=false;}
+}
+$('task-close').onclick=closeTaskModal;$('task-cancel').onclick=closeTaskModal;
+$('task-add').onclick=()=>addTaskField();$('task-form').onsubmit=saveTasks;
+$('task-backdrop').onclick=e=>{if(e.target===$('task-backdrop'))closeTaskModal();};
 $('logout').onclick=()=>{forget();$('login-pin').value='';showAuth('Session fermée sur cet appareil.');if(window.parent!==window&&query.get('rhEmbedded')==='1'){window.parent.postMessage({type:'ICHEF_PREMIUM_LOGOUT'},location.origin);}};
-$('login-form').onsubmit=login;$('prev').onclick=()=>{anchor=view==='week'?add(anchor,-7):new Date(anchor.getFullYear(),anchor.getMonth()-1,1,12);render();refresh(true);};$('next').onclick=()=>{anchor=view==='week'?add(anchor,7):new Date(anchor.getFullYear(),anchor.getMonth()+1,1,12);render();refresh(true);};$('today').onclick=()=>{anchor=view==='week'?monday(TODAY):new Date(TODAY.getFullYear(),TODAY.getMonth(),1,12);render();refresh(true);};$('view-week').onclick=()=>switchView('week');$('view-month').onclick=()=>{anchor=new Date(anchor.getFullYear(),anchor.getMonth(),1,12);switchView('month');refresh(true);};$('department').onchange=e=>{filter=e.target.value;focusedStaffId=null;render();};$('team-return').onclick=closeEmployee;$('close').onclick=closeModal;$('cancel').onclick=closeModal;$('kind').onchange=updateForm;document.querySelectorAll('[data-preset]').forEach(b=>b.addEventListener('click',()=>{$('kind').value=b.dataset.preset;updateForm();}));$('remove').onclick=()=>{$('kind').value='O';save();};$('shift-form').onsubmit=e=>{e.preventDefault();save();};$('modal-backdrop').onclick=e=>{if(e.target===$('modal-backdrop'))closeModal();};document.addEventListener('keydown',e=>{if(e.key==='Escape'&&selected)closeModal();});$('reset').onclick=()=>refresh(true);
+$('login-form').onsubmit=login;$('prev').onclick=()=>{anchor=view==='day'?add(anchor,-1):view==='week'?add(anchor,-7):new Date(anchor.getFullYear(),anchor.getMonth()-1,1,12);render();refresh(true);};$('next').onclick=()=>{anchor=view==='day'?add(anchor,1):view==='week'?add(anchor,7):new Date(anchor.getFullYear(),anchor.getMonth()+1,1,12);render();refresh(true);};$('today').onclick=()=>{anchor=view==='day'?new Date(TODAY):view==='week'?monday(TODAY):new Date(TODAY.getFullYear(),TODAY.getMonth(),1,12);render();refresh(true);};$('view-day').onclick=()=>{anchor=new Date(anchor);switchView('day');refresh(true);};$('view-week').onclick=()=>{anchor=monday(anchor);switchView('week');refresh(true);};$('view-month').onclick=()=>{anchor=new Date(anchor.getFullYear(),anchor.getMonth(),1,12);switchView('month');refresh(true);};$('department').onchange=e=>{filter=e.target.value;focusedStaffId=null;render();};$('team-return').onclick=closeEmployee;$('close').onclick=closeModal;$('cancel').onclick=closeModal;$('kind').onchange=updateForm;document.querySelectorAll('[data-preset]').forEach(b=>b.addEventListener('click',()=>{$('kind').value=b.dataset.preset;updateForm();}));$('remove').onclick=()=>{$('kind').value='O';save();};$('shift-form').onsubmit=e=>{e.preventDefault();save();};$('modal-backdrop').onclick=e=>{if(e.target===$('modal-backdrop'))closeModal();};document.addEventListener('keydown',e=>{if(e.key==='Escape'){if(selected)closeModal();if(taskSelected)closeTaskModal();}});$('reset').onclick=()=>refresh(true);
 $('panel-toggle').onclick=()=>{const on=document.querySelector('.board').classList.toggle('show-panel');$('panel-toggle').setAttribute('aria-expanded',String(on));$('panel-toggle').textContent=on?'× Fermer':'☷ Détails';};
 async function publishMonth(){
   if(!token||busy||readOnly)return;
