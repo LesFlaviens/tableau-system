@@ -1,4 +1,4 @@
-/* iCHEF OS Planning Premium V273 : responsable uniquement + assistant local, sans quitter le planning. */
+/* iCHEF OS Planning Premium V274 : sélection tactile groupée + assistant responsable, sans quitter le planning. */
 /* iCHEF OS Planning Premium PWA · client connecté au TIMESHEETS_MASTER.
    Aucune donnée RH n'est stockée en cache ni dans localStorage. */
 (()=>{'use strict';
@@ -19,6 +19,8 @@ const month=d=>iso(new Date(d.getFullYear(),d.getMonth(),1,12)).slice(0,7);
 const empty=()=>({k:'O',status:'',start:'',end:'',s2:'',e2:'',pause:0,note:'',original:null});
 const types={M:'MATIN',S:'SOIR',C:'COUPURE',R:'REPOS',O:'+',CP:'CONGÉ',MAL:'MALADIE',RECUP:'RÉCUP',FERIE:'FÉRIÉ',FORM:'FORMATION',A:'ABSENCE',NJS:'ABS. INJUSTIFIÉE',ACC:'ACCIDENT',MAT:'MATERNITÉ',PAT:'PATERNITÉ',PAR:'PARENTAL',EFM:'ENFANT MALADE',EVF:'ÉVÉNEMENT',DEC:'DEUIL',SSL:'SANS SOLDE'};
 let staffPage=0,dayIndex=(TODAY.getDay()+6)%7,lastPageCapacity=0;
+let bulkMode=false,bulkSelected=new Map(),bulkLastCell=null,bulkSaving=false;
+const MAX_BULK_CELLS=210;
 let anchor=monday(TODAY),view='week',filter='ALL',focusedStaffId=null,selected=null,staff=[],state={},rhSettings={},publication=null,actor=null,tenant='',token='',device='',busy=false,readOnly=false,lastFetch=0;
 const premiumChannel=typeof BroadcastChannel!=='undefined'?new BroadcastChannel('ichef-planning-premium-events-v1'):null;
 function broadcastPlanningChange(mm){try{premiumChannel?.postMessage({type:'PLANNING_CHANGED',tenant,month:mm,at:Date.now()});}catch(_){}}
@@ -26,7 +28,7 @@ function mkDevice(){const key='ichef_planning_device_v1';let id='';try{id=localS
 device=mkDevice();let oldTenant='';try{oldTenant=localStorage.getItem('ichef_tenant_id')||'';}catch{}tenant=(query.get('tenantID')||oldTenant||'').trim().slice(0,80);$('login-tenant').value=tenant;
 function setStatus(text,error=false){$('board-status').textContent=(error?'● ':'● ')+text;$('board-status').style.color=error?'#b64140':'#357b66';}
 function notify(message){$('toast').textContent=message;$('toast').classList.remove('hide');clearTimeout(notify.timer);notify.timer=setTimeout(()=>$('toast').classList.add('hide'),4300);}
-function showAuth(error=''){closeAssistant();token='';actor=null;focusedStaffId=null;staff=[];state={};publication=null;render();$('login-shield').classList.remove('hide');$('login-error').textContent=error;setStatus('Connexion requise',true);}
+function showAuth(error=''){exitBulk();closeAssistant();token='';actor=null;focusedStaffId=null;staff=[];state={};publication=null;render();$('login-shield').classList.remove('hide');$('login-error').textContent=error;setStatus('Connexion requise',true);}
 function authKey(){return 'ichef_planning_premium_auth_v1';}
 function forget(){try{sessionStorage.removeItem(authKey());}catch{}}
 function authHeaders(){return {'Accept':'application/json','Authorization':`Bearer ${token}`,'X-iCHEF-Tenant':tenant,'X-iCHEF-Device':device};}
@@ -109,6 +111,81 @@ function updateDayPicker(){
  picker.innerHTML=days.map((d,i)=>`<button type="button" data-day-pick="${i}" class="${i===dayIndex?'selected':''}" aria-pressed="${i===dayIndex}" aria-label="${esc(fmt(d,{weekday:'long',day:'numeric',month:'long'}))}">${esc(fmt(d,{weekday:'short'}))}<small>${fmt(d,{day:'numeric'})}</small></button>`).join('');
  picker.querySelectorAll('[data-day-pick]').forEach(b=>b.onclick=()=>{dayIndex=Number(b.dataset.dayPick);renderWeek();});
 }
+
+/* V274 : sélection tactile. Toucher court = édition, maintenir 550 ms = sélection.
+   Mode groupé explicite également utilisable à la souris et au clavier. */
+function bulkKey(person,date){return `${person}||${date}`;}
+function clearBulkSelection(){bulkSelected.clear();bulkLastCell=null;bulkVisualRefresh();updateBulkBar();}
+function exitBulk(){if(bulkSaving)return;bulkMode=false;bulkSelected.clear();bulkLastCell=null;const sh=$('bulk-shield');if(sh)sh.classList.add('hide');if($('bulk-toggle'))$('bulk-toggle').setAttribute('aria-pressed','false');if($('bulk-bar'))$('bulk-bar').classList.add('hide');document.querySelector('.board')?.classList.remove('bulk-active');}
+function setBulkMode(on){if(bulkSaving||!token||readOnly){if(on)notify('Le planning est verrouillé ou la session n’est pas autorisée.');return;}bulkMode=on;if(!on){exitBulk();render();return;}$('bulk-toggle').setAttribute('aria-pressed','true');document.querySelector('.board')?.classList.add('bulk-active');$('bulk-bar').classList.remove('hide');render();updateBulkBar();}
+function bulkVisualRefresh(){document.querySelectorAll('button[data-person][data-date],button[data-edit-person][data-edit-date]').forEach(b=>{const p=b.dataset.person||b.dataset.editPerson,d=b.dataset.date||b.dataset.editDate,on=bulkSelected.has(bulkKey(p,d));b.classList.toggle('is-marked',on);b.setAttribute('aria-pressed',String(on));});document.querySelectorAll('button[data-month-day]').forEach(b=>{const people=visible(),d=b.dataset.monthDay;b.classList.toggle('is-marked',bulkMode&&people.length>0&&people.every(p=>bulkSelected.has(bulkKey(p.id,d))));});}
+function updateBulkBar(){if(!$('bulk-count'))return;const count=bulkSelected.size;$('bulk-count').textContent=count?`${count} case${count>1?'s':''}`:'0 case';$('bulk-open').disabled=bulkSaving||!count;$('bulk-clear').disabled=bulkSaving||!count;$('bulk-exit').disabled=bulkSaving;}
+function bulkChangeCell(person,date,on){const key=bulkKey(person,date);if(on===false){bulkSelected.delete(key);return;}if(on===true&&bulkSelected.has(key))return;if(on===undefined&&bulkSelected.has(key)){bulkSelected.delete(key);return;}if(bulkSelected.size>=MAX_BULK_CELLS){notify(`Maximum ${MAX_BULK_CELLS} cases par opération.`);return;}bulkSelected.set(key,{person,date});}
+function bulkToggle(person,date,e){if(!token||readOnly||bulkSaving)return;if(!staff.some(p=>p.id===person))return;if(e?.shiftKey&&bulkLastCell&&bulkLastCell.person===person){const a=bulkLastCell.date,b=date;if(/^\d{4}-\d\d-\d\d$/.test(a)&&/^\d{4}-\d\d-\d\d$/.test(b)){let d=new Date((a<b?a:b)+'T12:00:00'),end=a>b?a:b,steps=0;while(iso(d)<=end&&steps++<32){bulkChangeCell(person,iso(d),true);d=add(d,1);}}}else bulkChangeCell(person,date);bulkLastCell={person,date};bulkVisualRefresh();updateBulkBar();}
+function bulkToggleRow(person,days){if(readOnly||busy)return;const items=days.map(d=>iso(d)),all=items.every(d=>bulkSelected.has(bulkKey(person,d)));items.forEach(d=>bulkChangeCell(person,d,!all));bulkVisualRefresh();updateBulkBar();}
+function bulkToggleDay(date,people){if(readOnly||busy)return;if(people.length===0)return;const all=people.every(p=>bulkSelected.has(bulkKey(p.id,date)));people.forEach(p=>bulkChangeCell(p.id,date,!all));bulkVisualRefresh();updateBulkBar();}
+function bindBulkCells(host,personAttr,dateAttr){
+ host.querySelectorAll(`[${personAttr}][${dateAttr}]`).forEach(b=>{
+  let timer=0,px=0,py=0,longFired=false;
+  const person=b.getAttribute(personAttr),date=b.getAttribute(dateAttr);
+  b.addEventListener('pointerdown',e=>{if(b.disabled||!e.isPrimary||e.button!==0||bulkMode)return;px=e.clientX;py=e.clientY;longFired=false;timer=setTimeout(()=>{timer=0;longFired=true;if(navigator.vibrate)try{navigator.vibrate(20);}catch(_){}setBulkMode(true);bulkToggle(person,date);},550);});
+  b.addEventListener('pointermove',e=>{if(Math.abs(e.clientX-px)>10||Math.abs(e.clientY-py)>10){clearTimeout(timer);timer=0;}});
+  for(const ev of ['pointerup','pointercancel','pointerleave'])b.addEventListener(ev,()=>{clearTimeout(timer);timer=0;});
+  b.addEventListener('contextmenu',e=>{if(longFired||bulkMode)e.preventDefault();});
+  b.addEventListener('click',e=>{if(longFired){e.preventDefault();e.stopPropagation();longFired=false;return;}if(bulkMode||e.ctrlKey||e.metaKey||e.shiftKey){e.preventDefault();if(!bulkMode)setBulkMode(true);bulkToggle(person,date,e);}else openModal(person,date);});
+ });
+}
+function bindBulkTeamDates(host){
+ host.querySelectorAll('[data-month-day]').forEach(b=>{
+  let timer=0,x=0,y=0;
+  b.addEventListener('pointerdown',e=>{if(bulkMode||e.button!==0||!e.isPrimary||readOnly)return;x=e.clientX;y=e.clientY;timer=setTimeout(()=>{timer=0;setBulkMode(true);bulkToggleDay(b.dataset.monthDay,visible());},550);});
+  b.addEventListener('pointermove',e=>{if(Math.abs(e.clientX-x)>10||Math.abs(e.clientY-y)>10)clearTimeout(timer);});
+  for(const ev of ['pointerup','pointercancel','pointerleave'])b.addEventListener(ev,()=>{clearTimeout(timer);timer=0;});
+  b.addEventListener('contextmenu',e=>{if(bulkMode)e.preventDefault();});
+ });
+}
+function openBulkEditor(){if(!bulkMode||bulkSelected.size===0||readOnly||busy)return;const entries=[...bulkSelected.values()],people=new Set(entries.map(x=>x.person)),dates=entries.map(x=>x.date).sort();const replacing=entries.filter(x=>{const p=staff.find(s=>s.id===x.person);return p&&get(p,new Date(x.date+'T12:00:00')).k!=='O';}).length;
+ $('bulk-summary').textContent=`${entries.length} case(s) · ${people.size} collaborateur(s) · du ${dates[0]} au ${dates.at(-1)} · ${replacing} case(s) déjà renseignée(s).`;
+ $('bulk-kind').value='R';$('bulk-reason').value='';$('bulk-note').value='';$('bulk-progress').textContent='';$('bulk-shield').classList.remove('hide');$('bulk-kind').focus();}
+function closeBulkEditor(){if(bulkSaving)return;$('bulk-shield').classList.add('hide');$('bulk-open').focus();}
+async function saveBulk(e){e.preventDefault();if(bulkSaving||busy||readOnly||!token||!bulkSelected.size)return;const k=$('bulk-kind').value,reason=$('bulk-reason').value.trim(),note=$('bulk-note').value.trim().slice(0,500);
+ const status={R:'off',CP:'conge',RECUP:'recup',FERIE:'ferie',FORM:'formation',A:'absence_autorisee',SSL:'sans_solde'}[k];if(!status)return void notify('Type de journée invalide.');if(reason.length<3)return void notify('Un motif de 3 caractères minimum est obligatoire.');
+ const entries=[...bulkSelected.values()];if(!confirm(`Confirmer ${entries.length} modification(s) en « ${types[k]||k} » ?\n\nLes services existants seront remplacés. En cas d’échec, seules les cases validées par le serveur seront enregistrées.`))return;
+ busy=true;bulkSaving=true;$('bulk-confirm').disabled=true;$('bulk-cancel').disabled=true;$('bulk-close').disabled=true;updateBulkBar();
+ let saved=0,failed=0,stop=false,authLost=false,lastError='',affected=new Set();
+ for(const item of entries){
+  if(!token){stop=true;break;}
+  const p=staff.find(x=>x.id===item.person);if(!p){failed++;continue;}
+  const base=get(p,new Date(item.date+'T12:00:00')).original||{};
+  const day={...base,status,s1:'',s2:'',pause:0,obs:note};
+  $('bulk-progress').textContent=`Enregistrement ${saved+failed+1} / ${entries.length} · ${saved} confirmé(s)…`;
+  try{
+   const res=await jsonFetch('/api/rh/planning/premium/day',{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenant,date:item.date,staffId:item.person,day,reason,baseRevision:base.planningVersionId||null})});
+   const m=item.date.slice(0,7),n=String(Number(item.date.slice(8)));
+   if(!state[m])state[m]={};if(!state[m][p.id])state[m][p.id]={};if(res.day)state[m][p.id][n]=res.day;
+   bulkSelected.delete(bulkKey(item.person,item.date));saved++;affected.add(m);
+  }catch(err){failed++;lastError=err.message||'Erreur serveur';authLost=[401,403].includes(err.status);stop=true;break;}
+ }
+ bulkSaving=false;busy=false;$('bulk-confirm').disabled=false;$('bulk-cancel').disabled=false;$('bulk-close').disabled=false;
+ if(saved){$('audit-title').textContent=`Modification groupée · ${saved} case(s)`;$('audit-detail').textContent=`${reason} · statut ${types[k]}`;$('audit-date').textContent=fmt(new Date(),{hour:'2-digit',minute:'2-digit'});for(const m of affected)broadcastPlanningChange(m);lastFetch=0;if(publication?.status==='published'){publication={...publication,status:'to_review'};$('publication-status').textContent='⚠ Modifié · à republier';}}
+ $('bulk-progress').textContent=`${saved} enregistrement(s) confirmé(s) · ${bulkSelected.size} case(s) restant à enregistrer${stop?' · opération interrompue':''}${lastError?' · '+lastError:''}`;
+ if(failed){setStatus(`${saved} enregistrées, ${bulkSelected.size} encore à traiter · ${lastError}`,true);notify(`Sauvegarde partielle : ${saved} réussie(s), ${bulkSelected.size} restante(s). Les cases non enregistrées restent sélectionnées.`);}
+ else{setStatus(`${saved} case(s) sauvegardée(s) sur le serveur`);notify(`${saved} case(s) enregistrée(s). Publication à vérifier.`);}
+ if(authLost){forget();showAuth('Session expirée ou accès refusé.');return;}
+ $('bulk-shield').classList.add('hide');render();updateBulkBar();
+ if(saved&&!failed){exitBulk();render();void refresh(true);}
+ // Important: pas de réessai automatique en cas de réseau incertain ou de conflit 409.
+}
+$('bulk-toggle').addEventListener('click',()=>setBulkMode(!bulkMode));
+$('bulk-clear').addEventListener('click',clearBulkSelection);
+$('bulk-exit').addEventListener('click',()=>{exitBulk();render();});
+$('bulk-open').addEventListener('click',openBulkEditor);
+$('bulk-close').addEventListener('click',closeBulkEditor);
+$('bulk-cancel').addEventListener('click',closeBulkEditor);
+$('bulk-form').addEventListener('submit',saveBulk);
+$('bulk-shield').addEventListener('click',e=>{if(e.target===$('bulk-shield'))closeBulkEditor();});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('bulk-shield').classList.contains('hide')){e.stopImmediatePropagation();closeBulkEditor();}else if(e.key==='Escape'&&bulkMode){exitBulk();render();}});
+
 function renderWeek(){
  const people=visible(),days=Array.from({length:7},(_,i)=>add(monday(anchor),i));
  lastPageCapacity=capacity();
@@ -117,14 +194,14 @@ function renderWeek(){
  const shown=people.slice(staffPage*lastPageCapacity,(staffPage+1)*lastPageCapacity);
  let h='<table class="schedule" aria-label="Planning semaine officiel"><thead><tr><th>COLLABORATEUR</th>';
  for(let i=0;i<days.length;i++){
-  const d=days[i];h+=`<th data-dayindex="${i}" class="${iso(d)===iso(TODAY)?'today ':''}${i===dayIndex?'is-selected-day':''}"><span class="weekday">${fmt(d,{weekday:'short'})}</span><span class="daynumber">${fmt(d,{day:'2-digit'})}</span></th>`;
+  const d=days[i];h+=`<th data-dayindex="${i}" class="${iso(d)===iso(TODAY)?'today ':''}${i===dayIndex?'is-selected-day':''}">${bulkMode?`<button class="bulk-all-day" type="button" data-day-all="${iso(d)}" title="Sélectionner cette date pour les collaborateurs affichés" aria-label="Sélectionner tous les collaborateurs visibles le ${iso(d)}"><span class="weekday">${fmt(d,{weekday:'short'})}</span><span class="daynumber">${fmt(d,{day:'2-digit'})}</span></button>`:`<span class="weekday">${fmt(d,{weekday:'short'})}</span><span class="daynumber">${fmt(d,{day:'2-digit'})}</span>`}</th>`;
  }
  h+='</tr></thead><tbody>';
  for(const p of shown){
-  h+=`<tr><td><button type="button" class="staff-open" data-profile="${esc(p.id)}" aria-label="Voir le planning individuel de ${esc(p.name)}" title="Afficher le planning de ${esc(p.name)}"><span class="avatar">${esc(p.avatar)}</span><span class="staff-details"><span class="staff-name">${esc(p.name)}</span><span class="staff-role">${esc(p.role)}</span><span class="staff-hint">${focusedStaffId?'Profil sélectionné':'Voir son planning →'}</span></span></button></td>`;
+  h+=`<tr><td><button type="button" class="staff-open" data-profile="${esc(p.id)}" aria-label="${bulkMode?'Sélectionner la semaine de':'Voir le planning individuel de'} ${esc(p.name)}" title="${bulkMode?'Sélectionner les sept jours de':'Afficher le planning de'} ${esc(p.name)}"><span class="avatar">${esc(p.avatar)}</span><span class="staff-details"><span class="staff-name">${esc(p.name)}</span><span class="staff-role">${esc(p.role)}</span><span class="staff-hint">${focusedStaffId?'Profil sélectionné':'Voir son planning →'}</span></span></button></td>`;
   for(let i=0;i<days.length;i++){
    const d=days[i],r=get(p,d),caption=[types[r.k]||'Absence',label(r)].filter(Boolean).join(' · '),enabled=!readOnly;
-   h+=`<td data-dayindex="${i}" data-daylabel="${esc(fmt(d,{weekday:'short',day:'2-digit'}))}" class="${(iso(d)===iso(TODAY)?'today ':'')+(i===dayIndex?'is-selected-day':'')}"><button class="entry ${(['M','S','C','R','O'].includes(r.k)?r.k:'A')}" type="button" data-person="${esc(p.id)}" data-date="${iso(d)}" ${enabled?'':'disabled'} title="${esc(caption)}" aria-label="${enabled?'Modifier':'Consulter'} le ${iso(d)} pour ${esc(p.name)} : ${esc(caption)}">${shiftMarkup(r)}</button></td>`;
+   h+=`<td data-dayindex="${i}" data-daylabel="${esc(fmt(d,{weekday:'short',day:'2-digit'}))}" class="${(iso(d)===iso(TODAY)?'today ':'')+(i===dayIndex?'is-selected-day':'')}"><button class="entry ${(['M','S','C','R','O'].includes(r.k)?r.k:'A')} ${bulkSelected.has(bulkKey(p.id,iso(d)))?'is-marked':''}" type="button" data-person="${esc(p.id)}" data-date="${iso(d)}" ${enabled?'':'disabled'} title="${esc(caption)}" aria-pressed="${bulkSelected.has(bulkKey(p.id,iso(d)))}" aria-label="${bulkMode?'Sélectionner':'Modifier'} le ${iso(d)} pour ${esc(p.name)} : ${esc(caption)}">${shiftMarkup(r)}</button></td>`;
   }
   h+='</tr>';
  }
@@ -133,13 +210,15 @@ function renderWeek(){
  for(let i=0;i<days.length;i++){const d=days[i],arr=people.map(p=>get(p,d)).filter(work);h+=`<td data-dayindex="${i}" data-daylabel="${esc(fmt(d,{weekday:'short',day:'2-digit'}))}" class="day-summary ${i===dayIndex?'is-selected-day':''}">${arr.length} équipe<span>${arr.reduce((sum,r)=>sum+hours(r),0).toFixed(1)} h</span></td>`;}
  h+='</tr></tfoot></table>';
  $('week-host').innerHTML=h;
- $('week-host').querySelectorAll('[data-profile]').forEach(b=>b.addEventListener('click',()=>openEmployee(b.dataset.profile)));
- $('week-host').querySelectorAll('[data-person]').forEach(b=>b.addEventListener('click',()=>openModal(b.dataset.person,b.dataset.date)));
+ $('week-host').querySelectorAll('[data-profile]').forEach(b=>b.addEventListener('click',()=>{if(bulkMode)bulkToggleRow(b.dataset.profile,days);else openEmployee(b.dataset.profile);}));
+ bindBulkCells($('week-host'),'data-person','data-date');
+ $('week-host').querySelectorAll('[data-day-all]').forEach(b=>b.addEventListener('click',()=>bulkToggleDay(b.dataset.dayAll,shown)));
  const pager=$('staff-pager');
  pager.hidden=!!focusedStaffId||view!=='week'||pages===1;
  $('staff-page-label').textContent=people.length?`${staffPage*lastPageCapacity+1}–${Math.min(people.length,(staffPage+1)*lastPageCapacity)} / ${people.length} collaborateurs`:'Aucun collaborateur';
  $('staff-prev').disabled=staffPage<=0;
  $('staff-next').disabled=staffPage>=pages-1;
+ document.querySelector('.board').classList.toggle('pager-visible',!pager.hidden);
  updateDayPicker();
 }
 function renderMonth(){
@@ -155,16 +234,17 @@ function renderMonth(){
   if(person){
     const r=get(person,date),caption=types[r.k]||'ABSENCE';
     const segments=[r.start&&r.end?`${r.start}–${r.end}`:'',r.s2&&r.e2?`${r.s2}–${r.e2}`:''].filter(Boolean);
-    h+=`<button class="monthday ${key===iso(TODAY)?'today':''} ${['M','S','C','R'].includes(r.k)?r.k:''}" data-edit-person="${esc(person.id)}" data-edit-date="${key}" type="button" ${readOnly?'disabled':''} aria-label="${esc(person.name)} · ${key} · ${esc(caption)} · ${esc(segments.join(' et '))}"><b>${day}</b><span class="month-label">${esc(r.k==='O'?'Ajouter +':caption)}</span>${segments.map(t=>`<small class="month-time">${esc(t)}</small>`).join('')}</button>`;
+    h+=`<button class="monthday ${key===iso(TODAY)?'today':''} ${['M','S','C','R'].includes(r.k)?r.k:''} ${bulkSelected.has(bulkKey(person.id,key))?'is-marked':''}" data-edit-person="${esc(person.id)}" data-edit-date="${key}" type="button" ${readOnly?'disabled':''} aria-pressed="${bulkSelected.has(bulkKey(person.id,key))}" aria-label="${esc(person.name)} · ${key} · ${esc(caption)} · ${esc(segments.join(' et '))}"><b>${day}</b><span class="month-label">${esc(r.k==='O'?'Ajouter +':caption)}</span>${segments.map(t=>`<small class="month-time">${esc(t)}</small>`).join('')}</button>`;
   }else{
     const n=visible().filter(p=>work(get(p,date))).length;
-    h+=`<button class="monthday ${key===iso(TODAY)?'today':''}" data-month-day="${key}" type="button" aria-label="Voir la semaine du ${key}"><b>${day}</b><small>${n} service${n>1?'s':''}</small><i></i></button>`;
+    h+=`<button class="monthday ${key===iso(TODAY)?'today':''} ${bulkMode&&visible().length&&visible().every(p=>bulkSelected.has(bulkKey(p.id,key)))?'is-marked':''}" data-month-day="${key}" type="button" aria-label="Voir la semaine du ${key}"><b>${day}</b><small>${n} service${n>1?'s':''}</small><i></i></button>`;
   }
  }
  h+='</div></div>';
  $('month-host').innerHTML=h;
- $('month-host').querySelectorAll('[data-month-day]').forEach(b=>b.addEventListener('click',()=>{anchor=monday(new Date(b.dataset.monthDay+'T12:00:00'));switchView('week');refresh(true);}));
- $('month-host').querySelectorAll('[data-edit-person]').forEach(b=>b.addEventListener('click',()=>openModal(b.dataset.editPerson,b.dataset.editDate)));
+ $('month-host').querySelectorAll('[data-month-day]').forEach(b=>b.addEventListener('click',()=>{if(bulkMode){bulkToggleDay(b.dataset.monthDay,visible());return;}anchor=monday(new Date(b.dataset.monthDay+'T12:00:00'));switchView('week');refresh(true);}));
+ bindBulkCells($('month-host'),'data-edit-person','data-edit-date');
+ bindBulkTeamDates($('month-host'));
 }
 function renderStats(){
  const days=periodDays(),people=visible(),arr=people.flatMap(p=>days.map(d=>get(p,d)));
@@ -182,14 +262,14 @@ function renderStats(){
  $('panel-range-label').textContent=view==='month'?'Ce mois':'Cette semaine';
  $('kpi-period-label').textContent=view==='month'?'Mois affiché':'Semaine affichée';
 }
-function render(){if(view!=='week'){$('staff-pager').hidden=true;$('day-picker').style.display='none';}else{$('day-picker').style.display='';}renderPersonBar();if(view==='week'){$('range').textContent=`${fmt(anchor,{day:'numeric',month:'short'})} – ${fmt(add(anchor,6),{day:'numeric',month:'short',year:'numeric'})}`;renderWeek();}else{$('range').textContent=fmt(anchor,{month:'long',year:'numeric'});renderMonth();}renderStats();}
+function render(){if($('bulk-toggle'))$('bulk-toggle').disabled=readOnly||!token||bulkSaving;if(view!=='week'){$('staff-pager').hidden=true;$('day-picker').style.display='none';}else{$('day-picker').style.display='';}renderPersonBar();if(view==='week'){$('range').textContent=`${fmt(anchor,{day:'numeric',month:'short'})} – ${fmt(add(anchor,6),{day:'numeric',month:'short',year:'numeric'})}`;renderWeek();}else{$('range').textContent=fmt(anchor,{month:'long',year:'numeric'});renderMonth();}renderStats();}
 function switchView(v){view=v;for(const which of ['week','month']){$('view-'+which).classList.toggle('active',which===v);$('view-'+which).setAttribute('aria-pressed',String(which===v));$(which+'-host').classList.toggle('hide',which!==v);}render();}
 function updateDepartments(){const select=$('department'),old=filter;select.innerHTML='<option value="ALL">Tous les services</option>';[...new Set(staff.map(s=>s.dept).filter(Boolean))].sort().forEach(d=>{const o=document.createElement('option');o.value=d;o.textContent=d;select.appendChild(o);});filter=old==='ALL'||staff.some(s=>s.dept===old)?old:'ALL';select.value=filter;}
 async function refresh(force=false){if(!token||busy)return;if(!force&&Date.now()-lastFetch<3500)return;busy=true;setStatus('Synchronisation sécurisée en cours…');try{const m=month(anchor);const res=await jsonFetch(`/api/rh/planning/premium/state?tenantID=${encodeURIComponent(tenant)}&month=${m}`,{headers:authHeaders()});staff=(res.staff||[]).map(p=>({...p,id:String(p.id),dept:String(p.dept||'Sans secteur'),avatar:String(p.name||'?').split(/\s+/).slice(0,2).map(z=>z[0]).join('').toUpperCase()}));state={...state,...(res.timesheets||{})};rhSettings=res.settings||{};
 publication=res.publication||null;readOnly=rhSettings.planningStatus==='locked';lastFetch=Date.now();
 $('publication-status').textContent=publication?.status==='published'?'✓ Mois publié':
   publication?.status==='to_review'?'⚠ Modifié après publication · à revalider':'Publication : en attente';
-updateDepartments();render();setStatus(`Synchronisé · ${tenant} · ${new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}${readOnly?' · planning verrouillé':''}`);
+for(const [key,item] of bulkSelected){if(!staff.some(p=>p.id===item.person))bulkSelected.delete(key);}updateDepartments();render();updateBulkBar();setStatus(`Synchronisé · ${tenant} · ${new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}${readOnly?' · planning verrouillé':''}`);
  // En vue semaine à cheval sur deux mois, charger la seconde période sans bloquer le premier affichage.
  if(view==='week'){
   const extra=month(add(monday(anchor),6));
