@@ -36912,6 +36912,36 @@ function h247Mutate(s,action,p){
    h247ExistingCategory(s,name);if(s.eq[name].length)h247Failure('Cette catégorie contient des équipements : déplacez-les avant de la retirer.');
    delete s.eq[name];delete s.eqCategoryTypes[name];delete s.eqCategoryOptionIds[name];s.eqResetPendingKeys=s.eqResetPendingKeys.filter(x=>x!==name);return;
   }
+  case 'DELETE_CATEGORY_PRESERVE_EQUIPMENT':{
+   // Suppression de la catégorie VISUELLE seulement : aucun équipement,
+   // type technique, nom personnalisé ni relevé HACCP ne doit être effacé.
+   // Le transfert et la suppression sont atomiques (révision MongoDB).
+   h247ExistingCategory(s,name);
+   if(s.eqResetPendingKeys.includes(name))h247Failure('Cette catégorie est déjà du matériel à reclasser.',400);
+   const items=s.eq[name];
+   const technical=h247TypeOf(s,name);
+   const option=String(s.eqCategoryOptionIds[name]||technical);
+   if(items.length){
+    // Un casier par suppression évite la collision d'identifiants d'équipements
+    // pouvant être présents dans plusieurs anciennes catégories.
+    const prefix='À classer · '+technical;
+    let key=prefix,number=2;
+    while(h247CategoryExists(s,key)){
+     key=prefix+' · '+number;
+     number++;
+     if(number>10000)h247Failure('Trop de catégories à reclasser.',413);
+    }
+    if(key.length>65)h247Failure('Nom temporaire de reclassement trop long.',413);
+    s.eq[key]=[...items];
+    s.eqCategoryTypes[key]=technical;
+    s.eqCategoryOptionIds[key]=option;
+    s.eqResetPendingKeys.push(key);
+   }
+   delete s.eq[name];
+   delete s.eqCategoryTypes[name];
+   delete s.eqCategoryOptionIds[name];
+   return;
+  }
   case 'CREATE_AND_ASSIGN_PENDING':{
    // Action atomique : la nouvelle catégorie et son matériel sont enregistrés
    // ensemble. Les contrôles/anciens relevés restent rattachés aux équipements.
@@ -37074,7 +37104,7 @@ app.post('/api/haccp/category-admin',async(req,res)=>{
  if(sector==='ADMIN'&&!String(auth?.claims?.staffId||'').startsWith('MASTER:'))h247Failure('Secteur Direction réservé au propriétaire.',403);
  if(sector!=='ADMIN'&&!auth.haccp247Access?.sectors?.includes(sector))h247Failure('Ce secteur HACCP ne vous est pas attribué.',403);
  const revision=Number(req.body?.revision);if(!Number.isSafeInteger(revision)||revision<0)return res.status(400).json({success:false,error:'Version du catalogue absente.'});
- if(!['CREATE_CATEGORY','RENAME_CATEGORY','DELETE_CATEGORY','MOVE_AND_DELETE_CATEGORY','CREATE_AND_ASSIGN_PENDING','MOVE_EQUIPMENT','RENAME_EQUIPMENT_DISPLAY','RESET_CATEGORIES','ADD_CHOICE','RENAME_CHOICE','HIDE_CHOICE','RESTORE_CHOICE','DELETE_CHOICE'].includes(action))return res.status(400).json({success:false,error:'Opération HACCP inconnue.'});
+ if(!['CREATE_CATEGORY','RENAME_CATEGORY','DELETE_CATEGORY','DELETE_CATEGORY_PRESERVE_EQUIPMENT','MOVE_AND_DELETE_CATEGORY','CREATE_AND_ASSIGN_PENDING','MOVE_EQUIPMENT','RENAME_EQUIPMENT_DISPLAY','RESET_CATEGORIES','ADD_CHOICE','RENAME_CHOICE','HIDE_CHOICE','RESTORE_CHOICE','DELETE_CHOICE'].includes(action))return res.status(400).json({success:false,error:'Opération HACCP inconnue.'});
  // État rechargé à chaque action : aucune confiance dans le catalogue navigateur.
  const document=await AppState.findOne({tenantID:auth.tenantID},{'activeOrders.HACCP_LISTS_MASTER':1});
  const node=document?.activeOrders?.HACCP_LISTS_MASTER||{};
