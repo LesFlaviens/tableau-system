@@ -3202,6 +3202,9 @@ pointer-events:none;opacity:.75
             let out = "";
             HACCP_EQUIPMENT_TYPES.forEach(type => {
                 const items = byType.get(type.id) || [];
+                const deletedTypes=EMPIRE_LISTS?.[currentDept]?.eqDeletedTypeIds||[];
+                // La surveillance d'un équipement existant n'est jamais masquée.
+                if (!items.length && Array.isArray(deletedTypes) && deletedTypes.includes(type.id)) return;
                 if (!items.length && desktopTempFilter !== "all") return;
 
                 out += `<div class="hd-eq-group"><div class="hd-eq-group-title"><span>${escapeHaccpUi(type.label)}</span><b>${items.length}</b></div><div class="hd-eq-items">`;
@@ -10156,6 +10159,8 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
 #hv227-modal .hv227-type-actions{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
 #hv227-modal .hv227-restore{color:#205837;background:#f2fff6}
 #hv227-modal .hv227-type-manager[hidden]{display:none!important}
+#hv227-modal .hv251-permanent{white-space:normal;text-align:center;min-height:38px}
+#hv227-modal .hv227-type-actions{flex-wrap:wrap;justify-content:flex-end}
 @media(max-width:900px){#hv227-modal .hv227-type-form{grid-template-columns:1fr}#hv227-modal .hv227-type-list{grid-template-columns:1fr}}
 
 @media(max-width:900px){#hv227-modal .hv227-list{grid-template-columns:1fr}#hv227-modal .hv227-new{grid-template-columns:1fr}#hv227-modal .hv227-transfer{grid-template-columns:1fr}#hv227-modal .hv227-eq-row{grid-template-columns:1fr 1fr}#hv227-modal .hv227-eq-row b{grid-column:1/-1}}
@@ -10186,11 +10191,11 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
     <div id="hv227-list" class="hv227-list"></div>
     <div id="hv248-pending" class="hv248-pending" hidden></div>
     <details class="hv227-type-manager" id="hv227-type-manager">
-      <summary>⚙ MODIFIER LA LISTE DES TYPES · Ajouter ou retirer</summary>
-      <p class="hv227-type-description">Ajoutez un nom à la liste déroulante, retirez les choix inutiles et réactivez-les si besoin. Chaque nouveau choix réutilise une règle technique HACCP existante : les seuils, contrôles et anciens relevés ne sont jamais effacés.</p>
+      <summary>⚙ MODIFIER LA LISTE DES TYPES · Ajouter ou supprimer définitivement</summary>
+      <p class="hv227-type-description"><strong>Suppression définitive des choix :</strong> un type supprimé disparaît de cette liste et du menu de création, sans bouton de réactivation. Si des catégories l’utilisent déjà, leur nom et leurs équipements restent consultables, et la règle technique HACCP ainsi que les anciens relevés sont conservés. Les règles de contrôle ne sont jamais supprimées.</p>
       <div class="hv227-type-form">
         <label>NOM À AFFICHER DANS LE MENU<input id="hv227-choice-name" maxlength="65" placeholder="Ex. Cave à vins" autocomplete="off"></label>
-        <label>RÈGLE HACCP ASSOCIÉE<select id="hv227-choice-rule"></select></label>
+        <label>RÈGLE TECHNIQUE HACCP ASSOCIÉE (CONSERVÉE)<select id="hv227-choice-rule"></select></label>
         <button type="button" id="hv227-choice-add" class="hv227-primary">＋ AJOUTER AU MENU</button>
       </div>
       <div id="hv227-type-list" class="hv227-type-list" aria-label="Choix disponibles et masqués"></div>
@@ -10286,6 +10291,7 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
   // Les données sont enregistrées dans le même HACCP_LISTS_MASTER que les catégories du secteur.
   const customChoices=()=>{try{const a=EMPIRE_LISTS?.[actual()]?.eqCustomTypeOptions;return Array.isArray(a)?a:[]}catch(_){return []}};
   const hiddenDefaults=()=>{try{const a=EMPIRE_LISTS?.[actual()]?.eqHiddenTypeIds;return Array.isArray(a)?a:[]}catch(_){return []}};
+  const deletedChoiceIds=()=>{try{const a=EMPIRE_LISTS?.[actual()]?.eqDeletedTypeIds;return Array.isArray(a)?a:[]}catch(_){return []}};
   const categoryChoiceMap=()=>{try{return EMPIRE_LISTS?.[actual()]?.eqCategoryOptionIds||{}}catch(_){return {}}};
   const displayEquipment=(name)=>{try{
     const raw=String(name??'');const labels=EMPIRE_LISTS?.[actual()]?.eqDisplayNames;
@@ -10297,18 +10303,22 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
     const stored=EMPIRE_LISTS?.[actual()]?.eqResetPendingKeys;
     return Array.isArray(stored)?stored.filter(k=>typeof k==='string'&&Array.isArray(catalog()[k])):[];
   }catch(_){return []}};
-  const offered=()=>[
+  // Un type supprimé reste uniquement en mémoire technique si une catégorie historique le référence.
+  // Il n'est jamais proposé à la création et ne peut pas être réactivé depuis cette interface.
+  const allChoiceRecords=()=>[
     ...types().map(t=>({id:t.id,label:t.label,baseTypeId:t.id,system:true,hidden:hiddenDefaults().includes(t.id)})),
     ...customChoices().filter(c=>c&&types().some(t=>t.id===c.baseTypeId)&&/^OPT_[A-Za-z0-9_-]+$/.test(String(c.id||''))).map(c=>({id:c.id,label:String(c.label||''),baseTypeId:c.baseTypeId,system:false,hidden:!!c.hidden}))
   ];
+  const offered=()=>allChoiceRecords().filter(c=>!deletedChoiceIds().includes(c.id));
   const displayType=(folder)=>{
-    const choice=offered().find(t=>t.id===categoryChoiceMap()[folder]);
+    const choice=allChoiceRecords().find(t=>t.id===categoryChoiceMap()[folder]);
     const technical=folderType(folder);
     return choice ? `${choice.label} · contrôle ${technical?.label||'à vérifier'}` : (technical?.label||'À vérifier');
   };
   const normalizeChoices=(sector)=>{
     sector.eqCustomTypeOptions=Array.isArray(sector.eqCustomTypeOptions)?sector.eqCustomTypeOptions:[];
     sector.eqHiddenTypeIds=Array.isArray(sector.eqHiddenTypeIds)?sector.eqHiddenTypeIds:[];
+    sector.eqDeletedTypeIds=Array.isArray(sector.eqDeletedTypeIds)?sector.eqDeletedTypeIds:[];
     sector.eqCategoryOptionIds=sector.eqCategoryOptionIds&&typeof sector.eqCategoryOptionIds==='object'&&!Array.isArray(sector.eqCategoryOptionIds)?sector.eqCategoryOptionIds:{};
   };
   function refreshChoices(){
@@ -10320,13 +10330,12 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
     if(rule){rule.innerHTML=types().map(t=>`<option value="${safe(t.id)}">${safe(t.label)}</option>`).join('');if(types().some(t=>t.id===previous))rule.value=previous}
     const box=$('hv227-type-list');if(!box)return;
     box.innerHTML=opts.map(t=>{
-      const used=Object.values(categoryChoiceMap()).filter(id=>id===t.id).length;
+      const used=Object.keys(catalog()).filter(k=>(categoryChoiceMap()[k]||typeMap()[k])===t.id).length;
       const ruleName=types().find(r=>r.id===t.baseTypeId)?.label||'À vérifier';
       const caption=t.system?'Type standard · règle technique conservée':`Choix personnalisé · contrôle ${ruleName}`;
-      const action=t.hidden?`<button type="button" class="hv227-restore" data-choice="restore" data-choice-id="${safe(t.id)}">↶ Réactiver</button>`:`<button type="button" class="hv227-danger" data-choice="hide" data-choice-id="${safe(t.id)}">🗑 Retirer de la liste</button>`;
+      const del=`<button type="button" class="hv227-danger hv251-permanent" data-choice="permanent-delete" data-choice-id="${safe(t.id)}" title="Suppression définitive du choix, sans effacer les contrôles ni les relevés">🗑 Supprimer définitivement</button>`;
       const rename=t.system?'':`<button type="button" data-choice="rename" data-choice-id="${safe(t.id)}">Renommer</button>`;
-      const del=!t.system&&!used?`<button type="button" class="hv227-danger" data-choice="delete" data-choice-id="${safe(t.id)}" title="Supprimer ce choix personnalisé inutilisé">Supprimer</button>`:'';
-      return `<div class="hv227-type-line${t.hidden?' is-hidden':''}"><div><strong>${safe(t.label)}</strong><small>${safe(caption)}${used?' · '+used+' catégorie(s)':''}${t.hidden?' · retiré du menu':''}</small></div><div class="hv227-type-actions">${rename}${action}${del}</div></div>`;
+      return `<div class="hv227-type-line${t.hidden?' is-hidden':''}"><div><strong>${safe(t.label)}</strong><small>${safe(caption)}${used?' · '+used+' catégorie(s) conservée(s)':''}${t.hidden?' · choix déjà masqué':''}</small></div><div class="hv227-type-actions">${rename}${del}</div></div>`;
     }).join('');
   }
   const folderType=folder=>{
@@ -10524,20 +10533,21 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
         if(offered().some(t=>t.id!==id&&norm(t.label)===norm(label)))return msg('Ce choix existe déjà.',true);
         await commit(sector=>{const c=sector.eqCustomTypeOptions.find(t=>t.id===id);if(!c)throw Error('Choix introuvable.');c.label=label},'Choix renommé',{action:'RENAME_CHOICE',id,label});return;
       }
-      if(action==='delete'){
-        if(choice.system)return msg('Les types HACCP standards restent protégés.',true);
-        if(Object.values(categoryChoiceMap()).includes(id))return msg('Ce choix est encore attribué à une catégorie. Retirez-le du menu plutôt que de le supprimer.',true);
-        if(!confirm('Supprimer définitivement le choix personnalisé « '+choice.label+' » (aucune catégorie liée) ?'))return;
-        await commit(sector=>{if(Object.values(sector.eqCategoryOptionIds).includes(id))throw Error('Choix encore attribué.');sector.eqCustomTypeOptions=sector.eqCustomTypeOptions.filter(c=>c.id!==id)},'Choix inutilisé supprimé',{action:'DELETE_CHOICE',id});return;
+      if(action==='permanent-delete'){
+        if(!catalogReady||saving)return msg('Veuillez attendre la synchronisation du catalogue.',true);
+        const used=Object.keys(catalog()).filter(k=>(categoryChoiceMap()[k]||typeMap()[k])===id).length;
+        const warning=`SUPPRIMER DÉFINITIVEMENT « ${choice.label} » DU MENU ?\n\n`+
+          `Le choix sera retiré définitivement de la liste des types de ce secteur et ne pourra plus être réactivé.\n`+
+          (used?`${used} catégorie(s) utilise(nt) déjà ce type : elles restent conservées avec leurs équipements.\n`:``)+
+          `Les règles HACCP et tous les relevés historiques restent intacts.\n\nConfirmez-vous ?`;
+        if(!confirm(warning))return;
+        const proof=prompt('Pour confirmer la suppression définitive, écrivez SUPPRIMER :');
+        if(String(proof||'').trim().toUpperCase()!=='SUPPRIMER')return msg('Suppression annulée. Aucun changement.',true);
+        await commit(null,'Choix « '+choice.label+' » supprimé définitivement du menu',{action:'PERMANENT_DELETE_CHOICE',id});
+        return;
       }
-      if(action==='hide'||action==='restore'){
-        const hiding=action==='hide';
-        if(hiding&&!confirm('Retirer « '+choice.label+' » du menu de création ? Les catégories et relevés existants restent intacts.'))return;
-        await commit(sector=>{
-          if(choice.system){sector.eqHiddenTypeIds=sector.eqHiddenTypeIds.filter(x=>x!==id);if(hiding)sector.eqHiddenTypeIds.push(id)}
-          else{const c=sector.eqCustomTypeOptions.find(x=>x.id===id);if(!c)throw Error('Choix introuvable.');c.hidden=hiding}
-        },hiding?'Choix retiré du menu':'Choix rétabli dans le menu',{action:hiding?'HIDE_CHOICE':'RESTORE_CHOICE',id});
-      }
+      // Les anciens boutons « retirer/réactiver » ne sont plus proposés.
+      // Le serveur protège également les choix supprimés contre toute réactivation.
     });
     $('hv227-new-name')?.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();$('hv227-add')?.click()}});
     $('hv227-add')?.addEventListener('click',async()=>{
