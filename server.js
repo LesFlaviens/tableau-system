@@ -36886,7 +36886,7 @@ function h247Norm(v){return String(v||'').normalize('NFD').replace(/[\u0300-\u03
 function h247Name(v){const s=String(v??'').trim();if(s.length<2||s.length>65||/[<>\u0000-\u001f.$]/.test(s)||['__proto__','constructor','prototype'].includes(s.toLowerCase()))throw Object.assign(new Error('Nom invalide (2 à 65 caractères, sans caractères réservés).'),{status:400});return s}
 function h247Failure(message,status=409){throw Object.assign(new Error(message),{status})}
 function h247Sector(v){const s=String(v||'').trim().toUpperCase();if(!ICHEF_HACCP247_SECTORS.has(s))h247Failure('Secteur HACCP inconnu.',400);return s}
-function h247NormalizeSector(value){const s=value&&typeof value==='object'&&!Array.isArray(value)?structuredClone(value):{};for(const k of ['eq','clean','trace','eqCategoryTypes','eqCategoryOptionIds'])if(!s[k]||typeof s[k]!=='object'||Array.isArray(s[k]))s[k]={};if(!Array.isArray(s.eqCustomTypeOptions))s.eqCustomTypeOptions=[];if(!Array.isArray(s.eqHiddenTypeIds))s.eqHiddenTypeIds=[];if(!Array.isArray(s.eqResetPendingKeys))s.eqResetPendingKeys=[];s.eqResetPendingKeys=s.eqResetPendingKeys.filter(k=>typeof k==='string'&&Array.isArray(s.eq[k]));return s}
+function h247NormalizeSector(value){const s=value&&typeof value==='object'&&!Array.isArray(value)?structuredClone(value):{};for(const k of ['eq','clean','trace','eqCategoryTypes','eqCategoryOptionIds','eqDisplayNames'])if(!s[k]||typeof s[k]!=='object'||Array.isArray(s[k]))s[k]={};if(!Array.isArray(s.eqCustomTypeOptions))s.eqCustomTypeOptions=[];if(!Array.isArray(s.eqHiddenTypeIds))s.eqHiddenTypeIds=[];if(!Array.isArray(s.eqResetPendingKeys))s.eqResetPendingKeys=[];s.eqResetPendingKeys=s.eqResetPendingKeys.filter(k=>typeof k==='string'&&Array.isArray(s.eq[k]));return s}
 const ICHEF_HACCP247_LABELS={'Chambres froides positives':'COLD_ROOM_POS','Chambres froides négatives':'COLD_ROOM_NEG','Frigos / Tours / Armoires':'FRIDGE','Congélateurs / Surgélateurs':'FREEZER','Vitrines / Meubles froids':'DISPLAY','Cellules de refroidissement':'COOLING_CELL','Liaison / Maintien chaud':'HOT_HOLD','Remise en température':'REHEAT','Caves / Boissons':'BEVERAGE','Machines à glaçons':'ICE','Autres équipements':'OTHER'};
 function h247TypeOf(s,k){const id=String(s.eqCategoryTypes[k]||'');if(ICHEF_HACCP247_TYPES[id])return id;return ICHEF_HACCP247_LABELS[k]||'OTHER'}
 function h247Choices(s){const customs=s.eqCustomTypeOptions.filter(x=>x&&typeof x==='object'&&/^OPT_[a-z0-9_-]+$/i.test(x.id||'')&&ICHEF_HACCP247_TYPES[x.baseTypeId]);return [...Object.keys(ICHEF_HACCP247_TYPES).map(id=>({id,baseTypeId:id,system:true})),...customs.map(x=>({...x,system:false}))]}
@@ -36912,11 +36912,44 @@ function h247Mutate(s,action,p){
    h247ExistingCategory(s,name);if(s.eq[name].length)h247Failure('Cette catégorie contient des équipements : déplacez-les avant de la retirer.');
    delete s.eq[name];delete s.eqCategoryTypes[name];delete s.eqCategoryOptionIds[name];s.eqResetPendingKeys=s.eqResetPendingKeys.filter(x=>x!==name);return;
   }
+  case 'CREATE_AND_ASSIGN_PENDING':{
+   // Action atomique : la nouvelle catégorie et son matériel sont enregistrés
+   // ensemble. Les contrôles/anciens relevés restent rattachés aux équipements.
+   h247ExistingCategory(s,name);
+   if(!s.eqResetPendingKeys.includes(name))h247Failure('La catégorie source n’est pas du matériel à reclasser.',400);
+   const newName=h247Name(to);
+   if(h247CategoryExists(s,newName))h247Failure('Une catégorie portant ce nom existe déjà.');
+   if(Object.keys(s.eq).length>=150)h247Failure('Limite de catégories atteinte.');
+   const technical=h247TypeOf(s,name);
+   s.eq[newName]=[...s.eq[name]];
+   s.eqCategoryTypes[newName]=technical;
+   s.eqCategoryOptionIds[newName]=s.eqCategoryOptionIds[name]||technical;
+   delete s.eq[name];delete s.eqCategoryTypes[name];delete s.eqCategoryOptionIds[name];
+   s.eqResetPendingKeys=s.eqResetPendingKeys.filter(x=>x!==name);
+   return;
+  }
   case 'MOVE_AND_DELETE_CATEGORY':{
    h247ExistingCategory(s,name);h247ExistingCategory(s,to);if(name===to)h247Failure('Choisissez une autre catégorie.');
    if(h247TypeOf(s,name)!==h247TypeOf(s,to))h247Failure('La destination doit avoir le même type HACCP.');
    if(s.eq[name].some(x=>s.eq[to].includes(x)))h247Failure('Équipement déjà présent dans la destination.');
    s.eq[to].push(...s.eq[name]);delete s.eq[name];delete s.eqCategoryTypes[name];delete s.eqCategoryOptionIds[name];s.eqResetPendingKeys=s.eqResetPendingKeys.filter(x=>x!==name);return;
+  }
+  case 'RENAME_EQUIPMENT_DISPLAY':{
+   // Ne jamais toucher à l'identité technique stockée dans s.eq[].
+   // Les anciens relevés/contrôles utilisent cette identité, ce qui préserve
+   // le lien avec l'historique même après plusieurs changements de libellé.
+   h247ExistingCategory(s,name);
+   const equipment=String(p.equipment??'');
+   if(!s.eq[name].includes(equipment))h247Failure('Équipement introuvable dans cette catégorie.',404);
+   if(!equipment||equipment.length>1000||['__proto__','constructor','prototype'].includes(equipment.toLowerCase()))h247Failure('Identifiant d’équipement invalide.',400);
+   const newLabel=h247Name(label);
+   // Pas de libellés visibles identiques pour deux équipements différents.
+   const duplicate=Object.values(s.eq).some(items=>Array.isArray(items)&&items.some(old=>
+      old!==equipment && h247Norm(s.eqDisplayNames[old]||old)===h247Norm(newLabel)));
+   if(duplicate)h247Failure('Ce nom est déjà utilisé par un autre équipement.',409);
+   if(h247Norm(newLabel)===h247Norm(equipment))delete s.eqDisplayNames[equipment];
+   else s.eqDisplayNames[equipment]=newLabel;
+   return;
   }
   case 'MOVE_EQUIPMENT':{
    h247ExistingCategory(s,name);h247ExistingCategory(s,to);if(name===to)h247Failure('Sélectionnez une autre catégorie.');
@@ -37041,7 +37074,7 @@ app.post('/api/haccp/category-admin',async(req,res)=>{
  if(sector==='ADMIN'&&!String(auth?.claims?.staffId||'').startsWith('MASTER:'))h247Failure('Secteur Direction réservé au propriétaire.',403);
  if(sector!=='ADMIN'&&!auth.haccp247Access?.sectors?.includes(sector))h247Failure('Ce secteur HACCP ne vous est pas attribué.',403);
  const revision=Number(req.body?.revision);if(!Number.isSafeInteger(revision)||revision<0)return res.status(400).json({success:false,error:'Version du catalogue absente.'});
- if(!['CREATE_CATEGORY','RENAME_CATEGORY','DELETE_CATEGORY','MOVE_AND_DELETE_CATEGORY','MOVE_EQUIPMENT','RESET_CATEGORIES','ADD_CHOICE','RENAME_CHOICE','HIDE_CHOICE','RESTORE_CHOICE','DELETE_CHOICE'].includes(action))return res.status(400).json({success:false,error:'Opération HACCP inconnue.'});
+ if(!['CREATE_CATEGORY','RENAME_CATEGORY','DELETE_CATEGORY','MOVE_AND_DELETE_CATEGORY','CREATE_AND_ASSIGN_PENDING','MOVE_EQUIPMENT','RENAME_EQUIPMENT_DISPLAY','RESET_CATEGORIES','ADD_CHOICE','RENAME_CHOICE','HIDE_CHOICE','RESTORE_CHOICE','DELETE_CHOICE'].includes(action))return res.status(400).json({success:false,error:'Opération HACCP inconnue.'});
  // État rechargé à chaque action : aucune confiance dans le catalogue navigateur.
  const document=await AppState.findOne({tenantID:auth.tenantID},{'activeOrders.HACCP_LISTS_MASTER':1});
  const node=document?.activeOrders?.HACCP_LISTS_MASTER||{};
