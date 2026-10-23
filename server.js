@@ -36886,7 +36886,7 @@ function h247Norm(v){return String(v||'').normalize('NFD').replace(/[\u0300-\u03
 function h247Name(v){const s=String(v??'').trim();if(s.length<2||s.length>65||/[<>\u0000-\u001f.$]/.test(s)||['__proto__','constructor','prototype'].includes(s.toLowerCase()))throw Object.assign(new Error('Nom invalide (2 à 65 caractères, sans caractères réservés).'),{status:400});return s}
 function h247Failure(message,status=409){throw Object.assign(new Error(message),{status})}
 function h247Sector(v){const s=String(v||'').trim().toUpperCase();if(!ICHEF_HACCP247_SECTORS.has(s))h247Failure('Secteur HACCP inconnu.',400);return s}
-function h247NormalizeSector(value){const s=value&&typeof value==='object'&&!Array.isArray(value)?structuredClone(value):{};for(const k of ['eq','clean','trace','eqCategoryTypes','eqCategoryOptionIds','eqDisplayNames'])if(!s[k]||typeof s[k]!=='object'||Array.isArray(s[k]))s[k]={};if(!Array.isArray(s.eqCustomTypeOptions))s.eqCustomTypeOptions=[];if(!Array.isArray(s.eqHiddenTypeIds))s.eqHiddenTypeIds=[];if(!Array.isArray(s.eqResetPendingKeys))s.eqResetPendingKeys=[];s.eqResetPendingKeys=s.eqResetPendingKeys.filter(k=>typeof k==='string'&&Array.isArray(s.eq[k]));return s}
+function h247NormalizeSector(value){const s=value&&typeof value==='object'&&!Array.isArray(value)?structuredClone(value):{};for(const k of ['eq','clean','trace','eqCategoryTypes','eqCategoryOptionIds','eqDisplayNames'])if(!s[k]||typeof s[k]!=='object'||Array.isArray(s[k]))s[k]={};if(!Array.isArray(s.eqCustomTypeOptions))s.eqCustomTypeOptions=[];if(!Array.isArray(s.eqHiddenTypeIds))s.eqHiddenTypeIds=[];if(!Array.isArray(s.eqDeletedTypeIds))s.eqDeletedTypeIds=[];s.eqDeletedTypeIds=[...new Set(s.eqDeletedTypeIds.filter(x=>typeof x==='string'&&x.length<=65))];if(!Array.isArray(s.eqResetPendingKeys))s.eqResetPendingKeys=[];s.eqResetPendingKeys=s.eqResetPendingKeys.filter(k=>typeof k==='string'&&Array.isArray(s.eq[k]));return s}
 const ICHEF_HACCP247_LABELS={'Chambres froides positives':'COLD_ROOM_POS','Chambres froides négatives':'COLD_ROOM_NEG','Frigos / Tours / Armoires':'FRIDGE','Congélateurs / Surgélateurs':'FREEZER','Vitrines / Meubles froids':'DISPLAY','Cellules de refroidissement':'COOLING_CELL','Liaison / Maintien chaud':'HOT_HOLD','Remise en température':'REHEAT','Caves / Boissons':'BEVERAGE','Machines à glaçons':'ICE','Autres équipements':'OTHER'};
 function h247TypeOf(s,k){const id=String(s.eqCategoryTypes[k]||'');if(ICHEF_HACCP247_TYPES[id])return id;return ICHEF_HACCP247_LABELS[k]||'OTHER'}
 function h247Choices(s){const customs=s.eqCustomTypeOptions.filter(x=>x&&typeof x==='object'&&/^OPT_[a-z0-9_-]+$/i.test(x.id||'')&&ICHEF_HACCP247_TYPES[x.baseTypeId]);return [...Object.keys(ICHEF_HACCP247_TYPES).map(id=>({id,baseTypeId:id,system:true})),...customs.map(x=>({...x,system:false}))]}
@@ -36898,7 +36898,7 @@ function h247Mutate(s,action,p){
   case 'CREATE_CATEGORY':{
    const newName=h247Name(name);if(h247CategoryExists(s,newName))h247Failure('Cette catégorie existe déjà.');
    if(Object.keys(s.eq).length>=150)h247Failure('Limite de catégories atteinte.');
-   const option=h247Choices(s).find(x=>x.id===id);if(!option||s.eqHiddenTypeIds.includes(id)||option.hidden)h247Failure('Choix HACCP non disponible.');
+   const option=h247Choices(s).find(x=>x.id===id);if(!option||s.eqHiddenTypeIds.includes(id)||s.eqDeletedTypeIds.includes(id)||option.hidden)h247Failure('Choix HACCP supprimé ou non disponible.');
    s.eq[newName]=[];s.eqCategoryTypes[newName]=option.baseTypeId;s.eqCategoryOptionIds[newName]=option.id;return;
   }
   case 'RENAME_CATEGORY':{
@@ -37034,17 +37034,34 @@ function h247Mutate(s,action,p){
    s.eqCustomTypeOptions.push({id:'OPT_'+nodeCrypto.randomBytes(12).toString('hex'),label:newLabel,baseTypeId:base,hidden:false});return;
   }
   case 'RENAME_CHOICE':{
-   const choice=s.eqCustomTypeOptions.find(x=>x.id===id);if(!choice)h247Failure('Seuls les choix personnalisés peuvent être renommés.',404);
+   const choice=s.eqCustomTypeOptions.find(x=>x.id===id);if(!choice||s.eqDeletedTypeIds.includes(id))h247Failure('Ce choix ne peut plus être renommé : inexistant ou supprimé définitivement.',404);
    const next=h247Name(label);if(s.eqCustomTypeOptions.some(x=>x.id!==id&&h247Norm(x.label)===h247Norm(next))||Object.keys(ICHEF_HACCP247_LABELS).some(x=>h247Norm(x)===h247Norm(next)))h247Failure('Nom déjà utilisé.');choice.label=next;return;
   }
   case 'HIDE_CHOICE':case 'RESTORE_CHOICE':{
    const choice=h247Choices(s).find(x=>x.id===id);if(!choice)h247Failure('Choix HACCP introuvable.',404);
+   if(s.eqDeletedTypeIds.includes(id))h247Failure('Ce choix est supprimé définitivement et ne peut pas être réactivé.',409);
    const hidden=action==='HIDE_CHOICE';
    if(choice.system){s.eqHiddenTypeIds=s.eqHiddenTypeIds.filter(x=>x!==id);if(hidden)s.eqHiddenTypeIds.push(id)}
    else{const c=s.eqCustomTypeOptions.find(x=>x.id===id);c.hidden=hidden;}return;
   }
+  case 'PERMANENT_DELETE_CHOICE':{
+   // Efface seulement le choix de menu, sans toucher aux seuils et aux relevés.
+   const choice=h247Choices(s).find(x=>x.id===id);
+   if(!choice||s.eqDeletedTypeIds.includes(id))h247Failure('Ce choix est introuvable ou déjà supprimé définitivement.',404);
+   const referenced=Object.entries(s.eqCategoryOptionIds).some(([category,value])=>
+     Object.hasOwn(s.eq,category)&&value===id);
+   if(choice.system){
+    s.eqHiddenTypeIds=s.eqHiddenTypeIds.filter(x=>x!==id);
+   }else if(!referenced){
+    s.eqCustomTypeOptions=s.eqCustomTypeOptions.filter(x=>x.id!==id);
+   }else{
+    const old=s.eqCustomTypeOptions.find(x=>x.id===id);if(old)old.hidden=true;
+   }
+   s.eqDeletedTypeIds=[...new Set([...s.eqDeletedTypeIds,id])];
+   return;
+  }
   case 'DELETE_CHOICE':{
-   const choice=s.eqCustomTypeOptions.find(x=>x.id===id);if(!choice)h247Failure('Les règles techniques standards ne peuvent pas être supprimées. Retirez-les du menu.',409);
+   const choice=s.eqCustomTypeOptions.find(x=>x.id===id);if(!choice||s.eqDeletedTypeIds.includes(id))h247Failure('Le choix personnalisé est inexistant ou déjà supprimé.',409);
    if(Object.values(s.eqCategoryOptionIds).includes(id))h247Failure('Ce choix est encore associé à une catégorie : retirez-le du menu, sans le supprimer.');
    s.eqCustomTypeOptions=s.eqCustomTypeOptions.filter(x=>x.id!==id);return;
   }
@@ -37104,7 +37121,7 @@ app.post('/api/haccp/category-admin',async(req,res)=>{
  if(sector==='ADMIN'&&!String(auth?.claims?.staffId||'').startsWith('MASTER:'))h247Failure('Secteur Direction réservé au propriétaire.',403);
  if(sector!=='ADMIN'&&!auth.haccp247Access?.sectors?.includes(sector))h247Failure('Ce secteur HACCP ne vous est pas attribué.',403);
  const revision=Number(req.body?.revision);if(!Number.isSafeInteger(revision)||revision<0)return res.status(400).json({success:false,error:'Version du catalogue absente.'});
- if(!['CREATE_CATEGORY','RENAME_CATEGORY','DELETE_CATEGORY','DELETE_CATEGORY_PRESERVE_EQUIPMENT','MOVE_AND_DELETE_CATEGORY','CREATE_AND_ASSIGN_PENDING','MOVE_EQUIPMENT','RENAME_EQUIPMENT_DISPLAY','RESET_CATEGORIES','ADD_CHOICE','RENAME_CHOICE','HIDE_CHOICE','RESTORE_CHOICE','DELETE_CHOICE'].includes(action))return res.status(400).json({success:false,error:'Opération HACCP inconnue.'});
+ if(!['CREATE_CATEGORY','RENAME_CATEGORY','DELETE_CATEGORY','DELETE_CATEGORY_PRESERVE_EQUIPMENT','MOVE_AND_DELETE_CATEGORY','CREATE_AND_ASSIGN_PENDING','MOVE_EQUIPMENT','RENAME_EQUIPMENT_DISPLAY','RESET_CATEGORIES','ADD_CHOICE','RENAME_CHOICE','HIDE_CHOICE','RESTORE_CHOICE','DELETE_CHOICE','PERMANENT_DELETE_CHOICE'].includes(action))return res.status(400).json({success:false,error:'Opération HACCP inconnue.'});
  // État rechargé à chaque action : aucune confiance dans le catalogue navigateur.
  const document=await AppState.findOne({tenantID:auth.tenantID},{'activeOrders.HACCP_LISTS_MASTER':1});
  const node=document?.activeOrders?.HACCP_LISTS_MASTER||{};
