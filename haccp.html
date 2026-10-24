@@ -2993,6 +2993,9 @@ pointer-events:none;opacity:.75
                     "updateState",
                     "state-updated",
                     "haccp-updated",
+                    "server-state-changed",
+                    "haccp-categories-changed",
+                    "haccp-staff-changed",
                     "inventory-updated",
                     "menu-updated",
                     "recipes-updated",
@@ -3075,8 +3078,11 @@ pointer-events:none;opacity:.75
         }
 
         function classifyEquipmentType(name="", folder="") {
-            // V227 : le type technique (et donc les règles de température) reste stable
-            // lorsqu'un responsable renomme une catégorie visible.
+            // V262 : la règle de chaque machine prime sur le libellé du dossier.
+            const equipmentRule=EMPIRE_LISTS?.[currentDept]?.eqEquipmentTypes?.[name];
+            const chosen=HACCP_EQUIPMENT_TYPES.find(t=>t.id===equipmentRule);
+            if(chosen)return chosen;
+            // Données anciennes : conserver le contrôle historique du dossier.
             const defined = EMPIRE_LISTS?.[currentDept]?.eqCategoryTypes?.[folder];
             const mapped = HACCP_EQUIPMENT_TYPES.find(t => t.id === defined);
             if (mapped) return mapped;
@@ -3345,6 +3351,11 @@ pointer-events:none;opacity:.75
         }
 
         function openDesktopEquipmentCreator(typeId=""){
+            // V262 : une seule porte d'entrée serveur avec type par machine,
+            // révision atomique et droits HACCP. Pas d'écriture legacy directe.
+            if(typeof window.haccpV227OpenCategories==='function'){
+                window.haccpV227OpenCategories();return;
+            }
             const box=document.getElementById("hd-equipment-creator"), select=document.getElementById("hd-new-equipment-type");
             if(!box||!select)return;
             const groups=EMPIRE_LISTS?.[currentDept]?.eq||{};
@@ -10194,6 +10205,13 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
 #hv227-modal .hv227-cat-buttons .hv250-delete:hover{background:#ffe6e9!important;border-color:#cb5265!important}
 #hv227-modal .hv227-cat-buttons .hv250-delete:focus-visible{outline:3px solid #d46a7a!important;outline-offset:2px}
 @media(max-width:1150px){#hv227-modal .hv227-cat-head{align-items:flex-start}#hv227-modal .hv227-cat-buttons{max-width:230px}}
+
+/* V261 — Actions indépendantes sur chaque machine, sans modifier les connexions. */
+#hv227-modal .hv227-eq-row .hv249-item-name{display:flex;align-items:center;flex-wrap:wrap;gap:7px;min-width:0}
+#hv227-modal .hv227-eq-row .hv249-item-name b{flex:1 1 160px;min-width:0}
+#hv227-modal .hv261-machine-delete{border:1px solid #e7aab4!important;background:#fff8f9!important;color:#a3243b!important;border-radius:9px!important;font-weight:800;cursor:pointer;min-height:36px}
+#hv227-modal .hv261-machine-delete:hover{background:#ffe9ec!important}
+#hv227-modal .hv261-machine-delete:disabled{opacity:.5;cursor:wait}
 </style>
 <div id="hv227-modal" role="dialog" aria-modal="true" aria-labelledby="hv227-title" hidden>
   <div class="hv227-box">
@@ -10205,7 +10223,7 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
     <div class="hv248-reset-box"><div><strong>Repartir de zéro avec mes propres catégories</strong><small>Supprime tous les anciens noms de catégories du secteur en une seule opération. Les équipements sont placés dans « Matériel à reclasser », restent utilisables et gardent leurs règles HACCP et leurs relevés.</small></div><button type="button" id="hv248-reset-all" class="hv248-reset-action">↻ REFAIRE MES CATÉGORIES</button></div>
     <div class="hv227-new">
       <label>NOUVELLE CATÉGORIE<input type="text" id="hv227-new-name" maxlength="65" placeholder="Ex. Chambre froide poissons" autocomplete="off"></label>
-      <label>TYPE DE CONTRÔLE HACCP<select id="hv227-new-type"></select></label>
+      <div class="hv262-category-note" role="note">Classement libre. Le contrôle HACCP se choisit pour chaque machine, au moment de son ajout.</div>
       <button type="button" class="hv227-primary" id="hv227-add">＋ AJOUTER</button>
     </div>
     <div class="hv227-section-title"><span>MES CATÉGORIES · Ajouter, renommer, supprimer</span><input id="hv227-search" type="search" placeholder="Rechercher une catégorie…" aria-label="Rechercher une catégorie"></div>
@@ -10216,7 +10234,7 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
       <p class="hv227-type-description"><strong>Menus synchronisés :</strong> les types supprimés ou masqués disparaissent aussi du menu « Type HACCP actif associé ». Les noms personnalisés actifs restent sélectionnables. Si des catégories utilisent déjà un ancien type, leurs équipements, seuils techniques HACCP et relevés historiques sont conservés.</p>
       <div class="hv227-type-form">
         <label>NOM À AFFICHER DANS LE MENU<input id="hv227-choice-name" maxlength="65" placeholder="Ex. Cave à vins" autocomplete="off"></label>
-        <label>TYPE HACCP ACTIF ASSOCIÉ<select id="hv227-choice-rule" aria-label="Choisir un type de contrôle actif"></select></label>
+        <label>RÈGLE TECHNIQUE HACCP ASSOCIÉE (CONSERVÉE)<select id="hv227-choice-rule" aria-label="Choisir une règle technique permanente"></select></label>
         <button type="button" id="hv227-choice-add" class="hv227-primary">＋ AJOUTER AU MENU</button>
       </div>
       <div id="hv227-type-list" class="hv227-type-list" aria-label="Choix disponibles et masqués"></div>
@@ -10234,6 +10252,14 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
 #hv227-modal .hv259-empty-machines{font-size:11px;color:#62788a;margin:8px 0 0}
 #hv227-modal .hv227-eq-details[open]{margin-top:10px;padding-top:7px;border-top:1px solid #edf0f4}
 @media(max-width:1020px){#hv227-modal .hv259-machine-form{grid-template-columns:1fr}#hv227-modal .hv259-machine-form button{width:100%}}
+</style>
+<style id="ichef-haccp-v262-rule-per-machine">
+#hv227-modal .hv262-category-note{align-self:center;font-size:12px;line-height:1.5;color:#526776;font-weight:700}
+#hv227-modal .hv262-machine-rule{display:flex;flex-wrap:wrap;align-items:center;gap:7px;margin-top:6px;color:#264765;font-size:11px}
+#hv227-modal .hv262-machine-rule select,#hv227-modal .hv259-machine-form select{min-height:39px;font-size:12px!important;color:#163147!important;background:#fff!important;border:1px solid #b7ccdc!important;border-radius:8px;max-width:330px}
+#hv227-modal .hv262-machine-rule button{min-height:36px;border-radius:8px;background:#f3f8fb;border:1px solid #bfd4e3;color:#1a435a;font-weight:800;cursor:pointer}
+#hv227-modal .hv259-machine-form{grid-template-columns:minmax(180px,1fr) minmax(180px,1fr) auto}
+@media(max-width:1250px){#hv227-modal .hv259-machine-form{grid-template-columns:1fr}}
 </style>
 <script id="ichef-haccp-v227-categories-script">
 (()=>{'use strict';
@@ -10336,8 +10362,9 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
   };
   const subtitleMarkup=(folder,index,{pending=false}={})=>{
     const state=subtitleState(folder);
-    const label=state.hidden?'':(state.custom|| (pending ? types().find(x=>x.id===folderType(folder)?.id)?.label : displayType(folder)) || 'Contrôle HACCP');
-    const prefix=pending?'Contrôle : ':'Type : ';
+    const freeCategory=!pending&&!categoryChoiceMap()[folder]&&typeMap()[folder]==='OTHER';
+    const label=state.hidden?'':(state.custom|| (freeCategory?'Contrôles définis par machine':pending ? types().find(x=>x.id===folderType(folder)?.id)?.label : displayType(folder)) || 'Contrôle HACCP');
+    const prefix=freeCategory?'Organisation : ':(pending?'Contrôle : ':'Type : ');
     const idx=String(index);
     const data=pending?`data-hv255-pending-subtitle="${idx}"`:`data-act="subtitle-edit" data-index="${idx}"`;
     const hide=pending?`data-hv255-pending-hide="${idx}"`:`data-act="subtitle-hide" data-index="${idx}"`;
@@ -10374,23 +10401,18 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
     sector.eqCategoryOptionIds=sector.eqCategoryOptionIds&&typeof sector.eqCategoryOptionIds==='object'&&!Array.isArray(sector.eqCategoryOptionIds)?sector.eqCategoryOptionIds:{};
   };
   function refreshChoices(){
-    const opts=offered(),active=opts.filter(x=>!x.hidden),prior=$('hv227-new-type')?.value||'';
-    $('hv227-new-type').innerHTML=active.map(t=>`<option value="${safe(t.id)}">${safe(t.label)}</option>`).join('');
-    if(active.some(t=>t.id===prior))$('hv227-new-type').value=prior;
-    $('hv227-new-type').disabled=!active.length;
+    const opts=offered();
+    // V262 : les noms de menu supprimés ne sont pas des règles techniques.
+    // Une règle permanente doit rester assignable à chaque machine même si
+    // TOUS les choix personnalisables de l'ancien menu ont été supprimés.
     const rule=$('hv227-choice-rule'),previous=rule?.value||'';
-    // V256 : le menu associé doit suivre EXACTEMENT les types encore actifs.
-    // L'ID présenté peut être un choix personnalisé ; la règle technique
-    // immuable (baseTypeId) est convertie uniquement lors de l'enregistrement.
     if(rule){
-      rule.innerHTML=active.length
-        ?active.map(t=>`<option value="${safe(t.id)}">${safe(t.label)}</option>`).join('')
-        :'<option value="">Aucun type actif disponible</option>';
-      if(active.some(t=>t.id===previous))rule.value=previous;
-      rule.disabled=!active.length;
+      rule.innerHTML=types().map(t=>`<option value="${safe(t.id)}">${safe(t.label)}</option>`).join('');
+      if(types().some(t=>t.id===previous))rule.value=previous;
+      rule.disabled=!types().length;
     }
     const addChoiceButton=$('hv227-choice-add');
-    if(addChoiceButton)addChoiceButton.disabled=!active.length;
+    if(addChoiceButton)addChoiceButton.disabled=!types().length;
     const box=$('hv227-type-list');if(!box)return;
     box.innerHTML=opts.map(t=>{
       const used=Object.keys(catalog()).filter(k=>(categoryChoiceMap()[k]||typeMap()[k])===t.id).length;
@@ -10401,6 +10423,13 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
       return `<div class="hv227-type-line${t.hidden?' is-hidden':''}"><div><strong>${safe(t.label)}</strong><small>${safe(caption)}${used?' · '+used+' catégorie(s) conservée(s)':''}${t.hidden?' · choix déjà masqué':''}</small></div><div class="hv227-type-actions">${rename}${del}</div></div>`;
     }).join('');
   }
+  const machineTypeMap=()=>{try{return EMPIRE_LISTS?.[actual()]?.eqEquipmentTypes||{}}catch(_){return {}}};
+  const machineType=(folder,item)=>{
+    const id=machineTypeMap()[item]||typeMap()[folder]||'OTHER';
+    return types().find(t=>t.id===id)||types().find(t=>t.id==='OTHER');
+  };
+  const techOptions=(selected='')=>'<option value="">Choisir le contrôle de cette machine…</option>'+types().map(t=>`<option value="${safe(t.id)}"${selected===t.id?' selected':''}>${safe(t.label)}</option>`).join('');
+  const hv262MachineRuleDrafts=new Map();
   const folderType=folder=>{
     const saved=typeMap()[folder];return types().find(t=>t.id===saved)
       || types().find(t=>norm(t.label)===norm(folder))
@@ -10456,15 +10485,16 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
     $('hv227-list').innerHTML=visible.length?visible.map(({folder,index})=>{
       const arr=Array.isArray(eq[folder])?eq[folder]:[];
       const t=folderType(folder),typeId=t?.id||'';
-      const sameType=keys.filter(k=>k!==folder&&folderType(k)?.id===typeId);
+      const sameType=keys.filter(k=>k!==folder); // Règle désormais par machine.
       const allTargets=keys.filter(k=>k!==folder).map(k=>`<option value="${safe(k)}">${safe(k)}</option>`).join('');
-      const items=arr.map((item,i)=>`<div class="hv227-eq-row"><div class="hv249-item-name"><b>${safe(displayEquipment(item))}</b><button type="button" class="hv249-rename" data-act="rename-equipment" data-index="${index}" data-item-index="${i}" aria-label="Renommer ${safe(displayEquipment(item))}">✎ Renommer</button></div><label class="hv227-move-label">Déplacer vers<select data-kind="destination" data-index="${index}" data-item-index="${i}"><option value="">Choisir une catégorie</option>${allTargets}</select></label><button type="button" data-act="move" data-index="${index}" data-item-index="${i}">Déplacer</button></div>`).join('');
+      const items=arr.map((item,i)=>`<div class="hv227-eq-row"><div class="hv249-item-name"><b>${safe(displayEquipment(item))}</b><button type="button" class="hv249-rename" data-act="rename-equipment" data-index="${index}" data-item-index="${i}" aria-label="Modifier le nom de ${safe(displayEquipment(item))}">✎ Modifier</button><button type="button" class="hv261-machine-delete" data-act="delete-equipment" data-index="${index}" data-item-index="${i}" aria-label="Supprimer la machine ${safe(displayEquipment(item))} du parc actif" title="Retirer cette machine du catalogue actif ; les relevés HACCP archivés restent conservés">🗑 Supprimer</button><div class="hv262-machine-rule"><label>Contrôle individuel : <select data-hv262-machine-type="${index}" data-item-index="${i}">${techOptions(machineType(folder,item)?.id||'')}</select></label><button type="button" data-act="save-machine-type" data-index="${index}" data-item-index="${i}">Enregistrer le contrôle</button></div></div><label class="hv227-move-label">Déplacer vers<select data-kind="destination" data-index="${index}" data-item-index="${i}"><option value="">Choisir une catégorie</option>${allTargets}</select></label><button type="button" data-act="move" data-index="${index}" data-item-index="${i}">Déplacer</button></div>`).join('');
       // Une catégorie regroupe autant de machines que nécessaire (max. serveur : 500),
       // chacune identifiée par un nom unique et liée au type HACCP immuable du dossier.
       const machineDraft=hv259MachineDrafts.get(pendingScopedKey('MACHINE:'+folder))||'';
-      const machineForm=`<div class="hv259-machine-form"><label>Nouvelle machine dans « ${safe(folder)} »<input type="text" maxlength="65" data-hv259-machine-input="${index}" value="${safe(machineDraft)}" placeholder="Ex. Chambre froide cuisine 1" autocomplete="off" aria-label="Nom de la machine à ajouter à ${safe(folder)}"></label><button type="button" class="hv227-primary" data-act="add-equipment" data-index="${index}" title="Ajouter cette machine sans modifier les autres">＋ AJOUTER UNE MACHINE</button></div>`;
-      const transfer=arr.length?`<div class="hv227-transfer" data-transfer="${index}" hidden>${sameType.length?`<label>CATÉGORIE DESTINATION (MÊME TYPE)<select data-kind="bulk-destination" data-index="${index}"><option value="">Choisir…</option>${sameType.map(k=>`<option value="${safe(k)}">${safe(k)}</option>`).join('')}</select></label><button type="button" class="hv227-danger" data-act="bulk-remove" data-index="${index}">Déplacer puis supprimer</button><p>Les ${arr.length} équipement(s) seront transférés. Les relevés historiques seront conservés.</p>`:`<p>Créez d'abord une autre catégorie de type « ${safe(t?.label||'identique')} » pour déplacer les équipements avant suppression.</p>`}</div>`:'';
-      return `<section class="hv227-category"><div class="hv227-cat-head"><div><strong>${safe(folder)}</strong>${subtitleMarkup(folder,index)}<span class="hv227-count">${arr.length} équipement${arr.length>1?'s':''}</span></div><div class="hv227-cat-buttons"><button type="button" data-act="rename" data-index="${index}" aria-label="Renommer ${safe(folder)}">✎ Renommer</button>${arr.length?`<button type="button" data-act="plan" data-index="${index}">Déplacer</button>`:''}<button type="button" class="hv227-danger hv250-delete" data-act="remove" data-index="${index}" aria-label="Supprimer la catégorie ${safe(folder)}">🗑 Supprimer</button></div></div>${transfer}${machineForm}${arr.length?`<details class="hv227-eq-details" open><summary>Mes machines (${arr.length}) · Renommer ou déplacer</summary>${items}</details>`:'<p class="hv259-empty-machines">Aucune machine dans cette catégorie : ajoutez la première ci-dessus.</p>'}</section>`;
+      const selectedMachineRule=hv262MachineRuleDrafts.get(pendingScopedKey('MACHINE_RULE:'+folder))||'';
+      const machineForm=`<div class="hv259-machine-form"><label>Nouvelle machine dans « ${safe(folder)} »<input type="text" maxlength="65" data-hv259-machine-input="${index}" value="${safe(machineDraft)}" placeholder="Ex. Chambre froide cuisine 1" autocomplete="off" aria-label="Nom de la machine à ajouter à ${safe(folder)}"></label><label>Surveillance HACCP de cette machine<select data-hv262-new-machine-type="${index}" aria-label="Règle technique HACCP de la machine">${techOptions(selectedMachineRule)}</select></label><button type="button" class="hv227-primary" data-act="add-equipment" data-index="${index}" title="Ajouter cette machine sans modifier les autres">＋ AJOUTER UNE MACHINE</button></div>`;
+      const transfer=arr.length?`<div class="hv227-transfer" data-transfer="${index}" hidden>${sameType.length?`<label>CATÉGORIE DESTINATION · RÈGLES DES MACHINES CONSERVÉES<select data-kind="bulk-destination" data-index="${index}"><option value="">Choisir…</option>${sameType.map(k=>`<option value="${safe(k)}">${safe(k)}</option>`).join('')}</select></label><button type="button" class="hv227-danger" data-act="bulk-remove" data-index="${index}">Déplacer puis supprimer</button><p>Les ${arr.length} équipement(s) seront transférés. Les relevés historiques seront conservés.</p>`:`<p>Créez d'abord une autre catégorie pour déplacer les équipements avant suppression.</p>`}</div>`:'';
+      return `<section class="hv227-category"><div class="hv227-cat-head"><div><strong>${safe(folder)}</strong>${subtitleMarkup(folder,index)}<span class="hv227-count">${arr.length} équipement${arr.length>1?'s':''}</span></div><div class="hv227-cat-buttons"><button type="button" data-act="rename" data-index="${index}" aria-label="Renommer ${safe(folder)}">✎ Renommer</button>${arr.length?`<button type="button" data-act="plan" data-index="${index}">Déplacer</button>`:''}<button type="button" class="hv227-danger hv250-delete" data-act="remove" data-index="${index}" aria-label="Supprimer la catégorie ${safe(folder)}">🗑 Supprimer</button></div></div>${transfer}${machineForm}${arr.length?`<details class="hv227-eq-details" open><summary>Mes machines (${arr.length}) · Modifier, supprimer ou déplacer</summary>${items}</details>`:'<p class="hv259-empty-machines">Aucune machine dans cette catégorie : ajoutez la première ci-dessus.</p>'}</section>`;
     }).join(''):`<div class="hv227-empty">${keys.length?'Aucune catégorie ne correspond à la recherche.':'Vous repartez de zéro : ajoutez votre première catégorie ci-dessus.'}</div>`;
     // Le matériel en attente est distinct des catégories client :
     // seules les catégories EXISTANTES du même type technique HACCP sont proposées.
@@ -10473,15 +10503,15 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
       const populated=pending.filter(k=>eq[k]?.length);
       box.hidden=!populated.length;
       box.dataset.keys=JSON.stringify(populated);
-      box.innerHTML=populated.length?`<h3>📦 Matériel conservé · À reclasser (${populated.reduce((n,k)=>n+eq[k].length,0)})</h3><p>Sélectionnez une catégorie créée ci-dessus dans la liste, puis cliquez sur AFFECTER. Vous pouvez aussi créer une nouvelle catégorie. Seules les catégories respectant le même type technique HACCP sont proposées : les seuils et les anciens relevés restent conservés.</p>${populated.map((k,idx)=>{
+      box.innerHTML=populated.length?`<h3>📦 Matériel conservé · À reclasser (${populated.reduce((n,k)=>n+eq[k].length,0)})</h3><p>Sélectionnez une catégorie créée ci-dessus dans la liste, puis cliquez sur AFFECTER. Vous pouvez aussi créer une nouvelle catégorie. Le contrôle appartient à chaque machine : choisir n'importe quelle catégorie ne modifie pas ses règles ni ses anciens relevés.</p>${populated.map((k,idx)=>{
         const t=folderType(k)?.id;
         const draft=pendingCategoryDrafts.get(pendingScopedKey(k))||'';
-        const destinations=keys.filter(folder=>folderType(folder)?.id===t);
+        const destinations=keys; // Toutes les catégories : chaque machine conserve sa règle HACCP.
         const savedSelection=pendingDestinationSelections.get(pendingScopedKey(k))||'';
         const selected=destinations.some(name=>'existing:'+name===savedSelection)||savedSelection==='__create__'?savedSelection:'';
         const newMode=selected==='__create__';
         const options=destinations.map(name=>`<option value="existing:${safe(name)}"${selected==='existing:'+name?' selected':''}>${safe(name)}</option>`).join('');
-        return `<div class="hv248-pending-row"><div><b><span class="hv249-pending-title" data-hv249-title="${idx}">${safe(types().find(x=>x.id===t)?.label||'Contrôle HACCP')}</span> · ${eq[k].length} équipement(s)</b>${subtitleMarkup(k,idx,{pending:true})}<div class="hv249-pending-items">${eq[k].map((item,i)=>`<div class="hv249-pending-item"><span>${safe(displayEquipment(item))}</span><div class="hv254-pending-actions"><button type="button" class="hv249-rename" data-hv249-rename-pending="${idx}" data-item-index="${i}" aria-label="Renommer ${safe(displayEquipment(item))}" title="Renommer l’équipement">✎</button><button type="button" class="hv254-delete-pending" data-hv254-delete-pending="${idx}" data-item-index="${i}" aria-label="Supprimer définitivement ${safe(displayEquipment(item))}" title="Retirer définitivement cet équipement du catalogue actif ; les relevés historiques sont conservés">🗑 Supprimer</button></div></div>`).join('')}</div></div><label>Ma nouvelle catégorie · choisir dans la liste<select data-hv248-dest="${idx}" aria-label="Choisir une catégorie créée dans ce secteur pour ${safe(types().find(x=>x.id===t)?.label||'contrôle HACCP')}"><option value=""${selected?'':' selected'} disabled>Choisir une catégorie déjà créée…</option>${options}<option value="__create__"${newMode?' selected':''}>＋ Créer une nouvelle catégorie…</option></select><input data-hv257-new="${idx}" type="text" maxlength="65" placeholder="Nom de la nouvelle catégorie…" autocomplete="off" value="${safe(draft)}" ${newMode?'':'hidden'} aria-label="Nom de la nouvelle catégorie" /><small class="hv257-help">${destinations.length?'Catégories créées de même type HACCP.':'Aucune catégorie compatible créée : choisissez « Créer une nouvelle catégorie ».'}</small></label><button type="button" class="hv227-primary" data-hv248-move="${idx}">AFFECTER</button></div>`;
+        return `<div class="hv248-pending-row"><div><b><span class="hv249-pending-title" data-hv249-title="${idx}">${safe(types().find(x=>x.id===t)?.label||'Contrôle HACCP')}</span> · ${eq[k].length} équipement(s)</b>${subtitleMarkup(k,idx,{pending:true})}<div class="hv249-pending-items">${eq[k].map((item,i)=>`<div class="hv249-pending-item"><span>${safe(displayEquipment(item))}</span><div class="hv254-pending-actions"><button type="button" class="hv249-rename" data-hv249-rename-pending="${idx}" data-item-index="${i}" aria-label="Renommer ${safe(displayEquipment(item))}" title="Renommer l’équipement">✎</button><button type="button" class="hv254-delete-pending" data-hv254-delete-pending="${idx}" data-item-index="${i}" aria-label="Supprimer définitivement ${safe(displayEquipment(item))}" title="Retirer définitivement cet équipement du catalogue actif ; les relevés historiques sont conservés">🗑 Supprimer</button></div></div>`).join('')}</div></div><label>Ma nouvelle catégorie · choisir dans la liste<select data-hv248-dest="${idx}" aria-label="Choisir une catégorie créée dans ce secteur pour ${safe(types().find(x=>x.id===t)?.label||'contrôle HACCP')}"><option value=""${selected?'':' selected'} disabled>Choisir une catégorie déjà créée…</option>${options}<option value="__create__"${newMode?' selected':''}>＋ Créer une nouvelle catégorie…</option></select><input data-hv257-new="${idx}" type="text" maxlength="65" placeholder="Nom de la nouvelle catégorie…" autocomplete="off" value="${safe(draft)}" ${newMode?'':'hidden'} aria-label="Nom de la nouvelle catégorie" /><small class="hv257-help">${destinations.length?'Catégories existantes, contrôles de chaque machine conservés.':'Aucune catégorie créée : choisissez « Créer une nouvelle catégorie ».'}</small></label><button type="button" class="hv227-primary" data-hv248-move="${idx}">AFFECTER</button></div>`;
       }).join('')}`:'';
     }
   }
@@ -10550,7 +10580,7 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
       if(typeof renderLogs==='function')renderLogs();
       window.dispatchEvent(new Event('ichef:haccp:categories-changed'));
       refresh();msg(label+' · sauvegardé sur le serveur.');
-      if(['RESET_CATEGORIES','DELETE_CATEGORY','DELETE_CATEGORY_PRESERVE_EQUIPMENT','MOVE_AND_DELETE_CATEGORY','PERMANENT_DELETE_CHOICE','DELETE_PENDING_EQUIPMENT'].includes(operation.action))hv252ShowSavedToast();
+      if(['RESET_CATEGORIES','DELETE_CATEGORY','DELETE_CATEGORY_PRESERVE_EQUIPMENT','MOVE_AND_DELETE_CATEGORY','PERMANENT_DELETE_CHOICE','DELETE_PENDING_EQUIPMENT','DELETE_CATEGORY_EQUIPMENT'].includes(operation.action))hv252ShowSavedToast();
       return true;
     }catch(e){
       console.warn('[HACCP V247 catégories]',e);
@@ -10678,8 +10708,7 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
         // Validation côté écran puis double validation stricte côté serveur.
         // Ne jamais changer silencieusement la règle technique ou les seuils.
         dest=keysList().find(folder=>'existing:'+folder===selected);
-        if(!dest||folderType(dest)?.id!==folderType(source)?.id)
-          return msg('Cette catégorie n’existe plus ou possède un type HACCP incompatible. Actualisez la liste.',true);
+        if(!dest)return msg('Cette catégorie n’existe plus. Actualisez la liste.',true);
         operation={action:'MOVE_AND_DELETE_CATEGORY',name:source,target:dest};
         label='Matériel affecté à la catégorie « '+dest+' »';
       }
@@ -10697,13 +10726,10 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
       if(!eligible())return;
       const el=$('hv227-choice-name'),label=String(el?.value||'').trim();
       if(label.length<2||label.length>65||/[<>\u0000-\u001f]/.test(label))return msg('Le nom du choix doit contenir 2 à 65 caractères valides.',true);
-      // La liste et ce sélecteur sont synchronisés via offered().
-      // Ne JAMAIS déduire la règle de température du libellé affiché.
-      const choiceId=$('hv227-choice-rule')?.value;
-      const selectedRule=offered().find(t=>t.id===choiceId&&!t.hidden);
-      if(!selectedRule||!types().some(t=>t.id===selectedRule.baseTypeId))
-        return msg('Choisissez un type HACCP encore actif.',true);
-      const rule=selectedRule.baseTypeId;
+      // Le nom de menu est distinct de la règle technique immuable.
+      // Celle-ci reste disponible même après suppression d'un nom de menu.
+      const rule=$('hv227-choice-rule')?.value;
+      if(!types().some(t=>t.id===rule))return msg('Choisissez une règle technique HACCP.',true);
       if(offered().some(t=>norm(t.label)===norm(label)))return msg('Ce choix existe déjà dans la liste.',true);
       const id='OPT_'+(crypto.randomUUID?crypto.randomUUID().replace(/-/g,''):String(Date.now())+Math.random().toString(36).slice(2));
       const ok=await commit(sector=>{
@@ -10735,15 +10761,9 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
     $('hv227-add')?.addEventListener('click',async()=>{
       if(!eligible())return;const el=$('hv227-new-name');let name;
       try{name=validateName(el?.value)}catch(e){msg(e.message,true);return}
-      const option=$('hv227-new-type')?.value;
-      const selected=offered().find(t=>t.id===option&&!t.hidden);
-      if(!selected)return msg('Sélectionnez un choix de contrôle HACCP valide.',true);
-      const ok=await commit(sector=>{
-        if(sector.eq[name])throw Error('Catégorie existante.');
-        sector.eq[name]=[];
-        sector.eqCategoryTypes[name]=selected.baseTypeId;
-        sector.eqCategoryOptionIds[name]=selected.id;
-      },'Catégorie « '+name+' » créée',{action:'CREATE_CATEGORY',name,id:selected.id});
+      // V262 : catégorie libre, sans type imposé. La règle sera choisie lors
+      // de l'ajout de chaque machine, sans modifier l'historique des anciennes.
+      const ok=await commit(null,'Catégorie « '+name+' » créée',{action:'CREATE_CATEGORY',name});
       if(ok&&el){el.value='';el.focus({preventScroll:true})}
     });
     $('hv227-list')?.addEventListener('input',e=>{
@@ -10751,6 +10771,12 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
       const keys=JSON.parse($('hv227-list')?.dataset.keys||'[]');
       const folder=keys[Number(field.dataset.hv259MachineInput)];
       if(folder)hv259MachineDrafts.set(pendingScopedKey('MACHINE:'+folder),field.value);
+    });
+    $('hv227-list')?.addEventListener('change',e=>{
+      const field=e.target.closest('select[data-hv262-new-machine-type]');if(!field)return;
+      const keys=JSON.parse($('hv227-list')?.dataset.keys||'[]');
+      const folder=keys[Number(field.dataset.hv262NewMachineType)];
+      if(folder)hv262MachineRuleDrafts.set(pendingScopedKey('MACHINE_RULE:'+folder),field.value);
     });
     $('hv227-list')?.addEventListener('keydown',e=>{
       if(e.key!=='Enter'||!e.target.matches('input[data-hv259-machine-input]'))return;
@@ -10779,22 +10805,51 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
         if(used.some(value=>norm(value)===norm(label)||norm(displayEquipment(value))===norm(label))){
           msg('Ce nom de machine existe déjà dans ce secteur.',true);field?.focus();return;
         }
+        const typeId=String($('hv227-list')?.querySelector(`select[data-hv262-new-machine-type="${idx}"]`)?.value||'');
+        if(!types().some(t=>t.id===typeId))return msg('Sélectionnez le contrôle HACCP de cette machine avant de l’ajouter.',true);
         btn.disabled=true;
         try{
           const saved=await commit(null,'Machine « '+label+' » ajoutée à « '+folder+' »',{
-            action:'ADD_EQUIPMENT_TO_CATEGORY',name:folder,label
+            action:'ADD_EQUIPMENT_TO_CATEGORY',name:folder,label,typeId
           });
           if(saved){
             hv259MachineDrafts.delete(pendingScopedKey('MACHINE:'+folder));
+            hv262MachineRuleDrafts.delete(pendingScopedKey('MACHINE_RULE:'+folder));
             const fresh=$('hv227-list')?.querySelector(`input[data-hv259-machine-input="${idx}"]`);
             if(fresh){fresh.value='';fresh.focus({preventScroll:true})}
           }
         }finally{btn.disabled=false}
         return;
       }
+      if(kind==='save-machine-type'){
+        if(!catalogReady||saving)return msg('Connexion au serveur requise.',true);
+        const equipment=eq[folder]?.[Number(btn.dataset.itemIndex)];
+        const typeId=String($('hv227-list')?.querySelector(`select[data-hv262-machine-type="${idx}"][data-item-index="${btn.dataset.itemIndex}"]`)?.value||'');
+        if(typeof equipment!=='string'||!types().some(t=>t.id===typeId))return msg('Machine ou règle HACCP invalide.',true);
+        if(machineType(folder,equipment)?.id===typeId)return msg('Ce contrôle est déjà celui de cette machine.');
+        if(!confirm('Modifier la surveillance de « '+displayEquipment(equipment)+' » ? Les futurs contrôles utiliseront cette règle ; les relevés historiques ne changent pas.'))return;
+        await commit(null,'Contrôle de « '+displayEquipment(equipment)+' » mis à jour pour les futurs relevés',{
+          action:'SET_EQUIPMENT_TECH_TYPE',name:folder,equipment,typeId
+        });
+        return;
+      }
       if(kind==='rename-equipment'){
         const equipment=eq[folder]?.[Number(btn.dataset.itemIndex)];
         if(typeof equipment==='string')await renameEquipment(folder,equipment);
+        return;
+      }
+      if(kind==='delete-equipment'){
+        if(!catalogReady||saving)return msg('Attendez la synchronisation du serveur avant de supprimer.',true);
+        const equipment=eq[folder]?.[Number(btn.dataset.itemIndex)];
+        if(typeof equipment!=='string'||!equipment)return msg('Machine introuvable. Actualisez le catalogue.',true);
+        btn.disabled=true;
+        try{
+          // Aucune confirmation à recopier. Le message vert ne s'affiche
+          // qu'après une réponse confirmée du serveur sécurisé.
+          await commit(null,'Machine « '+displayEquipment(equipment)+' » supprimée du parc actif ; relevés historiques conservés',{
+            action:'DELETE_CATEGORY_EQUIPMENT',name:folder,equipment
+          });
+        }finally{btn.disabled=false}
         return;
       }
       if(kind==='plan'){
@@ -10840,8 +10895,8 @@ body.haccp-v223-staff .nav-haccp button[onclick*="inventaire"],body.haccp-v223-s
         const itemIdx=Number(btn.dataset.itemIndex),equipment=eq[folder]?.[itemIdx];
         const sel=$('hv227-list')?.querySelector(`select[data-kind="destination"][data-index="${idx}"][data-item-index="${itemIdx}"]`);
         const target=sel?.value;if(!equipment||!target||target===folder||!Array.isArray(eq[target]))return msg('Choisissez une autre catégorie.',true);
-        const sourceKind=folderType(folder)?.kind,targetKind=folderType(target)?.kind;
-        if(sourceKind!==targetKind&&!confirm(`Attention : déplacer « ${equipment} » vers un autre type HACCP peut modifier les seuils des futurs relevés. Confirmer ?`))return;
+        // V262 : le type HACCP technique reste attaché à cette machine
+        // même si les autres équipements du dossier ont un autre contrôle.
         if(!confirm(`Déplacer « ${equipment} » vers « ${target} » ? Les anciens relevés seront conservés.`))return;
         await commit(sector=>{
           const from=sector.eq[folder],to=sector.eq[target];if(!Array.isArray(from)||!Array.isArray(to))throw Error('Catégorie introuvable.');
