@@ -36886,9 +36886,21 @@ function h247Norm(v){return String(v||'').normalize('NFD').replace(/[\u0300-\u03
 function h247Name(v){const s=String(v??'').trim();if(s.length<2||s.length>65||/[<>\u0000-\u001f.$]/.test(s)||['__proto__','constructor','prototype'].includes(s.toLowerCase()))throw Object.assign(new Error('Nom invalide (2 à 65 caractères, sans caractères réservés).'),{status:400});return s}
 function h247Failure(message,status=409){throw Object.assign(new Error(message),{status})}
 function h247Sector(v){const s=String(v||'').trim().toUpperCase();if(!ICHEF_HACCP247_SECTORS.has(s))h247Failure('Secteur HACCP inconnu.',400);return s}
-function h247NormalizeSector(value){const s=value&&typeof value==='object'&&!Array.isArray(value)?structuredClone(value):{};for(const k of ['eq','clean','trace','eqCategoryTypes','eqCategoryOptionIds','eqDisplayNames','eqSubtitleOverrides'])if(!s[k]||typeof s[k]!=='object'||Array.isArray(s[k]))s[k]={};if(!Array.isArray(s.eqCustomTypeOptions))s.eqCustomTypeOptions=[];if(!Array.isArray(s.eqHiddenTypeIds))s.eqHiddenTypeIds=[];if(!Array.isArray(s.eqDeletedTypeIds))s.eqDeletedTypeIds=[];s.eqDeletedTypeIds=[...new Set(s.eqDeletedTypeIds.filter(x=>typeof x==='string'&&x.length<=65))];if(!Array.isArray(s.eqResetPendingKeys))s.eqResetPendingKeys=[];s.eqResetPendingKeys=s.eqResetPendingKeys.filter(k=>typeof k==='string'&&Array.isArray(s.eq[k]));return s}
+function h247NormalizeSector(value){const s=value&&typeof value==='object'&&!Array.isArray(value)?structuredClone(value):{};for(const k of ['eq','clean','trace','eqCategoryTypes','eqCategoryOptionIds','eqDisplayNames','eqSubtitleOverrides','eqEquipmentTypes'])if(!s[k]||typeof s[k]!=='object'||Array.isArray(s[k]))s[k]={};if(!Array.isArray(s.eqCustomTypeOptions))s.eqCustomTypeOptions=[];if(!Array.isArray(s.eqHiddenTypeIds))s.eqHiddenTypeIds=[];if(!Array.isArray(s.eqDeletedTypeIds))s.eqDeletedTypeIds=[];s.eqDeletedTypeIds=[...new Set(s.eqDeletedTypeIds.filter(x=>typeof x==='string'&&x.length<=65))];if(!Array.isArray(s.eqResetPendingKeys))s.eqResetPendingKeys=[];s.eqResetPendingKeys=s.eqResetPendingKeys.filter(k=>typeof k==='string'&&Array.isArray(s.eq[k]));return s}
 const ICHEF_HACCP247_LABELS={'Chambres froides positives':'COLD_ROOM_POS','Chambres froides négatives':'COLD_ROOM_NEG','Frigos / Tours / Armoires':'FRIDGE','Congélateurs / Surgélateurs':'FREEZER','Vitrines / Meubles froids':'DISPLAY','Cellules de refroidissement':'COOLING_CELL','Liaison / Maintien chaud':'HOT_HOLD','Remise en température':'REHEAT','Caves / Boissons':'BEVERAGE','Machines à glaçons':'ICE','Autres équipements':'OTHER'};
 function h247TypeOf(s,k){const id=String(s.eqCategoryTypes[k]||'');if(ICHEF_HACCP247_TYPES[id])return id;return ICHEF_HACCP247_LABELS[k]||'OTHER'}
+// V262 : le type de surveillance appartient à la MACHINE, pas à la catégorie.
+// Repli sur le type historique du dossier pour assurer une migration sans perte.
+function h262EquipmentType(s,folder,equipment){
+ const override=String(s.eqEquipmentTypes?.[equipment]||'');
+ return Object.hasOwn(ICHEF_HACCP247_TYPES,override)?override:h247TypeOf(s,folder);
+}
+function h262FreezeTypesBeforeMove(s,folder,items){
+ for(const equipment of items){
+  const id=h262EquipmentType(s,folder,equipment);
+  if(!Object.hasOwn(s.eqEquipmentTypes,equipment))s.eqEquipmentTypes[equipment]=id;
+ }
+}
 function h247Choices(s){const customs=s.eqCustomTypeOptions.filter(x=>x&&typeof x==='object'&&/^OPT_[a-z0-9_-]+$/i.test(x.id||'')&&ICHEF_HACCP247_TYPES[x.baseTypeId]);return [...Object.keys(ICHEF_HACCP247_TYPES).map(id=>({id,baseTypeId:id,system:true})),...customs.map(x=>({...x,system:false}))]}
 function h247ExistingCategory(s,name){if(!Object.hasOwn(s.eq,name)||!Array.isArray(s.eq[name]))h247Failure('Catégorie introuvable.',404)}
 function h247CategoryExists(s,label,exclude=''){return Object.keys(s.eq).some(n=>h247Norm(n)===h247Norm(label)&&n!==exclude)}
@@ -36898,8 +36910,49 @@ function h247Mutate(s,action,p){
   case 'CREATE_CATEGORY':{
    const newName=h247Name(name);if(h247CategoryExists(s,newName))h247Failure('Cette catégorie existe déjà.');
    if(Object.keys(s.eq).length>=150)h247Failure('Limite de catégories atteinte.');
-   const option=h247Choices(s).find(x=>x.id===id);if(!option||s.eqHiddenTypeIds.includes(id)||s.eqDeletedTypeIds.includes(id)||option.hidden)h247Failure('Choix HACCP supprimé ou non disponible.');
-   s.eq[newName]=[];s.eqCategoryTypes[newName]=option.baseTypeId;s.eqCategoryOptionIds[newName]=option.id;return;
+   // Pas de type imposé pour une catégorie vide. 'OTHER' est uniquement
+   // le repli de compatibilité historique ; chaque nouvelle machine reçoit
+   // ensuite SA propre règle technique de contrôle HACCP.
+   const option=id?h247Choices(s).find(x=>x.id===id):null;
+   if(id&&(!option||s.eqHiddenTypeIds.includes(id)||s.eqDeletedTypeIds.includes(id)||option.hidden))h247Failure('Choix HACCP supprimé ou non disponible.');
+   s.eq[newName]=[];s.eqCategoryTypes[newName]=option?option.baseTypeId:'OTHER';
+   if(option)s.eqCategoryOptionIds[newName]=option.id;
+   return;
+  }
+  case 'ADD_EQUIPMENT_TO_CATEGORY':{
+   // Ajout contrôlé d’une machine nommée dans UNE catégorie existante.
+   // La clé stable et le libellé initial sont identiques, compatible avec les
+   // lecteurs, contrôles, exports et relevés déjà présents dans iCHEF HACCP.
+   h247ExistingCategory(s,name);
+   if(s.eqResetPendingKeys.includes(name))h247Failure('Créez d’abord une catégorie avant d’y ajouter une machine.',400);
+   if(s.eq[name].length>=500)h247Failure('Limite de 500 équipements dans cette catégorie.',413);
+   const machine=h247Name(label);
+   const conflict=Object.values(s.eq).some(items=>Array.isArray(items)&&items.some(existing=>{
+     const raw=String(existing||'');
+     const displayed=String(s.eqDisplayNames[raw]||raw);
+     return h247Norm(raw)===h247Norm(machine)||h247Norm(displayed)===h247Norm(machine);
+   }));
+   if(conflict)h247Failure('Un équipement porte déjà ce nom dans ce secteur.',409);
+   // Choix explicite de la règle ; les anciens clients qui n'envoient pas de
+   // type continuent d'hériter du dossier uniquement si celui-ci est défini.
+   const selected=String(p.typeId||'');
+   if(selected&&!Object.hasOwn(ICHEF_HACCP247_TYPES,selected))h247Failure('Règle HACCP inconnue.',400);
+   const technical=selected||h247TypeOf(s,name);
+   if(!selected&&technical==='OTHER'&&!s.eqCategoryOptionIds[name])
+     h247Failure('Choisissez la règle de surveillance de cette machine.',400);
+   s.eq[name].push(machine);
+   s.eqEquipmentTypes[machine]=technical;
+   return;
+  }
+  case 'SET_EQUIPMENT_TECH_TYPE':{
+   h247ExistingCategory(s,name);
+   if(s.eqResetPendingKeys.includes(name))h247Failure('Reclassez d’abord cet équipement.',400);
+   const equipment=String(p.equipment||''),technical=String(p.typeId||'');
+   if(!s.eq[name].includes(equipment))h247Failure('Machine introuvable dans cette catégorie.',404);
+   if(!Object.hasOwn(ICHEF_HACCP247_TYPES,technical))h247Failure('Règle HACCP inconnue.',400);
+   // Le changement ne réécrit JAMAIS les relevés historiques.
+   s.eqEquipmentTypes[equipment]=technical;
+   return;
   }
   case 'SET_CATEGORY_SUBTITLE':{
    // Personnalisation de la présentation UNIQUEMENT. Aucune modification de
@@ -36937,6 +36990,7 @@ function h247Mutate(s,action,p){
    const technical=h247TypeOf(s,name);
    const option=String(s.eqCategoryOptionIds[name]||technical);
    if(items.length){
+    h262FreezeTypesBeforeMove(s,name,items);
     // Un casier par suppression évite la collision d'identifiants d'équipements
     // pouvant être présents dans plusieurs anciennes catégories.
     const prefix='À classer · '+technical;
@@ -36967,6 +37021,7 @@ function h247Mutate(s,action,p){
    if(h247CategoryExists(s,newName))h247Failure('Une catégorie portant ce nom existe déjà.');
    if(Object.keys(s.eq).length>=150)h247Failure('Limite de catégories atteinte.');
    const technical=h247TypeOf(s,name);
+   h262FreezeTypesBeforeMove(s,name,s.eq[name]);
    s.eq[newName]=[...s.eq[name]];
    s.eqCategoryTypes[newName]=technical;
    s.eqCategoryOptionIds[newName]=s.eqCategoryOptionIds[name]||technical;
@@ -36977,8 +37032,8 @@ function h247Mutate(s,action,p){
   }
   case 'MOVE_AND_DELETE_CATEGORY':{
    h247ExistingCategory(s,name);h247ExistingCategory(s,to);if(name===to)h247Failure('Choisissez une autre catégorie.');
-   if(h247TypeOf(s,name)!==h247TypeOf(s,to))h247Failure('La destination doit avoir le même type HACCP.');
    if(s.eq[name].some(x=>s.eq[to].includes(x)))h247Failure('Équipement déjà présent dans la destination.');
+   h262FreezeTypesBeforeMove(s,name,s.eq[name]);
    s.eq[to].push(...s.eq[name]);delete s.eq[name];delete s.eqCategoryTypes[name];delete s.eqCategoryOptionIds[name];delete s.eqSubtitleOverrides[name];s.eqResetPendingKeys=s.eqResetPendingKeys.filter(x=>x!==name);return;
   }
   case 'RENAME_EQUIPMENT_DISPLAY':{
@@ -36996,6 +37051,27 @@ function h247Mutate(s,action,p){
    if(duplicate)h247Failure('Ce nom est déjà utilisé par un autre équipement.',409);
    if(h247Norm(newLabel)===h247Norm(equipment))delete s.eqDisplayNames[equipment];
    else s.eqDisplayNames[equipment]=newLabel;
+   return;
+  }
+  case 'DELETE_CATEGORY_EQUIPMENT':{
+   // V261 : retire uniquement CETTE machine du parc actif de ce secteur.
+   // Ne modifie ni relevés archivés, ni seuils, ni identité technique, ni autres secteurs.
+   // Les catégories à reclasser utilisent toujours DELETE_PENDING_EQUIPMENT.
+   h247ExistingCategory(s,name);
+   if(s.eqResetPendingKeys.includes(name))
+     h247Failure('Pour ce matériel, utilisez la suppression du bloc À reclasser.',400);
+   const equipment=String(p.equipment??'');
+   if(!equipment||equipment.length>1000||
+      ['__proto__','prototype','constructor'].includes(equipment.toLowerCase()))
+     h247Failure('Identifiant de machine invalide.',400);
+   const items=s.eq[name];
+   if(!items.includes(equipment))
+     h247Failure('Machine absente de cette catégorie. Actualisez la liste.',404);
+   // Si une ancienne catégorie contient des doublons de cette clé, on la
+   // retire uniquement de la catégorie demandée (pas des autres listes).
+   s.eq[name]=items.filter(old=>old!==equipment);
+   // Conserver eqDisplayNames[equipment] : référence historique immuable.
+   // La catégorie reste disponible, même lorsqu'elle devient vide.
    return;
   }
   case 'DELETE_PENDING_EQUIPMENT':{
@@ -37018,8 +37094,8 @@ function h247Mutate(s,action,p){
   }
   case 'MOVE_EQUIPMENT':{
    h247ExistingCategory(s,name);h247ExistingCategory(s,to);if(name===to)h247Failure('Sélectionnez une autre catégorie.');
-   if(h247TypeOf(s,name)!==h247TypeOf(s,to))h247Failure('Pour préserver les seuils de contrôle, déplacez vers le même type HACCP.');
    const equipment=String(p.equipment||'');const pos=s.eq[name].indexOf(equipment);if(pos<0||s.eq[to].includes(equipment))h247Failure('Équipement absent ou déjà présent.');
+   h262FreezeTypesBeforeMove(s,name,[equipment]);
    s.eq[name].splice(pos,1);s.eq[to].push(equipment);if(s.eqResetPendingKeys.includes(name)&&s.eq[name].length===0){delete s.eq[name];delete s.eqCategoryTypes[name];delete s.eqCategoryOptionIds[name];delete s.eqSubtitleOverrides[name];s.eqResetPendingKeys=s.eqResetPendingKeys.filter(x=>x!==name);}return;
   }
   case 'RESET_CATEGORIES':{
@@ -37029,9 +37105,10 @@ function h247Mutate(s,action,p){
    const groups=new Map();
    for(const [old,items] of Object.entries(s.eq)){
     if(!Array.isArray(items))h247Failure('Parc HACCP invalide : réinitialisation refusée.',400);
-    const technical=h247TypeOf(s,old);
-    if(!groups.has(technical))groups.set(technical,[]);
     for(const equipment of items){
+     const technical=h262EquipmentType(s,old,equipment);
+     if(!groups.has(technical))groups.set(technical,[]);
+     if(!Object.hasOwn(s.eqEquipmentTypes,equipment))s.eqEquipmentTypes[equipment]=technical;
      // Conserver même les noms historiques courts : ne pas utiliser la
      // validation stricte des *nouveaux* noms sur les données existantes.
      if(typeof equipment!=='string'||!equipment.trim()||equipment.length>1000)
@@ -37156,7 +37233,7 @@ app.post('/api/haccp/category-admin',async(req,res)=>{
  if(sector==='ADMIN'&&!String(auth?.claims?.staffId||'').startsWith('MASTER:'))h247Failure('Secteur Direction réservé au propriétaire.',403);
  if(sector!=='ADMIN'&&!auth.haccp247Access?.sectors?.includes(sector))h247Failure('Ce secteur HACCP ne vous est pas attribué.',403);
  const revision=Number(req.body?.revision);if(!Number.isSafeInteger(revision)||revision<0)return res.status(400).json({success:false,error:'Version du catalogue absente.'});
- if(!['CREATE_CATEGORY','RENAME_CATEGORY','DELETE_CATEGORY','DELETE_CATEGORY_PRESERVE_EQUIPMENT','MOVE_AND_DELETE_CATEGORY','CREATE_AND_ASSIGN_PENDING','MOVE_EQUIPMENT','DELETE_PENDING_EQUIPMENT','RENAME_EQUIPMENT_DISPLAY','SET_CATEGORY_SUBTITLE','RESET_CATEGORY_SUBTITLE','RESET_CATEGORIES','ADD_CHOICE','RENAME_CHOICE','HIDE_CHOICE','RESTORE_CHOICE','DELETE_CHOICE','PERMANENT_DELETE_CHOICE'].includes(action))return res.status(400).json({success:false,error:'Opération HACCP inconnue.'});
+ if(!['CREATE_CATEGORY','ADD_EQUIPMENT_TO_CATEGORY','SET_EQUIPMENT_TECH_TYPE','DELETE_CATEGORY_EQUIPMENT','RENAME_CATEGORY','DELETE_CATEGORY','DELETE_CATEGORY_PRESERVE_EQUIPMENT','MOVE_AND_DELETE_CATEGORY','CREATE_AND_ASSIGN_PENDING','MOVE_EQUIPMENT','DELETE_PENDING_EQUIPMENT','RENAME_EQUIPMENT_DISPLAY','SET_CATEGORY_SUBTITLE','RESET_CATEGORY_SUBTITLE','RESET_CATEGORIES','ADD_CHOICE','RENAME_CHOICE','HIDE_CHOICE','RESTORE_CHOICE','DELETE_CHOICE','PERMANENT_DELETE_CHOICE'].includes(action))return res.status(400).json({success:false,error:'Opération HACCP inconnue.'});
  // État rechargé à chaque action : aucune confiance dans le catalogue navigateur.
  const document=await AppState.findOne({tenantID:auth.tenantID},{'activeOrders.HACCP_LISTS_MASTER':1});
  const node=document?.activeOrders?.HACCP_LISTS_MASTER||{};
