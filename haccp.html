@@ -12903,8 +12903,24 @@ async function showReference(x,notice){if(!canRead())return info(x,'Authentifica
  if(!m.refs)return;const found=m.refs.find(r=>matches(r,p));if(found){output.hidden=false;output.textContent=`Référence validée par le chef : ${found.approvedHours} h à ${found.temperatureC} °C pour les conditions identiques ci-dessus. Source : ${found.referenceSource}. Validation : ${found.approvedAt?.slice(0,10)||'—'}. Vérifiez la DLC fabricant et les conditions réelles avant d'appliquer cette durée.`;if(notice)info(x,'Référence PMS trouvée.');}
  else if(notice)info(x,'Aucune durée validée correspondant exactement au produit, à son procédé, conditionnement et température. Demandez au chef de valider une fiche.');
 }
-async function advice(x){if(!canRead())return info(x,'Session HACCP autorisée nécessaire.',true);const p=values(x);if(p.productName.trim().length<2)return info(x,'Indiquez un nom de produit.',true);const btn=elem(x,'request');btn.disabled=true;info(x,'Conseil IA en cours…');const result=elem(x,'result');result.hidden=true;
- try{const d=await fetchJSON('/api/haccp/dlc-ai/advice',{method:'POST',body:JSON.stringify({sector:sector(),product:p})});result.hidden=false;result.textContent=(d.source==='FALLBACK'?'MODE SECOURS — CONSEILS GÉNÉRAUX (sans IA)\n\n':'CONSEIL IA\n\n')+d.advice+'\n\n'+d.disclaimer;info(x,d.source==='FALLBACK'?(d.notice||'Conseil IA temporairement indisponible ; mode secours affiché.'):'Conseil IA reçu. Vérifiez avec le PMS et le chef.',d.source==='FALLBACK'?'warning':false);h270DisplaySources(x,d.jurisdiction);await showReference(x,false)}catch(e){info(x,'Conseil temporairement indisponible. Consultez le référentiel validé ou contactez le chef.',true);await showReference(x,false)}finally{btn.disabled=false}}
+async function advice(x){if(!canRead())return info(x,'Session HACCP autorisée nécessaire.',true);const p=values(x);if(p.productName.trim().length<2)return info(x,'Indiquez un nom de produit.',true);const requestSector=sector();const requestKey=['product','family','formState','packaging','process','temperature','manufacturer'].map(n=>elem(x,n)?.value||'').join('||');const btn=elem(x,'request');btn.disabled=true;info(x,'Conseil IA en cours…');const result=elem(x,'result');result.hidden=true;result.dataset.h277Hours='';result.dataset.h277Key='';result.dataset.h277Source='';
+ try{const d=await fetchJSON('/api/haccp/dlc-ai/advice',{method:'POST',body:JSON.stringify({sector:sector(),product:p})});
+  // V277 : vérifier que le produit ET le secteur n'ont pas changé pendant l'appel asynchrone.
+  if(requestSector!==sector()||requestKey!==['product','family','formState','packaging','process','temperature','manufacturer'].map(n=>elem(x,n)?.value||'').join('||')){info(x,'Informations modifiées : redemandez un conseil pour ce produit.');return;}
+  // Durée IA INDICATIVE, jamais validée, jamais conservée comme DLC.
+  const h=Number(d.suggestedHours),valid=d.source==='GEMINI'&&Number.isSafeInteger(h)&&h>=1&&h<=720&&String(d.suggestionBasis||'').trim().length>=30;
+  result.dataset.h277Hours=valid?String(h):'';
+  result.dataset.h277Key=requestKey;
+  result.dataset.h277Basis=valid?String(d.suggestionBasis).slice(0,800):'';
+  result.dataset.h277Source=String(d.source||'');
+  result.hidden=false;result.textContent=(d.source==='FALLBACK'?'MODE SECOURS — CONSEILS GÉNÉRAUX (sans IA)\n\n':'CONSEIL IA\n\n')+d.advice+'\n\n'+d.disclaimer;
+  info(x,d.source==='FALLBACK'?(d.notice||'Conseil IA temporairement indisponible ; mode secours affiché.'):'Conseil IA reçu. Vérifiez avec le PMS et le chef.',d.source==='FALLBACK'?'warning':false);
+  x.dispatchEvent(new CustomEvent('ichef:haccp:dlc-advice-updated'));
+  h270DisplaySources(x,d.jurisdiction);await showReference(x,false)
+ }catch(e){result.dataset.h277Hours='';result.dataset.h277Key='';result.dataset.h277Source='';
+  x.dispatchEvent(new CustomEvent('ichef:haccp:dlc-advice-updated'));
+  info(x,'Conseil temporairement indisponible. Consultez le référentiel validé ou contactez le chef.',true);await showReference(x,false)
+ }finally{btn.disabled=false}}
 async function approve(x){if(!canRead()||!chef())return info(x,'Validation réservée au responsable HACCP autorisé.',true);
  const p=values(x),hours=Number(elem(x,'hours').value),source=elem(x,'source').value.trim(),m=models.get(x);
  if(p.productName.trim().length<2||p.temperatureC===null||!Number.isInteger(hours)||hours<1||!source||source.length<12)return info(x,'Produit, température, durée en heures et justificatif PMS de 12 caractères minimum obligatoires.',true);
@@ -13132,6 +13148,15 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
 .h276-help-inline p{margin:5px 0 0}
 @media(max-width:520px){.h276-help>p{right:-4px;width:min(260px,76vw)}.h276-reference-heading{align-items:flex-start}}
 </style>
+
+<!-- iCHEF HACCP V277 — Dates IA indicatives + simulation chef ; pas d'image -->
+<style id="ichef-v277-proposition-style">
+.h271-ready .h277-simulator-label{display:grid;gap:6px;font-size:12px;font-weight:850;color:#235144;min-width:0;padding:10px 0 3px}
+.h271-ready .h277-simulator-label[hidden]{display:none!important}
+.h271-ready .h277-simulator-label input{width:100%;max-width:100%;min-width:0}
+.h271-ready .h277-simulator-note{font-size:11px;color:#526e60;line-height:1.5;margin:2px 0 11px}
+.h271-ready .h275-origin{overflow-wrap:anywhere}
+</style>
 <script id="ichef-v274-dlc-date-script">
 (()=>{'use strict';
  if(window.__ICHEF_HACCP_V275_DLC_DATE__)return;
@@ -13161,7 +13186,15 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
  function canApprove(root){const manager=get(root,'manager');return !!manager&&!manager.hidden&&!manager.closest('[hidden]')}
  function refresh(root,state){
   const {start,date,ui,status,save,source,alert,display,origin,expiredBox}=state;
-  const startMs=parseLocal(start.value),hours=matchedHours(root,state),mfr=get(root,'manufacturer')?.value||'',chief=canApprove(root);
+  const startMs=parseLocal(start.value),validatedHours=matchedHours(root,state),mfr=get(root,'manufacturer')?.value||'',chief=canApprove(root);
+  const adviceEl=get(root,'result');
+  const h=Number(adviceEl?.dataset?.h277Hours);
+  const aiHours=adviceEl?.dataset?.h277Source==='GEMINI'&&adviceEl?.dataset?.h277Key===key(root)&&
+   adviceEl?.dataset?.h277Hours&&Number.isSafeInteger(h)&&h>=1&&h<=720?h:null;
+  const simValue=state.simulator?.value||'';
+  const simHours=simValue!==''&&Number.isSafeInteger(Number(simValue))&&Number(simValue)>=1&&Number(simValue)<=17520?Number(simValue):null;
+  const hours=validatedHours!==null?validatedHours:(simHours!==null?simHours:aiHours);
+  const suggestionKind=validatedHours!==null?'PMS':simHours!==null?'MANUAL':aiHours!==null?'IA':null;
   const expired=Boolean(mfr&&Number.isFinite(startMs)&&start.value.slice(0,10)>mfr);
   const mfrTodayExpired=Boolean(mfr&&mfr<(new Date().getFullYear()+'-'+pad(new Date().getMonth()+1)+'-'+pad(new Date().getDate())));
   // Interdire toute date proposée ou validée après un fabricant déjà périmé.
@@ -13185,13 +13218,18 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
    if(mfr&&computed.slice(0,10)>mfr){
     if(!state.edited)date.value='';
     display.textContent='DLC fabricant : '+nice(mfr);display.classList.add('urgent');
-    origin.textContent='La règle PMS ('+hours+' h) mène au '+nice(computed)+', APRÈS la date fabricant. Proposition PMS non applicable.';
+    origin.textContent='La durée envisagée ('+hours+' h) mène au '+nice(computed)+', APRÈS la date fabricant. Proposition non applicable.';
     status.textContent='Le chef doit vérifier le lot et définir une date antérieure uniquement sur justification PMS. La DLC fabricant reste une limite absolue.';
    }else{
     if(!state.edited)date.value=computed;
     display.textContent=nice(computed);
-    origin.textContent='Date calculée sur '+hours+' h selon la règle PMS du chef. Date modifiable uniquement par le chef, puis validation nécessaire.';
-    status.textContent='Proposition iCHEF calculée automatiquement pour les conditions exactes du référentiel validé.';
+    origin.textContent=suggestionKind==='PMS'
+     ?'Date calculée sur '+hours+' h selon la règle PMS validée pour ce produit.'
+     :suggestionKind==='IA'
+      ?'SIMULATION IA : '+hours+' h proposés à titre indicatif. Justification à vérifier : '+String(adviceEl?.dataset?.h277Basis||'Non fournie').slice(0,400)+'. NE PAS UTILISER comme DLC avant validation PMS.'
+      :'SIMULATION MANUELLE : '+hours+' h renseignées par le chef. Ne constitue ni un conseil IA, ni une DLC validée.';
+    status.textContent=suggestionKind==='PMS'?'Durée enregistrée dans le référentiel. Vérifier le lot et la DLC fabricant.':
+      'Hypothèse non validée : modification possible par le chef, avec référence PMS obligatoire avant application.';
    }
   }else if(mfr){
    if(!state.edited)date.value='';
@@ -13201,9 +13239,12 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
   }else{
    if(!state.edited)date.value='';
    display.textContent='Aucune date validée disponible';
-   origin.textContent='L’IA peut donner des conseils, mais sans durée PMS justifiée elle ne doit pas inventer une date.';
-   status.textContent='Rechercher une règle PMS validée ou demander une validation documentée au chef.';
+   origin.textContent=adviceEl?.dataset?.h277Source==='FALLBACK'
+    ?'Gemini indisponible (quota ou service) : iCHEF ne peut pas produire de durée IA fiable.'
+    :'Aucune durée justifiée par le référentiel ou le conseil IA.';
+   status.textContent='Le chef peut simuler une durée ci-dessous puis la vérifier et la justifier dans le PMS, ou consulter une fiche déjà validée.';
   }
+  state.simulator.closest('label').hidden=!chief;
   if(!chief){source.hidden=true;save.hidden=true;ui.textContent='Seul le chef habilité peut modifier et valider la DLC.';}
   else{source.hidden=false;save.hidden=false;}
   const endMs=parseLocal(date.value);
@@ -13233,6 +13274,11 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
   const origin=el('div','h275-origin','');origin.setAttribute('data-h275','origin');box.append(origin);
   const expiredBox=el('div','h275-expired','');expiredBox.hidden=true;box.append(expiredBox);
   const status=el('div','h274-state','Indiquez la date de départ.');box.append(status);
+  const simulator=el('label','h277-simulator-label','Durée à étudier (heures) · simulation manuelle');
+  const simInput=el('input');simInput.type='number';simInput.min='1';simInput.max='17520';simInput.step='1';
+  simInput.placeholder='Ex. durée de votre fiche PMS';simInput.setAttribute('aria-label','Durée à étudier en heures, simulation non validée');
+  simulator.append(simInput);box.append(simulator);
+  box.append(el('p','h277-simulator-note','Sans réponse IA ni règle validée, le chef peut saisir une durée pour SIMULER une date. Ce calcul ne constitue pas une validation sanitaire.'));
   const line=el('div','h274-date-box');const dlcLabel=el('label','','Modifier la date / heure limite (chef)');
   const date=el('input');date.type='datetime-local';date.setAttribute('aria-label','DLC à valider par le chef');date.setAttribute('data-h274','proposed');dlcLabel.append(date);
   const save=el('button','h274-save','Valider cette DLC');save.type='button';
@@ -13252,7 +13298,9 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
   const alert=el('div','h274-alert');alert.setAttribute('role','status');box.append(alert);
   box.append(el('div','h274-state','Une date calculée reste une proposition : elle doit être contrôlée et validée par le chef et ne peut jamais prolonger la DLC fabricant.'));
   card.querySelector('.h272-rows')?.append(box);
-  const state={start,date,ui,status,save,source,alert,display,origin,expiredBox,edited:false,confirmedKey:''};
+  const state={start,date,ui,status,save,source,alert,display,origin,expiredBox,simulator:simInput,edited:false,confirmedKey:''};
+  simInput.addEventListener('input',()=>{state.edited=false;alert.textContent='';refresh(root,state)});
+  root.addEventListener('ichef:haccp:dlc-advice-updated',()=>{state.edited=false;alert.textContent='';refresh(root,state)});
   function clearForChange(){state.confirmedKey='';state.edited=false;date.value='';alert.textContent='';refresh(root,state)}
   form.addEventListener('input',e=>{if(e.target!==start)clearForChange()});
   form.addEventListener('change',e=>{if(e.target!==start)clearForChange()});
