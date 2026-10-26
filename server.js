@@ -37258,6 +37258,67 @@ app.post('/api/haccp/category-admin',async(req,res)=>{
  return res.json({success:true,sector,sectorData:edited,revision:rev+1,action});
  }catch(e){if(!res.headersSent)return res.status(e.status||503).json({success:false,error:e?.message||'Enregistrement HACCP indisponible.'});}
 });
+// ============================================================================
+// HACCP V266 — Seuils de vigilance DLC, par établissement et secteur.
+// API autonome : ne modifie ni la connexion, ni les routes existantes, ni les relevés.
+// ============================================================================
+function h266DlcDefaults(){return {enabled:true,orangeDays:3,redDays:1,version:0}}
+function h266DlcPublic(raw){
+ const d=h266DlcDefaults();
+ if(!raw||typeof raw!=='object'||Array.isArray(raw))return d;
+ const orange=Number(raw.orangeDays),red=Number(raw.redDays),version=Number(raw.version);
+ return {
+  enabled:raw.enabled!==false,
+  orangeDays:Number.isSafeInteger(orange)&&orange>=1&&orange<=90?orange:d.orangeDays,
+  redDays:Number.isSafeInteger(red)&&red>=0&&red<=90?red:d.redDays,
+  version:Number.isSafeInteger(version)&&version>=0?version:0
+ };
+}
+app.get('/api/haccp/dlc-alert-settings',async(req,res)=>{
+ res.setHeader('Cache-Control','no-store, private');
+ try{
+  const auth=await ichefHaccp223Auth(req,res);if(!auth)return;
+  const sector=h247Sector(req.query?.sector);
+  if(!auth.haccp223?.sectors?.includes(sector))return res.status(403).json({success:false,error:'Secteur HACCP non autorisé.'});
+  const doc=await AppState.findOne({tenantID:auth.tenantID},{'activeOrders.HACCP_DLC_ALERT_SETTINGS':1}).lean();
+  const raw=doc?.activeOrders?.HACCP_DLC_ALERT_SETTINGS?.[sector];
+  return res.json({success:true,sector,settings:h266DlcPublic(raw)});
+ }catch(e){return res.status(e.status||503).json({success:false,error:e.message||'Réglages DLC indisponibles.'})}
+});
+app.post('/api/haccp/dlc-alert-settings',async(req,res)=>{
+ res.setHeader('Cache-Control','no-store, private');
+ try{
+  // Le droit de configurer reste réservé au même responsable qu'en administration HACCP.
+  const auth=await h247Auth(req,res);if(!auth)return;
+  const sector=h247Sector(req.body?.sector);
+  if(!auth.haccp247Access?.sectors?.includes(sector))return res.status(403).json({success:false,error:'Secteur HACCP non autorisé.'});
+  const {enabled,orangeDays,redDays,version}=req.body||{};
+  if(typeof enabled!=='boolean'||!Number.isSafeInteger(orangeDays)||orangeDays<1||orangeDays>90||
+     !Number.isSafeInteger(redDays)||redDays<0||redDays>orangeDays||
+     !Number.isSafeInteger(version)||version<0){
+   return res.status(400).json({success:false,error:'Seuils invalides : orange 1 à 90 jours, rouge 0 à orange.'});
+  }
+  const key='activeOrders.HACCP_DLC_ALERT_SETTINGS.'+sector;
+  // Mise à jour atomique du seul secteur ; contrôle de version pour éviter d'écraser un autre manager.
+  const filter={tenantID:auth.tenantID};
+  filter[key+'.version']=version===0?{$in:[null,0]}:version;
+  const doc=await AppState.findOneAndUpdate(filter,{$set:{[key]:{
+   enabled,orangeDays,redDays,version:version+1,
+   updatedAt:new Date().toISOString(),updatedByStaffId:String(auth.claims?.staffId||'').slice(0,120)
+  }}},{new:true});
+  if(!doc)return res.status(409).json({success:false,code:'DLC_SETTINGS_CHANGED',error:'Réglages modifiés ailleurs : actualisez avant de réessayer.'});
+  const settings={enabled,orangeDays,redDays,version:version+1};
+  const packet={tenantID:auth.tenantID,sector,version:settings.version};
+  io.to(auth.tenantID).emit('haccp-dlc-settings-changed',packet);
+  const staffRoom=ichefStaffRealtimeRoom(auth.tenantID);
+  if(staffRoom)io.to(staffRoom).emit('haccp-dlc-settings-changed',packet);
+  void ichefWriteSecurityEvent({req,type:'HACCP_DLC_SETTINGS_UPDATED',tenantID:auth.tenantID,detail:'Seuils DLC mis à jour · '+sector});
+  return res.json({success:true,sector,settings});
+ }catch(e){if(!res.headersSent)return res.status(e.status||503).json({success:false,error:e.message||'Enregistrement des seuils impossible.'})}
+});
+// ================= FIN HACCP DLC V266 =================
+
+
 // =================== FIN HACCP V247 =========================================
 
 app.get('/api/haccp/inspection/dossier', ichef232DossierHandler);
