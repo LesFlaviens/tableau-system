@@ -37319,6 +37319,138 @@ app.post('/api/haccp/dlc-alert-settings',async(req,res)=>{
 // ================= FIN HACCP DLC V266 =================
 
 
+// ============================================================================
+// HACCP V267 — destinataires des alertes DLC désignés par le chef de secteur.
+// Nouveau stockage indépendant : n'écrase JAMAIS les seuils V266 existants.
+// Authentification signée, isolation établissement/secteur et présence réutilisées.
+// ============================================================================
+function h267LeadForSector(auth,sector){
+ if(!auth?.haccp247Access?.sectors?.includes(sector))return false;
+ if(String(auth?.claims?.staffId||'').startsWith('MASTER:'))return true;
+ // Responsable de SON secteur uniquement. Le paramètre URL n'accorde aucun droit.
+ const dept=ichefHaccp223Dept([
+  auth.staff?.dept,auth.staff?.department,auth.staff?.service,
+  auth.staff?.role,auth.staff?.position,auth.staff?.fonction
+ ].filter(Boolean).join(' '));
+ return dept===sector;
+}
+async function h267EligiblePeople(auth,sector){
+ const people=ichefOpsDirectory(auth).filter(p=>p.id&&p.id.length<=120);
+ const grants=await IchefHaccp223Grant.find({tenantID:auth.tenantID,staffId:{$in:people.map(p=>p.id)}}).lean();
+ const byId=new Map(grants.map(g=>[String(g.staffId),g]));
+ const now=Date.now();
+ return people.filter(p=>{
+  const grant=byId.get(p.id);
+  if(!grant)return ichefHaccp223Dept([p.dept,p.role].filter(Boolean).join(' '))===sector;
+  // Autorisation temporaire/croisée admise si expressément enregistrée.
+  if(grant.disabled)return false;
+  return (grant.sectors||[]).includes(sector)||
+   (grant.temporary||[]).some(x=>x.sector===sector&&Date.parse(x.expiresAt)>now);
+ }).map(p=>({id:p.id,name:String(p.name||p.id).slice(0,150)}));
+}
+function h267RecipientNode(raw){
+ const x=raw&&typeof raw==='object'&&!Array.isArray(raw)?raw:{};
+ const version=Number(x.version);
+ return {version:Number.isSafeInteger(version)&&version>=0?version:0,
+  recipientIds:Array.isArray(x.recipientIds)?[...new Set(x.recipientIds.filter(v=>typeof v==='string'))].slice(0,100):[]};
+}
+app.get('/api/haccp/dlc-recipients',async(req,res)=>{
+ res.setHeader('Cache-Control','no-store, private');
+ try{
+  const auth=await h247Auth(req,res);if(!auth)return;
+  const sector=h247Sector(req.query?.sector);
+  if(!h267LeadForSector(auth,sector))return res.status(403).json({success:false,error:'Attribution réservée au chef de ce secteur.'});
+  const people=await h267EligiblePeople(auth,sector);
+  const doc=await AppState.findOne({tenantID:auth.tenantID},{'activeOrders.HACCP_DLC_RECIPIENTS':1}).lean();
+  const data=h267RecipientNode(doc?.activeOrders?.HACCP_DLC_RECIPIENTS?.[sector]);
+  const eligible=new Set(people.map(p=>p.id));
+  return res.json({success:true,sector,version:data.version,people,recipientIds:data.recipientIds.filter(id=>eligible.has(id))});
+ }catch(e){return res.status(e.status||503).json({success:false,error:e.message||'Liste des destinataires indisponible.'})}
+});
+app.post('/api/haccp/dlc-recipients',async(req,res)=>{
+ res.setHeader('Cache-Control','no-store, private');
+ try{
+  const auth=await h247Auth(req,res);if(!auth)return;
+  const sector=h247Sector(req.body?.sector);
+  if(!h267LeadForSector(auth,sector))return res.status(403).json({success:false,error:'Attribution réservée au chef de ce secteur.'});
+  const ids=req.body?.recipientIds,version=req.body?.version;
+  if(!Array.isArray(ids)||ids.length>100||ids.some(id=>typeof id!=='string'||!id.trim()||id.length>120)||
+     !Number.isSafeInteger(version)||version<0){
+    return res.status(400).json({success:false,error:'Liste des collaborateurs ou version invalide.'});
+  }
+  const unique=[...new Set(ids)];
+  const people=await h267EligiblePeople(auth,sector);
+  const eligible=new Set(people.map(p=>p.id));
+  if(unique.some(id=>!eligible.has(id)))return res.status(403).json({success:false,error:'Un collaborateur n’est pas autorisé dans ce secteur.'});
+  const key='activeOrders.HACCP_DLC_RECIPIENTS.'+sector;
+  const filter={tenantID:auth.tenantID};
+  filter[key+'.version']=version===0?{$in:[null,0]}:version;
+  const result=await AppState.findOneAndUpdate(filter,{$set:{[key]:{
+   version:version+1,recipientIds:unique,updatedAt:new Date().toISOString(),
+   updatedByStaffId:String(auth.claims?.staffId||'').slice(0,120)
+  }}},{new:true});
+  if(!result)return res.status(409).json({success:false,code:'DLC_RECIPIENTS_CHANGED',error:'Destinataires modifiés ailleurs : rechargez avant de réessayer.'});
+  const packet={tenantID:auth.tenantID,sector,version:version+1};
+  io.to(auth.tenantID).emit('haccp-dlc-recipients-changed',packet);
+  const room=ichefStaffRealtimeRoom(auth.tenantID);
+  if(room)io.to(room).emit('haccp-dlc-recipients-changed',packet); // Simple signal : aucune donnée privée dans le socket.
+  void ichefWriteSecurityEvent({req,type:'HACCP_DLC_RECIPIENTS_UPDATED',tenantID:auth.tenantID,
+   detail:`Destinataires DLC · ${sector} · ${unique.length} collaborateurs`});
+  return res.json({success:true,sector,version:version+1,recipientIds:unique});
+ }catch(e){return res.status(e.status||503).json({success:false,error:e.message||'Attribution des alertes impossible.'})}
+});
+// Affichage staff : les destinataires sont recalculés sur chaque requête, et
+// les alertes sont générées côté serveur. Le navigateur ne décide PAS des droits.
+function h267DaysToDlc(value){
+ if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(value))return null;
+ const [y,m,d]=value.split('-').map(Number);
+ const ms=Date.UTC(y,m-1,d);
+ if(new Date(ms).toISOString().slice(0,10)!==value)return null;
+ // Construire YYYY-MM-DD à partir de date parts pour éviter les variations locales.
+ const parts=new Intl.DateTimeFormat('en-GB',{timeZone:'Europe/Paris',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());
+ const todayMap=Object.fromEntries(parts.map(p=>[p.type,p.value]));
+ const todayMs=Date.UTC(+todayMap.year,+todayMap.month-1,+todayMap.day);
+ return Math.round((ms-todayMs)/86400000);
+}
+app.get('/api/staff/haccp/dlc-alerts',async(req,res)=>{
+ res.setHeader('Cache-Control','no-store, private');
+ try{
+  const auth=await ichefHaccp223Auth(req,res);if(!auth)return; // session, tenant, appareil, présence, secteur.
+  const staffId=ichefHaccp223SelfId(auth);
+  const doc=await AppState.findOne({tenantID:auth.tenantID},{
+   'activeOrders.HACCP_DLC_RECIPIENTS':1,'activeOrders.HACCP_DLC_ALERT_SETTINGS':1,
+   'activeOrders.HACCP_TRACE.data':1
+  }).lean();
+  const settingsBySector=doc?.activeOrders?.HACCP_DLC_ALERT_SETTINGS||{};
+  const recipientsBySector=doc?.activeOrders?.HACCP_DLC_RECIPIENTS||{};
+  const allowed=auth.haccp223.sectors.filter(s=>{
+   const assigned=h267RecipientNode(recipientsBySector[s]).recipientIds.includes(staffId);
+   return assigned&&h266DlcPublic(settingsBySector[s]).enabled;
+  });
+  if(!allowed.length)return res.json({success:true,assigned:false,alerts:[],counts:{green:0,orange:0,red:0},sectors:[]});
+  const trace=doc?.activeOrders?.HACCP_TRACE?.data;
+  const rows=Array.isArray(trace)?trace:[];
+  const latest=new Map();
+  for(let i=rows.length-1;i>=0;i--){
+   const row=rows[i];if(!row||row.originalId||!allowed.includes(String(row.dept||'').toUpperCase()))continue;
+   const days=h267DaysToDlc(row.dlc);if(days===null)continue;
+   const key=[String(row.dept||''),String(row.name||'').trim().toLocaleLowerCase('fr'),String(row.lot||'').trim().toLocaleLowerCase('fr')].join('|');
+   if(!latest.has(key))latest.set(key,{row,days});
+  }
+  const counts={green:0,orange:0,red:0},alerts=[];
+  for(const {row,days} of latest.values()){
+   const sector=String(row.dept||'').toUpperCase(),s=h266DlcPublic(settingsBySector[sector]);
+   const level=days<=s.redDays?'red':days<=s.orangeDays?'orange':'green';
+   counts[level]++;
+   if(level!=='green')alerts.push({sector,name:String(row.name||'Produit').slice(0,160),
+    lot:String(row.lot||'').slice(0,120),dlc:String(row.dlc||''),days,level});
+  }
+  alerts.sort((a,b)=>a.days-b.days);
+  return res.json({success:true,assigned:true,sectors:allowed,counts,alerts:alerts.slice(0,30)});
+ }catch(e){return res.status(e.status||503).json({success:false,error:'Alertes HACCP indisponibles.'})}
+});
+// ================= FIN HACCP DLC V267 =================
+
 // =================== FIN HACCP V247 =========================================
 
 app.get('/api/haccp/inspection/dossier', ichef232DossierHandler);
