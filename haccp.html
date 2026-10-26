@@ -13149,13 +13149,25 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
 @media(max-width:520px){.h276-help>p{right:-4px;width:min(260px,76vw)}.h276-reference-heading{align-items:flex-start}}
 </style>
 
-<!-- iCHEF HACCP V277 — Dates IA indicatives + simulation chef ; pas d'image -->
+<!-- iCHEF HACCP V278 — repères conservatoires + date indicative liée au formulaire. Aucun nouveau script global. -->
 <style id="ichef-v277-proposition-style">
 .h271-ready .h277-simulator-label{display:grid;gap:6px;font-size:12px;font-weight:850;color:#235144;min-width:0;padding:10px 0 3px}
 .h271-ready .h277-simulator-label[hidden]{display:none!important}
 .h271-ready .h277-simulator-label input{width:100%;max-width:100%;min-width:0}
 .h271-ready .h277-simulator-note{font-size:11px;color:#526e60;line-height:1.5;margin:2px 0 11px}
 .h271-ready .h275-origin{overflow-wrap:anywhere}
+</style>
+<style id="ichef-v278-dlc-reperes-style">
+.h271-ready .h278-transfer{width:100%;border:1px solid #0c7854!important;border-radius:9px!important;background:#f5fdf8!important;color:#075c3e!important;padding:9px 12px!important;margin:8px 0 10px!important;font-size:12.5px!important;font-weight:850!important;white-space:normal;overflow-wrap:anywhere}
+.h271-ready .h278-transfer[hidden]{display:none!important}
+.h271-ready .h278-table{border-top:1px solid #c2e5d2;margin-top:12px;padding-top:9px;color:#244c3b}
+.h271-ready .h278-table summary{cursor:pointer;font-size:12px;font-weight:850;color:#0b6443}
+.h271-ready .h278-table-scroll{max-width:100%;overflow-x:auto}
+.h271-ready .h278-table table{width:100%;border-collapse:collapse;min-width:480px;font-size:11px}
+.h271-ready .h278-table td,.h271-ready .h278-table th{text-align:left;padding:7px 8px;border-bottom:1px solid #cee6d8;vertical-align:top}
+.h271-ready .h278-table th{background:#e0f3e9}
+.h271-ready .h278-warning{font-size:11px;line-height:1.5;color:#735328}
+.h271-ready .h275-origin{overflow-wrap:anywhere;white-space:normal}
 </style>
 <script id="ichef-v274-dlc-date-script">
 (()=>{'use strict';
@@ -13183,6 +13195,43 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
   if(!found)return null;
   const h=Number(found[1]);return Number.isSafeInteger(h)&&h>=1&&h<=17520?h:null;
  }
+ // V278 — Repères d'orientation fournis par l'utilisateur, PAS des durées réglementaires.
+ // Priorité absolue au référentiel PMS validé, ensuite proposition IA justifiée,
+ // puis repère indicatif strictement filtré. Ne jamais écrire ces repères au serveur.
+ function h278Norm(v){return String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim()}
+ function h278Country(root){
+  const txt=h278Norm(get(root,'jurisdiction')?.querySelector('strong')?.textContent||'');
+  // Ne pas appliquer par défaut un tableau français à un établissement suisse / non renseigné.
+  return /france/.test(txt)?'FR':/suisse|schweiz/.test(txt)?'CH':'UNKNOWN';
+ }
+ function h278Repere(root){
+  if(h278Country(root)!=='FR')return null;
+  const name=h278Norm(get(root,'product')?.value),family=get(root,'family')?.value;
+  const form=get(root,'formState')?.value,pack=get(root,'packaging')?.value;
+  const process=get(root,'process')?.value,rawTemp=get(root,'temperature')?.value;
+  const temperature=rawTemp===''?NaN:Number(rawTemp);
+  if(name.length<2||!Number.isFinite(temperature)||pack!=='SANS_VIDE')return null;
+  if(!['AUCUN','REFROIDISSEMENT'].includes(process))return null;
+  if(/fum[eé]|marin[eé]|sal[eé]|saumur|sushi|tartare|sashimi|mi.cuit|congel|d[eé]congel|sous.vide|pasteuris/i.test(name))return null;
+  const entry=(hours,label,conditions)=>({hours,label,conditions,origin:'TABLEAU_INTERNE_FR'});
+  // L'estimation courte est intentionnelle ; la fourchette transmise n'est jamais une autorisation.
+  if(family==='POISSONS'&&form==='CRU'&&process==='AUCUN'&&temperature>=0&&temperature<=2)
+   return entry(24,'Poisson frais cru — repère prudent 24 h','À +0/+2 °C ; préciser entier ou filet, fraîcheur initiale et conditions de réception. Le tableau fourni indique 1–2 j pour les filets et 2 j pour les poissons entiers.');
+  if(family==='VIANDES'&&form==='CRU'&&process==='AUCUN'&&temperature>=0&&temperature<=2&&/hach|steak hach|farce/.test(name))
+   return entry(24,'Viande hachée crue — repère 24 h','À +0/+2 °C ; très périssable. Tableau interne : 24–48 h sous réserve de toutes les conditions ; respecter les indications fabricant.');
+  if(family==='VOLAILLES'&&form==='CRU'&&process==='AUCUN'&&temperature>=0&&temperature<=2)
+   return entry(48,'Volaille crue — repère 48 h','À +0/+2 °C ; tableau interne : 2–3 jours selon provenance, lot, emballage et fraîcheur.');
+  if(family==='VIANDES'&&form==='CRU'&&process==='AUCUN'&&temperature>=0&&temperature<=4&&/boeuf|bœuf|porc|veau|agneau|entrec[oô]te|steak|c[oô]te|rumsteck|filet/.test(name))
+   return entry(72,'Pièce de viande crue — repère 72 h','À +0/+4 °C ; tableau interne : 3–5 jours selon état initial. Ne vaut pas pour viande hachée, abats ou préparations de viandes.');
+  if(['LEGUMES','FRUITS'].includes(family)&&form==='LAVE_DECOUPE'&&process==='AUCUN'&&temperature>=2&&temperature<=4)
+   return entry(24,'Végétaux lavés / découpés — repère 24 h','À +2/+4 °C, bonne hygiène de préparation. Tableau interne : 24–48 h ; vérifier le risque microbiologique.');
+  // Cadre français dépendant du champ d'application et de l'analyse des dangers.
+  if(family==='PLATS_PREPARES'&&['REFROIDI','CUIT'].includes(form)&&process==='REFROIDISSEMENT'&&temperature>=0&&temperature<=3)
+   return entry(72,'Préparation cuite refroidie — repère 72 h','À +0/+3 °C uniquement si cuisson et refroidissement rapide maîtrisés, procédé validé. Repère à étudier, pas règle automatique J+3 pour toute recette.');
+  // Ne pas proposer une date numérique pour œufs, coquillages, sauces, crèmes, sous vide,
+  // décongelés ou préparations à risque sans règle propre à la recette / au procédé.
+  return null;
+ }
  function canApprove(root){const manager=get(root,'manager');return !!manager&&!manager.hidden&&!manager.closest('[hidden]')}
  function refresh(root,state){
   const {start,date,ui,status,save,source,alert,display,origin,expiredBox}=state;
@@ -13193,8 +13242,12 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
    adviceEl?.dataset?.h277Hours&&Number.isSafeInteger(h)&&h>=1&&h<=720?h:null;
   const simValue=state.simulator?.value||'';
   const simHours=simValue!==''&&Number.isSafeInteger(Number(simValue))&&Number(simValue)>=1&&Number(simValue)<=17520?Number(simValue):null;
-  const hours=validatedHours!==null?validatedHours:(simHours!==null?simHours:aiHours);
-  const suggestionKind=validatedHours!==null?'PMS':simHours!==null?'MANUAL':aiHours!==null?'IA':null;
+  const repere=h278Repere(root);
+  const hours=validatedHours!==null?validatedHours:(simHours!==null?simHours:(aiHours!==null?aiHours:repere?.hours??null));
+  const suggestionKind=validatedHours!==null?'PMS':simHours!==null?'MANUAL':aiHours!==null?'IA':repere?'REPERE':null;
+  const transfer=state.transfer;
+  state.suggestedDate='';
+  if(transfer){transfer.hidden=true;transfer.disabled=true;}
   const expired=Boolean(mfr&&Number.isFinite(startMs)&&start.value.slice(0,10)>mfr);
   const mfrTodayExpired=Boolean(mfr&&mfr<(new Date().getFullYear()+'-'+pad(new Date().getMonth()+1)+'-'+pad(new Date().getDate())));
   // Interdire toute date proposée ou validée après un fabricant déjà périmé.
@@ -13215,21 +13268,28 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
    status.textContent='La date et l’heure de départ sont nécessaires pour calculer une échéance.';
   }else if(hours!==null){
    const computed=toLocal(startMs+hours*3600000);
+   const proposedAlreadyExpired=parseLocal(computed)<=Date.now();
    if(mfr&&computed.slice(0,10)>mfr){
     if(!state.edited)date.value='';
     display.textContent='DLC fabricant : '+nice(mfr);display.classList.add('urgent');
     origin.textContent='La durée envisagée ('+hours+' h) mène au '+nice(computed)+', APRÈS la date fabricant. Proposition non applicable.';
     status.textContent='Le chef doit vérifier le lot et définir une date antérieure uniquement sur justification PMS. La DLC fabricant reste une limite absolue.';
    }else{
-    if(!state.edited)date.value=computed;
+    // La date du cadre est indicative ; elle n'est jamais une DLC étiquetable sans le chef.
+    // Pour le tableau interne / IA / simulation, le chef COPIE volontairement la date.
+    if(!state.edited)date.value=suggestionKind==='PMS'?computed:'';
     display.textContent=nice(computed);
     origin.textContent=suggestionKind==='PMS'
      ?'Date calculée sur '+hours+' h selon la règle PMS validée pour ce produit.'
      :suggestionKind==='IA'
-      ?'SIMULATION IA : '+hours+' h proposés à titre indicatif. Justification à vérifier : '+String(adviceEl?.dataset?.h277Basis||'Non fournie').slice(0,400)+'. NE PAS UTILISER comme DLC avant validation PMS.'
-      :'SIMULATION MANUELLE : '+hours+' h renseignées par le chef. Ne constitue ni un conseil IA, ni une DLC validée.';
+      ?'PROPOSITION IA À VÉRIFIER : '+hours+' h. Base à contrôler : '+String(adviceEl?.dataset?.h277Basis||'Non fournie').slice(0,400)+'. NON VALIDÉE.'
+      :suggestionKind==='REPERE'
+       ?'REPÈRE DU TABLEAU INTERNE (pas une DLC autorisée) : '+repere.label+'. '+repere.conditions
+       :'SIMULATION MANUELLE : '+hours+' h renseignées par le chef. Ne constitue ni un conseil IA, ni une DLC validée.';
     status.textContent=suggestionKind==='PMS'?'Durée enregistrée dans le référentiel. Vérifier le lot et la DLC fabricant.':
-      'Hypothèse non validée : modification possible par le chef, avec référence PMS obligatoire avant application.';
+      'Date indicative non validée. Le chef peut la reprendre, la modifier et la justifier dans son PMS avant tout usage.';
+    if(proposedAlreadyExpired){display.classList.add('urgent');status.textContent='DATE INDICATIVE DÉJÀ ÉCHUE. Ce repère ne permet pas de remettre le produit en circulation.';}
+    if(!proposedAlreadyExpired&&suggestionKind!=='PMS'&&chief&&transfer){state.suggestedDate=computed;transfer.hidden=false;transfer.disabled=false;}
    }
   }else if(mfr){
    if(!state.edited)date.value='';
@@ -13242,7 +13302,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
    origin.textContent=adviceEl?.dataset?.h277Source==='FALLBACK'
     ?'Gemini indisponible (quota ou service) : iCHEF ne peut pas produire de durée IA fiable.'
     :'Aucune durée justifiée par le référentiel ou le conseil IA.';
-   status.textContent='Le chef peut simuler une durée ci-dessous puis la vérifier et la justifier dans le PMS, ou consulter une fiche déjà validée.';
+   status.textContent='Aucun repère sûr pour ces paramètres : vérifiez la famille, l’état, le conditionnement, la température et le pays de l’établissement. Sinon, utilisez une fiche PMS validée ou une étude de durée de vie.';
   }
   state.simulator.closest('label').hidden=!chief;
   if(!chief){source.hidden=true;save.hidden=true;ui.textContent='Seul le chef habilité peut modifier et valider la DLC.';}
@@ -13255,6 +13315,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
    else if(mfr&&date.value.slice(0,10)>mfr)ui.textContent='Date refusée : au-delà de la DLC fabricant.';
    else if(!Number.isInteger(diff))ui.textContent='Choisissez un nombre entier d’heures de conservation.';
   }
+  if(date.value&&Number.isFinite(endMs)&&endMs<=Date.now()){ui.textContent='Date déjà échue : validation impossible.';save.disabled=true;}
   if(blocker)save.disabled=true;
  }
  function setup(root){
@@ -13269,7 +13330,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
   const details=get(root,'details');if(details?.closest('label'))details.closest('label').before(startLabel);else grid.append(startLabel);
   const hiddenLegacy=card.querySelector('[data-h272="ai"]')?.closest('.h272-proposal-row');if(hiddenLegacy)hiddenLegacy.style.display='none';
   const box=el('section','h274-suggestion');box.setAttribute('aria-label','Proposition de date DLC et validation humaine');
-  box.append(el('div','h274-title','Date de DLC proposée par iCHEF'));
+  box.append(el('div','h274-title','Date indicative proposée · validation du chef'));
   const display=el('div','h275-proposal-display','—');display.setAttribute('data-h275','display');box.append(display);
   const origin=el('div','h275-origin','');origin.setAttribute('data-h275','origin');box.append(origin);
   const expiredBox=el('div','h275-expired','');expiredBox.hidden=true;box.append(expiredBox);
@@ -13283,6 +13344,33 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
   const date=el('input');date.type='datetime-local';date.setAttribute('aria-label','DLC à valider par le chef');date.setAttribute('data-h274','proposed');dlcLabel.append(date);
   const save=el('button','h274-save','Valider cette DLC');save.type='button';
   line.append(dlcLabel,save);box.append(line);
+  const transfer=el('button','h278-transfer','Reprendre cette date pour vérification');
+  transfer.type='button';transfer.hidden=true;transfer.disabled=true;
+  transfer.setAttribute('aria-label','Copier la date indicative dans le champ modifiable du chef');
+  box.append(transfer);
+  const repereHelp=el('details','h278-table');
+  const repereSummary=el('summary','','Voir les repères de conservation du tableau interne (indicatifs)');
+  const repereWrap=el('div','h278-table-scroll');
+  const table=el('table');const th=el('thead');const headTr=el('tr');
+  for(const col of ['Produit / famille','Température indicative','Repère fourni','Utilisation iCHEF'])headTr.append(el('th','',col));
+  th.append(headTr);table.append(th);
+  const body=el('tbody');
+  for(const row of [
+   ['Viande hachée crue','0 à +2 °C','24–48 h','24 h, hors vide'],
+   ['Volailles crues','0 à +2 °C','2–3 jours','48 h, hors vide'],
+   ['Viandes rouges / porc, pièces','0 à +4 °C','3–5 jours','72 h, hors vide'],
+   ['Poissons frais entiers','0 à +2 °C','2 jours','24 h conservatoires, hors vide'],
+   ['Filets / pavés de poisson','0 à +2 °C','1–2 jours','24 h, hors vide'],
+   ['Coquillages, crustacés','Selon espèce / présentation','2–3 jours dans le tableau','Pas de proposition automatique'],
+   ['Produits laitiers, œufs','Étiquette / lot','Selon fabricant','Pas de proposition automatique'],
+   ['Plats cuits refroidis','0 à +3 °C','J+3 dans le tableau','72 h seulement si refroidissement maîtrisé'],
+   ['Végétaux épluchés / découpés','+2 à +4 °C','24–48 h','24 h, hors vide'],
+   ['Fruits et légumes entiers','Selon produit','Variable','Pas de proposition automatique'],
+   ['Sauces, pâtisseries, sous vide','Selon recette et procédé','Étude propre à la préparation','Pas de proposition automatique']
+  ]){const tr=el('tr');for(const cell of row)tr.append(el('td','',cell));body.append(tr);}
+  table.append(body);repereWrap.append(table);
+  repereHelp.append(repereSummary,el('p','h278-warning','Repères du tableau transmis, non validés : ces chiffres ne sont pas des DLC réglementaires universelles, ne prouvent pas la sécurité d’un lot et ne remplacent pas le PMS. La loi française peut prévoir des règles spécifiques selon le type d’activité.'),repereWrap);
+  box.append(repereHelp);
   const ui=el('div','h274-alert');box.append(ui);
   const source=el('div','h274-source-row');
   const sourceHeading=el('div','h276-reference-heading');
@@ -13298,7 +13386,16 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
   const alert=el('div','h274-alert');alert.setAttribute('role','status');box.append(alert);
   box.append(el('div','h274-state','Une date calculée reste une proposition : elle doit être contrôlée et validée par le chef et ne peut jamais prolonger la DLC fabricant.'));
   card.querySelector('.h272-rows')?.append(box);
-  const state={start,date,ui,status,save,source,alert,display,origin,expiredBox,simulator:simInput,edited:false,confirmedKey:''};
+  const state={start,date,ui,status,save,source,alert,display,origin,expiredBox,simulator:simInput,transfer,suggestedDate:'',edited:false,confirmedKey:''};
+  transfer.addEventListener('click',()=>{
+   if(!canApprove(root)||!state.suggestedDate||transfer.disabled)return;
+   const manufacturer=get(root,'manufacturer')?.value||'';
+   const now=toLocal(Date.now()).slice(0,10);
+   if(manufacturer&&(manufacturer<now||state.suggestedDate.slice(0,10)>manufacturer))return;
+   date.value=state.suggestedDate;state.edited=true;refresh(root,state);
+   alert.textContent='Date copiée pour contrôle humain : modifiez-la si nécessaire, renseignez votre référence PMS puis validez.';
+   alert.style.color='#76500b';
+  });
   simInput.addEventListener('input',()=>{state.edited=false;alert.textContent='';refresh(root,state)});
   root.addEventListener('ichef:haccp:dlc-advice-updated',()=>{state.edited=false;alert.textContent='';refresh(root,state)});
   function clearForChange(){state.confirmedKey='';state.edited=false;date.value='';alert.textContent='';refresh(root,state)}
@@ -13313,6 +13410,9 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
    const found=/^Référence validée par le chef\s*:/i.test((ref.textContent||'').trim())&&!ref.hidden;
    state.confirmedKey=found?key(root):'';if(!state.edited)refresh(root,state);
   });refWatcher.observe(ref,{attributes:true,attributeFilter:['hidden'],childList:true,characterData:true,subtree:true});
+  const jurisdiction=get(root,'jurisdiction');
+  if(jurisdiction){const countryWatcher=new MutationObserver(()=>{if(!state.edited)refresh(root,state)});
+   countryWatcher.observe(jurisdiction,{subtree:true,childList:true,characterData:true});}
   const msg=get(root,'message');if(msg){const m=new MutationObserver(()=>{const t=String(msg.textContent||'');if(t.includes('✓ Référence du chef enregistrée')){alert.style.color='#136644';alert.textContent='Durée enregistrée dans le référentiel PMS par le chef.';}
    else if(/non enregistrée|refusée|rechargez|Erreur/i.test(t)){alert.style.color='#9b302c';alert.textContent=t;}});m.observe(msg,{childList:true,characterData:true,subtree:true});}
   root.addEventListener('toggle',()=>{if(!root.open){state.confirmedKey='';state.edited=false;date.value='';sourceInput.value=''}refresh(root,state)});
@@ -13323,6 +13423,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
    const today=toLocal(Date.now()).slice(0,10);
    if(mfr&&(start.value.slice(0,10)>mfr||mfr<today)){alert.textContent='DLC fabricant périmée : validation impossible.';return;}
    if(!Number.isFinite(startMs)||!Number.isFinite(endMs)){alert.textContent='Renseignez les deux dates et les heures.';return;}
+   if(endMs<=Date.now()){alert.textContent='La date est déjà échue. Impossible de la valider.';return;}
    const hours=(endMs-startMs)/3600000;
    if(!Number.isSafeInteger(hours)||hours<1||hours>17520){alert.textContent='Durée invalide : 1 à 17 520 heures entières.';return;}
    if(mfr&&date.value.slice(0,10)>mfr){alert.textContent='Impossible de dépasser la DLC fabricant.';return;}
