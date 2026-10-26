@@ -13089,5 +13089,148 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
  setInterval(init,2800);
 })();
 </script>
+<!-- iCHEF HACCP V274 — proposition de date de DLC + ajustement humain sécurisé.
+     Ajout autonome, pas de modification des scripts d'identité/PIN/session ni des API. -->
+<style id="ichef-v274-dlc-date-style">
+.h274-start-date{grid-column:1/-1!important}
+.h274-suggestion{border-top:1px solid #cfe3d6;margin-top:10px;padding-top:12px;display:grid;gap:9px;min-width:0}
+.h274-suggestion *{box-sizing:border-box}
+.h274-title{font-size:14px;font-weight:900;color:#115d3b}
+.h274-state{font-size:12px;line-height:1.5;color:#375d50;overflow-wrap:anywhere}
+.h274-date-box{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:10px;min-width:0}
+.h274-date-box label{font-size:12px;font-weight:800;display:grid;gap:5px;min-width:0}
+.h274-date-box input{min-width:0;width:100%;max-width:100%;padding:10px;border:1px solid #9bc2b0;border-radius:8px;background:#fff;color:#153d31;font:inherit;font-size:15px}
+.h274-date-box input:disabled{background:#f5f9f6;color:#315446;opacity:1}
+.h274-source-row{display:grid;gap:5px;min-width:0;font-size:12px;font-weight:800;color:#225242}
+.h274-source-row input{min-width:0;width:100%;max-width:100%;padding:10px;border:1px solid #9bc2b0;border-radius:8px;background:#fff;color:#153d31;font:inherit}
+.h274-save{min-height:40px!important;border:0!important;background:#086747!important;color:#fff!important;border-radius:8px!important;padding:9px 12px!important;font-weight:800!important;font-size:13px!important;line-height:1.3!important;font-family:inherit!important;white-space:normal;cursor:pointer}
+.h274-save:disabled{opacity:.55;cursor:wait}
+.h274-save[hidden],.h274-source-row[hidden],.h274-date-box[hidden]{display:none!important}
+.h274-alert{color:#9b302c;font-size:12px;line-height:1.4;font-weight:700}
+.h274-alert:empty{display:none}
+@media(max-width:650px){.h274-date-box{grid-template-columns:1fr}.h274-save{width:100%}}
+</style>
+<script id="ichef-v274-dlc-date-script">
+(()=>{'use strict';
+ if(window.__ICHEF_HACCP_V274_DLC_DATE__)return;
+ window.__ICHEF_HACCP_V274_DLC_DATE__=true;
+ const wired=new WeakSet();
+ const el=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n};
+ const get=(root,name)=>root.querySelector('[data-h268="'+name+'"]');
+ function key(root){return ['product','family','formState','packaging','process','temperature','manufacturer'].map(n=>get(root,n)?.value||'').join('||')}
+ function dateUTC(value){
+  const m=/^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d)$/.exec(value||'');
+  if(!m)return NaN;
+  const y=+m[1],mo=+m[2],d=+m[3],h=+m[4],mi=+m[5];
+  if(y<2000||y>2100||mo<1||mo>12||d<1||d>31||h>23||mi>59)return NaN;
+  const ts=Date.UTC(y,mo-1,d,h,mi,0,0),dt=new Date(ts);
+  return dt.getUTCFullYear()===y&&dt.getUTCMonth()===mo-1&&dt.getUTCDate()===d?ts:NaN;
+ }
+ function toLocalValue(timestamp){if(!Number.isFinite(timestamp))return '';return new Date(timestamp).toISOString().slice(0,16)}
+ function nice(value){return value?value.slice(8,10)+'/'+value.slice(5,7)+'/'+value.slice(0,4)+' à '+value.slice(11,16):'—'}
+ function matchedHours(root,state){
+  const ref=get(root,'reference');
+  if(!ref||ref.hidden||state.confirmedKey!==key(root))return null;
+  const found=/Référence validée par le chef\s*:\s*(\d+)\s*h\s*à/i.exec(ref.textContent||'');
+  if(!found)return null;
+  const h=Number(found[1]);return Number.isSafeInteger(h)&&h>=1&&h<=17520?h:null;
+ }
+ function canApprove(root){const manager=get(root,'manager');return !!manager&&!manager.hidden&&!manager.closest('[hidden]')}
+ function refresh(root,state){
+  const start=state.start,rawDate=state.date,ui=state.ui,stat=state.status,save=state.save,src=state.source,alert=state.alert;
+  const val=start.value,dateStart=dateUTC(val),hours=matchedHours(root,state),mfr=get(root,'manufacturer')?.value||'',chief=canApprove(root);
+  rawDate.disabled=!chief;
+  ui.textContent='';
+  if(!Number.isFinite(dateStart)){
+   if(!state.edited)rawDate.value='';
+   stat.textContent='Indiquez d’abord la date et l’heure de préparation ou d’ouverture.';
+  }else if(hours!==null){
+   const computed=toLocalValue(dateStart+hours*3600000);
+   if(!state.edited)rawDate.value=computed;
+   const exceeds=mfr&&computed.slice(0,10)>mfr;
+   stat.textContent=exceeds?'La date calculée depuis la règle PMS dépasse la DLC fabricant : elle ne doit pas être retenue.':
+    'Suggestion calculée depuis la règle PMS validée ('+hours+' h). Vérifier les conditions de conservation.';
+   if(exceeds)ui.textContent='Attention : proposition après la DLC fabricant ('+mfr.split('-').reverse().join('/')+').';
+  }else{
+   if(!state.edited)rawDate.value='';
+   stat.textContent='Aucune date fiable calculable : recherchez une règle PMS validée. Le chef peut renseigner une date avec son justificatif.';
+  }
+  if(!chief){src.hidden=true;save.hidden=true;ui.textContent=ui.textContent||'Modification réservée au chef du secteur.';}
+  else{src.hidden=false;save.hidden=false;}
+  const dateEnd=dateUTC(rawDate.value);
+  if(Number.isFinite(dateStart)&&Number.isFinite(dateEnd)){
+   const diff=(dateEnd-dateStart)/3600000;
+   if(diff<=0)ui.textContent='La DLC doit être postérieure au début de conservation.';
+   else if(mfr&&rawDate.value.slice(0,10)>mfr)ui.textContent='Date refusée : après la DLC fabricant.';
+   else if(!Number.isInteger(diff))ui.textContent='Choisissez une heure complète après le début (durée entière en heures).';
+  }
+ }
+ function setup(root){
+  if(wired.has(root)||!root.classList.contains('h271-ready'))return;
+  const form=get(root,'form'),ref=get(root,'reference'),advice=get(root,'result'),manager=get(root,'manager'),card=root.querySelector('.h272-proposal-card');
+  if(!form||!ref||!advice||!manager||!card)return;
+  const grid=form.querySelector('.h268-grid');if(!grid)return;
+  wired.add(root);
+  const startLabel=el('label','h274-start-date','Date et heure de préparation / ouverture');
+  const start=el('input');start.type='datetime-local';start.required=false;start.autocomplete='off';start.setAttribute('aria-label','Début de conservation, date et heure');
+  startLabel.append(start);
+  const details=get(root,'details');if(details?.closest('label'))details.closest('label').before(startLabel);else grid.append(startLabel);
+  const hiddenLegacy=card.querySelector('[data-h272="ai"]')?.closest('.h272-proposal-row');if(hiddenLegacy)hiddenLegacy.style.display='none';
+  const box=el('section','h274-suggestion');box.setAttribute('aria-label','Proposition de DLC et validation du chef');
+  box.append(el('div','h274-title','Date de DLC proposée'));
+  const status=el('div','h274-state','Indiquez le début de conservation.');box.append(status);
+  const line=el('div','h274-date-box');const dlcLabel=el('label','', 'Date / heure limite');
+  const date=el('input');date.type='datetime-local';date.setAttribute('aria-label','Date de DLC proposée ou ajustée par le chef');date.setAttribute('data-h274','proposed');dlcLabel.append(date);
+  const save=el('button','h274-save','Valider cette DLC');save.type='button';
+  line.append(dlcLabel,save);box.append(line);
+  const ui=el('div','h274-alert');box.append(ui);
+  const source=el('label','h274-source-row','Justificatif PMS (obligatoire pour valider)');
+  const sourceInput=el('input');sourceInput.type='text';sourceInput.maxLength=320;sourceInput.placeholder='Procédure PMS + version / étude de durée de vie';source.append(sourceInput);box.append(source);
+  const alert=el('div','h274-alert');alert.setAttribute('role','status');box.append(alert);
+  const caveat=el('div','h274-state','Proposition non applicable avant validation du chef. Aucune date inventée par l’IA et aucune prolongation de la DLC fabricant.');box.append(caveat);
+  card.querySelector('.h272-rows')?.append(box);
+  const state={start,date,ui,status,save,source,alert,edited:false,confirmedKey:'',initialKey:key(root)};
+  function clearForChange(){state.confirmedKey='';state.edited=false;alert.textContent='';refresh(root,state)}
+  form.addEventListener('input',e=>{if(e.target!==start)clearForChange();});
+  form.addEventListener('change',e=>{if(e.target!==start)clearForChange();});
+  start.addEventListener('input',()=>{state.edited=false;alert.textContent='';refresh(root,state)});
+  start.addEventListener('change',()=>{state.edited=false;alert.textContent='';refresh(root,state)});
+  date.addEventListener('input',()=>{state.edited=true;alert.textContent='';refresh(root,state)});
+  date.addEventListener('change',()=>{state.edited=true;alert.textContent='';refresh(root,state)});
+  sourceInput.addEventListener('input',()=>{alert.textContent='';});
+  const refWatcher=new MutationObserver(()=>{
+   const found=/^Référence validée par le chef\s*:/i.test((ref.textContent||'').trim())&&!ref.hidden;
+   if(found){state.confirmedKey=key(root);if(!state.edited)refresh(root,state)}else{state.confirmedKey='';refresh(root,state)}
+  });refWatcher.observe(ref,{attributes:true,attributeFilter:['hidden'],childList:true,characterData:true,subtree:true});
+  const msg=get(root,'message');if(msg){const m=new MutationObserver(()=>{const text=String(msg.textContent||'');if(text.includes('✓ Référence du chef enregistrée')){alert.style.color='#136644';alert.textContent='Règle de conservation enregistrée sur le serveur par le chef.';}
+    else if(/non enregistrée|refusée|rechargez|Erreur/i.test(text)){alert.style.color='#9b302c';alert.textContent=text;}});m.observe(msg,{childList:true,characterData:true,subtree:true});}
+  root.addEventListener('toggle',()=>{if(!root.open){state.confirmedKey='';state.edited=false;date.value='';sourceInput.value='';}refresh(root,state)});
+  save.addEventListener('click',async()=>{
+   alert.style.color='#9b302c';alert.textContent='';
+   if(!canApprove(root)){alert.textContent='Validation réservée au chef du secteur.';return;}
+   const startMs=dateUTC(start.value),endMs=dateUTC(date.value),mfr=get(root,'manufacturer')?.value||'';
+   if(!Number.isFinite(startMs)||!Number.isFinite(endMs)){alert.textContent='Renseignez les deux dates et les heures.';return;}
+   const hours=(endMs-startMs)/3600000;
+   if(!Number.isSafeInteger(hours)||hours<1||hours>17520){alert.textContent='Durée invalide : 1 à 17 520 heures entières.';return;}
+   if(mfr&&date.value.slice(0,10)>mfr){alert.textContent='Impossible de dépasser la DLC fabricant.';return;}
+   if(!get(root,'product')?.value.trim()||get(root,'temperature')?.value==='') {alert.textContent='Nom du produit et température obligatoires.';return;}
+   const justification=sourceInput.value.trim()||get(root,'source')?.value.trim()||'';
+   if(justification.length<12){alert.textContent='Indiquez une justification PMS documentée (12 caractères minimum).';return;}
+   // Les écritures sont effectuées EXCLUSIVEMENT via le bouton existant,
+   // qui utilise la session et l'API sécurisée du serveur, pas de nouvel endpoint.
+   const hoursField=get(root,'hours'),sourceField=get(root,'source'),approve=get(root,'approve');
+   if(!hoursField||!sourceField||!approve){alert.textContent='Module de validation indisponible.';return;}
+   hoursField.value=String(hours);sourceField.value=justification;
+   alert.style.color='#2b5a47';alert.textContent='Envoi au chef / serveur sécurisé en cours…';
+   approve.click();
+  });
+  if(!ref.hidden&&/^Référence validée par le chef\s*:/i.test((ref.textContent||'').trim()))state.confirmedKey=key(root);
+  refresh(root,state);
+ }
+ function mount(){document.querySelectorAll('.h268-root.h271-ready').forEach(setup)}
+ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',mount,{once:true});else mount();
+ setInterval(mount,3000);
+})();
+</script>
 </body>
 </html>
