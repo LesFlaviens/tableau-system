@@ -4872,9 +4872,14 @@ function haccpSectorReturnConfig() {
                 </tr>`).join('');
 
             document.getElementById('logs-trace').innerHTML = db.trace.filter(l => l.dept === currentDept).slice(0,20).map(l => {
-                let diffDays = l.dlc ? Math.ceil((new Date(l.dlc) - new Date().setHours(0,0,0,0)) / 86400000) : null;
+                const dlcRule = window.ICHEF_HACCP_DLC_V266;
+                const diffDays = dlcRule ? dlcRule.daysUntil(l.dlc) : (l.dlc ? Math.ceil((new Date(l.dlc) - new Date().setHours(0,0,0,0)) / 86400000) : null);
                 let dlcStatus = ""; let rowClass = "";
-                if(diffDays !== null) {
+                if (dlcRule && diffDays !== null) {
+                    const level = dlcRule.classify(diffDays);
+                    dlcStatus = `<span class="h266-chip ${level.css}">${level.label}</span>`;
+                    rowClass = 'h266-row-' + level.css;
+                } else if (diffDays !== null) {
                     if (diffDays < 0) { dlcStatus = `<b style="color:var(--alert);">PÉRIMÉ</b>`; rowClass = "dlc-alert"; }
                     else if (diffDays === 0) { dlcStatus = `<b style="color:var(--alert);">EXPIRE AUJ.</b>`; rowClass = "dlc-alert"; }
                     else dlcStatus = `<b style="color:var(--gold);">J-${diffDays}</b>`;
@@ -4929,6 +4934,7 @@ function haccpSectorReturnConfig() {
             } catch (_) {}
             try { refreshTraceDesktopStats(); } catch (_) {}
             try { updateTraceValidityIndicators(); } catch (_) {}
+            try { window.ICHEF_HACCP_DLC_V266?.render(); } catch (_) {}
         }
 
 
@@ -7552,6 +7558,12 @@ tbody td,
                 return;
             }
 
+            if (window.ICHEF_HACCP_DLC_V266) {
+                const level = window.ICHEF_HACCP_DLC_V266.classify(diff);
+                box.className = 'htrace-validity h266-' + level.css;
+                box.textContent = level.label;
+                return;
+            }
             if (diff < 0) {
                 box.className = "htrace-validity expired";
                 box.textContent = `EXPIRÉE · ${Math.abs(diff)} jour${Math.abs(diff)>1?"s":""}`;
@@ -7581,7 +7593,10 @@ tbody td,
             const diff = traceDaysUntil(row.dlc);
             if (diff !== null) {
                 if (diff < 0) expired++;
-                else if (diff <= 2) soon++;
+                else if (window.ICHEF_HACCP_DLC_V266) {
+                    const level = window.ICHEF_HACCP_DLC_V266.classify(diff);
+                    if (level.css === 'red' || level.css === 'orange') soon++;
+                } else if (diff <= 2) soon++;
             }
         });
 
@@ -12592,5 +12607,157 @@ window.ICHEF_V242_CORRECTIVE={open,build:'V242'};
 })();
 </script>
 
+<style id="ichef-haccp-v266-dlc-style">
+/* V266 : alertes textuelles uniquement. Aucun dépassement ni image. */
+#mod-trace .h266-panel{box-sizing:border-box;max-width:100%;min-width:0;margin:10px 0 16px;padding:15px;border:1px solid #d4dfe9;border-radius:14px;background:#fff;color:#213a53;font-family:inherit}
+#mod-trace .h266-title{font-size:17px;font-weight:900;margin:0 0 5px;color:#20364b}
+#mod-trace .h266-sub{margin:0 0 12px;font-size:13px;line-height:1.55;color:#50677d}
+#mod-trace .h266-states{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;min-width:0}
+#mod-trace .h266-state{box-sizing:border-box;border:1px solid #d4dfe9;border-radius:10px;padding:11px;min-width:0}
+#mod-trace .h266-state strong{display:block;font-size:19px;color:#14283b}
+#mod-trace .h266-state span{display:block;font-size:12px;font-weight:750;overflow-wrap:anywhere}
+#mod-trace .h266-state.green{background:#edf9f1;border-color:#b6d9bf;color:#225f3b}
+#mod-trace .h266-state.orange{background:#fff5e7;border-color:#efd3a7;color:#895a12}
+#mod-trace .h266-state.red{background:#fff0f0;border-color:#e8b5b5;color:#a32c36}
+#mod-trace .h266-settings{margin-top:11px;border-top:1px solid #e0e7ef;padding-top:11px}
+#mod-trace .h266-settings summary{cursor:pointer;font-size:13px;font-weight:900;color:#294b68;padding:5px 0}
+#mod-trace .h266-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) auto;gap:8px;align-items:end;margin-top:10px}
+#mod-trace .h266-fields label{font-size:12px;font-weight:800;min-width:0;display:flex;flex-direction:column;gap:5px;overflow-wrap:anywhere}
+#mod-trace .h266-fields label.h266-check{flex-direction:row;align-items:center;gap:7px;min-height:44px}
+#mod-trace .h266-fields input[type=number]{background:#fff!important;color:#1b324a!important;border:1px solid #b9c7d6!important;border-radius:8px!important;box-sizing:border-box;min-width:0;max-width:100%;min-height:44px;padding:8px 10px;font-size:16px}
+#mod-trace .h266-fields input[type=checkbox]{width:19px;height:19px;min-height:auto}
+#mod-trace .h266-fields button{background:#1c3c57;color:white;border:0;border-radius:8px;min-height:44px;padding:8px 14px;font-weight:850;cursor:pointer;white-space:normal}
+#mod-trace .h266-fields button:disabled{opacity:.6;cursor:wait}
+#mod-trace .h266-feedback{min-height:20px;margin:8px 0 0;font-size:12px;font-weight:700}
+#mod-trace .h266-list{display:flex;flex-direction:column;gap:6px;margin-top:12px}
+#mod-trace .h266-alert-item{font-size:13px;line-height:1.4;display:flex;align-items:flex-start;justify-content:space-between;gap:8px;padding:9px 11px;border:1px solid #dce6ee;border-radius:8px;min-width:0}
+#mod-trace .h266-alert-item strong{overflow-wrap:anywhere;min-width:0}
+#mod-trace .h266-alert-item small{font-size:12px;color:#50677d}
+#mod-trace .h266-alert-item .h266-chip{flex:0 0 auto}
+#mod-trace .h266-note{margin-top:10px;font-size:12px;line-height:1.5;color:#607488}
+#mod-trace .h266-chip{display:inline-block;border-radius:6px;padding:4px 7px;font-weight:850;font-size:12px;white-space:nowrap}
+#mod-trace .h266-chip.green,#mod-trace .htrace-validity.h266-green{background:#e5f5eb!important;color:#20643c!important}
+#mod-trace .h266-chip.orange,#mod-trace .htrace-validity.h266-orange{background:#fff0d5!important;color:#85520a!important}
+#mod-trace .h266-chip.red,#mod-trace .htrace-validity.h266-red{background:#ffe7e7!important;color:#a32835!important}
+#mod-trace .h266-row-red{background:rgba(211,48,48,.08)!important}
+#mod-trace .h266-row-orange{background:rgba(240,150,20,.055)!important}
+#mod-trace .h266-mobile{margin:10px 8px}
+@media(max-width:920px){#mod-trace .h266-fields{grid-template-columns:repeat(2,minmax(0,1fr))}#mod-trace .h266-states{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:560px){#mod-trace .h266-states{grid-template-columns:1fr 1fr 1fr;gap:5px}#mod-trace .h266-state{padding:7px}#mod-trace .h266-state strong{font-size:17px}#mod-trace .h266-state span{font-size:10px}#mod-trace .h266-fields{grid-template-columns:1fr}#mod-trace .h266-alert-item{flex-direction:column}#mod-trace .h266-panel{padding:11px}}
+</style>
+<script id="ichef-haccp-v266-dlc-script">
+(()=>{'use strict';if(window.ICHEF_HACCP_DLC_V266)return;
+const $=id=>document.getElementById(id),defaults=()=>({enabled:true,orangeDays:3,redDays:1,version:0});
+const state={sector:'',settings:defaults(),serverReady:false,busy:false,inFlight:false,lastFetch:0};
+const visible=()=>document.visibilityState==='visible';
+const sector=()=>typeof currentDept==='string'?currentDept.trim().toUpperCase():'';
+const allowedSector=s=>/^(CUISINE|PATISSERIE|BAR|SERVICE|ADMIN)$/.test(s);
+const signedIn=()=>!!window.ICHEF_HACCP?.authenticated;
+const manager=()=>signedIn()&&typeof isBoss==='function'&&isBoss()&&!window.ICHEF_HACCP?.v223Staff;
+const server=()=>typeof SERVER_URL==='string'?SERVER_URL:'https://tableau-system.onrender.com';
+const headers=(json=false)=>typeof systemHeaders==='function'?systemHeaders(json?{'Content-Type':'application/json'}:{}):null;
+const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c]));
+function daysUntil(value){if(typeof value!=='string'||!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(value))return null;
+ const [y,m,d]=value.split('-').map(Number),target=new Date(y,m-1,d,12,0,0);
+ if(target.getFullYear()!==y||target.getMonth()!==m-1||target.getDate()!==d)return null;
+ const t=new Date(),today=new Date(t.getFullYear(),t.getMonth(),t.getDate(),12,0,0);
+ return Math.round((target-today)/86400000);
+}
+function classify(days){const s=state.settings;if(days===null)return {css:'neutral',label:'DLC manquante'};
+ if(days<0)return {css:'red',label:'PÉRIMÉ · '+Math.abs(days)+' j'};
+ if(!state.serverReady)return {css:'neutral',label:'SEUILS NON SYNCHRONISÉS'};
+ if(days===0)return {css:'red',label:'EXPIRE AUJOURD’HUI'};
+ if(s.enabled&&days<=s.redDays)return {css:'red',label:'ROUGE · J-'+days};
+ if(s.enabled&&days<=s.orangeDays)return {css:'orange',label:'ORANGE · J-'+days};
+ return {css:'green',label:'VERT · J-'+days};
+}
+function entries(){const seen=new Map();const rows=typeof db==='undefined'?[]:Array.isArray(db.trace)?db.trace:[];
+ // La traçabilité comporte des preuves successives et corrections : ne garder que le dernier enregistrement par lot.
+ for(const r of rows){if(!r||r.originalId||String(r.dept||'').toUpperCase()!==sector())continue;
+  const days=daysUntil(r.dlc);if(days===null)continue;
+  const key=[String(r.name||'').trim().toLocaleLowerCase('fr'),String(r.lot||'').trim().toLocaleLowerCase('fr')].join('|');
+  if(!seen.has(key))seen.set(key,{row:r,days,level:classify(days)});
+ }
+ return [...seen.values()];
+}
+function make(tag,cl,txt){const el=document.createElement(tag);if(cl)el.className=cl;if(txt!==undefined)el.textContent=String(txt);return el}
+function panel(id,mobile){const outer=make('section','h266-panel'+(mobile?' h266-mobile':''));outer.id=id;
+ const title=make('h2','h266-title','Alertes de péremption · Traçabilité');outer.append(title);
+ const sub=make('p','h266-sub','Règles par secteur · le responsable choisit combien de jours avant la DLC les alertes passent à l’orange puis au rouge.');outer.append(sub);
+ const stats=make('div','h266-states');stats.setAttribute('role','status');stats.setAttribute('aria-live','polite');
+ for(const [level,label] of [['green','VERT · Conforme'],['orange','ORANGE · À surveiller'],['red','ROUGE · Urgent / périmé']]){
+  const item=make('div','h266-state '+level),count=make('strong','', '—'),caption=make('span','',label);count.dataset.h266Count=level;item.append(count,caption);stats.append(item);
+ }outer.append(stats);
+ const list=make('div','h266-list');list.dataset.h266List='';outer.append(list);
+ const note=make('p','h266-note','Les alertes sont calculées à partir du registre de traçabilité, pas d’un inventaire physique. Un lot déjà sorti du stock peut encore figurer dans les archives.');outer.append(note);
+ {
+  const d=make('details','h266-settings');d.hidden=!manager();d.dataset.h266Settings='';const summary=make('summary','','Réglages des alertes · Responsable');d.append(summary);
+  const fields=make('div','h266-fields');
+  const orangeLabel=make('label','','Orange dès (jours avant DLC)');const orange=make('input');orange.type='number';orange.min='1';orange.max='90';orange.step='1';orange.dataset.h266Field='orange';orangeLabel.append(orange);
+  const redLabel=make('label','','Rouge dès (jours avant DLC)');const red=make('input');red.type='number';red.min='0';red.max='90';red.step='1';red.dataset.h266Field='red';redLabel.append(red);
+  const enabledLabel=make('label','h266-check');const enabled=make('input');enabled.type='checkbox';enabled.dataset.h266Field='enabled';enabledLabel.append(enabled,make('span','','Alertes anticipées actives'));
+  const save=make('button','','ENREGISTRER');save.type='button';save.dataset.h266Save='';save.addEventListener('click',()=>void saveSettings());
+  fields.append(orangeLabel,redLabel,enabledLabel,save);d.append(fields);
+  const status=make('p','h266-feedback','');status.dataset.h266Feedback='';status.setAttribute('role','status');d.append(status);outer.append(d);
+ }
+ return outer;
+}
+function mount(){const desktop=$('htrace-desktop'),mobile=$('haccp-express-trace');if(!desktop||!mobile)return;
+ if(!$('h266-dlc-desktop')){const p=panel('h266-dlc-desktop',false),head=desktop.querySelector('.htrace-desktop-head');head?.insertAdjacentElement('afterend',p)}
+ if(!$('h266-dlc-mobile')){const p=panel('h266-dlc-mobile',true),main=mobile.querySelector('.htrace-main');main?.insertBefore(p,main.firstChild)}
+}
+function draw(){mount();const rows=state.serverReady&&signedIn()?entries():[],counts={green:0,orange:0,red:0};
+ rows.forEach(x=>{if(Object.hasOwn(counts,x.level.css))counts[x.level.css]++});
+ for(const parent of [$('h266-dlc-desktop'),$('h266-dlc-mobile')].filter(Boolean)){
+  for(const level of Object.keys(counts)){const span=parent.querySelector('[data-h266-count="'+level+'"]');if(span)span.textContent=state.serverReady?String(counts[level]):'—';}
+  const list=parent.querySelector('[data-h266-list]');if(!list)continue;list.replaceChildren();
+  const active=rows.filter(x=>x.level.css==='red'||x.level.css==='orange').sort((a,b)=>a.days-b.days).slice(0,8);
+  if(!state.serverReady){list.append(make('p','h266-note',signedIn()?'Synchronisation des réglages en cours…':'Identifiez-vous pour voir les alertes.'));}
+  else if(!active.length){list.append(make('p','h266-note','Aucune DLC en orange ou en rouge dans le registre de ce secteur.'));}
+  else for(const x of active){const item=make('div','h266-alert-item');
+    const detail=make('div');detail.append(make('strong','',String(x.row.name||'Produit sans nom')));
+    detail.append(make('small','',' · Lot : '+String(x.row.lot||'—')+' · DLC : '+String(x.row.dlc||'—')));
+    const badge=make('span','h266-chip '+x.level.css,x.level.label);item.append(detail,badge);list.append(item);
+  }
+  const settingsEl=parent.querySelector('[data-h266-settings]');if(settingsEl)settingsEl.hidden=!manager();if(settingsEl&&!settingsEl.open){
+   const orange=settingsEl.querySelector('[data-h266-field="orange"]'),red=settingsEl.querySelector('[data-h266-field="red"]'),enabled=settingsEl.querySelector('[data-h266-field="enabled"]');
+   if(orange)orange.value=String(state.settings.orangeDays);if(red)red.value=String(state.settings.redDays);if(enabled)enabled.checked=state.settings.enabled;
+  }
+ }
+}
+function notify(message,isError=false){for(const el of document.querySelectorAll('#mod-trace [data-h266-feedback]')){el.textContent=message;el.style.color=isError?'#aa2535':'#246448'}}
+async function load(force=false){const s=sector();if(!allowedSector(s)||!signedIn())return;
+ if(state.inFlight||(!force&&s===state.sector&&Date.now()-state.lastFetch<25000))return;
+ if(s!==state.sector){state.sector=s;state.serverReady=false;state.settings=defaults();draw();}
+ state.inFlight=true;
+ try{const r=await fetch(server()+'/api/haccp/dlc-alert-settings?sector='+encodeURIComponent(s),{credentials:'include',headers:headers(),cache:'no-store'});
+  const data=await r.json().catch(()=>({}));if(!r.ok||data.success!==true)throw Error(data.error||'Réglages DLC indisponibles');
+  if(s!==sector())return;
+  const cfg=data.settings||defaults();state.settings={enabled:cfg.enabled!==false,orangeDays:cfg.orangeDays,redDays:cfg.redDays,version:cfg.version||0};
+  state.serverReady=true;state.lastFetch=Date.now();draw();try{renderLogs();updateTraceValidityIndicators()}catch(_){}
+ }catch(e){state.serverReady=false;draw();notify('Réglages non synchronisés : '+e.message,true);}finally{state.inFlight=false;if(s!==sector()&&signedIn())setTimeout(()=>void load(true),0)}
+}
+async function saveSettings(){if(!manager()||state.busy)return notify('Modification réservée au responsable connecté.',true);
+ const open=document.querySelector('#mod-trace [data-h266-settings][open]');if(!open)return;
+ const orange=Number(open.querySelector('[data-h266-field="orange"]')?.value),red=Number(open.querySelector('[data-h266-field="red"]')?.value),enabled=!!open.querySelector('[data-h266-field="enabled"]')?.checked;
+ if(!Number.isSafeInteger(orange)||orange<1||orange>90||!Number.isSafeInteger(red)||red<0||red>orange)return notify('Saisissez orange entre 1 et 90 jours, rouge entre 0 et orange.',true);
+ if(!state.serverReady)return notify('Connexion serveur non confirmée : sauvegarde impossible.',true);
+ state.busy=true;const btn=open.querySelector('[data-h266-save]');if(btn)btn.disabled=true;notify('Enregistrement sécurisé…');
+ try{const r=await fetch(server()+'/api/haccp/dlc-alert-settings',{method:'POST',credentials:'include',headers:headers(true),cache:'no-store',body:JSON.stringify({sector:sector(),orangeDays:orange,redDays:red,enabled,version:state.settings.version})});
+  const d=await r.json().catch(()=>({}));if(!r.ok||d.success!==true)throw Error(d.error||'Enregistrement refusé');
+  state.settings=d.settings;state.lastFetch=Date.now();notify('✓ Seuils enregistrés et synchronisés.');draw();try{renderLogs();updateTraceValidityIndicators()}catch(_){}
+ }catch(e){notify('Non enregistré : '+e.message,true);if(e.message?.includes('ailleurs'))void load(true)}finally{state.busy=false;if(btn)btn.disabled=false}
+}
+function boot(){mount();draw();setTimeout(()=>void load(true),700);setInterval(()=>{if(visible()&&signedIn()&&allowedSector(sector()))void load(true)},30000);
+ setInterval(()=>{if(signedIn()&&sector()!==state.sector)void load(true)},2500);
+ document.addEventListener('visibilitychange',()=>{if(visible())void load(true)});
+ // Le registre change après les saisies HACCP : son tableau appelle déjà .render().
+ document.addEventListener('click',ev=>{if(ev.target.closest('[onclick*="showModule(\'trace\')"],[onclick*="haccpV7Open(\'trace\')"]'))setTimeout(()=>void load(true),80)});
+ try{window.addEventListener('ichef:haccp:sector-changed',()=>void load(true))}catch(_){}
+}
+window.ICHEF_HACCP_DLC_V266={classify,daysUntil,render:draw,refresh:()=>load(true)};
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
+})();
+</script>
 </body>
 </html>
