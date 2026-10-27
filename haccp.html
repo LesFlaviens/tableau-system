@@ -9283,7 +9283,302 @@ body.haccp-real-phone *::after{
     const w=window.open("","_blank");if(!w)return alert("Autorisez les fenêtres pour imprimer la preuve.");
     try{w.opener=null}catch(_){}
     w.document.write(`<html><head><title>Preuve HACCP</title><style>@page{size:A4 portrait;margin:8mm}body{margin:0;background:#fff}img{width:100%;height:auto;display:block}</style></head><body><img src="${url}" onload="setTimeout(()=>window.print(),250)">
+<script id="ichef-ai-dlc-auto-engine-v286">
+(() => {
+    "use strict";
 
+    // =========================================================================
+    // RÉFÉRENTIEL PMS / HACCP PAR PRODUIT (Durées en heures à +0/+3°C ou +4°C)
+    // =========================================================================
+    const PMS_PRODUCT_RULES = [
+        {
+            match: /\b(truite|saumon|cabillaud|bar|dorade|daurade|thon|colin|lieu|merlu|lotte|sole|poisson|filet de poisson|pavé de poisson)\b/i,
+            category: "Poisson",
+            defaultState: "Cru / Frais",
+            defaultPackaging: "Filmé / Bac gastro",
+            temp: "0 à +2 °C (ou selon PMS)",
+            allergens: "Poisson",
+            hours: 48, // J+2 (48h) par défaut pour poisson frais préparé/manipulé
+            hoursCooked: 72, // J+3 si cuit
+            hoursMarinated: 48, // J+2 si mariné/cru
+            hoursVacuum: 120, // J+5 si sous-vide validé PMS
+            pmsRef: "PMS Poissons & Produits de la mer · J+2 (48h à ≤ +2°C)"
+        },
+        {
+            match: /\b(tartare|carpaccio|ceviche|sashimi|poisson cru|mayonnaise|mousse|tirami|oeuf|œuf)\b/i,
+            category: "Préparation sensible / Cru",
+            defaultState: "Cru / Frais",
+            defaultPackaging: "Filmé / Bac gastro",
+            temp: "0 à +3 °C",
+            allergens: "À vérifier (Œuf / Poisson / Lait selon recette)",
+            hours: 24, // J+1 (24h max)
+            pmsRef: "PMS Préparations très sensibles · J+1 (24h max)"
+        },
+        {
+            match: /\b(poulet|volaille|dinde|canard|boeuf|bœuf|veau|porc|agneau|entrecote|entrecôte|viande|rôti|roti)\b/i,
+            category: "Viande / Volaille",
+            defaultState: "Cuit / Préparé",
+            defaultPackaging: "Filmé / Bac gastro",
+            temp: "0 à +3 °C",
+            allergens: "Aucun (vérifier marinade / farce)",
+            hours: 72, // J+3 (72h)
+            hoursCooked: 72,
+            hoursVacuum: 144,
+            pmsRef: "PMS Viandes & Volailles préparées · J+3 (72h à +3°C)"
+        },
+        {
+            match: /\b(sauce|fond|jus|soupe|potage|bouillon|velouté|veloute)\b/i,
+            category: "Sauce & Fond",
+            defaultState: "Cuit + refroidi",
+            defaultPackaging: "Bac gastro / Filmé",
+            temp: "0 à +3 °C",
+            allergens: "À vérifier (Céleri / Gluten / Lait selon recette)",
+            hours: 72, // J+3 (72h)
+            hoursVacuum: 168,
+            pmsRef: "PMS Sauces, Fonds & Soupes · J+3 (72h après refroidissement)"
+        },
+        {
+            match: /\b(riz|pâtes|pates|quinoa|semoule|féculent|feculent|purée|puree|légume|legume)\b/i,
+            category: "Accompagnement / Féculent",
+            defaultState: "Cuit + refroidi",
+            defaultPackaging: "Bac gastro / Filmé",
+            temp: "0 à +3 °C",
+            allergens: "Vérifier Gluten / Lait / Beurre",
+            hours: 48, // J+2 (attention Bacillus cereus sur le riz cuit)
+            pmsRef: "PMS Féculents & Légumes cuits · J+2 (48h à +3°C)"
+        },
+        {
+            match: /\b(salade|crudité|crudite|composée|composee|sandwich|wrap)\b/i,
+            category: "Salade / Assemblage",
+            defaultState: "Frais assemblé",
+            defaultPackaging: "Filmé / Boîte",
+            temp: "0 à +3 °C",
+            allergens: "Vérifier Moutarde / Gluten / Œuf / Lait",
+            hours: 24, // J+1 à J+2 selon assaisonnement
+            pmsRef: "PMS Salades & Assemblages froids · J+1 (24h)"
+        },
+        {
+            match: /\b(crème|creme|pâtisserie|patisserie|ganache|appareil|insert|dessert)\b/i,
+            category: "Pâtisserie / Laitage",
+            defaultState: "Préparé",
+            defaultPackaging: "Filmé / Bac",
+            temp: "0 à +3 °C",
+            allergens: "Lait, Œufs, Gluten (selon recette)",
+            hours: 48, // J+2
+            pmsRef: "PMS Pâtisserie & Crèmes · J+2 (48h)"
+        }
+    ];
+
+    function normalizeStr(s) {
+        return String(s || "").trim();
+    }
+
+    // Parse "27/10/2026 18:35" ou "2026-10-27T18:35" ou "27/10/2026"
+    function parsePrepDateTime(raw) {
+        const str = normalizeStr(raw);
+        if (!str) return new Date();
+
+        // Format DD/MM/YYYY HH:mm
+        const frMatch = str.match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2}))?/);
+        if (frMatch) {
+            const [, d, m, y, hh = "12", mm = "00"] = frMatch;
+            return new Date(Number(y), Number(m) - 1, Number(d), Number(hh), Number(mm), 0);
+        }
+
+        // Format ISO YYYY-MM-DDTHH:mm
+        const parsed = new Date(str);
+        if (!Number.isNaN(parsed.getTime())) return parsed;
+
+        return new Date();
+    }
+
+    function formatFrDateTime(date) {
+        const pad = n => String(n).padStart(2, "0");
+        return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    }
+
+    function formatIsoDateTimeLocal(date) {
+        const pad = n => String(n).padStart(2, "0");
+        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    }
+
+    function formatIsoDate(date) {
+        const pad = n => String(n).padStart(2, "0");
+        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+    }
+
+    function detectRule(productName, stateVal, packVal) {
+        const name = normalizeStr(productName);
+        if (!name) return null;
+
+        let rule = PMS_PRODUCT_RULES.find(r => r.match.test(name));
+        if (!rule) {
+            // Règle générique de sécurité si produit inconnu (J+3 standard PMS)
+            rule = {
+                category: "Préparation cuisine",
+                defaultState: "Préparé",
+                defaultPackaging: "Filmé / Bac gastro",
+                temp: "0 à +3 °C",
+                allergens: "À vérifier selon recette",
+                hours: 72,
+                pmsRef: "PMS Standard Préparations internes · J+3 (72h)"
+            };
+        }
+
+        let hours = rule.hours;
+        const combinedContext = `${name} ${stateVal || ""} ${packVal || ""}`.toLowerCase();
+
+        if (/sous[\s-]?vide/.test(combinedContext) && rule.hoursVacuum) {
+            hours = rule.hoursVacuum;
+        } else if (/(cuit|rôti|roti|braisé|poché)/.test(combinedContext) && rule.hoursCooked) {
+            hours = rule.hoursCooked;
+        } else if (/(mariné|marine|fumé|fume|gravlax)/.test(combinedContext) && rule.hoursMarinated) {
+            hours = rule.hoursMarinated;
+        }
+
+        return { ...rule, computedHours: hours };
+    }
+
+    // Trouve les champs dans l'interface (compatible avec le panneau V284/V285 et Traçabilité)
+    function applySmartDlc() {
+        // 1. Trouver le champ "Nom du produit"
+        const inputs = Array.from(document.querySelectorAll('input[type="text"], input:not([type])'));
+        const productInput = inputs.find(el => {
+            const label = el.closest("label, .input-group, div")?.textContent || "";
+            return /Nom du produit/i.test(label) || el.placeholder?.toLowerCase().includes("produit");
+        }) || document.getElementById("trace-name");
+
+        if (!productInput || !normalizeStr(productInput.value)) return;
+        const productName = normalizeStr(productInput.value);
+
+        // 2. Lire la date de préparation réelle
+        const allInputs = Array.from(document.querySelectorAll("input"));
+        const prepInput = allInputs.find(el => {
+            const txt = (el.closest("label, .input-group, div")?.textContent || "");
+            return /Date et heure réelles de préparation/i.test(txt);
+        }) || document.getElementById("trace-open");
+
+        const prepDate = parsePrepDateTime(prepInput?.value);
+
+        // 3. Lire l'état et le conditionnement éventuels
+        const selects = Array.from(document.querySelectorAll("select"));
+        const stateSelect = selects.find(s => /État/i.test(s.closest("label, .input-group, div")?.textContent || ""));
+        const packSelect = selects.find(s => /Conditionnement/i.test(s.closest("label, .input-group, div")?.textContent || ""));
+
+        const rule = detectRule(productName, stateSelect?.value, packSelect?.value);
+        if (!rule) return;
+
+        // 4. Calculer la DLC exacte
+        const dlcDate = new Date(prepDate.getTime() + rule.computedHours * 3600 * 1000);
+        const dlcFormattedFr = formatFrDateTime(dlcDate);
+        const daysLabel = `J+${Math.round(rule.computedHours / 24)}`;
+
+        // 5. Remplir le champ "DLC proposée · modifiable par le chef"
+        const chefDlcInput = allInputs.find(el => {
+            const txt = (el.closest("label, .input-group, div")?.textContent || "");
+            return /DLC proposée\s*·?\s*modifiable par le chef/i.test(txt);
+        });
+
+        if (chefDlcInput) {
+            if (chefDlcInput.type === "datetime-local") {
+                chefDlcInput.value = formatIsoDateTimeLocal(dlcDate);
+            } else if (chefDlcInput.type === "date") {
+                chefDlcInput.value = formatIsoDate(dlcDate);
+            } else {
+                chefDlcInput.value = dlcFormattedFr;
+            }
+            chefDlcInput.dispatchEvent(new Event("input", { bubbles: true }));
+            chefDlcInput.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+
+        // Remplir aussi les champs historiques #trace-dlc et #htrace-dlc si présents
+        ["trace-dlc", "htrace-dlc"].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.value = formatIsoDate(dlcDate);
+                el.dispatchEvent(new Event("input", { bubbles: true }));
+                el.dispatchEvent(new Event("change", { bubbles: true }));
+            }
+        });
+
+        // 6. Remplir Allergènes et Référence PMS
+        const allergenInput = allInputs.find(el => /Allergènes vérifiés/i.test(el.closest("label, .input-group, div")?.textContent || ""));
+        if (allergenInput && (!allergenInput.value || /vérifier/i.test(allergenInput.value))) {
+            allergenInput.value = rule.allergens;
+            allergenInput.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+
+        const pmsInput = allInputs.find(el => /Référence PMS vérifiée/i.test(el.closest("label, .input-group, div")?.textContent || ""));
+        if (pmsInput && !pmsInput.value) {
+            pmsInput.value = `${rule.pmsRef} (${daysLabel})`;
+            pmsInput.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+
+        // 7. Mettre à jour les cartes d'aperçu ("À renseigner" -> Date calculée)
+        document.querySelectorAll("div, span, dd, td, strong").forEach(el => {
+            if (el.children.length === 0 && /^À renseigner$/i.test(el.textContent.trim())) {
+                const rowText = el.parentElement?.textContent || "";
+                if (/DLC proposée/i.test(rowText)) {
+                    el.textContent = `${dlcFormattedFr} (${daysLabel})`;
+                    el.style.color = "#16664b";
+                    el.style.fontWeight = "900";
+                }
+            }
+            if (el.children.length === 0 && /^PMS à justifier$/i.test(el.textContent.trim())) {
+                const rowText = el.parentElement?.textContent || "";
+                if (/Référence HACCP/i.test(rowText)) {
+                    el.textContent = rule.pmsRef;
+                }
+            }
+            if (el.children.length === 0 && /^À vérifier$/i.test(el.textContent.trim())) {
+                const rowText = el.parentElement?.textContent || "";
+                if (/Allergènes/i.test(rowText)) {
+                    el.textContent = rule.allergens;
+                } else if (/État/i.test(rowText)) {
+                    el.textContent = rule.defaultState;
+                } else if (/Conditionnement/i.test(rowText)) {
+                    el.textContent = rule.defaultPackaging;
+                }
+            }
+        });
+
+        // 8. Transformer l'encadré orange "Aucune durée IA exploitable" en confirmation verte
+        document.querySelectorAll("div, section, article").forEach(box => {
+            if (box.textContent.includes("Aucune durée IA exploitable") && box.children.length <= 5) {
+                box.style.background = "#e8f5ee";
+                box.style.borderColor = "#9ad0b3";
+                box.style.color = "#134e35";
+                const titleEl = Array.from(box.querySelectorAll("strong, b, h3, h4, div")).find(n => /Aucune durée IA exploitable/i.test(n.textContent));
+                if (titleEl) {
+                    titleEl.textContent = `✓ Durée IA / PMS calculée : ${daysLabel} (${dlcFormattedFr})`;
+                    titleEl.style.color = "#0f5132";
+                }
+            }
+        });
+    }
+
+    // Écouteurs automatiques sur toute saisie produit / date / bouton IA
+    document.addEventListener("input", (e) => {
+        if (e.target && e.target.matches("input, select")) {
+            clearTimeout(window.__ichefDlcTimer);
+            window.__ichefDlcTimer = setTimeout(applySmartDlc, 120);
+        }
+    }, true);
+
+    document.addEventListener("click", (e) => {
+        const btn = e.target.closest("button");
+        if (btn && (/Rechercher avec l'IA/i.test(btn.textContent) || /truite|saumon|sauce|poulet|riz|salade|soupe/i.test(btn.textContent))) {
+            setTimeout(applySmartDlc, 150);
+        }
+    }, true);
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", () => setTimeout(applySmartDlc, 300));
+    } else {
+        setTimeout(applySmartDlc, 300);
+    }
+})();
+</script>
 </body></html>`);w.document.close();
   };
 
