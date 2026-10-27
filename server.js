@@ -1,4 +1,4 @@
-// iCHEF SERVER V292 - correction DLC Gemini securisee - patch circonscrit aux routes HACCP IA.
+// iCHEF SERVER V293 - diagnostic quotas Gemini / delais adaptatifs, routes HACCP IA seulement.
 
 const express = require('express');
 const cors = require('cors');
@@ -37269,7 +37269,7 @@ const h268AdviceLimits = new Map();
 // V269 : coupe-circuit volontaire après un refus de quota Gemini.
 // Ce cache est uniquement une optimisation par instance : il ne remplace
 // ni la gestion du budget du projet Google ni les droits HACCP du serveur.
-const h269GeminiCircuit={blockedUntil:0};
+const h269GeminiCircuit={blockedUntil:0,lastReason:'',lastHttpStatus:0};
 
 const H268_FAMILIES=new Set(['POISSONS','FRUITS_DE_MER','VIANDES','VOLAILLES','LEGUMES','FRUITS','SAUCES','LAITAGES','OEUFS','FECULENTS','CHARCUTERIES','PATISSERIES','PLATS_PREPARES','CONGELES','AUTRE']);
 const H268_FORMS=new Set(['CRU','CUIT','REFROIDI','DECONGELE','OUVERT','LAVE_DECOUPE','PREPARE','AUTRE']);
@@ -37322,15 +37322,27 @@ function h269SafeFallback(p){
  general.push('En cas de dépassement d’une DLC ou de doute sur la sécurité : isoler le produit et appliquer la procédure du PMS ; demander la décision au responsable habilité.');
  return general.join('\n\n');
 }
-function h269SafeResponse(res,auth,p,reason,jurisdiction=null){
- const reasons={QUOTA:'Plafond de dépenses ou quota Gemini atteint : conseil IA indisponible. Le responsable de la facturation Google doit vérifier le budget du projet.',
-  COOLDOWN:'Conseil IA temporairement suspendu après un refus de quota Gemini : aucune nouvelle requête envoyée.',
-  KEY:'Service Gemini non configuré. Conseils généraux disponibles sans IA.',
-  RATE:'Limite locale de demandes IA atteinte. Conseils généraux disponibles sans IA.',
-  SERVICE:'Le service IA est momentanément indisponible. Conseils généraux disponibles sans IA.'};
+function h269SafeResponse(res,auth,p,reason,jurisdiction=null,meta={}){
+ // Aucun code secret, aucune réponse brute de Google, aucune information client sensible.
+ const reasons={
+  QUOTA:'Quota journalier Gemini atteint ou dépassé. Vérifier le quota du projet/modèle dans Google AI Studio et la facturation.',
+  RATE_LIMIT:'Trop de requêtes Gemini à court terme. Nouvelle tentative possible après le délai indiqué.',
+  COOLDOWN:'Le serveur respecte un délai de protection après un refus Gemini. Aucune requête n’est envoyée pendant cette période.',
+  KEY:'Clé Gemini absente ou refusée par Google. Vérifier GEMINI_API_KEY dans les variables Render (sans divulguer sa valeur).',
+  BILLING:'Facturation ou crédits Google insuffisants. Vérifier le projet dans Google AI Studio.',
+  PERMISSION:'Accès Gemini refusé pour le projet : vérifier les restrictions de la clé et les droits du projet.',
+  MODEL:'Modèle Gemini indisponible ou nom incorrect : vérifier ICHEF_HACCP_GEMINI_MODEL.',
+  CONFIG:'Requête IA rejetée : vérifier la configuration et la compatibilité du modèle.',
+  RATE:'Limite locale de demandes IA atteinte. Réessayer plus tard.',
+  SERVICE:'Le service IA est temporairement indisponible. Aucun conseil chiffré de substitution n’est généré.'
+ };
+ const retryAfterSeconds=Math.max(0,Math.ceil(Number(meta?.retryAfterSeconds)||0));
+ const untilText=retryAfterSeconds?' Nouvelle tentative possible dans environ '+Math.ceil(retryAfterSeconds/60)+' minute(s).':'';
  return res.json({success:true,sector:auth.h268Sector,source:'FALLBACK',reason,
-  suggestedHours:null,suggestionBasis:'',
-  notice:reasons[reason]||reasons.SERVICE,advice:h269SafeFallback(p),jurisdiction:jurisdiction||{country:'',label:'Pays non configuré',sources:[],configured:false},
+  suggestedHours:null,suggestionBasis:'',retryAfterSeconds,
+  upstreamStatus:Number(meta?.upstreamStatus)||undefined,
+  notice:(reasons[reason]||reasons.SERVICE)+untilText,
+  advice:h269SafeFallback(p),jurisdiction:jurisdiction||{country:'',label:'Pays non configuré',sources:[],configured:false},
   generatedAt:new Date().toISOString(),
   disclaimer:'Ces conseils généraux ne proviennent pas de Gemini et ne constituent pas une validation sanitaire. Aucune durée ni DLC n’est générée. Seuls le PMS et le chef habilité fixent la durée.'});
 }
@@ -37452,6 +37464,37 @@ function h292DlcNormalizeJson(raw) {
  if(!obj||typeof obj!=='object'||Array.isArray(obj))throw new Error('AI_RESPONSE_INVALID');
  return obj;
 }
+// Les statuts Google sont classés sans jamais publier le contenu d'erreur brut.
+// Sur 429, le fournisseur peut limiter les requêtes/minute OU le quota journalier.
+function h293ClassifyGeminiError(status,payload={}) {
+ const err=payload?.error&&typeof payload.error==='object'?payload.error:{};
+ const value=String(err.status||'').toLowerCase();
+ const message=String(err.message||'').slice(0,2200).toLowerCase();
+ const detail=JSON.stringify(Array.isArray(err.details)?err.details:[]).slice(0,2800).toLowerCase();
+ if(status===401)return 'KEY';
+ if(status===402)return 'BILLING';
+ if(status===403)return 'PERMISSION';
+ if(status===404)return 'MODEL';
+ if(status===400)return 'CONFIG';
+ if(status===429){
+  if(/daily|per.day|per_day|requestsperday|requests_per_day|\brpd\b|perdayperproject/.test(value+' '+message+' '+detail))return 'QUOTA';
+  return 'RATE_LIMIT';
+ }
+ return 'SERVICE';
+}
+function h293RetrySeconds(response,payload) {
+ let seconds=0;
+ const header=String(response?.headers?.get?.('retry-after')||'').trim();
+ if(/^\d{1,7}$/.test(header))seconds=Number(header);
+ else if(header){const parsed=Date.parse(header);if(Number.isFinite(parsed))seconds=Math.max(0,Math.ceil((parsed-Date.now())/1000));}
+ const details=payload?.error?.details;
+ for(const d of (Array.isArray(details)?details:[])){
+  const raw=String(d?.retryDelay||'');
+  const match=raw.match(/^(\d+(?:\.\d+)?)s$/);
+  if(match)seconds=Math.max(seconds,Math.ceil(Number(match[1])));
+ }
+ return Math.min(3600,Math.max(0,seconds));
+}
 async function h292DlcCallGemini(p,jurisdiction) {
  // Gemini n'a jamais d'accès direct à la base client, ni aux réglages privés.
  const key=String(process.env.GEMINI_API_KEY||'').trim();
@@ -37483,11 +37526,18 @@ async function h292DlcCallGemini(p,jurisdiction) {
    signal:controller.signal,
    headers:{'Content-Type':'application/json','x-goog-api-key':key},
    body:JSON.stringify({contents:[{role:'user',parts:[{text:instruction}]}],
-    generationConfig:{temperature:0.15,maxOutputTokens:2000,responseMimeType:'application/json'}})
+    generationConfig:{temperature:0.15,maxOutputTokens:2000,responseMimeType:'application/json',
+     // Flash 2.5 : évite que le raisonnement implicite épuise les tokens de sortie.
+     ...(model==='gemini-2.5-flash'?{thinkingConfig:{thinkingBudget:512}}:{})}})
   });
   if(!response.ok){
+   // Diagnostiquer le refus, sans écrire la réponse externe ni la clé dans les logs.
+   const body=await response.text().catch(()=> '');
+   let payload={};
+   try{payload=JSON.parse(body.slice(0,10000));}catch(_){ /* réponse non JSON */ }
    const err=new Error('GEMINI_HTTP_'+response.status);
-   err.h292Reason=response.status===429?'QUOTA':'SERVICE';
+   err.h292Reason=h293ClassifyGeminiError(response.status,payload);
+   err.h292RetrySeconds=h293RetrySeconds(response,payload);
    err.h292HttpStatus=response.status;
    throw err;
   }
@@ -37511,7 +37561,10 @@ async function h292DlcCallGemini(p,jurisdiction) {
 }
 async function h292DlcAdviceForAuth(auth,p,jurisdiction) {
  const now=Date.now();
- if(now<h269GeminiCircuit.blockedUntil)return {source:'FALLBACK',reason:'COOLDOWN'};
+ if(now<h269GeminiCircuit.blockedUntil)return {source:'FALLBACK',reason:'COOLDOWN',
+  priorReason:h269GeminiCircuit.lastReason,
+  upstreamStatus:h269GeminiCircuit.lastHttpStatus,
+  retryAfterSeconds:Math.ceil((h269GeminiCircuit.blockedUntil-now)/1000)};
  if(!String(process.env.GEMINI_API_KEY||'').trim())return {source:'FALLBACK',reason:'KEY'};
  const staffId=ichefHaccp223SelfId(auth);
  const unique=auth.tenantID+'|'+auth.h268Sector+'|'+staffId;
@@ -37528,15 +37581,26 @@ async function h292DlcAdviceForAuth(auth,p,jurisdiction) {
  const pending=(async()=>{
   try{
    const result=await h292DlcCallGemini(p,jurisdiction);
+   h269GeminiCircuit.blockedUntil=0;
+   h269GeminiCircuit.lastReason='';
+   h269GeminiCircuit.lastHttpStatus=0;
    h292DlcClearOldCache();
    h292DlcCache.set(memoKey,{until:Date.now()+90_000,value:result});
    return result;
   }catch(error){
    const reason=error?.h292Reason||'SERVICE';
-   if(reason==='QUOTA')h269GeminiCircuit.blockedUntil=Date.now()+12*60*60*1000;
-   // Pas de données produit ni de clé secrète dans les journaux.
-   console.warn('[HACCP DLC V292] service IA indisponible :',reason);
-   return {source:'FALLBACK',reason};
+   // Contrairement à la V292, un 429 minute n'interrompt PAS Gemini 12 heures.
+   // Limite projet respectée : aucune tentative dans le circuit, même entre utilisateurs.
+   const cooldownBase=reason==='QUOTA'?30*60:reason==='RATE_LIMIT'?2*60:0;
+   const cooldownSeconds=cooldownBase?Math.max(cooldownBase,Math.min(3600,Number(error?.h292RetrySeconds)||0)):0;
+   if(cooldownSeconds){
+    h269GeminiCircuit.blockedUntil=Date.now()+cooldownSeconds*1000;
+    h269GeminiCircuit.lastReason=reason;
+    h269GeminiCircuit.lastHttpStatus=Number(error?.h292HttpStatus)||0;
+   }
+   // Log : uniquement catégorie et statut; jamais de clé ni de données alimentaires privées.
+   console.warn('[HACCP DLC V293] fournisseur IA indisponible',reason,Number(error?.h292HttpStatus)||'réseau');
+   return {source:'FALLBACK',reason,upstreamStatus:error?.h292HttpStatus||undefined,retryAfterSeconds:cooldownSeconds};
   }
  })();
  h292DlcInFlight.set(memoKey,pending);
@@ -37550,7 +37614,7 @@ app.post('/api/haccp/dlc-ai/advice',async(req,res)=>{
   const p=h268Form(req.body?.product);
   const jurisdiction=await h270Jurisdiction(auth); // Jamais depuis req.body.country.
   const result=await h292DlcAdviceForAuth(auth,p,jurisdiction);
-  if(result.source!=='GEMINI')return h269SafeResponse(res,auth,p,result.reason||'SERVICE',jurisdiction);
+  if(result.source!=='GEMINI')return h269SafeResponse(res,auth,p,result.reason||'SERVICE',jurisdiction,result);
   return res.json({success:true,sector:auth.h268Sector,...result,jurisdiction,
    disclaimer:'Proposition IA indicative NON VALIDÉE. Le chef doit confirmer la préparation, le froid, les ingrédients, la justification PMS et la DLC fabricant avant l’étiquetage.'});
  }catch(error){if(!res.headersSent)return res.status(error.status||503).json({success:false,error:error.status===400?error.message:'Conseil IA inaccessible.'});}
@@ -37848,7 +37912,7 @@ HACCP_DLC_AI_PATHS.forEach(routePath=>{
    if(!Number.isFinite(prep.getTime())||Math.abs(prep.getTime()-Date.now())>365*24*3600*1000)
     return res.status(400).json({success:false,error:'Date de préparation invalide.'});
    const result=await h292DlcAdviceForAuth(auth,p,jurisdiction);
-   if(result.source!=='GEMINI')return h269SafeResponse(res,auth,p,result.reason||'SERVICE',jurisdiction);
+   if(result.source!=='GEMINI')return h269SafeResponse(res,auth,p,result.reason||'SERVICE',jurisdiction,result);
    const hours=result.suggestedHours;
    let dlcIso=null,manufacturerLimitReached=false;
    if(Number.isSafeInteger(hours)&&hours>=1&&hours<=720){
