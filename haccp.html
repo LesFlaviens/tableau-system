@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- iCHEF HACCP V284 : activation création étiquette IA sur base V283 ; ne pas concaténer. -->
+<!-- iCHEF HACCP V285 : DLC indicative par produit, références du pays du tenant, contrôle chef. Ne pas concaténer. -->
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
@@ -13507,8 +13507,21 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
 #hv71-prepared .v283-actions{display:flex;gap:9px;flex-wrap:wrap}#hv71-prepared .v283-actions>*{flex:1 1 180px}
 @media(max-width:620px){#hv71-prepared .v283-row{grid-template-columns:1fr}}
 </style>
-<script id="ichef-v284-auto-label-js">
-/* iCHEF V284 — activation traçabilité / génération d'étiquettes.
+
+<style id="ichef-v285-date-sources-style">
+#hv71-prepared .v285-jurisdiction{display:grid;gap:5px;padding:10px 12px;border:1px solid #cbdff5;border-radius:9px;background:#f5f9ff;font-size:12px;color:#22466a;overflow-wrap:anywhere}
+#hv71-prepared .v285-jurisdiction a{color:#115ab2;text-decoration:underline;font-weight:850}
+#hv71-prepared .v285-jurisdiction small{color:#667c91;line-height:1.4}
+#hv71-prepared .v285-conditions,#hv71-prepared .v285-jurisdiction-note{font-size:12px!important;color:#5f4e25!important;padding:8px 10px;border-radius:8px;background:#fff9e9;line-height:1.45}
+#hv71-prepared .v285-date-row{padding:11px;border:1px solid #a3d6bb;background:#e8f8ef;border-radius:12px}
+#hv71-prepared .v285-date-row label{font-size:15px!important;font-weight:950!important;color:#095c41!important}
+#hv71-prepared .v285-date-row input{background:white!important;min-height:52px!important;font-weight:900;font-size:17px!important}
+#hv71-prepared .v284-source{font-size:11px!important;line-height:1.5!important;overflow-wrap:anywhere!important}
+#hv71-prepared .v283-proof dd{overflow-wrap:anywhere}
+@media(max-width:720px){#hv71-prepared .v283-panel{padding:12px!important}.v285-date-row{max-width:100%}}
+</style>
+<script id="ichef-v285-auto-label-js">
+/* iCHEF V285 — DLC indicative automatique depuis le référentiel client, pays vérifié et contrôle humain.
  * Réutilise les validations/permissions/APIs existantes ; aucune écriture par ce module.
  * Ne jamais dupliquer cette balise dans le document. */
 (function(){'use strict';
@@ -13527,6 +13540,47 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
  const safeHeaders=()=>typeof systemHeaders==='function'?systemHeaders({}):{};
  const set=(id,v)=>{const x=$(id);if(!x)return;x.value=v;x.dispatchEvent(new Event('input',{bubbles:true}));x.dispatchEvent(new Event('change',{bubbles:true}))};
  let busy=false,edited=false,preparing=false,lastProduct='',lastSource='',refConditions='',requestId=0;
+ let activeJurisdiction={country:'',label:'Pays non vérifié',configured:false,sources:[]};
+ let currentBasis='NONE',lastInference=null;
+ const OFFICIAL_LAW={
+  FR:{title:'France — texte officiel des préparations culinaires (champ d’application à vérifier)',url:'https://www.legifrance.gouv.fr/loda/article_lc/LEGIARTI000041864953'},
+  CH:{title:'Suisse — OSAV : datage, DLC/DDM selon les risques',url:'https://www.blv.admin.ch/fr/etiquette-des-aliments'}
+ };
+ function referencePanel(){return $('v285-country-law')}
+ function countryText(j){return j?.country==='FR'?'France':j?.country==='CH'?'Suisse':'Pays à renseigner dans le compte';}
+ function showCountry(j){const box=referencePanel();if(!box)return;
+  const code=j?.country==='FR'||j?.country==='CH'?j.country:'';activeJurisdiction={country:code,label:countryText(j),configured:!!code,sources:Array.isArray(j?.sources)?j.sources:[]};
+  box.replaceChildren();const line=E('div','Références HACCP : '+activeJurisdiction.label,'v285-country-line');box.append(line);
+  const law=OFFICIAL_LAW[code];if(law){const a=E('a','Voir la référence officielle du pays');a.href=law.url;a.target='_blank';a.rel='noopener noreferrer';box.append(a)}
+  const p=E('small',code?'Le texte encadre les pratiques mais ne fixe pas une DLC universelle pour chaque aliment.':'Pays non vérifié par le serveur : aucune norme nationale n’est présumée.');box.append(p);
+ }
+ async function fetchJurisdiction(){const url=server()+'/api/haccp/dlc-ai/jurisdiction?sector='+encodeURIComponent(deps());
+  const res=await fetch(url,{method:'GET',headers:safeHeaders(),credentials:'include',cache:'no-store'});
+  if(!res.ok)throw Error('Profil réglementaire indisponible');const j=await res.json();if(j?.success!==true)throw Error('Pays non vérifié');return j;
+ }
+ function inferProduct(name){const n=norm(name);
+  // Seulement des repères d'organisation provenant du tableau transmis par le client.
+  // Une proposition est NON VALIDEE et basée sur des hypothèses affichées au chef.
+  if(/fum[eé]|marin[eé]|sushi|tartare|sashimi|saumur|mi.cuit|sous.vide|d[eé]congel|congel|pasteuris/.test(n))return null;
+  if(/coquillage|huitre|moule|palourde|crustace|crevette|homard|langouste/.test(n))return null;
+  if(/saumon|truite|cabillaud|colin|lieu noir|sole|dorade|poisson|bar frais|filet de merlan/.test(n))return {hours:24,temperature:2,storage:'≤ 2 °C · froid positif',family:'POISSONS',form:'CRU',process:'AUCUN',packaging:'SANS_VIDE',allergen:'Poisson (à vérifier)',assumption:'Hypothèse à vérifier : poisson frais cru, non préparé, sans sous vide, entre 0 et +2 °C.',basis:'Repère INTERNE indicatif : poisson frais 24 h (tableau client), pas une norme fixant la DLC.'};
+  if(/steak.hach|viande.hach|hach[eé]|farce crue/.test(n))return {hours:24,temperature:2,storage:'≤ 2 °C · froid positif',family:'VIANDES',form:'CRU',process:'AUCUN',packaging:'SANS_VIDE',assumption:'Hypothèse : viande hachée crue sans sous vide, 0 à +2 °C.',basis:'Repère INTERNE indicatif : viande hachée 24 h. Ne remplace pas la DLC fabricant.'};
+  if(/poulet cru|volaille crue|dinde crue|canard cru/.test(n))return {hours:48,temperature:2,storage:'≤ 2 °C · froid positif',family:'VOLAILLES',form:'CRU',process:'AUCUN',packaging:'SANS_VIDE',assumption:'Hypothèse : volaille crue non sous vide, 0 à +2 °C.',basis:'Repère INTERNE indicatif : volaille crue 48 h.'};
+  if(/l[eé]gume[s]? [eé]pluch|carotte[s]? [eé]pluch|salade coup[eé]e|fruit[s]? coup[eé]s/.test(n))return {hours:24,temperature:4,storage:'≤ 4 °C · froid positif',family:'LEGUMES',form:'LAVE_DECOUPE',process:'AUCUN',packaging:'SANS_VIDE',assumption:'Hypothèse : végétaux nettoyés et découpés, sans vide, entre +2 et +4 °C.',basis:'Repère INTERNE indicatif : végétaux découpés 24 h.'};
+  return null;
+ }
+ function setStorageDefault(value){const el=$('v283-storage');if(!el||!value)return;
+  if(![...el.options].some(o=>o.value===value)){const o=E('option',value);o.value=value;el.append(o)}el.value=value;
+ }
+ function applyIndicative(profile){if(!profile)return false;const chosen=autoDlc(profile.hours,'PROPOSITION INDICATIVE — NON VALIDÉE · '+profile.basis);
+  if(!chosen)return false;setStorageDefault(profile.storage);lastInference=profile;currentBasis='INTERNE';
+  const info=$('v285-conditions');if(info)info.textContent=profile.assumption+' Toute information réelle différente exige une correction de la date.';
+  const ref=$('v284-reference');if(ref)ref.textContent=profile.basis+' Vérifier la source, la fraîcheur, le procédé, la température et la DLC fabricant.';
+  notify('Date provisoire inscrite automatiquement. Le chef doit vérifier les hypothèses et fournir sa règle de conservation.');
+  return true;
+ }
+ function maybeAddProductAllergen(profile){/* Ne jamais préremplir le champ "allergènes vérifiés" depuis une simple inférence. */}
+
  function notify(s,warning=false){const x=$('v283-status');if(!x)return;x.textContent=s;x.classList.toggle('warn',!!warning)}
  function field(parent,title,id,type='text',options){const lab=E('label',title),el=type==='select'?E('select'):E('input');el.id=id;
   if(type!=='select')el.type=type;
@@ -13536,18 +13590,21 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
   rows.forEach(([a,b])=>{table.append(E('dt',a),E('dd',b))});box.append(table);
   const chip=E('div',lastSource||'Brouillon non validé','v284-source');box.append(chip);
  }
- function futureDate(hours){const p=$('v283-start')?.value;const t=new Date(p||'');if(!Number.isFinite(t.getTime()))return '';const h=Number(hours);if(!Number.isInteger(h)||h<1||h>17520)return '';const d=local(new Date(t.getTime()+h*3600000));const manufacturer=$('v283-manufacturer')?.value||'';if(manufacturer&&d.slice(0,10)>manufacturer)return '';return d}
+ function futureDate(hours){const p=$('v283-start')?.value;const t=new Date(p||'');if(!Number.isFinite(t.getTime()))return '';const h=Number(hours);if(!Number.isInteger(h)||h<1||h>17520)return '';const d=local(new Date(t.getTime()+h*3600000));const manufacturer=$('v283-manufacturer')?.value||'';if(manufacturer&&(d.slice(0,10)>manufacturer||p.slice(0,10)>manufacturer))return '';return d}
  function autoDlc(hours,basis){if(edited)return false;const date=futureDate(hours);if(!date)return false;$('v283-dlc').value=date;lastSource=basis;preview();return true}
  function getRefData(){return {n:norm($('v283-name')?.value),sector:deps()}}
  async function findApprovedReference(){const expected=getRefData();if(!expected.n||!expected.sector)return null;
-  // Lecture uniquement sur l'API HACCP existante, avec les headers de session/tenant.
   const url=server()+'/api/haccp/dlc-ai/references?sector='+encodeURIComponent(expected.sector);
   const res=await fetch(url,{method:'GET',headers:safeHeaders(),credentials:'include',cache:'no-store'});
   const data=await res.json();if(!res.ok||data.success!==true)throw Error(data.error||'Référentiel indisponible');
   if(getRefData().n!==expected.n||deps()!==expected.sector)return null;
-  const found=(Array.isArray(data.items)?data.items:[]).filter(r=>norm(r.productName)===expected.n&&Number.isSafeInteger(Number(r.approvedHours))&&Number(r.approvedHours)>0&&Number(r.approvedHours)<=17520&&String(r.referenceSource||'').trim().length>5);
-  // Ne pas appliquer une règle ambiguë si plusieurs procédés/conditionnements possibles.
-  return found.length===1?found[0]:null;
+  // Une règle n'est sélectionnée automatiquement que si un SEUL profil existe.
+  // Le chef doit confirmer que le conditionnement réel correspond au profil.
+  const matches=(Array.isArray(data.items)?data.items:[]).filter(r=>norm(r.productName)===expected.n&&
+    Number.isSafeInteger(Number(r.approvedHours))&&Number(r.approvedHours)>0&&Number(r.approvedHours)<=17520&&
+    typeof r.referenceSource==='string'&&r.referenceSource.trim().length>=12&&
+    r.form&&r.packaging&&r.process&&Number.isFinite(Number(r.temperatureC)));
+  return matches.length===1?matches[0]:null;
  }
  function selectInference(name){const n=norm(name);const fish=/truite|saumon|thon|cabillaud|merlan|dorade|poisson|sole|bar de mer/;
   const meat=/boeuf|bœuf|steak|entrec[oô]te|veau|agneau|porc|viande/;
@@ -13557,13 +13614,16 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
   let family='AUTRE';if(fish.test(n))family='POISSONS';else if(meat.test(n))family='VIANDES';else if(poultry.test(n))family='VOLAILLES';else if(sauces.test(n))family='SAUCES';else if(vegetables.test(n))family='LEGUMES';
   return {family,form:/cuit|r[oô]ti|grill[eé]/.test(n)?'CUIT':'CRU',process:/marin[eé]/.test(n)?'MARINADE':'AUCUN'};
  }
- function applyRef(ref){if(!ref)return false;refConditions=[ref.form||'',ref.packaging||'',ref.process||'',ref.temperatureC===null?'':String(ref.temperatureC)].filter(Boolean).join(' · ');
-  if(!edited&&autoDlc(Number(ref.approvedHours),'Durée provenant d’une règle validée (à vérifier)')){
-   const t=Number(ref.temperatureC);if(Number.isFinite(t)){if(t<=-18)$('v283-storage').value='≤ -18 °C · congelé';else if(t<=4)$('v283-storage').value='≤ 4 °C · froid positif';else if(t<=8)$('v283-storage').value='≤ 8 °C · froid positif';}
-   const h=$('v284-reference');if(h)h.textContent='Règle retrouvée : '+ref.approvedHours+' h · '+refConditions+' · '+String(ref.referenceSource||'')+'. À confirmer avant validation.';
-   notify('Étiquette préparée à partir de votre référentiel. Le chef vérifie le conditionnement, la DLC et les allergènes.');return true;
-  }
-  return false;
+ function applyRef(ref){if(!ref)return false;
+  refConditions=[ref.form||'',ref.packaging||'',ref.process||'',ref.temperatureC===null?'':String(ref.temperatureC)+' °C'].filter(Boolean).join(' · ');
+  const t=Number(ref.temperatureC);if(!Number.isFinite(t))return false;
+  const store=t<=-18?'≤ -18 °C · congelé':t<=2?'≤ 2 °C · poisson frais':t<=4?'≤ 4 °C · froid positif':t<=8?'≤ 8 °C · froid positif':null;
+  const applied=autoDlc(Number(ref.approvedHours),'RÈGLE PMS enregistrée · À CONFIRMER · '+String(ref.referenceSource||''));if(!applied)return false;
+  if(store)setStorageDefault(store);currentBasis='PMS';lastInference={family:ref.family,form:ref.form,packaging:ref.packaging,process:ref.process,temperature:t};
+  const h=$('v284-reference');if(h)h.textContent='Règle enregistrée : '+ref.approvedHours+' h · '+refConditions+' · '+String(ref.referenceSource||'')+'. Le chef doit confirmer que les conditions réelles sont identiques.';
+  const cond=$('v285-conditions');if(cond)cond.textContent='Contrôle obligatoire : ce produit doit correspondre exactement à la fiche '+refConditions+'.';
+  const source=$('v285-justification');if(source)source.value=String(ref.referenceSource||'');
+  notify('Date préremplie depuis la règle validée du restaurant. Confirmez les conditions réelles.');return true;
  }
  async function askAi(product,seq){const root=[...document.querySelectorAll('.h268-root')].find(el=>el.isConnected&&el.querySelector('[data-h268="product"]'));
   if(!root){notify('Conseil IA indisponible sur cet écran. Ouvrez les réglages et vérifiez la DLC avec votre référentiel.',true);return}
@@ -13574,7 +13634,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
   if(get('process'))get('process').value=inferred.process;
   if(get('packaging'))get('packaging').value='SANS_VIDE';
   const storage=$('v283-storage').value,mt=storage.match(/-?\d+/);
-  if(get('temperature'))get('temperature').value=mt?mt[0]:'';
+  if(get('temperature'))get('temperature').value=mt?mt[0]:(lastInference&&Number.isFinite(lastInference.temperature)?String(lastInference.temperature):'');
   const manufacturer=$('v283-manufacturer')?.value;if(get('manufacturer'))get('manufacturer').value=manufacturer||'';
   notify('Recherche du conseil de conservation…');
   await new Promise(resolve=>{let done=false;const finish=()=>{if(done)return;done=true;clearTimeout(timer);root.removeEventListener('ichef:haccp:dlc-advice-updated',receive);resolve()};
@@ -13583,22 +13643,40 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
     if(source==='GEMINI'&&Number.isInteger(h)&&h>0&&h<=720&&result.dataset.h277Basis?.length>=30&&get('temperature').value!==''){
       const applied=autoDlc(h,'Proposition IA INDICATIVE · contrôle du chef obligatoire');
       notify(applied?'Date indicative inscrite. Vérifiez les conditions, les ingrédients et la justification avant impression.':'DLC fabricant dépassée ou correction manuelle conservée.',!applied);
-    }else notify('Conseil reçu, mais aucune durée IA fiable. Renseignez une DLC justifiée pour imprimer.',true);
+    }else if(!$('v283-dlc').value)notify('Aucune durée IA vérifiable ; le chef doit justifier sa DLC.',true);
     preview();finish()};
    root.addEventListener('ichef:haccp:dlc-advice-updated',receive);
-   const timer=setTimeout(()=>{notify('IA indisponible ou quota atteint. Utilisez une durée validée par votre établissement.',true);finish()},16000);
+   const timer=setTimeout(()=>{if(!$('v283-dlc')?.value)notify('IA indisponible. Aucune durée officielle inventée.',true);finish()},7000);
    try{button.click()}catch(_){finish()}
   });
  }
  async function generate(){if(busy)return;const product=$('v283-name')?.value.trim();if(!product||product.length<2)return notify('Écrivez simplement le nom du produit.',true);
   if(!signed())return notify('Identification HACCP nécessaire.',true);
-  const seq=++requestId,old=$('v283-generate');busy=true;if(old)old.disabled=true;edited=false;refConditions='';lastSource='Brouillon · en attente de validation';
+  const seq=++requestId,btn=$('v283-generate');busy=true;if(btn)btn.disabled=true;
+  edited=false;currentBasis='NONE';lastInference=null;refConditions='';lastSource='Brouillon · non validé';
   if(!$('v283-start').value)$('v283-start').value=local(new Date());
-  $('v283-dlc').value='';preview();notify('Préparation automatique de l’étiquette…');
-  try{const ref=await findApprovedReference().catch(()=>null);if(seq!==requestId)return;
-   if(!applyRef(ref))await askAi(product,seq);
-   if(!editWouldBeSafe())notify('Complétez la DLC justifiée et vérifiez les autres informations pour continuer.',true);
-  }finally{busy=false;if(old)old.disabled=false;preview()}
+  $('v283-dlc').value='';if($('v285-justification'))$('v285-justification').value='';
+  if($('v285-conditions'))$('v285-conditions').textContent='Les conditions de conservation réelles restent à vérifier.';
+  preview();notify('Recherche des règles enregistrées et du pays du restaurant…');
+  try{
+   const fast=(p)=>Promise.race([p,new Promise((_,reject)=>setTimeout(()=>reject(Error('Délai API dépassé')),3500))]);
+   const [jResult,refResult]=await Promise.allSettled([fast(fetchJurisdiction()),fast(findApprovedReference())]);
+   if(seq!==requestId)return;
+   const j=jResult.status==='fulfilled'?jResult.value:{country:'',configured:false};showCountry(j);
+   const ref=refResult.status==='fulfilled'?refResult.value:null;
+   const hasRule=applyRef(ref);
+   if(!hasRule){const internal=inferProduct(product);if(!applyIndicative(internal)){
+      lastSource='DLC non calculable à partir du nom seul · Chef : renseignez les conditions réelles';
+      notify('Aucune règle correspondante : précisez la préparation, le conditionnement et la conservation. L’IA peut conseiller sans fixer une DLC.',true);
+   }}
+   const note=$('v285-jurisdiction-note');if(note){note.textContent=activeJurisdiction.configured?
+      'Références légales du pays : '+activeJurisdiction.label+'. La date proposée dépend de la fiche PMS ou d’un repère interne, jamais d’une durée légale universelle.':
+      'Pays non confirmé : complétez la fiche établissement. La date indicative ne vaut pas conformité réglementaire.';}
+   preview();
+   // Conseil IA facultatif, sans bloquer la préparation rapide de l'étiquette.
+   // La suggestion chiffrée IA ne peut jamais devenir une durée validée automatiquement.
+   if(!hasRule){void askAi(product,seq).catch(()=>{});}
+  }finally{busy=false;if(btn)btn.disabled=false;preview()}
  }
  function editWouldBeSafe(){const a=$('v283-start')?.value,b=$('v283-dlc')?.value;return !!(a&&b&&new Date(b)>new Date(a))}
  function safeDate(value){const d=new Date(value);return Number.isFinite(d.getTime())?d:null}
@@ -13608,6 +13686,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
   if(safeDate(dlc)<=safeDate(start)||safeDate(dlc)<=new Date())return notify('DLC échue ou antérieure à la préparation : validation impossible.',true);
   const manufacturer=$('v283-manufacturer').value;if(manufacturer&&(dlc.slice(0,10)>manufacturer||start.slice(0,10)>manufacturer))return notify('DLC fabricant dépassée. Aucune prolongation possible.',true);
   if(!$('v284-check')?.checked)return notify('Le chef doit confirmer la recette, les allergènes, les conditions réelles et la DLC.',true);
+  const proof=$('v285-justification')?.value.trim()||'';if(proof.length<12)return notify('Avant validation, indiquez la fiche PMS / preuve de conservation vérifiée (12 caractères minimum).',true);
   const allergens=$('v283-allergens').value.trim();if(!allergens)return notify('Vérifiez puis renseignez les allergènes (ou saisissez « Aucun identifié » après contrôle).',true);
   const storage=$('v283-storage').value;if(storage==='Selon PMS / fiche produit')return notify('Indiquez la température de conservation réelle.',true);
   set('hv71-product',product);set('hv71-prep-date',start.slice(0,10));set('hv71-prep-time',start.slice(11,16));set('hv71-dlc-date',dlc.slice(0,10));set('hv71-dlc-time',dlc.slice(11,16));
@@ -13621,25 +13700,32 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
   match=raw.match(/^lot\s*[:=]\s*(.+)$/i);if(match){$('v283-lot').value=match[1].trim();done=true}
   match=raw.match(/^allerg[eè]nes?\s*[:=]\s*(.+)$/i);if(match){$('v283-allergens').value=match[1].trim();done=true}
   match=raw.match(/^nom\s*[:=]\s*(.+)$/i);if(match){$('v283-name').value=match[1].trim();$('v283-dlc').value='';edited=false;requestId++;done=true}
-  if(done){$('v284-check').checked=false;lastSource='Brouillon corrigé par le chef';x.value='';notify('Correction appliquée au brouillon. Vérifiez avant de valider.');preview()}
+  if(done){$('v284-check').checked=false;lastSource='Brouillon corrigé par le chef · à revalider';x.value='';notify('Correction appliquée au brouillon. Vérifiez avant de valider.');preview()}
   else{$('v284-advanced').open=true;notify('Écrivez par exemple « DLC : 28/10/2026 14:00 », « Lot : ABC12 » ou « Allergènes : lait ». Sinon, corrigez les champs.',true)}
  }
  function mount(){const old=$('hv71-prepared');if(!old||$('v283-panel'))return;const shell=old.querySelector('.hv71-shell');if(!shell)return;
   const panel=E('section','','v283-panel');panel.id='v283-panel';panel.append(E('h2','Étiquette IA · Création rapide'),E('p','Écrivez le produit. iCHEF prépare les données disponibles ; le chef corrige seulement si nécessaire.'));
   const name=field(panel,'Nom du produit','v283-name');name.placeholder='Ex. Saumon mariné';name.autocomplete='off';
   const create=E('button','Générer l’étiquette automatiquement','v283-btn');create.id='v283-generate';create.type='button';create.addEventListener('click',()=>void generate());panel.append(create);
+  const country=E('div','','v285-jurisdiction');country.id='v285-country-law';country.setAttribute('role','region');country.setAttribute('aria-label','Pays et références réglementaires');panel.append(country);
   const label=E('section','','v283-proof');label.id='v283-label';panel.append(label);
+  const conditions=E('p','Les conditions réelles du produit doivent être contrôlées par le chef.','v285-conditions');conditions.id='v285-conditions';panel.append(conditions);
+  const countryInfo=E('p','Les sources officielles décrivent des obligations et non une durée applicable à toute préparation.','v285-jurisdiction-note');countryInfo.id='v285-jurisdiction-note';panel.append(countryInfo);
   const status=E('div','Écrivez un produit pour commencer.','v283-status');status.id='v283-status';status.setAttribute('role','status');status.setAttribute('aria-live','polite');panel.append(status);
   const advanced=E('details');advanced.id='v284-advanced';const sum=E('summary','Modifier les informations (chef)');advanced.append(sum);
   const row=E('div','','v283-row');advanced.append(row);const start=field(row,'Préparé / ouvert le','v283-start','datetime-local');start.value=local(new Date());const dlc=field(row,'DLC proposée — modifiable','v283-dlc','datetime-local');
   const row2=E('div','','v283-row');advanced.append(row2);const storage=field(row2,'Conservation','v283-storage','select',[['Selon PMS / fiche produit','Selon PMS / fiche produit'],['≤ 4 °C · froid positif','≤ 4 °C · froid positif'],['≤ 8 °C · froid positif','≤ 8 °C · froid positif'],['≤ -18 °C · congelé','≤ -18 °C · congelé'],['≥ 63 °C · maintien chaud','≥ 63 °C · maintien chaud']]);const manufacturer=field(row2,'DLC fabricant (si existante)','v283-manufacturer','date');
+  const proof=field(advanced,'Fiche de conservation vérifiée par le chef (obligatoire pour valider)','v285-justification');proof.placeholder='Ex. PMS cuisine, fiche poisson cru v3, étude de durée de vie…';
   const row3=E('div','','v283-row');advanced.append(row3);const lot=field(row3,'N° de lot (optionnel, sinon identifiant interne)','v283-lot');const allergens=field(row3,'Allergènes vérifiés','v283-allergens');allergens.placeholder='Ex. Poisson · À contrôler sur la recette';
   const ref=E('p','','v284-ref');ref.id='v284-reference';ref.textContent='Les DLC proposées ne sont jamais validées automatiquement.';advanced.append(ref);panel.append(advanced);
   const fix=field(panel,'Une correction ? Écrivez-la ici','v284-correction');fix.placeholder='Ex. DLC : 28/10/2026 14:00';const apply=E('button','Appliquer la correction','v283-btn secondary');apply.type='button';apply.addEventListener('click',applyTextCorrection);panel.append(apply);
   const confirm=E('label','','v284-confirm');const check=E('input');check.type='checkbox';check.id='v284-check';confirm.append(check,E('span','Je confirme la recette, les allergènes, la date réelle et la DLC justifiée.'));panel.append(confirm);
   const approve=E('button','Valider → choisir le format → imprimer','v283-btn green');approve.type='button';approve.addEventListener('click',applyDraft);panel.append(approve);
-  shell.insertBefore(panel,shell.children[1]||null);old.classList.add('v283-on');
-  [name,start,storage,manufacturer,lot,allergens].forEach(el=>el.addEventListener('input',()=>{if(el===name){requestId++;lastSource='Produit modifié · à régénérer';$('v283-dlc').value='';edited=false}check.checked=false;preview()}));
+  // DLC modifiable sans ouvrir les paramètres avancés : manipulation centrale du chef.
+  const dateRow=E('section','','v285-date-row');const dateField=dlc.closest('label');
+  if(dateField){dateField.textContent='DLC proposée — à vérifier et modifier';dateField.append(dlc);dateRow.append(dateField);panel.insertBefore(dateRow,status.nextSibling)}
+  shell.insertBefore(panel,shell.children[1]||null);old.classList.add('v283-on');showCountry(activeJurisdiction);
+  [name,start,storage,manufacturer,lot,allergens].forEach(el=>el.addEventListener('input',()=>{if(el===name){requestId++;lastSource='Produit modifié · à régénérer';$('v283-dlc').value='';edited=false;currentBasis='NONE';if($('v285-justification'))$('v285-justification').value=''}check.checked=false;preview()}));
   dlc.addEventListener('input',()=>{edited=true;lastSource='Date corrigée par le chef · non validée';check.checked=false;preview()});
   name.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();void generate()}});
   preview();
