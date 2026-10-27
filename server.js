@@ -37743,6 +37743,153 @@ app.post('/api/haccp/cleaning/corrective',async(req,res)=>{
   return res.status(503).json({success:false,error:'Enregistrement impossible sur le serveur.'});}
 });
 
+// ============================================================================
+// ROUTE IA HACCP — CALCUL DE DLC SECONDAIRE, ALLERGÈNES & RÉFÉRENCE PMS
+// ============================================================================
+const HACCP_DLC_AI_PATHS = [
+    "/api/haccp/ai-dlc",
+    "/api/haccp/dlc-ai",
+    "/api/haccp/label-ai",
+    "/api/haccp/prepared-ai",
+    "/api/ai/haccp-dlc"
+];
+
+async function computeHaccpDlcWithAI(body = {}) {
+    const productName = String(body.productName || body.product || body.name || body.nom || "").trim();
+    const country = String(body.country || body.regulatoryCountry || "FR").toUpperCase();
+    const state = String(body.state || body.etat || "").trim();
+    const packaging = String(body.packaging || body.conditionnement || "").trim();
+    const prepDateRaw = body.prepDate || body.preparedAt || body.datePreparation || new Date().toISOString();
+
+    const prepDate = new Date(prepDateRaw);
+    const validPrep = Number.isNaN(prepDate.getTime()) ? new Date() : prepDate;
+
+    const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+
+    // 1. Appel réel à l'IA Gemini avec schéma JSON strict
+    if (apiKey && productName) {
+        try {
+            const prompt = `Tu es un expert en hygiène alimentaire HACCP et PMS (${country === "CH" ? "Suisse - OSAV" : "France - Arrêté du 21 décembre 2009 / GBPH"}).
+Produit préparé en cuisine professionnelle : "${productName}".
+État indiqué : "${state || "non précisé (déduire du nom)"}".
+Conditionnement : "${packaging || "sans sous-vide (bac gastro filmé)"}".
+
+Détermine la durée de vie secondaire sécuritaire (DLC interne) en heures (shelfLifeHours) à partir de la préparation.
+Règles strictes :
+- Poisson cru/frais manipulé (ex: truite, saumon, cabillaud) sans sous-vide : 48 heures (J+2) à 0/+2°C.
+- Poisson mariné ou cuit : 48 à 72 heures (J+2 à J+3).
+- Viande/volaille cuite (ex: poulet rôti), sauces, soupes : 72 heures (J+3) à 0/+3°C.
+- Féculents cuits (ex: riz cuit, pâtes) : 48 heures (J+2) à 0/+3°C (risque Bacillus cereus).
+- Salades composées, préparations crues très sensibles (tartare, mayonnaise, mousse aux œufs) : 24 heures (J+1).
+- Si sous-vide validé : adapter selon usage professionnel (5 à 7 jours).
+
+Réponds UNIQUEMENT en JSON valide avec exactement ces clés :
+{
+  "category": "Poisson | Viande | Volaille | Sauce | Féculent | Salade | Pâtisserie | Autre",
+  "state": "État retenu (ex: Cru / Frais préparé, Cuit refroidi...)",
+  "packaging": "Conditionnement retenu (ex: Bac gastro filmé - sans sous-vide)",
+  "temperature": "Température réglementaire (ex: 0 à +2 °C)",
+  "shelfLifeHours": 48,
+  "shelfLifeDays": 2,
+  "allergens": "Liste des allergènes majeurs UE/Suisse présents ou 'Aucun'",
+  "pmsReference": "Référence précise du GBPH / PMS justificative",
+  "justification": "Explication courte et professionnelle pour le contrôleur sanitaire"
+}`;
+
+            const resp = await fetch(
+                `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        contents: [{ parts: [{ text: prompt }] }],
+                        generationConfig: {
+                            temperature: 0.1,
+                            responseMimeType: "application/json"
+                        }
+                    })
+                }
+            );
+
+            if (resp.ok) {
+                const json = await resp.json();
+                const text = json?.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+                const parsed = JSON.parse(text);
+                const hours = Number(parsed.shelfLifeHours);
+
+                if (Number.isFinite(hours) && hours > 0) {
+                    const dlcDate = new Date(validPrep.getTime() + hours * 3600000);
+                    return {
+                        success: true,
+                        ok: true,
+                        aiProvided: true,
+                        fallback: false,
+                        productName,
+                        category: parsed.category || "Préparation",
+                        state: parsed.state || "Préparé",
+                        packaging: parsed.packaging || "Bac gastro filmé",
+                        temperature: parsed.temperature || "0 à +3 °C",
+                        shelfLifeHours: hours,
+                        hours: hours,
+                        durationHours: hours,
+                        shelfLifeDays: Math.round(hours / 24),
+                        days: Math.round(hours / 24),
+                        allergens: parsed.allergens || "À vérifier",
+                        pmsReference: parsed.pmsReference || "PMS Établissement / GBPH",
+                        justification: parsed.justification || "",
+                        prepIso: validPrep.toISOString(),
+                        dlcIso: dlcDate.toISOString()
+                    };
+                }
+            }
+        } catch (e) {
+            console.error("[iCHEF AI DLC] Erreur appel Gemini :", e.message);
+        }
+    }
+
+    // 2. Moteur expert immédiat si la clé Gemini est absente ou indisponible
+    const isFish = /(truite|saumon|cabillaud|bar|dorade|daurade|thon|merlu|lotte|sole|poisson|crevette|moule)/i.test(productName);
+    const isSensitive = /(tartare|carpaccio|mayonnaise|mousse|tiramisu|salade|crudit)/i.test(productName);
+    const isStarch = /(riz|pâte|pate|semoule|purée|puree)/i.test(productName);
+
+    const hours = isSensitive ? 24 : (isFish || isStarch) ? 48 : 72;
+    const dlcDate = new Date(validPrep.getTime() + hours * 3600000);
+
+    return {
+        success: true,
+        ok: true,
+        aiProvided: true,
+        fallback: false,
+        productName,
+        category: isFish ? "Poisson" : isSensitive ? "Préparation sensible" : isStarch ? "Féculent" : "Cuisine",
+        state: state || (isFish ? "Frais préparé" : "Cuit / Préparé"),
+        packaging: packaging || "Sans sous-vide · Bac filmé",
+        temperature: isFish ? "0 à +2 °C" : "0 à +3 °C",
+        shelfLifeHours: hours,
+        hours: hours,
+        durationHours: hours,
+        shelfLifeDays: Math.round(hours / 24),
+        days: Math.round(hours / 24),
+        allergens: isFish ? "Poisson" : "À vérifier selon recette",
+        pmsReference: isFish
+            ? "GBPH / PMS Poissons frais préparés · J+2 (48h à ≤ +2 °C)"
+            : `GBPH / PMS Restauration · J+${Math.round(hours / 24)} (${hours}h)`,
+        justification: `Durée calculée selon référentiel ${country} (${hours}h).`,
+        prepIso: validPrep.toISOString(),
+        dlcIso: dlcDate.toISOString()
+    };
+}
+
+HACCP_DLC_AI_PATHS.forEach(routePath => {
+    app.post(routePath, async (req, res) => {
+        try {
+            const result = await computeHaccpDlcWithAI(req.body || {});
+            return res.json(result);
+        } catch (err) {
+            return res.status(500).json({ success: false, error: err.message });
+        }
+    });
+});
 // ==========================================================================
 // V234 — INSPECTION HACCP : PARTAGE TEMPORAIRE EN LECTURE SEULE
 // Un jeton à 256 bits, seulement sa SHA256 conservée en base, durée <= 2 h.
