@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>iCHEF OS — Mon espace collaborateur</title>
-<meta name="ichef-build" content="V227-INSTALLATION-DIAGNOSTIC">
+<meta name="ichef-build" content="V228-PWA-INSTALLATION-VERIFICATION">
 
 <script id="ichef-staff-pwa-capture-v208">
 // Capture precoce : l'invite Android peut etre emise avant la fin du chargement.
@@ -47,10 +47,10 @@ html.ichef-staff-not-standalone body #ichef-universal-home-btn {
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="iCHEF Staff">
-<link rel="manifest" href="./manifest-staff.json?v=227">
-<link rel="apple-touch-icon" sizes="180x180" href="./ichef-staff.png?v=227">
-<link rel="icon" type="image/png" sizes="192x192" href="./ichef-staff-192.png?v=227">
-<link rel="icon" type="image/png" sizes="512x512" href="./ichef-staff-512.png?v=227">
+<link rel="manifest" href="./manifest-staff.json?v=228">
+<link rel="apple-touch-icon" sizes="180x180" href="./ichef-staff.png?v=228">
+<link rel="icon" type="image/png" sizes="192x192" href="./ichef-staff-192.png?v=228">
+<link rel="icon" type="image/png" sizes="512x512" href="./ichef-staff-512.png?v=228">
 
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -12984,7 +12984,7 @@ window.ichefOpenOpsMobileScreenV150=ichefOpenOpsMobileScreen;
 // Installation Android = interaction utilisateur explicite. iPhone = ajout manuel.
 // Aucun changement aux PIN, sessions, jetons, compte ou donnees RH.
 // V225 : information Chrome vs Edge ; aucun changement d'authentification ni de jeton.
-const SW_URL='./sw-staff.js?v=227';
+const SW_URL='./sw-staff.js?v=228';
 const SW_SCOPE='/portail-staff.html';
 const early=window.ICHEF_PWA_INSTALL_EVENTS_V208||{};
 let deferredPrompt=early.prompt||null;
@@ -13071,25 +13071,61 @@ function refresh(){
     setStatus('Ouvrez ce lien dans Chrome, puis touchez Installer l’application. Les navigateurs intégrés aux e-mails ne proposent pas toujours l’installation.');
   }else if(deferredPrompt){
     buttons().forEach(btn=>btn.textContent='INSTALLER iCHEF STAFF');
-    setStatus('Prête à être installée : touchez INSTALLER et confirmez sur votre téléphone.');
+    setStatus('Le navigateur autorise l’installation : touchez INSTALLER puis confirmez dans Chrome.');
   }else{
-    buttons().forEach(btn=>btn.textContent='COMMENT INSTALLER');
-    setStatus('L’installation automatique n’est pas proposée ici. Dans Chrome : menu ⋮ → Installer l’application. Si cette option manque, contrôlez le manifest et le service worker.');
+    buttons().forEach(btn=>btn.textContent='VÉRIFIER L’INSTALLATION');
+    setStatus('Ce n’est pas un téléchargement de fichier APK. Chrome ne propose pas sa fenêtre d’installation. Touchez VÉRIFIER pour contrôler les fichiers, puis ouvrez le menu ⋮ du navigateur.');
   }
 }
 async function checkPwaFiles(){
-  try{
-    const response=await fetch('./manifest-staff.json',{cache:'no-store',credentials:'omit'});
-    if(!response.ok)return 'Manifest PWA introuvable (HTTP '+response.status+').';
-    const manifest=await response.json();
-    if(!manifest?.start_url || !Array.isArray(manifest?.icons) || !manifest.icons.length){
-      return 'Le manifest PWA ne contient pas les champs start_url et icons indispensables.';
+  // Diagnostic en lecture seule sur les fichiers PUBLICS. Aucun token d'invitation,
+  // session, code PIN ou appel /api/ n'est lu, transmis ni mis en cache.
+  const errors=[];
+  const safeFetch=async url=>{
+    try{return await fetch(url,{cache:'no-store',credentials:'omit',redirect:'follow'});}
+    catch(_){return null;}
+  };
+  if(!window.isSecureContext)errors.push('La page doit être ouverte en HTTPS.');
+  const manifestUrl=new URL('./manifest-staff.json?v=228',location.href);
+  const mr=await safeFetch(manifestUrl.href);
+  let m=null;
+  if(!mr || !mr.ok)errors.push('manifest-staff.json absent ou inaccessible'+(mr?' (HTTP '+mr.status+')':'')+'.');
+  else {
+    try{m=await mr.json();}catch(_){errors.push('manifest-staff.json ne contient pas du JSON valide.');}
+  }
+  if(m){
+    if(!m.name&&!m.short_name)errors.push('Le manifest n’a pas de nom.');
+    if(!m.start_url)errors.push('Le manifest n’a pas de start_url.');
+    if(!['standalone','fullscreen','minimal-ui'].includes(m.display))errors.push('Le manifest doit utiliser display: standalone.');
+    const icons=Array.isArray(m.icons)?m.icons:[];
+    for(const required of [192,512]){
+      const entry=icons.find(i=>String(i.sizes||'').split(/\s+/).includes(required+'x'+required)&&i.src);
+      if(!entry){errors.push('Icône '+required+'×'+required+' manquante dans le manifest.');continue;}
+      const u=new URL(entry.src,manifestUrl);
+      if(u.origin!==location.origin){errors.push('Icône '+required+' distante : même origine requise dans ce déploiement.');continue;}
+      const response=await safeFetch(u.href);
+      if(!response||!response.ok)errors.push('Icône '+required+' inaccessible'+(response?' (HTTP '+response.status+')':'')+'.');
+      else if(!String(response.headers.get('content-type')||'').toLowerCase().includes('image/')){
+        errors.push('Icône '+required+' ne renvoie pas une image (possible page HTML).');
+      }
     }
-    if(manifest.display && !['standalone','fullscreen','minimal-ui','window-controls-overlay'].includes(manifest.display)){
-      return 'Le manifest utilise display='+String(manifest.display)+' ; configurez standalone.';
-    }
-    return '';
-  }catch(_){return 'Manifest PWA inaccessible ou JSON invalide.';}
+  }
+  const sw=await safeFetch(new URL('./sw-staff.js?v=228',location.href).href);
+  if(!sw||!sw.ok)errors.push('sw-staff.js inaccessible'+(sw?' (HTTP '+sw.status+')':'')+'.');
+  else if(!/javascript|ecmascript/i.test(sw.headers.get('content-type')||'')){
+    errors.push('sw-staff.js est servi avec un mauvais type MIME.');
+  }
+  if(!('serviceWorker' in navigator))errors.push('Service Workers non pris en charge.');
+  else {
+    try{
+      const registration=await navigator.serviceWorker.getRegistration(new URL('./portail-staff.html',location.href).href);
+      if(!registration)errors.push('Aucun Service Worker enregistré sur la page Staff.');
+      else if(!registration.active)errors.push('Le Service Worker n’est pas encore actif.');
+    }catch(_){errors.push('Impossible de vérifier le Service Worker.');}
+  }
+  // Un diagnostic OK ne garantit PAS l'apparition de beforeinstallprompt : Chrome
+  // peut refuser l'invite si l'app est déjà installée ou pour d'autres raisons.
+  return errors.join(' ');
 }
 async function install(){
   if(standalone()){
@@ -13120,13 +13156,20 @@ async function install(){
   // NE PAS faire d'appel reseau avant prompt() : cela perdrait le geste utilisateur.
   const promptEvent=deferredPrompt || window.ICHEF_PWA_INSTALL_EVENTS_V208?.prompt;
   if(!promptEvent || typeof promptEvent.prompt!=='function'){
-    setInstallAction('Aucune fenêtre d’installation n’est proposée par ce navigateur. Utilisez le menu du navigateur indiqué ci-dessous.','error');
+    // Ne pas conserver un ancien prompt consommé et ne pas promettre de téléchargement.
+    deferredPrompt=null;
+    if(window.ICHEF_PWA_INSTALL_EVENTS_V208)window.ICHEF_PWA_INSTALL_EVENTS_V208.prompt=null;
+    setInstallAction('Vérification de l’installation iCHEF Staff…');
     showInstallInstructions();
-    setStatus('Installation automatique non disponible ; utilisez le menu du navigateur.',22000);
     const reason=await checkPwaFiles();
     if(reason){
-      setInstallAction('Installation non disponible : '+reason+' Vérifiez les fichiers PWA publiés sur le site.','error');
+      setInstallAction('Installation non proposée : '+reason+' Corrigez les ressources sur le serveur puis réessayez.','error');
+      setStatus('Le site ne remplit pas toutes les vérifications PWA. Voir le diagnostic sous le bouton.',22000);
+    }else{
+      setInstallAction('✓ Fichiers PWA accessibles. Chrome ne propose pas son dialogue : menu ⋮ → Ajouter à l’écran d’accueil → Installer l’application (si disponible). Vérifiez aussi si iCHEF Staff est déjà installée.','ok');
+      setStatus('Pas de téléchargement APK : utilisez le menu ⋮ de Chrome pour installer ou ajouter l’application.',22000);
     }
+    buttons().forEach(btn=>btn.textContent='VÉRIFIER L’INSTALLATION');
     return {promptUnavailable:true,reason};
   }
   // L'appel prompt() doit être exécuté immédiatement, pendant le clic utilisateur.
@@ -13137,7 +13180,7 @@ async function install(){
   setInstallAction('Demande d’installation envoyée au navigateur : validez la fenêtre Chrome/Edge qui doit apparaître.');
   refresh();
   try{
-    console.info('[iCHEF Staff PWA V227] Clic Installer : ouverture du dialogue système');
+    console.info('[iCHEF Staff PWA V228] Clic Installer : ouverture du dialogue système');
     const promptResult=promptEvent.prompt();
     // Selon le navigateur, prompt() résout avec le résultat ou userChoice.
     const result=await promptResult;
@@ -13157,7 +13200,7 @@ async function install(){
     return choice;
   }catch(error){
     const name=String(error?.name||'');
-    console.warn('[iCHEF Staff PWA V227] Dialogue non ouvert',name,error?.message||error);
+    console.warn('[iCHEF Staff PWA V228] Dialogue non ouvert',name,error?.message||error);
     setInstallAction('Le navigateur a refusé la fenêtre d’installation'+(name?' ('+name+')':'')+'. Ouvrez son menu ⋮ → Installer l’application.','error');
     showInstallInstructions();
     setStatus('Installation bloquée par le navigateur ; utilisez son menu.',20000);
