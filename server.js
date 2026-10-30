@@ -25179,6 +25179,7 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
         return res.json({
             ...payload,
             activationCompleted:true,
+            pinSaved:true, // Seulement après vérification en base, puis consommation sécurisée de l’invitation.
             activationMethod:identityMode,
             pwaRequired:true
         });
