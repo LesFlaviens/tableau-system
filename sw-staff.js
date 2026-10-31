@@ -1,10 +1,10 @@
 'use strict';
 /*
- * iCHEF Staff V228 — Correctif PWA et icones.
+ * iCHEF Staff V232 — Correctif PWA et icones.
  * Périmètre strict : /portail-staff.html + manifest / icones Staff.
  * Aucun accès aux API, sessions, PIN, invitations, Socket.IO ou autres modules.
  */
-const VERSION = '228';
+const VERSION = '232';
 const CACHE = `ichef-staff-shell-v${VERSION}`;
 const ORIGIN = self.location.origin;
 const APP = '/portail-staff.html';
@@ -49,7 +49,7 @@ self.addEventListener('activate', event => {
 });
 
 self.addEventListener('message', event => {
-  if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
+  if (event.data && event.data.type === 'SKIP_WAITING') self.skipWaiting();
 });
 
 self.addEventListener('fetch', event => {
