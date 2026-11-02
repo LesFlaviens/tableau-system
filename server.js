@@ -2143,7 +2143,16 @@ app.get('/ichef-staff-512.png', (req, res) => {
         }
     );
 });
+/
+app.get('/.well-known/assetlinks.json', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.type('application/json');
 
+    return res.sendFile(
+        path.join(__dirname, '.well-known', 'assetlinks.json'),
+        { dotfiles: 'allow' }
+    );
+});
 app.use(express.static(__dirname, {
 etag: true,
 lastModified: true,
