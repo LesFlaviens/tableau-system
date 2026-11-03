@@ -1,4 +1,4 @@
-// iCHEF SERVER V293 - diagnostic quotas Gemini / delais adaptatifs, routes HACCP IA seulement.
+// iCHEF SERVER V294 - diagnostic Staff login/OTP + contrôle SMTP destinataire accepté ; V293 conservée.
 
 const express = require('express');
 const cors = require('cors');
@@ -22644,6 +22644,10 @@ app.post(
             }
 
             if (!candidates.length) {
+                // V294 : distinguer une paire ID/PIN sans correspondance
+                // d'un problème de quota/hébergement, sans exposer les secrets.
+                ichefStaffAccessTraceV294(req,tenantHint,submittedStaffId,
+                    'STAFF_LOGIN','IDENTITY_PIN_NO_MATCH');
                 ichefPinAttemptFailure(
                     req,
                     attemptKey,
@@ -22730,6 +22734,10 @@ app.post(
                 });
 
             if (allowed.length !== 1) {
+                // Le profil peut exister mais son établissement être expiré,
+                // archivé ou suspendu ; ne pas modifier les contrôles d'accès.
+                ichefStaffAccessTraceV294(req,tenantHint,submittedStaffId,
+                    'STAFF_LOGIN',allowed.length>1?'IDENTITY_AMBIGUOUS':'TENANT_NOT_ELIGIBLE');
                 ichefPinAttemptFailure(
                     req,
                     attemptKey,
@@ -24203,7 +24211,8 @@ async function ichefStaffCreatePinResetCode({
             }[ch]||ch)
         );
 
-    try { await mail.transporter.sendMail({
+    try {
+    const smtpInfo=await mail.transporter.sendMail({
         from:`iCHEF OS <${mail.user}>`,
         to:email,
         subject:'iCHEF Staff — Code pour choisir un nouveau PIN',
@@ -24220,7 +24229,17 @@ async function ichefStaffCreatePinResetCode({
             `<div style="margin:24px 0;padding:18px;text-align:center;background:#111827;border:1px solid #d4af37;border-radius:12px;font-size:30px;font-weight:900;letter-spacing:8px;color:#fff">${code}</div>` +
             `<p style="color:#94a3b8;font-size:13px">Code à usage unique · expiration 10 minutes.</p>` +
             `</div>`
-    }); } catch (error) {
+    });
+    // Acquittement SMTP, pas preuve de livraison en boîte de réception.
+    // Nodemailer SMTP peut résoudre sans exception même si un destinataire est refusé.
+    const smtpAccepted=Array.isArray(smtpInfo?.accepted) &&
+        smtpInfo.accepted.some(v=>String(v||'').trim().toLowerCase()===email.toLowerCase());
+    if(!smtpAccepted){
+        const refused=new Error('Destinataire non accepté par le serveur SMTP.');
+        refused.code='STAFF_PIN_RESET_SMTP_RECIPIENT_REJECTED';
+        throw refused;
+    }
+    } catch (error) {
         await IchefStaffPinReset.updateOne({resetId,mode:'EMAIL_CODE',usedAt:null},
             {$set:{usedAt:new Date()}}).catch(()=>{});
         throw error;
@@ -24440,50 +24459,84 @@ app.post('/api/staff/pin-reset/request',async(req,res)=>{
         });
     }
 });
+// V294 — Diagnostic confidentiel côté Render uniquement, sans énumération de comptes.
+// Ne jamais exposer dans les journaux un PIN, une adresse e-mail ou un OTP.
+function ichefStaffAccessTraceV294(req,tenantID,staffId,action,outcome){
+    try{
+        console.info('[iCHEF STAFF ACCESS V294]',{
+            requestId:String(req?.ichefRequestId||'').slice(0,120),
+            action:String(action||'').slice(0,36),
+            outcome:String(outcome||'').slice(0,80),
+            tenantHash:tenantID?ichefSecurityHash(String(tenantID)):'',
+            staffHash:staffId?ichefSecurityHash(`${String(tenantID||'')}|${String(staffId).trim().toLowerCase()}`):''
+        });
+    }catch(_){/* Le journal ne doit jamais bloquer la connexion. */}
+}
+
 // V214 — récupération sécurisée par code e-mail personnel (Option A).
 // Ne divulgue pas si le collaborateur est présent dans le système.
 app.post('/api/staff/pin-reset/code/request',async(req,res)=>{
     res.setHeader('Cache-Control','no-store');
     const newFakeId=()=>nodeCrypto.randomBytes(18).toString('base64url');
+    // Le succès générique masque délibérément l'existence d'un collaborateur.
+    // Une erreur de traitement ne doit PAS divulguer si son adresse existe.
     const generic=id=>res.json({
         success:true,
         challengeId:id,
         message:'Si le compte possède une adresse e-mail RH, un code de vérification lui sera envoyé.'
     });
+    let tenantID='',staffId='';
     try{
-        const tenantID=cleanString(req.body?.tenantID||req.headers?.['x-ichef-tenant']||'');
-        const staffId=String(req.body?.staffId||'').trim().slice(0,160);
-        if(!tenantID||!staffId)return generic(newFakeId());
-        // Erreur technique commune à tous les comptes (pas d'énumération des utilisateurs).
-        if(!ichefStaffResetMailer())return res.status(503).json({
-            success:false,code:'STAFF_SMTP_NOT_CONFIGURED',
-            error:'L’envoi d’e-mail est temporairement indisponible.'
-        });
+        tenantID=cleanString(req.body?.tenantID||req.headers?.['x-ichef-tenant']||'');
+        staffId=String(req.body?.staffId||'').trim().slice(0,160);
+        if(!tenantID||!staffId){
+            ichefStaffAccessTraceV294(req,tenantID,staffId,'PIN_RESET','INPUT_MISSING');
+            return generic(newFakeId());
+        }
+        // Erreur commune à tous les comptes ; aucune découverte d'identité.
+        if(!ichefStaffResetMailer()){
+            ichefStaffAccessTraceV294(req,tenantID,staffId,'PIN_RESET','SMTP_NOT_CONFIGURED');
+            return res.status(503).json({
+                success:false,code:'STAFF_SMTP_NOT_CONFIGURED',
+                error:'L’envoi d’e-mail est temporairement indisponible.'
+            });
+        }
         const ip=ichefSecurityHash(ichefSecurityClientIp(req));
         const key=`PIN_RESET_OTP_V214|${tenantID}|${staffId.toLowerCase()}|${ip}`;
         const last=Number(ichefStaffPinResetBuckets.get(key)||0);
-        if(Date.now()-last<60000)return generic(newFakeId());
+        if(Date.now()-last<60000){
+            ichefStaffAccessTraceV294(req,tenantID,staffId,'PIN_RESET','COOLDOWN_NO_NEW_EMAIL');
+            return generic(newFakeId());
+        }
         ichefStaffPinResetBuckets.set(key,Date.now());
-        // Limitation en mémoire bornée, en plus du quota middleware.
         if(ichefStaffPinResetBuckets.size>10000){
             for(const [k,ts] of ichefStaffPinResetBuckets){
                 if(Date.now()-Number(ts||0)>600000)ichefStaffPinResetBuckets.delete(k);
             }
         }
         const profile=await ichefStaffResolveProfileForReset(tenantID,staffId);
-        if(!profile)return generic(newFakeId());
+        if(!profile){
+            ichefStaffAccessTraceV294(req,tenantID,staffId,'PIN_RESET','PROFILE_NOT_RESOLVED');
+            return generic(newFakeId());
+        }
         try{
             const result=await ichefStaffCreatePinResetCode({
-                req,profile,requestedFrom:'SELF_EMAIL_CODE_V214'
+                req,profile,requestedFrom:'SELF_EMAIL_CODE_V294'
             });
-            if(result?.ok && result.resetId)return generic(result.resetId);
-            console.warn('[iCHEF RESET CODE]',result?.code||'SEND_FAILED');
+            if(result?.ok && result.resetId){
+                ichefStaffAccessTraceV294(req,tenantID,staffId,'PIN_RESET','SMTP_ACCEPTED_NOT_INBOX_CONFIRMED');
+                return generic(result.resetId);
+            }
+            ichefStaffAccessTraceV294(req,tenantID,staffId,'PIN_RESET',
+                String(result?.code||'RESET_CREATION_FAILED'));
         }catch(error){
-            console.warn('[iCHEF RESET CODE] Envoi impossible',error?.code||'SMTP_ERROR');
+            ichefStaffAccessTraceV294(req,tenantID,staffId,'PIN_RESET',
+                `SEND_FAILED_${String(error?.code||'SMTP_ERROR')}`);
         }
         return generic(newFakeId());
     }catch(error){
-        console.error('[iCHEF RESET CODE] Requête indisponible',error?.code||'ERROR');
+        ichefStaffAccessTraceV294(req,tenantID,staffId,'PIN_RESET',
+            `REQUEST_FAILED_${String(error?.code||'ERROR')}`);
         return generic(newFakeId());
     }
 });
