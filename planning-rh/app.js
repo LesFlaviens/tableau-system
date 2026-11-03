@@ -1,4 +1,4 @@
-/* iCHEF Planning Premium V280 — lecture stricte + diagnostic non destructif. */
+/* V266: source fournie par le client, renommée en .js. */
 /* iCHEF OS Planning Premium PWA · client connecté au TIMESHEETS_MASTER.
    Aucune donnée RH n'est stockée en cache ni dans localStorage. */
 (()=>{'use strict';
@@ -59,7 +59,7 @@ async function login(ev){ev.preventDefault();const t=$('login-tenant').value.tri
 }
 async function restoreAuth(){try{const row=JSON.parse(sessionStorage.getItem(authKey())||'null');if(row?.token&&row?.tenant===tenant&&row?.device===device&&row.exp>Date.now()){token=row.token;actor=row.actor;$('login-shield').classList.add('hide');await refresh(true);return;}}catch(e){console.warn('[RH premium] session à réauthentifier',e?.message);}showAuth();}
 function convert(day){if(!day||!Object.keys(day).length)return empty();const s=String(day.status||'');const p=String(day.s1||'').split('-'),q=String(day.s2||'').split('-');let k='A';if(s==='off')k='R';else if(s==='conge')k='CP';else if(s==='maladie')k='MAL';else if(s==='accident_travail')k='ACC';else if(s==='absence_injustifiee')k='NJS';else if(s==='maternite')k='MAT';else if(s==='paternite')k='PAT';else if(s==='parental')k='PAR';else if(s==='enfant_malade')k='EFM';else if(s==='evenement_familial')k='EVF';else if(s==='deces')k='DEC';else if(s==='sans_solde')k='SSL';else if(s==='recup')k='RECUP';else if(s==='ferie')k='FERIE';else if(s==='formation')k='FORM';else if(s==='present'||s==='off_matin'||s==='off_soir')k=(day.s1&&day.s2)?'C':(day.s1?'M':'S');return {k,status:s,start:p[0]||'',end:p[1]||'',s2:q[0]||'',e2:q[1]||'',pause:Number(day.pause||0),note:String(day.obs||''),original:day};}
-function get(p,date){const d=iso(date),m=d.slice(0,7),n=String(Number(d.slice(8))),padded=d.slice(8);const days=state?.[m]?.[p.id];return convert(days?.[n]??days?.[padded]??days?.[d]);}
+function get(p,date){const d=iso(date),m=d.slice(0,7),n=String(Number(d.slice(8)));return convert(state?.[m]?.[p.id]?.[n]);}
 function work(r){return ['M','S','C'].includes(r.k);}
 // Les tâches sont conservées dans le champ obs existant des journées RH.
 // Un texte lisible est utilisé pour rester compatible avec RH et Portail Staff.
@@ -222,7 +222,7 @@ function openEmployee(staffId){
  switchView(view==='day'?'day':'week');
  $('person-bar').scrollIntoView({block:'nearest',behavior:'smooth'});
 }
-function closeEmployee(){focusedStaffId=null;render();if(token)premiumDisplaySyncStatus(month(anchor));}
+function closeEmployee(){focusedStaffId=null;render();}
 function periodDays(){
  if(view==='day')return [new Date(anchor)];
  if(view==='week')return Array.from({length:7},(_,i)=>add(monday(anchor),i));
@@ -239,7 +239,6 @@ function renderPersonBar(){
   `Consultez et modifiez les journées de ${person.name} directement sur le planning officiel.`:
   'Planning officiel : lecture et modification directement sur iCHEF OS.';
  if(!person)return;
- if($('team-return'))$('team-return').textContent=`← Toute l'équipe (${staff.length})`;
  $('person-title').textContent=person.name||'Collaborateur';
  $('person-role').textContent=[person.role,person.dept].filter(Boolean).join(' · ');
  $('person-avatar').textContent=person.avatar||'?';
@@ -453,7 +452,7 @@ function renderStats(){
  $('kpi-hours').textContent=tot.toFixed(1).replace('.',',')+' h';
  $('kpi-shifts').textContent=sh.length;
  $('kpi-absences').textContent=arr.filter(r=>['A','CP','MAL','RECUP','FORM','FERIE','NJS','ACC','MAT','PAT','PAR','EFM','EVF','DEC','SSL'].includes(r.k)).length;
- $('kpi-staff').textContent=people.length;$('kpi-staff').title=`${people.length} affiché(s) sur ${staff.length} collaborateur(s) reçus du serveur RH.`;
+ $('kpi-staff').textContent=people.length;
  $('morning').textContent=arr.filter(r=>r.k==='M'||r.k==='C').length;
  $('evening').textContent=arr.filter(r=>r.k==='S'||r.k==='C').length;
  $('split').textContent=arr.filter(r=>r.k==='C').length;
@@ -486,64 +485,11 @@ window.addEventListener('resize',queuePlanningFit,{passive:true});
 function render(){renderPersonBar();if(view==='week'){$('range').textContent=`${fmt(anchor,{day:'numeric',month:'short'})} – ${fmt(add(anchor,6),{day:'numeric',month:'short',year:'numeric'})}`;renderWeek();}else if(view==='day'){$('range').textContent=fmt(anchor,{weekday:'short',day:'numeric',month:'short',year:'numeric'});renderDay();}else{$('range').textContent=fmt(anchor,{month:'long',year:'numeric'});renderMonth();}renderStats();renderAdvice();queuePlanningFit();}
 function switchView(v){view=v;for(const which of ['day','week','month']){$('view-'+which).classList.toggle('active',which===v);$('view-'+which).setAttribute('aria-pressed',String(which===v));$(which+'-host').classList.toggle('hide',which!==v);}render();}
 function updateDepartments(){const select=$('department'),old=filter;select.innerHTML='<option value="ALL">Tous les services</option>';[...new Set(staff.map(s=>s.dept).filter(Boolean))].sort().forEach(d=>{const o=document.createElement('option');o.value=d;o.textContent=d;select.appendChild(o);});filter=old==='ALL'||staff.some(s=>s.dept===old)?old:'ALL';select.value=filter;}
-// V280 — Ne jamais présenter une réponse API incomplète comme un planning vide synchronisé.
-// On utilise exclusivement la réponse de l'API RH signée ; aucune donnée fictive,
-// aucun autre cache, aucune écriture côté serveur n'est introduite ici.
-function premiumPlainObject(value){return value!==null&&typeof value==='object'&&!Array.isArray(value);}
-function validatePremiumStateResponse(res,mm){
-  if(!premiumPlainObject(res))throw new Error('Réponse Planning Premium invalide. Aucun horaire remplacé.');
-  if(res.tenantID!==undefined&&String(res.tenantID)!==tenant)
-    throw new Error('Établissement incohérent dans la réponse RH. Aucun horaire remplacé.');
-  if(!Array.isArray(res.staff))throw new Error('Liste des collaborateurs absente de la réponse RH. Aucun horaire remplacé.');
-  const raw=res.timesheets;
-  if(!premiumPlainObject(raw))throw new Error('Feuilles horaires absentes de la réponse RH. Aucun horaire remplacé.');
-  // Accepter uniquement les deux enveloppes connues du même référentiel officiel.
-  const months=premiumPlainObject(raw.data)&&!Object.prototype.hasOwnProperty.call(raw,mm)?raw.data:raw;
-  if(!premiumPlainObject(months[mm]))throw new Error('Mois '+mm+' absent de la réponse RH. Aucune donnée effacée.');
-  return months;
-}
-function premiumMonthDiagnostic(mm){
-  const peopleIds=new Set(staff.map(p=>String(p.id)));
-  const tree=premiumPlainObject(state[mm])?state[mm]:{};
-  let matchedDays=0,matchedShifts=0,unlinkedStaff=0,unlinkedDays=0;
-  for(const [sid,personDays] of Object.entries(tree)){
-    if(!premiumPlainObject(personDays))continue;
-    const records=Object.values(personDays).filter(day=>premiumPlainObject(day)&&(day.status!==undefined||day.s1!==undefined||day.s2!==undefined));
-    if(!peopleIds.has(String(sid))){if(records.length){unlinkedStaff++;unlinkedDays+=records.length;}continue;}
-    matchedDays+=records.length;
-    matchedShifts+=records.filter(day=>work(convert(day))).length;
-  }
-  return {matchedDays,matchedShifts,unlinkedStaff,unlinkedDays};
-}
-function premiumDisplaySyncStatus(mm){
-  const diag=premiumMonthDiagnostic(mm);
-  const shown=visible().length;
-  const context=focusedStaffId?'vue individuelle':filter==='ALL'?'toute l’équipe':'service filtré';
-  const syncTime=new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
-  const suffix=readOnly?' · verrouillé':'';
-  if(diag.unlinkedStaff){
-    $('board-status').textContent=`⚠ ${diag.unlinkedDays} journée(s) sous ${diag.unlinkedStaff} identifiant(s) absents des fiches RH · aucune réaffectation automatique`;
-    $('board-status').style.color='#a86b18';
-  }else if(staff.length===0){
-    $('board-status').textContent='⚠ L’API RH n’a retourné aucun collaborateur. Vérifier le répertoire officiel.';
-    $('board-status').style.color='#a86b18';
-  }else if(diag.matchedDays===0){
-    $('board-status').textContent=`⚠ ${staff.length} collaborateurs reçus · ${shown} affiché(s) (${context}) · aucun jour planifié dans ${mm}${suffix}`;
-    $('board-status').style.color='#a86b18';
-  }else if(diag.matchedShifts===0){
-    $('board-status').textContent=`⚠ ${staff.length} collaborateurs reçus · ${shown} affiché(s) (${context}) · aucun service travaillé dans ${mm}${suffix}`;
-    $('board-status').style.color='#a86b18';
-  }else{
-    setStatus(`Synchronisé · ${staff.length} collaborateurs reçus · ${shown} affiché(s) (${context}) · ${mm} · ${syncTime}${suffix}`);
-  }
-  return diag;
-}
-
-async function refresh(force=false){if(!token||busy)return;if(!force&&Date.now()-lastFetch<3500)return;busy=true;setStatus('Synchronisation sécurisée en cours…');try{const m=month(anchor);const res=await jsonFetch(`/api/rh/planning/premium/state?tenantID=${encodeURIComponent(tenant)}&month=${m}`,{headers:authHeaders()});const officialMonths=validatePremiumStateResponse(res,m);staff=res.staff.filter(p=>premiumPlainObject(p)&&p.id!==undefined&&p.id!==null&&String(p.id).trim()).map(p=>({...p,id:String(p.id),dept:String(p.dept||'Sans secteur'),avatar:String(p.name||'?').split(/\s+/).slice(0,2).map(z=>z[0]).join('').toUpperCase()}));state={...state,...officialMonths};actualMonths[m]=readRealMonth(res,m);rhSettings=res.settings||{};
+async function refresh(force=false){if(!token||busy)return;if(!force&&Date.now()-lastFetch<3500)return;busy=true;setStatus('Synchronisation sécurisée en cours…');try{const m=month(anchor);const res=await jsonFetch(`/api/rh/planning/premium/state?tenantID=${encodeURIComponent(tenant)}&month=${m}`,{headers:authHeaders()});staff=(res.staff||[]).map(p=>({...p,id:String(p.id),dept:String(p.dept||'Sans secteur'),avatar:String(p.name||'?').split(/\s+/).slice(0,2).map(z=>z[0]).join('').toUpperCase()}));state={...state,...(res.timesheets||{})};actualMonths[m]=readRealMonth(res,m);rhSettings=res.settings||{};
 publication=res.publication||null;readOnly=rhSettings.planningStatus==='locked';lastFetch=Date.now();
 $('publication-status').textContent=publication?.status==='published'?'✓ Mois publié':
   publication?.status==='to_review'?'⚠ Modifié après publication · à revalider':'Publication : en attente';
-updateDepartments();render();premiumDisplaySyncStatus(m);
+updateDepartments();render();setStatus(`Synchronisé · ${tenant} · ${new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}${readOnly?' · planning verrouillé':''}`);
 // V276 : cibler exactement le salarié et la date demandés depuis RH après la réponse serveur autorisée.
 if(pendingRhJump){const jump=pendingRhJump;pendingRhJump=null;
  if(jump.tenant===tenant){const match=staff.find(p=>String(p.id)===String(jump.staffId));
@@ -560,11 +506,11 @@ if(query.get('controlRoom')==='1'&&window.parent!==window)window.parent.postMess
   const extra=month(add(monday(anchor),6));
   if(extra!==m){
    void jsonFetch(`/api/rh/planning/premium/state?tenantID=${encodeURIComponent(tenant)}&month=${extra}`,{headers:authHeaders()})
-    .then(extraRes=>{const extraMonths=validatePremiumStateResponse(extraRes,extra);state={...state,...extraMonths};actualMonths[extra]=readRealMonth(extraRes,extra);if(month(add(monday(anchor),6))===extra){render();premiumDisplaySyncStatus(extra);}})
+    .then(extraRes=>{state={...state,...(extraRes.timesheets||{})};actualMonths[extra]=readRealMonth(extraRes,extra);if(month(add(monday(anchor),6))===extra)render();})
     .catch(e=>console.warn('[iCHEF Planning] mois adjacent indisponible',e?.message));
   }
  }}
-catch(e){if(query.get('controlRoom')==='1'&&window.parent!==window)window.parent.postMessage({type:'ICHEF_PREMIUM_CONTROL_ERROR',tenant,reason:e.message},location.origin);setStatus(e.message,true);if(e.status===401||e.status===403){forget();showAuth(e.message);}else notify('Lecture Planning Premium impossible : '+(e.message||'vérifier la réponse serveur')+'. Aucune écriture effectuée.');}finally{busy=false;}}
+catch(e){if(query.get('controlRoom')==='1'&&window.parent!==window)window.parent.postMessage({type:'ICHEF_PREMIUM_CONTROL_ERROR',tenant,reason:e.message},location.origin);setStatus(e.message,true);if(e.status===401||e.status===403){forget();showAuth(e.message);}else notify('Réseau indisponible. Les données ne sont pas modifiées.');}finally{busy=false;}}
 function openModal(person,date){if(!token||readOnly)return;const p=staff.find(x=>x.id===person);if(!p)return;const d=new Date(date+'T12:00:00'),r=get(p,d);selected={person,date,base:r.original};$('modal-sub').textContent=`${p.name} · ${fmt(d,{weekday:'long',day:'numeric',month:'long'})}`;$('kind').value=types[r.k]?r.k:'A';$('start').value=r.start||'08:00';$('end').value=r.end||'16:00';$('split-start').value=r.s2||'18:00';$('split-end').value=r.e2||'22:00';$('note').value=splitDayTasks(r.note).note;$('reason').value='';updateForm();$('modal-backdrop').classList.remove('hide');$('kind').focus();}
 function closeModal(){selected=null;$('modal-backdrop').classList.add('hide');}
 function updateForm(){const k=$('kind').value;document.querySelectorAll('[data-preset]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.preset===k)));for(const id of ['time1','time2'])$(id).classList.toggle('hide',!['M','S','C'].includes(k));$('split-row').classList.toggle('hide',k!=='C');}
@@ -636,11 +582,8 @@ $('login-form').onsubmit=login;$('prev').onclick=()=>{anchor=view==='day'?add(an
 $('panel-toggle').onclick=()=>{const on=document.querySelector('.board').classList.toggle('show-panel');$('panel-toggle').setAttribute('aria-expanded',String(on));$('panel-toggle').textContent=on?'× Fermer':'☷ Détails';};
 async function publishMonth(){
   if(!token||busy||readOnly)return;
-   const m=month(anchor);
-   const diagnostic=premiumMonthDiagnostic(m);
-   if(diagnostic.unlinkedDays){notify('Publication bloquée : des journées sont associées à des identifiants RH non reconnus. Vérifiez la correspondance côté serveur.');return;}
-   if(diagnostic.matchedDays===0){notify('Publication bloquée : aucun jour enregistré pour ce mois. Aucune donnée n’a été créée.');return;}
-   if(!confirm(`Publier le planning officiel de ${m} sur le Portail Staff ?\n\nVérifiez la couverture, les contrats, les repos, les congés approuvés et la conformité légale avant de confirmer.`))return;
+  const m=month(anchor);
+  if(!confirm(`Publier le planning officiel de ${m} sur le Portail Staff ?\n\nVérifiez la couverture, les contrats, les repos, les congés approuvés et la conformité légale avant de confirmer.`))return;
   busy=true;const b=$('publish');b.disabled=true;setStatus('Publication sécurisée en cours…');
   try{
     const res=await jsonFetch('/api/rh/planning/premium/publish',{
