@@ -1,4 +1,4 @@
-// iCHEF SERVER V294 - diagnostic Staff login/OTP + contrôle SMTP destinataire accepté ; V293 conservée.
+// iCHEF SERVER V295 - identification RH/Staff pour le PIN oublié ; diagnostics V294 et autres modules conservés.
 
 const express = require('express');
 const cors = require('cors');
@@ -24075,11 +24075,44 @@ async function ichefStaffResolveProfileForReset(tenantID,loginId){
     if(!state)return null;
     const access=ichefStaffPortalArray(state?.activeOrders?.STAFF_ACCESS),directory=ichefStaffPortalArray(state?.activeOrders?.DIRECTORY_MASTER);
     const norm=v=>String(v||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' '),w=norm(wanted);
-    const matches=access.filter(item=>{if(!item||item.active===false)return false;const tech=ichefStaffResetIdentityValues(item).map(norm);const human=[item?.name,item?.pseudo,item?.displayName,item?.prenom,item?.firstName].filter(Boolean).map(norm);return tech.includes(w)||human.includes(w);});
-    if(matches.length!==1)return null;
-    const member=matches[0],ids=new Set(ichefStaffResetIdentityValues(member));
-    const directoryEntry=directory.find(item=>item?.active!==false&&ichefStaffResetIdentityValues(item).some(id=>ids.has(id)))||{};
-    return {tenant:{tenantID:safeTenant},state,member,directoryEntry};
+    // V295 : la fiche RH peut exister dans DIRECTORY_MASTER alors que la
+    // fiche STAFF_ACCESS n'est pas présente ou n'a pas le même alias visible.
+    // Le tenant doit rester éligible ; pas de contournement par le fallback.
+    const tenant=await Tenant.findOne({tenantID:safeTenant},{tenantID:1,status:1,archivedAt:1,demoExpiration:1}).lean();
+    if(!tenant || tenant.archivedAt || String(tenant.status||'').toUpperCase()==='SUSPENDU' ||
+       (tenant.demoExpiration && new Date()>new Date(tenant.demoExpiration)))return null;
+    const aliases=item=>[
+        ...ichefStaffResetIdentityValues(item),
+        item?.name,item?.pseudo,item?.displayName,item?.prenom,item?.firstName
+    ].filter(v=>v!==undefined&&v!==null&&String(v).trim()!=='').map(norm);
+    const matches=access.filter(item=>item && item.active!==false && aliases(item).includes(w));
+    // Jamais de sélection arbitraire lorsqu'un alias correspond à plusieurs fiches.
+    if(matches.length>1)return null;
+    if(matches.length===1){
+        const member=matches[0],ids=new Set(ichefStaffResetIdentityValues(member));
+        const linked=directory.filter(item=>item?.active!==false &&
+            ichefStaffResetIdentityValues(item).some(id=>ids.has(id)));
+        if(linked.length>1)return null;
+        return {tenant,state,member,directoryEntry:linked[0]||{}};
+    }
+    // Secours limité au même établissement : un prénom/pseudo n'est valable
+    // que s'il est unique, et l'e-mail RH devra être vérifié par OTP.
+    const rhMatches=directory.filter(item=>item && item.active!==false && aliases(item).includes(w));
+    if(rhMatches.length!==1)return null;
+    const directoryEntry=rhMatches[0];
+    const dirIds=new Set(ichefStaffResetIdentityValues(directoryEntry));
+    if(!dirIds.size)return null; // un PIN ne peut pas être modifié sans ID technique
+    const linkedAccess=access.filter(item=>item?.active!==false &&
+        ichefStaffResetIdentityValues(item).some(id=>dirIds.has(id)));
+    if(linkedAccess.length>1)return null;
+    const member=linkedAccess[0]||{
+        ...directoryEntry,
+        id:ichefStaffResetCanonicalId({directoryEntry}),
+        name:directoryEntry.name||[directoryEntry.firstName,directoryEntry.lastName]
+            .filter(Boolean).join(' ')||[directoryEntry.prenom,directoryEntry.nom]
+            .filter(Boolean).join(' ')||'Collaborateur'
+    };
+    return {tenant,state,member,directoryEntry};
 }
 function ichefStaffResetMailer(){
     const user=String(process.env.GMAIL_USER||process.env.EMAIL_USER||process.env.SMTP_USER||'').trim();
