@@ -9139,6 +9139,8 @@ function ichefStaffHasActivePinResetV175(){
   );
 }
 
+let ICHEF_STAFF_BOOTSTRAP_INITIALIZED_V236=false;
+
 async function bootstrapCollaboratorPortal(){
   const resetToken=
     ichefStaffPinResetTokenFromLocationV175() ||
@@ -9153,6 +9155,12 @@ async function bootstrapCollaboratorPortal(){
     showStaffPwaRequiredGate();
     return;
   }
+
+  // V236 : ne brancher l'authentification qu'une seule fois si Chrome
+  // bascule du navigateur vers la fenêtre PWA après l'installation.
+  // Aucun changement de PIN, session, invitation ou appel API.
+  if(ICHEF_STAFF_BOOTSTRAP_INITIALIZED_V236)return;
+  ICHEF_STAFF_BOOTSTRAP_INITIALIZED_V236=true;
 
   hideStaffPwaRequiredGate();
   // V230 : rétablir l'affichage des portes de connexion navigateur sur mobile.
@@ -9536,6 +9544,43 @@ document.addEventListener('visibilitychange',()=>{
 // =========================================================
 
 bootstrapCollaboratorPortal();
+
+// V236 — Retour automatique à l'écran de connexion après installation.
+// Chrome peut faire passer une page déjà ouverte du mode navigateur au mode
+// application sans relancer l'initialisation des écrans. On continue alors
+// le parcours initial : session existante, invitation, reset ou connexion.
+// Jamais de bypass d'authentification, ni rechargement forcé du navigateur.
+(function ichefStaffInstalledEntryV236(){
+  let checking=false;
+  function resumeInstalledEntry(){
+    if(checking || !ichefIsStandalonePwa())return;
+    const installGate=document.getElementById('staffPwaRequiredGate');
+    if(!installGate || installGate.hidden)return;
+    checking=true;
+    document.documentElement.classList.remove('ichef-staff-not-standalone');
+    hideStaffPwaRequiredGate();
+    const notice=document.getElementById('ichefPwaInstallConfirmed');
+    if(notice)notice.hidden=true;
+    Promise.resolve(bootstrapCollaboratorPortal())
+      .catch(error=>{
+        console.error('[iCHEF Staff PWA V236] réouverture de la connexion',error);
+        if(!requireStaffSession())showStaffLogin('Connexion sécurisée : veuillez saisir votre identifiant et votre PIN.');
+      })
+      .finally(()=>{checking=false;});
+  }
+  function scheduleResume(){setTimeout(resumeInstalledEntry,80);}
+  window.addEventListener('pageshow',scheduleResume);
+  window.addEventListener('focus',scheduleResume);
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden)scheduleResume();});
+  window.addEventListener('ichef-pwa-install-confirmed',scheduleResume);
+  window.addEventListener('appinstalled',scheduleResume);
+  try{
+    for(const mode of ['standalone','fullscreen','minimal-ui','window-controls-overlay']){
+      window.matchMedia?.(`(display-mode: ${mode})`)?.addEventListener?.('change',scheduleResume);
+    }
+  }catch(_){}
+  scheduleResume();
+})();
 </script>
   
 
@@ -13699,9 +13744,14 @@ close.addEventListener('click',()=>{
 function confirmOpening(){
   if(!standalone()||shownInThisOpen)return;
   shownInThisOpen=true;
-  // Confirmation visible tant que le collaborateur ne la ferme pas.
+  // V236 : la connexion s'affiche directement, sans encart qui masque
+  // les champs lors d'une première ouverture non authentifiée.
+  if(!requireStaffSession()){
+    box.hidden=true;
+    return;
+  }
   show('✓ iCHEF Staff est installée',
-    'Application ouverte depuis votre téléphone. Vous pouvez vous connecter ou activer votre compte.',true);
+    'Application ouverte depuis votre appareil.',false);
 }
 window.addEventListener('appinstalled',()=>{
   if(standalone())confirmOpening();
@@ -15837,3 +15887,5 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
 
 
 </html>
+
+  
