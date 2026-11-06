@@ -1,3 +1,4 @@
+// iCHEF SERVER V295 — connexion Staff limitée à son établissement et à son identité RH
 // iCHEF SERVER V293 - diagnostic quotas Gemini / delais adaptatifs, routes HACCP IA seulement.
 
 const express = require('express');
@@ -22255,6 +22256,28 @@ app.post(
                 ''
             );
 
+        // V295 : le collaborateur se connecte seulement au sein de
+        // l'établissement renseigné. Une recherche globale par PIN est interdite.
+        if (!tenantHint) {
+            return res.status(400).json({
+                success:false,
+                code:'STAFF_TENANT_REQUIRED',
+                error:'Indiquez le code de votre établissement iCHEF.'
+            });
+        }
+
+        // Le navigateur Staff transmet la même identité d'appareil dans
+        // le corps et l'en-tête. Un conflit est refusé (sans changer les PIN).
+        const headerDeviceId = String(req.headers?.['x-ichef-device'] || '').trim();
+        const bodyDeviceId = String(req.body?.deviceId || '').trim();
+        if (headerDeviceId && bodyDeviceId && headerDeviceId !== bodyDeviceId) {
+            return res.status(401).json({
+                success:false,
+                code:'STAFF_DEVICE_ID_MISMATCH',
+                error:'Appareil non reconnu. Relancez iCHEF Staff.'
+            });
+        }
+
         if (
             !submittedStaffId ||
             submittedStaffId.length < 2 ||
@@ -22438,12 +22461,9 @@ app.post(
             const candidateKeys = new Set();
 
             /*
-             * V103 — FAST LOGIN :
-             * 1) si le portail connaît l'établissement, on lit d'abord UN SEUL
-             *    AppState via l'index unique tenantID ;
-             * 2) seulement si aucun couple ID/PIN ne correspond, on lance le
-             *    secours global V101. Ainsi un login normal évite le scan de
-             *    plusieurs établissements sans réduire la sécurité.
+             * V295 — Login strictement isolé au tenant :
+             * un unique AppState via l'index tenantID.
+             * Aucun scan inter-établissements par couple ID/PIN.
              */
             const collectCandidatesFromStates = (stateList = []) => {
                 for (const state of stateList) {
@@ -22478,9 +22498,9 @@ app.post(
                             identityValues(member);
 
                         /*
-                         * On rattache la fiche RH au membre STAFF_ACCESS par ID
-                         * d'abord, puis par PIN en secours. Le nom n'est jamais
-                         * utilisé comme preuve d'identité.
+                         * V295 : lien RH <-> STAFF_ACCESS par identifiant
+                         * technique partagé uniquement. Ni le nom ni le PIN
+                         * ne prouvent que deux fiches sont la même personne.
                          */
                         const linkedDirectory =
                             directory.find(item => {
@@ -22496,15 +22516,9 @@ app.post(
                                         dirIds.includes(id)
                                     );
 
-                                return (
-                                    sharesId ||
-                                    (
-                                        !member?.staffActivatedAt &&
-                                        !member?.pinUpdatedAt &&
-                                        samePin(member?.pin) &&
-                                        samePin(item?.pin)
-                                    )
-                                );
+                                // V295 : une identité RH ne peut jamais être
+                                // rattachée à une autre fiche par PIN commun.
+                                return sharesId;
                             }) || null;
 
                         const allIds = [
@@ -22526,9 +22540,16 @@ app.post(
                         const staffPinIsActivated=Boolean(
                             member?.staffActivatedAt || member?.pinUpdatedAt
                         );
+                        // V295 : le PIN de la fiche Staff prévaut dès
+                        // qu'il est configuré. Le PIN RH lié est un secours
+                        // uniquement si le PIN Staff est réellement absent.
+                        const staffPinConfigured = /^\d{4,12}$/.test(
+                            String(member?.pin ?? '').trim()
+                        );
                         if (
-                            !samePin(member?.pin) &&
-                            (staffPinIsActivated || !samePin(linkedDirectory?.pin))
+                            (staffPinConfigured || staffPinIsActivated)
+                                ? !samePin(member?.pin)
+                                : !samePin(linkedDirectory?.pin)
                         ) {
                             continue;
                         }
@@ -22634,29 +22655,9 @@ app.post(
                 );
             }
 
-            /*
-             * Le fallback V101 est conservé pour un ancien/mauvais tenantID
-             * mémorisé dans le téléphone. Il ne s'exécute plus à chaque login.
-             */
-            if (!candidates.length) {
-                const fallbackQuery = {
-                    ...stateQuery,
-                    ...(tenantHint
-                        ? { tenantID: { $ne: tenantHint } }
-                        : {})
-                };
-
-                const fallbackStates =
-                    await AppState
-                        .find(
-                            fallbackQuery,
-                            stateProjection
-                        )
-                        .limit(120)
-                        .lean();
-
-                collectCandidatesFromStates(fallbackStates);
-            }
+            // V295 : aucun secours inter-établissements.
+            // Si l'identifiant ou le PIN ne correspond pas au tenant indiqué,
+            // la connexion échoue : jamais de bascule silencieuse vers un autre client.
 
             if (!candidates.length) {
                 ichefPinAttemptFailure(
