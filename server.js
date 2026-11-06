@@ -19578,6 +19578,8 @@ async function ichefStaffSendActivationEmail({
     }catch(_){}
 
     const link=`${publicStaffOrigin}/portail-staff.html#activate=${encodeURIComponent(token)}`;
+    // V294 — La page d'installation est publique, le lien personnel demeure privé.
+    const installLink=`${publicStaffOrigin}/installer-staff.html`;
     const expiryLabel=expiresAt
         ? new Date(expiresAt).toLocaleString('fr-FR',{
             timeZone:'Europe/Paris',dateStyle:'short',timeStyle:'short'
@@ -19587,14 +19589,19 @@ async function ichefStaffSendActivationEmail({
     const subject='iCHEF Staff — Activez votre accès personnel';
     const text=`Bonjour ${name},
 
-Votre responsable vous invite à activer votre accès iCHEF Staff.
+Votre responsable vous invite à rejoindre iCHEF Staff.
 
-1. Ouvrez ce lien sur votre téléphone :
+1. Installez l'application sur votre téléphone (Android ou iPhone) :
+${installLink}
+
+2. Ouvrez ensuite votre lien personnel d'activation :
 ${link}
 
-2. Dans iCHEF Staff, appuyez sur « RECEVOIR LE CODE PAR E-MAIL ».
-3. Saisissez le code de sécurité à 6 chiffres reçu dans un deuxième e-mail.
-4. Choisissez et confirmez votre PIN personnel pour terminer l'activation.
+3. Dans iCHEF Staff, appuyez sur « RECEVOIR LE CODE PAR E-MAIL ».
+4. Saisissez le code de sécurité à 6 chiffres reçu dans un deuxième e-mail.
+5. Choisissez et confirmez votre PIN personnel pour terminer l'activation.
+
+Si iCHEF Staff est déjà installé, passez directement à l'étape 2.
 
 Si le lien ne s'ouvre pas, allez sur ${publicStaffOrigin}/portail-staff.html et entrez manuellement l'identifiant établissement, votre ID collaborateur et ce code d'invitation : ${code}.
 
@@ -19607,6 +19614,7 @@ iCHEF Staff`;
     const safeCode=ichefStaffActivationEmailEscape(code);
     const safeExpiry=ichefStaffActivationEmailEscape(expiryLabel);
     const safeLink=ichefStaffActivationEmailEscape(link);
+    const safeInstall=ichefStaffActivationEmailEscape(installLink);
     const safePortal=ichefStaffActivationEmailEscape(`${publicStaffOrigin}/portail-staff.html`);
 
     const html=`
@@ -19618,11 +19626,16 @@ iCHEF Staff`;
     </div>
     <div style="padding:26px">
       <p style="margin:0 0 16px;color:#edf0f1;font-size:15px">Bonjour ${safeName},</p>
-      <p style="margin:0 0 18px;color:#aeb8bd;font-size:14px;line-height:1.55">Votre responsable vous invite à activer votre accès personnel <b style="color:#fff">iCHEF Staff</b>.</p>
-      <p style="margin:0 0 20px;color:#aeb8bd;font-size:13px;line-height:1.55">Ouvrez cette invitation sur votre téléphone :</p>
-      <div style="text-align:center;margin:24px 0">
-        <a href="${safeLink}" style="display:inline-block;background:#e5bb55;color:#11181c;text-decoration:none;padding:16px 25px;border-radius:11px;font-size:15px;font-weight:800">ACTIVER MON ACCÈS STAFF</a>
+      <p style="margin:0 0 18px;color:#aeb8bd;font-size:14px;line-height:1.55">Votre responsable vous invite à rejoindre <b style="color:#fff">iCHEF Staff</b>.</p>
+      <p style="margin:0 0 8px;color:#aeb8bd;font-size:13px;line-height:1.55">1. Installez iCHEF Staff sur votre téléphone :</p>
+      <div style="text-align:center;margin:20px 0 26px">
+        <a href="${safeInstall}" style="display:inline-block;background:#253845;color:#f3f7f8;border:1px solid #4d6b7c;text-decoration:none;padding:16px 25px;border-radius:11px;font-size:15px;font-weight:800">INSTALLER ICHEF STAFF</a>
       </div>
+      <p style="margin:0 0 8px;color:#aeb8bd;font-size:13px;line-height:1.55">2. Revenez dans cet e-mail et activez votre accès personnel :</p>
+      <div style="text-align:center;margin:20px 0 24px">
+        <a href="${safeLink}" style="display:inline-block;background:#e5bb55;color:#11181c;text-decoration:none;padding:16px 25px;border-radius:11px;font-size:15px;font-weight:800">ACTIVER MON COMPTE</a>
+      </div>
+      <p style="margin:0 0 12px;color:#879aa4;font-size:12px;line-height:1.5">L'application est déjà installée ? Passez directement à l'activation.</p>
       <p style="margin:0 0 12px;color:#aeb8bd;font-size:13px;line-height:1.65">Dans iCHEF Staff, appuyez sur <b>RECEVOIR LE CODE PAR E-MAIL</b>, entrez le code à 6 chiffres du second e-mail, puis choisissez votre PIN personnel.</p>
       <p style="margin:16px 0 6px;color:#9fa8ad;font-size:11px">Si le bouton ne fonctionne pas, copiez le lien suivant dans votre navigateur :</p>
       <p style="margin:0 0 18px;overflow-wrap:anywhere;font-size:11px"><a href="${safeLink}" style="color:#8fd5fa;text-decoration:underline">${safeLink}</a></p>
@@ -19671,7 +19684,7 @@ ichefStaffAutoInviteGateSchemaV216.index({tenantID:1,staffId:1},{unique:true});
 const IchefStaffAutoInviteGateV216 = mongoose.models.IchefStaffAutoInviteGateV216 ||
     mongoose.model('IchefStaffAutoInviteGateV216',ichefStaffAutoInviteGateSchemaV216);
 
-async function ichefStaffAutoInviteV216({tenantID,staffId,origin='AUTO_PIN',req=null}={}){
+async function ichefStaffAutoInviteV216({tenantID,staffId,origin='AUTO_PIN',req=null,actor=null}={}){
     const safeTenant=cleanString(tenantID);
     const safeStaff=String(staffId||'').trim().slice(0,160);
     if(!safeTenant||!safeStaff)return {status:'INVALID'};
@@ -19721,9 +19734,11 @@ async function ichefStaffAutoInviteV216({tenantID,staffId,origin='AUTO_PIN',req=
         activationId,tenantID:safeTenant,staffId:safeStaff,
         tokenHash:ichefStaffActivationHmac(`${activationId}|${secret}`),
         shortCodeHash:ichefStaffActivationHmac(`${safeTenant}|${safeStaff}|${code}`),
-        createdById:origin==='AUTO_RH'?'RH_MANAGER':'PIN_VERIFIED',
-        createdByName:origin==='AUTO_RH'?'Direction / RH':'Connexion après PIN vérifié',
-        createdByRole:origin,
+        // La route privilégiée transmet uniquement l'identité de la session
+        // signée, jamais un nom ou un rôle fournis par le navigateur.
+        createdById:actor?.actorId||(origin==='AUTO_RH'?'RH_MANAGER':'PIN_VERIFIED'),
+        createdByName:actor?.actorName||(origin==='AUTO_RH'?'Direction / RH':'Connexion après PIN vérifié'),
+        createdByRole:actor?.actorRole||origin,
         createdAt:now,expiresAt,
         cleanupAt:new Date(expiresAt.getTime()+90*86400000)
     });
@@ -23288,6 +23303,62 @@ app.get('/api/staff/activation/admin/staff',async(req,res)=>{
             success:false,
             error:'Liste collaborateurs momentanément indisponible.'
         });
+    }
+});
+
+// V294 — INVITATION INDIVIDUELLE depuis Admin OU RH (session déjà signée).
+// Une seule action côté interface : création + envoi au courriel RH du profil.
+// Ne prend jamais d'adresse destinataire fournie par le navigateur.
+// Ne contourne ni l'authentification, ni les rôles, ni les contrôles PIN.
+app.post('/api/staff/activation/manager/invite',async(req,res)=>{
+    res.setHeader('Cache-Control','no-store');
+    try{
+        const auth=await ichefLoadStaffActivationManagerSession(req);
+        if(!auth.ok){
+            return res.status(auth.status||401).json({
+                success:false,
+                code:'STAFF_INVITE_MANAGER_SESSION_REQUIRED',
+                error:'Session Admin / RH non reconnue. Reconnectez-vous dans votre espace de gestion si votre session a expiré.'
+            });
+        }
+        const requestedStaffId=String(req.body?.staffId||'').trim().slice(0,160);
+        if(!requestedStaffId){
+            return res.status(400).json({success:false,code:'STAFF_INVITE_ID_REQUIRED',error:'Choisissez un collaborateur.'});
+        }
+        const profile=await ichefStaffFindActiveSecurityProfile(auth.tenantID,requestedStaffId);
+        if(!profile){
+            return res.status(404).json({success:false,code:'STAFF_INVITE_PROFILE_NOT_FOUND',error:'Collaborateur actif introuvable dans cet établissement.'});
+        }
+        const staffId=String(profile.canonicalStaffId||ichefStaffActivationTechnicalId(profile.member)||requestedStaffId).trim();
+        const result=await ichefStaffAutoInviteV216({
+            tenantID:auth.tenantID,staffId,origin:'AUTO_RH',req,
+            actor:{actorId:auth.actorId,actorName:auth.actorName,actorRole:auth.actorRole}
+        });
+        if(result.status==='SENT'){
+            return res.json({success:true,sent:true,status:'SENT',maskedEmail:result.maskedEmail||''});
+        }
+        if(result.status==='ALREADY_SENT'){
+            return res.json({success:true,sent:false,status:'ALREADY_SENT',
+                maskedEmail:ichefStaffProfileEmail(profile)?ichefStaffMaskEmail(ichefStaffProfileEmail(profile)):''});
+        }
+        if(result.status==='COOLDOWN_OR_LIMIT'){
+            return res.status(429).json({success:false,code:'STAFF_INVITE_COOLDOWN',
+                error:'Une invitation a déjà été demandée récemment pour cette personne. Vérifiez son e-mail avant de réessayer.'});
+        }
+        if(result.status==='EMAIL_MISSING'){
+            return res.status(428).json({success:false,code:'STAFF_INVITE_EMAIL_MISSING',
+                error:'Adresse e-mail manquante dans la fiche RH de ce collaborateur.'});
+        }
+        if(result.status==='SMTP_NOT_CONFIGURED'){
+            return res.status(503).json({success:false,code:'STAFF_INVITE_SMTP_UNAVAILABLE',
+                error:'Service d’envoi d’e-mails non configuré.'});
+        }
+        return res.status(503).json({success:false,code:'STAFF_INVITE_SEND_UNCONFIRMED',
+            error:'Envoi non confirmé. Vérifiez la boîte e-mail avant de réessayer.'});
+    }catch(error){
+        console.error('[iCHEF STAFF INVITE V294]',error?.code||error?.message||'FAILED');
+        return res.status(503).json({success:false,code:'STAFF_INVITE_UNAVAILABLE',
+            error:'Invitation momentanément indisponible.'});
     }
 });
 
