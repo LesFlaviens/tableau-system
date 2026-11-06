@@ -1,3 +1,4 @@
+// iCHEF SERVER V296 — 3 demandes PIN oublié/jour par collaborateur, 4e via Direction uniquement.
 // iCHEF SERVER V295 — connexion Staff limitée à son établissement et à son identité RH
 // iCHEF SERVER V293 - diagnostic quotas Gemini / delais adaptatifs, routes HACCP IA seulement.
 
@@ -1570,6 +1571,99 @@ ichefStaffPinResetSchema.index({expiresAt:1},{expireAfterSeconds:0});
 ichefStaffPinResetSchema.index({tenantID:1,staffId:1,createdAt:-1});
 const IchefStaffPinReset = mongoose.models.IchefStaffPinReset || mongoose.model('IchefStaffPinReset',ichefStaffPinResetSchema);
 const ichefStaffPinResetBuckets = new Map();
+
+// V296 : quota persistant transversal (lien + code email) par établissement,
+// collaborateur canonique et journée calendaire Europe/Paris.
+// Une même identité ne contourne pas la limite en changeant de téléphone,
+// de connexion Internet ou de méthode de récupération.
+const ICHEF_STAFF_PIN_RESET_SELF_DAILY_MAX_V296 = 3;
+const ichefStaffPinResetDailyQuotaSchemaV296 = new mongoose.Schema({
+    tenantID:{type:String,required:true},
+    staffId:{type:String,required:true},
+    dayKey:{type:String,required:true},
+    count:{type:Number,default:0,min:0},
+    createdAt:{type:Date,default:Date.now},
+    updatedAt:{type:Date,default:Date.now},
+    expiresAt:{type:Date,required:true}
+},{minimize:false});
+ichefStaffPinResetDailyQuotaSchemaV296.index(
+    {tenantID:1,staffId:1,dayKey:1},{unique:true}
+);
+ichefStaffPinResetDailyQuotaSchemaV296.index(
+    {expiresAt:1},{expireAfterSeconds:0}
+);
+const IchefStaffPinResetDailyQuotaV296 =
+    mongoose.models.IchefStaffPinResetDailyQuotaV296 ||
+    mongoose.model('IchefStaffPinResetDailyQuotaV296',
+        ichefStaffPinResetDailyQuotaSchemaV296);
+
+function ichefStaffPinResetParisDayV296(date=new Date()){
+    const parts=new Intl.DateTimeFormat('en-US',{
+        timeZone:'Europe/Paris',year:'numeric',month:'2-digit',day:'2-digit'
+    }).formatToParts(date);
+    const part=k=>parts.find(x=>x.type===k)?.value||'';
+    return `${part('year')}-${part('month')}-${part('day')}`;
+}
+function ichefStaffPinResetSelfV296(requestedFrom){
+    return String(requestedFrom||'').toUpperCase().startsWith('SELF');
+}
+async function ichefStaffPinResetSelfQuotaReserveV296(tenantID,staffId){
+    // Garantit l'index unique avant le premier quota (fail-closed si Mongo indisponible).
+    await IchefStaffPinResetDailyQuotaV296.init();
+    const dayKey=ichefStaffPinResetParisDayV296();
+    const match={tenantID:cleanString(tenantID),staffId:String(staffId).trim(),dayKey};
+    const now=new Date();
+    const update={
+        $inc:{count:1},
+        $set:{updatedAt:now},
+        $setOnInsert:{createdAt:now,expiresAt:new Date(now.getTime()+45*86400000)}
+    };
+    const filter={...match,count:{$lt:ICHEF_STAFF_PIN_RESET_SELF_DAILY_MAX_V296}};
+    let row;
+    try{
+        row=await IchefStaffPinResetDailyQuotaV296.findOneAndUpdate(
+            filter,update,{upsert:true,new:true,setDefaultsOnInsert:false}
+        );
+    }catch(error){
+        if(error?.code!==11000)throw error;
+        // Une autre requête a pu insérer la journée entretemps.
+        // On retente l'incrément sans upsert, toujours avec condition count<3.
+        row=await IchefStaffPinResetDailyQuotaV296.findOneAndUpdate(
+            filter,{$inc:{count:1},$set:{updatedAt:new Date()}},
+            {upsert:false,new:true}
+        );
+    }
+    return row
+        ? {ok:true,dayKey,used:Number(row.count||0),
+           remaining:Math.max(0,ICHEF_STAFF_PIN_RESET_SELF_DAILY_MAX_V296-Number(row.count||0))}
+        : {ok:false,dayKey,requiresDirection:true};
+}
+async function ichefStaffPinResetSelfQuotaReleaseV296(tenantID,staffId,reservation){
+    if(!reservation?.ok)return;
+    await IchefStaffPinResetDailyQuotaV296.updateOne({
+        tenantID:cleanString(tenantID),
+        staffId:String(staffId).trim(),
+        dayKey:reservation.dayKey,
+        count:{$gt:0}
+    },{$inc:{count:-1},$set:{updatedAt:new Date()}}).catch(error=>{
+        console.warn('[iCHEF PIN RESET V296] Quota non restitué',error?.code||'ERROR');
+    });
+}
+async function ichefStaffPinResetSelfUsageV296(tenantID,staffId){
+    const row=await IchefStaffPinResetDailyQuotaV296.findOne({
+        tenantID:cleanString(tenantID),
+        staffId:String(staffId).trim(),
+        dayKey:ichefStaffPinResetParisDayV296()
+    }).select({count:1}).lean();
+    return Math.max(0,Number(row?.count||0));
+}
+function ichefStaffPinResetIsDirectionV296(auth){
+    if(auth?.source==='OPS_MASTER')return true;
+    const role=String(auth?.actorRole||'').trim().toUpperCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+    return ['MASTER','DIRECTION','ADMIN','GERANT','DIRECTEUR','DIRECTRICE'].includes(role);
+}
+
 
 function ichefFiscalId(prefix = 'FISCAL') {
 return (
@@ -24198,6 +24292,13 @@ async function ichefStaffCreatePinResetCode({
         };
     }
 
+    const selfQuotaV296=ichefStaffPinResetSelfV296(requestedFrom)
+        ? await ichefStaffPinResetSelfQuotaReserveV296(tenantID,staffId)
+        : null;
+    if(selfQuotaV296 && !selfQuotaV296.ok){
+        return {ok:false,code:'STAFF_PIN_RESET_DAILY_LIMIT',requiresDirection:true};
+    }
+    try{
     const resetId=
         nodeCrypto
             .randomBytes(18)
@@ -24305,6 +24406,10 @@ async function ichefStaffCreatePinResetCode({
         maskedEmail:
             ichefStaffMaskEmail(email)
     };
+    }catch(error){
+        await ichefStaffPinResetSelfQuotaReleaseV296(tenantID,staffId,selfQuotaV296);
+        throw error;
+    }
 }
 
 async function ichefStaffCreatePinReset({req,profile,requestedFrom='SELF'}){
@@ -24337,6 +24442,13 @@ async function ichefStaffCreatePinReset({req,profile,requestedFrom='SELF'}){
         };
     }
     const mail=ichefStaffResetMailer(); if(!mail)return {ok:false,code:'STAFF_PIN_RESET_MAIL_UNAVAILABLE'};
+    const selfQuotaV296=ichefStaffPinResetSelfV296(requestedFrom)
+        ? await ichefStaffPinResetSelfQuotaReserveV296(tenantID,staffId)
+        : null;
+    if(selfQuotaV296 && !selfQuotaV296.ok){
+        return {ok:false,code:'STAFF_PIN_RESET_DAILY_LIMIT',requiresDirection:true};
+    }
+    try{
     const resetId=nodeCrypto.randomBytes(18).toString('base64url'),secret=nodeCrypto.randomBytes(32).toString('base64url'),token=`pr1.${resetId}.${secret}`;
     const now=new Date(),expiresAt=new Date(now.getTime()+20*60*1000);
     await IchefStaffPinReset.updateMany({tenantID,staffId,usedAt:null,expiresAt:{$gt:now}},{$set:{usedAt:now}});
@@ -24390,6 +24502,10 @@ async function ichefStaffCreatePinReset({req,profile,requestedFrom='SELF'}){
     const safeName=rawName.replace(/[<>&\"]/g,ch=>({'<':'&lt;','>':'&gt;','&':'&amp;','\"':'&quot;'}[ch]||ch));
     await mail.transporter.sendMail({from:`iCHEF OS <${mail.user}>`,to:email,subject:'iCHEF Staff — Choisissez votre nouveau PIN',text:`Bonjour ${rawName},\n\nOuvrez ce lien dans les 20 minutes pour choisir un nouveau PIN iCHEF Staff :\n${resetUrl}\n\nSi vous n’êtes pas à l’origine de cette demande, ignorez cet email.`,html:`<div style="font-family:Arial,sans-serif;background:#0b0f19;color:#f8fafc;padding:28px;border-radius:16px"><div style="font-size:22px;font-weight:800;color:#d4af37;margin-bottom:18px">iCHEF Staff</div><p>Bonjour <b>${safeName}</b>,</p><p>Vous avez demandé à changer votre PIN iCHEF Staff. Cliquez sur le bouton ci-dessous pour choisir un nouveau PIN.</p><p style="margin:24px 0"><a href="${resetUrl}" style="background:#d4af37;color:#111;text-decoration:none;padding:14px 20px;border-radius:10px;font-weight:800">CHANGER MON PIN</a></p><p style="color:#94a3b8;font-size:13px">Lien à usage unique · expiration 20 minutes.</p></div>`});
     return {ok:true,resetId,expiresAt,maskedEmail:ichefStaffMaskEmail(email)};
+    }catch(error){
+        await ichefStaffPinResetSelfQuotaReleaseV296(tenantID,staffId,selfQuotaV296);
+        throw error;
+    }
 }
 app.post('/api/staff/pin-reset/request',async(req,res)=>{
     try{
@@ -24415,7 +24531,7 @@ app.post('/api/staff/pin-reset/request',async(req,res)=>{
         const generic=()=>res.json({
             success:true,
             message:
-                'Si le compte et son email sont configurés, un lien sécurisé vient d’être envoyé. Ouvrez cet email pour choisir votre nouveau PIN.'
+                'Si le compte est autorisé et possède un e-mail, un lien de réinitialisation peut lui être envoyé (maximum trois demandes par jour). Au-delà, contactez la Direction.'
         });
 
         if(!tenantID || !staffId){
@@ -24508,7 +24624,7 @@ app.post('/api/staff/pin-reset/request',async(req,res)=>{
         return res.json({
             success:true,
             message:
-                'Si le compte et son email sont configurés, un lien sécurisé vient d’être envoyé. Ouvrez cet email pour choisir votre nouveau PIN.'
+                'Si le compte est autorisé et possède un e-mail, un lien de réinitialisation peut lui être envoyé (maximum trois demandes par jour). Au-delà, contactez la Direction.'
         });
     }
 });
@@ -24520,7 +24636,7 @@ app.post('/api/staff/pin-reset/code/request',async(req,res)=>{
     const generic=id=>res.json({
         success:true,
         challengeId:id,
-        message:'Si le compte possède une adresse e-mail RH, un code de vérification lui sera envoyé.'
+        message:'Si le compte possède une adresse e-mail RH et n’a pas dépassé trois demandes aujourd’hui, un code de vérification lui sera envoyé. Au-delà, contactez la Direction.'
     });
     try{
         const tenantID=cleanString(req.body?.tenantID||req.headers?.['x-ichef-tenant']||'');
@@ -24565,8 +24681,25 @@ app.post('/api/staff/pin-reset/admin/request',async(req,res)=>{
         res.setHeader('Cache-Control','no-store'); const auth=await ichefLoadStaffActivationManagerSession(req); if(!auth.ok)return res.status(auth.status||401).json({success:false,error:auth.error});
         const staffId=String(req.body?.staffId||'').trim().slice(0,160); if(!staffId)return res.status(400).json({success:false,error:'Collaborateur manquant.'});
         const profile=await ichefStaffFindActiveSecurityProfile(auth.tenantID,staffId); if(!profile)return res.status(404).json({success:false,error:'Collaborateur introuvable.'});
+        const canonicalId=ichefStaffResetCanonicalId(profile);
+        if(!canonicalId)return res.status(409).json({success:false,error:'Identifiant collaborateur indisponible.'});
+        const dailySelfRequests=await ichefStaffPinResetSelfUsageV296(auth.tenantID,canonicalId);
+        if(dailySelfRequests>=ICHEF_STAFF_PIN_RESET_SELF_DAILY_MAX_V296 &&
+           !ichefStaffPinResetIsDirectionV296(auth)){
+            return res.status(403).json({
+                success:false,code:'STAFF_PIN_RESET_DIRECTION_REQUIRED',
+                error:'Après trois demandes personnelles dans la journée, seule la Direction peut autoriser une nouvelle réinitialisation.'
+            });
+        }
         const result=await ichefStaffCreatePinReset({req,profile,requestedFrom:`ADMIN:${auth.actorId||'DIRECTION'}`});
         if(!result.ok){if(result.code==='STAFF_PIN_RESET_EMAIL_MISSING')return res.status(428).json({success:false,code:result.code,error:'Aucun email de récupération n’est enregistré pour ce collaborateur.'});return res.status(503).json({success:false,code:result.code,error:'Envoi email momentanément indisponible.'});}
+        if(dailySelfRequests>=ICHEF_STAFF_PIN_RESET_SELF_DAILY_MAX_V296){
+            void ichefWriteSecurityEvent({
+                req,type:'STAFF_PIN_RESET_DIRECTION_ASSIST',severity:'INFO',
+                tenantID:auth.tenantID,
+                detail:'Assistance Direction après trois demandes personnelles de réinitialisation PIN.'
+            });
+        }
         return res.json({success:true,maskedEmail:result.maskedEmail,expiresAt:result.expiresAt});
     }catch(error){console.error('[iCHEF STAFF PIN RESET admin V166]',error);return res.status(500).json({success:false,error:'Réinitialisation PIN momentanément indisponible.'});}
 });
