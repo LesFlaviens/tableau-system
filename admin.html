@@ -13659,7 +13659,7 @@ function openStaffActivationEmail(staffId) {
     } else if (STAFF_ACTIVATION_V38.emailConfigured === false) {
         staffActivationEmailFeedback('Messagerie SMTP iCHEF non configurée sur le serveur. Aucun e-mail ne peut être envoyé.', 'error');
     } else if (row.status === 'EN_ATTENTE') {
-        staffActivationEmailFeedback('Une invitation est déjà en attente. Un nouvel envoi annulera l’ancien code.', 'warn');
+        staffActivationEmailFeedback('Une invitation est déjà en attente. Un renvoi peut remplacer le lien précédent après confirmation d’envoi.', 'warn');
     } else {
         staffActivationEmailFeedback('', '');
     }
@@ -13680,92 +13680,41 @@ function closeStaffActivationModal() {
 }
 
 async function sendCurrentStaffActivationEmail() {
-    const current = STAFF_ACTIVATION_V38.current;
-    if (STAFF_ACTIVATION_V38.sending || !current?.staffId || current.sent) return;
-    const button = document.getElementById('staff-activation-email-btn');
-    const closeButton = document.getElementById('staff-activation-modal-close');
-    if (current.staff.emailReady !== true) {
-        staffActivationEmailFeedback('Adresse e-mail RH manquante.', 'error');
-        return;
-    }
-    if (STAFF_ACTIVATION_V38.emailConfigured === false) {
-        staffActivationEmailFeedback('Messagerie SMTP iCHEF non configurée.', 'error');
-        return;
-    }
-    if (
-        current.status === 'EN_ATTENTE' &&
-        !window.confirm('Une invitation est déjà en attente. En envoyer une nouvelle annulera l’ancienne. Continuer ?')
-    ) return;
-
-    STAFF_ACTIVATION_V38.sending = true;
-    if (button) { button.disabled = true; button.textContent = 'ENVOI EN COURS…'; }
-    if (closeButton) closeButton.disabled = true;
-    staffActivationEmailFeedback('Préparation et envoi sécurisé de l’invitation…');
-
-    let invitationCreated = false;
-    let deliveryConfirmed = false;
-    try {
-        // Manager authentifié uniquement. Le serveur résout le collaborateur,
-        // génère un secret temporaire et n'envoie qu'à l'e-mail RH serveur.
-        const created = await staffActivationV38Api(
-            '/api/staff/activation/admin/create',
-            { method: 'POST', body: { staffId: current.staffId, expiresHours: 24 } }
-        );
-        if (!created.activation?.activationId ||
-            !created.activation?.activationCode ||
-            !created.activation?.activationUrl) {
-            throw new Error('Le serveur n’a pas fourni une invitation complète.');
-        }
-        invitationCreated = true;
-
-        if (created.staff?.emailReady !== true) {
-            throw new Error('L’adresse e-mail du collaborateur est absente de la fiche RH.');
-        }
-        const sent = await staffActivationV38Api(
-            '/api/staff/activation/admin/email',
-            {
-                method: 'POST',
-                timeoutMs: 55000,
-                body: {
-                    activationId: created.activation.activationId,
-                    activationCode: created.activation.activationCode,
-                    activationUrl: created.activation.activationUrl
-                }
-            }
-        );
-        if (sent.sent !== true) throw new Error('Envoi non confirmé par le serveur.');
-        deliveryConfirmed = true;
-        current.sent = true;
-        const masked = String(sent.maskedEmail || created.staff.maskedEmail || current.staff.maskedEmail || '');
+    const current=STAFF_ACTIVATION_V38.current;
+    if(STAFF_ACTIVATION_V38.sending||!current?.staffId||current.sent)return;
+    const button=document.getElementById('staff-activation-email-btn');
+    const closeButton=document.getElementById('staff-activation-modal-close');
+    if(current.staff.emailReady!==true){staffActivationEmailFeedback('Adresse e-mail RH manquante.','error');return;}
+    if(STAFF_ACTIVATION_V38.emailConfigured===false){staffActivationEmailFeedback('Messagerie iCHEF non configurée.','error');return;}
+    if(current.status==='EN_ATTENTE'&&!window.confirm('Une invitation a déjà été envoyée. Continuer uniquement si un renvoi est nécessaire ?'))return;
+    STAFF_ACTIVATION_V38.sending=true;
+    if(button){button.disabled=true;button.textContent='ENVOI EN COURS…';}
+    if(closeButton)closeButton.disabled=true;
+    staffActivationEmailFeedback('Envoi sécurisé de l’invitation individuelle…');
+    try{
+        const sent=await staffActivationV38Api('/api/staff/activation/manager/invite',{
+            method:'POST',timeoutMs:55000,body:{staffId:String(current.staffId)}
+        });
+        if(sent.sent!==true && sent.status!=='ALREADY_SENT')throw Error('Envoi non confirmé.');
+        current.sent=true;
+        const masked=String(sent.maskedEmail||current.staff.maskedEmail||'l’adresse RH enregistrée');
         staffActivationEmailFeedback(
-            `✓ Invitation envoyée à ${masked || 'l’adresse e-mail RH enregistrée'}. Le collaborateur peut activer son accès avec son e-mail. La page officielle d’installation est disponible dans la rubrique ci-dessus.`,
+            sent.status==='ALREADY_SENT'
+            ? `✓ Invitation déjà envoyée récemment à ${masked}. Vérifiez la boîte e-mail avant tout renvoi.`
+            : `✓ Invitation envoyée à ${masked}. L’e-mail contient INSTALLER ICHEF STAFF et ACTIVER MON COMPTE.`,
             'success'
         );
-        if (button) {
-            button.disabled = true;
-            button.classList.add('sent');
-            button.textContent = 'INVITATION ENVOYÉE ✓';
-        }
-        if (typeof showToast === 'function') showToast('Invitation Staff envoyée par e-mail ✓');
-        // Rafraîchir les statuts sans remplacer le message de confirmation.
-        void loadStaffActivationAdmin({silent:true}).catch(() => {});
-    } catch (error) {
-        console.error('[iCHEF ADMIN V43 invitation email]', error?.code || error?.message || error);
-        const message = String(error?.message || 'Envoi de l’invitation impossible.');
-        staffActivationEmailFeedback(
-            invitationCreated && !deliveryConfirmed
-                ? `${message} L’envoi n’est pas confirmé : vérifiez d’abord la boîte e-mail avant de réessayer, afin de ne pas invalider une invitation déjà reçue.`
-                : message,
-            'error'
-        );
-        if (button) {
-            button.classList.remove('sent');
-            button.disabled = false;
-            button.textContent = 'RÉESSAYER L’ENVOI';
-        }
-    } finally {
-        STAFF_ACTIVATION_V38.sending = false;
-        if (closeButton) closeButton.disabled = false;
+        if(button){button.disabled=true;button.classList.add('sent');button.textContent='INVITATION TRAITÉE ✓';}
+        if(typeof showToast==='function')showToast('Invitation Staff traitée ✓');
+        void loadStaffActivationAdmin({silent:true}).catch(()=>{});
+    }catch(error){
+        console.error('[iCHEF ADMIN V294 invitation]',error?.code||error?.message||error);
+        const msg=String(error?.message||'Envoi non confirmé.');
+        staffActivationEmailFeedback(msg+' En cas d’incertitude, vérifiez l’e-mail avant de réessayer.','error');
+        if(button){button.disabled=false;button.classList.remove('sent');button.textContent='RÉESSAYER L’ENVOI';}
+    }finally{
+        STAFF_ACTIVATION_V38.sending=false;
+        if(closeButton)closeButton.disabled=false;
     }
 }
 
