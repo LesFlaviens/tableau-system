@@ -3448,7 +3448,7 @@ NOTE : le moteur fournit une assistance de conformité à partir du profil confi
      rows=Array.isArray(d.staff)?d.staff:[];
      emailConfigured=d.activationEmailConfigured!==false;
      if(needsReview){
-       msg('Un envoi précédent n’est pas confirmé. Vérifiez l’e-mail avant de fermer cette fenêtre ou de relancer une invitation.','warning');
+       msg('Un envoi précédent n’est pas confirmé. Vérifiez l’e-mail avant de relancer une invitation.','warning');
      }else{
        msg(emailConfigured?'Choisissez un collaborateur pour envoyer son invitation.':'Service e-mail du serveur non configuré.',emailConfigured?'':'error');
      }
@@ -3457,28 +3457,20 @@ NOTE : le moteur fournit une assistance de conformité à partir du profil confi
  }
  async function sendInvitation(row){
    if(busy||needsReview||!row?.id||!row.emailReady||emailConfigured===false)return;
-   if(row.status==='EN_ATTENTE'&&!confirm('Une invitation est déjà en attente. Un nouvel envoi annulera le code précédent. Continuer ?'))return;
-   if(row.status==='ACTIVÉ'&&!confirm('Ce collaborateur est déjà activé. Envoyer une invitation pour un nouvel appareil ?'))return;
-   busy=true;render();msg('Préparation de l’invitation sécurisée…');
-   let created=false,confirmed=false;
+   if(row.status==='EN_ATTENTE'&&!confirm('Une invitation existe déjà. Un renvoi est-il vraiment nécessaire ?'))return;
+   if(row.status==='ACTIVÉ'&&!confirm('Ce collaborateur a déjà un accès. Envoyer une invitation pour un nouvel appareil ?'))return;
+   busy=true;render();msg('Envoi sécurisé de l’invitation individuelle…');
    try{
-     const r=await api('/api/staff/activation/admin/create','POST',{staffId:String(row.id),expiresHours:24},18000);
-     const a=r.activation||{};
-     if(!a.activationId||!a.activationCode||!a.activationUrl||r.staff?.emailReady!==true)throw Error('Le serveur n’a pas fourni l’invitation ou l’adresse e-mail RH.');
-     created=true;
-     msg('Envoi de l’invitation personnelle par e-mail…');
-     const sent=await api('/api/staff/activation/admin/email','POST',{
-       activationId:a.activationId,activationCode:a.activationCode,activationUrl:a.activationUrl
-     },55000);
-     if(sent.sent!==true)throw Error('La livraison de l’invitation n’est pas confirmée.');
-     confirmed=true;
-     msg('✓ Invitation envoyée à '+(sent.maskedEmail||r.staff?.maskedEmail||'l’adresse RH enregistrée')+'. Le collaborateur peut ensuite installer iCHEF Staff via '+INSTALL_URL,'success');
+     const sent=await api('/api/staff/activation/manager/invite','POST',{staffId:String(row.id)},55000);
+     if(sent.sent!==true&&sent.status!=='ALREADY_SENT')throw Error('Envoi non confirmé.');
+     const masked=sent.maskedEmail||row.maskedEmail||'l’adresse RH enregistrée';
+     msg(sent.status==='ALREADY_SENT'
+       ? '✓ Invitation déjà envoyée récemment à '+masked+'. Vérifiez la boîte e-mail avant un renvoi.'
+       : '✓ Invitation envoyée à '+masked+'. Le message contient les boutons INSTALLER ICHEF STAFF et ACTIVER MON COMPTE.','success');
      row.status='EN_ATTENTE';
    }catch(e){
-     // En cas d'envoi incertain, bloquer tout nouvel envoi pendant cette session,
-     // pour éviter d'invalider un code possiblement déjà reçu.
-     needsReview=created&&!confirmed;
-     msg(e.message+(needsReview?' Vérifiez la boîte e-mail avant de relancer une invitation : un nouvel envoi annulerait le code précédent.':''),'error');
+     msg(e.message+' Si l’envoi est incertain, vérifiez la boîte e-mail avant de réessayer.','error');
+     needsReview=e.status===503;
    }finally{busy=false;render();}
  }
  async function open(){
