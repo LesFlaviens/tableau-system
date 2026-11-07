@@ -1,3 +1,14 @@
+
+
+
+
+
+
+
+
+
+
+// iCHEF SERVER V297 — diagnostic sécurisé des e-mails PIN oublié; sécurité V296 conservée.
 // iCHEF SERVER V296 — 3 demandes PIN oublié/jour par collaborateur, 4e via Direction uniquement.
 // iCHEF SERVER V295 — connexion Staff limitée à son établissement et à son identité RH
 // iCHEF SERVER V293 - diagnostic quotas Gemini / delais adaptatifs, routes HACCP IA seulement.
@@ -24376,7 +24387,7 @@ async function ichefStaffCreatePinResetCode({
             }[ch]||ch)
         );
 
-    try { await mail.transporter.sendMail({
+    try { const sent=await mail.transporter.sendMail({
         from:`iCHEF OS <${mail.user}>`,
         to:email,
         subject:'iCHEF Staff — Code pour choisir un nouveau PIN',
@@ -24393,7 +24404,18 @@ async function ichefStaffCreatePinResetCode({
             `<div style="margin:24px 0;padding:18px;text-align:center;background:#111827;border:1px solid #d4af37;border-radius:12px;font-size:30px;font-weight:900;letter-spacing:8px;color:#fff">${code}</div>` +
             `<p style="color:#94a3b8;font-size:13px">Code à usage unique · expiration 10 minutes.</p>` +
             `</div>`
-    }); } catch (error) {
+    });
+        // Le fournisseur a accepté le message. Son arrivée dans la boîte
+        // de réception reste soumise aux filtres anti-spam / domaine.
+        const accepted=Array.isArray(sent?.accepted)?sent.accepted:[];
+        const recipientAccepted=accepted.some(addr=>
+            String(addr||'').trim().toLowerCase()===email.toLowerCase());
+        if(!recipientAccepted){
+            const err=new Error('Destinataire non accepté par le serveur de messagerie.');
+            err.code='STAFF_SMTP_RECIPIENT_REJECTED';
+            throw err;
+        }
+    } catch (error) {
         await IchefStaffPinReset.updateOne({resetId,mode:'EMAIL_CODE',usedAt:null},
             {$set:{usedAt:new Date()}}).catch(()=>{});
         throw error;
@@ -24630,48 +24652,71 @@ app.post('/api/staff/pin-reset/request',async(req,res)=>{
 });
 // V214 — récupération sécurisée par code e-mail personnel (Option A).
 // Ne divulgue pas si le collaborateur est présent dans le système.
+// V297 — traçabilité de l'envoi du code, sans révélation de l'existence d'un compte.
+// Consulter les logs Render avec la référence courte visible par le collaborateur.
 app.post('/api/staff/pin-reset/code/request',async(req,res)=>{
     res.setHeader('Cache-Control','no-store');
+    const requestRef=nodeCrypto.randomBytes(6).toString('hex');
+    const audit=(status,extra={})=>{
+        // Ni adresse e-mail, ni identifiant, ni code PIN/OTP dans les logs.
+        console.info('[iCHEF STAFF PIN EMAIL V297]',JSON.stringify({
+            ref:requestRef,status,...extra
+        }));
+    };
     const newFakeId=()=>nodeCrypto.randomBytes(18).toString('base64url');
     const generic=id=>res.json({
         success:true,
         challengeId:id,
+        requestRef,
         message:'Si le compte possède une adresse e-mail RH et n’a pas dépassé trois demandes aujourd’hui, un code de vérification lui sera envoyé. Au-delà, contactez la Direction.'
     });
     try{
         const tenantID=cleanString(req.body?.tenantID||req.headers?.['x-ichef-tenant']||'');
         const staffId=String(req.body?.staffId||'').trim().slice(0,160);
-        if(!tenantID||!staffId)return generic(newFakeId());
-        // Erreur technique commune à tous les comptes (pas d'énumération des utilisateurs).
-        if(!ichefStaffResetMailer())return res.status(503).json({
-            success:false,code:'STAFF_SMTP_NOT_CONFIGURED',
-            error:'L’envoi d’e-mail est temporairement indisponible.'
-        });
+        if(!tenantID||!staffId){
+            audit('IDENTIFIANTS_MANQUANTS');
+            return generic(newFakeId());
+        }
+        if(!ichefStaffResetMailer()){
+            audit('SMTP_NON_CONFIGURE');
+            return res.status(503).json({
+                success:false,code:'STAFF_SMTP_NOT_CONFIGURED',requestRef,
+                error:'L’envoi d’e-mail est temporairement indisponible.'
+            });
+        }
         const ip=ichefSecurityHash(ichefSecurityClientIp(req));
         const key=`PIN_RESET_OTP_V214|${tenantID}|${staffId.toLowerCase()}|${ip}`;
         const last=Number(ichefStaffPinResetBuckets.get(key)||0);
-        if(Date.now()-last<60000)return generic(newFakeId());
+        if(Date.now()-last<60000){
+            audit('ATTENTE_60_SECONDES');
+            return generic(newFakeId());
+        }
         ichefStaffPinResetBuckets.set(key,Date.now());
-        // Limitation en mémoire bornée, en plus du quota middleware.
         if(ichefStaffPinResetBuckets.size>10000){
             for(const [k,ts] of ichefStaffPinResetBuckets){
                 if(Date.now()-Number(ts||0)>600000)ichefStaffPinResetBuckets.delete(k);
             }
         }
         const profile=await ichefStaffResolveProfileForReset(tenantID,staffId);
-        if(!profile)return generic(newFakeId());
+        if(!profile){
+            audit('COMPTE_INTROUVABLE_OU_NON_ACTIF');
+            return generic(newFakeId());
+        }
         try{
             const result=await ichefStaffCreatePinResetCode({
-                req,profile,requestedFrom:'SELF_EMAIL_CODE_V214'
+                req,profile,requestedFrom:'SELF_EMAIL_CODE_V214',auditRef:requestRef
             });
-            if(result?.ok && result.resetId)return generic(result.resetId);
-            console.warn('[iCHEF RESET CODE]',result?.code||'SEND_FAILED');
+            if(result?.ok && result.resetId){
+                audit('SMTP_ACCEPTE'); // Acceptation SMTP ≠ distribution en boîte de réception.
+                return generic(result.resetId);
+            }
+            audit(result?.code||'ENVOI_NON_CONFIRME');
         }catch(error){
-            console.warn('[iCHEF RESET CODE] Envoi impossible',error?.code||'SMTP_ERROR');
+            audit('ERREUR_ENVOI',{errorCode:String(error?.code||'SMTP_ERROR').slice(0,80)});
         }
         return generic(newFakeId());
     }catch(error){
-        console.error('[iCHEF RESET CODE] Requête indisponible',error?.code||'ERROR');
+        audit('ERREUR_SERVEUR',{errorCode:String(error?.code||'ERROR').slice(0,80)});
         return generic(newFakeId());
     }
 });
@@ -38252,3 +38297,6 @@ console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
 console.log('==========================================');
 }
 );
+
+
+
