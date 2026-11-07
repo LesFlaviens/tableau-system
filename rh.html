@@ -1,3 +1,10 @@
+
+
+
+
+
+
+
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -3497,5 +3504,176 @@ NOTE : le moteur fournit une assistance de conformité à partir du profil confi
 })();
 </script>
 
+
+<!-- iCHEF RH V282 : fiche collaborateur / planning individuel, LECTURE SEULE. -->
+<style id="ichef-rh-v282-profile-fix">
+/* Éviter la grande carte « Planning officiel » avant l'identité du salarié. */
+#hr-interface.rh-v236-individual-mode #rh-v236-content > .rh-v259-entry{display:none!important}
+#rh-v282-personal{background:#fff;color:#182a37;border:1px solid #dfe6eb;border-radius:14px;min-width:0;margin:8px 0 14px;padding:13px 15px;font-family:Inter,system-ui,Arial,sans-serif}
+#rh-v282-personal[hidden]{display:none!important}
+#rh-v282-personal .v282-head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:11px}
+#rh-v282-personal h2{font-size:15px;line-height:1.25;margin:0;color:#142c3b;font-weight:850}
+#rh-v282-personal .v282-small{font-size:10px;line-height:1.5;color:#667b88;margin:3px 0 0}
+#rh-v282-personal .v282-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+#rh-v282-personal .v282-actions button{border:1px solid #cbdbe3;border-radius:8px;background:#fff;color:#213744;padding:7px 11px;font-size:11px;min-height:34px;font-weight:750;cursor:pointer}
+#rh-v282-personal #rh-v282-open{color:#fff;background:#142d3b;border-color:#142d3b}
+#rh-v282-personal #rh-v282-state{margin:4px 0 9px;font-size:11px;color:#476477;min-height:16px;line-height:1.4}
+#rh-v282-personal #rh-v282-state.v282-error{color:#a64743}
+#rh-v282-personal .v282-calendar{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:5px;min-width:0}
+#rh-v282-personal .v282-wday{text-align:center;font-size:10px;font-weight:850;color:#667784;padding:4px}
+#rh-v282-personal .v282-day{border:1px solid #e4eaf0;min-width:0;border-radius:8px;background:#f8fafb;padding:6px;min-height:48px;display:flex;flex-direction:column;gap:3px}
+#rh-v282-personal .v282-day.today{border-color:#98bcca}
+#rh-v282-personal .v282-day.blank{background:transparent;border:0}
+#rh-v282-personal .v282-day strong{font-size:11px}
+#rh-v282-personal .v282-day .v282-label{font-size:9px;line-height:1.15;font-weight:760;overflow-wrap:anywhere}
+#rh-v282-personal .v282-day .v282-hours{font-size:9px;line-height:1.15;white-space:normal;overflow-wrap:anywhere}
+#rh-v282-personal .v282-day.work{background:#e6f4ed;color:#225740}
+#rh-v282-personal .v282-day.rest{background:#f0f3f6;color:#64717a}
+#rh-v282-personal .v282-day.leave{background:#fff2e4;color:#875a31}
+#rh-v282-personal .v282-day.unknown{color:#74838c}
+@media(max-width:720px){#rh-v282-personal{padding:10px;margin:7px 0}#rh-v282-personal .v282-calendar{gap:3px}#rh-v282-personal .v282-day{padding:4px;min-height:46px}#rh-v282-personal .v282-day .v282-hours{font-size:8px}}
+</style>
+<script id="ichef-rh-v282-profile-fix-script">
+(()=>{'use strict';
+ if(window.__ICHEF_RH_PROFILE_V282__)return;
+ window.__ICHEF_RH_PROFILE_V282__=true;
+ // Lecture de la MÊME API que Planning Premium; aucune écriture dans RH/pointages.
+ const AUTH='ichef_planning_premium_auth_v1',DEVICE='ichef_planning_device_v1';
+ const JUMP='ichef_rh_premium_jump_v1';
+ const BASE=/^(localhost|127\.0\.0\.1)$/.test(location.hostname)?'http://localhost:10000':'https://tableau-system.onrender.com';
+ const $=id=>document.getElementById(id);
+ const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+ const normalize=v=>String(v??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim().toLocaleLowerCase('fr');
+ const tenant=()=>String(new URLSearchParams(location.search).get('tenantID')||localStorage.getItem('ichef_tenant_id')||'').trim();
+ const safeTenant=t=>/^[A-Za-z0-9_-]{2,80}$/.test(t);
+ const monthOf=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+ const nowMonth=()=>{const input=$('month-selector')?.value;return /^\d{4}-(0[1-9]|1[0-2])$/.test(input||'')?input:monthOf(new Date());};
+ const selected=()=>{
+   const id=String(window.__ICHEF_V239_SELECTED_STAFF_ID__||'').trim();
+   let rows=[];try{rows=typeof getDir==='function'?getDir():[];}catch(_){}
+   return Array.isArray(rows)?rows.find(s=>s&&String(s.id)===id)||null:null;
+ };
+ let pane=null,lastKey='',stamp=0,busy=false,repeat=false,remoteStaffId=null;
+ function mount(){
+   const host=$('rh-v236-content'),stats=$('rh-v236-kpis-secondary');
+   if(!host||!stats)return false;
+   if(!pane){
+     pane=document.createElement('section');pane.id='rh-v282-personal';pane.hidden=true;
+     pane.setAttribute('aria-label','Planning mensuel personnel, lecture seule');
+     pane.innerHTML=`<div class="v282-head"><div><h2>Planning individuel</h2><p class="v282-small">Horaires officiels · consultation uniquement</p></div><div class="v282-actions"><button type="button" id="rh-v282-prev" aria-label="Mois précédent">‹</button><strong id="rh-v282-month" style="font-size:12px"></strong><button type="button" id="rh-v282-next" aria-label="Mois suivant">›</button><button type="button" id="rh-v282-open">Ouvrir le planning</button></div></div><div id="rh-v282-state" role="status" aria-live="polite"></div><div class="v282-calendar" id="rh-v282-calendar"></div>`;
+     pane.addEventListener('click',e=>{
+       const b=e.target.closest('button');if(!b)return;
+       if(b.id==='rh-v282-open'){openPremium();return;}
+       const dir=b.id==='rh-v282-prev'?-1:b.id==='rh-v282-next'?1:0;
+       if(!dir)return;
+       const picker=$('month-selector');let input=nowMonth();const [yy,mm]=input.split('-').map(Number);
+       const date=new Date(yy,mm-1+dir,1,12);input=monthOf(date);
+       if(picker){picker.value=input;try{if(typeof handleMonthChange==='function')handleMonthChange();}catch(e){console.warn('[RH V282] mois',e);}}
+       void load(true,input);
+     });
+   }
+   if(pane.parentElement!==host || stats.nextElementSibling!==pane)stats.insertAdjacentElement('afterend',pane);
+   // Une fiche ne doit pas afficher une seconde carte du planning général avant l'identité.
+   host.querySelectorAll(':scope > .rh-v259-entry').forEach(el=>{el.hidden=true;});
+   return true;
+ }
+ function state(msg,err=false){const node=$('rh-v282-state');if(node){node.textContent=msg;node.classList.toggle('v282-error',err);}}
+ function token(){try{const a=JSON.parse(sessionStorage.getItem(AUTH)||'null');
+   const d=localStorage.getItem(DEVICE)||'';
+   if(a&&a.tenant===tenant()&&a.device===d&&typeof a.token==='string'&&a.token.length>30&&Number(a.exp)>Date.now()+15000)return {token:a.token,device:d};
+ }catch(_){}return null;}
+ function openPremium(){
+   const t=tenant();if(!safeTenant(t))return void state('Établissement non reconnu.',true);
+   // Aucune navigation vers la fiche d'un autre salarié en cas d'identifiants différents.
+   const staff=selected();const id=remoteStaffId;
+   if(staff&&id){try{sessionStorage.setItem(JUMP,JSON.stringify({tenant:t,staffId:id,date:nowMonth()+'-01',created:Date.now()}));
+     location.assign('/planning-rh/?tenantID='+encodeURIComponent(t)+'&rhJump=1');return;
+   }catch(_){}}
+   location.assign('/planning-rh/?tenantID='+encodeURIComponent(t));
+ }
+ function label(v){
+   if(!v||!v.status)return ['unknown','—',''];
+   const st=String(v.status),times=[v.s1,v.s2].filter(Boolean).map(String).join(' / ');
+   if(['present','off_matin','off_soir'].includes(st))return ['work','TRAVAIL',times];
+   if(st==='off')return ['rest','REPOS',''];
+   const labels={conge:'CONGÉ',recup:'RÉCUP.',ferie:'FÉRIÉ',maladie:'MALADIE',formation:'FORMATION',absence_autorisee:'ABSENCE',absence_injustifiee:'ABSENCE',accident_travail:'ACCIDENT',maternite:'MATERNITÉ',paternite:'PATERNITÉ',parental:'PARENTAL',enfant_malade:'ENFANT MALADE',sans_solde:'SANS SOLDE'};
+   return ['leave',labels[st]||st.toUpperCase(),''];
+ }
+ function render(data,month,premiumId){
+   const [y,m]=month.split('-').map(Number);const count=new Date(y,m,0).getDate();
+   const offset=(new Date(y,m-1,1).getDay()+6)%7;
+   const weekdays=['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'];
+   let html=weekdays.map(s=>'<div class="v282-wday">'+s+'</div>').join('');
+   for(let i=0;i<offset;i++)html+='<div class="v282-day blank" aria-hidden="true"></div>';
+   const monthData=data?.timesheets?.[month]?.[premiumId]||{};
+   const today=new Date(),todayMonth=monthOf(today);
+   for(let d=1;d<=count;d++){
+     const item=monthData[String(d)]||monthData[String(d).padStart(2,'0')],x=label(item);
+     const date=month+'-'+String(d).padStart(2,'0');
+     html+='<div class="v282-day '+x[0]+(todayMonth===month&&today.getDate()===d?' today':'')+'" title="'+esc(date+' '+x[1]+' '+x[2])+'"><strong>'+d+'</strong><span class="v282-label">'+esc(x[1])+'</span>'+(x[2]?'<span class="v282-hours">'+esc(x[2])+'</span>':'')+'</div>';
+   }
+   $('rh-v282-month').textContent=new Date(y,m-1,1,12).toLocaleDateString('fr-FR',{month:'long',year:'numeric'});
+   $('rh-v282-calendar').innerHTML=html;
+   state('Planning officiel consulté · '+new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}));
+ }
+ async function load(force=false,desiredMonth){
+   if(!mount())return;
+   const hr=$('hr-interface');if(!hr?.classList.contains('rh-v236-individual-mode')){pane.hidden=true;return;}
+   const person=selected();if(!person){pane.hidden=true;return;}
+   pane.hidden=false;
+   const month=desiredMonth||nowMonth();
+   const key=tenant()+'|'+String(person.id)+'|'+month;
+   if(!force&&key===lastKey)return;
+   if(busy){repeat=true;return;}
+   busy=true;lastKey=key;const request=++stamp;remoteStaffId=null;
+   $('rh-v282-month').textContent=new Date(Number(month.slice(0,4)),Number(month.slice(5,7))-1,1).toLocaleDateString('fr-FR',{month:'long',year:'numeric'});
+   state('Chargement du planning individuel…');
+   try{
+     const t=tenant();if(!safeTenant(t))throw new Error('Établissement non reconnu.');
+     let a=token();if(!a){try{await window.ICHEF_RH_PREMIUM_MIRROR?.refresh?.(true);}catch(_){}a=token();}
+     if(!a)throw new Error('Session Planning Premium indisponible. Ouvrez le planning pour vous connecter.');
+     const c=new AbortController(),timer=setTimeout(()=>c.abort(),12500);
+     let response,data;
+     try{response=await fetch(BASE+'/api/rh/planning/premium/state?tenantID='+encodeURIComponent(t)+'&month='+month,{credentials:'include',cache:'no-store',signal:c.signal,headers:{Authorization:'Bearer '+a.token,'X-iCHEF-Device':a.device,'X-iCHEF-Tenant':t,Accept:'application/json'}});
+       data=await response.json().catch(()=>({}));
+     }finally{clearTimeout(timer);}
+     if(!response.ok||data?.success===false)throw new Error('Lecture du planning refusée ('+response.status+').');
+     if(data?.tenantID!==t||!Array.isArray(data.staff)||!data.timesheets||typeof data.timesheets!=='object')throw new Error('Réponse du serveur non vérifiée.');
+     const matches=data.staff.filter(s=>String(s?.id)===String(person.id));
+     let actual=matches.length===1?matches[0]:null;
+     if(!actual){const same=data.staff.filter(s=>normalize(s?.name)===normalize(person.name));if(same.length===1)actual=same[0];}
+     if(request!==stamp || String(selected()?.id)!==String(person.id))return;
+     if(!actual){
+       $('rh-v282-calendar').replaceChildren();
+       state('Ce collaborateur n’est pas associé de manière unique au planning officiel.',true);return;
+     }
+     remoteStaffId=String(actual.id);render(data,month,remoteStaffId);
+   }catch(error){if(request===stamp){$('rh-v282-calendar').replaceChildren();state(String(error?.message||'Lecture impossible.'),true);}}
+   finally{busy=false;if(repeat){repeat=false;void load(true);}}
+ }
+ let queued=0;
+ function schedule(force=false){clearTimeout(queued);queued=setTimeout(()=>{void load(force);},force?90:260);}
+ function start(){
+   if(!mount()){let retry=0;const timer=setInterval(()=>{if(mount()||++retry>=45){clearInterval(timer);if(pane)schedule(true);}},400);}else schedule(true);
+   window.addEventListener('ichef:staff-selected',()=>schedule(true));
+   window.addEventListener('ichef:profile-navigation',()=>schedule(true));
+   window.addEventListener('ichef:premium:rh-synced',()=>schedule(true));
+   window.addEventListener('focus',()=>schedule(false));
+   document.addEventListener('visibilitychange',()=>{if(!document.hidden)schedule(false);});
+   $('month-selector')?.addEventListener('change',()=>schedule(true));
+   const observer=new MutationObserver(()=>{
+     if($('hr-interface')?.classList.contains('rh-v236-individual-mode')&&selected()){
+       if(pane?.hidden)schedule(true);
+     }else if(pane&&!pane.hidden)pane.hidden=true;
+   });
+   if($('hr-interface'))observer.observe($('hr-interface'),{attributes:true,attributeFilter:['class']});
+ }
+ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start,{once:true});else start();
+})();
+</script>
+
 </body>
 </html>
+
+
+
