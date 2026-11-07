@@ -1,12 +1,3 @@
-
-
-
-
-
-
-
-
-
 /* V266: source fournie par le client, renommée en .js. */
 /* iCHEF OS Planning Premium PWA · client connecté au TIMESHEETS_MASTER.
    Aucune donnée RH n'est stockée en cache ni dans localStorage. */
