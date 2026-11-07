@@ -1,18 +1,3 @@
-
-
-
-
-
-
-
-
-
-
-// iCHEF SERVER V297 — diagnostic sécurisé des e-mails PIN oublié; sécurité V296 conservée.
-// iCHEF SERVER V296 — 3 demandes PIN oublié/jour par collaborateur, 4e via Direction uniquement.
-// iCHEF SERVER V295 — connexion Staff limitée à son établissement et à son identité RH
-// iCHEF SERVER V293 - diagnostic quotas Gemini / delais adaptatifs, routes HACCP IA seulement.
-
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
