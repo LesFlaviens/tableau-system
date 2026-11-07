@@ -1,3 +1,12 @@
+
+
+
+
+
+
+
+
+
 /* V266: source fournie par le client, renommée en .js. */
 /* iCHEF OS Planning Premium PWA · client connecté au TIMESHEETS_MASTER.
    Aucune donnée RH n'est stockée en cache ni dans localStorage. */
@@ -31,6 +40,9 @@ const rhJump=(()=>{if(query.get('rhJump')!=='1')return null;
     }
   }catch(_){}return null;
 })();
+// V279 : sélections locales en mémoire, aucune autorisation ni donnée RH conservée.
+const MULTI_DAY_LIMIT=12;
+let multiEnabled=false,multiStaffId=null,multiDates=new Set(),multiPointer=null,multiIgnoreClickUntil=0;
 let pendingRhJump=rhJump;
 let anchor=rhJump?monday(new Date(rhJump.date+'T12:00:00')):monday(TODAY),view='week',filter='ALL',focusedStaffId=null,selected=null,staff=[],state={},actualMonths={},rhSettings={},publication=null,actor=null,tenant='',token='',device='',busy=false,readOnly=false,lastFetch=0;
 const premiumChannel=typeof BroadcastChannel!=='undefined'?new BroadcastChannel('ichef-planning-premium-events-v1'):null;
@@ -43,7 +55,7 @@ function showAuth(error=''){
  if(query.get('controlRoom')==='1'&&window.parent!==window){
   try{window.parent.postMessage({type:'ICHEF_PREMIUM_CONTROL_AUTH_REQUIRED',tenant},location.origin);}catch(_){}
  }
- if($('ai-advisor'))$('ai-advisor').open=false;if(taskSelected)closeTaskModal();token='';actor=null;focusedStaffId=null;staff=[];state={};actualMonths={};publication=null;render();$('login-shield').classList.remove('hide');$('login-error').textContent=error;setStatus('Connexion requise',true);}
+ multiEnabled=false;multiDates.clear();multiStaffId=null;if($('ai-advisor'))$('ai-advisor').open=false;if(taskSelected)closeTaskModal();token='';actor=null;focusedStaffId=null;staff=[];state={};actualMonths={};publication=null;render();$('login-shield').classList.remove('hide');$('login-error').textContent=error;setStatus('Connexion requise',true);}
 function authKey(){return 'ichef_planning_premium_auth_v1';}
 function forget(){try{sessionStorage.removeItem(authKey());}catch{}}
 function authHeaders(){return {'Accept':'application/json','Authorization':`Bearer ${token}`,'X-iCHEF-Tenant':tenant,'X-iCHEF-Device':device};}
@@ -215,6 +227,8 @@ function shiftMarkup(r){
  return `<span class="entry-label">${heading}</span>${segments.map(x=>`<span class="entry-time">${esc(x)}</span>`).join('')}`;
 }
 function openEmployee(staffId){
+ if(multiEnabled&&multiStaffId&&String(multiStaffId)!==String(staffId))multiClear({all:true});
+ if(multiEnabled)multiStaffId=String(staffId);
  const p=staff.find(x=>String(x.id)===String(staffId));
  if(!p)return;
  focusedStaffId=String(p.id);
@@ -247,6 +261,111 @@ function renderPersonBar(){
  $('person-hours').textContent=`${summary.actual===null?'Prévues':'Effectuées'} ${displayHours(summary.actual===null?summary.planned:summary.actual)} · Écart ${signedHours(summary.difference)}`;
  $('person-hours').title=summary.actual===null?'Heures de pointage indisponibles côté serveur. Seules les heures planifiées sont affichées.':'Écart indicatif entre les heures pointées et l’objectif communiqué par RH.';
 }
+function multiValidDate(value){
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(String(value||'')))return false;
+ const d=new Date(value+'T12:00:00');return Number.isFinite(+d)&&iso(d)===value;
+}
+function multiName(){return staff.find(p=>String(p.id)===String(multiStaffId))?.name||'Collaborateur';}
+function multiUpdateToolbar(){
+ const bar=$('multi-days-toolbar');if(!bar)return;
+ bar.classList.toggle('is-active',multiEnabled);
+ $('multi-mode').setAttribute('aria-pressed',String(multiEnabled));
+ $('multi-mode').textContent=multiEnabled?'✓ Sélection active':'▣ Sélectionner des jours';
+ const n=multiDates.size;
+ $('multi-counter').textContent=multiEnabled
+  ? `${multiStaffId?multiName()+' · ': 'Choisir un collaborateur · '}${n}/12 jours sélectionnés`
+  : '1 collaborateur · jusqu’à 12 jours';
+ $('multi-apply').disabled=!multiEnabled||readOnly||busy||!multiStaffId||!n;
+ $('multi-apply').textContent=n?`Modifier ${n} jour${n>1?'s':''}`:'Modifier les jours';
+ $('multi-range').disabled=!multiEnabled||readOnly||busy;
+ $('multi-mode').disabled=readOnly||busy;
+}
+function multiPaint(){
+ document.querySelectorAll('.entry[data-person][data-date],.monthday[data-edit-person][data-edit-date],.day-shift[data-edit-person][data-edit-date]').forEach(el=>{
+  const person=el.dataset.person||el.dataset.editPerson;
+  const date=el.dataset.date||el.dataset.editDate;
+  const on=multiEnabled&&String(person)===String(multiStaffId)&&multiDates.has(date);
+  el.classList.toggle('is-multi-selected',on);
+  if(multiEnabled)el.setAttribute('aria-pressed',String(on));else el.removeAttribute('aria-pressed');
+ });
+ multiUpdateToolbar();
+}
+function multiClear({all=false}={}){multiDates.clear();if(all)multiStaffId=null;multiPaint();}
+function multiEnable(force){
+ if(!token||readOnly)return notify('Connectez-vous avec les droits RH pour modifier le planning.');
+ multiEnabled=typeof force==='boolean'?force:!multiEnabled;
+ if(!multiEnabled){multiClear({all:true});}else if(focusedStaffId){multiStaffId=focusedStaffId;}
+ multiPaint();
+ if(multiEnabled)notify('Touchez ou cliquez sur des journées, ou choisissez une période de 12 jours maximum.');
+}
+function multiSelectDate(person,date,forcedAdd=false){
+ if(!multiEnabled||!token||readOnly||busy||!multiValidDate(date))return;
+ if(!staff.some(s=>String(s.id)===String(person)))return;
+ if(multiStaffId&&String(multiStaffId)!==String(person)){
+   // Protection contre une édition accidentelle de plusieurs salariés.
+   multiDates.clear();notify('Nouvelle sélection pour ce collaborateur uniquement.');
+ }
+ multiStaffId=String(person);
+ if(multiDates.has(date)){if(!forcedAdd)multiDates.delete(date);}
+ else if(multiDates.size<MULTI_DAY_LIMIT)multiDates.add(date);
+ else {notify('12 jours maximum : validez ou effacez la sélection avant de continuer.');}
+ multiPaint();
+}
+function multiRangeAdd(){
+ if(!multiEnabled||readOnly||busy)return;
+ const start=$('multi-from').value,end=$('multi-to').value;
+ if(!multiValidDate(start)||!multiValidDate(end)||start>end)return notify('Choisissez deux dates valides dans l’ordre.');
+ const p=multiStaffId||focusedStaffId;
+ if(!p)return notify('Sélectionnez d’abord un collaborateur dans la vue Semaine.');
+ const count=Math.round((Date.parse(end+'T12:00:00')-Date.parse(start+'T12:00:00'))/86400000)+1;
+ if(count>12||count<1)return notify('La période doit contenir entre 1 et 12 jours.');
+ const span=[];for(let i=0;i<count;i++)span.push(iso(add(new Date(start+'T12:00:00'),i)));
+ const union=new Set([...multiDates,...span]);
+ if(union.size>12)return notify('12 jours maximum, sélection actuelle comprise.');
+ multiStaffId=String(p);multiDates=union;multiPaint();notify(`${multiDates.size} journées sélectionnées.`);
+}
+function multiOpenEditor(){
+ if(!multiEnabled||!multiStaffId||!multiDates.size||busy||readOnly)return;
+ const dates=[...multiDates].sort();
+ openModal(multiStaffId,dates[0]);
+ if(!selected)return;
+ selected.bulkDates=dates;
+ $('modal-title').textContent=`Modifier ${dates.length} journées`;
+ $('modal-sub').textContent=`${multiName()} · ${dates.length} date${dates.length>1?'s':''} · modification commune`;
+ $('multi-note-opt').classList.remove('hide');
+ $('multi-apply-note').checked=false;
+ $('form-hint').textContent=`Les ${dates.length} journées seront enregistrées individuellement sur le serveur. Les tâches et notes de chaque date sont conservées par défaut. Publiez ou republiez le mois pour rendre les changements visibles sur les portails concernés.`;
+}
+function multiPointerBind(host){
+ if(!host)return;
+ // Pointer Events fonctionnent sur la souris, les écrans tactiles et les stylets.
+ host.addEventListener('pointerdown',e=>{
+  if(!multiEnabled||readOnly||busy||e.button!==0)return;
+  const cell=e.target.closest('[data-person][data-date], [data-edit-person][data-edit-date]');
+  if(!cell||!host.contains(cell))return;
+  const p=cell.dataset.person||cell.dataset.editPerson,d=cell.dataset.date||cell.dataset.editDate;
+  multiPointer={id:e.pointerId,person:p,visited:new Set([d]),moved:false};
+  multiSelectDate(p,d);
+  multiIgnoreClickUntil=Date.now()+700;
+  if(e.pointerType==='touch')e.preventDefault();
+ });
+ host.addEventListener('pointermove',e=>{
+  if(!multiEnabled||!multiPointer||multiPointer.id!==e.pointerId)return;
+  const at=document.elementFromPoint(e.clientX,e.clientY);
+  const cell=at?.closest?.('[data-person][data-date], [data-edit-person][data-edit-date]');
+  if(!cell||!host.contains(cell))return;
+  const p=cell.dataset.person||cell.dataset.editPerson,d=cell.dataset.date||cell.dataset.editDate;
+  if(String(p)!==String(multiPointer.person)||multiPointer.visited.has(d))return;
+  multiPointer.visited.add(d);multiPointer.moved=true;multiSelectDate(p,d,true);
+  if(e.pointerType==='touch')e.preventDefault();
+ });
+ const end=e=>{if(multiPointer?.id===e.pointerId){multiPointer=null;multiIgnoreClickUntil=Date.now()+550;}};
+ host.addEventListener('pointerup',end);host.addEventListener('pointercancel',end);
+}
+function multiCellClick(person,date){
+ if(multiEnabled){if(Date.now()>multiIgnoreClickUntil)multiSelectDate(person,date);return;}
+ openModal(person,date);
+}
 function renderWeek(){
  const people=visible(),days=Array.from({length:7},(_,i)=>add(monday(anchor),i));
  let h='<table class="schedule" aria-label="Planning semaine officiel"><thead><tr><th>COLLABORATEUR</th>';
@@ -268,7 +387,8 @@ function renderWeek(){
  $('week-host').innerHTML=h;
  $('week-host').querySelectorAll('[data-open-day]').forEach(b=>b.addEventListener('click',()=>openDay(b.dataset.openDay)));
  $('week-host').querySelectorAll('[data-profile]').forEach(b=>b.addEventListener('click',()=>openEmployee(b.dataset.profile)));
- $('week-host').querySelectorAll('[data-person]').forEach(b=>b.addEventListener('click',()=>openModal(b.dataset.person,b.dataset.date)));
+ $('week-host').querySelectorAll('[data-person]').forEach(b=>b.addEventListener('click',()=>multiCellClick(b.dataset.person,b.dataset.date)));
+ multiPaint();
 }
 function openDay(date){
  if(!/^\d{4}-\d{2}-\d{2}$/.test(date))return;
@@ -294,7 +414,8 @@ function renderDay(){
  h+='</tbody></table>';
  $('day-host').innerHTML=h;
  $('day-host').querySelectorAll('[data-profile]').forEach(b=>b.addEventListener('click',()=>openEmployee(b.dataset.profile)));
- $('day-host').querySelectorAll('[data-edit-person]').forEach(b=>b.addEventListener('click',()=>openModal(b.dataset.editPerson,b.dataset.editDate)));
+ $('day-host').querySelectorAll('[data-edit-person]').forEach(b=>b.addEventListener('click',()=>multiCellClick(b.dataset.editPerson,b.dataset.editDate)));
+ multiPaint();
  $('day-host').querySelectorAll('[data-task-person]').forEach(b=>b.addEventListener('click',()=>openTaskModal(b.dataset.taskPerson,b.dataset.taskDate)));
 }
 function renderMonth(){
@@ -329,7 +450,8 @@ function renderMonth(){
  $('month-host').style.setProperty('--planning-month-weeks',String(Math.ceil((last+shift)/7)));
  $('month-host').innerHTML=h;
  $('month-host').querySelectorAll('[data-month-day]').forEach(b=>b.addEventListener('click',()=>openDay(b.dataset.monthDay)));
- $('month-host').querySelectorAll('[data-edit-person]').forEach(b=>b.addEventListener('click',()=>openDay(b.dataset.editDate)));
+ $('month-host').querySelectorAll('[data-edit-person]').forEach(b=>b.addEventListener('click',()=>multiEnabled?multiCellClick(b.dataset.editPerson,b.dataset.editDate):openDay(b.dataset.editDate)));
+ multiPaint();
 }
 // V275 — analyse rapide et explicable : aucune IA distante, aucun envoi supplémentaire.
 // Le moteur de proposition complet existant reste dans RH ; ici : pistes non contraignantes.
@@ -482,7 +604,7 @@ function fitPlanningToViewport(){
 }
 function queuePlanningFit(){cancelAnimationFrame(planningFitRaf);planningFitRaf=requestAnimationFrame(fitPlanningToViewport);}
 window.addEventListener('resize',queuePlanningFit,{passive:true});
-function render(){renderPersonBar();if(view==='week'){$('range').textContent=`${fmt(anchor,{day:'numeric',month:'short'})} – ${fmt(add(anchor,6),{day:'numeric',month:'short',year:'numeric'})}`;renderWeek();}else if(view==='day'){$('range').textContent=fmt(anchor,{weekday:'short',day:'numeric',month:'short',year:'numeric'});renderDay();}else{$('range').textContent=fmt(anchor,{month:'long',year:'numeric'});renderMonth();}renderStats();renderAdvice();queuePlanningFit();}
+function render(){renderPersonBar();if(view==='week'){$('range').textContent=`${fmt(anchor,{day:'numeric',month:'short'})} – ${fmt(add(anchor,6),{day:'numeric',month:'short',year:'numeric'})}`;renderWeek();}else if(view==='day'){$('range').textContent=fmt(anchor,{weekday:'short',day:'numeric',month:'short',year:'numeric'});renderDay();}else{$('range').textContent=fmt(anchor,{month:'long',year:'numeric'});renderMonth();}renderStats();renderAdvice();multiPaint();queuePlanningFit();}
 function switchView(v){view=v;for(const which of ['day','week','month']){$('view-'+which).classList.toggle('active',which===v);$('view-'+which).setAttribute('aria-pressed',String(which===v));$(which+'-host').classList.toggle('hide',which!==v);}render();}
 function updateDepartments(){const select=$('department'),old=filter;select.innerHTML='<option value="ALL">Tous les services</option>';[...new Set(staff.map(s=>s.dept).filter(Boolean))].sort().forEach(d=>{const o=document.createElement('option');o.value=d;o.textContent=d;select.appendChild(o);});filter=old==='ALL'||staff.some(s=>s.dept===old)?old:'ALL';select.value=filter;}
 async function refresh(force=false){if(!token||busy)return;if(!force&&Date.now()-lastFetch<3500)return;busy=true;setStatus('Synchronisation sécurisée en cours…');try{const m=month(anchor);const res=await jsonFetch(`/api/rh/planning/premium/state?tenantID=${encodeURIComponent(tenant)}&month=${m}`,{headers:authHeaders()});staff=(res.staff||[]).map(p=>({...p,id:String(p.id),dept:String(p.dept||'Sans secteur'),avatar:String(p.name||'?').split(/\s+/).slice(0,2).map(z=>z[0]).join('').toUpperCase()}));state={...state,...(res.timesheets||{})};actualMonths[m]=readRealMonth(res,m);rhSettings=res.settings||{};
@@ -511,12 +633,88 @@ if(query.get('controlRoom')==='1'&&window.parent!==window)window.parent.postMess
   }
  }}
 catch(e){if(query.get('controlRoom')==='1'&&window.parent!==window)window.parent.postMessage({type:'ICHEF_PREMIUM_CONTROL_ERROR',tenant,reason:e.message},location.origin);setStatus(e.message,true);if(e.status===401||e.status===403){forget();showAuth(e.message);}else notify('Réseau indisponible. Les données ne sont pas modifiées.');}finally{busy=false;}}
-function openModal(person,date){if(!token||readOnly)return;const p=staff.find(x=>x.id===person);if(!p)return;const d=new Date(date+'T12:00:00'),r=get(p,d);selected={person,date,base:r.original};$('modal-sub').textContent=`${p.name} · ${fmt(d,{weekday:'long',day:'numeric',month:'long'})}`;$('kind').value=types[r.k]?r.k:'A';$('start').value=r.start||'08:00';$('end').value=r.end||'16:00';$('split-start').value=r.s2||'18:00';$('split-end').value=r.e2||'22:00';$('note').value=splitDayTasks(r.note).note;$('reason').value='';updateForm();$('modal-backdrop').classList.remove('hide');$('kind').focus();}
+function openModal(person,date){$('modal-title').textContent='Modifier un service';$('multi-note-opt').classList.add('hide');$('form-hint').textContent='Après validation, les modifications sont enregistrées sur le serveur RH avec motif et historique.';if(!token||readOnly)return;const p=staff.find(x=>x.id===person);if(!p)return;const d=new Date(date+'T12:00:00'),r=get(p,d);selected={person,date,base:r.original};$('modal-sub').textContent=`${p.name} · ${fmt(d,{weekday:'long',day:'numeric',month:'long'})}`;$('kind').value=types[r.k]?r.k:'A';$('start').value=r.start||'08:00';$('end').value=r.end||'16:00';$('split-start').value=r.s2||'18:00';$('split-end').value=r.e2||'22:00';$('note').value=splitDayTasks(r.note).note;$('reason').value='';updateForm();$('modal-backdrop').classList.remove('hide');$('kind').focus();}
 function closeModal(){selected=null;$('modal-backdrop').classList.add('hide');}
 function updateForm(){const k=$('kind').value;document.querySelectorAll('[data-preset]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.preset===k)));for(const id of ['time1','time2'])$(id).classList.toggle('hide',!['M','S','C'].includes(k));$('split-row').classList.toggle('hide',k!=='C');}
 function pair(a,b){return /^\d{2}:\d{2}$/.test(a)&&/^\d{2}:\d{2}$/.test(b)&&a!==b;}
 function getDraft(){const k=$('kind').value,original=selected?.base||{},note=$('note').value.trim().slice(0,500);let r={...original,status:'off',s1:'',s2:'',pause:0,obs:packDayTasks(note,splitDayTasks(String(original.obs||'')).tasks)};if(['M','S','C'].includes(k)){if(!pair($('start').value,$('end').value))throw Error('Horaires de service invalides.');r.status=k==='M'?'off_soir':k==='S'?'off_matin':'present';const s=`${$('start').value}-${$('end').value}`;if(k==='S')r.s2=s;else r.s1=s;if(k==='C'){if(!pair($('split-start').value,$('split-end').value))throw Error('Deuxième service invalide.');r.s2=`${$('split-start').value}-${$('split-end').value}`;}}else{r.status=({R:'off',CP:'conge',MAL:'maladie',RECUP:'recup',FERIE:'ferie',FORM:'formation',A:'absence_autorisee',NJS:'absence_injustifiee',ACC:'accident_travail',MAT:'maternite',PAT:'paternite',PAR:'parental',EFM:'enfant_malade',EVF:'evenement_familial',DEC:'deces',SSL:'sans_solde',O:'off'})[k]||'off';}return k==='O'?null:r;}
-async function save(){if(!selected||busy)return;const reason=$('reason').value.trim();if(reason.length<3)return notify('Motif obligatoire (au moins 3 caractères).');let day;try{day=getDraft();}catch(e){return notify(e.message);}busy=true;setStatus('Enregistrement sur le serveur…');const btn=$('shift-form').querySelector('[type="submit"]');btn.disabled=true;try{const res=await jsonFetch('/api/rh/planning/premium/day',{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenant,date:selected.date,staffId:selected.person,day,reason,baseRevision:selected.base?selected.base.planningVersionId||'':null})});const m=selected.date.slice(0,7),n=String(Number(selected.date.slice(8)));if(!state[m])state[m]={};if(!state[m][selected.person])state[m][selected.person]={};if(res.day)state[m][selected.person][n]=res.day;else delete state[m][selected.person][n];$('audit-title').textContent=`Modifié · ${res.staffName||selected.person}`;$('audit-detail').textContent=`${selected.date} · ${reason}`;$('audit-date').textContent=fmt(new Date(),{hour:'2-digit',minute:'2-digit'});closeModal();render();setStatus('Enregistré sur le serveur central · RH et Staff informés');notify('Horaire sauvegardé et synchronisé.');broadcastPlanningChange(m);lastFetch=0;
+async function saveMultiple(){
+ if(!selected?.bulkDates?.length||busy||readOnly||!token)return;
+ const dates=selected.bulkDates.slice().sort(),person=selected.person;
+ if(dates.length>MULTI_DAY_LIMIT)return notify('12 jours maximum.');
+ const reason=$('reason').value.trim();if(reason.length<3)return notify('Motif obligatoire (au moins 3 caractères).');
+ const sharedNote=$('note').value,applyNote=$('multi-apply-note').checked;
+ // Validation complète AVANT tout envoi. Les tâches sont conservées date par date.
+ const drafts=[];const originalSelected=selected;
+ try{
+  for(const date of dates){
+   const p=staff.find(s=>String(s.id)===String(person));if(!p)throw Error('Collaborateur introuvable.');
+   const base=get(p,new Date(date+'T12:00:00')).original;
+   selected={person,date,base};
+   $('note').value=applyNote?sharedNote:splitDayTasks(String(base?.obs||'')).note;
+   drafts.push({date,day:getDraft(),base});
+  }
+ }catch(e){return notify(e.message||'Journée non valide.');}
+ finally{$('note').value=sharedNote;selected=originalSelected;}
+ if(!confirm(`Appliquer la modification à ${dates.length} journées de ${multiName()} ?\n\nChaque journée sera enregistrée auprès du serveur RH. Vérifiez les congés, repos et obligations légales avant de continuer.`))return;
+ busy=true;const btn=$('shift-form').querySelector('[type="submit"]');btn.disabled=true;multiUpdateToolbar();
+ let done=0,failed=null;const changedMonths=new Set();
+ try{
+  // Lecture des mois nécessaires (y compris la transition entre mois) avant écriture.
+  // Ne jamais faire de sauvegarde à l'aveugle sur des journées non récupérées.
+  for(const mm of new Set(dates.map(d=>d.slice(0,7)))){
+   const res=await jsonFetch(`/api/rh/planning/premium/state?tenantID=${encodeURIComponent(tenant)}&month=${mm}`,{headers:authHeaders()});
+   if(res.settings?.planningStatus==='locked')throw Error(`Planning verrouillé (${mm}).`);
+   state={...state,...(res.timesheets||{})};
+  }
+  const personRecord=staff.find(s=>String(s.id)===String(person));
+  // Écrase uniquement les champs horaires / statut voulus, tout en conservant
+  // la note et les tâches propres à chaque journée.
+  for(const d of drafts){
+   const base=get(personRecord,new Date(d.date+'T12:00:00')).original;
+   const newDay=d.day===null?null:{...(base||{}),status:d.day.status,s1:d.day.s1,s2:d.day.s2,pause:d.day.pause,obs:packDayTasks(
+      applyNote?sharedNote.trim().slice(0,500):splitDayTasks(String(base?.obs||'')).note,
+      splitDayTasks(String(base?.obs||'')).tasks
+   )};
+   setStatus(`Enregistrement sécurisé ${done+1}/${dates.length}…`);
+   let res;
+   try{
+    res=await jsonFetch('/api/rh/planning/premium/day',{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenant,date:d.date,staffId:person,day:newDay,reason,baseRevision:base?.planningVersionId||null})});
+   }catch(e){failed=e;break;}
+   const mm=d.date.slice(0,7),n=String(Number(d.date.slice(8)));
+   if(!state[mm])state[mm]={};if(!state[mm][person])state[mm][person]={};
+   if(res.day)state[mm][person][n]=res.day;else delete state[mm][person][n];
+   multiDates.delete(d.date);changedMonths.add(mm);done++;
+  }
+  for(const mm of changedMonths)broadcastPlanningChange(mm);
+  if(done){
+   $('audit-title').textContent=`${done} jour${done>1?'s':''} · ${multiName()}`;
+   $('audit-detail').textContent=`${done}/${dates.length} journée(s) enregistrée(s) · ${reason}`;
+   $('audit-date').textContent=fmt(new Date(),{hour:'2-digit',minute:'2-digit'});
+   $('publication-status').textContent='⚠ Horaire(s) modifié(s) · publication à vérifier';
+   if(publication?.status==='published')publication={...publication,status:'to_review'};
+  }
+  lastFetch=0;
+  closeModal();render();
+  if(failed){
+   setStatus(`${done}/${dates.length} journées enregistrées · erreur : ${failed.message}`,true);
+   notify(`${done} enregistrée(s), ${dates.length-done} restante(s). Vérifiez avant de réessayer.`);
+   if(failed.status===401||failed.status===403){forget();showAuth(failed.message);}
+  }else{
+   setStatus(`${done} journées synchronisées sur iCHEF OS`);
+   notify(`${done} journées enregistrées sur le serveur RH.`);
+   multiClear({all:true});multiEnabled=false;multiUpdateToolbar();
+  }
+ }catch(e){
+  setStatus(e.message||'Synchronisation refusée.',true);
+  if(e.status===401||e.status===403){forget();showAuth(e.message);}else notify('Aucune nouvelle modification : '+e.message);
+ }finally{
+  busy=false;btn.disabled=false;multiUpdateToolbar();
+  // Rafraîchir la vue visible APRÈS la fin de la transaction locale.
+  void refresh(true);
+ }
+}
+async function save(){if(selected?.bulkDates?.length)return saveMultiple();if(!selected||busy)return;const reason=$('reason').value.trim();if(reason.length<3)return notify('Motif obligatoire (au moins 3 caractères).');let day;try{day=getDraft();}catch(e){return notify(e.message);}busy=true;setStatus('Enregistrement sur le serveur…');const btn=$('shift-form').querySelector('[type="submit"]');btn.disabled=true;try{const res=await jsonFetch('/api/rh/planning/premium/day',{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenant,date:selected.date,staffId:selected.person,day,reason,baseRevision:selected.base?selected.base.planningVersionId||'':null})});const m=selected.date.slice(0,7),n=String(Number(selected.date.slice(8)));if(!state[m])state[m]={};if(!state[m][selected.person])state[m][selected.person]={};if(res.day)state[m][selected.person][n]=res.day;else delete state[m][selected.person][n];$('audit-title').textContent=`Modifié · ${res.staffName||selected.person}`;$('audit-detail').textContent=`${selected.date} · ${reason}`;$('audit-date').textContent=fmt(new Date(),{hour:'2-digit',minute:'2-digit'});closeModal();render();setStatus('Enregistré sur le serveur central · RH et Staff informés');notify('Horaire sauvegardé et synchronisé.');broadcastPlanningChange(m);lastFetch=0;
 if(publication?.status==='published'){$('publication-status').textContent='⚠ Horaire modifié · à republier';publication={...publication,status:'to_review'};}}
 catch(e){setStatus(e.message,true);if(e.status===409){notify('Planning modifié ailleurs : rechargement nécessaire avant de réessayer.');closeModal();lastFetch=0;}else if(e.status===401||e.status===403){forget();showAuth(e.message);}else notify('Enregistrement refusé : '+e.message);}
 finally{busy=false;btn.disabled=false;}}
@@ -577,6 +775,11 @@ async function saveTasks(ev){
 $('task-close').onclick=closeTaskModal;$('task-cancel').onclick=closeTaskModal;
 $('task-add').onclick=()=>addTaskField();$('task-form').onsubmit=saveTasks;
 $('task-backdrop').onclick=e=>{if(e.target===$('task-backdrop'))closeTaskModal();};
+$('multi-mode').onclick=()=>multiEnable();
+$('multi-clear').onclick=()=>multiClear({all:true});
+$('multi-range').onclick=multiRangeAdd;
+$('multi-apply').onclick=multiOpenEditor;
+multiPointerBind($('week-host'));multiPointerBind($('day-host'));multiPointerBind($('month-host'));
 $('logout').onclick=()=>{forget();$('login-pin').value='';showAuth('Session fermée sur cet appareil.');if(window.parent!==window&&query.get('rhEmbedded')==='1'){window.parent.postMessage({type:'ICHEF_PREMIUM_LOGOUT'},location.origin);}};
 $('login-form').onsubmit=login;$('prev').onclick=()=>{anchor=view==='day'?add(anchor,-1):view==='week'?add(anchor,-7):new Date(anchor.getFullYear(),anchor.getMonth()-1,1,12);render();refresh(true);};$('next').onclick=()=>{anchor=view==='day'?add(anchor,1):view==='week'?add(anchor,7):new Date(anchor.getFullYear(),anchor.getMonth()+1,1,12);render();refresh(true);};$('today').onclick=()=>{anchor=view==='day'?new Date(TODAY):view==='week'?monday(TODAY):new Date(TODAY.getFullYear(),TODAY.getMonth(),1,12);render();refresh(true);};$('view-day').onclick=()=>{const current=view==='week'?iso(monday(anchor))===iso(monday(TODAY)):view==='month'?month(anchor)===month(TODAY):false;anchor=current?new Date(TODAY):new Date(anchor);switchView('day');refresh(true);};$('view-week').onclick=()=>{anchor=monday(anchor);switchView('week');refresh(true);};$('view-month').onclick=()=>{anchor=new Date(anchor.getFullYear(),anchor.getMonth(),1,12);switchView('month');refresh(true);};$('department').onchange=e=>{filter=e.target.value;focusedStaffId=null;render();};$('team-return').onclick=closeEmployee;$('close').onclick=closeModal;$('cancel').onclick=closeModal;$('kind').onchange=updateForm;document.querySelectorAll('[data-preset]').forEach(b=>b.addEventListener('click',()=>{$('kind').value=b.dataset.preset;updateForm();}));$('remove').onclick=()=>{$('kind').value='O';save();};$('shift-form').onsubmit=e=>{e.preventDefault();save();};$('modal-backdrop').onclick=e=>{if(e.target===$('modal-backdrop'))closeModal();};document.addEventListener('keydown',e=>{if(e.key==='Escape'){if(selected)closeModal();if(taskSelected)closeTaskModal();}});$('reset').onclick=()=>refresh(true);
 $('panel-toggle').onclick=()=>{const on=document.querySelector('.board').classList.toggle('show-panel');$('panel-toggle').setAttribute('aria-expanded',String(on));$('panel-toggle').textContent=on?'× Fermer':'☷ Détails';};
@@ -635,3 +838,6 @@ setInterval(()=>{if(!document.hidden&&!rhEmbeddedPaused&&!selected)refresh(true)
 if('serviceWorker' in navigator&&location.protocol==='https:'){navigator.serviceWorker.register('./sw.js',{scope:'./'}).catch(e=>console.warn('PWA non installée',e));}
 render();restoreAuth();
 })();
+
+
+
