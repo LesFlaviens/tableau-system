@@ -6,6 +6,9 @@
 
 
 
+
+
+
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -4353,6 +4356,128 @@ NOTE : le moteur fournit une assistance de conformité à partir du profil confi
   else if(!init()){const t=setInterval(()=>{if(init())clearInterval(t);},350);setTimeout(()=>clearInterval(t),10000);}
 })();
 </script>
+
+<!-- RH V292 · Connexion vérifiable avec Planning RH Premium ; pas de copie de données. -->
+<style id="ichef-rh-v292-sync-style">
+#rh-v287-directory .v292-sync-label{display:inline-flex;align-items:center;gap:6px;font-size:10px;font-weight:780;color:#5d7180;max-width:100%;white-space:normal}
+#rh-v287-directory .v292-sync-label[data-state="ok"]{color:#177659}
+#rh-v287-directory .v292-sync-label[data-state="warn"]{color:#a34b27}
+#rh-v287-directory .v292-sync-label::before{content:"";width:7px;height:7px;flex:none;background:#abb6bf;border-radius:50%}
+#rh-v287-directory .v292-sync-label[data-state="ok"]::before{background:#18a579}
+#rh-v287-directory .v292-sync-label[data-state="warn"]::before{background:#d48b45}
+#rh-v287-directory .v292-open-planning{min-height:32px;padding:6px 11px!important;white-space:nowrap}
+@media(max-width:650px){#rh-v287-directory .v292-sync-label{width:100%}}
+</style>
+<script id="ichef-rh-v292-sync-planning">
+(()=>{'use strict';
+  if(window.__ICHEF_RH_PLANNING_LINK_V292__)return;
+  window.__ICHEF_RH_PLANNING_LINK_V292__=true;
+  const CHANNEL='ichef-planning-premium-events-v1';
+  const AUTH='ichef_planning_premium_auth_v1';
+  const DEVICE='ichef_planning_device_v1';
+  const BASE=(location.hostname==='localhost'||location.hostname==='127.0.0.1')?'http://localhost:10000':'https://tableau-system.onrender.com';
+  const tenant=()=>String(new URLSearchParams(location.search).get('tenantID')||localStorage.getItem('ichef_tenant_id')||'').trim();
+  const valid=/^[A-Za-z0-9_-]{2,80}$/;
+  const time=()=>new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
+  let root=null,label=null,channel=null,pingBusy=false,lastPing=0,pingTimer=null,localFingerprint=null,refreshBusy=false,lastRefresh=0;
+  try{channel=new BroadcastChannel(CHANNEL);}catch(_){channel=null;}
+  function status(s,kind=''){if(label){label.textContent=s;label.dataset.state=kind;}}
+  function rhRows(){try{return typeof getDir==='function' ? getDir() : [];}catch(_){return [];}}
+  function fingerprint(){
+    const rows=rhRows();if(!Array.isArray(rows))return '';
+    // Une signature de profil non sensible : jamais les PIN, les contacts ou les tokens.
+    return JSON.stringify(rows.map(s=>[String(s?.id??''),String(s?.name??''),String(s?.role??''),String(s?.dept??''),s?.active!==false?1:0,Number(s?.contract||0)]).sort((a,b)=>a[0].localeCompare(b[0])));
+  }
+  function signalDirectory(){
+    const t=tenant();if(!valid.test(t))return;
+    try{channel?.postMessage({type:'STAFF_DIRECTORY_CHANGED',tenant:t,at:Date.now()});}catch(_){}
+  }
+  function mount(){
+    if(root?.isConnected)return true;
+    const host=document.getElementById('rh-v287-directory');if(!host)return false;
+    const tools=host.querySelector('.v287-actions');const state=host.querySelector('.v287-statebar');
+    if(!tools||!state)return false;
+    root=host;
+    let btn=host.querySelector('.v292-open-planning');
+    if(!btn){btn=document.createElement('button');btn.type='button';btn.className='v287-btn v292-open-planning';btn.textContent='↗ PLANNING RH';btn.setAttribute('aria-label','Ouvrir Planning RH Premium connecté à cet établissement');tools.append(btn);}
+    label=host.querySelector('.v292-sync-label');
+    if(!label){label=document.createElement('span');label.className='v292-sync-label';label.setAttribute('role','status');label.setAttribute('aria-live','polite');label.textContent='Vérification du lien RH · Planning…';state.append(label);}
+    btn.addEventListener('click',ev=>{
+      ev.preventDefault();const t=tenant();if(!valid.test(t)){status('Établissement non identifié.','warn');return;}
+      if(window.iChefRhPlanningBridgeV267?.openEditor)void window.iChefRhPlanningBridgeV267.openEditor();
+      else location.assign('/planning-rh/?tenantID='+encodeURIComponent(t));
+    });
+    host.addEventListener('click',ev=>{if(ev.target.closest('[data-v287-action="refresh"]'))schedulePing(2400);});
+    return true;
+  }
+  function auth(){
+    try{const a=JSON.parse(sessionStorage.getItem(AUTH)||'null');const d=localStorage.getItem(DEVICE)||'';
+      if(a&&a.tenant===tenant()&&a.device===d&&a.exp>Date.now()+15000&&typeof a.token==='string'&&a.token.length>32)return {token:a.token,device:d};
+    }catch(_){}return null;
+  }
+  async function ping(force=false){
+    if(!mount()||document.hidden||pingBusy)return;
+    if(!force&&Date.now()-lastPing<18000)return;
+    const t=tenant();if(!valid.test(t)){status('Établissement non identifié','warn');return;}
+    const a=auth();if(!a){status('Ouvrez le planning pour vérifier la synchronisation','');return;}
+    pingBusy=true;const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),12000);
+    try{
+      const month=new Date().toISOString().slice(0,7);
+      const response=await fetch(BASE+'/api/rh/planning/premium/state?tenantID='+encodeURIComponent(t)+'&month='+month,{cache:'no-store',credentials:'include',signal:controller.signal,headers:{'Authorization':'Bearer '+a.token,'X-iCHEF-Tenant':t,'X-iCHEF-Device':a.device,'Accept':'application/json'}});
+      const data=await response.json().catch(()=>({}));
+      if(!response.ok||data.success!==true||data.tenantID!==t||!Array.isArray(data.staff))throw Error('Lecture Planning RH indisponible');
+      const rows=rhRows();const seen=new Map(data.staff.map(s=>[String(s?.id??''),s]));
+      const active=Array.isArray(rows)?rows.filter(s=>s&&s.active!==false&&String(s.id||'')):[];
+      const missing=active.filter(s=>!seen.has(String(s.id)));
+      const norm=x=>String(x||'').trim().normalize('NFC').toLocaleLowerCase('fr');
+      const different=active.filter(s=>{const r=seen.get(String(s.id));return !!r&&(norm(s.name)!==norm(r.name)||norm(s.role)!==norm(r.role)||norm(s.dept||s.department)!==norm(r.dept));});
+      lastPing=Date.now();
+      if(missing.length||different.length)status('⚠ '+missing.length+' fiche(s) manquante(s), '+different.length+' profil(s) différent(s) · actualisez RH','warn');
+      else status('RH et Planning connectés · '+data.staff.length+' collaborateurs · '+time(),'ok');
+    }catch(e){status('Connexion Planning RH à vérifier · '+String(e?.message||'erreur'),'warn');}
+    finally{clearTimeout(timer);pingBusy=false;}
+  }
+  function schedulePing(delay=300){clearTimeout(pingTimer);pingTimer=setTimeout(()=>void ping(true),delay);}
+  function employeeModalOpen(){
+    const modal=document.getElementById('staff-modal');return !!(modal&&(modal.classList.contains('show')||modal.style.display==='flex'));
+  }
+  async function refreshFromPlanning(){
+    if(refreshBusy||employeeModalOpen()||document.hidden)return;
+    if(Date.now()-lastRefresh<1300)return;
+    if(typeof refreshRhStaffFromServer!=='function')return;
+    lastRefresh=Date.now();refreshBusy=true;
+    try{
+      const data=await refreshRhStaffFromServer();
+      if(data?.activeOrders){
+        document.dispatchEvent(new CustomEvent('ichef:premium:rh-synced'));
+        schedulePing(250);
+      }
+    }finally{refreshBusy=false;}
+  }
+  function localDirectoryTick(){
+    const next=fingerprint();if(localFingerprint===null){localFingerprint=next;return;}
+    if(next!==localFingerprint){localFingerprint=next;signalDirectory();schedulePing(3000);}
+  }
+  function start(){
+    if(!mount()){const t=setInterval(()=>{if(mount()){clearInterval(t);schedulePing(800);}},400);setTimeout(()=>clearInterval(t),15000);}
+    else schedulePing(1000);
+    localDirectoryTick();setInterval(localDirectoryTick,2500);
+    // Les messages ne contiennent aucune donnée personnelle; l'API vérifie toujours la session et l'établissement.
+    if(channel)channel.addEventListener('message',e=>{
+      const d=e.data;if(!d||d.tenant!==tenant())return;
+      if(d.type==='PLANNING_CHANGED'){setTimeout(()=>void refreshFromPlanning(),600);schedulePing(1400);}
+    });
+    document.addEventListener('visibilitychange',()=>{if(!document.hidden){void refreshFromPlanning();schedulePing(800);}});
+    window.addEventListener('focus',()=>schedulePing(600));
+    window.addEventListener('online',()=>schedulePing(600));
+    document.addEventListener('ichef:premium:rh-synced',()=>schedulePing(800));
+    // Actualisation depuis l'API centrale aussi sur les autres appareils (sans partage de cache local).
+    setInterval(()=>{if(!document.hidden)void ping(false);},20000);
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start,{once:true});else start();
+})();
+</script>
+
 </body>
 </html>
 
