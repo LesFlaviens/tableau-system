@@ -6,6 +6,9 @@
 
 
 
+
+
+
 /* iCHEF RH V285 - garde d'identité par ID collaborateur; fonctions de sécurité inchangées. */
 
 ;
@@ -7356,6 +7359,67 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                 updateStaffProfessionalLegalUIV193(document.getElementById('staff-edit-original-pin')?.value || null);
             }
         }, true);
+        // RH V286 — un code provisoire est une donnée de sécurité.
+        // Génération locale par Web Crypto (pas par IA/Math.random), sans réseau
+        // et uniquement dans l'établissement courant.
+        function rhGenerateUniqueTemporaryPinV286(excludedStaffId = '') {
+            const secure = globalThis.crypto;
+            if (!secure || typeof secure.getRandomValues !== 'function') {
+                throw new Error('Génération sécurisée indisponible. Ouvrez iCHEF RH sur os.ichef.ch en HTTPS.');
+            }
+            const excluded = String(excludedStaffId ?? '').trim();
+            const taken = new Set();
+            for (const row of [
+                ...getDir(),
+                ...(Array.isArray(staffAccess) ? staffAccess : [])
+            ]) {
+                if (!row || (excluded && String(row.id ?? '').trim() === excluded)) continue;
+                const existingPin = String(row.pin ?? '').trim();
+                if (/^\d{4,12}$/.test(existingPin)) taken.add(existingPin);
+            }
+            // Un PIN de collaborateur ne doit pas reproduire celui de la Direction.
+            const directionPin = String(getRhDirectionAuthPin() || '').trim();
+            if (directionPin) taken.add(directionPin);
+            const width = 100000000; // 8 chiffres, compatibilité RH/Staff (4–12).
+            const space = 0x100000000;
+            const limit = Math.floor(space / width) * width; // tirage sans biais modulo
+            const sample = new Uint32Array(1);
+            for (let attempt = 0; attempt < 256; attempt++) {
+                secure.getRandomValues(sample);
+                if (sample[0] >= limit) continue;
+                const candidate = String(sample[0] % width).padStart(8, '0');
+                if (!taken.has(candidate)) return candidate;
+            }
+            throw new Error('Impossible de produire un code provisoire libre. Réessayez.');
+        }
+        function generateStaffPinV286() {
+            const input = document.getElementById('staff-pin');
+            const id = String(document.getElementById('staff-edit-original-id')?.value || '').trim();
+            if (!input) return false;
+            const matches = id ? getDir().filter(s => String(s?.id ?? '') === id) : [];
+            if (id && matches.length !== 1) {
+                setStaffPinStatusV203('error', 'Identité du collaborateur ambiguë : génération bloquée.');
+                return false;
+            }
+            const staff = matches[0] || null;
+            if (staff && (staff.staffActivatedAt || staff.pinUpdatedAt)) {
+                setStaffPinStatusV203('warn', 'PIN personnel protégé : le collaborateur le change dans iCHEF Staff.');
+                return false;
+            }
+            // Le changement d'un code provisoire existant n'est jamais silencieux.
+            if (staff && !confirm('Remplacer le code provisoire de ce collaborateur ? Enregistrez ensuite sa fiche pour appliquer le nouveau code.')) return false;
+            try {
+                const generated = rhGenerateUniqueTemporaryPinV286(id);
+                input.value = generated;
+                setStaffPinStatusV203('ok', 'Code provisoire sécurisé généré · enregistrez la fiche pour l’activer.');
+                return true;
+            } catch (error) {
+                setStaffPinStatusV203('error', String(error?.message || 'Génération sécurisée impossible'));
+                return false;
+            }
+        }
+        window.generateStaffPinV286 = generateStaffPinV286;
+
         function openStaffModal(staffRef = null) {
             const ref = String(staffRef ?? '').trim();
             const directory = getDir();
@@ -7380,6 +7444,9 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                 document.getElementById('staff-name').value = s.name;
                 document.getElementById('staff-title').value = s.role || "";
                 document.getElementById('staff-pin').value = s.pin;
+                // L'édition de la fiche ne remplace jamais un code personnel actif.
+                const pinField = document.getElementById('staff-pin');
+                if (pinField) pinField.readOnly = true;
 
                 const staffEmailV241 =
                     document.getElementById('staff-email');
@@ -7432,7 +7499,18 @@ const urlParamsJS = new URLSearchParams(window.location.search);
             } else {
                 document.getElementById('staff-name').value = "";
                 document.getElementById('staff-title').value = "";
-                document.getElementById('staff-pin').value = "";
+                // Nouveau collaborateur : attribution automatique d'un code
+                // provisoire unique, sans appel à un service d'IA.
+                const pinField = document.getElementById('staff-pin');
+                if (pinField) {
+                    pinField.readOnly = true;
+                    try {
+                        pinField.value = rhGenerateUniqueTemporaryPinV286();
+                    } catch (error) {
+                        pinField.value = '';
+                        console.warn('[iCHEF RH] Génération sécurisée du code indisponible.');
+                    }
+                }
 
                 const staffEmailV241 =
                     document.getElementById('staff-email');
@@ -7483,6 +7561,29 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                     );
                 });
             }
+            // Une ancienne fiche non activée peut partager un code historique.
+            // Proposer automatiquement un code neuf pour ce seul ID, sans toucher
+            // aux codes personnels déjà activés sur le Portail Staff.
+            const pinInputV286 = document.getElementById('staff-pin');
+            const hasActivePersonalPinV286 = Boolean(s && (s.staffActivatedAt || s.pinUpdatedAt));
+            const existingPinV286 = String(s?.pin || '').trim();
+            const duplicateProvisionalV286 = Boolean(s && existingPinV286 && directory.some(row =>
+                String(row?.id ?? '') !== String(s.id ?? '') &&
+                String(row?.pin ?? '').trim() === existingPinV286
+            ));
+            if (s && !hasActivePersonalPinV286 && (duplicateProvisionalV286 || !/^\d{4,12}$/.test(existingPinV286))) {
+                try {
+                    pinInputV286.value = rhGenerateUniqueTemporaryPinV286(String(s.id ?? ''));
+                } catch (error) {
+                    console.warn('[iCHEF RH] Impossible de corriger un code provisoire dupliqué.');
+                }
+            }
+            if (pinInputV286) pinInputV286.readOnly = true;
+            const regenButtonV286 = document.getElementById('rh-v286-generate-pin');
+            if (regenButtonV286) {
+                regenButtonV286.hidden = hasActivePersonalPinV286;
+                regenButtonV286.disabled = hasActivePersonalPinV286;
+            }
             const editedStaffV242 = s;
 
             const staffPinOwnedByPortalV242 =
@@ -7494,14 +7595,16 @@ const urlParamsJS = new URLSearchParams(window.location.search);
             setStaffPinStatusV203(
                 staffPinOwnedByPortalV242
                     ? 'ok'
-                    : (pin ? 'neutral' : 'warn'),
+                    : (pinInputV286?.value ? 'neutral' : 'warn'),
 
                 staffPinOwnedByPortalV242
                     ? 'PIN personnel géré par iCHEF Staff · RH ne l’écrase plus'
                     : (
-                        pin
-                            ? 'PIN provisoire chargé · remplacé lors de la première activation Staff'
-                            : 'Créez un PIN provisoire de 4 à 12 chiffres'
+                        pinInputV286?.value
+                            ? (duplicateProvisionalV286
+                                ? 'Ancien code partagé remplacé pour ce collaborateur · enregistrer la fiche'
+                                : 'Code provisoire unique prêt · le collaborateur pourra choisir son PIN personnel')
+                            : 'Génération sécurisée indisponible · aucune fiche ne sera enregistrée sans code'
                     )
             );
             updateStaffGrossHourlyCost();
@@ -7701,12 +7804,30 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                 return false;
             }
             // Bloquer une saisie qui attribuerait un même PIN à deux comptes.
-            const duplicatePin = dir.find(s =>
+            let duplicatePin = dir.find(s =>
                 String(s.pin || '').trim() === pin &&
                 (!existing || String(s.id) !== String(existing.id))
             );
             if (duplicatePin) {
-                return alert(`Ce PIN est déjà attribué à ${duplicatePin.name || 'un autre collaborateur'}.`);
+                if (existing && (existing.staffActivatedAt || existing.pinUpdatedAt)) {
+                    // Aucun changement automatique d'un compte activé.
+                    return alert('Code personnel déjà partagé : le collaborateur doit changer son PIN depuis iCHEF Staff. Son compte actif ne sera pas remplacé dans RH.');
+                }
+                try {
+                    // Ne modifie que le dossier actuellement édité.
+                    pin = rhGenerateUniqueTemporaryPinV286(existing?.id || '');
+                    const input = document.getElementById('staff-pin');
+                    if (input) input.value = pin;
+                    setStaffPinStatusV203('warn', 'Ancien code en double : nouveau code provisoire attribué à cette fiche uniquement.');
+                } catch (error) {
+                    setStaffPinStatusV203('error', String(error?.message || 'Génération sécurisée indisponible'));
+                    return false;
+                }
+            }
+            if (dir.some(s => String(s.pin || '').trim() === pin &&
+                (!existing || String(s.id) !== String(existing.id)))) {
+                setStaffPinStatusV203('error', 'Code provisoire en conflit : aucune donnée enregistrée.');
+                return false;
             }
             let newStaff = {
                 ...(existing || {}),
@@ -17527,6 +17648,7 @@ window.__ICHEF_RH_CORE_BUILD__='RH-CORE-V252-13E-ANNUEL-MENSUEL';
   if (document.body) render();
   else document.addEventListener('DOMContentLoaded', render, { once:true });
 })();
+
 
 
 
