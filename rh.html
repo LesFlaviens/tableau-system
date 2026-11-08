@@ -1,6 +1,11 @@
 
 
 
+
+
+
+
+
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -120,6 +125,7 @@ html{background:#080a0d}body{margin:0;background:#080a0d;color:#f2f3f4;font:500 
 
 <!-- iCHEF RH — CORRECTIF VISUEL CIBLÉ DU MENU LATÉRAL (aucune modification JS/API) -->
 <meta id="ichef-rh-sidebar-contrast-fix-v253" data-rh-v264-style-externalized="true">
+<!-- RH V285 : édition d’une fiche uniquement par ID personnel, jamais par service. -->
 </head>
 <body>
 <div id="landing-portal" class="official-gateway">
@@ -864,6 +870,7 @@ html{background:#080a0d}body{margin:0;background:#080a0d;color:#f2f3f4;font:500 
 <button class="btn-outline" style="border:none;" onclick="closeModals()">FERMER</button>
 </div>
 <div class="staff-pro-form">
+<input type="hidden" id="staff-edit-original-id">
 <input type="hidden" id="staff-edit-original-pin">
 <input type="hidden" id="staff-leave-days" value="25">
 
@@ -2008,7 +2015,7 @@ html{background:#080a0d}body{margin:0;background:#080a0d;color:#f2f3f4;font:500 
 <!-- iCHEF RH V263 : le moteur RH complet est embarqué pour une restauration sûre. -->
 <!-- Socket.IO n'est pas nécessaire pour afficher le clavier PIN ni pour vérifier les droits HTTP. -->
 <script async src="https://cdn.socket.io/4.7.2/socket.io.min.js" id="ichef-rh-socket-client-v261"></script>
-<script id="ichef-rh-core-v261-integre" src="./rh-core.js?v=266"></script>
+<script id="ichef-rh-core-v261-integre" src="./rh-core.js?v=285"></script>
 <script id="ichef-rh-core-v261-diagnostic"></script>
 
 <!-- =========================================================
@@ -3074,7 +3081,7 @@ NOTE : le moteur fournit une assistance de conformité à partir du profil confi
 })();
 
 </script>
-<script id="ichef-rh-features-v266" src="./rh-modules.js?v=278"></script>
+<script id="ichef-rh-features-v266" src="./rh-modules.js?v=285"></script>
 
 <style id="ichef-rh-planning-integral-v279-style">
 /* V278 — Tableau de bord : un seul planning officiel visible dans la page.
@@ -3238,8 +3245,8 @@ NOTE : le moteur fournit une assistance de conformité à partir du profil confi
         return true;
       }
       // Dernière solution : ouvrir la vraie fiche RH déjà protégée par la session Direction.
-      if(typeof window.openStaffModal==='function' && staff.pin){
-        window.openStaffModal(staff.pin);
+      if(typeof window.openStaffModal==='function' && staff.id){
+        window.openStaffModal(staff.id);
         return true;
       }
       info('Ouverture de la fiche RH indisponible : rechargez le module RH.');
@@ -3382,6 +3389,8 @@ NOTE : le moteur fournit une assistance de conformité à partir du profil confi
  const refresh=modal.querySelector('#rh-v280-refresh');
  const close=modal.querySelector('#rh-v280-close');
  let rows=[],emailConfigured=true,busy=false,token='',tokenExpires=0,needsReview=false;
+ const SYNC_CHANNEL='ichef-staff-invitations-v1';
+ let syncChannel=null;
  function tenant(){return String((typeof tenantID_JS!=='undefined'?tenantID_JS:'')||'').trim();}
  function server(){return String((typeof SERVER_URL_JS!=='undefined'?SERVER_URL_JS:'https://tableau-system.onrender.com')).replace(/\/$/,'');}
  function device(){return String((typeof RH_DEVICE_ID!=='undefined'?RH_DEVICE_ID:localStorage.getItem('ichef_device_id'))||'').trim();}
@@ -3443,20 +3452,26 @@ NOTE : le moteur fournit une assistance de conformité à partir du profil confi
      box.append(person,state,send);list.append(box);
    }
  }
- async function load(){
-   if(busy)return;
-   busy=true;msg('Chargement sécurisé des collaborateurs…');render();
+ async function load({silent=false}={}){
+   if(busy||modal.hidden)return;
+   if(silent&&document.visibilityState==='hidden')return;
+   busy=true;
+   if(!silent){msg('Chargement sécurisé des collaborateurs…');render();}
    try{
      const d=await api('/api/staff/activation/admin/staff');
      rows=Array.isArray(d.staff)?d.staff:[];
      emailConfigured=d.activationEmailConfigured!==false;
-     if(needsReview){
-       msg('Un envoi précédent n’est pas confirmé. Vérifiez l’e-mail avant de relancer une invitation.','warning');
-     }else{
-       msg(emailConfigured?'Choisissez un collaborateur pour envoyer son invitation.':'Service e-mail du serveur non configuré.',emailConfigured?'':'error');
+     if(!silent){
+       if(needsReview){
+         msg('Un envoi précédent n’est pas confirmé. Vérifiez l’e-mail avant de relancer une invitation.','warning');
+       }else{
+         msg(emailConfigured?'Liste synchronisée avec Administration. Choisissez un collaborateur.':'Service e-mail du serveur non configuré.',emailConfigured?'':'error');
+       }
      }
-   }catch(e){rows=[];msg('Invitations indisponibles : '+e.message,'error');}
-   finally{busy=false;render();}
+   }catch(e){
+     // Sur un rafraîchissement silencieux, conserver la liste affichée si le réseau coupe.
+     if(!silent){rows=[];msg('Invitations indisponibles : '+e.message,'error');}
+   }finally{busy=false;render();}
  }
  async function sendInvitation(row){
    if(busy||needsReview||!row?.id||!row.emailReady||emailConfigured===false)return;
@@ -3470,11 +3485,16 @@ NOTE : le moteur fournit une assistance de conformité à partir du profil confi
      msg(sent.status==='ALREADY_SENT'
        ? '✓ Invitation déjà envoyée récemment à '+masked+'. Vérifiez la boîte e-mail avant un renvoi.'
        : '✓ Invitation envoyée à '+masked+'. Le message contient les boutons INSTALLER ICHEF STAFF et ACTIVER MON COMPTE.','success');
-     row.status='EN_ATTENTE';
+     // Statut confirmé exclusivement par le serveur commun RH/Admin.
+     announce();
    }catch(e){
      msg(e.message+' Si l’envoi est incertain, vérifiez la boîte e-mail avant de réessayer.','error');
      needsReview=e.status===503;
-   }finally{busy=false;render();}
+   }finally{
+     busy=false;render();
+     // Après tout envoi, relire l'état réel plutôt que forcer EN_ATTENTE localement.
+     if(!modal.hidden)void load({silent:true});
+   }
  }
  async function open(){
    if(!authorizedView()){
@@ -3488,6 +3508,28 @@ NOTE : le moteur fournit une assistance de conformité à partir du profil confi
    if(busy)return;
    modal.hidden=true;token='';tokenExpires=0;rows=[];needsReview=false;list.replaceChildren();msg('');
  }
+ // Les deux interfaces lisent la même API et le même établissement.
+ function announce(){
+   try{syncChannel?.postMessage({tenant:tenant(),type:'changed'});}catch(_){}
+ }
+ function liveRefresh(){
+   if(modal.hidden||busy||document.visibilityState==='hidden')return;
+   void load({silent:true});
+ }
+ try{
+   if('BroadcastChannel' in window){
+     syncChannel=new BroadcastChannel(SYNC_CHANNEL);
+     syncChannel.addEventListener('message',e=>{
+       if(e.data?.type==='changed' && e.data.tenant===tenant())liveRefresh();
+     });
+   }
+ }catch(_){syncChannel=null;}
+ // Le polling léger permet la synchronisation entre PC/téléphones distincts.
+ window.setInterval(liveRefresh,20000);
+ window.addEventListener('focus',liveRefresh);
+ document.addEventListener('visibilitychange',()=>{
+   if(document.visibilityState==='visible')liveRefresh();
+ });
  window.openRhStaffInvitesV280=open;
  refresh.addEventListener('click',()=>void load());
  search.addEventListener('input',render);
