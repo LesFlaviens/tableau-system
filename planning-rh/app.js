@@ -1,3 +1,13 @@
+
+
+
+
+
+
+
+
+
+
 /* V266: source fournie par le client, renommée en .js. */
 /* iCHEF OS Planning Premium PWA · client connecté au TIMESHEETS_MASTER.
    Aucune donnée RH n'est stockée en cache ni dans localStorage. */
@@ -34,6 +44,21 @@ const rhJump=(()=>{if(query.get('rhJump')!=='1')return null;
 // V279 : sélections locales en mémoire, aucune autorisation ni donnée RH conservée.
 const MULTI_DAY_LIMIT=12;
 let multiEnabled=false,multiStaffId=null,multiDates=new Set(),multiPointer=null,multiIgnoreClickUntil=0;
+// V280 · rafraîchissement différé des fiches RH : une mise à jour locale peut
+// précéder la confirmation de l'enregistrement serveur. On relit donc la source centrale.
+let rhDirectorySyncTimers=[];
+function scheduleRhDirectoryRefresh(delay=850){
+  if(!token)return;
+  for(const timer of rhDirectorySyncTimers)clearTimeout(timer);
+  rhDirectorySyncTimers=[];
+  const tryRefresh=()=>{
+    if(!token||document.hidden)return;
+    if(busy||selected||taskSelected){rhDirectorySyncTimers=[setTimeout(tryRefresh,2500)];return;}
+    lastFetch=0;void refresh(true);
+  };
+  rhDirectorySyncTimers=[setTimeout(tryRefresh,delay),setTimeout(tryRefresh,Math.max(delay+3000,5000))];
+}
+
 let pendingRhJump=rhJump;
 let anchor=rhJump?monday(new Date(rhJump.date+'T12:00:00')):monday(TODAY),view='week',filter='ALL',focusedStaffId=null,selected=null,staff=[],state={},actualMonths={},rhSettings={},publication=null,actor=null,tenant='',token='',device='',busy=false,readOnly=false,lastFetch=0;
 const premiumChannel=typeof BroadcastChannel!=='undefined'?new BroadcastChannel('ichef-planning-premium-events-v1'):null;
@@ -598,11 +623,15 @@ window.addEventListener('resize',queuePlanningFit,{passive:true});
 function render(){renderPersonBar();if(view==='week'){$('range').textContent=`${fmt(anchor,{day:'numeric',month:'short'})} – ${fmt(add(anchor,6),{day:'numeric',month:'short',year:'numeric'})}`;renderWeek();}else if(view==='day'){$('range').textContent=fmt(anchor,{weekday:'short',day:'numeric',month:'short',year:'numeric'});renderDay();}else{$('range').textContent=fmt(anchor,{month:'long',year:'numeric'});renderMonth();}renderStats();renderAdvice();multiPaint();queuePlanningFit();}
 function switchView(v){view=v;for(const which of ['day','week','month']){$('view-'+which).classList.toggle('active',which===v);$('view-'+which).setAttribute('aria-pressed',String(which===v));$(which+'-host').classList.toggle('hide',which!==v);}render();}
 function updateDepartments(){const select=$('department'),old=filter;select.innerHTML='<option value="ALL">Tous les services</option>';[...new Set(staff.map(s=>s.dept).filter(Boolean))].sort().forEach(d=>{const o=document.createElement('option');o.value=d;o.textContent=d;select.appendChild(o);});filter=old==='ALL'||staff.some(s=>s.dept===old)?old:'ALL';select.value=filter;}
-async function refresh(force=false){if(!token||busy)return;if(!force&&Date.now()-lastFetch<3500)return;busy=true;setStatus('Synchronisation sécurisée en cours…');try{const m=month(anchor);const res=await jsonFetch(`/api/rh/planning/premium/state?tenantID=${encodeURIComponent(tenant)}&month=${m}`,{headers:authHeaders()});staff=(res.staff||[]).map(p=>({...p,id:String(p.id),dept:String(p.dept||'Sans secteur'),avatar:String(p.name||'?').split(/\s+/).slice(0,2).map(z=>z[0]).join('').toUpperCase()}));state={...state,...(res.timesheets||{})};actualMonths[m]=readRealMonth(res,m);rhSettings=res.settings||{};
+async function refresh(force=false){if(!token||busy)return;if(!force&&Date.now()-lastFetch<3500)return;busy=true;setStatus('Synchronisation sécurisée en cours…');try{const m=month(anchor);const res=await jsonFetch(`/api/rh/planning/premium/state?tenantID=${encodeURIComponent(tenant)}&month=${m}`,{headers:authHeaders()});if(res.tenantID!==tenant||!Array.isArray(res.staff))throw Error('Réponse RH d’un autre établissement ou répertoire invalide.');
+const refreshedStaff=res.staff.map(p=>({...p,id:String(p.id),dept:String(p.dept||'Sans secteur'),avatar:String(p.name||'?').split(/\s+/).slice(0,2).map(z=>z[0]).join('').toUpperCase()}));
+if(refreshedStaff.some(p=>!p.id)||new Set(refreshedStaff.map(p=>p.id)).size!==refreshedStaff.length)throw Error('Identifiants collaborateurs RH invalides ou en doublon.');
+staff=refreshedStaff;
+if(focusedStaffId&&!staff.some(p=>p.id===focusedStaffId)&&!selected)focusedStaffId=null;state={...state,...(res.timesheets||{})};actualMonths[m]=readRealMonth(res,m);rhSettings=res.settings||{};
 publication=res.publication||null;readOnly=rhSettings.planningStatus==='locked';lastFetch=Date.now();
 $('publication-status').textContent=publication?.status==='published'?'✓ Mois publié':
   publication?.status==='to_review'?'⚠ Modifié après publication · à revalider':'Publication : en attente';
-updateDepartments();render();setStatus(`Synchronisé · ${tenant} · ${new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}${readOnly?' · planning verrouillé':''}`);
+updateDepartments();render();setStatus(`RH + Planning synchronisés · ${staff.length} collaborateurs actifs · ${new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}${readOnly?' · planning verrouillé':''}`);
 // V276 : cibler exactement le salarié et la date demandés depuis RH après la réponse serveur autorisée.
 if(pendingRhJump){const jump=pendingRhJump;pendingRhJump=null;
  if(jump.tenant===tenant){const match=staff.find(p=>String(p.id)===String(jump.staffId));
@@ -801,8 +830,17 @@ function returnToRh(){
 }
 $('return-rh').onclick=returnToRh;
 $('ai').onclick=$('ai-side').onclick=()=>toggleAdvice();$('ai-full').onclick=openFullAssistant;$('ai-advisor').addEventListener('toggle',()=>{const open=$('ai-advisor').open;$('ai').setAttribute('aria-expanded',String(open));$('ai-side').setAttribute('aria-expanded',String(open));if(open)renderAdvice();});$('print').onclick=()=>window.print();document.querySelectorAll('[data-inactive]').forEach(b=>b.onclick=()=>{const key=b.dataset.inactive;if(window.parent!==window&&query.get('rhEmbedded')==='1'){window.parent.postMessage({type:'ICHEF_PREMIUM_RETURN_RH',target:key},location.origin);return;}const page=key==='Pointeuse'?'/pointeuse.html':key==='Portail Staff'?'/portail-staff.html':'/rh.html';location.assign(page+'?tenantID='+encodeURIComponent(tenant));});if(premiumChannel)premiumChannel.onmessage=e=>{
-  if(e?.data?.type==='PLANNING_CHANGED'&&e.data.tenant===tenant&&!selected){lastFetch=0;void refresh(true);}
+  const msg=e?.data;
+  if(!msg||msg.tenant!==tenant)return;
+  if(msg.type==='PLANNING_CHANGED'&&!selected&&!taskSelected){lastFetch=0;void refresh(true);}
+  if(msg.type==='STAFF_DIRECTORY_CHANGED')scheduleRhDirectoryRefresh(1300);
 };
+window.addEventListener('storage',e=>{
+  // Une modification RH dans un autre onglet est un signal, pas une source de données.
+  if(e.key==='empire_hr_directory'||e.key==='EMPIRE_GLOBAL_SYNC')scheduleRhDirectoryRefresh(1600);
+});
+window.addEventListener('focus',()=>{if(token&&!selected&&!taskSelected){lastFetch=0;void refresh(true);}});
+window.addEventListener('online',()=>{if(token&&!selected&&!taskSelected)scheduleRhDirectoryRefresh(450);});
 let rhEmbeddedPaused=false;
 async function resumeFromRh(){
   rhEmbeddedPaused=false;
@@ -824,11 +862,13 @@ window.addEventListener('message',e=>{
     rhEmbeddedPaused=true;forget();showAuth('Session RH fermée.');
   }
 });
-document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!rhEmbeddedPaused&&!selected)refresh(true);});
-setInterval(()=>{if(!document.hidden&&!rhEmbeddedPaused&&!selected)refresh(true);},30000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!rhEmbeddedPaused&&!selected&&!taskSelected)refresh(true);});
+// Les appareils différents relisent le même serveur toutes les 15 secondes lorsque le planning est visible.
+setInterval(()=>{if(!document.hidden&&!rhEmbeddedPaused&&!selected&&!taskSelected)refresh(true);},15000);
 if('serviceWorker' in navigator&&location.protocol==='https:'){navigator.serviceWorker.register('./sw.js',{scope:'./'}).catch(e=>console.warn('PWA non installée',e));}
 render();restoreAuth();
 })();
+
 
 
 
