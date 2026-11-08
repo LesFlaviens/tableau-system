@@ -1,4 +1,12 @@
-/* iCHEF RH V266 - rh-core.js, moteur d'origine complet + garde de diagnostic. */
+
+
+
+
+
+
+
+
+/* iCHEF RH V285 - garde d'identité par ID collaborateur; fonctions de sécurité inchangées. */
 
 ;
 /* RH V264 - preserved script #4 */
@@ -428,18 +436,35 @@ const urlParamsJS = new URLSearchParams(window.location.search);
             return remote.map((s, index) => {
                 const pin = String(s?.pin || '').trim();
                 const name = String(s?.name || '').trim();
-                const existing = local.find(d =>
-                    (pin && String(d?.pin || '').trim() === pin) ||
-                    (
-                        name &&
-                        String(d?.name || '').trim().toLowerCase() === name.toLowerCase()
-                    ) ||
-                    (
-                        s?.id !== undefined &&
-                        s?.id !== null &&
-                        String(d?.id ?? '') === String(s.id)
-                    )
-                );
+                // V285 : l'identité d'une personne est son ID unique, jamais
+                // son service, son nom ou son PIN (potentiellement partagé).
+                // S'il n'existe pas d'ID historique, une correspondance par
+                // PIN est acceptée uniquement si elle est UNIQUE, avec même nom,
+                // et que la ligne ne peut pas appartenir à une autre personne.
+                const sid = s?.id === undefined || s?.id === null
+                    ? '' : String(s.id).trim();
+                let existing = null;
+                if (sid) {
+                    const idMatches = local.filter(d =>
+                        d && String(d.id ?? '').trim() === sid
+                    );
+                    if (idMatches.length === 1) existing = idMatches[0];
+                    if (idMatches.length > 1) {
+                        console.warn('[iCHEF RH V285] ID collaborateur en doublon : fusion locale ignorée.');
+                    }
+                } else if (pin && name) {
+                    const pinMatches = local.filter(d =>
+                        d && String(d.pin ?? '').trim() === pin
+                    );
+                    const remotePinMatches = remote.filter(d =>
+                        d && String(d.pin ?? '').trim() === pin
+                    );
+                    if (pinMatches.length === 1 && remotePinMatches.length === 1 &&
+                        String(pinMatches[0].name ?? '').trim().toLocaleLowerCase('fr') ===
+                        name.toLocaleLowerCase('fr')) {
+                        existing = pinMatches[0];
+                    }
+                }
 
                 const email =
                     rhContactEmailFromRecordV241(
@@ -7188,14 +7213,20 @@ const urlParamsJS = new URLSearchParams(window.location.search);
             return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
         }
         function getEditingStaffForSalary() {
-            const originalPin = String(document.getElementById('staff-edit-original-pin')?.value || '').trim();
-            if (!originalPin) return null;
             try {
-                return getDir().find(staff => String(staff.pin || '') === originalPin) || null;
-            } catch (_) {
-                return null;
-            }
+                const id = String(document.getElementById('staff-edit-original-id')?.value || '').trim();
+                const dir = getDir();
+                if (id) {
+                    const matches = dir.filter(staff => String(staff.id ?? '') === id);
+                    return matches.length === 1 ? matches[0] : null;
+                }
+                const pin = String(document.getElementById('staff-edit-original-pin')?.value || '').trim();
+                if (!pin) return null;
+                const matches = dir.filter(staff => String(staff.pin ?? '') === pin);
+                return matches.length === 1 ? matches[0] : null;
+            } catch (_) { return null; }
         }
+
         function toggleStaffSalaryInfo(event) {
             event?.preventDefault?.();
             event?.stopPropagation?.();
@@ -7325,13 +7356,27 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                 updateStaffProfessionalLegalUIV193(document.getElementById('staff-edit-original-pin')?.value || null);
             }
         }, true);
-        function openStaffModal(pin = null) {
-            document.getElementById('staff-edit-original-pin').value = pin || "";
+        function openStaffModal(staffRef = null) {
+            const ref = String(staffRef ?? '').trim();
+            const directory = getDir();
+            let s = null;
+            if (ref) {
+                const byId = directory.filter(x => String(x?.id ?? '').trim() === ref);
+                const byPin = directory.filter(x => String(x?.pin ?? '').trim() === ref);
+                if (byId.length === 1) s = byId[0];
+                else if (byId.length > 1 || byPin.length !== 1) {
+                    alert('Identité collaborateur ambiguë : édition bloquée. Vérifiez les IDs et les accès individuels avant toute modification.');
+                    return false;
+                } else s = byPin[0];
+            }
+            const pin = s ? String(s.pin || '') : '';
+            const originalId = document.getElementById('staff-edit-original-id');
+            if (originalId) originalId.value = s ? String(s.id ?? '') : '';
+            document.getElementById('staff-edit-original-pin').value = pin;
             const salaryInfoPanel = document.getElementById('staff-salary-info');
             if (salaryInfoPanel) salaryInfoPanel.style.display = 'none';
             document.querySelectorAll('.staff-salary-info-btn').forEach(btn => btn.setAttribute('aria-expanded', 'false'));
-            if (pin) {
-                let s = getDir().find(x => x.pin === pin);
+            if (s) {
                 document.getElementById('staff-name').value = s.name;
                 document.getElementById('staff-title').value = s.role || "";
                 document.getElementById('staff-pin').value = s.pin;
@@ -7438,14 +7483,7 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                     );
                 });
             }
-            const editedStaffV242 =
-                pin
-                    ? getDir().find(
-                        item =>
-                            String(item?.pin || '') ===
-                            String(pin)
-                    )
-                    : null;
+            const editedStaffV242 = s;
 
             const staffPinOwnedByPortalV242 =
                 Boolean(
@@ -7640,7 +7678,29 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                 return alert("Vérifiez les informations obligatoires du contrat, le PIN, les heures contractuelles et les compteurs RH.");
             }
             let dir = getDir();
-            const existing = origPin ? dir.find(s => String(s.pin || '') === String(origPin)) : null;
+            // Protection AVANT tout journal ou enregistrement : ne jamais
+            // propager un répertoire contenant plusieurs personnes sous un même ID.
+            if (new Set(dir.map(s => String(s?.id ?? '').trim())).size !== dir.length ||
+                dir.some(s => !String(s?.id ?? '').trim())) {
+                alert('IDs collaborateurs dupliqués ou manquants. Édition arrêtée pour protéger les autres fiches.');
+                return false;
+            }
+            const origId = String(document.getElementById('staff-edit-original-id')?.value || '').trim();
+            const identityMatches = origId
+                ? dir.filter(s => String(s.id ?? '').trim() === origId)
+                : (origPin ? dir.filter(s => String(s.pin ?? '').trim() === String(origPin)) : []);
+            if ((origId || origPin) && identityMatches.length !== 1) {
+                alert('Impossible de modifier : identité introuvable ou ambiguë. Aucune fiche n’a été enregistrée.');
+                return false;
+            }
+            const existing = identityMatches.length === 1 ? identityMatches[0] : null;
+            // Ne jamais altérer le PIN personnel déjà activé dans Staff.
+            if (existing && (existing.staffActivatedAt || existing.pinUpdatedAt) &&
+                pin !== String(existing.pin ?? '')) {
+                alert('PIN personnel géré par iCHEF Staff : la fiche RH ne peut pas le remplacer.');
+                return false;
+            }
+            // Bloquer une saisie qui attribuerait un même PIN à deux comptes.
             const duplicatePin = dir.find(s =>
                 String(s.pin || '').trim() === pin &&
                 (!existing || String(s.id) !== String(existing.id))
@@ -7649,6 +7709,7 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                 return alert(`Ce PIN est déjà attribué à ${duplicatePin.name || 'un autre collaborateur'}.`);
             }
             let newStaff = {
+                ...(existing || {}),
                 id: existing?.id || `staff_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
                 name,
                 pin,
@@ -7735,6 +7796,8 @@ const urlParamsJS = new URLSearchParams(window.location.search);
             }
             syncStaffGrossSalaryToPayrollProfile(newStaff);
             document.getElementById('staff-edit-original-pin').value = pin;
+            const savedId = document.getElementById('staff-edit-original-id');
+            if (savedId) savedId.value = String(newStaff.id);
             const ok = await persistRhStaffDirectory(dir, existing ? 'Collaborateur synchronisé' : 'Collaborateur créé et synchronisé');
             if (!ok) {
                 // Ne pas fermer : sinon l'utilisateur croit que le PIN est
@@ -7815,16 +7878,20 @@ const urlParamsJS = new URLSearchParams(window.location.search);
         window.saveStaff = saveStaff;
 
         async function deleteStaff() {
-            const origPin = document.getElementById('staff-edit-original-pin').value;
-            if (!origPin) return closeModals();
-            if (!confirm("SUPPRESSION DÉFINITIVE : Supprimer cet employé ?")) return;
+            const origId = String(document.getElementById('staff-edit-original-id')?.value || '').trim();
+            const origPin = String(document.getElementById('staff-edit-original-pin')?.value || '').trim();
+            if (!origId && !origPin) return closeModals();
             const before = getDir();
-            const removed = before.find(s => String(s.pin || '') === String(origPin));
-            const dir = before.filter(s => String(s.pin || '') !== String(origPin));
-            if (!removed) {
-                closeModals();
-                return alert("Collaborateur introuvable.");
+            const matches = origId
+                ? before.filter(s => String(s.id ?? '') === origId)
+                : before.filter(s => String(s.pin ?? '') === origPin);
+            if (matches.length !== 1) {
+                alert('Suppression interdite : identité collaborateur ambiguë ou introuvable.');
+                return false;
             }
+            const removed = matches[0];
+            if (!confirm('SUPPRESSION DÉFINITIVE : supprimer uniquement ce collaborateur ?')) return;
+            const dir = before.filter(s => String(s.id ?? '') !== String(removed.id ?? ''));
             if (currentStaffId && String(currentStaffId) === String(removed.id)) {
                 currentStaffId = null;
                 isGlobalView = true;
@@ -13994,7 +14061,7 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                     if (action === 'planning') {
                         selectStaff(staff.id);
                     } else if (action === 'edit') {
-                        openStaffModal(staff.pin);
+                        openStaffModal(staff.id);
                     } else if (action === 'documents') {
                         window.openStaffDocumentsV103?.(staff.id);
                     } else if (action === 'toggle') {
@@ -14485,7 +14552,7 @@ const urlParamsJS = new URLSearchParams(window.location.search);
             document.getElementById('staff-detail-edit-btn').onclick =
                 () => {
                     closeModals();
-                    openStaffModal(staff.pin);
+                    openStaffModal(staff.id);
                 };
             const modal =
                 document.getElementById('staff-detail-modal');
@@ -17460,4 +17527,7 @@ window.__ICHEF_RH_CORE_BUILD__='RH-CORE-V252-13E-ANNUEL-MENSUEL';
   if (document.body) render();
   else document.addEventListener('DOMContentLoaded', render, { once:true });
 })();
+
+
+
 
