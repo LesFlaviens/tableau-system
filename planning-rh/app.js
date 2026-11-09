@@ -6,6 +6,9 @@
 
 
 
+
+
+
 /* V266: source fournie par le client, renommée en .js. */
 /* iCHEF OS Planning Premium PWA · client connecté au TIMESHEETS_MASTER.
    Aucune donnée RH n'est stockée en cache ni dans localStorage. */
@@ -933,7 +936,24 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!rhEmbedd
 // Les appareils différents relisent le même serveur toutes les 15 secondes lorsque le planning est visible.
 setInterval(()=>{if(!document.hidden&&!rhEmbeddedPaused&&!selected&&!taskSelected)refresh(true);},15000);
 if('serviceWorker' in navigator&&location.protocol==='https:'){navigator.serviceWorker.register('./sw.js',{scope:'./'}).catch(e=>console.warn('PWA non installée',e));}
-render();restoreAuth();
+// V283 : le démarrage RH -> Planning doit toujours aboutir à l'affichage du
+// planning autorisé ou à une erreur explicite, jamais à une attente infinie.
+window.__ichefPlanningBootedV283 = true;
+async function startPlanningV283(){
+  try { render(); }
+  catch(error){ console.error('[iCHEF Planning V283] Rendu initial indisponible :',error); }
+  try { await restoreAuth(); }
+  catch(error){
+    console.error('[iCHEF Planning V283] Restauration de session indisponible :',error);
+    // Ne jamais créer une session de secours ou ignorer l'API officielle.
+    const shield=$('login-shield'),message=$('rh-handoff-message');
+    if(shield)shield.classList.remove('hide');
+    if(message&&query.get('fromRh')==='1')
+      message.textContent='Impossible de vérifier votre session RH. Revenez dans RH et ouvrez à nouveau le planning.';
+    const loginError=$('login-error');if(loginError)loginError.textContent='Session non vérifiée.';
+  }
+}
+void startPlanningV283();
 })();
 
 
