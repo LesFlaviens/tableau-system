@@ -1,3 +1,14 @@
+
+
+
+
+
+
+
+
+
+
+
 // iCHEF SERVER V297 — diagnostic sécurisé des e-mails PIN oublié; sécurité V296 conservée.
 // iCHEF SERVER V296 — 3 demandes PIN oublié/jour par collaborateur, 4e via Direction uniquement.
 // iCHEF SERVER V295 — connexion Staff limitée à son établissement et à son identité RH
@@ -35543,6 +35554,57 @@ function ichefPremiumRhValidateDay(raw) {
     if(!['present','off_soir','off_matin'].includes(status)&&(s1||s2))return {ok:false,error:'Une absence ne doit pas comporter d’horaires.'};
     return {ok:true,day:{status,s1,s2,pause,obs:String(raw.obs||'').slice(0,500)}};
 }
+
+// V299 : règles de délai CCNT/HCR configurables par un responsable RH autorisé.
+// Assistance à la vérification, aucune dérogation décidée automatiquement.
+const ICHEF_PREMIUM_LEGAL_RULES_V299=Object.freeze({
+ CH_CCNT_YEAR:{publicationDays:14,modificationDays:14,zone:'Europe/Zurich'},
+ CH_CCNT_SEASON:{publicationDays:7,modificationDays:7,zone:'Europe/Zurich'},
+ FR_HCR_AMEN19:{publicationDays:15,modificationDays:8,zone:'Europe/Paris'},
+ FR_HCR_PART_TIME:{publicationDays:null,modificationDays:7,zone:'Europe/Paris'},
+ FR_HCR_OTHER:{publicationDays:null,modificationDays:null,zone:'Europe/Paris'}
+});
+function ichefPremiumLegalPolicyV299(orders){
+ const p=ichefPlanningNodeData(orders,'RH_SETTINGS',{})?.legalPlanning;
+ return p && typeof p==='object' && ICHEF_PREMIUM_LEGAL_RULES_V299[p.code] ? p : null;
+}
+function ichefPremiumLegalDaysV299(dateStr,code,now=new Date()){
+ const rule=ICHEF_PREMIUM_LEGAL_RULES_V299[code];if(!rule)return null;
+ const pieces=Object.fromEntries(new Intl.DateTimeFormat('en-GB',{timeZone:rule.zone,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(now).filter(x=>x.type!=='literal').map(x=>[x.type,x.value]));
+ const today=`${pieces.year}-${pieces.month}-${pieces.day}`;
+ return Math.round((Date.parse(dateStr+'T00:00:00Z')-Date.parse(today+'T00:00:00Z'))/86400000);
+}
+function ichefPremiumLegalReviewV299(raw,code,kind,dateStr){
+ const policy=ICHEF_PREMIUM_LEGAL_RULES_V299[code];
+ if(!policy)return {status:'not_configured',code:null,kind};
+ const limit=kind==='publication'?policy.publicationDays:policy.modificationDays;
+ const lead=dateStr?ichefPremiumLegalDaysV299(dateStr,code):null;
+ const alert=limit===null?'manual':(lead!==null && lead<limit?'late':'normal');
+ const review=raw && typeof raw==='object' && !Array.isArray(raw)?raw:{};
+ const validBasis=new Set(['normal','manual_review','to_verify','agreed','urgent','compensation']);
+ const confirmed=review.acknowledged===true && String(review.code||'')===code;
+ const details=String(review.justification||'').trim().slice(0,240);
+ return {status:confirmed?'review_recorded':'review_missing',code,kind,ruleDays:limit,leadDays:lead,alert,
+   acknowledged:confirmed,basis:validBasis.has(review.basis)?review.basis:'to_verify',justification:confirmed?details:'',reviewedAt:new Date().toISOString()};
+}
+app.post('/api/rh/planning/premium/legal-policy',async(req,res)=>{
+ res.setHeader('Cache-Control','no-store, private');
+ try{
+   const auth=await ichefLoadRhPlanningManagerSession(req);
+   if(!auth.ok)return res.status(401).json({success:false,error:auth.error});
+   const code=String(req.body?.code||'');
+   if(!Object.prototype.hasOwnProperty.call(ICHEF_PREMIUM_LEGAL_RULES_V299,code))return res.status(400).json({success:false,error:'Régime juridique invalide.'});
+   const now=new Date().toISOString(),by=String(auth.claims?.actorName||'Direction/RH').slice(0,120);
+   const legalPlanning={code,updatedAt:now,updatedBy:by};
+   const result=await AppState.updateOne({tenantID:auth.tenantID},{$set:{
+     'activeOrders.RH_SETTINGS.data.legalPlanning':legalPlanning,
+     'activeOrders.RH_SETTINGS.updatedAt':now
+   }});
+   if(result.matchedCount!==1)return res.status(404).json({success:false,error:'Établissement introuvable.'});
+   return res.json({success:true,legalPlanning});
+ }catch(e){console.error('[PLANNING LEGAL POLICY]',e);return res.status(500).json({success:false,error:'Enregistrement juridique indisponible.'});}
+});
+
 app.get('/api/rh/planning/premium/state', async(req,res)=>{
     res.setHeader('Cache-Control','no-store, private');
     try {
@@ -35561,7 +35623,7 @@ app.get('/api/rh/planning/premium/state', async(req,res)=>{
         const timesheets={};for(const mm of months)timesheets[mm]=ichefPlanningPlainObject(all?.[mm]);
         const publication = ichefPlanningNodeData(order,'PLANNING_PUBLICATIONS_MASTER',{})?.[input] || null;
         return res.json({success:true,tenantID:auth.tenantID,staff:ichefPremiumRhStaffList(row),
-            settings:{planningStatus:String(ichefPlanningNodeData(order,'RH_SETTINGS',{})?.planningStatus||'draft')},
+            settings:{planningStatus:String(ichefPlanningNodeData(order,'RH_SETTINGS',{})?.planningStatus||'draft'),legalPlanning:ichefPremiumLegalPolicyV299(order)},
             publication, months,timesheets,serverTime:new Date().toISOString()});
     }catch(e){console.error('[PLANNING PREMIUM READ]',e);return res.status(500).json({success:false,error:'Lecture sécurisée du planning indisponible.'});}
 });
@@ -35595,6 +35657,8 @@ app.post('/api/rh/planning/premium/day', async(req,res)=>{
             return res.status(409).json({success:false,code:'PLANNING_CONFLICT',error:'Le planning a été modifié ailleurs. Rechargez avant de réessayer.'});
         const settings=ichefPlanningNodeData(orders,'RH_SETTINGS',{});
         const window=ichefPlanningChangeWindow(d,before,valid.day,settings);
+        const legalPolicy=ichefPremiumLegalPolicyV299(orders);
+        const legalReview=ichefPremiumLegalReviewV299(req.body?.legalReview,legalPolicy?.code,'modification',d);
         const now=new Date(),actor=String(auth.claims?.actorName||'Direction / RH').slice(0,120);
         const id=`pv_${Date.now().toString(36)}_${nodeCrypto.randomBytes(7).toString('hex')}`;
         const after=valid.day===null?null:{
@@ -35605,7 +35669,7 @@ app.post('/api/rh/planning/premium/day', async(req,res)=>{
             planningChangeKind:window.kind,planningUrgent:window.urgent===true
         };
         const version={id,tenantID:auth.tenantID,staffId:sid,staffName:employee.name,date:d,month:mm,day:Number(dy),createdAt:now,
-            by:actor,source:'PLANNING_PREMIUM_PWA',reason:motive,changeKind:window.kind,urgent:window.urgent===true,
+            by:actor,source:'PLANNING_PREMIUM_PWA',reason:motive,changeKind:window.kind,urgent:window.urgent===true,legalReview,
             original:ichefPlanningClone(before||{}),before:ichefPlanningClone(before||{}),after:ichefPlanningClone(after||{})};
         const notification={id:`pn_${id}`,versionId:id,staffId:sid,staffName:employee.name,date:d,createdAt:now,by:actor,
             source:'PLANNING_PREMIUM_PWA',reason:motive,changeKind:window.kind,urgent:window.urgent===true,
@@ -35666,8 +35730,26 @@ app.post('/api/rh/planning/premium/publish', async(req,res)=>{
       error:'Planning vide : aucun service à publier pour ce mois.'});
     const now=new Date().toISOString();
     const actor=String(auth.claims?.actorName||'Direction / RH').slice(0,120);
+    const legalPolicy=ichefPremiumLegalPolicyV299(orders);
+    const legalCode=legalPolicy?.code||null;
+    const legalLimit=legalCode?ICHEF_PREMIUM_LEGAL_RULES_V299[legalCode].publicationDays:null;
+    let lateDayCount=0,checkedFutureDays=0;
+    for(const days of Object.values(monthly))for(const [key,day] of Object.entries(ichefPlanningPlainObject(days))){
+      if(!ichefPlanningDayHasContent(day)||!/^\d{1,2}$/.test(key))continue;
+      const dayNum=Number(key),dateStr=mm+'-'+String(dayNum).padStart(2,'0');
+      const checkDate=new Date(dateStr+'T00:00:00Z');
+      if(Number.isNaN(+checkDate)||checkDate.toISOString().slice(0,10)!==dateStr)continue;
+      const lead=ichefPremiumLegalDaysV299(dateStr,legalCode);
+      if(lead===null||lead<0)continue;
+      checkedFutureDays++;
+      if(legalLimit!==null&&lead<legalLimit)lateDayCount++;
+    }
+    const legalReview=ichefPremiumLegalReviewV299(req.body?.legalReview,legalCode,'publication',null);
+    legalReview.alert=legalCode?(legalLimit===null?'manual':lateDayCount?'late':'normal'):'not_configured';
+    legalReview.reviewedFutureDays=checkedFutureDays;
+    legalReview.lateDayCount=lateDayCount;
     const pub={month:mm,status:'published',publishedAt:now,publishedBy:actor,
-      plannedDays:totalDays,source:'PLANNING_PREMIUM_PWA'};
+      plannedDays:totalDays,source:'PLANNING_PREMIUM_PWA',legalReview};
     // Mise à jour partielle : ne réécrit ni les horaires ni les réglages RH existants.
     // CAS : le mois ne doit pas avoir changé entre la vérification et la publication.
     const oldMaster=orders.TIMESHEETS_MASTER||{};
@@ -38367,3 +38449,7 @@ console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
 console.log('==========================================');
 }
 );
+
+
+
+
