@@ -8,11 +8,8 @@
 
 
 
-
-
-
-
-/* iCHEF Planning V284 : gestes tactiles; connexion RH et API inchangées. */
+/* iCHEF Planning V285 : sélection de cases libres, plusieurs collaborateurs,
+    validation groupée et synchronisation via les API RH existantes. */
 /* V266: source fournie par le client, renommée en .js. */
 /* iCHEF OS Planning Premium PWA · client connecté au TIMESHEETS_MASTER.
    Aucune donnée RH n'est stockée en cache ni dans localStorage. */
@@ -46,9 +43,14 @@ const rhJump=(()=>{if(query.get('rhJump')!=='1')return null;
     }
   }catch(_){}return null;
 })();
-// V279 : sélections locales en mémoire, aucune autorisation ni donnée RH conservée.
-const MULTI_DAY_LIMIT=12;
-let multiEnabled=false,multiStaffId=null,multiDates=new Set(),multiPointer=null,multiIgnoreClickUntil=0;
+// V285 : les couples (collaborateur, date) sont uniques. Pas de PIN, de données RH
+// sensibles ni de sélection persistés. Limite de sécurité contre l'envoi massif.
+const MULTI_CELL_LIMIT=200;
+let multiEnabled=false,multiStaffId=null,multiCells=new Map(),multiPointer=null,multiIgnoreClickUntil=0;
+const multiKey=(person,date)=>JSON.stringify([String(person),String(date)]);
+const multiHas=(person,date)=>multiCells.has(multiKey(person,date));
+const multiPeople=()=>new Set([...multiCells.values()].map(x=>x.person));
+const multiSelected=()=>[...multiCells.values()].sort((a,b)=>a.date.localeCompare(b.date)||a.person.localeCompare(b.person));
 // V280 · rafraîchissement différé des fiches RH : une mise à jour locale peut
 // précéder la confirmation de l'enregistrement serveur. On relit donc la source centrale.
 let rhDirectorySyncTimers=[];
@@ -81,7 +83,7 @@ function showAuth(error=''){
  if(query.get('controlRoom')==='1'&&window.parent!==window){
   try{window.parent.postMessage({type:'ICHEF_PREMIUM_CONTROL_AUTH_REQUIRED',tenant},location.origin);}catch(_){}
  }
- multiEnabled=false;multiDates.clear();multiStaffId=null;if($('ai-advisor'))$('ai-advisor').open=false;if(taskSelected)closeTaskModal();token='';actor=null;focusedStaffId=null;staff=[];state={};actualMonths={};publication=null;render();$('login-shield').classList.remove('hide');$('login-error').textContent=error;setStatus('Connexion requise',true);}
+ multiEnabled=false;multiCells.clear();multiStaffId=null;if($('ai-advisor'))$('ai-advisor').open=false;if(taskSelected)closeTaskModal();token='';actor=null;focusedStaffId=null;staff=[];state={};actualMonths={};publication=null;render();$('login-shield').classList.remove('hide');$('login-error').textContent=error;setStatus('Connexion requise',true);}
 function authKey(){return 'ichef_planning_premium_auth_v1';}
 function forget(){try{sessionStorage.removeItem(authKey());}catch{}}
 function authHeaders(){return {'Accept':'application/json','Authorization':`Bearer ${token}`,'X-iCHEF-Tenant':tenant,'X-iCHEF-Device':device};}
@@ -253,7 +255,8 @@ function shiftMarkup(r){
  return `<span class="entry-label">${heading}</span>${segments.map(x=>`<span class="entry-time">${esc(x)}</span>`).join('')}`;
 }
 function openEmployee(staffId){
- if(multiEnabled&&multiStaffId&&String(multiStaffId)!==String(staffId))multiClear({all:true});
+ // La sélection V285 peut couvrir plusieurs collaborateurs, y compris si
+ // l'utilisateur consulte entre-temps une fiche individuelle.
  if(multiEnabled)multiStaffId=String(staffId);
  const p=staff.find(x=>String(x.id)===String(staffId));
  if(!p)return;
@@ -291,83 +294,97 @@ function multiValidDate(value){
  if(!/^\d{4}-\d{2}-\d{2}$/.test(String(value||'')))return false;
  const d=new Date(value+'T12:00:00');return Number.isFinite(+d)&&iso(d)===value;
 }
-function multiName(){return staff.find(p=>String(p.id)===String(multiStaffId))?.name||'Collaborateur';}
+function multiName(){
+ const ids=multiPeople();
+ if(ids.size===1){const id=[...ids][0];return staff.find(p=>String(p.id)===id)?.name||'Collaborateur';}
+ return `${ids.size} collaborateurs`;
+}
 function multiUpdateToolbar(){
  const bar=$('multi-days-toolbar');if(!bar)return;
  bar.classList.toggle('is-active',multiEnabled);
  $('multi-mode').setAttribute('aria-pressed',String(multiEnabled));
- $('multi-mode').textContent=multiEnabled?'✓ Sélection de jours active':'☝ Sélectionner plusieurs jours';
- const n=multiDates.size;
+ $('multi-mode').textContent=multiEnabled?'✓ Sélection libre active':'☝ Sélectionner des cases';
+ const n=multiCells.size,np=multiPeople().size;
  $('multi-counter').textContent=multiEnabled
-  ? `${multiStaffId?multiName()+' · ': 'Choisissez une ligne · '}${n}/12 jours · toucher ou glisser`
-  : '1 toucher : modifier · glisser horizontalement : choisir plusieurs jours';
+  ? `${n} case${n>1?'s':''} choisie${n>1?'s':''} · ${np} collaborateur${np>1?'s':''} · toucher / glisser (max. ${MULTI_CELL_LIMIT})`
+  : 'Touchez une case pour modifier · activez la sélection pour choisir des cases libres';
  bar.classList.toggle('has-selection',multiEnabled&&n>0);
- $('multi-apply').disabled=!multiEnabled||readOnly||busy||!multiStaffId||!n;
- $('multi-apply').textContent=n?`Modifier ${n} jour${n>1?'s':''}`:'Modifier les jours';
+ $('multi-apply').disabled=!multiEnabled||readOnly||busy||!n;
+ $('multi-apply').textContent=n?`Modifier ${n} case${n>1?'s':''}`:'Modifier les cases';
  document.querySelectorAll('[data-multi-preset]').forEach(b=>{b.disabled=!multiEnabled||!n||readOnly||busy;});
  $('multi-range').disabled=!multiEnabled||readOnly||busy;
+ const all=$('multi-all-visible');if(all){all.disabled=!multiEnabled||readOnly||busy||!token||view==='month'&&!focusedStaffId;all.title=view==='month'&&!focusedStaffId?'Choisissez la vue Semaine ou un collaborateur en vue Mois.':'Ajouter toutes les cases affichées, sans effacer la sélection précédente.';}
  $('multi-mode').disabled=readOnly||busy;
 }
 function multiPaint(){
  document.querySelectorAll('.entry[data-person][data-date],.monthday[data-edit-person][data-edit-date],.day-shift[data-edit-person][data-edit-date]').forEach(el=>{
   const person=el.dataset.person||el.dataset.editPerson;
   const date=el.dataset.date||el.dataset.editDate;
-  const on=multiEnabled&&String(person)===String(multiStaffId)&&multiDates.has(date);
+  const on=multiEnabled&&multiHas(person,date);
   el.classList.toggle('is-multi-selected',on);
   if(multiEnabled)el.setAttribute('aria-pressed',String(on));else el.removeAttribute('aria-pressed');
  });
  multiUpdateToolbar();
 }
-function multiClear({all=false}={}){multiDates.clear();if(all)multiStaffId=null;multiPaint();}
+function multiClear({all=false}={}){multiCells.clear();if(all)multiStaffId=null;multiPaint();}
 function multiEnable(force){
- if(!token||readOnly)return notify('Connectez-vous avec les droits RH pour modifier le planning.');
+ if(!token||readOnly)return notify('Connexion RH autorisée requise pour modifier le planning.');
  multiEnabled=typeof force==='boolean'?force:!multiEnabled;
- if(!multiEnabled){multiClear({all:true});}else if(focusedStaffId){multiStaffId=focusedStaffId;}
+ if(!multiEnabled)multiClear({all:true});
+ else if(focusedStaffId)multiStaffId=focusedStaffId;
  multiPaint();
- if(multiEnabled)notify('Touchez ou glissez sur les jours du même collaborateur, puis choisissez Matin, Soir, Repos…');
+ if(multiEnabled)notify('Sélection libre : touchez les cases souhaitées, même sur plusieurs lignes ou semaines.');
 }
 function multiSelectDate(person,date,forcedAdd=false){
  if(!multiEnabled||!token||readOnly||busy||!multiValidDate(date))return;
  if(!staff.some(s=>String(s.id)===String(person)))return;
- if(multiStaffId&&String(multiStaffId)!==String(person)){
-   // Protection contre une édition accidentelle de plusieurs salariés.
-   multiDates.clear();notify('Nouvelle sélection pour ce collaborateur uniquement.');
- }
+ const key=multiKey(person,date);
  multiStaffId=String(person);
- if(multiDates.has(date)){if(!forcedAdd)multiDates.delete(date);}
- else if(multiDates.size<MULTI_DAY_LIMIT)multiDates.add(date);
- else {notify('12 jours maximum : validez ou effacez la sélection avant de continuer.');}
+ if(multiCells.has(key)){if(!forcedAdd)multiCells.delete(key);}
+ else if(multiCells.size<MULTI_CELL_LIMIT)multiCells.set(key,{person:String(person),date});
+ else notify(`Maximum ${MULTI_CELL_LIMIT} cases par opération : validez les cases choisies avant de continuer.`);
  multiPaint();
+}
+function multiSelectVisible(){
+ if(!multiEnabled||readOnly||busy||!token)return;
+ const cells=[...document.querySelectorAll((view==='week'?'#week-host':view==='day'?'#day-host':'#month-host')+' [data-person][data-date], '+(view==='week'?'#week-host':view==='day'?'#day-host':'#month-host')+' [data-edit-person][data-edit-date]')];
+ if(!cells.length)return notify('Passez en vue Semaine ou ouvrez un collaborateur pour sélectionner toutes les cases visibles.');
+ const remaining=cells.filter(el=>!multiHas(el.dataset.person||el.dataset.editPerson,el.dataset.date||el.dataset.editDate));
+ if(multiCells.size+remaining.length>MULTI_CELL_LIMIT)return notify(`Cette sélection dépasserait ${MULTI_CELL_LIMIT} cases. Sélectionnez une période plus courte.`);
+ for(const el of remaining){const person=String(el.dataset.person||el.dataset.editPerson),date=el.dataset.date||el.dataset.editDate;if(multiValidDate(date))multiCells.set(multiKey(person,date),{person,date});}
+ multiPaint();notify(`${multiCells.size} cases sélectionnées · ${multiPeople().size} collaborateurs.`);
 }
 function multiRangeAdd(){
  if(!multiEnabled||readOnly||busy)return;
  const start=$('multi-from').value,end=$('multi-to').value;
  if(!multiValidDate(start)||!multiValidDate(end)||start>end)return notify('Choisissez deux dates valides dans l’ordre.');
- const p=multiStaffId||focusedStaffId;
- if(!p)return notify('Sélectionnez d’abord un collaborateur dans la vue Semaine.');
+ const p=focusedStaffId||multiStaffId;
+ if(!p)return notify('Touchez d’abord une case du collaborateur concerné.');
  const count=Math.round((Date.parse(end+'T12:00:00')-Date.parse(start+'T12:00:00'))/86400000)+1;
- if(count>12||count<1)return notify('La période doit contenir entre 1 et 12 jours.');
+ if(count<1||count>MULTI_CELL_LIMIT)return notify(`Choisissez une période de ${MULTI_CELL_LIMIT} jours maximum.`);
  const span=[];for(let i=0;i<count;i++)span.push(iso(add(new Date(start+'T12:00:00'),i)));
- const union=new Set([...multiDates,...span]);
- if(union.size>12)return notify('12 jours maximum, sélection actuelle comprise.');
- multiStaffId=String(p);multiDates=union;multiPaint();notify(`${multiDates.size} journées sélectionnées.`);
+ const newCount=span.filter(date=>!multiHas(p,date)).length;
+ if(multiCells.size+newCount>MULTI_CELL_LIMIT)return notify(`Cette période dépasserait ${MULTI_CELL_LIMIT} cases.`);
+ for(const date of span)multiCells.set(multiKey(p,date),{person:String(p),date});
+ multiPaint();notify(`${multiCells.size} cases sélectionnées.`);
 }
 function multiOpenEditor(){
- if(!multiEnabled||!multiStaffId||!multiDates.size||busy||readOnly)return;
- const dates=[...multiDates].sort();
- openModal(multiStaffId,dates[0]);
+ if(!multiEnabled||!multiCells.size||busy||readOnly)return;
+ const cells=multiSelected(),first=cells[0];
+ openModal(first.person,first.date);
  if(!selected)return;
- selected.bulkDates=dates;
- $('modal-title').textContent=`Modifier ${dates.length} journées`;
- $('modal-sub').textContent=`${multiName()} · ${dates.length} date${dates.length>1?'s':''} · modification commune`;
+ selected.bulkCells=cells;
+ const n=multiPeople().size;
+ $('modal-title').textContent=`Modifier ${cells.length} cases`;
+ $('modal-sub').textContent=`${n} collaborateur${n>1?'s':''} · ${cells.length} case${cells.length>1?'s':''} · même modification`;
  $('multi-note-opt').classList.remove('hide');
  $('multi-apply-note').checked=false;
- $('form-hint').textContent=`Les ${dates.length} journées seront enregistrées individuellement sur le serveur. Les tâches et notes de chaque date sont conservées par défaut. Publiez ou republiez le mois pour rendre les changements visibles sur les portails concernés.`;
+ $('form-hint').textContent=`Appliquer les mêmes horaires ou absences à toutes les cases sélectionnées. Les notes et tâches de chaque employé restent conservées par défaut. Chaque case est enregistrée individuellement sur le serveur et les modifications doivent être publiées.`;
 }
 // V281 — glisser pour sélectionner sans dupliquer les enregistrements.
 // La validation continue d'utiliser saveMultiple() et le serveur RH existants.
 function multiQuickPreset(kind){
- if(!['M','S','C','R','CP'].includes(kind)||!multiEnabled||!multiDates.size||readOnly||busy)return;
+ if(!['M','S','C','R','CP'].includes(kind)||!multiEnabled||!multiCells.size||readOnly||busy)return;
  multiOpenEditor();
  if(!selected)return;
  $('kind').value=kind;
@@ -382,9 +399,9 @@ function multiSpanBetween(a,b){
  const dates=[];for(let i=0;i<days;i++)dates.push(iso(add(new Date(begin+'T12:00:00'),i)));
  return dates;
 }
-// V284 : les gestes fonctionnent même sans activer un mode préalable.
-// Toucher bref : éditeur d'une journée. Glisser horizontalement : sélection
-// de plusieurs dates. Appui long : sélection. Le défilement vertical reste libre.
+// V285 : sélection tactile par cases (lignes ET colonnes).
+// Toucher simple hors sélection = modifier. Glisser horizontalement = choisir.
+// Sélection active = toucher/faire glisser sur n'importe quelle cellule.
 function multiPointerBind(host){
  if(!host)return;
  const selector='[data-person][data-date], [data-edit-person][data-edit-date]';
@@ -392,30 +409,25 @@ function multiPointerBind(host){
   const found=document.elementFromPoint(x,y)?.closest?.(selector);
   return found&&host.contains(found)?found:null;
  };
- const getIdentity=cell=>({person:cell.dataset.person||cell.dataset.editPerson,date:cell.dataset.date||cell.dataset.editDate});
- const clearTimer=gesture=>{if(gesture?.holdTimer){clearTimeout(gesture.holdTimer);gesture.holdTimer=0;}};
- const applyDate=(gesture,date)=>{
-  if(gesture.visited.has(date))return;
-  gesture.visited.add(date);
-  if(gesture.action==='remove'){
-   multiDates.delete(date);
-   multiPaint();
-  }else multiSelectDate(gesture.person,date,true);
+ const getIdentity=cell=>({person:String(cell.dataset.person||cell.dataset.editPerson),date:cell.dataset.date||cell.dataset.editDate});
+ const clearTimer=g=>{if(g?.holdTimer){clearTimeout(g.holdTimer);g.holdTimer=0;}};
+ const applyCell=(gesture,person,date)=>{
+  const key=multiKey(person,date);
+  if(gesture.visited.has(key))return;
+  gesture.visited.add(key);
+  if(gesture.action==='remove'){multiCells.delete(key);multiPaint();}
+  else multiSelectDate(person,date,true);
  };
  const startSelection=(gesture)=>{
   if(gesture.started||multiPointer!==gesture||!token||readOnly||busy)return;
   clearTimer(gesture);
-  // Ne pas agrandir la barre d'outils sous le doigt pendant le glissement.
   gesture.freezeToolbar=!multiEnabled;
   if(gesture.freezeToolbar)$('multi-days-toolbar')?.classList.add('is-gesturing');
   if(!multiEnabled)multiEnable(true);
   if(!multiEnabled){$('multi-days-toolbar')?.classList.remove('is-gesturing');return;}
-  if(multiStaffId&&multiStaffId!==gesture.person){multiDates.clear();multiStaffId=gesture.person;}
-  gesture.action=multiDates.has(gesture.startDate)?'remove':'add';
+  gesture.action=multiHas(gesture.person,gesture.startDate)?'remove':'add';
   gesture.started=true;
-  // Empêche l'édition simultanée de plusieurs collaborateurs.
-  multiStaffId=gesture.person;
-  applyDate(gesture,gesture.startDate);
+  applyCell(gesture,gesture.person,gesture.startDate);
   multiIgnoreClickUntil=Date.now()+900;
   try{host.setPointerCapture(gesture.id);}catch(_){}
  };
@@ -425,39 +437,31 @@ function multiPointerBind(host){
   if(!cell||!host.contains(cell)||cell.disabled)return;
   const {person,date}=getIdentity(cell);
   if(!multiValidDate(date)||!staff.some(p=>String(p.id)===String(person)))return;
-  const gesture={id:e.pointerId,person:String(person),startDate:date,lastDate:date,
+  const gesture={id:e.pointerId,person,startDate:date,lastPerson:person,lastDate:date,
     startX:e.clientX,startY:e.clientY,visited:new Set(),action:'add',started:false,holdTimer:0};
   multiPointer=gesture;
-  if(multiEnabled){
-   startSelection(gesture);
-   e.preventDefault();
-  }else if(e.pointerType==='touch'||e.pointerType==='pen'){
-   // Alternative utilisable sans glisser, avec une seule main.
-   gesture.holdTimer=setTimeout(()=>startSelection(gesture),420);
-  }
+  if(multiEnabled){startSelection(gesture);e.preventDefault();}
+  else if(e.pointerType==='touch'||e.pointerType==='pen')gesture.holdTimer=setTimeout(()=>startSelection(gesture),420);
  },{passive:false});
  host.addEventListener('pointermove',e=>{
   const gesture=multiPointer;
   if(!gesture||gesture.id!==e.pointerId)return;
   const dx=e.clientX-gesture.startX,dy=e.clientY-gesture.startY;
   if(!gesture.started){
-   // Ne pas intercepter le défilement vertical sur téléphone.
    if(Math.abs(dy)>15&&Math.abs(dy)>Math.abs(dx)*1.2){clearTimer(gesture);multiPointer=null;return;}
-   const cell=atPoint(e.clientX,e.clientY);
-   const other=cell?getIdentity(cell):null;
-   if(Math.abs(dx)>14&&Math.abs(dx)>Math.abs(dy)*1.2&&other?.person===gesture.person){
-    startSelection(gesture);
-   }else return;
+   const cell=atPoint(e.clientX,e.clientY),other=cell?getIdentity(cell):null;
+   if(Math.abs(dx)>14&&Math.abs(dx)>Math.abs(dy)*1.2&&other?.person===gesture.person)startSelection(gesture);
+   else return;
   }
-  if(!gesture.started)return;
   const cell=atPoint(e.clientX,e.clientY);
   if(!cell)return;
   const {person,date}=getIdentity(cell);
-  if(String(person)!==gesture.person||!multiValidDate(date)||date===gesture.lastDate)return;
-  for(const day of multiSpanBetween(gesture.lastDate,date))applyDate(gesture,day);
-  gesture.lastDate=date;
-  multiIgnoreClickUntil=Date.now()+850;
-  e.preventDefault();
+  if(!multiValidDate(date)||!staff.some(p=>String(p.id)===person))return;
+  if(person===gesture.lastPerson&&date!==gesture.lastDate){
+   for(const day of multiSpanBetween(gesture.lastDate,date))applyCell(gesture,person,day);
+  }else applyCell(gesture,person,date);
+  gesture.lastPerson=person;gesture.lastDate=date;
+  multiIgnoreClickUntil=Date.now()+850;e.preventDefault();
  },{passive:false});
  const end=e=>{
   const gesture=multiPointer;
@@ -473,14 +477,11 @@ function multiPointerBind(host){
  host.addEventListener('pointerup',end);
  host.addEventListener('pointercancel',end);
  host.addEventListener('lostpointercapture',e=>{
-  // Sur Android, la capture tactile implicite du bouton est perdue quand
-  // le conteneur reprend la capture : cet évènement remonte mais n'est pas une fin de geste.
   if(e.target!==host)return;
   if(multiPointer?.id===e.pointerId){clearTimer(multiPointer);$('multi-days-toolbar')?.classList.remove('is-gesturing');multiPointer=null;multiIgnoreClickUntil=Date.now()+700;}
  });
 }
 function multiCellClick(person,date,event){
- // Ctrl/Cmd+clic : alternative rapide à la souris sans sélectionner le mode au préalable.
  if(!multiEnabled&&(event?.ctrlKey||event?.metaKey)){
   multiEnable(true);multiSelectDate(person,date);return;
  }
@@ -767,70 +768,59 @@ function updateForm(){const k=$('kind').value;document.querySelectorAll('[data-p
 function pair(a,b){return /^\d{2}:\d{2}$/.test(a)&&/^\d{2}:\d{2}$/.test(b)&&a!==b;}
 function getDraft(){const k=$('kind').value,original=selected?.base||{},note=$('note').value.trim().slice(0,500);let r={...original,status:'off',s1:'',s2:'',pause:0,obs:packDayTasks(note,splitDayTasks(String(original.obs||'')).tasks)};if(['M','S','C'].includes(k)){if(!pair($('start').value,$('end').value))throw Error('Horaires de service invalides.');r.status=k==='M'?'off_soir':k==='S'?'off_matin':'present';const s=`${$('start').value}-${$('end').value}`;if(k==='S')r.s2=s;else r.s1=s;if(k==='C'){if(!pair($('split-start').value,$('split-end').value))throw Error('Deuxième service invalide.');r.s2=`${$('split-start').value}-${$('split-end').value}`;}}else{r.status=({R:'off',CP:'conge',MAL:'maladie',RECUP:'recup',FERIE:'ferie',FORM:'formation',A:'absence_autorisee',NJS:'absence_injustifiee',ACC:'accident_travail',MAT:'maternite',PAT:'paternite',PAR:'parental',EFM:'enfant_malade',EVF:'evenement_familial',DEC:'deces',SSL:'sans_solde',O:'off'})[k]||'off';}return k==='O'?null:r;}
 async function saveMultiple(){
- if(!selected?.bulkDates?.length||busy||readOnly||!token)return;
- const dates=selected.bulkDates.slice().sort(),person=selected.person;
- if(dates.length>MULTI_DAY_LIMIT)return notify('12 jours maximum.');
+ if(!selected?.bulkCells?.length||busy||readOnly||!token)return;
+ const cells=selected.bulkCells.slice().sort((a,b)=>a.date.localeCompare(b.date)||a.person.localeCompare(b.person));
+ if(cells.length>MULTI_CELL_LIMIT)return notify(`Maximum ${MULTI_CELL_LIMIT} cases.`);
  const reason=$('reason').value.trim();if(reason.length<3)return notify('Motif obligatoire (au moins 3 caractères).');
  const sharedNote=$('note').value,applyNote=$('multi-apply-note').checked;
- // Validation complète AVANT tout envoi. Les tâches sont conservées date par date.
- const drafts=[];const originalSelected=selected;
- try{
-  for(const date of dates){
-   const p=staff.find(s=>String(s.id)===String(person));if(!p)throw Error('Collaborateur introuvable.');
-   const base=get(p,new Date(date+'T12:00:00')).original;
-   selected={person,date,base};
-   $('note').value=applyNote?sharedNote:splitDayTasks(String(base?.obs||'')).note;
-   drafts.push({date,day:getDraft(),base});
-  }
- }catch(e){return notify(e.message||'Journée non valide.');}
- finally{$('note').value=sharedNote;selected=originalSelected;}
- if(!confirm(`Appliquer la modification à ${dates.length} journées de ${multiName()} ?\n\nChaque journée sera enregistrée auprès du serveur RH. Vérifiez les congés, repos et obligations légales avant de continuer.`))return;
+ let template;
+ try{template=getDraft();}catch(e){return notify(e.message||'Horaires invalides.');}
+ const n=multiPeople().size;
+ if(!confirm(`Appliquer les mêmes horaires à ${cells.length} cases de ${n} collaborateur${n>1?'s':''} ?\n\nChaque case sera enregistrée séparément sur le serveur RH. En cas d'échec, les cases restantes resteront sélectionnées. Vérifiez les repos, congés et obligations légales avant de continuer.`))return;
  busy=true;const btn=$('shift-form').querySelector('[type="submit"]');btn.disabled=true;multiUpdateToolbar();
  let done=0,failed=null;const changedMonths=new Set();
  try{
-  // Lecture des mois nécessaires (y compris la transition entre mois) avant écriture.
-  // Ne jamais faire de sauvegarde à l'aveugle sur des journées non récupérées.
-  for(const mm of new Set(dates.map(d=>d.slice(0,7)))){
+  // Toujours relire les mois officiels avant écriture, afin de préserver
+  // les dernières notes, tâches et révisions de chaque case.
+  for(const mm of new Set(cells.map(c=>c.date.slice(0,7)))){
    const res=await jsonFetch(`/api/rh/planning/premium/state?tenantID=${encodeURIComponent(tenant)}&month=${mm}`,{headers:authHeaders()});
    if(res.settings?.planningStatus==='locked')throw Error(`Planning verrouillé (${mm}).`);
    state={...state,...(res.timesheets||{})};
   }
-  const personRecord=staff.find(s=>String(s.id)===String(person));
-  // Écrase uniquement les champs horaires / statut voulus, tout en conservant
-  // la note et les tâches propres à chaque journée.
-  for(const d of drafts){
-   const base=get(personRecord,new Date(d.date+'T12:00:00')).original;
-   const newDay=d.day===null?null:{...(base||{}),status:d.day.status,s1:d.day.s1,s2:d.day.s2,pause:d.day.pause,obs:packDayTasks(
+  for(const cell of cells){
+   const p=staff.find(s=>String(s.id)===cell.person);
+   if(!p){failed=Error('Collaborateur introuvable dans RH.');break;}
+   const base=get(p,new Date(cell.date+'T12:00:00')).original;
+   const newDay=template===null?null:{...(base||{}),status:template.status,s1:template.s1,s2:template.s2,pause:template.pause,obs:packDayTasks(
       applyNote?sharedNote.trim().slice(0,500):splitDayTasks(String(base?.obs||'')).note,
       splitDayTasks(String(base?.obs||'')).tasks
    )};
-   setStatus(`Enregistrement sécurisé ${done+1}/${dates.length}…`);
+   setStatus(`Enregistrement sécurisé ${done+1}/${cells.length}…`);
    let res;
    try{
-    res=await jsonFetch('/api/rh/planning/premium/day',{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenant,date:d.date,staffId:person,day:newDay,reason,baseRevision:base?.planningVersionId||null})});
+    res=await jsonFetch('/api/rh/planning/premium/day',{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenant,date:cell.date,staffId:cell.person,day:newDay,reason,baseRevision:base?.planningVersionId||null})});
    }catch(e){failed=e;break;}
-   const mm=d.date.slice(0,7),n=String(Number(d.date.slice(8)));
-   if(!state[mm])state[mm]={};if(!state[mm][person])state[mm][person]={};
-   if(res.day)state[mm][person][n]=res.day;else delete state[mm][person][n];
-   multiDates.delete(d.date);changedMonths.add(mm);done++;
+   const mm=cell.date.slice(0,7),d=String(Number(cell.date.slice(8)));
+   if(!state[mm])state[mm]={};if(!state[mm][cell.person])state[mm][cell.person]={};
+   if(res.day)state[mm][cell.person][d]=res.day;else delete state[mm][cell.person][d];
+   multiCells.delete(multiKey(cell.person,cell.date));changedMonths.add(mm);done++;
   }
   for(const mm of changedMonths)broadcastPlanningChange(mm);
   if(done){
-   $('audit-title').textContent=`${done} jour${done>1?'s':''} · ${multiName()}`;
-   $('audit-detail').textContent=`${done}/${dates.length} journée(s) enregistrée(s) · ${reason}`;
+   $('audit-title').textContent=`${done} case${done>1?'s':''} · ${n} collaborateur${n>1?'s':''}`;
+   $('audit-detail').textContent=`${done}/${cells.length} case(s) enregistrée(s) · ${reason}`;
    $('audit-date').textContent=fmt(new Date(),{hour:'2-digit',minute:'2-digit'});
    $('publication-status').textContent='⚠ Horaire(s) modifié(s) · publication à vérifier';
    if(publication?.status==='published')publication={...publication,status:'to_review'};
   }
-  lastFetch=0;
-  closeModal();render();
+  lastFetch=0;closeModal();render();
   if(failed){
-   setStatus(`${done}/${dates.length} journées enregistrées · erreur : ${failed.message}`,true);
-   notify(`${done} enregistrée(s), ${dates.length-done} restante(s). Vérifiez avant de réessayer.`);
+   setStatus(`${done}/${cells.length} cases enregistrées · erreur : ${failed.message}`,true);
+   notify(`${done} enregistrée(s), ${cells.length-done} restante(s). Corrigez le problème puis réessayez.`);
    if(failed.status===401||failed.status===403){forget();showAuth(failed.message);}
   }else{
-   setStatus(`${done} journées synchronisées sur iCHEF OS`);
-   notify(`${done} journées enregistrées sur le serveur RH.`);
+   setStatus(`${done} cases enregistrées sur le serveur RH`);
+   notify(`${done} cases enregistrées. Pensez à publier les mois concernés.`);
    multiClear({all:true});multiEnabled=false;multiUpdateToolbar();
   }
  }catch(e){
@@ -838,11 +828,11 @@ async function saveMultiple(){
   if(e.status===401||e.status===403){forget();showAuth(e.message);}else notify('Aucune nouvelle modification : '+e.message);
  }finally{
   busy=false;btn.disabled=false;multiUpdateToolbar();
-  // Rafraîchir la vue visible APRÈS la fin de la transaction locale.
+  // Ne pas effacer la sélection restante lors du rafraîchissement.
   void refresh(true);
  }
 }
-async function save(){if(selected?.bulkDates?.length)return saveMultiple();if(!selected||busy)return;const reason=$('reason').value.trim();if(reason.length<3)return notify('Motif obligatoire (au moins 3 caractères).');let day;try{day=getDraft();}catch(e){return notify(e.message);}busy=true;setStatus('Enregistrement sur le serveur…');const btn=$('shift-form').querySelector('[type="submit"]');btn.disabled=true;try{const res=await jsonFetch('/api/rh/planning/premium/day',{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenant,date:selected.date,staffId:selected.person,day,reason,baseRevision:selected.base?selected.base.planningVersionId||'':null})});const m=selected.date.slice(0,7),n=String(Number(selected.date.slice(8)));if(!state[m])state[m]={};if(!state[m][selected.person])state[m][selected.person]={};if(res.day)state[m][selected.person][n]=res.day;else delete state[m][selected.person][n];$('audit-title').textContent=`Modifié · ${res.staffName||selected.person}`;$('audit-detail').textContent=`${selected.date} · ${reason}`;$('audit-date').textContent=fmt(new Date(),{hour:'2-digit',minute:'2-digit'});closeModal();render();setStatus('Enregistré sur le serveur central · RH et Staff informés');notify('Horaire sauvegardé et synchronisé.');broadcastPlanningChange(m);lastFetch=0;
+async function save(){if(selected?.bulkCells?.length)return saveMultiple();if(!selected||busy)return;const reason=$('reason').value.trim();if(reason.length<3)return notify('Motif obligatoire (au moins 3 caractères).');let day;try{day=getDraft();}catch(e){return notify(e.message);}busy=true;setStatus('Enregistrement sur le serveur…');const btn=$('shift-form').querySelector('[type="submit"]');btn.disabled=true;try{const res=await jsonFetch('/api/rh/planning/premium/day',{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenant,date:selected.date,staffId:selected.person,day,reason,baseRevision:selected.base?selected.base.planningVersionId||'':null})});const m=selected.date.slice(0,7),n=String(Number(selected.date.slice(8)));if(!state[m])state[m]={};if(!state[m][selected.person])state[m][selected.person]={};if(res.day)state[m][selected.person][n]=res.day;else delete state[m][selected.person][n];$('audit-title').textContent=`Modifié · ${res.staffName||selected.person}`;$('audit-detail').textContent=`${selected.date} · ${reason}`;$('audit-date').textContent=fmt(new Date(),{hour:'2-digit',minute:'2-digit'});closeModal();render();setStatus('Enregistré sur le serveur central · RH et Staff informés');notify('Horaire sauvegardé et synchronisé.');broadcastPlanningChange(m);lastFetch=0;
 if(publication?.status==='published'){$('publication-status').textContent='⚠ Horaire modifié · à republier';publication={...publication,status:'to_review'};}}
 catch(e){setStatus(e.message,true);if(e.status===409){notify('Planning modifié ailleurs : rechargement nécessaire avant de réessayer.');closeModal();lastFetch=0;}else if(e.status===401||e.status===403){forget();showAuth(e.message);}else notify('Enregistrement refusé : '+e.message);}
 finally{busy=false;btn.disabled=false;}}
@@ -907,6 +897,7 @@ $('multi-mode').onclick=()=>multiEnable();
 $('multi-clear').onclick=()=>multiClear({all:true});
 $('multi-range').onclick=multiRangeAdd;
 $('multi-apply').onclick=multiOpenEditor;
+$('multi-all-visible').onclick=multiSelectVisible;
 document.querySelectorAll('[data-multi-preset]').forEach(b=>b.addEventListener('click',()=>multiQuickPreset(b.dataset.multiPreset)));
 multiPointerBind($('week-host'));multiPointerBind($('day-host'));multiPointerBind($('month-host'));
 $('logout').onclick=()=>{forget();$('login-pin').value='';showAuth('Session fermée sur cet appareil.');if(window.parent!==window&&query.get('rhEmbedded')==='1'){window.parent.postMessage({type:'ICHEF_PREMIUM_LOGOUT'},location.origin);}};
