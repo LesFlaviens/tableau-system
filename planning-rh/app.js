@@ -9,6 +9,10 @@
 
 
 
+
+
+
+/* iCHEF Planning V284 : gestes tactiles; connexion RH et API inchangées. */
 /* V266: source fournie par le client, renommée en .js. */
 /* iCHEF OS Planning Premium PWA · client connecté au TIMESHEETS_MASTER.
    Aucune donnée RH n'est stockée en cache ni dans localStorage. */
@@ -292,11 +296,11 @@ function multiUpdateToolbar(){
  const bar=$('multi-days-toolbar');if(!bar)return;
  bar.classList.toggle('is-active',multiEnabled);
  $('multi-mode').setAttribute('aria-pressed',String(multiEnabled));
- $('multi-mode').textContent=multiEnabled?'✓ Sélection tactile active':'☝ Sélection tactile';
+ $('multi-mode').textContent=multiEnabled?'✓ Sélection de jours active':'☝ Sélectionner plusieurs jours';
  const n=multiDates.size;
  $('multi-counter').textContent=multiEnabled
   ? `${multiStaffId?multiName()+' · ': 'Choisissez une ligne · '}${n}/12 jours · toucher ou glisser`
-  : 'Touchez une case pour créer un horaire · ou activez la sélection rapide';
+  : '1 toucher : modifier · glisser horizontalement : choisir plusieurs jours';
  bar.classList.toggle('has-selection',multiEnabled&&n>0);
  $('multi-apply').disabled=!multiEnabled||readOnly||busy||!multiStaffId||!n;
  $('multi-apply').textContent=n?`Modifier ${n} jour${n>1?'s':''}`:'Modifier les jours';
@@ -320,7 +324,7 @@ function multiEnable(force){
  multiEnabled=typeof force==='boolean'?force:!multiEnabled;
  if(!multiEnabled){multiClear({all:true});}else if(focusedStaffId){multiStaffId=focusedStaffId;}
  multiPaint();
- if(multiEnabled)notify('Glissez le doigt ou la souris sur les cases d’un même collaborateur (12 jours maximum).');
+ if(multiEnabled)notify('Touchez ou glissez sur les jours du même collaborateur, puis choisissez Matin, Soir, Repos…');
 }
 function multiSelectDate(person,date,forcedAdd=false){
  if(!multiEnabled||!token||readOnly||busy||!multiValidDate(date))return;
@@ -378,6 +382,9 @@ function multiSpanBetween(a,b){
  const dates=[];for(let i=0;i<days;i++)dates.push(iso(add(new Date(begin+'T12:00:00'),i)));
  return dates;
 }
+// V284 : les gestes fonctionnent même sans activer un mode préalable.
+// Toucher bref : éditeur d'une journée. Glisser horizontalement : sélection
+// de plusieurs dates. Appui long : sélection. Le défilement vertical reste libre.
 function multiPointerBind(host){
  if(!host)return;
  const selector='[data-person][data-date], [data-edit-person][data-edit-date]';
@@ -386,58 +393,90 @@ function multiPointerBind(host){
   return found&&host.contains(found)?found:null;
  };
  const getIdentity=cell=>({person:cell.dataset.person||cell.dataset.editPerson,date:cell.dataset.date||cell.dataset.editDate});
+ const clearTimer=gesture=>{if(gesture?.holdTimer){clearTimeout(gesture.holdTimer);gesture.holdTimer=0;}};
  const applyDate=(gesture,date)=>{
   if(gesture.visited.has(date))return;
   gesture.visited.add(date);
   if(gesture.action==='remove'){
    multiDates.delete(date);
    multiPaint();
-  }else{
-   multiSelectDate(gesture.person,date,true);
-  }
+  }else multiSelectDate(gesture.person,date,true);
+ };
+ const startSelection=(gesture)=>{
+  if(gesture.started||multiPointer!==gesture||!token||readOnly||busy)return;
+  clearTimer(gesture);
+  // Ne pas agrandir la barre d'outils sous le doigt pendant le glissement.
+  gesture.freezeToolbar=!multiEnabled;
+  if(gesture.freezeToolbar)$('multi-days-toolbar')?.classList.add('is-gesturing');
+  if(!multiEnabled)multiEnable(true);
+  if(!multiEnabled){$('multi-days-toolbar')?.classList.remove('is-gesturing');return;}
+  if(multiStaffId&&multiStaffId!==gesture.person){multiDates.clear();multiStaffId=gesture.person;}
+  gesture.action=multiDates.has(gesture.startDate)?'remove':'add';
+  gesture.started=true;
+  // Empêche l'édition simultanée de plusieurs collaborateurs.
+  multiStaffId=gesture.person;
+  applyDate(gesture,gesture.startDate);
+  multiIgnoreClickUntil=Date.now()+900;
+  try{host.setPointerCapture(gesture.id);}catch(_){}
  };
  host.addEventListener('pointerdown',e=>{
-  if(!multiEnabled||!token||readOnly||busy||e.button!==0||multiPointer)return;
+  if(!token||readOnly||busy||selected||e.button!==0||multiPointer)return;
   const cell=e.target.closest?.(selector);
-  if(!cell||!host.contains(cell))return;
+  if(!cell||!host.contains(cell)||cell.disabled)return;
   const {person,date}=getIdentity(cell);
   if(!multiValidDate(date)||!staff.some(p=>String(p.id)===String(person)))return;
-  // Changement de ligne = remise à zéro, pas de modification d’un deuxième salarié.
-  if(multiStaffId&&String(multiStaffId)!==String(person)){
-   multiDates.clear();multiStaffId=String(person);
-   notify('Nouvelle sélection : un seul collaborateur à la fois.');
-  }
-  multiStaffId=String(person);
-  const gesture={id:e.pointerId,person:String(person),lastDate:date,visited:new Set(),action:multiDates.has(date)?'remove':'add'};
+  const gesture={id:e.pointerId,person:String(person),startDate:date,lastDate:date,
+    startX:e.clientX,startY:e.clientY,visited:new Set(),action:'add',started:false,holdTimer:0};
   multiPointer=gesture;
-  applyDate(gesture,date);
-  multiIgnoreClickUntil=Date.now()+800;
-  try{host.setPointerCapture(e.pointerId);}catch(_){}
-  e.preventDefault();
+  if(multiEnabled){
+   startSelection(gesture);
+   e.preventDefault();
+  }else if(e.pointerType==='touch'||e.pointerType==='pen'){
+   // Alternative utilisable sans glisser, avec une seule main.
+   gesture.holdTimer=setTimeout(()=>startSelection(gesture),420);
+  }
  },{passive:false});
  host.addEventListener('pointermove',e=>{
   const gesture=multiPointer;
-  if(!multiEnabled||!gesture||gesture.id!==e.pointerId)return;
+  if(!gesture||gesture.id!==e.pointerId)return;
+  const dx=e.clientX-gesture.startX,dy=e.clientY-gesture.startY;
+  if(!gesture.started){
+   // Ne pas intercepter le défilement vertical sur téléphone.
+   if(Math.abs(dy)>15&&Math.abs(dy)>Math.abs(dx)*1.2){clearTimer(gesture);multiPointer=null;return;}
+   const cell=atPoint(e.clientX,e.clientY);
+   const other=cell?getIdentity(cell):null;
+   if(Math.abs(dx)>14&&Math.abs(dx)>Math.abs(dy)*1.2&&other?.person===gesture.person){
+    startSelection(gesture);
+   }else return;
+  }
+  if(!gesture.started)return;
   const cell=atPoint(e.clientX,e.clientY);
   if(!cell)return;
   const {person,date}=getIdentity(cell);
-  // Geste limité à la même ligne ; aucune propagation aux autres employés.
   if(String(person)!==gesture.person||!multiValidDate(date)||date===gesture.lastDate)return;
   for(const day of multiSpanBetween(gesture.lastDate,date))applyDate(gesture,day);
   gesture.lastDate=date;
-  multiIgnoreClickUntil=Date.now()+800;
+  multiIgnoreClickUntil=Date.now()+850;
   e.preventDefault();
  },{passive:false});
  const end=e=>{
-  if(multiPointer?.id!==e.pointerId)return;
+  const gesture=multiPointer;
+  if(!gesture||gesture.id!==e.pointerId)return;
+  clearTimer(gesture);
+  if(gesture.freezeToolbar)$('multi-days-toolbar')?.classList.remove('is-gesturing');
+  if(gesture.started){
+   multiIgnoreClickUntil=Date.now()+850;
+   try{if(host.hasPointerCapture?.(e.pointerId))host.releasePointerCapture(e.pointerId);}catch(_){}
+  }
   multiPointer=null;
-  multiIgnoreClickUntil=Date.now()+700;
-  try{if(host.hasPointerCapture?.(e.pointerId))host.releasePointerCapture(e.pointerId);}catch(_){}
  };
  host.addEventListener('pointerup',end);
  host.addEventListener('pointercancel',end);
  host.addEventListener('lostpointercapture',e=>{
-  if(multiPointer?.id===e.pointerId){multiPointer=null;multiIgnoreClickUntil=Date.now()+700;}
+  // Sur Android, la capture tactile implicite du bouton est perdue quand
+  // le conteneur reprend la capture : cet évènement remonte mais n'est pas une fin de geste.
+  if(e.target!==host)return;
+  if(multiPointer?.id===e.pointerId){clearTimer(multiPointer);$('multi-days-toolbar')?.classList.remove('is-gesturing');multiPointer=null;multiIgnoreClickUntil=Date.now()+700;}
  });
 }
 function multiCellClick(person,date,event){
