@@ -9,10 +9,13 @@
 
 
 
-/* iCHEF RH Planning Premium SW v283 · cache statique uniquement. */
+
+
+
+/* iCHEF RH Planning Premium SW v284 · cache statique uniquement. */
 'use strict';
-const CACHE='ichef-planning-premium-static-v283';
-const SHELL=['/planning-rh/','/planning-rh/app.js?v=283','/planning-rh/manifest.webmanifest'];
+const CACHE='ichef-planning-premium-static-v284';
+const SHELL=['/planning-rh/','/planning-rh/app.js?v=284','/planning-rh/manifest.webmanifest'];
 self.addEventListener('install',e=>e.waitUntil((async()=>{
   const c=await caches.open(CACHE);
   await Promise.allSettled(SHELL.map(async url=>{
