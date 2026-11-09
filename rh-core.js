@@ -8,7 +8,6 @@
 
 
 
-
 /* iCHEF RH V285 - garde d'identité par ID collaborateur; fonctions de sécurité inchangées. */
 
 ;
