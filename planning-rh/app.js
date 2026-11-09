@@ -6,8 +6,6 @@
 
 
 
-
-
 /* V266: source fournie par le client, renommée en .js. */
 /* iCHEF OS Planning Premium PWA · client connecté au TIMESHEETS_MASTER.
    Aucune donnée RH n'est stockée en cache ni dans localStorage. */
@@ -286,13 +284,15 @@ function multiUpdateToolbar(){
  const bar=$('multi-days-toolbar');if(!bar)return;
  bar.classList.toggle('is-active',multiEnabled);
  $('multi-mode').setAttribute('aria-pressed',String(multiEnabled));
- $('multi-mode').textContent=multiEnabled?'✓ Sélection active':'▣ Sélectionner des jours';
+ $('multi-mode').textContent=multiEnabled?'✓ Sélection tactile active':'☝ Sélection tactile';
  const n=multiDates.size;
  $('multi-counter').textContent=multiEnabled
-  ? `${multiStaffId?multiName()+' · ': 'Choisir un collaborateur · '}${n}/12 jours sélectionnés`
-  : '1 collaborateur · jusqu’à 12 jours';
+  ? `${multiStaffId?multiName()+' · ': 'Choisissez une ligne · '}${n}/12 jours · toucher ou glisser`
+  : 'Touchez une case pour créer un horaire · ou activez la sélection rapide';
+ bar.classList.toggle('has-selection',multiEnabled&&n>0);
  $('multi-apply').disabled=!multiEnabled||readOnly||busy||!multiStaffId||!n;
  $('multi-apply').textContent=n?`Modifier ${n} jour${n>1?'s':''}`:'Modifier les jours';
+ document.querySelectorAll('[data-multi-preset]').forEach(b=>{b.disabled=!multiEnabled||!n||readOnly||busy;});
  $('multi-range').disabled=!multiEnabled||readOnly||busy;
  $('multi-mode').disabled=readOnly||busy;
 }
@@ -312,7 +312,7 @@ function multiEnable(force){
  multiEnabled=typeof force==='boolean'?force:!multiEnabled;
  if(!multiEnabled){multiClear({all:true});}else if(focusedStaffId){multiStaffId=focusedStaffId;}
  multiPaint();
- if(multiEnabled)notify('Touchez ou cliquez sur des journées, ou choisissez une période de 12 jours maximum.');
+ if(multiEnabled)notify('Glissez le doigt ou la souris sur les cases d’un même collaborateur (12 jours maximum).');
 }
 function multiSelectDate(person,date,forcedAdd=false){
  if(!multiEnabled||!token||readOnly||busy||!multiValidDate(date))return;
@@ -352,34 +352,95 @@ function multiOpenEditor(){
  $('multi-apply-note').checked=false;
  $('form-hint').textContent=`Les ${dates.length} journées seront enregistrées individuellement sur le serveur. Les tâches et notes de chaque date sont conservées par défaut. Publiez ou republiez le mois pour rendre les changements visibles sur les portails concernés.`;
 }
+// V281 — glisser pour sélectionner sans dupliquer les enregistrements.
+// La validation continue d'utiliser saveMultiple() et le serveur RH existants.
+function multiQuickPreset(kind){
+ if(!['M','S','C','R','CP'].includes(kind)||!multiEnabled||!multiDates.size||readOnly||busy)return;
+ multiOpenEditor();
+ if(!selected)return;
+ $('kind').value=kind;
+ updateForm();
+}
+function multiSpanBetween(a,b){
+ if(!multiValidDate(a)||!multiValidDate(b))return [];
+ const begin=a<=b?a:b,finish=a<=b?b:a;
+ const days=Math.round((new Date(finish+'T12:00:00')-new Date(begin+'T12:00:00'))/86400000)+1;
+ // Ne jamais créer une sélection disproportionnée lors d’un geste hors de la grille.
+ if(days<1||days>31)return [b];
+ const dates=[];for(let i=0;i<days;i++)dates.push(iso(add(new Date(begin+'T12:00:00'),i)));
+ return dates;
+}
 function multiPointerBind(host){
  if(!host)return;
- // Pointer Events fonctionnent sur la souris, les écrans tactiles et les stylets.
+ const selector='[data-person][data-date], [data-edit-person][data-edit-date]';
+ const atPoint=(x,y)=>{
+  const found=document.elementFromPoint(x,y)?.closest?.(selector);
+  return found&&host.contains(found)?found:null;
+ };
+ const getIdentity=cell=>({person:cell.dataset.person||cell.dataset.editPerson,date:cell.dataset.date||cell.dataset.editDate});
+ const applyDate=(gesture,date)=>{
+  if(gesture.visited.has(date))return;
+  gesture.visited.add(date);
+  if(gesture.action==='remove'){
+   multiDates.delete(date);
+   multiPaint();
+  }else{
+   multiSelectDate(gesture.person,date,true);
+  }
+ };
  host.addEventListener('pointerdown',e=>{
-  if(!multiEnabled||readOnly||busy||e.button!==0)return;
-  const cell=e.target.closest('[data-person][data-date], [data-edit-person][data-edit-date]');
+  if(!multiEnabled||!token||readOnly||busy||e.button!==0||multiPointer)return;
+  const cell=e.target.closest?.(selector);
   if(!cell||!host.contains(cell))return;
-  const p=cell.dataset.person||cell.dataset.editPerson,d=cell.dataset.date||cell.dataset.editDate;
-  multiPointer={id:e.pointerId,person:p,visited:new Set([d]),moved:false};
-  multiSelectDate(p,d);
-  multiIgnoreClickUntil=Date.now()+700;
-  if(e.pointerType==='touch')e.preventDefault();
- });
+  const {person,date}=getIdentity(cell);
+  if(!multiValidDate(date)||!staff.some(p=>String(p.id)===String(person)))return;
+  // Changement de ligne = remise à zéro, pas de modification d’un deuxième salarié.
+  if(multiStaffId&&String(multiStaffId)!==String(person)){
+   multiDates.clear();multiStaffId=String(person);
+   notify('Nouvelle sélection : un seul collaborateur à la fois.');
+  }
+  multiStaffId=String(person);
+  const gesture={id:e.pointerId,person:String(person),lastDate:date,visited:new Set(),action:multiDates.has(date)?'remove':'add'};
+  multiPointer=gesture;
+  applyDate(gesture,date);
+  multiIgnoreClickUntil=Date.now()+800;
+  try{host.setPointerCapture(e.pointerId);}catch(_){}
+  e.preventDefault();
+ },{passive:false});
  host.addEventListener('pointermove',e=>{
-  if(!multiEnabled||!multiPointer||multiPointer.id!==e.pointerId)return;
-  const at=document.elementFromPoint(e.clientX,e.clientY);
-  const cell=at?.closest?.('[data-person][data-date], [data-edit-person][data-edit-date]');
-  if(!cell||!host.contains(cell))return;
-  const p=cell.dataset.person||cell.dataset.editPerson,d=cell.dataset.date||cell.dataset.editDate;
-  if(String(p)!==String(multiPointer.person)||multiPointer.visited.has(d))return;
-  multiPointer.visited.add(d);multiPointer.moved=true;multiSelectDate(p,d,true);
-  if(e.pointerType==='touch')e.preventDefault();
+  const gesture=multiPointer;
+  if(!multiEnabled||!gesture||gesture.id!==e.pointerId)return;
+  const cell=atPoint(e.clientX,e.clientY);
+  if(!cell)return;
+  const {person,date}=getIdentity(cell);
+  // Geste limité à la même ligne ; aucune propagation aux autres employés.
+  if(String(person)!==gesture.person||!multiValidDate(date)||date===gesture.lastDate)return;
+  for(const day of multiSpanBetween(gesture.lastDate,date))applyDate(gesture,day);
+  gesture.lastDate=date;
+  multiIgnoreClickUntil=Date.now()+800;
+  e.preventDefault();
+ },{passive:false});
+ const end=e=>{
+  if(multiPointer?.id!==e.pointerId)return;
+  multiPointer=null;
+  multiIgnoreClickUntil=Date.now()+700;
+  try{if(host.hasPointerCapture?.(e.pointerId))host.releasePointerCapture(e.pointerId);}catch(_){}
+ };
+ host.addEventListener('pointerup',end);
+ host.addEventListener('pointercancel',end);
+ host.addEventListener('lostpointercapture',e=>{
+  if(multiPointer?.id===e.pointerId){multiPointer=null;multiIgnoreClickUntil=Date.now()+700;}
  });
- const end=e=>{if(multiPointer?.id===e.pointerId){multiPointer=null;multiIgnoreClickUntil=Date.now()+550;}};
- host.addEventListener('pointerup',end);host.addEventListener('pointercancel',end);
 }
-function multiCellClick(person,date){
- if(multiEnabled){if(Date.now()>multiIgnoreClickUntil)multiSelectDate(person,date);return;}
+function multiCellClick(person,date,event){
+ // Ctrl/Cmd+clic : alternative rapide à la souris sans sélectionner le mode au préalable.
+ if(!multiEnabled&&(event?.ctrlKey||event?.metaKey)){
+  multiEnable(true);multiSelectDate(person,date);return;
+ }
+ if(multiEnabled){
+  if(event?.detail===0||Date.now()>multiIgnoreClickUntil)multiSelectDate(person,date);
+  return;
+ }
  openModal(person,date);
 }
 function renderWeek(){
@@ -403,7 +464,7 @@ function renderWeek(){
  $('week-host').innerHTML=h;
  $('week-host').querySelectorAll('[data-open-day]').forEach(b=>b.addEventListener('click',()=>openDay(b.dataset.openDay)));
  $('week-host').querySelectorAll('[data-profile]').forEach(b=>b.addEventListener('click',()=>openEmployee(b.dataset.profile)));
- $('week-host').querySelectorAll('[data-person]').forEach(b=>b.addEventListener('click',()=>multiCellClick(b.dataset.person,b.dataset.date)));
+ $('week-host').querySelectorAll('[data-person]').forEach(b=>b.addEventListener('click',event=>multiCellClick(b.dataset.person,b.dataset.date,event)));
  multiPaint();
 }
 function openDay(date){
@@ -430,7 +491,7 @@ function renderDay(){
  h+='</tbody></table>';
  $('day-host').innerHTML=h;
  $('day-host').querySelectorAll('[data-profile]').forEach(b=>b.addEventListener('click',()=>openEmployee(b.dataset.profile)));
- $('day-host').querySelectorAll('[data-edit-person]').forEach(b=>b.addEventListener('click',()=>multiCellClick(b.dataset.editPerson,b.dataset.editDate)));
+ $('day-host').querySelectorAll('[data-edit-person]').forEach(b=>b.addEventListener('click',event=>multiCellClick(b.dataset.editPerson,b.dataset.editDate,event)));
  multiPaint();
  $('day-host').querySelectorAll('[data-task-person]').forEach(b=>b.addEventListener('click',()=>openTaskModal(b.dataset.taskPerson,b.dataset.taskDate)));
 }
@@ -466,7 +527,7 @@ function renderMonth(){
  $('month-host').style.setProperty('--planning-month-weeks',String(Math.ceil((last+shift)/7)));
  $('month-host').innerHTML=h;
  $('month-host').querySelectorAll('[data-month-day]').forEach(b=>b.addEventListener('click',()=>openDay(b.dataset.monthDay)));
- $('month-host').querySelectorAll('[data-edit-person]').forEach(b=>b.addEventListener('click',()=>multiEnabled?multiCellClick(b.dataset.editPerson,b.dataset.editDate):openDay(b.dataset.editDate)));
+ $('month-host').querySelectorAll('[data-edit-person]').forEach(b=>b.addEventListener('click',event=>multiEnabled||event.ctrlKey||event.metaKey?multiCellClick(b.dataset.editPerson,b.dataset.editDate,event):openDay(b.dataset.editDate)));
  multiPaint();
 }
 // V275 — analyse rapide et explicable : aucune IA distante, aucun envoi supplémentaire.
@@ -652,7 +713,7 @@ if(query.get('controlRoom')==='1'&&window.parent!==window)window.parent.postMess
     .catch(e=>console.warn('[iCHEF Planning] mois adjacent indisponible',e?.message));
   }
  }}
-catch(e){if(query.get('controlRoom')==='1'&&window.parent!==window)window.parent.postMessage({type:'ICHEF_PREMIUM_CONTROL_ERROR',tenant,reason:e.message},location.origin);setStatus(e.message,true);if(e.status===401||e.status===403){forget();showAuth(e.message);}else notify('Réseau indisponible. Les données ne sont pas modifiées.');}finally{busy=false;}}
+catch(e){if(query.get('controlRoom')==='1'&&window.parent!==window)window.parent.postMessage({type:'ICHEF_PREMIUM_CONTROL_ERROR',tenant,reason:e.message},location.origin);setStatus(e.message,true);if(e.status===401||e.status===403){forget();showAuth(e.message);}else notify('Réseau indisponible. Les données ne sont pas modifiées.');}finally{busy=false;multiUpdateToolbar();}}
 function openModal(person,date){$('modal-title').textContent='Modifier un service';$('multi-note-opt').classList.add('hide');$('form-hint').textContent='Après validation, les modifications sont enregistrées sur le serveur RH avec motif et historique.';if(!token||readOnly)return;const p=staff.find(x=>x.id===person);if(!p)return;const d=new Date(date+'T12:00:00'),r=get(p,d);selected={person,date,base:r.original};$('modal-sub').textContent=`${p.name} · ${fmt(d,{weekday:'long',day:'numeric',month:'long'})}`;$('kind').value=types[r.k]?r.k:'A';$('start').value=r.start||'08:00';$('end').value=r.end||'16:00';$('split-start').value=r.s2||'18:00';$('split-end').value=r.e2||'22:00';$('note').value=splitDayTasks(r.note).note;$('reason').value='';updateForm();$('modal-backdrop').classList.remove('hide');$('kind').focus();}
 function closeModal(){selected=null;$('modal-backdrop').classList.add('hide');}
 function updateForm(){const k=$('kind').value;document.querySelectorAll('[data-preset]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.preset===k)));for(const id of ['time1','time2'])$(id).classList.toggle('hide',!['M','S','C'].includes(k));$('split-row').classList.toggle('hide',k!=='C');}
@@ -799,6 +860,7 @@ $('multi-mode').onclick=()=>multiEnable();
 $('multi-clear').onclick=()=>multiClear({all:true});
 $('multi-range').onclick=multiRangeAdd;
 $('multi-apply').onclick=multiOpenEditor;
+document.querySelectorAll('[data-multi-preset]').forEach(b=>b.addEventListener('click',()=>multiQuickPreset(b.dataset.multiPreset)));
 multiPointerBind($('week-host'));multiPointerBind($('day-host'));multiPointerBind($('month-host'));
 $('logout').onclick=()=>{forget();$('login-pin').value='';showAuth('Session fermée sur cet appareil.');if(window.parent!==window&&query.get('rhEmbedded')==='1'){window.parent.postMessage({type:'ICHEF_PREMIUM_LOGOUT'},location.origin);}};
 $('login-form').onsubmit=login;$('prev').onclick=()=>{anchor=view==='day'?add(anchor,-1):view==='week'?add(anchor,-7):new Date(anchor.getFullYear(),anchor.getMonth()-1,1,12);render();refresh(true);};$('next').onclick=()=>{anchor=view==='day'?add(anchor,1):view==='week'?add(anchor,7):new Date(anchor.getFullYear(),anchor.getMonth()+1,1,12);render();refresh(true);};$('today').onclick=()=>{anchor=view==='day'?new Date(TODAY):view==='week'?monday(TODAY):new Date(TODAY.getFullYear(),TODAY.getMonth(),1,12);render();refresh(true);};$('view-day').onclick=()=>{const current=view==='week'?iso(monday(anchor))===iso(monday(TODAY)):view==='month'?month(anchor)===month(TODAY):false;anchor=current?new Date(TODAY):new Date(anchor);switchView('day');refresh(true);};$('view-week').onclick=()=>{anchor=monday(anchor);switchView('week');refresh(true);};$('view-month').onclick=()=>{anchor=new Date(anchor.getFullYear(),anchor.getMonth(),1,12);switchView('month');refresh(true);};$('department').onchange=e=>{filter=e.target.value;focusedStaffId=null;render();};$('team-return').onclick=closeEmployee;$('close').onclick=closeModal;$('cancel').onclick=closeModal;$('kind').onchange=updateForm;document.querySelectorAll('[data-preset]').forEach(b=>b.addEventListener('click',()=>{$('kind').value=b.dataset.preset;updateForm();}));$('remove').onclick=()=>{$('kind').value='O';save();};$('shift-form').onsubmit=e=>{e.preventDefault();save();};$('modal-backdrop').onclick=e=>{if(e.target===$('modal-backdrop'))closeModal();};document.addEventListener('keydown',e=>{if(e.key==='Escape'){if(selected)closeModal();if(taskSelected)closeTaskModal();}});$('reset').onclick=()=>refresh(true);
