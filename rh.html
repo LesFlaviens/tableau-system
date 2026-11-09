@@ -9,6 +9,19 @@
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -57,7 +70,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>iCHEF RH · Legal Command Center · France / Suisse</title>
-<meta name="ichef-build" content="RH-V297-SINGLE-SIGNON-PLANNING">
+<meta name="ichef-build" content="RH-V301-PLANNING-TRANSFER-PRIORITAIRE">
 <script>
 ;
 /* RH V264 - preserved script #1 */
@@ -194,6 +207,22 @@ html{background:#080a0d}body{margin:0;background:#080a0d;color:#f2f3f4;font:500 
   #hr-interface > #rh-v287-directory{margin-bottom:0!important;}
 }
 </style>
+<!-- iCHEF RH V301 : le lien Planning doit utiliser l'authentification RH unique.
+     Garde placée AVANT les anciens écouteurs de navigation ; aucune donnée sensible n'est transmise. -->
+<script id="ichef-rh-v301-priority-planning-navigation">
+(function(){
+  'use strict';
+  document.addEventListener('click',function(event){
+    const element=event.target && event.target.closest?.(
+      '#rh-v226-sidebar [data-v226-nav="planning"], #rh-v236-side [data-v236-nav="planning"]'
+    );
+    if(!element || typeof window.iChefOpenPlanningRH!=='function')return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    void window.iChefOpenPlanningRH();
+  },true);
+})();
+</script>
 </head>
 <body>
 <div id="landing-portal" class="official-gateway">
@@ -4493,11 +4522,14 @@ NOTE : le moteur fournit une assistance de conformité à partir du profil confi
     catch(_){return '';}
   }
   function getDevice(){
-    let id='';try{id=localStorage.getItem(DEVICE_KEY)||'';}catch(_){}
+    let id='';
+    try{id=localStorage.getItem(DEVICE_KEY)||'';}catch(_){}
+    if(!id)try{id=sessionStorage.getItem(DEVICE_KEY)||'';}catch(_){}
     if(!id){
       id=typeof crypto.randomUUID==='function'?crypto.randomUUID():('rh_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2));
-      try{localStorage.setItem(DEVICE_KEY,id);}catch(_){}
     }
+    try{sessionStorage.setItem(DEVICE_KEY,id);}catch(_){}
+    try{localStorage.setItem(DEVICE_KEY,id);}catch(_){}
     return id;
   }
   function getRhPin(){
@@ -4556,11 +4588,25 @@ NOTE : le moteur fournit une assistance de conformité à partir du profil confi
       exp:Date.now()+ttl*1000-15000};
     try{sessionStorage.setItem(KEY,JSON.stringify(row));}
     catch(_){throw Error('Le stockage de session est désactivé dans ce navigateur.');}
+    try{
+      const valid=await checkedJSON('/api/rh/planning/premium/state?tenantID='+encodeURIComponent(tenant)+'&month='+new Date().toISOString().slice(0,7),{
+        headers:{'Accept':'application/json','Authorization':'Bearer '+row.token,
+          'X-iCHEF-Tenant':tenant,'X-iCHEF-Device':device}
+      });
+      if(valid.tenantID!==tenant||!Array.isArray(valid.staff))throw Error('Les droits Planning RH ne sont pas confirmés par le serveur.');
+    }catch(error){
+      clearPlanningToken();
+      throw error;
+    }
     return row;
   }
   async function provision(){
     if(ongoing)return ongoing;
-    ongoing=ensureSession().finally(()=>{ongoing=null;});
+    ongoing=ensureSession().then(row=>{
+      // Rafraîchit immédiatement la carte RH qui lisait l'API avant que le jeton n'existe.
+      document.dispatchEvent(new CustomEvent('ichef:premium:rh-synced'));
+      return row;
+    }).finally(()=>{ongoing=null;});
     return ongoing;
   }
   async function openPlanning(options){
@@ -4605,6 +4651,9 @@ NOTE : le moteur fournit une assistance de conformité à partir du profil confi
 
 </body>
 </html>
+
+
+
 
 
 
