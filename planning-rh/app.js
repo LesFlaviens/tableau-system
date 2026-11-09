@@ -9,6 +9,18 @@
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
 /* iCHEF Planning V300 : contrôle juridique vérifié + compatibilité de chargement V285 + sélection de cases libres, plusieurs collaborateurs,
     validation groupée et synchronisation via les API RH existantes. */
 /* V266: source fournie par le client, renommée en .js. */
@@ -221,7 +233,15 @@ let pendingRhJump=rhJump;
 let anchor=rhJump?monday(new Date(rhJump.date+'T12:00:00')):monday(TODAY),view='week',filter='ALL',focusedStaffId=null,selected=null,staff=[],state={},actualMonths={},rhSettings={},publication=null,actor=null,tenant='',token='',device='',busy=false,readOnly=false,lastFetch=0;
 const premiumChannel=typeof BroadcastChannel!=='undefined'?new BroadcastChannel('ichef-planning-premium-events-v1'):null;
 function broadcastPlanningChange(mm){try{premiumChannel?.postMessage({type:'PLANNING_CHANGED',tenant,month:mm,at:Date.now()});}catch(_){}}
-function mkDevice(){const key='ichef_planning_device_v1';let id='';try{id=localStorage.getItem(key)||'';if(!id){id=crypto.randomUUID();localStorage.setItem(key,id);}}catch{ id=(crypto.randomUUID?.()||('pwa_'+Date.now())); }return id;}
+function mkDevice(){
+ const key='ichef_planning_device_v1';let id='';
+ try{id=localStorage.getItem(key)||'';}catch(_){ }
+ if(!id)try{id=sessionStorage.getItem(key)||'';}catch(_){ }
+ if(!id){try{id=crypto.randomUUID();}catch(_){id='pwa_'+Date.now()+'_'+Math.random().toString(36).slice(2);}}
+ try{sessionStorage.setItem(key,id);}catch(_){ }
+ try{localStorage.setItem(key,id);}catch(_){ }
+ return id;
+}
 device=mkDevice();let oldTenant='';try{oldTenant=localStorage.getItem('ichef_tenant_id')||'';}catch{}tenant=(query.get('tenantID')||oldTenant||'').trim().slice(0,80);$('login-tenant').value=tenant;if($('rh-handoff-return'))$('rh-handoff-return').href='/rh.html?tenantID='+encodeURIComponent(tenant);
 function setStatus(text,error=false){$('board-status').textContent=(error?'● ':'● ')+text;$('board-status').style.color=error?'#b64140':'#357b66';}
 function notify(message){$('toast').textContent=message;$('toast').classList.remove('hide');clearTimeout(notify.timer);notify.timer=setTimeout(()=>$('toast').classList.add('hide'),4300);}
@@ -248,7 +268,17 @@ async function login(ev){ev.preventDefault();const t=$('login-tenant').value.tri
  catch(e){$('login-pin').value='';forget();showAuth(e.message||'Connexion refusée.');}
  finally{btn.disabled=false;}
 }
-async function restoreAuth(){try{const row=JSON.parse(sessionStorage.getItem(authKey())||'null');if(row?.token&&row?.tenant===tenant&&row?.device===device&&row.exp>Date.now()){token=row.token;actor=row.actor;$('login-shield').classList.add('hide');await refresh(true);return;}}catch(e){console.warn('[RH premium] session à réauthentifier',e?.message);}showAuth();}
+async function restoreAuth(){
+ let row=null;
+ try{row=JSON.parse(sessionStorage.getItem(authKey())||'null');}
+ catch(e){console.warn('[RH premium] lecture de session indisponible',e?.message);showAuth('Stockage temporaire de session indisponible.');return;}
+ if(!row?.token){showAuth('Le transfert de session RH n’a pas abouti. Utilisez le bouton Planning dans RH.');return;}
+ if(row.tenant!==tenant){showAuth('La session appartient à un autre établissement. Revenez dans RH.');return;}
+ if(row.device!==device){showAuth('Appareil de session non reconnu. Revenez dans RH.');return;}
+ if(!(Number(row.exp)>Date.now())){forget();showAuth('Session Planning expirée. Revenez dans RH.');return;}
+ try{token=row.token;actor=row.actor;$('login-shield').classList.add('hide');await refresh(true);}
+ catch(e){console.warn('[RH premium] chargement après authentification',e?.message);showAuth(e.message||'Chargement sécurisé impossible.');}
+}
 function convert(day){if(!day||!Object.keys(day).length)return empty();const s=String(day.status||'');const p=String(day.s1||'').split('-'),q=String(day.s2||'').split('-');let k='A';if(s==='off')k='R';else if(s==='conge')k='CP';else if(s==='maladie')k='MAL';else if(s==='accident_travail')k='ACC';else if(s==='absence_injustifiee')k='NJS';else if(s==='maternite')k='MAT';else if(s==='paternite')k='PAT';else if(s==='parental')k='PAR';else if(s==='enfant_malade')k='EFM';else if(s==='evenement_familial')k='EVF';else if(s==='deces')k='DEC';else if(s==='sans_solde')k='SSL';else if(s==='recup')k='RECUP';else if(s==='ferie')k='FERIE';else if(s==='formation')k='FORM';else if(s==='present'||s==='off_matin'||s==='off_soir')k=(day.s1&&day.s2)?'C':(day.s1?'M':'S');return {k,status:s,start:p[0]||'',end:p[1]||'',s2:q[0]||'',e2:q[1]||'',pause:Number(day.pause||0),note:String(day.obs||''),original:day};}
 function get(p,date){const d=iso(date),m=d.slice(0,7),n=String(Number(d.slice(8)));return convert(state?.[m]?.[p.id]?.[n]);}
 function work(r){return ['M','S','C'].includes(r.k);}
