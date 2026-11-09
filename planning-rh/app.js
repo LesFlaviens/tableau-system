@@ -8,7 +8,7 @@
 
 
 
-/* iCHEF Planning V286 : compatibilité de chargement V285 + sélection de cases libres, plusieurs collaborateurs,
+/* iCHEF Planning V287 : contrôle juridique vérifié + compatibilité de chargement V285 + sélection de cases libres, plusieurs collaborateurs,
     validation groupée et synchronisation via les API RH existantes. */
 /* V266: source fournie par le client, renommée en .js. */
 /* iCHEF OS Planning Premium PWA · client connecté au TIMESHEETS_MASTER.
@@ -32,6 +32,116 @@ const monday=d=>{const a=new Date(d);a.setHours(12,0,0,0);a.setDate(a.getDate()-
 const month=d=>iso(new Date(d.getFullYear(),d.getMonth(),1,12)).slice(0,7);
 const empty=()=>({k:'O',status:'',start:'',end:'',s2:'',e2:'',pause:0,note:'',original:null});
 const types={M:'MATIN',S:'SOIR',C:'COUPURE',R:'REPOS',O:'+',CP:'CONGÉ',MAL:'MALADIE',RECUP:'RÉCUP',FERIE:'FÉRIÉ',FORM:'FORMATION',A:'ABSENCE',NJS:'ABS. INJUSTIFIÉE',ACC:'ACCIDENT',MAT:'MATERNITÉ',PAT:'PATERNITÉ',PAR:'PARENTAL',EFM:'ENFANT MALADE',EVF:'ÉVÉNEMENT',DEC:'DEUIL',SSL:'SANS SOLDE'};
+
+/* V287 : aide à la conformité des délais de communication / modification FR-HCR et CH-CCNT.
+   Le profil est choisi par le responsable et conservé côté serveur, jamais déduit d'un PIN.
+   Aucun verrouillage général des plannings et aucune modification des pointages. */
+const LEGAL_PROFILES={
+ CH_CCNT_YEAR:{label:'Suisse · CCNT, établissement ouvert toute l’année',pub:14,edit:14,zone:'Europe/Zurich',url:'https://l-gav.ch/fr/convention-actuelle/iv-duree-du-travail-et-repos/art-21-horaire-de-travail-/-enregistrement-de-la-duree-du-temps-de-travail-/-controle-de-la-duree-du-travail'},
+ CH_CCNT_SEASON:{label:'Suisse · CCNT, établissement saisonnier',pub:7,edit:7,zone:'Europe/Zurich',url:'https://l-gav.ch/fr/convention-actuelle/iv-duree-du-travail-et-repos/art-21-horaire-de-travail-/-enregistrement-de-la-duree-du-temps-de-travail-/-controle-de-la-duree-du-travail'},
+ FR_HCR_AMEN19:{label:'France · HCR, aménagement (avenant n° 19)',pub:15,edit:8,zone:'Europe/Paris',url:'https://www.legifrance.gouv.fr/conv_coll/article/KALIARTI000030068672'},
+ FR_HCR_PART_TIME:{label:'France · HCR, temps partiel (règle générale)',pub:null,edit:7,zone:'Europe/Paris',url:'https://www.legifrance.gouv.fr/conv_coll/id/KALISCTA000005713664/'},
+ FR_HCR_OTHER:{label:'France · HCR, régime spécifique ou à vérifier',pub:null,edit:null,zone:'Europe/Paris',url:'https://www.legifrance.gouv.fr/conv_coll/id/KALITEXT000005670064'}
+};
+let legalPolicy=null;
+function legalDaysBefore(date,code){
+ const p=LEGAL_PROFILES[code];if(!p||!/^\d{4}-\d{2}-\d{2}$/.test(date))return null;
+ // Comparer deux dates civiles dans le fuseau de l'établissement, sans dépendre
+ // de la zone horaire du téléphone ou de l'ordinateur du responsable.
+ const parts=Object.fromEntries(new Intl.DateTimeFormat('en-GB',{timeZone:p.zone,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).filter(x=>x.type!=='literal').map(x=>[x.type,x.value]));
+ const today=`${parts.year}-${parts.month}-${parts.day}`;
+ return Math.round((Date.parse(date+'T00:00:00Z')-Date.parse(today+'T00:00:00Z'))/86400000);
+}
+function legalPanelRender(){
+ const select=$('legal-profile'),status=$('legal-profile-status'),hint=$('legal-rules-hint');if(!select)return;
+ const code=legalPolicy?.code||'';
+ select.value=code;status.textContent=code?`Règles enregistrées pour cet établissement · ${LEGAL_PROFILES[code].label}`:'À configurer par la Direction/RH avant publication.';
+ const p=LEGAL_PROFILES[code];
+ hint.textContent=p?
+ `Publication : ${p.pub===null?'délai selon contrat / accord à vérifier':p.pub+' jours'} · Changement : ${p.edit===null?'délai à vérifier':p.edit+' jours'}. Les urgences, accords individuels et contreparties doivent être contrôlés.`:
+ 'Choisissez le régime réellement applicable. Les accords d’entreprise, contrats, dérogations et autres obligations nécessitent une vérification humaine.';
+ const source=$('legal-source');if(source){source.hidden=!p;if(p)source.href=p.url;}
+}
+async function legalSavePolicy(){
+ if(!token||busy||readOnly)return notify('Connexion RH autorisée nécessaire.');
+ const code=$('legal-profile').value;
+ if(!LEGAL_PROFILES[code])return notify('Choisissez le régime applicable.');
+ const current=legalPolicy?.code||'';
+ if(current===code)return notify('Ce régime est déjà enregistré.');
+ if(!confirm(`Enregistrer ce régime pour l’établissement ${tenant} ?\n\n${LEGAL_PROFILES[code].label}\n\nCette sélection doit correspondre à la situation juridique réelle.`))return;
+ const b=$('legal-save');b.disabled=true;
+ try{
+  const res=await jsonFetch('/api/rh/planning/premium/legal-policy',{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenant,code,reason:'Configuration vérifiée par la Direction RH'})});
+  legalPolicy=res.legalPlanning;legalPanelRender();notify('Régime enregistré sur le serveur RH.');
+ }catch(e){notify('Enregistrement du régime refusé : '+e.message);}
+ finally{b.disabled=false;}
+}
+function legalCellsUnderNotice(cells,kind){
+ const profile=LEGAL_PROFILES[legalPolicy?.code];if(!profile)return {count:0,unknown:true,profile:null,minDays:null};
+ const limit=kind==='publish'?profile.pub:profile.edit;
+ if(limit===null)return {count:0,unknown:true,profile,minDays:null};
+ const leads=cells.map(c=>legalDaysBefore(typeof c==='string'?c:c.date,legalPolicy.code)).filter(Number.isFinite);
+ const late=leads.filter(n=>n<limit);
+ return {count:late.length,unknown:false,profile,minDays:leads.length?Math.min(...leads):null,limit};
+}
+function legalEditSummary(){
+ const cells=selected?.bulkCells?.length?selected.bulkCells:(selected?.date?[{date:selected.date}]:[]);
+ return legalCellsUnderNotice(cells,'edit');
+}
+function legalEditRender(){
+ const panel=$('legal-edit-warning'),line=$('legal-edit-text');if(!panel)return;
+ const n=legalEditSummary();
+ if(!selected){panel.hidden=true;return;}
+ panel.hidden=false;
+ if(!n.profile){line.textContent='Régime non configuré : vérifiez manuellement les délais et les accords applicables avant de modifier. Aucune conformité ne peut être certifiée.';}
+ else if(n.unknown){line.textContent=`${n.profile.label} : délai de modification variable selon le contrat et les accords. Contrôle manuel nécessaire.`;}
+ else if(n.count){line.textContent=`⚠ ${n.count} journée(s) sur ${selected?.bulkCells?.length||1} dans un délai inférieur à ${n.limit} jours ou déjà passée(s). Vérifiez les conditions d’urgence, l’accord du salarié si requis et les compensations.`;}
+ else{line.textContent=`Prévenance indicative respectée (${n.limit} jours), sous réserve des autres règles applicables.`;}
+ const needs=n.unknown||n.count>0||!n.profile;
+ $('legal-ack-wrap').hidden=!needs;
+ $('legal-basis-wrap').hidden=!needs;
+ $('legal-details-wrap').hidden=!needs;
+ if(!needs){$('legal-ack').checked=false;$('legal-details').value='';$('legal-basis').value='to_verify';}
+}
+function legalEditReview(){
+ if(!legalPolicy?.code)return null;
+ const n=legalEditSummary(),sensitive=n.unknown||n.count>0;
+ if(sensitive){
+  if(!$('legal-ack').checked)throw Error('Confirmez l’examen des règles et du délai de prévenance.');
+  if($('legal-details').value.trim().length<8)throw Error('Précisez la justification juridique (8 caractères minimum).');
+ }
+ return {code:legalPolicy.code,acknowledged:sensitive?$('legal-ack').checked:true,
+  basis:sensitive?$('legal-basis').value:'normal',justification:sensitive?$('legal-details').value.trim().slice(0,240):'Délai indicatif respecté',
+  reviewedAt:new Date().toISOString()};
+}
+function legalPublishReview(monthKey){
+ if(!LEGAL_PROFILES[legalPolicy?.code]){notify('Choisissez et enregistrez d’abord le régime juridique de l’établissement.');$('legal-panel')?.setAttribute('open','');return null;}
+ const raw=state[monthKey]||{},dates=[];
+ for(const days of Object.values(raw))for(const [d,shift] of Object.entries(days||{})){
+  const yyyy=monthKey+'-'+String(d).padStart(2,'0');
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(yyyy)||!shift||!Object.keys(shift).length)continue;
+  if(legalDaysBefore(yyyy,legalPolicy.code)>=0)dates.push(yyyy);
+ }
+ if(!dates.length){
+  const explanation=prompt('Ce mois ne contient aucun jour futur planifié. Publication ou archivage tardif : indiquez la justification et vérifiez les preuves de communication :');
+  if(explanation===null)return null;
+  if(explanation.trim().length<8){notify('Justification requise : 8 caractères minimum.');return null;}
+  if(!confirm('Confirmer cette publication tardive après examen RH ?'))return null;
+  return {code:legalPolicy.code,acknowledged:true,basis:'manual_review',justification:explanation.trim().slice(0,240),reviewedAt:new Date().toISOString()};
+ }
+ const n=legalCellsUnderNotice(dates,'publish');
+ let explanation='Délai de communication indicatif vérifié',basis='normal';
+ if(n.unknown||n.count){
+  const msg=n.unknown?'Délai de publication variable selon régime/accord.':`${n.count} journée(s) sur ${dates.length} à moins de ${n.limit} jours.`;
+  const text=prompt(`${msg}\n\nAvant publication, vérifiez les accords collectifs et la notification aux salariés. Saisissez le motif / la justification :`);
+  if(text===null)return null;
+  if(text.trim().length<8){notify('Justification requise : 8 caractères minimum.');return null;}
+  explanation=text.trim().slice(0,240);basis='manual_review';
+ }
+ if(!confirm(`Vérification juridique : ${n.unknown?'délai à vérifier':(n.count?n.count+' journée(s) en alerte':'aucune alerte de prévenance détectée')}\n\nPublier ${monthKey} et conserver la référence de cette revue ?\nLa publication ne prouve pas à elle seule la bonne réception par les salariés.`))return null;
+ return {code:legalPolicy.code,acknowledged:true,basis,justification:explanation,reviewedAt:new Date().toISOString()};
+}
+
 // V276 : passage RH -> case Premium, sans mettre de PIN, jeton ou identité en URL.
 const RH_JUMP_KEY='ichef_rh_premium_jump_v1';
 const rhJump=(()=>{if(query.get('rhJump')!=='1')return null;
@@ -377,9 +487,9 @@ function multiOpenEditor(){
  if(!selected)return;
  selected.bulkCells=cells;
  const n=multiPeople().size;
- $('modal-title').textContent=`Modifier ${cells.length} cases`;
+ legalEditRender();$('modal-title').textContent=`Modifier ${cells.length} cases`;
  $('modal-sub').textContent=`${n} collaborateur${n>1?'s':''} · ${cells.length} case${cells.length>1?'s':''} · même modification`;
- $('multi-note-opt').classList.remove('hide');
+ $('legal-ack').checked=false;$('legal-details').value='';$('multi-note-opt').classList.remove('hide');
  $('multi-apply-note').checked=false;
  $('form-hint').textContent=`Appliquer les mêmes horaires ou absences à toutes les cases sélectionnées. Les notes et tâches de chaque employé restent conservées par défaut. Chaque case est enregistrée individuellement sur le serveur et les modifications doivent être publiées.`;
 }
@@ -738,7 +848,7 @@ async function refresh(force=false){if(!token||busy)return;if(!force&&Date.now()
 const refreshedStaff=res.staff.map(p=>({...p,id:String(p.id),dept:String(p.dept||'Sans secteur'),avatar:String(p.name||'?').split(/\s+/).slice(0,2).map(z=>z[0]).join('').toUpperCase()}));
 if(refreshedStaff.some(p=>!p.id)||new Set(refreshedStaff.map(p=>p.id)).size!==refreshedStaff.length)throw Error('Identifiants collaborateurs RH invalides ou en doublon.');
 staff=refreshedStaff;
-if(focusedStaffId&&!staff.some(p=>p.id===focusedStaffId)&&!selected)focusedStaffId=null;state={...state,...(res.timesheets||{})};actualMonths[m]=readRealMonth(res,m);rhSettings=res.settings||{};
+if(focusedStaffId&&!staff.some(p=>p.id===focusedStaffId)&&!selected)focusedStaffId=null;state={...state,...(res.timesheets||{})};actualMonths[m]=readRealMonth(res,m);rhSettings=res.settings||{};legalPolicy=LEGAL_PROFILES[rhSettings.legalPlanning?.code]?rhSettings.legalPlanning:null;legalPanelRender();
 publication=res.publication||null;readOnly=rhSettings.planningStatus==='locked';lastFetch=Date.now();
 $('publication-status').textContent=publication?.status==='published'?'✓ Mois publié':
   publication?.status==='to_review'?'⚠ Modifié après publication · à revalider':'Publication : en attente';
@@ -764,8 +874,8 @@ if(query.get('controlRoom')==='1'&&window.parent!==window)window.parent.postMess
   }
  }}
 catch(e){if(query.get('controlRoom')==='1'&&window.parent!==window)window.parent.postMessage({type:'ICHEF_PREMIUM_CONTROL_ERROR',tenant,reason:e.message},location.origin);setStatus(e.message,true);if(e.status===401||e.status===403){forget();showAuth(e.message);}else notify('Réseau indisponible. Les données ne sont pas modifiées.');}finally{busy=false;multiUpdateToolbar();}}
-function openModal(person,date){$('modal-title').textContent='Modifier un service';$('multi-note-opt').classList.add('hide');$('form-hint').textContent='Après validation, les modifications sont enregistrées sur le serveur RH avec motif et historique.';if(!token||readOnly)return;const p=staff.find(x=>x.id===person);if(!p)return;const d=new Date(date+'T12:00:00'),r=get(p,d);selected={person,date,base:r.original};$('modal-sub').textContent=`${p.name} · ${fmt(d,{weekday:'long',day:'numeric',month:'long'})}`;$('kind').value=types[r.k]?r.k:'A';$('start').value=r.start||'08:00';$('end').value=r.end||'16:00';$('split-start').value=r.s2||'18:00';$('split-end').value=r.e2||'22:00';$('note').value=splitDayTasks(r.note).note;$('reason').value='';updateForm();$('modal-backdrop').classList.remove('hide');$('kind').focus();}
-function closeModal(){selected=null;$('modal-backdrop').classList.add('hide');}
+function openModal(person,date){$('modal-title').textContent='Modifier un service';$('multi-note-opt').classList.add('hide');$('form-hint').textContent='Après validation, les modifications sont enregistrées sur le serveur RH avec motif et historique.';if(!token||readOnly)return;const p=staff.find(x=>x.id===person);if(!p)return;const d=new Date(date+'T12:00:00'),r=get(p,d);selected={person,date,base:r.original};$('modal-sub').textContent=`${p.name} · ${fmt(d,{weekday:'long',day:'numeric',month:'long'})}`;$('kind').value=types[r.k]?r.k:'A';$('start').value=r.start||'08:00';$('end').value=r.end||'16:00';$('split-start').value=r.s2||'18:00';$('split-end').value=r.e2||'22:00';$('note').value=splitDayTasks(r.note).note;$('reason').value='';updateForm();$('legal-ack').checked=false;$('legal-details').value='';legalEditRender();$('modal-backdrop').classList.remove('hide');$('kind').focus();}
+function closeModal(){selected=null;legalEditRender();$('modal-backdrop').classList.add('hide');}
 function updateForm(){const k=$('kind').value;document.querySelectorAll('[data-preset]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.preset===k)));for(const id of ['time1','time2'])$(id).classList.toggle('hide',!['M','S','C'].includes(k));$('split-row').classList.toggle('hide',k!=='C');}
 function pair(a,b){return /^\d{2}:\d{2}$/.test(a)&&/^\d{2}:\d{2}$/.test(b)&&a!==b;}
 function getDraft(){const k=$('kind').value,original=selected?.base||{},note=$('note').value.trim().slice(0,500);let r={...original,status:'off',s1:'',s2:'',pause:0,obs:packDayTasks(note,splitDayTasks(String(original.obs||'')).tasks)};if(['M','S','C'].includes(k)){if(!pair($('start').value,$('end').value))throw Error('Horaires de service invalides.');r.status=k==='M'?'off_soir':k==='S'?'off_matin':'present';const s=`${$('start').value}-${$('end').value}`;if(k==='S')r.s2=s;else r.s1=s;if(k==='C'){if(!pair($('split-start').value,$('split-end').value))throw Error('Deuxième service invalide.');r.s2=`${$('split-start').value}-${$('split-end').value}`;}}else{r.status=({R:'off',CP:'conge',MAL:'maladie',RECUP:'recup',FERIE:'ferie',FORM:'formation',A:'absence_autorisee',NJS:'absence_injustifiee',ACC:'accident_travail',MAT:'maternite',PAT:'paternite',PAR:'parental',EFM:'enfant_malade',EVF:'evenement_familial',DEC:'deces',SSL:'sans_solde',O:'off'})[k]||'off';}return k==='O'?null:r;}
@@ -774,6 +884,7 @@ async function saveMultiple(){
  const cells=selected.bulkCells.slice().sort((a,b)=>a.date.localeCompare(b.date)||a.person.localeCompare(b.person));
  if(cells.length>MULTI_CELL_LIMIT)return notify(`Maximum ${MULTI_CELL_LIMIT} cases.`);
  const reason=$('reason').value.trim();if(reason.length<3)return notify('Motif obligatoire (au moins 3 caractères).');
+ let legalReview;try{legalReview=legalEditReview();}catch(e){return notify(e.message);}
  const sharedNote=$('note').value,applyNote=$('multi-apply-note').checked;
  let template;
  try{template=getDraft();}catch(e){return notify(e.message||'Horaires invalides.');}
@@ -800,7 +911,7 @@ async function saveMultiple(){
    setStatus(`Enregistrement sécurisé ${done+1}/${cells.length}…`);
    let res;
    try{
-    res=await jsonFetch('/api/rh/planning/premium/day',{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenant,date:cell.date,staffId:cell.person,day:newDay,reason,baseRevision:base?.planningVersionId||null})});
+    res=await jsonFetch('/api/rh/planning/premium/day',{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenant,date:cell.date,staffId:cell.person,day:newDay,reason,legalReview,baseRevision:base?.planningVersionId||null})});
    }catch(e){failed=e;break;}
    const mm=cell.date.slice(0,7),d=String(Number(cell.date.slice(8)));
    if(!state[mm])state[mm]={};if(!state[mm][cell.person])state[mm][cell.person]={};
@@ -834,7 +945,7 @@ async function saveMultiple(){
   void refresh(true);
  }
 }
-async function save(){if(selected?.bulkCells?.length)return saveMultiple();if(!selected||busy)return;const reason=$('reason').value.trim();if(reason.length<3)return notify('Motif obligatoire (au moins 3 caractères).');let day;try{day=getDraft();}catch(e){return notify(e.message);}busy=true;setStatus('Enregistrement sur le serveur…');const btn=$('shift-form').querySelector('[type="submit"]');btn.disabled=true;try{const res=await jsonFetch('/api/rh/planning/premium/day',{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenant,date:selected.date,staffId:selected.person,day,reason,baseRevision:selected.base?selected.base.planningVersionId||'':null})});const m=selected.date.slice(0,7),n=String(Number(selected.date.slice(8)));if(!state[m])state[m]={};if(!state[m][selected.person])state[m][selected.person]={};if(res.day)state[m][selected.person][n]=res.day;else delete state[m][selected.person][n];$('audit-title').textContent=`Modifié · ${res.staffName||selected.person}`;$('audit-detail').textContent=`${selected.date} · ${reason}`;$('audit-date').textContent=fmt(new Date(),{hour:'2-digit',minute:'2-digit'});closeModal();render();setStatus('Enregistré sur le serveur central · RH et Staff informés');notify('Horaire sauvegardé et synchronisé.');broadcastPlanningChange(m);lastFetch=0;
+async function save(){if(selected?.bulkCells?.length)return saveMultiple();if(!selected||busy)return;const reason=$('reason').value.trim();if(reason.length<3)return notify('Motif obligatoire (au moins 3 caractères).');let day,legalReview;try{day=getDraft();legalReview=legalEditReview();}catch(e){return notify(e.message);}busy=true;setStatus('Enregistrement sur le serveur…');const btn=$('shift-form').querySelector('[type="submit"]');btn.disabled=true;try{const res=await jsonFetch('/api/rh/planning/premium/day',{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenant,date:selected.date,staffId:selected.person,day,reason,legalReview,baseRevision:selected.base?selected.base.planningVersionId||'':null})});const m=selected.date.slice(0,7),n=String(Number(selected.date.slice(8)));if(!state[m])state[m]={};if(!state[m][selected.person])state[m][selected.person]={};if(res.day)state[m][selected.person][n]=res.day;else delete state[m][selected.person][n];$('audit-title').textContent=`Modifié · ${res.staffName||selected.person}`;$('audit-detail').textContent=`${selected.date} · ${reason}`;$('audit-date').textContent=fmt(new Date(),{hour:'2-digit',minute:'2-digit'});closeModal();render();setStatus('Enregistré sur le serveur central · RH et Staff informés');notify('Horaire sauvegardé et synchronisé.');broadcastPlanningChange(m);lastFetch=0;
 if(publication?.status==='published'){$('publication-status').textContent='⚠ Horaire modifié · à republier';publication={...publication,status:'to_review'};}}
 catch(e){setStatus(e.message,true);if(e.status===409){notify('Planning modifié ailleurs : rechargement nécessaire avant de réessayer.');closeModal();lastFetch=0;}else if(e.status===401||e.status===403){forget();showAuth(e.message);}else notify('Enregistrement refusé : '+e.message);}
 finally{busy=false;btn.disabled=false;}}
@@ -910,12 +1021,12 @@ $('panel-toggle').onclick=()=>{const on=document.querySelector('.board').classLi
 async function publishMonth(){
   if(!token||busy||readOnly)return;
   const m=month(anchor);
-  if(!confirm(`Publier le planning officiel de ${m} sur le Portail Staff ?\n\nVérifiez la couverture, les contrats, les repos, les congés approuvés et la conformité légale avant de confirmer.`))return;
+  const legalReview=legalPublishReview(m);if(!legalReview)return;
   busy=true;const b=$('publish');b.disabled=true;setStatus('Publication sécurisée en cours…');
   try{
     const res=await jsonFetch('/api/rh/planning/premium/publish',{
       method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},
-      body:JSON.stringify({tenantID:tenant,month:m,confirmed:true})
+      body:JSON.stringify({tenantID:tenant,month:m,confirmed:true,legalReview})
     });
     publication=res.publication||null;
     $('publication-status').textContent='✓ Mois publié';
@@ -925,6 +1036,8 @@ async function publishMonth(){
     if(e.status===401||e.status===403){forget();showAuth(e.message);}else notify('Publication refusée : '+e.message);
   }finally{busy=false;b.disabled=false;}
 }
+$('legal-save').onclick=legalSavePolicy;
+$('legal-profile').onchange=()=>{const id=$('legal-profile').value;const x=LEGAL_PROFILES[id];$('legal-rules-hint').textContent=x?`Choix non enregistré · ${x.label}. Cliquez sur « Enregistrer ».`:'Choisissez le régime applicable.';};
 $('publish').onclick=publishMonth;
 function returnToRh(){
  if(window.parent!==window && new URLSearchParams(location.search).get('rhEmbedded')==='1'){
