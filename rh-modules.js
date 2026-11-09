@@ -6,6 +6,8 @@
 
 
 
+
+
 /* iCHEF RH V266 - modules historiques conservés, ordre original de chargement. */
 
 ;
@@ -21173,6 +21175,7 @@ window.__ICHEF_RH_BUILD__='RH-V240-AUTO-STYLE-SELF-HEAL';
  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start,{once:true});
  else start();
 })();
+
 
 
 
