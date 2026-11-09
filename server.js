@@ -9,6 +9,7 @@
 
 
 
+// V300 — Motif conditionnel à la première création dans les délais, vérifié côté serveur (PIN et sessions inchangés).
 // iCHEF SERVER V297 — diagnostic sécurisé des e-mails PIN oublié; sécurité V296 conservée.
 // iCHEF SERVER V296 — 3 demandes PIN oublié/jour par collaborateur, 4e via Direction uniquement.
 // iCHEF SERVER V295 — connexion Staff limitée à son établissement et à son identité RH
@@ -35638,8 +35639,7 @@ app.post('/api/rh/planning/premium/day', async(req,res)=>{
         const parsed=match?new Date(d+'T12:00:00Z'):null;
         if(!parsed||Number.isNaN(+parsed)||parsed.toISOString().slice(0,10)!==d||!/^\d{1,4}$/.test(d.slice(0,4))||!sid||sid.length>120||/[.$]/.test(sid))
             return res.status(400).json({success:false,error:'Date ou collaborateur invalide.'});
-        const motive=String(reason||'').trim().slice(0,180);
-        if(motive.length<3)return res.status(400).json({success:false,error:'Motif de modification obligatoire.'});
+        const suppliedMotive=String(reason||'').trim().slice(0,180);
         const valid=ichefPremiumRhValidateDay(req.body.day);
         if(!valid.ok)return res.status(400).json({success:false,error:valid.error});
         const previousState=await AppState.findOne({tenantID:auth.tenantID},
@@ -35652,6 +35652,22 @@ app.post('/api/rh/planning/premium/day', async(req,res)=>{
         if(!employee)return res.status(403).json({success:false,error:'Collaborateur non autorisé ou inexistant.'});
         const mm=d.slice(0,7),dy=String(Number(d.slice(8))),days=ichefPlanningNodeData(orders,'TIMESHEETS_MASTER',{});
         const before=days?.[mm]?.[sid]?.[dy];
+        // V300 : seule une première création de service ou de repos, annoncée à temps,
+        // sur un mois non publié, dispense de saisir un motif manuel.
+        // L'audit garde un libellé système explicite. Toute modification existante,
+        // suppression, absence réglementée ou création tardive exige un motif.
+        const legalPolicyForMotive=ichefPremiumLegalPolicyV299(orders);
+        const profileForMotive=ICHEF_PREMIUM_LEGAL_RULES_V299[legalPolicyForMotive?.code];
+        const monthPublication=ichefPlanningNodeData(orders,'PLANNING_PUBLICATIONS_MASTER',{})?.[mm];
+        const publicationIsDraft=!monthPublication||['draft','pending'].includes(String(monthPublication.status||''));
+        const newDayStatus=String(valid.day?.status||'');
+        const firstAndTimely=before===undefined&&valid.day!==null&&
+            ['present','off_matin','off_soir','off'].includes(newDayStatus)&&
+            publicationIsDraft&&Number.isInteger(profileForMotive?.publicationDays)&&
+            ichefPremiumLegalDaysV299(d,legalPolicyForMotive.code)>=profileForMotive.publicationDays;
+        if(!firstAndTimely&&suppliedMotive.length<3)
+            return res.status(400).json({success:false,error:'Motif obligatoire pour une modification ou une création hors délai.'});
+        const motive=suppliedMotive||'Création initiale dans le délai de publication';
         // Contrôle de conflit : toute édition externe plus récente est refusée.
         if(before===undefined ? baseRevision!==null : String(before?.planningVersionId||'')!==String(baseRevision||''))
             return res.status(409).json({success:false,code:'PLANNING_CONFLICT',error:'Le planning a été modifié ailleurs. Rechargez avant de réessayer.'});
