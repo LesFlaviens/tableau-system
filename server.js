@@ -1,3 +1,8 @@
+// iCHEF SERVER V297 — diagnostic sécurisé des e-mails PIN oublié; sécurité V296 conservée.
+// iCHEF SERVER V296 — 3 demandes PIN oublié/jour par collaborateur, 4e via Direction uniquement.
+// iCHEF SERVER V295 — connexion Staff limitée à son établissement et à son identité RH
+// iCHEF SERVER V293 - diagnostic quotas Gemini / delais adaptatifs, routes HACCP IA seulement.
+
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -24221,19 +24226,99 @@ function ichefStaffResetCanonicalId(profile={}){
 
     return '';
 }
+// V298 — PIN oublié : même périmètre d'identité que la connexion Staff.
+// Le login peut utiliser un nom/pseudo dans un établissement identifié et une
+// fiche RH de DIRECTORY_MASTER, même avant synchronisation STAFF_ACCESS.
+// Ne jamais relier deux fiches par nom ou PIN : uniquement par identifiant RH.
+// Ne jamais chercher dans un autre établissement ni choisir entre homonymes.
 async function ichefStaffResolveProfileForReset(tenantID,loginId){
-    const safeTenant=cleanString(tenantID),wanted=String(loginId||'').trim();
+    const safeTenant=cleanString(tenantID);
+    const wanted=String(loginId||'').trim();
     if(!safeTenant||!wanted)return null;
-    const exact=await ichefStaffFindActiveSecurityProfile(safeTenant,wanted); if(exact)return exact;
-    const state=await AppState.findOne({tenantID:safeTenant},{'activeOrders.STAFF_ACCESS.data':1,'activeOrders.DIRECTORY_MASTER.data':1}).lean();
+
+    // Chemin existant inchangé pour les identifiants techniques.
+    const exact=await ichefStaffFindActiveSecurityProfile(safeTenant,wanted);
+    if(exact)return exact;
+
+    // La même règle de validité établissement que l'accès Staff.
+    const tenant=await Tenant.findOne({tenantID:safeTenant},{
+        tenantID:1,status:1,archivedAt:1,demoExpiration:1
+    }).lean();
+    if(!tenant||tenant.archivedAt||
+       String(tenant.status||'').toUpperCase()==='SUSPENDU'||
+       (tenant.demoExpiration&&new Date()>new Date(tenant.demoExpiration)))return null;
+
+    const state=await AppState.findOne({tenantID:safeTenant},{
+        'activeOrders.STAFF_ACCESS.data':1,
+        'activeOrders.DIRECTORY_MASTER.data':1
+    }).lean();
     if(!state)return null;
-    const access=ichefStaffPortalArray(state?.activeOrders?.STAFF_ACCESS),directory=ichefStaffPortalArray(state?.activeOrders?.DIRECTORY_MASTER);
-    const norm=v=>String(v||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' '),w=norm(wanted);
-    const matches=access.filter(item=>{if(!item||item.active===false)return false;const tech=ichefStaffResetIdentityValues(item).map(norm);const human=[item?.name,item?.pseudo,item?.displayName,item?.prenom,item?.firstName].filter(Boolean).map(norm);return tech.includes(w)||human.includes(w);});
-    if(matches.length!==1)return null;
-    const member=matches[0],ids=new Set(ichefStaffResetIdentityValues(member));
-    const directoryEntry=directory.find(item=>item?.active!==false&&ichefStaffResetIdentityValues(item).some(id=>ids.has(id)))||{};
-    return {tenant:{tenantID:safeTenant},state,member,directoryEntry};
+    const members=ichefStaffPortalArray(state?.activeOrders?.STAFF_ACCESS)
+        .filter(item=>item&&item.active!==false);
+    const directory=ichefStaffPortalArray(state?.activeOrders?.DIRECTORY_MASTER)
+        .filter(item=>item&&item.active!==false);
+
+    const norm=value=>String(value??'').trim().toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ');
+    const wantedNormalized=norm(wanted);
+    const technical=item=>new Set(ichefStaffResetIdentityValues(item).map(norm).filter(Boolean));
+    const aliases=item=>[
+        ...technical(item),item?.name,item?.pseudo,item?.displayName,
+        item?.prenom,item?.firstName
+    ].map(norm).filter(Boolean);
+    const isMatch=item=>aliases(item).includes(wantedNormalized);
+    const linked=(a,b)=>{
+        const aIds=technical(a),bIds=technical(b);
+        return [...aIds].some(value=>bIds.has(value));
+    };
+    const groups=[];
+    const directoryLinks=new Map();
+
+    for(const member of members){
+        const matchingDirectory=directory.filter(item=>linked(member,item));
+        // Une fiche STAFF_ACCESS ne doit jamais lier plusieurs personnes RH.
+        matchingDirectory.forEach(row=>
+            directoryLinks.set(row,(directoryLinks.get(row)||0)+1)
+        );
+        groups.push({
+            member,directoryEntry:matchingDirectory.length===1?matchingDirectory[0]:null,
+            linkedDirectory:matchingDirectory,
+            ambiguous:matchingDirectory.length>1
+        });
+    }
+    for(const row of directory){
+        if(directoryLinks.has(row))continue;
+        const staffId=ichefStaffActivationTechnicalId(row);
+        // Le PIN est écrit après vérification par identifiant technique stable.
+        if(!staffId)continue;
+        groups.push({
+            member:{
+                ...row,id:staffId,
+                name:ichefStaffActivationDisplayName(row)
+            },
+            directoryEntry:row,linkedDirectory:[row],ambiguous:false
+        });
+    }
+
+    const matched=groups.filter(group=>
+        isMatch(group.member)||group.linkedDirectory.some(isMatch)
+    );
+    // N'envoyer aucun code si deux employés ont le même nom / alias.
+    if(matched.length!==1)return null;
+    const selected=matched[0];
+    if(selected.ambiguous || selected.linkedDirectory.some(
+        row=>directoryLinks.has(row)&&directoryLinks.get(row)!==1
+    ))return null;
+    const staffId=ichefStaffResetCanonicalId(selected);
+    if(!staffId)return null;
+    return {
+        tenant,state,member:selected.member,
+        directoryEntry:selected.directoryEntry||{},canonicalStaffId:staffId,
+        aliases:[...new Set([
+            ...ichefStaffActivationAliases(selected.member),
+            ...ichefStaffActivationAliases(selected.directoryEntry||{})
+        ])]
+    };
 }
 function ichefStaffResetMailer(){
     const user=String(process.env.GMAIL_USER||process.env.EMAIL_USER||process.env.SMTP_USER||'').trim();
@@ -24644,7 +24729,7 @@ app.post('/api/staff/pin-reset/code/request',async(req,res)=>{
     const requestRef=nodeCrypto.randomBytes(6).toString('hex');
     const audit=(status,extra={})=>{
         // Ni adresse e-mail, ni identifiant, ni code PIN/OTP dans les logs.
-        console.info('[iCHEF STAFF PIN EMAIL V297]',JSON.stringify({
+        console.info('[iCHEF STAFF PIN EMAIL V298]',JSON.stringify({
             ref:requestRef,status,...extra
         }));
     };
@@ -38282,6 +38367,3 @@ console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
 console.log('==========================================');
 }
 );
-
-
-
