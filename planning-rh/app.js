@@ -8,6 +8,7 @@
 
 
 
+
 /* iCHEF Planning V287 : contrôle juridique vérifié + compatibilité de chargement V285 + sélection de cases libres, plusieurs collaborateurs,
     validation groupée et synchronisation via les API RH existantes. */
 /* V266: source fournie par le client, renommée en .js. */
