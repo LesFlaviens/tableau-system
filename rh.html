@@ -46,7 +46,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>iCHEF RH · Legal Command Center · France / Suisse</title>
-<meta name="ichef-build" content="RH-V301-PLANNING-TRANSFER-PRIORITAIRE">
+<meta name="ichef-build" content="RH-V302-PLANNING-CONNEXION-UNIQUE">
 <script>
 ;
 /* RH V264 - preserved script #1 */
@@ -185,14 +185,23 @@ html{background:#080a0d}body{margin:0;background:#080a0d;color:#f2f3f4;font:500 
 </style>
 <!-- iCHEF RH V301 : le lien Planning doit utiliser l'authentification RH unique.
      Garde placée AVANT les anciens écouteurs de navigation ; aucune donnée sensible n'est transmise. -->
-<script id="ichef-rh-v301-priority-planning-navigation">
+<script id="ichef-rh-v302-priority-planning-navigation">
+// Routage unique sur les boutons de Planning RH, installé AVANT les gestionnaires historiques.
+// Ne modifie pas la connexion, le PIN, les droits ou les autres éléments du menu.
 (function(){
   'use strict';
+  const targets=[
+    '#rh-v226-sidebar [data-v226-nav="planning"]',
+    '#rh-v236-side [data-v236-nav="planning"]',
+    '#director-hub .rh-cockpit-nav button[onclick*="iChefOpenPlanningRH"]',
+    '#director-hub .rh-view-full-plan',
+    '#rh-v287-directory .v292-open-planning',
+    '.rh-v259-open', '.ichef-v258-open'
+  ].join(',');
   document.addEventListener('click',function(event){
-    const element=event.target && event.target.closest?.(
-      '#rh-v226-sidebar [data-v226-nav="planning"], #rh-v236-side [data-v236-nav="planning"]'
-    );
-    if(!element || typeof window.iChefOpenPlanningRH!=='function')return;
+    const target=event.target;
+    const button=target && typeof target.closest==='function' ? target.closest(targets) : null;
+    if(!button || typeof window.iChefOpenPlanningRH!=='function')return;
     event.preventDefault();
     event.stopImmediatePropagation();
     void window.iChefOpenPlanningRH();
@@ -4534,22 +4543,17 @@ NOTE : le moteur fournit une assistance de conformité à partir du profil confi
   async function ensureSession(){
     const tenant=getTenant();
     if(!TENANT_RE.test(tenant))throw Error('Établissement inconnu. Connectez-vous à RH.');
-    const pin=getRhPin();
-    // Un jeton stocké seul ne prouve pas que RH est encore connecté.
-    if(!/^\d{4,12}$/.test(pin))throw Error('Session RH non disponible. Reconnectez-vous à RH.');
     const device=getDevice();
+    // Jeton délivré par le serveur : on le réutilise jusqu'à expiration.
+    // Les API du Planning revérifient signature, appareil, établissement et droits.
     const previous=existing(tenant,device);
-    if(previous){
-      try{
-        const check=await checkedJSON('/api/rh/planning/premium/state?tenantID='+encodeURIComponent(tenant)+'&month='+new Date().toISOString().slice(0,7),{
-          headers:{'Accept':'application/json','Authorization':'Bearer '+previous.token,
-            'X-iCHEF-Tenant':tenant,'X-iCHEF-Device':device}
-        });
-        if(check.tenantID===tenant&&Array.isArray(check.staff))return previous;
-      }catch(_){
-        // Un jeton expiré ou invalidé ne sera jamais réutilisé.
-      }
-      clearPlanningToken();
+    if(previous)return previous;
+
+    // Aucun jeton RH Planning disponible : il faut une connexion RH déjà validée.
+    // Le PIN n'est jamais placé dans l'URL ou stocké dans la session.
+    const pin=getRhPin();
+    if(!/^\d{4,12}$/.test(pin)){
+      throw Error('Accès RH non reconnu dans cette page. Revenez à RH et connectez-vous avec votre PIN.');
     }
     const response=await checkedJSON('/api/rh/planning/session',{
       method:'POST',
@@ -4557,23 +4561,24 @@ NOTE : le moteur fournit une assistance de conformité à partir du profil confi
         'X-iCHEF-Tenant':tenant,'X-iCHEF-Device':device},
       body:JSON.stringify({tenantID:tenant,pin,deviceId:device})
     });
-    if(response.success!==true||typeof response.accessToken!=='string'||response.accessToken.length<30)
+    if(response.success!==true||typeof response.accessToken!=='string'||response.accessToken.length<30){
       throw Error('Le serveur n’a pas délivré de session Planning autorisée.');
+    }
     const ttl=Math.max(60,Math.min(7200,Number(response.expiresInSeconds)||7200));
     const row={tenant,device,token:response.accessToken,actor:response.actor||null,
       exp:Date.now()+ttl*1000-15000};
-    try{sessionStorage.setItem(KEY,JSON.stringify(row));}
-    catch(_){throw Error('Le stockage de session est désactivé dans ce navigateur.');}
+    // IMPORTANT : écrire la session AVANT toute navigation. Un seul onglet.
     try{
-      const valid=await checkedJSON('/api/rh/planning/premium/state?tenantID='+encodeURIComponent(tenant)+'&month='+new Date().toISOString().slice(0,7),{
-        headers:{'Accept':'application/json','Authorization':'Bearer '+row.token,
-          'X-iCHEF-Tenant':tenant,'X-iCHEF-Device':device}
-      });
-      if(valid.tenantID!==tenant||!Array.isArray(valid.staff))throw Error('Les droits Planning RH ne sont pas confirmés par le serveur.');
-    }catch(error){
-      clearPlanningToken();
-      throw error;
-    }
+      sessionStorage.setItem(KEY,JSON.stringify(row));
+      const saved=JSON.parse(sessionStorage.getItem(KEY)||'null');
+      if(saved?.token!==row.token||saved?.tenant!==tenant||saved?.device!==device){
+        throw Error('Session navigateur non persistée.');
+      }
+    }catch(_){throw Error('Le navigateur bloque la session temporaire. Autorisez les données du site iCHEF.');}
+    // V301 vérifiait encore l'état RH avant d'ouvrir le planning. Si ce GET
+    // échouait ou expirait, il supprimait le jeton pourtant valide : régression.
+    // Ici, aucune donnée n'est retournée sans contrôle d'autorisation du serveur ;
+    // le Planning recharge et vérifie lui-même son état via l'API protégée.
     return row;
   }
   async function provision(){
@@ -4585,7 +4590,10 @@ NOTE : le moteur fournit une assistance de conformité à partir du profil confi
     }).finally(()=>{ongoing=null;});
     return ongoing;
   }
+  let navigating=false;
   async function openPlanning(options){
+    if(navigating)return false;
+    navigating=true;
     try{
       const row=await provision();
       const dest=new URL('/planning-rh/',location.origin);
@@ -4594,10 +4602,11 @@ NOTE : le moteur fournit une assistance de conformité à partir du profil confi
       if(options&&typeof options==='object'&&options.jump===true)dest.searchParams.set('rhJump','1');
       location.assign(dest.pathname+dest.search);
     }catch(err){
-      // Ne pas ouvrir l'écran PIN du Planning en cas d'échec de transfert.
-      const message=err?.name==='AbortError'?'Serveur RH indisponible. Réessayez.':String(err?.message||'Connexion Planning indisponible.');
-      console.warn('[iCHEF RH/Planning V297] Transfert de session refusé:',message);
+      // Jamais de transfert d'accès implicite, et jamais de secret dans l'URL.
+      const message=err?.name==='AbortError'?'Serveur RH trop lent. Réessayez.':String(err?.message||'Connexion Planning indisponible.');
+      console.warn('[iCHEF RH/Planning V302] Ouverture refusée:',message);
       alert('Ouverture du Planning impossible : '+message);
+      navigating=false;
     }
     return false;
   }
