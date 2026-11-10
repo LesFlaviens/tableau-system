@@ -2,7 +2,18 @@
 
 
 
-/* iCHEF Planning V302 : contrôle juridique vérifié + compatibilité de chargement V285 + sélection de cases libres, plusieurs collaborateurs,
+
+
+
+
+
+
+
+
+
+
+
+/* iCHEF Planning V303 : enregistrement rapide et preuve serveur ; contrôle juridique vérifié + compatibilité de chargement V285 + sélection de cases libres, plusieurs collaborateurs,
     validation groupée et synchronisation via les API RH existantes. */
 /* V266: source fournie par le client, renommée en .js. */
 /* iCHEF OS Planning Premium PWA · client connecté au TIMESHEETS_MASTER.
@@ -537,12 +548,28 @@ function multiOpenEditor(){
 }
 // V281 — glisser pour sélectionner sans dupliquer les enregistrements.
 // La validation continue d'utiliser saveMultiple() et le serveur RH existants.
+// V303 : boutons tactiles directs uniquement si les contrôles de prévenance
+// n'exigent ni motif ni examen juridique. Les autres cas ouvrent l'éditeur.
 function multiQuickPreset(kind){
- if(!['M','S','C','R','CP'].includes(kind)||!multiEnabled||!multiCells.size||readOnly||busy)return;
+ if(!['M','S','C','R','CP'].includes(kind)||!multiEnabled||!multiCells.size||readOnly||busy||!token)return;
  multiOpenEditor();
  if(!selected)return;
  $('kind').value=kind;
  updateForm();
+ const cells=selected.bulkCells||[];
+ const notice=legalEditSummary();
+ // Ne pas contourner la vérification de droit ou la règle des 14 jours.
+ const direct=cells.length>0 && cells.every(c=>planningLeadDaysV301(c.date)>=14) &&
+    Boolean(notice.profile) && !notice.unknown && notice.count===0;
+ if(!direct)return; // L'éditeur reste ouvert pour justification, horaires ou contrôle.
+ // Les horaires du matin/soir/coupure utilisent les champs de l'éditeur existant.
+ // Ne pas créer de plage horaire arbitraire pour une case vide : ouvrir l'éditeur.
+ if(['M','S','C'].includes(kind) && cells.some(c=>{
+   const p=staff.find(x=>String(x.id)===String(c.person));
+   return !p || !get(p,new Date(c.date+'T12:00:00')).original;
+ }))return;
+ $('modal-backdrop').classList.add('hide');
+ void saveMultiple({quick:true});
 }
 function multiSpanBetween(a,b){
  if(!multiValidDate(a)||!multiValidDate(b))return [];
@@ -921,7 +948,27 @@ function closeModal(){selected=null;legalEditRender();$('modal-backdrop').classL
 function updateForm(){const k=$('kind').value;document.querySelectorAll('[data-preset]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.preset===k)));for(const id of ['time1','time2'])$(id).classList.toggle('hide',!['M','S','C'].includes(k));$('split-row').classList.toggle('hide',k!=='C');legalEditRender();}
 function pair(a,b){return /^\d{2}:\d{2}$/.test(a)&&/^\d{2}:\d{2}$/.test(b)&&a!==b;}
 function getDraft(){const k=$('kind').value,original=selected?.base||{},note=$('note').value.trim().slice(0,500);let r={...original,status:'off',s1:'',s2:'',pause:0,obs:packDayTasks(note,splitDayTasks(String(original.obs||'')).tasks)};if(['M','S','C'].includes(k)){if(!pair($('start').value,$('end').value))throw Error('Horaires de service invalides.');r.status=k==='M'?'off_soir':k==='S'?'off_matin':'present';const s=`${$('start').value}-${$('end').value}`;if(k==='S')r.s2=s;else r.s1=s;if(k==='C'){if(!pair($('split-start').value,$('split-end').value))throw Error('Deuxième service invalide.');r.s2=`${$('split-start').value}-${$('split-end').value}`;}}else{r.status=({R:'off',CP:'conge',MAL:'maladie',RECUP:'recup',FERIE:'ferie',FORM:'formation',A:'absence_autorisee',NJS:'absence_injustifiee',ACC:'accident_travail',MAT:'maternite',PAT:'paternite',PAR:'parental',EFM:'enfant_malade',EVF:'evenement_familial',DEC:'deces',SSL:'sans_solde',O:'off'})[k]||'off';}return k==='O'?null:r;}
-async function saveMultiple(){
+// V303 : reçu consultable à l'écran, sans enregistrer de données RH dans
+// le stockage local. Les identifiants correspondent à l'historique côté serveur.
+let planningProofsV303=[];
+function planningShowProofV303(records,partial=false){
+ if(!Array.isArray(records)||!records.length)return;
+ planningProofsV303=records.slice();
+ const host=$('audit-title')?.parentElement;
+ if(!host)return;
+ let button=$('planning-proof-v303');
+ if(!button){
+  button=document.createElement('button');button.id='planning-proof-v303';
+  button.type='button';button.textContent='Voir la preuve serveur';
+  button.style.cssText='margin:8px 0;padding:9px 13px;min-height:42px;border-radius:9px;cursor:pointer;border:1px solid currentColor;background:transparent;color:inherit';
+  button.addEventListener('click',()=>{
+   const proof=planningProofsV303.map(x=>`${x.date} · ${x.staffName} · ${x.versionId} · ${x.serverTime}`).join('\n');
+   alert(`Preuve d’enregistrement côté serveur\n\n${proof}\n\nCes identifiants figurent dans l’historique central. La réception par le téléphone Staff n’est pas confirmée par ce reçu.`);
+  });host.appendChild(button);
+ }
+ button.textContent=partial?'Voir les preuves des cases confirmées':'Voir la preuve serveur';
+}
+async function saveMultiple({quick=false}={}){
  if(!selected?.bulkCells?.length||busy||readOnly||!token)return;
  const cells=selected.bulkCells.slice().sort((a,b)=>a.date.localeCompare(b.date)||a.person.localeCompare(b.person));
  if(cells.length>MULTI_CELL_LIMIT)return notify(`Maximum ${MULTI_CELL_LIMIT} cases.`);
@@ -931,9 +978,9 @@ async function saveMultiple(){
  let template;
  try{template=getDraft();}catch(e){return notify(e.message||'Horaires invalides.');}
  const n=multiPeople().size;
- if(!confirm(`Appliquer les mêmes horaires à ${cells.length} cases de ${n} collaborateur${n>1?'s':''} ?\n\nChaque case sera enregistrée séparément sur le serveur RH. En cas d'échec, les cases restantes resteront sélectionnées. Vérifiez les repos, congés et obligations légales avant de continuer.`))return;
+ if(!quick && !confirm(`Appliquer les mêmes horaires à ${cells.length} cases de ${n} collaborateur${n>1?'s':''} ?\n\nChaque case sera enregistrée séparément sur le serveur RH. En cas d'échec, les cases restantes resteront sélectionnées. Vérifiez les repos, congés et obligations légales avant de continuer.`))return;
  busy=true;const btn=$('shift-form').querySelector('[type="submit"]');btn.disabled=true;multiUpdateToolbar();
- let done=0,failed=null;const changedMonths=new Set();
+ let done=0,failed=null;const changedMonths=new Set(),proofs=[];
  try{
   // Toujours relire les mois officiels avant écriture, afin de préserver
   // les dernières notes, tâches et révisions de chaque case.
@@ -955,15 +1002,20 @@ async function saveMultiple(){
    try{
     res=await jsonFetch('/api/rh/planning/premium/day',{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenant,date:cell.date,staffId:cell.person,day:newDay,reason,legalReview,baseRevision:base?.planningVersionId||null})});
    }catch(e){failed=e;break;}
+   // Ne pas appliquer localement une modification sans reçu du serveur.
+   if(!res.success || !res.versionId || !res.serverTime){failed=Error('Accusé serveur incomplet : vérification requise.');break;}
    const mm=cell.date.slice(0,7),d=String(Number(cell.date.slice(8)));
    if(!state[mm])state[mm]={};if(!state[mm][cell.person])state[mm][cell.person]={};
    if(res.day)state[mm][cell.person][d]=res.day;else delete state[mm][cell.person][d];
+   proofs.push({staffName:res.staffName||p.name,staffId:cell.person,date:cell.date,
+    versionId:res.versionId,serverTime:res.serverTime,reason});
    multiCells.delete(multiKey(cell.person,cell.date));changedMonths.add(mm);done++;
   }
   for(const mm of changedMonths)broadcastPlanningChange(mm);
   if(done){
    $('audit-title').textContent=`${done} case${done>1?'s':''} · ${n} collaborateur${n>1?'s':''}`;
-   $('audit-detail').textContent=`${done}/${cells.length} case(s) enregistrée(s) · ${reason}`;
+   $('audit-detail').textContent=`${done}/${cells.length} case(s) confirmée(s) par le serveur · ${proofs[proofs.length-1]?.versionId||''}`;
+   planningShowProofV303(proofs,Boolean(failed));
    $('audit-date').textContent=fmt(new Date(),{hour:'2-digit',minute:'2-digit'});
    $('publication-status').textContent='⚠ Horaire(s) modifié(s) · publication à vérifier';
    if(publication?.status==='published')publication={...publication,status:'to_review'};
@@ -974,20 +1026,20 @@ async function saveMultiple(){
    notify(`${done} enregistrée(s), ${cells.length-done} restante(s). Corrigez le problème puis réessayez.`);
    if(failed.status===401||failed.status===403){forget();showAuth(failed.message);}
   }else{
-   setStatus(`${done} cases enregistrées sur le serveur RH`);
+   setStatus(`✓ ${done} case(s) confirmée(s) par le serveur RH · Staff à actualiser`);
    notify(`${done} cases enregistrées. Pensez à publier les mois concernés.`);
    multiClear({all:true});multiEnabled=false;multiUpdateToolbar();
   }
  }catch(e){
   setStatus(e.message||'Synchronisation refusée.',true);
-  if(e.status===401||e.status===403){forget();showAuth(e.message);}else notify('Aucune nouvelle modification : '+e.message);
+  if(e.status===401||e.status===403){forget();showAuth(e.message);}else{if(quick&&selected)$('modal-backdrop').classList.remove('hide');notify('Aucune nouvelle modification : '+e.message);}
  }finally{
   busy=false;btn.disabled=false;multiUpdateToolbar();
   // Ne pas effacer la sélection restante lors du rafraîchissement.
   void refresh(true);
  }
 }
-async function save(){if(selected?.bulkCells?.length)return saveMultiple();if(!selected||busy)return;const reason=$('reason').value.trim();if(legalReasonRequired()&&reason.length<3)return notify('Motif obligatoire pour une date antérieure à J+14.');let day,legalReview;try{day=getDraft();legalReview=legalEditReview();}catch(e){return notify(e.message);}busy=true;setStatus('Enregistrement sur le serveur…');const btn=$('shift-form').querySelector('[type="submit"]');btn.disabled=true;try{const res=await jsonFetch('/api/rh/planning/premium/day',{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenant,date:selected.date,staffId:selected.person,day,reason,legalReview,baseRevision:selected.base?selected.base.planningVersionId||'':null})});const m=selected.date.slice(0,7),n=String(Number(selected.date.slice(8)));if(!state[m])state[m]={};if(!state[m][selected.person])state[m][selected.person]={};if(res.day)state[m][selected.person][n]=res.day;else delete state[m][selected.person][n];$('audit-title').textContent=`Enregistré · ${res.staffName||selected.person}`;$('audit-detail').textContent=`${selected.date} · ${reason}`;$('audit-date').textContent=fmt(new Date(),{hour:'2-digit',minute:'2-digit'});closeModal();render();setStatus('Enregistré sur le serveur central · RH et Staff informés');notify('Horaire enregistré sur le serveur ; actualisation Staff déclenchée.');broadcastPlanningChange(m);lastFetch=0;
+async function save(){if(selected?.bulkCells?.length)return saveMultiple();if(!selected||busy)return;const reason=$('reason').value.trim();if(legalReasonRequired()&&reason.length<3)return notify('Motif obligatoire pour une date antérieure à J+14.');let day,legalReview;try{day=getDraft();legalReview=legalEditReview();}catch(e){return notify(e.message);}busy=true;setStatus('Enregistrement sur le serveur…');const btn=$('shift-form').querySelector('[type="submit"]');btn.disabled=true;try{const res=await jsonFetch('/api/rh/planning/premium/day',{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenant,date:selected.date,staffId:selected.person,day,reason,legalReview,baseRevision:selected.base?selected.base.planningVersionId||'':null})});if(!res.success||!res.versionId||!res.serverTime)throw Error('Enregistrement non confirmé par le serveur. Actualisez pour vérifier.');const m=selected.date.slice(0,7),n=String(Number(selected.date.slice(8)));if(!state[m])state[m]={};if(!state[m][selected.person])state[m][selected.person]={};if(res.day)state[m][selected.person][n]=res.day;else delete state[m][selected.person][n];$('audit-title').textContent=`Enregistré · ${res.staffName||selected.person}`;$('audit-detail').textContent=`${selected.date} · ${reason}`;$('audit-date').textContent=fmt(new Date(),{hour:'2-digit',minute:'2-digit'});planningShowProofV303([{staffName:res.staffName||selected.person,staffId:selected.person,date:selected.date,versionId:res.versionId,serverTime:res.serverTime,reason}]);closeModal();render();setStatus('Enregistré sur le serveur central · RH et Staff informés');notify('Horaire enregistré sur le serveur ; actualisation Staff déclenchée.');broadcastPlanningChange(m);lastFetch=0;
 if(publication?.status==='published'){$('publication-status').textContent='⚠ Horaire modifié · à republier';publication={...publication,status:'to_review'};}}
 catch(e){setStatus(e.message,true);if(e.status===409){notify('Planning modifié ailleurs : rechargement nécessaire avant de réessayer.');closeModal();lastFetch=0;}else if(e.status===401||e.status===403){forget();showAuth(e.message);}else notify('Enregistrement refusé : '+e.message);}
 finally{busy=false;btn.disabled=false;}}
@@ -1145,3 +1197,7 @@ async function startPlanningV283(){
 }
 void startPlanningV283();
 })();
+
+
+
+
