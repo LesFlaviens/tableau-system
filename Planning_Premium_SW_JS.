@@ -1,73 +1,53 @@
-/* iCHEF RH Planning Premium SW v274 · cache statique uniquement. */
+
+
+
+
+
+
+
+
+/* iCHEF RH Planning Premium SW V306 — cache statique uniquement.
+   API, authentification, PIN, données RH et Socket.IO jamais mis en cache. */
 'use strict';
-const CACHE='ichef-planning-premium-static-v274';
-const SHELL=['/planning-rh/','/planning-rh/app.js?v=273','/planning-rh/manifest.webmanifest'];
-self.addEventListener('install',e=>e.waitUntil((async()=>{
-  const c=await caches.open(CACHE);
-  await Promise.allSettled(SHELL.map(async url=>{
-    const r=await fetch(url,{cache:'reload',credentials:'same-origin'});
-    if(r.ok&&r.type!=='opaque')await c.put(url,r.clone());
+const CACHE = 'ichef-planning-premium-static-v306';
+const SHELL = ['/planning-rh/', '/planning-rh/manifest.webmanifest'];
+self.addEventListener('install', event => event.waitUntil((async () => {
+  const cache = await caches.open(CACHE);
+  await Promise.allSettled(SHELL.map(async url => {
+    const response = await fetch(url, { cache: 'reload', credentials: 'same-origin' });
+    if (response.ok && response.type !== 'opaque') await cache.put(url, response.clone());
   }));
   await self.skipWaiting();
 })()));
-self.addEventListener('activate',e=>e.waitUntil((async()=>{
- const keys=await caches.keys();
- await Promise.all(keys.filter(k=>k.startsWith('ichef-planning-premium-static-')&&k!==CACHE).map(k=>caches.delete(k)));
- await self.clients.claim();
+self.addEventListener('activate', event => event.waitUntil((async () => {
+  const keys = await caches.keys();
+  await Promise.all(keys.filter(key => key.startsWith('ichef-planning-premium-static-') && key !== CACHE).map(key => caches.delete(key)));
+  await self.clients.claim();
 })()));
-self.addEventListener('fetch',e=>{
- const r=e.request;
- if(r.method!=='GET')return;
- const u=new URL(r.url);
- if(u.origin!==self.location.origin)return;
- // Strict isolation: no API responses, no PIN, no timesheets, no tokens cached.
- if(u.pathname.startsWith('/api/')||u.pathname.startsWith('/socket.io/')||
- u.pathname==='/get-current-state'||u.pathname==='/update-order')return;
- if(!u.pathname.startsWith('/planning-rh/'))return;
- if(r.mode==='navigate'){
-  e.respondWith(fetch(r,{cache:'no-store'}).then(x=>x).catch(()=>caches.match('/planning-rh/')));
-  return;
- }
- if(u.pathname==='/planning-rh/app.js'||u.pathname==='/planning-rh/manifest.webmanifest'){
-  e.respondWith(fetch(r,{cache:'no-cache'}).then(async x=>{
-    if(x.ok){const c=await caches.open(CACHE);await c.put(r,x.clone());}
-    return x;
-  }).catch(()=>caches.match(r)));
- }
-});/* iCHEF RH Planning Premium SW v274 · cache statique uniquement. */
-'use strict';
-const CACHE='ichef-planning-premium-static-v274';
-const SHELL=['/planning-rh/','/planning-rh/app.js?v=273','/planning-rh/manifest.webmanifest'];
-self.addEventListener('install',e=>e.waitUntil((async()=>{
-  const c=await caches.open(CACHE);
-  await Promise.allSettled(SHELL.map(async url=>{
-    const r=await fetch(url,{cache:'reload',credentials:'same-origin'});
-    if(r.ok&&r.type!=='opaque')await c.put(url,r.clone());
-  }));
-  await self.skipWaiting();
-})()));
-self.addEventListener('activate',e=>e.waitUntil((async()=>{
- const keys=await caches.keys();
- await Promise.all(keys.filter(k=>k.startsWith('ichef-planning-premium-static-')&&k!==CACHE).map(k=>caches.delete(k)));
- await self.clients.claim();
-})()));
-self.addEventListener('fetch',e=>{
- const r=e.request;
- if(r.method!=='GET')return;
- const u=new URL(r.url);
- if(u.origin!==self.location.origin)return;
- // Strict isolation: no API responses, no PIN, no timesheets, no tokens cached.
- if(u.pathname.startsWith('/api/')||u.pathname.startsWith('/socket.io/')||
- u.pathname==='/get-current-state'||u.pathname==='/update-order')return;
- if(!u.pathname.startsWith('/planning-rh/'))return;
- if(r.mode==='navigate'){
-  e.respondWith(fetch(r,{cache:'no-store'}).then(x=>x).catch(()=>caches.match('/planning-rh/')));
-  return;
- }
- if(u.pathname==='/planning-rh/app.js'||u.pathname==='/planning-rh/manifest.webmanifest'){
-  e.respondWith(fetch(r,{cache:'no-cache'}).then(async x=>{
-    if(x.ok){const c=await caches.open(CACHE);await c.put(r,x.clone());}
-    return x;
-  }).catch(()=>caches.match(r)));
- }
+self.addEventListener('fetch', event => {
+  const request = event.request;
+  if (request.method !== 'GET') return;
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin || !url.pathname.startsWith('/planning-rh/')) return;
+  // Ne jamais intercepter les API ni leurs réponses, l'auth ou les sockets.
+  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/socket.io/') ||
+      url.pathname === '/get-current-state' || url.pathname === '/update-order') return;
+  if (request.mode === 'navigate') {
+    event.respondWith(fetch(request, { cache: 'no-store' }).catch(() => caches.match('/planning-rh/')));
+    return;
+  }
+  // Code du planning : réseau d'abord ; éviter de servir une ancienne version.
+  if (url.pathname === '/planning-rh/app.js' || url.pathname === '/planning-rh/manifest.webmanifest') {
+    event.respondWith(fetch(request, { cache: 'no-cache' }).then(async response => {
+      if (response.ok && response.type !== 'opaque') {
+        const cache = await caches.open(CACHE);
+        await cache.put(request, response.clone());
+      }
+      return response;
+    }).catch(() => caches.match(request)));
+  }
 });
+
+
+
+
