@@ -12,1152 +12,731 @@
 
 
 
-(()=>{'use strict';
-// V286 : accusé de chargement, distinct de l'authentification.
-window.__ichefPlanningJsLoadedV286=true;
-const $=id=>document.getElementById(id);
-const query=new URLSearchParams(location.search);
-// Même API officielle que rh-core.js. Pas d'origine configurable via URL / utilisateur.
-const RH_API_BASE = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
-  ? 'http://localhost:10000'
-  : 'https://tableau-system.onrender.com';
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>iCHEF OS · Planning RH Premium</title>
+<script>if(new URLSearchParams(location.search).get("fromRh")==="1")document.documentElement.classList.add("ichef-from-rh");</script>
+<style>
+:root{--ink:#14212a;--muted:#72808c;--line:#e5e9ed;--bg:#f6f8fa;--white:#fff;--nav:#0e1a25;--nav2:#152634;--gold:#c6a56b;--green:#148e72;--red:#d45c59;--blue:#4c87c1;--orange:#d69449;--shadow:0 10px 34px rgba(20,36,48,.055)}
+*{box-sizing:border-box}html,body{margin:0;height:100%;font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color:var(--ink);background:var(--bg)}button,select,input,textarea{font:inherit}button{cursor:pointer}button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid rgba(53,123,172,.45);outline-offset:2px}button:disabled{cursor:not-allowed;opacity:.45}
+.shell{min-height:100vh;display:grid;grid-template-columns:224px minmax(0,1fr)}
+.sidebar{background:var(--nav);color:#d7e0e6;padding:23px 14px;display:flex;flex-direction:column;gap:5px;position:sticky;top:0;height:100vh}.brand{margin:0 10px 28px}.brand-logo{font-size:29px;font-weight:850;letter-spacing:.055em;color:#fff}.brand-logo span{font-size:13px;color:var(--gold);font-weight:750;margin-left:5px;letter-spacing:0}.brand-sub{color:#92a3ae;font-size:10px;letter-spacing:2px;margin-top:7px;font-weight:700}.nav-label{font-size:10px;font-weight:800;color:#80919c;letter-spacing:1.7px;margin:18px 13px 8px}.nav{border:0;border-radius:11px;padding:13px 14px;text-align:left;display:flex;align-items:center;gap:13px;background:transparent;color:#b4c3cc;font-weight:650;font-size:13px}.nav:hover{background:#1b2b39;color:#fff}.nav.active{color:#141f27;background:#f3f5f5;box-shadow:0 3px 18px rgba(0,0,0,.1);font-weight:800}.nav .ico{width:19px;text-align:center;font-size:18px}.sidebar-spacer{flex:1}.demo-pill{border:1px solid #355061;background:#162d3c;color:#b8cdd9;border-radius:11px;padding:13px;line-height:1.45;font-size:11px}.demo-pill strong{color:#e5be81;display:block;font-size:12px;margin-bottom:3px}.sidebar-foot{color:#7e929f;font-size:11px;padding:14px 6px 0}
+.main{min-width:0;padding:26px 30px 22px;max-height:100vh;overflow-y:auto}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:21px}.eyebrow{letter-spacing:2.4px;color:#a78046;font-weight:850;font-size:10px;text-transform:uppercase;margin-bottom:7px}.top h1{font-size:27px;letter-spacing:-.85px;line-height:1.05;margin:0;font-weight:850}.sub{font-size:12px;color:var(--muted);margin-top:8px}.actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap;justify-content:flex-end}.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:38px;border-radius:9px;padding:9px 13px;border:1px solid #dce3e8;background:white;color:#263742;font-weight:740;font-size:12px;white-space:nowrap}.btn:hover:not(:disabled){border-color:#a4bbc7;background:#f8fafb}.btn.dark{background:#101e29;color:white;border-color:#101e29}.btn.dark:hover{background:#203544}.btn.gold{background:#e9d8b9;color:#49381e;border-color:#e9d8b9}.btn.soft{background:#edf3f8;border-color:#edf3f8;color:#286383}.btn.danger{color:#b3484c;border-color:#f1d2d2}.btn.small{min-height:33px;padding:7px 11px}.userpic{height:38px;width:38px;display:grid;place-items:center;background:linear-gradient(135deg,#e9cc92,#bd9555);color:#513a19;border-radius:50%;font-weight:900;font-size:12px;margin-left:5px}
+.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:11px;margin-bottom:17px}.kpi{background:#fff;border:1px solid var(--line);border-radius:13px;box-shadow:var(--shadow);padding:15px 17px;display:flex;justify-content:space-between;align-items:center;min-width:0}.kpi label{color:#6c7c88;font-size:11px;letter-spacing:.2px;font-weight:720}.kpi .value{font-size:23px;font-weight:850;letter-spacing:-.5px;margin-top:6px}.kpi .hint{font-size:10px;color:#86959f;margin-top:4px}.kpi-icon{display:grid;place-items:center;border-radius:12px;background:#edf4f7;height:43px;min-width:43px;font-size:21px;color:#608496}.kpi:nth-child(2) .kpi-icon{background:#e7f5ee;color:#118963}.kpi:nth-child(3) .kpi-icon{background:#fff5e9;color:#bd8742}.kpi:nth-child(4) .kpi-icon{background:#f1eff9;color:#7f6ba2}
+.board{background:#fff;border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);overflow:hidden;min-width:0}.board-toolbar{display:flex;justify-content:space-between;gap:14px;align-items:center;padding:17px 19px;border-bottom:1px solid var(--line)}.range{display:flex;align-items:center;gap:9px}.range-title{font-size:16px;font-weight:850;min-width:202px;text-align:center;letter-spacing:-.25px}.iconbtn{height:33px;width:33px;border-radius:9px;border:1px solid #dce2e7;background:#fff;color:#293944;font-size:21px;display:grid;place-items:center}.iconbtn:hover{background:#f0f5f7}.segmented{display:flex;border:1px solid #e2e7ea;border-radius:9px;padding:3px;gap:3px;background:#f6f8f9}.segmented button{padding:7px 14px;border:0;border-radius:7px;font-size:11px;font-weight:800;color:#778895;background:transparent}.segmented button.active{background:white;color:#152b39;box-shadow:0 2px 7px rgba(22,35,45,.1)}.toolbar-right{display:flex;gap:9px;align-items:center}.sel{height:34px;border:1px solid #dfe5e9;padding:0 10px;border-radius:9px;background:#fff;color:#344854;font-weight:660;font-size:12px}.board-sub{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 19px;border-bottom:1px solid var(--line);font-size:11px;color:#70818e}.legend{display:flex;align-items:center;gap:16px;flex-wrap:wrap}.dot{width:8px;height:8px;display:inline-block;border-radius:3px;margin-right:5px}.dot.m{background:#568aa3}.dot.s{background:#c6a16b}.dot.c{background:#ac9bcc}.dot.a{background:#cd6d69}.dot.r{background:#bbc7cd}
+.content-grid{display:grid;grid-template-columns:minmax(0,1fr) 265px;gap:15px;align-items:start}.schedule-wrap{overflow-x:auto;max-height:calc(100vh - 300px);overflow-y:auto;min-height:390px}.schedule{width:100%;border-collapse:separate;border-spacing:0;table-layout:fixed}.schedule th{height:49px;background:#fafbfc;color:#60737f;font-size:10px;font-weight:750;border-bottom:1px solid var(--line);padding:5px 6px;position:sticky;top:0;z-index:2}.schedule th:first-child{width:181px;text-align:left;padding-left:20px;position:sticky;left:0;z-index:5}.schedule td{height:72px;padding:7px 6px;text-align:center;border-bottom:1px solid #edf1f3;border-left:1px solid #f0f3f5;vertical-align:middle}.schedule td:first-child{border-left:0;background:white;position:sticky;left:0;z-index:3;text-align:left;padding:8px 12px}.schedule tbody tr:hover td{background:#fafcfd}.schedule tbody tr:hover td:first-child{background:#f9fcfd}.weekday{display:block;text-transform:uppercase;letter-spacing:1.1px}.daynumber{display:block;font-size:16px;color:#162836;font-weight:850;margin-top:4px}.schedule th.today{background:#eff5f6}.schedule td.today{background:#fbfdfd}.staff{display:flex;gap:9px;align-items:center}.avatar{height:34px;width:34px;min-width:34px;border-radius:11px;background:#e4edf3;color:#3a6379;font-weight:850;font-size:10px;display:grid;place-items:center}.staff-name{font-size:11px;font-weight:850;white-space:nowrap}.staff-role{font-size:10px;color:#84949d;margin-top:4px}.entry{width:100%;min-height:47px;border-radius:9px;border:1px solid transparent;text-align:left;padding:8px 7px;display:flex;flex-direction:column;justify-content:center;gap:4px;transition:transform .12s,background .12s}.entry:hover{transform:translateY(-1px);filter:saturate(1.3)}.entry b{font-size:10px;white-space:nowrap;font-weight:850}.entry small{font-size:9px;white-space:nowrap;font-weight:650;color:inherit;opacity:.84}.entry.M{background:#e6f0f6;color:#2d637d}.entry.S{background:#faf0e2;color:#946c35}.entry.C{background:#eeeafa;color:#675388}.entry.R{background:#f3f5f6;color:#8b969d}.entry.A{background:#fcebea;color:#a84d4d}.entry.O{background:#fff;color:#c0c9cd;border:1px dashed #e2e6e9;align-items:center;font-size:18px}.entry.O:hover{background:#f6fafb;color:#5a8da2}.schedule .off-day{background:#fbfbfc}.schedule tfoot td{height:48px;background:#f7fafb;font-size:11px;color:#60717a;font-weight:800;border-top:1px solid var(--line);border-bottom:0}.schedule tfoot td:first-child{background:#f7fafb}.day-summary{font-size:10px;font-weight:800}.day-summary span{display:block;font-size:9px;font-weight:600;color:#a1adb4;margin-top:3px}
+.sidepanel{border-left:1px solid var(--line);min-height:480px;padding:20px 17px 16px;background:linear-gradient(#fff,#fdfefe)}.panel-title{font-size:13px;font-weight:850;margin:0 0 13px}.panel-muted{color:var(--muted);font-size:11px;line-height:1.5;margin-bottom:18px}.mini-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:13px}.mini-head span{font-size:11px;color:#8899a4}.progress{height:7px;background:#edf1f3;border-radius:9px;overflow:hidden}.progress i{display:block;height:100%;background:#70ad9a;border-radius:9px}.service{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #eef2f4;padding:12px 0;font-size:11px;font-weight:750}.service small{color:#7b8c96;font-size:10px;display:block;margin-top:4px;font-weight:500}.service strong{font-size:12px;color:#233847}.audit{background:#f5f8fa;border-radius:12px;padding:12px;font-size:11px;color:#617380;line-height:1.45;margin-top:19px}.audit b{display:block;color:#253a47;margin-bottom:5px}.audit time{font-size:10px;color:#9aabb3}.panel-section{margin-top:20px;border-top:1px solid #eef1f3;padding-top:17px}.statuslabel{display:inline-flex;align-items:center;gap:6px;font-size:10px;color:#178468;font-weight:820;background:#e9f6f0;border-radius:99px;padding:5px 10px}.bottom-hint{margin:11px 0 0;font-size:10px;color:#98a7ae}
+.month-wrap{padding:15px 17px}.month-head,.month-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:7px}.month-head div{text-align:center;color:#86969f;text-transform:uppercase;letter-spacing:.7px;font-size:10px;font-weight:850;padding:7px}.monthday{border:1px solid var(--line);border-radius:11px;min-height:86px;background:white;padding:9px;text-align:left}.monthday:not(.empty){cursor:pointer}.monthday:not(.empty):hover{border-color:#a6bcc8;background:#f8fbfc}.monthday.empty{background:#fafafa;color:#c9cfd4}.monthday b{display:block;font-size:12px}.monthday small{display:block;font-size:10px;color:#778b98;margin-top:12px}.monthday i{display:block;width:27px;height:4px;border-radius:99px;background:#bfdcce;margin-top:9px}.monthday.today{border-color:#c4a577;box-shadow:inset 0 0 0 1px #dfc9a5}.hide{display:none!important}
+.modal-backdrop{position:fixed;inset:0;background:rgba(11,24,32,.55);z-index:30;display:flex;justify-content:center;align-items:center;padding:15px;backdrop-filter:blur(3px)}.modal{width:min(520px,100%);background:white;border-radius:19px;box-shadow:0 20px 90px rgba(0,0,0,.25);overflow:hidden}.modal-top{padding:22px 25px 17px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:flex-start;gap:14px}.modal h2{font-size:19px;margin:0 0 6px;letter-spacing:-.5px}.modal p{font-size:12px;color:#778896;margin:0}.modal-content{padding:21px 25px;display:grid;grid-template-columns:1fr 1fr;gap:15px}.field{display:flex;flex-direction:column;gap:8px;min-width:0}.field.full{grid-column:1/-1}.field label{font-size:10px;font-weight:850;letter-spacing:.65px;color:#536774;text-transform:uppercase}.field input,.field select,.field textarea{width:100%;min-height:39px;border:1px solid #dce5e9;border-radius:9px;padding:9px 11px;background:#fff;color:var(--ink);font-size:12px}.field textarea{min-height:70px;resize:vertical}.modal-bottom{padding:16px 25px;border-top:1px solid var(--line);display:flex;gap:9px;justify-content:flex-end;flex-wrap:wrap}.form-info{font-size:11px;color:#617482;line-height:1.6;background:#f1f7fa;border:1px solid #ddebf2;border-radius:9px;padding:10px 13px;grid-column:1/-1}.toast{position:fixed;bottom:21px;right:22px;background:#152b36;color:#fff;border-radius:11px;padding:14px 18px;font-size:12px;font-weight:750;z-index:40;box-shadow:0 11px 40px rgba(0,0,0,.3)}
+@media(max-width:1480px){.sidebar{padding-left:11px;padding-right:11px}.main{padding:24px 22px}.content-grid{grid-template-columns:minmax(0,1fr) 232px}.sidepanel{padding:18px 13px}.schedule th:first-child{width:161px}.schedule td:first-child{padding-left:7px}.avatar{height:29px;width:29px;min-width:29px}.staff-name{font-size:10px}}
+@media(max-width:1190px){.content-grid{grid-template-columns:minmax(0,1fr)}.sidepanel{border-top:1px solid var(--line);border-left:0;min-height:auto;display:grid;grid-template-columns:1fr 1fr;gap:15px}.panel-section{margin-top:0;border-top:0;padding-top:0}.schedule-wrap{max-height:none}.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.main{max-height:none}.shell{grid-template-columns:190px minmax(0,1fr)}.top{align-items:start}}
+@media(max-width:740px){.shell{display:block}.sidebar{position:relative;height:auto;display:block;padding:11px 15px}.brand{margin:0}.brand-logo{font-size:20px}.brand-sub,.nav-label,.nav,.sidebar-spacer,.demo-pill,.sidebar-foot{display:none}.main{padding:18px 11px}.top{display:block}.top h1{font-size:23px}.actions{margin:17px 0;justify-content:flex-start}.userpic{display:none}.kpis{gap:8px}.kpi{padding:12px}.kpi .value{font-size:19px}.kpi-icon{display:none}.board-toolbar{flex-wrap:wrap;padding:12px}.range-title{min-width:180px;font-size:13px}.toolbar-right{width:100%;justify-content:space-between}.board-sub{padding:11px;display:block}.legend{gap:9px;margin-top:7px}.schedule{min-width:830px}.sidepanel{display:block}.month-wrap{overflow-x:auto}.month-head,.month-grid{min-width:590px}.modal-content{padding:15px;gap:10px}.modal-top,.modal-bottom{padding:15px}.btn{font-size:11px;padding:9px}}
+@media print{.sidebar,.actions,.sidepanel,.board-toolbar,.board-sub,.bottom-hint{display:none!important}.shell{display:block}.main{padding:5px;max-height:none}.content-grid{display:block}.schedule-wrap{overflow:visible;max-height:none}.schedule{font-size:9px}.schedule th:first-child{width:150px}.entry{border:1px solid #c5ced1}.board{border:0;box-shadow:none}}
 
-const TODAY=new Date(); TODAY.setHours(12,0,0,0);
-const fmt=(d,opts)=>new Intl.DateTimeFormat('fr-FR',opts).format(d);
-const esc=v=>String(v??'').replace(/[&<>"']/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x]));
-const iso=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-const add=(d,n)=>{const a=new Date(d);a.setDate(a.getDate()+n);return a;};
-const monday=d=>{const a=new Date(d);a.setHours(12,0,0,0);a.setDate(a.getDate()-(a.getDay()+6)%7);return a;};
-const month=d=>iso(new Date(d.getFullYear(),d.getMonth(),1,12)).slice(0,7);
-const empty=()=>({k:'O',status:'',start:'',end:'',s2:'',e2:'',pause:0,note:'',original:null});
-const types={M:'MATIN',S:'SOIR',C:'COUPURE',R:'REPOS',O:'+',CP:'CONGÉ',MAL:'MALADIE',RECUP:'RÉCUP',FERIE:'FÉRIÉ',FORM:'FORMATION',A:'ABSENCE',NJS:'ABS. INJUSTIFIÉE',ACC:'ACCIDENT',MAT:'MATERNITÉ',PAT:'PATERNITÉ',PAR:'PARENTAL',EFM:'ENFANT MALADE',EVF:'ÉVÉNEMENT',DEC:'DEUIL',SSL:'SANS SOLDE'};
+/* PWA connectée : mode sécurité et accessibilité */
+.login-shield{position:fixed;inset:0;z-index:9999;background:linear-gradient(130deg,#0b1620,#152b38);display:flex;align-items:center;justify-content:center;padding:18px}
+.login-shield.hide{display:none}.login-card{background:#fff;width:min(440px,100%);padding:34px;border-radius:20px;box-shadow:0 22px 90px #0008;display:grid;gap:14px}.login-brand{color:#10202c;font-size:33px;font-weight:900}.login-brand span{color:#ba914f;font-size:16px}.login-card h2{font-size:24px;line-height:1.1;margin:0}.login-card p{font-size:13px;color:#58717f;margin:0;line-height:1.45}.login-card label{display:grid;gap:6px;font-size:12px;font-weight:800}.login-card input{padding:13px;border:1px solid #c7d3dd;border-radius:10px;color:#14212a;background:#fff;font-size:16px}.login-error{color:#bb3939!important;min-height:1em}.login-card small{color:#697e8b;font-size:11px;line-height:1.5}.login-card button{width:100%;margin-top:6px}
+#board-status{font-weight:750}.entry{cursor:pointer}.entry:focus-visible{outline:3px solid #ba9455}.statuslabel{color:#17745a}
+@media(max-width:740px){.login-card{padding:22px}.schedule-wrap{max-height:calc(100dvh - 280px);min-height:280px}}
 
-/* V287 : aide à la conformité des délais de communication / modification FR-HCR et CH-CCNT.
-   Le profil est choisi par le responsable et conservé côté serveur, jamais déduit d'un PIN.
-   Aucun verrouillage général des plannings et aucune modification des pointages. */
-const LEGAL_PROFILES={
- CH_CCNT_YEAR:{label:'Suisse · CCNT, établissement ouvert toute l’année',pub:14,edit:14,zone:'Europe/Zurich',url:'https://l-gav.ch/fr/convention-actuelle/iv-duree-du-travail-et-repos/art-21-horaire-de-travail-/-enregistrement-de-la-duree-du-temps-de-travail-/-controle-de-la-duree-du-travail'},
- CH_CCNT_SEASON:{label:'Suisse · CCNT, établissement saisonnier',pub:7,edit:7,zone:'Europe/Zurich',url:'https://l-gav.ch/fr/convention-actuelle/iv-duree-du-travail-et-repos/art-21-horaire-de-travail-/-enregistrement-de-la-duree-du-temps-de-travail-/-controle-de-la-duree-du-travail'},
- FR_HCR_AMEN19:{label:'France · HCR, aménagement (avenant n° 19)',pub:15,edit:8,zone:'Europe/Paris',url:'https://www.legifrance.gouv.fr/conv_coll/article/KALIARTI000030068672'},
- FR_HCR_PART_TIME:{label:'France · HCR, temps partiel (règle générale)',pub:null,edit:7,zone:'Europe/Paris',url:'https://www.legifrance.gouv.fr/conv_coll/id/KALISCTA000005713664/'},
- FR_HCR_OTHER:{label:'France · HCR, régime spécifique ou à vérifier',pub:null,edit:null,zone:'Europe/Paris',url:'https://www.legifrance.gouv.fr/conv_coll/id/KALITEXT000005670064'}
-};
-let legalPolicy=null;
-function legalDaysBefore(date,code){
- const p=LEGAL_PROFILES[code];if(!p||!/^\d{4}-\d{2}-\d{2}$/.test(date))return null;
- // Comparer deux dates civiles dans le fuseau de l'établissement, sans dépendre
- // de la zone horaire du téléphone ou de l'ordinateur du responsable.
- const parts=Object.fromEntries(new Intl.DateTimeFormat('en-GB',{timeZone:p.zone,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).filter(x=>x.type!=='literal').map(x=>[x.type,x.value]));
- const today=`${parts.year}-${parts.month}-${parts.day}`;
- return Math.round((Date.parse(date+'T00:00:00Z')-Date.parse(today+'T00:00:00Z'))/86400000);
+
+/* iCHEF PLANNING PREMIUM V269: tactile + souris, fiche individuelle, grille sans débordement */
+.board .content-grid,.board .schedule-wrap,.board #week-host{min-width:0;}
+.schedule{min-width:910px;table-layout:fixed;}
+.schedule td,.schedule th{min-width:0;}
+.schedule td{overflow:hidden;}
+.schedule th:first-child{width:166px;}
+.schedule td:first-child{max-width:166px;}
+.schedule tbody td:first-child{padding:7px 8px;}
+.staff-open{display:flex;align-items:center;gap:8px;width:100%;border:1px solid transparent;background:transparent;text-align:left;color:var(--ink);border-radius:9px;min-height:48px;padding:5px 2px;min-width:0;touch-action:manipulation;}
+.staff-open:hover,.staff-open:focus-visible{background:#e8f3f9;border-color:#a5c6d9;}
+.staff-open .staff-details{min-width:0;flex:1;}
+.staff-open .staff-name,.staff-open .staff-role{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;}
+.staff-open .staff-hint{display:block;font-size:9px;color:#27759a;margin-top:3px;font-weight:750;}
+.entry{min-width:0;width:100%;min-height:58px;height:auto;overflow:hidden;gap:2px;padding:7px 5px;touch-action:manipulation;transform:none!important;align-items:stretch;}
+.entry .entry-label{display:block;font-weight:850;font-size:clamp(9px,.73vw,11px);white-space:normal;overflow-wrap:anywhere;line-height:1.2;}
+.entry .entry-time{display:block;max-width:100%;font-size:clamp(9px,.70vw,10px);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.22;letter-spacing:-.15px;opacity:.95;}
+.entry.A .entry-label{font-size:10px;}
+.entry.O{align-items:center;justify-content:center;font-size:19px;}
+.schedule td .entry:focus-visible,.monthday:focus-visible{outline:3px solid #286f9c;outline-offset:-2px;}
+.schedule tbody tr:hover td{background:initial;}
+.schedule tbody tr:hover td:first-child{background:#fff;}
+.schedule td:first-child{background:#fff;}
+.person-bar{border-bottom:1px solid #dce6eb;background:#f2f8fb;padding:13px 18px;display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0;flex-wrap:wrap;}
+.person-ident{display:flex;align-items:center;gap:11px;min-width:0;}
+.person-avatar{width:47px;height:47px;min-width:47px;display:grid;place-items:center;background:#dceaf4;color:#2f6586;font-weight:850;border-radius:13px;}
+.person-text{display:flex;flex-direction:column;gap:3px;min-width:0;}
+.person-eyebrow{font-size:9px;color:#667d88;letter-spacing:1.1px;font-weight:850;}
+.person-text strong{font-size:16px;line-height:1.22;overflow-wrap:anywhere;}
+.person-text small{color:#66818f;font-size:11px;overflow-wrap:anywhere;}
+.person-tools{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.person-hours{font-size:12px;font-weight:800;color:#27627e;}
+.board.person-mode .content-grid{grid-template-columns:minmax(0,1fr) 245px;}
+.board.person-mode .schedule{width:100%;min-width:780px;}
+.board.person-mode .schedule th:first-child{width:160px;}
+.board.person-mode .schedule td:first-child{max-width:160px;}
+.board.person-mode .entry{min-height:70px;}
+.board.person-mode .entry .entry-label{font-size:11px;}
+.board.person-mode .entry .entry-time{font-size:11px;}
+.board.person-mode .monthday{min-width:0;overflow:hidden;min-height:95px;display:flex;flex-direction:column;gap:3px;}
+.board.person-mode .monthday .month-label{font-size:10px;font-weight:850;white-space:normal;overflow-wrap:anywhere;line-height:1.2;}
+.board.person-mode .monthday .month-time{display:block;font-size:10px;color:#627888;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;}
+.board.person-mode .monthday .month-empty{color:#90a4b0;}
+.board.person-mode .monthday.M{background:#e6f0f6;}.board.person-mode .monthday.S{background:#faf0e2;}.board.person-mode .monthday.C{background:#eeeafa;}.board.person-mode .monthday.R{background:#f3f5f6;}
+.shift-presets{padding:14px 20px 0;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;}
+.shift-presets .preset{min-height:44px;border:1px solid #d6e0e5;border-radius:10px;background:#f8fbfc;color:#314956;font-size:12px;font-weight:750;touch-action:manipulation;padding:7px 3px;}
+.shift-presets .preset[aria-pressed="true"]{background:#142734;color:white;border-color:#142734;}
+.modal{max-height:calc(100dvh - 30px);overflow-y:auto;}
+.btn,.iconbtn,.segmented button,.sel{min-height:44px;touch-action:manipulation;}
+.iconbtn{min-width:44px;width:44px;height:44px;}
+.monthday{touch-action:manipulation;}
+@media(max-width:1240px){.board.person-mode .content-grid{grid-template-columns:1fr;}.board.person-mode .schedule{min-width:780px;}}
+@media(max-width:740px){.schedule{min-width:880px;}.board.person-mode .schedule{min-width:760px;}.board.person-mode .month-head,.board.person-mode .month-grid{min-width:560px;}.person-bar{padding:13px 10px;}.person-tools{width:100%;justify-content:space-between;}.shift-presets{padding:10px 12px 0;gap:4px;}.shift-presets .preset{font-size:11px;}.modal-content .field input,.modal-content .field select,.modal-content .field textarea{font-size:16px;}.board-toolbar .sel{max-width:160px;}}
+@media(hover:none),(pointer:coarse){.entry,.staff-open,.monthday{min-height:56px;}.schedule td{padding:5px;}.schedule{min-width:960px;}}
+@media(max-width:740px){.board-toolbar{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}.range{width:100%;display:grid;grid-template-columns:44px minmax(0,1fr) 44px;gap:8px}.range-title{min-width:0;font-size:13px}.range #today{grid-column:1/-1;width:100%}.toolbar-right{justify-content:space-between;gap:6px}.toolbar-right .sel{flex:1;max-width:190px}}
+@media print{.person-bar .person-tools,.shift-presets{display:none!important}.schedule{min-width:0!important}}
+
+
+/* iCHEF OS — V271 : planning sur un seul écran, sans zoom navigateur.
+   Les grilles se réduisent à l’espace utile; sur très petit écran, la grille
+   reste défilable à l’intérieur du planning pour préserver la lisibilité. */
+@media screen and (min-width: 1024px) and (min-height: 620px) {
+  html, body {height: 100%;overflow: hidden;}
+  .shell {height: 100vh;height: 100dvh;min-height: 0;overflow: hidden;grid-template-columns:clamp(172px,15.5vw,210px) minmax(0,1fr);}
+  .sidebar {height: 100vh;height: 100dvh;min-height: 0;overflow: hidden;padding:13px 9px;gap:2px;}
+  .brand {margin:0 8px 10px;}
+  .brand-logo{font-size:23px;}
+  .brand-sub{margin-top:4px;}
+  .nav-label{margin:9px 9px 3px;}
+  .nav{padding:8px 10px;font-size:12px;gap:7px;}
+  .sidebar-foot{padding-top:6px;}
+  .demo-pill{padding:8px;font-size:10px;}
+  .main {height:100vh;height:100dvh;max-height:none;min-height:0;overflow:hidden;display:flex;flex-direction:column;gap:8px;padding:11px clamp(10px,1.3vw,21px) 7px;}
+  .top{flex:0 0 auto;min-height:47px;margin:0;gap:8px;}
+  .top>div:first-child{min-width:0;}
+  .eyebrow{font-size:9px;margin-bottom:3px;}
+  .top h1{font-size:clamp(18px,1.55vw,23px);line-height:1.08;}
+  .sub{font-size:10px;margin-top:3px;}
+  .actions{gap:5px;flex-wrap:wrap;}
+  .btn,.btn.small,.iconbtn,.sel{min-height:30px;height:auto;padding:6px 8px;border-radius:7px;font-size:10px;}
+  .iconbtn{height:31px;width:31px;min-width:31px;padding:0;}
+  .segmented button{min-height:29px;padding:6px 9px;font-size:10px;}
+  .userpic{height:30px;width:30px;min-width:30px;font-size:10px;margin-left:0;}
+  .kpis{grid-template-columns:repeat(4,minmax(0,1fr));flex:0 0 auto;gap:7px;margin:0;}
+  .kpi{padding:7px 10px;min-height:57px;border-radius:9px;}
+  .kpi label{font-size:10px;}
+  .kpi .value{font-size:19px;margin-top:2px;}
+  .kpi .hint{font-size:9px;margin-top:1px;}
+  .kpi-icon{height:30px;min-width:30px;font-size:17px;border-radius:8px;}
+  .board{display:flex;flex-direction:column;flex:1 1 0;min-height:0;overflow:hidden;border-radius:11px;}
+  .board-toolbar{flex:0 0 auto;padding:6px 10px;min-height:44px;gap:8px;}
+  .range{gap:5px;}
+  .range-title{font-size:13px;min-width:145px;}
+  .toolbar-right{gap:5px;}
+  .board-sub{flex:0 0 auto;padding:5px 10px;min-height:28px;gap:5px;font-size:10px;}
+  .legend{gap:7px;font-size:9px;}
+  .person-bar{flex:0 0 auto;padding:5px 11px;min-height:44px;}
+  .person-avatar{width:31px;height:31px;min-width:31px;}
+  .person-text strong{font-size:12px;}
+  .person-eyebrow{font-size:8px;}
+  .panel-toggle{display:none!important;}
+  .content-grid,.board.person-mode .content-grid{display:grid;grid-template-columns:minmax(0,1fr) clamp(174px,17vw,217px);gap:0;align-items:stretch;flex:1 1 0;min-height:0;overflow:hidden;}
+  .schedule-wrap{min-width:0;min-height:0;max-height:none;height:100%;overflow:auto;overscroll-behavior:contain;}
+  #week-host,#month-host{min-width:0;min-height:0;}
+  .schedule,.board.person-mode .schedule{width:100%;min-width:0;max-width:100%;table-layout:fixed;}
+  .schedule th{height:36px;padding:2px 3px;font-size:9px;}
+  .schedule th:first-child,.board.person-mode .schedule th:first-child{width:clamp(110px,13vw,150px);padding-left:7px;}
+  .schedule tbody td:first-child,.board.person-mode .schedule tbody td:first-child{max-width:150px;padding:2px 3px;}
+  .daynumber{font-size:13px;margin-top:1px;}
+  .weekday{letter-spacing:.3px;}
+  .schedule tbody tr{height:var(--planning-row-height,47px);}
+  .schedule tbody td,.board.person-mode .schedule tbody td{height:var(--planning-row-height,47px);padding:2px 3px;}
+  .staff-open{min-height:0;height:calc(var(--planning-row-height,47px) - 5px);padding:1px;gap:5px;}
+  .avatar{width:24px;height:24px;min-width:24px;border-radius:6px;font-size:9px;}
+  .staff-name{font-size:10px;}
+  .staff-role{font-size:9px;margin-top:1px;}
+  .staff-hint{display:none!important;}
+  .entry,.board.person-mode .entry{min-height:0;height:calc(var(--planning-row-height,47px) - 5px);padding:2px 3px;gap:1px;border-radius:6px;}
+  .entry .entry-label,.board.person-mode .entry .entry-label{font-size:clamp(8px,.75vw,10px);line-height:1.12;}
+  .entry .entry-time,.board.person-mode .entry .entry-time{font-size:clamp(8px,.72vw,10px);line-height:1.12;}
+  .schedule tfoot td{height:31px;padding:3px;font-size:9px;}
+  .day-summary{font-size:9px;}.day-summary span{font-size:8px;margin-top:1px;}
+  .sidepanel{display:block;min-height:0;max-height:100%;overflow:auto;scrollbar-width:thin;padding:9px 10px;}
+  .mini-head{margin-bottom:6px;}
+  .panel-title{font-size:11px;margin-bottom:6px;}
+  .panel-muted{font-size:10px;margin-bottom:6px;line-height:1.25;}
+  .service{padding:6px 0;font-size:10px;}.service small{font-size:9px;margin-top:1px;}
+  .audit{padding:7px;margin-top:8px;font-size:10px;}
+  .panel-section{margin:9px 0 0;padding-top:8px;border-top:1px solid #eef1f3;}
+  .statuslabel{padding:3px 6px;font-size:9px;}
+  .bottom-hint{flex:0 0 auto;margin:0;font-size:9px;line-height:1.15;}
+  .sidepanel .bottom-hint{margin-top:7px;}
+  #month-host{height:100%;}
+  .month-wrap{height:100%;min-height:0;display:flex;flex-direction:column;padding:7px;overflow:hidden;}
+  .month-head{flex:0 0 auto;gap:4px;}
+  .month-head div{padding:4px;font-size:9px;}
+  .month-grid{flex:1 1 0;min-height:0;gap:4px;grid-template-rows:repeat(var(--planning-month-weeks,6),minmax(0,1fr));}
+  .monthday,.board.person-mode .monthday{min-width:0;min-height:0;height:100%;padding:5px;overflow:hidden;border-radius:7px;}
+  .monthday b{font-size:11px;}.monthday small{font-size:9px;margin-top:3px;}.monthday i{margin-top:3px;}
+  .board.person-mode .monthday .month-label{font-size:9px;line-height:1.1;}
+  .board.person-mode .monthday .month-time{font-size:8px;}
 }
-function legalPanelRender(){
- const select=$('legal-profile'),status=$('legal-profile-status'),hint=$('legal-rules-hint');if(!select)return;
- const code=legalPolicy?.code||'';
- select.value=code;status.textContent=code?`Règles enregistrées pour cet établissement · ${LEGAL_PROFILES[code].label}`:'À configurer par la Direction/RH avant publication.';
- const p=LEGAL_PROFILES[code];
- hint.textContent=p?
- `Publication : ${p.pub===null?'délai selon contrat / accord à vérifier':p.pub+' jours'} · Changement : ${p.edit===null?'délai à vérifier':p.edit+' jours'}. Les urgences, accords individuels et contreparties doivent être contrôlés.`:
- 'Choisissez le régime réellement applicable. Les accords d’entreprise, contrats, dérogations et autres obligations nécessitent une vérification humaine.';
- const source=$('legal-source');if(source){source.hidden=!p;if(p)source.href=p.url;}
+@media screen and (min-width:1024px) and (max-width:1240px) and (min-height:620px){
+  .shell{grid-template-columns:165px minmax(0,1fr);}
+  .content-grid,.board.person-mode .content-grid{grid-template-columns:minmax(0,1fr) 175px;}
+  .top .sub,.eyebrow{display:none;}
+  .top{min-height:38px;}
+  .top h1{font-size:18px;}
+  .actions .btn{font-size:9px;padding:6px;}
+  .range-title{min-width:110px;font-size:12px;}
+  .legend{gap:4px;font-size:8px;}
+  .schedule th:first-child,.board.person-mode .schedule th:first-child{width:110px;}
+  .avatar{display:none;}
+  .schedule .staff-name{font-size:9px;}
+  .schedule .staff-role{font-size:8px;}
+  .board-sub{font-size:9px;}
 }
-async function legalSavePolicy(){
- if(!token||busy||readOnly)return notify('Connexion RH autorisée nécessaire.');
- const code=$('legal-profile').value;
- if(!LEGAL_PROFILES[code])return notify('Choisissez le régime applicable.');
- const current=legalPolicy?.code||'';
- if(current===code)return notify('Ce régime est déjà enregistré.');
- if(!confirm(`Enregistrer ce régime pour l’établissement ${tenant} ?\n\n${LEGAL_PROFILES[code].label}\n\nCette sélection doit correspondre à la situation juridique réelle.`))return;
- const b=$('legal-save');b.disabled=true;
- try{
-  const res=await jsonFetch('/api/rh/planning/premium/legal-policy',{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenant,code,reason:'Configuration vérifiée par la Direction RH'})});
-  legalPolicy=res.legalPlanning;legalPanelRender();notify('Régime enregistré sur le serveur RH.');
- }catch(e){notify('Enregistrement du régime refusé : '+e.message);}
- finally{b.disabled=false;}
+@media screen and (max-width:1023px),screen and (max-height:619px){
+  /* Sur mobile / petits écrans : ne jamais masquer les fonctions ou le texte. */
+  .main{overflow:visible;max-height:none;}
+  .schedule-wrap{overflow:auto;}
 }
-function legalCellsUnderNotice(cells,kind){
- const profile=LEGAL_PROFILES[legalPolicy?.code];if(!profile)return {count:0,unknown:true,profile:null,minDays:null};
- const limit=kind==='publish'?profile.pub:profile.edit;
- if(limit===null)return {count:0,unknown:true,profile,minDays:null};
- const leads=cells.map(c=>legalDaysBefore(typeof c==='string'?c:c.date,legalPolicy.code)).filter(Number.isFinite);
- const late=leads.filter(n=>n<limit);
- return {count:late.length,unknown:false,profile,minDays:leads.length?Math.min(...leads):null,limit};
-}
-/* V300 : l'absence de motif n'est autorisée que pour une création initiale,
-   dans le délai de publication de l'établissement, sur des cases réellement vides.
-   Le serveur effectue séparément la vérification finale de chaque case. */
-function legalInitialCreationTimely(){
- const p=LEGAL_PROFILES[legalPolicy?.code];
- if(!p||!Number.isInteger(p.pub)||p.pub<1||!selected)return false;
- if(!['M','S','C','R'].includes($('kind')?.value||''))return false;
- const cells=selected.bulkCells?.length?selected.bulkCells:(selected.date?[{date:selected.date,person:selected.person}]:[]);
- if(!cells.length)return false;
- return cells.every(c=>{
-   // Ce mois est celui dont l'état de publication a été lu du serveur.
-   if(c.date.slice(0,7)!==month(anchor))return false;
-   if(publication && !['draft','pending'].includes(String(publication.status||'')))return false;
-   const raw=state?.[c.date.slice(0,7)]?.[c.person]?.[String(Number(c.date.slice(8)))];
-   if(raw && Object.keys(raw).length)return false;
-   const days=legalDaysBefore(c.date,legalPolicy.code);
-   return Number.isInteger(days)&&days>=p.pub;
- });
-}
-function legalSelectionAllInitialDraft(){
- if(!selected)return false;
- const cells=selected.bulkCells?.length?selected.bulkCells:(selected.date?[{date:selected.date,person:selected.person}]:[]);
- return Boolean(cells.length)&&cells.every(c=>{
-   if(c.date.slice(0,7)!==month(anchor))return false;
-   if(publication && !['draft','pending'].includes(String(publication.status||'')))return false;
-   const raw=state?.[c.date.slice(0,7)]?.[c.person]?.[String(Number(c.date.slice(8)))];
-   return !raw||!Object.keys(raw).length;
- });
-}
-function legalReasonRequired(){return !legalInitialCreationTimely();}
-function legalReasonRender(){
- const isRequired=legalReasonRequired();
- const row=$('planning-reason-row'),input=$('reason');
- if(row)row.hidden=!isRequired;
- if(input)input.required=isRequired;
- if(!isRequired)$('form-hint').textContent='Création initiale dans le délai de communication : aucune justification personnelle nécessaire. L’enregistrement reste historisé.';
-}
-function legalEditSummary(){
- const cells=selected?.bulkCells?.length?selected.bulkCells:(selected?.date?[{date:selected.date}]:[]);
- return legalCellsUnderNotice(cells,legalSelectionAllInitialDraft()?'publish':'edit');
-}
-function legalEditRender(){
- const panel=$('legal-edit-warning'),line=$('legal-edit-text');if(!panel)return;
- legalReasonRender();
- const n=legalEditSummary();
- if(!selected){panel.hidden=true;return;}
- panel.hidden=false;
- if(!n.profile){line.textContent='Régime non configuré : vérifiez manuellement les délais et les accords applicables avant de modifier. Aucune conformité ne peut être certifiée.';}
- else if(n.unknown){line.textContent=`${n.profile.label} : délai de modification variable selon le contrat et les accords. Contrôle manuel nécessaire.`;}
- else if(n.count){line.textContent=`⚠ ${n.count} journée(s) sur ${selected?.bulkCells?.length||1} dans un délai inférieur à ${n.limit} jours ou déjà passée(s). Vérifiez les conditions d’urgence, l’accord du salarié si requis et les compensations.`;}
- else{line.textContent=`Prévenance indicative respectée (${n.limit} jours), sous réserve des autres règles applicables.`;}
- const needs=n.unknown||n.count>0||!n.profile;
- $('legal-ack-wrap').hidden=!needs;
- $('legal-basis-wrap').hidden=!needs;
- $('legal-details-wrap').hidden=!needs;
- if(!needs){$('legal-ack').checked=false;$('legal-details').value='';$('legal-basis').value='to_verify';}
-}
-function legalEditReview(){
- if(!legalPolicy?.code)return null;
- const n=legalEditSummary(),sensitive=n.unknown||n.count>0;
- if(sensitive){
-  if(!$('legal-ack').checked)throw Error('Confirmez l’examen des règles et du délai de prévenance.');
-  if($('legal-details').value.trim().length<8)throw Error('Précisez la justification juridique (8 caractères minimum).');
- }
- return {code:legalPolicy.code,acknowledged:sensitive?$('legal-ack').checked:true,
-  basis:sensitive?$('legal-basis').value:'normal',justification:sensitive?$('legal-details').value.trim().slice(0,240):'Délai indicatif respecté',
-  reviewedAt:new Date().toISOString()};
-}
-function legalPublishReview(monthKey){
- if(!LEGAL_PROFILES[legalPolicy?.code]){notify('Choisissez et enregistrez d’abord le régime juridique de l’établissement.');$('legal-panel')?.setAttribute('open','');return null;}
- const raw=state[monthKey]||{},dates=[];
- for(const days of Object.values(raw))for(const [d,shift] of Object.entries(days||{})){
-  const yyyy=monthKey+'-'+String(d).padStart(2,'0');
-  if(!/^\d{4}-\d{2}-\d{2}$/.test(yyyy)||!shift||!Object.keys(shift).length)continue;
-  if(legalDaysBefore(yyyy,legalPolicy.code)>=0)dates.push(yyyy);
- }
- if(!dates.length){
-  const explanation=prompt('Ce mois ne contient aucun jour futur planifié. Publication ou archivage tardif : indiquez la justification et vérifiez les preuves de communication :');
-  if(explanation===null)return null;
-  if(explanation.trim().length<8){notify('Justification requise : 8 caractères minimum.');return null;}
-  if(!confirm('Confirmer cette publication tardive après examen RH ?'))return null;
-  return {code:legalPolicy.code,acknowledged:true,basis:'manual_review',justification:explanation.trim().slice(0,240),reviewedAt:new Date().toISOString()};
- }
- const n=legalCellsUnderNotice(dates,'publish');
- let explanation='Délai de communication indicatif vérifié',basis='normal';
- if(n.unknown||n.count){
-  const msg=n.unknown?'Délai de publication variable selon régime/accord.':`${n.count} journée(s) sur ${dates.length} à moins de ${n.limit} jours.`;
-  const text=prompt(`${msg}\n\nAvant publication, vérifiez les accords collectifs et la notification aux salariés. Saisissez le motif / la justification :`);
-  if(text===null)return null;
-  if(text.trim().length<8){notify('Justification requise : 8 caractères minimum.');return null;}
-  explanation=text.trim().slice(0,240);basis='manual_review';
- }
- if(!confirm(`Vérification juridique : ${n.unknown?'délai à vérifier':(n.count?n.count+' journée(s) en alerte':'aucune alerte de prévenance détectée')}\n\nPublier ${monthKey} et conserver la référence de cette revue ?\nLa publication ne prouve pas à elle seule la bonne réception par les salariés.`))return null;
- return {code:legalPolicy.code,acknowledged:true,basis,justification:explanation,reviewedAt:new Date().toISOString()};
+@media print{
+  html,body{height:auto!important;overflow:visible!important;}
+  .main,.board,.content-grid,.schedule-wrap{height:auto!important;max-height:none!important;overflow:visible!important;}
+  .schedule,.board.person-mode .schedule{min-width:0!important;}
 }
 
-// V276 : passage RH -> case Premium, sans mettre de PIN, jeton ou identité en URL.
-const RH_JUMP_KEY='ichef_rh_premium_jump_v1';
-const rhJump=(()=>{if(query.get('rhJump')!=='1')return null;
-  query.delete('rhJump');
-  try{history.replaceState(null,'',location.pathname+(query.toString()?'?'+query.toString():''));}catch(_){}
-  try{const x=JSON.parse(sessionStorage.getItem(RH_JUMP_KEY)||'null');sessionStorage.removeItem(RH_JUMP_KEY);
-    if(x&&typeof x.staffId==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(x.date)&&
-       String(x.tenant||'')===String(query.get('tenantID')||localStorage.getItem('ichef_tenant_id')||'')&&
-       Date.now()-Number(x.created)<120000&&Date.now()>=Number(x.created)){
-       const dt=new Date(x.date+'T12:00:00');if(!Number.isNaN(+dt)&&iso(dt)===x.date)return x;
-    }
-  }catch(_){}return null;
-})();
-// V285 : les couples (collaborateur, date) sont uniques. Pas de PIN, de données RH
-// sensibles ni de sélection persistés. Limite de sécurité contre l'envoi massif.
-const MULTI_CELL_LIMIT=200;
-let multiEnabled=false,multiStaffId=null,multiCells=new Map(),multiPointer=null,multiIgnoreClickUntil=0;
-const multiKey=(person,date)=>JSON.stringify([String(person),String(date)]);
-const multiHas=(person,date)=>multiCells.has(multiKey(person,date));
-const multiPeople=()=>new Set([...multiCells.values()].map(x=>x.person));
-const multiSelected=()=>[...multiCells.values()].sort((a,b)=>a.date.localeCompare(b.date)||a.person.localeCompare(b.person));
-// V280 · rafraîchissement différé des fiches RH : une mise à jour locale peut
-// précéder la confirmation de l'enregistrement serveur. On relit donc la source centrale.
-let rhDirectorySyncTimers=[];
-function scheduleRhDirectoryRefresh(delay=850){
-  if(!token)return;
-  for(const timer of rhDirectorySyncTimers)clearTimeout(timer);
-  rhDirectorySyncTimers=[];
-  const tryRefresh=()=>{
-    if(!token||document.hidden)return;
-    if(busy||selected||taskSelected){rhDirectorySyncTimers=[setTimeout(tryRefresh,2500)];return;}
-    lastFetch=0;void refresh(true);
+
+/* Format tablette et téléphone : une seule page écran, interactions conservées. */
+.panel-toggle,.mobile-legend{display:none;}
+@media screen and (max-width:1023px) and (min-height:580px){
+ html,body{height:100%;overflow:hidden;}
+ .shell{height:100vh;height:100dvh;min-height:0;display:flex;flex-direction:column;overflow:hidden;}
+ .sidebar{height:36px;min-height:36px;flex:0 0 36px;position:static;display:flex;justify-content:center;padding:3px 11px;}
+ .brand{margin:0;}.brand-logo{font-size:17px;line-height:28px;}.brand-sub{display:none;}
+ .main{flex:1 1 0;height:auto;min-height:0;max-height:none;overflow:hidden;display:flex;flex-direction:column;gap:5px;padding:5px 7px;}
+ .top{display:flex;flex-direction:column;gap:5px;flex:0 0 auto;margin:0;min-height:0;}
+ .top h1{font-size:17px;line-height:1.15;}.top .sub,.top .eyebrow{display:none;}
+ .actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:3px;margin:0;width:100%;justify-content:stretch;}
+ .actions .btn{min-width:0;min-height:29px;padding:5px 3px;font-size:9px;white-space:nowrap;gap:1px;}
+ .userpic{display:none;}
+ .kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:3px;margin:0;flex:0 0 auto;}
+ .kpi{min-width:0;min-height:43px;padding:5px;border-radius:7px;}
+ .kpi label{font-size:8px;line-height:1.1;display:block;}
+ .kpi .value{font-size:15px;line-height:1.1;margin-top:3px;}
+ .kpi .hint,.kpi-icon{display:none;}
+ .board{flex:1 1 0;min-height:0;display:flex;flex-direction:column;overflow:hidden;border-radius:9px;}
+ .board-toolbar{display:grid;grid-template-columns:minmax(0,1fr);flex:0 0 auto;gap:3px;padding:5px;}
+ .range{display:grid;width:100%;grid-template-columns:28px minmax(0,1fr) 28px auto;gap:3px;align-items:center;}
+ .range-title{min-width:0;font-size:11px;}
+ .range #today{grid-column:auto;width:auto;}
+ .btn,.btn.small,.iconbtn,.sel{min-height:28px;height:28px;padding:3px 5px;font-size:10px;}
+ .iconbtn{width:28px;min-width:28px;height:28px;}
+ .toolbar-right{display:grid;width:100%;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:3px;justify-content:stretch;}
+ .toolbar-right .sel{width:100%;min-width:0;max-width:none;font-size:9px;}
+ .segmented{padding:1px;gap:1px;}
+ .segmented button{min-height:26px;padding:3px 5px;font-size:9px;}
+ .panel-toggle{display:inline-flex;min-width:0;padding:3px 6px;font-size:9px;}
+ .board-sub{display:flex;flex:0 0 auto;padding:4px 6px;min-height:23px;font-size:9px;flex-wrap:nowrap;}
+ .board-sub .legend{display:none;}
+ .board-sub #board-status{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+ #publication-status{white-space:nowrap;font-size:9px!important;}
+ .person-bar{flex:0 0 auto;min-height:38px;padding:4px 5px;flex-wrap:nowrap;}
+ .person-ident{gap:4px;}.person-avatar{width:26px;min-width:26px;height:26px;font-size:9px;}
+ .person-eyebrow,.person-text small{display:none;}.person-text strong{font-size:11px;}
+ .person-tools{width:auto;gap:4px;}.person-hours{font-size:9px;}.person-tools .btn{height:27px;min-height:27px;font-size:9px;padding:3px;}
+ .content-grid,.board.person-mode .content-grid{position:relative;display:block;flex:1 1 0;min-height:0;overflow:hidden;}
+ .schedule-wrap{height:100%;min-height:0;max-height:none;overflow:auto;overscroll-behavior:contain;}
+ #week-host,#month-host{min-width:0;min-height:0;}
+ .schedule,.board.person-mode .schedule{min-width:0!important;max-width:100%;width:100%;table-layout:fixed;}
+ .schedule th{height:27px;padding:1px;font-size:8px;}
+ .schedule th:first-child,.board.person-mode .schedule th:first-child{width:85px;padding-left:3px;}
+ .schedule td:first-child,.board.person-mode .schedule td:first-child{max-width:85px;}
+ .schedule tbody td,.schedule tbody td:first-child,.board.person-mode .schedule tbody td{height:var(--planning-row-height,40px);padding:1px 2px;}
+ .schedule tbody tr{height:var(--planning-row-height,40px);}
+ .weekday{font-size:8px;letter-spacing:0;}.daynumber{font-size:10px;margin-top:0;}
+ .staff-open{height:calc(var(--planning-row-height,40px) - 3px);min-height:0;padding:1px;gap:2px;}
+ .avatar,.staff-role,.staff-hint{display:none!important;}
+ .staff-name{display:block;white-space:normal;font-size:8px;line-height:1.12;max-height:calc(var(--planning-row-height,40px) - 5px);overflow:hidden;overflow-wrap:anywhere;}
+ .entry,.board.person-mode .entry{min-height:0;height:calc(var(--planning-row-height,40px) - 3px);padding:1px;border-radius:4px;gap:1px;}
+ .entry .entry-label,.board.person-mode .entry .entry-label{font-size:8px;line-height:1.05;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+ .entry .entry-time,.board.person-mode .entry .entry-time{font-size:8px;line-height:1.0;letter-spacing:-.3px;white-space:normal;overflow-wrap:anywhere;overflow:hidden;}
+ .schedule tfoot td{height:22px;padding:1px;font-size:7px;}
+ .day-summary{font-size:8px;}.day-summary span{font-size:7px;}
+ .sidepanel{display:none!important;}
+ .board.show-panel .sidepanel{display:block!important;position:absolute;inset:0;min-height:0;height:100%;overflow:auto;z-index:10;padding:13px;background:white;border:0;}
+ .mobile-legend{display:flex;flex-wrap:wrap;gap:9px;font-size:10px;padding:0 0 9px;margin-bottom:10px;border-bottom:1px solid var(--line);}
+ .board.show-panel .mobile-legend{display:flex;}
+ .bottom-hint{display:none;}
+ #month-host{height:100%;}
+ .month-wrap{height:100%;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:4px;}
+ .month-head{flex:0 0 auto;gap:2px;}.month-head div{padding:3px 1px;font-size:8px;}
+ .month-grid{flex:1 1 0;min-height:0;gap:2px;grid-template-rows:repeat(var(--planning-month-weeks,6),minmax(0,1fr));}
+ .monthday,.board.person-mode .monthday{min-width:0;min-height:0;height:100%;padding:3px;border-radius:4px;overflow:hidden;}
+ .monthday b{font-size:10px;}.monthday small{font-size:8px;margin-top:3px;}.monthday i{margin-top:3px;}
+ .board.person-mode .monthday .month-label{font-size:9px;line-height:1.1;}
+ .board.person-mode .monthday .month-time{font-size:8px;}
+}
+@media screen and (max-width:359px) and (min-height:580px){
+ /* Accessibilité : sur les très petits téléphones, ne pas écraser les horaires. */
+ .schedule,.board.person-mode .schedule{min-width:370px!important;}
+}
+@media print{.panel-toggle{display:none!important;}}
+
+
+/* V272 — Totaux individuels dans la colonne des collaborateurs.
+   Garder un affichage lisible dans le cadre « un seul écran ». */
+.schedule th:first-child{width:195px;}
+.schedule td:first-child{max-width:195px;}
+.staff-open{height:100%;min-height:50px;gap:6px;}
+.staff-open .staff-details{display:flex;flex-direction:column;align-items:stretch;gap:2px;}
+.staff-open .staff-role{margin-top:0;}
+.staff-metrics{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px;align-items:center;margin-top:2px;min-width:0;max-width:100%;}
+.staff-metric{display:flex;gap:3px;align-items:baseline;min-width:0;color:#587489;font-size:10px;line-height:1.1;font-weight:650;white-space:nowrap;}
+.staff-metric strong{font-size:11px;font-weight:850;color:#24536c;white-space:nowrap;}
+.staff-balance{justify-self:end;padding:3px 5px;border-radius:6px;background:#f1f4f6;}
+.staff-plan-line{grid-column:1/-1;display:block;color:#778794;font-size:9px;line-height:1.05;font-weight:650;white-space:nowrap;}
+.staff-balance.positive{background:#e8f5ef;color:#187952;}.staff-balance.positive strong{color:#14734c;}
+.staff-balance.negative{background:#fff0ef;color:#ac4545;}.staff-balance.negative strong{color:#a73c3c;}
+.staff-balance.neutral{background:#eff3f6;}.staff-balance.missing strong{color:#8393a0;}
+@media screen and (min-width:1024px) and (min-height:620px){
+ .schedule th:first-child,.board.person-mode .schedule th:first-child{width:clamp(156px,15.8vw,199px);}
+ .schedule td:first-child,.board.person-mode .schedule td:first-child{max-width:199px;}
+ .staff-open{min-height:0;height:calc(var(--planning-row-height,51px) - 3px);}
+ .staff-open .staff-details{gap:1px;}
+ .staff-name{font-size:10px;line-height:1.12;}
+ .staff-open .staff-role{font-size:9px;line-height:1.1;}
+ .staff-metric{font-size:9px;line-height:1.05;}
+ .staff-metric strong{font-size:9px;}
+ .staff-plan-line{font-size:8px;}
+ .staff-balance{padding:2px 3px;}
+}
+@media screen and (min-width:1024px) and (max-width:1240px) and (min-height:620px){
+ .schedule th:first-child,.board.person-mode .schedule th:first-child{width:145px;}
+ .schedule td:first-child,.board.person-mode .schedule td:first-child{max-width:145px;}
+ .staff-open .staff-role{display:none;}
+ .staff-metrics{gap:2px;}
+ .staff-metric{font-size:8px;}.staff-metric strong{font-size:8px;}
+}
+@media screen and (max-width:1023px) and (min-height:580px){
+ .schedule th:first-child,.board.person-mode .schedule th:first-child{width:clamp(96px,26vw,145px);}
+ .schedule td:first-child,.board.person-mode .schedule td:first-child{max-width:145px;}
+ .staff-open{height:calc(var(--planning-row-height,48px) - 2px);min-height:0;gap:2px;}
+ .staff-open .staff-details{gap:1px;}
+ .staff-open .staff-name{font-size:clamp(8px,1.9vw,11px);line-height:1.05;max-height:2.1em;overflow:hidden;}
+ .staff-open .staff-role{display:none!important;}
+ .staff-metrics{grid-template-columns:minmax(0,1fr);gap:1px;margin:1px 0 0;}
+ .staff-metric{font-size:8px;justify-content:flex-start;gap:3px;}
+ .staff-metric strong{font-size:9px;}
+ .staff-plan-line{font-size:8px;}
+ .staff-balance{justify-self:start;padding:1px 3px;margin:0;}
+ .staff-plan-line{font-size:8px;}
+ .staff-metrics .metric-label{font-size:8px;}
+ .staff-metrics .staff-metric:first-child .metric-label{font-size:7px;}
+}
+@media screen and (max-width:390px) and (min-height:580px){
+ .schedule th:first-child,.board.person-mode .schedule th:first-child{width:100px;}
+ .schedule td:first-child,.board.person-mode .schedule td:first-child{max-width:100px;}
+ .staff-metrics{display:grid;gap:1px;}
+ .staff-open .staff-name{font-size:8px;}
+ .staff-metric,.staff-metric strong{font-size:8px;}
+}
+
+
+/* V274 : navigation Jour / Semaine / Mois avec couleurs d'horaires identiques. */
+.board-toolbar .segmented button{white-space:nowrap;}
+#day-host{width:100%;min-width:0;}
+.day-table{width:100%;border-collapse:separate;border-spacing:0;table-layout:fixed;}
+.day-table th{position:sticky;top:0;z-index:2;text-align:left;background:#f6f9fb;padding:10px 11px;font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:#6c7c88;border-bottom:1px solid #dce5eb;}
+.day-table td{padding:9px 11px;font-size:12px;vertical-align:middle;border-bottom:1px solid #eef1f4;min-width:0;}
+.day-table th:nth-child(1){width:21%}.day-table th:nth-child(2){width:21%}.day-table th:nth-child(3){width:11%}.day-table th:nth-child(4){width:33%}.day-table th:nth-child(5){width:14%}
+.day-person{display:flex;align-items:center;gap:8px;min-width:0;}
+.day-person button{display:flex;flex-direction:column;text-align:left;border:0;background:transparent;color:#203c4c;padding:4px;min-width:0;}
+.day-person strong{font-size:12px;overflow-wrap:anywhere}.day-person small{color:#71828b;font-size:10px;}
+.day-shift{display:inline-flex;flex-direction:column;gap:3px;max-width:100%;border-radius:9px;padding:7px 10px;font-size:11px;font-weight:850;white-space:normal;text-align:left;border:0;}
+.day-shift.M{background:#e6f0f6;color:#2d637d}.day-shift.S{background:#faf0e2;color:#946c35}.day-shift.C{background:#eeeafa;color:#675388}.day-shift.R{background:#f3f5f6;color:#788790}.day-shift.A{background:#fcebea;color:#a84d4d}.day-shift.O{background:#f7f9fa;color:#75858e}
+.day-shift small{font-size:11px;font-weight:700}.day-duration{font-weight:850;color:#23485b;white-space:nowrap;}
+.day-tasks{display:flex;flex-wrap:wrap;align-items:center;gap:5px;min-width:0;}
+.day-task-chip{font-size:11px;line-height:1.25;background:#f3f6f8;border-radius:6px;padding:5px 7px;color:#315165;overflow-wrap:anywhere;}
+.day-no-tasks{color:#91a1a9;font-size:11px;}
+.day-edit-task,.day-edit-shift{font-size:10px;min-height:28px;padding:5px 8px;white-space:nowrap;}
+.day-action-cell{white-space:normal;}
+.day-header{padding:8px 12px;border-bottom:1px solid #e7eef2;background:#fcfdfd;display:flex;align-items:center;justify-content:space-between;gap:12px;}
+.day-header strong{font-size:12px;color:#314e62}.day-header small{font-size:11px;color:#83929b;}
+.week-day-button{display:block;width:100%;color:inherit;background:transparent;border:0;padding:0;text-align:center;font:inherit;}
+.week-day-button:hover,.week-day-button:focus-visible{background:#e8f2f6;border-radius:6px;}
+.monthday .month-shift{display:block;width:100%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;border-radius:5px;font-size:9px;line-height:1.28;text-align:left;padding:2px 4px;font-weight:720;}
+.monthday .month-shift.M{background:#e6f0f6;color:#2d637d}.monthday .month-shift.S{background:#faf0e2;color:#946c35}.monthday .month-shift.C{background:#eeeafa;color:#675388}
+.monthday .month-shift.R{background:#f3f5f6;color:#7b8991}.monthday .month-shift.A{background:#fcebea;color:#a84d4d}
+.monthday .month-extra{color:#72838e;font-size:9px;font-weight:750;line-height:1.2;}
+.monthday .month-shifts{display:flex;flex-direction:column;gap:2px;min-width:0;width:100%;overflow:hidden;}
+.monthday .month-mini{display:none;}
+.monthday.month-has-work{border-color:#d8e8ee;}
+.task-modal{max-width:490px;width:calc(100% - 20px);}
+.task-editor-body{padding:15px 20px;display:flex;flex-direction:column;gap:9px;}
+.task-help{font-size:11px;color:#71818d;line-height:1.4;margin:0;}
+#task-fields{display:flex;flex-direction:column;gap:7px;}
+.task-row{display:flex;align-items:center;gap:7px;}
+.task-row input{min-height:42px;min-width:0;flex:1;border:1px solid #dbe4ea;border-radius:8px;padding:9px 11px;font-size:14px;}
+.task-row button{min-height:42px;min-width:42px;border:1px solid #f1d3d3;background:#fff5f4;color:#a14949;border-radius:8px;}
+.task-error{margin:0;color:#aa3e3e;font-size:11px;min-height:0;}
+.task-reason-label{font-size:11px;font-weight:780;color:#506678;}
+.task-reason-label span{font-weight:500;color:#8394a1;}
+#task-reason{min-height:42px;border:1px solid #dbe4ea;border-radius:8px;padding:9px 11px;}
+@media screen and (min-width:1024px) and (min-height:620px){
+ #day-host{min-height:0}.day-table td{padding:5px 8px;font-size:11px;}.day-table th{padding:7px;font-size:9px;}
+ .day-shift{padding:5px 7px;font-size:10px;}.day-header{padding:5px 8px;}
+ .monthday .month-shift{font-size:8px;padding:1px 3px;}
+}
+@media screen and (max-width:750px){
+ .day-table{min-width:0}.day-table thead{display:none;}.day-table tbody{display:block;padding:4px;}
+ .day-table tr{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:9px 6px;border-bottom:1px solid #e7edf1;}
+ .day-table td{padding:1px;border:0;min-width:0;}
+ .day-table td:nth-child(1){grid-column:1 / -1}.day-table td:nth-child(2){grid-column:1}.day-table td:nth-child(3){grid-column:2;align-self:center;}
+ .day-table td:nth-child(4){grid-column:1 / -1}.day-table td:nth-child(5){grid-column:1 / -1}
+ .day-task-chip{font-size:10px}.day-edit-task{min-height:32px;}
+ .monthday .month-shift{font-size:7px;padding:1px;}.monthday .month-extra{font-size:7px;}
+ .task-editor-body{padding:12px;}.day-header{flex-wrap:wrap;}
+}
+
+@media(max-width:750px){
+ .month-wrap{min-width:0;max-width:100%;overflow:hidden;}
+ .month-head,.month-grid,.board.person-mode .month-head,.board.person-mode .month-grid{min-width:0!important;width:100%;grid-template-columns:repeat(7,minmax(0,1fr));}
+ .monthday,.board.person-mode .monthday{min-width:0;max-width:100%;overflow:hidden;padding:2px 1px;}
+ .monthday .month-full{display:none;}.monthday .month-mini{display:inline;}
+ .monthday .month-shift{font-size:7px;text-overflow:clip;padding:1px;}
+ .monthday .month-extra{font-size:7px;white-space:nowrap;}
+ .monthday b{font-size:9px;}
+}
+
+/* V275 — assistant de planification discret et sans décision automatique. */
+.ai-mini{border:1px solid #e3eaf0;border-radius:11px;background:#fbfcfd;margin-top:9px;overflow:hidden;min-width:0;}
+.ai-mini summary{list-style:none;display:flex;gap:7px;align-items:center;cursor:pointer;padding:9px 10px;color:#2e5269;font-size:11px;font-weight:820;line-height:1.2;}
+.ai-mini summary::-webkit-details-marker{display:none;}
+.ai-mini summary::after{content:'⌄';font-size:14px;margin-left:auto;transition:transform .12s;}
+.ai-mini[open] summary::after{transform:rotate(180deg);}
+.ai-mini summary:focus-visible{outline:3px solid #c4dceb;outline-offset:-2px;}
+.ai-mini-star{color:#ad8d59;font-size:15px;}
+.ai-mini-count{margin-left:auto;font-size:9px;font-weight:800;color:#718490;background:#eff4f6;border-radius:99px;padding:3px 6px;white-space:nowrap;}
+.ai-mini[open] .ai-mini-count{margin-left:auto;}
+.ai-mini-body{border-top:1px solid #e6eef1;padding:7px 9px 10px;min-width:0;}
+.ai-mini-intro,.ai-mini-footer{margin:3px 0 8px;font-size:10px;line-height:1.4;color:#7c8a94;}
+.ai-suggestions{display:grid;gap:6px;max-height:min(33vh,270px);overflow:auto;scrollbar-width:thin;}
+.ai-suggestion{background:white;border:1px solid #e8edf0;border-radius:8px;padding:8px;min-width:0;}
+.ai-suggestion strong{display:block;font-size:10px;line-height:1.25;color:#263b49;overflow-wrap:anywhere;}
+.ai-suggestion p{font-size:10px;color:#697e89;line-height:1.35;margin:3px 0 5px;overflow-wrap:anywhere;}
+.ai-suggestion button{border:0;background:#edf4f7;color:#286383;font-size:10px;font-weight:790;padding:5px 7px;border-radius:6px;min-height:26px;}
+.ai-suggestion button:hover{background:#e0edf3;}
+.ai-mini-footer{margin:8px 0 7px;}
+.ai-full{border:1px solid #cfdde5;border-radius:7px;min-height:30px;padding:6px 7px;width:100%;background:#fff;color:#38576a;font-size:10px;font-weight:800;}
+.ai-full:hover{background:#f3f8fa;}
+.actions #ai{background:#f6f8f9;border-color:#e2e9ed;color:#476476;}
+.actions #ai[aria-expanded="true"]{background:#e9f2f6;border-color:#bcd2de;}
+@media screen and (min-width:1024px) and (min-height:620px){.ai-mini{margin-top:7px}.ai-mini summary{padding:6px 8px;font-size:10px}.ai-mini-body{padding:6px}.ai-suggestions{max-height:min(25vh,230px)}.ai-suggestion{padding:6px}.ai-mini-intro,.ai-mini-footer{font-size:9px}}
+@media print{.ai-mini{display:none!important}}
+
+
+/* V281 — sélection tactile rapide sur le planning officiel (sans modification du serveur). */
+.multi-days-toolbar{position:relative;gap:7px;align-items:center}
+.multi-days-toolbar #multi-mode{border-color:#a4c7d8;background:#e6f4fa;color:#17465e;font-weight:850;min-height:42px;padding:8px 13px;white-space:nowrap}
+.multi-days-toolbar #multi-mode[aria-pressed="true"]{background:#176b83;color:white;border-color:#176b83}
+.multi-days-toolbar .multi-counter{flex:1 1 240px;font-size:11px;line-height:1.35}
+.multi-days-toolbar.is-active .multi-counter{color:#145c70;font-weight:800}
+.multi-quick-presets{display:none;width:100%;align-items:center;gap:6px;flex-wrap:wrap;padding-top:6px;border-top:1px solid #deebf0}
+.multi-days-toolbar.is-active .multi-quick-presets{display:flex}
+.multi-quick-caption{color:#516c7b;font-size:10px;font-weight:850;margin-right:3px}
+.multi-quick{min-height:40px;min-width:73px;display:inline-flex;justify-content:center;align-items:center;padding:7px 9px;border:1px solid #d9e6ec;border-radius:8px;font-size:11px;font-weight:850;touch-action:manipulation;cursor:pointer}
+.multi-quick.M{background:#e6f0f6;color:#2d637d}.multi-quick.S{background:#faf0e2;color:#946c35}.multi-quick.C{background:#eeeafa;color:#675388}.multi-quick.R{background:#f3f5f6;color:#72838d}.multi-quick.CP{background:#e6f5eb;color:#27704d}
+.multi-quick:focus-visible{outline:3px solid #2380a1;outline-offset:1px}.multi-quick:hover{filter:brightness(.96)}
+.multi-quick-help{color:#6d8290;font-size:10px;font-weight:600}
+/* En sélection active, le geste s'applique seulement aux cases, et non aux fiches des autres collaborateurs. */
+.multi-days-toolbar.is-active~.content-grid .entry[data-person],
+.multi-days-toolbar.is-active~.content-grid .monthday[data-edit-person],
+.multi-days-toolbar.is-active~.content-grid .day-shift[data-edit-person]{touch-action:none!important;-webkit-user-select:none;user-select:none}
+.multi-days-toolbar.is-active~.content-grid .entry.is-multi-selected,
+.multi-days-toolbar.is-active~.content-grid .monthday.is-multi-selected,
+.multi-days-toolbar.is-active~.content-grid .day-shift.is-multi-selected{outline:3px solid #157e99!important;outline-offset:-3px!important;background:#c6eff1!important;color:#0b4b62!important}
+@media(max-width:740px){.multi-days-toolbar #multi-mode{width:100%;min-height:44px}.multi-days-toolbar .multi-counter{flex-basis:100%;order:1}.multi-quick-presets{order:4}.multi-quick{flex:1 1 73px;min-height:44px}.multi-quick-help{width:100%}}
+/* V285 : sélection visuelle de cases libres sur plusieurs collaborateurs. */
+.multi-days-toolbar.is-active #multi-all-visible{display:inline-flex;}
+.multi-days-toolbar:not(.is-active) #multi-all-visible{display:none;}
+.multi-days-toolbar #multi-all-visible{min-height:39px;border:1px solid #b9d0dc;color:#285a70;background:#fff;font-weight:800;white-space:normal;}
+@media(max-width:740px){.multi-days-toolbar #multi-all-visible{min-height:44px;order:3;flex:1 1 138px;}}
+@media print{.multi-quick-presets{display:none!important}}
+
+/* V279 — sélection de 1 à 12 dates, tactile / souris, cadres sans débordement. */
+.multi-days-toolbar{display:flex;align-items:center;gap:7px;padding:8px 12px;border-bottom:1px solid var(--line);background:#f5f9fb;flex-wrap:wrap;min-width:0;}
+.multi-days-toolbar .btn{min-height:37px;touch-action:manipulation;}
+.multi-days-toolbar .multi-counter{font-size:11px;font-weight:750;color:#4d7185;margin-right:auto;white-space:normal;}
+.multi-days-toolbar .multi-date-control{display:flex;align-items:center;gap:5px;font-size:10px;font-weight:750;color:#486272;white-space:nowrap;}
+.multi-days-toolbar input[type="date"]{min-width:0;max-width:148px;min-height:36px;padding:4px 6px;border:1px solid #d3e0e7;border-radius:7px;background:#fff;color:#243b49;font-size:11px;}
+.multi-days-toolbar #multi-mode[aria-pressed="true"]{background:#1d5875;color:#fff;border-color:#1d5875;}
+.multi-days-toolbar #multi-apply:disabled{opacity:.45;}
+.multi-days-toolbar:not(.is-active) .multi-date-control,.multi-days-toolbar:not(.is-active) #multi-range,.multi-days-toolbar:not(.is-active) #multi-clear,.multi-days-toolbar:not(.is-active) #multi-apply{display:none;}
+.schedule .entry.is-multi-selected,.monthday.is-multi-selected,.day-shift.is-multi-selected{outline:3px solid #187d96!important;outline-offset:-3px!important;background:#c8eff4!important;color:#0d4557!important;box-shadow:inset 0 0 0 1px #0c7796;}
+.multi-days-toolbar.is-active~.content-grid .entry[data-person],.multi-days-toolbar.is-active~.content-grid .monthday[data-edit-person],.multi-days-toolbar.is-active~.content-grid .day-shift[data-edit-person]{cursor:crosshair;touch-action:none;user-select:none;-webkit-user-select:none;}
+.multi-note-label{display:flex;align-items:center;gap:9px;flex-wrap:wrap;text-transform:none!important;letter-spacing:normal!important;}
+.multi-note-label input{width:18px!important;height:18px!important;min-height:18px!important;flex:0 0 auto;}
+.multi-note-tip{display:block;font-size:11px;color:#607889;line-height:1.3;}
+@media(max-width:740px){.multi-days-toolbar{padding:6px;gap:5px;}.multi-days-toolbar .multi-counter{width:100%;order:1;}.multi-days-toolbar .multi-date-control{flex:1 1 42%;order:2;}.multi-days-toolbar input[type="date"]{flex:1;max-width:none;width:100%;}.multi-days-toolbar #multi-range{order:3;}.multi-days-toolbar #multi-clear{order:3;}.multi-days-toolbar #multi-apply{order:3;flex:1;}.multi-days-toolbar .btn{font-size:10px;min-height:31px;}}
+@media print{.multi-days-toolbar{display:none!important;}}
+
+/* V284 — ne pas déplacer le calendrier pendant qu'un glissement commence. */
+.multi-days-toolbar.is-gesturing .multi-quick-presets,
+.multi-days-toolbar.is-gesturing .multi-date-control,
+.multi-days-toolbar.is-gesturing #multi-range,
+.multi-days-toolbar.is-gesturing #multi-apply,
+.multi-days-toolbar.is-gesturing #multi-clear{display:none!important}
+/* V284 — interaction native au doigt, stylet et souris : aucune modification des API. */
+@media screen and (pointer:coarse){
+ .schedule .entry[data-person],.day-shift[data-edit-person],.monthday[data-edit-person]{
+  touch-action:pan-y!important;user-select:none!important;-webkit-user-select:none!important;
+  -webkit-touch-callout:none;min-height:44px;
+ }
+ .multi-days-toolbar.is-active~.content-grid .entry[data-person],
+ .multi-days-toolbar.is-active~.content-grid .day-shift[data-edit-person],
+ .multi-days-toolbar.is-active~.content-grid .monthday[data-edit-person]{touch-action:none!important;}
+ .multi-days-toolbar #multi-mode,.multi-days-toolbar .multi-quick,
+ .multi-days-toolbar #multi-apply,.multi-days-toolbar #multi-clear{min-height:44px!important;}
+}
+.schedule .entry[data-person],.day-shift[data-edit-person],.monthday[data-edit-person]{
+ -webkit-tap-highlight-color:rgba(17,106,138,.16);
+}
+.multi-days-toolbar.is-active{background:#eaf5f8;border-bottom-color:#9bc9d5;}
+.multi-days-toolbar.is-active #multi-counter{font-weight:850;}
+.multi-days-toolbar.is-active .multi-quick-presets{gap:7px;}
+.multi-days-toolbar .multi-quick{min-height:44px;}
+@media(max-width:740px){
+ .multi-days-toolbar{padding:7px!important;}
+ .multi-days-toolbar #multi-mode{width:100%;min-height:44px!important;}
+ .multi-days-toolbar .multi-counter{font-size:11px;line-height:1.3;}
+ .multi-days-toolbar .multi-quick{min-width:0;flex:1 1 29%;font-size:12px;}
+ .multi-days-toolbar #multi-apply{min-height:44px!important;}
+}
+
+/* V287 · Contrôles juridiques sobres et lisibles, y compris sur tablette. */
+.legal-panel{border:1px solid #c6d5db;border-radius:10px;background:#f7fafb;margin:10px 0;}
+.legal-panel>summary{cursor:pointer;font-weight:850;color:#233c48;font-size:12px;padding:12px 10px;line-height:1.5;}
+.legal-badge{display:inline-block;margin-left:3px;color:#52717b;font-weight:600;font-size:10px;}
+.legal-panel-body{display:flex;flex-direction:column;gap:7px;padding:0 11px 12px;color:#2b4955;font-size:12px;line-height:1.45;}
+.legal-panel-body .sel{max-width:100%;width:100%;font-size:12px;min-height:42px;white-space:normal;}
+.legal-panel-body .btn{white-space:normal;min-height:42px;}
+.legal-panel-body p{margin:2px 0;overflow-wrap:anywhere;}
+.legal-panel-body a{color:#17607c;text-decoration:underline;font-weight:650;}
+.legal-caveat{font-size:11px;color:#6b7780;}
+.legal-edit-warning{border:1px solid #d3a55e;border-radius:12px;background:#fff9ed;padding:12px;display:flex;flex-direction:column;gap:9px;color:#4b3819;}
+.legal-edit-warning[hidden],.legal-edit-warning [hidden]{display:none!important;}
+.legal-edit-warning h3{margin:0;font-size:14px;}.legal-edit-warning p{margin:0;font-size:12px;line-height:1.5;}
+.legal-edit-warning label{font-size:12px;display:flex;flex-direction:column;gap:5px;}
+.legal-edit-warning input[type=text],.legal-edit-warning select{min-height:44px;width:100%;padding:8px 10px;border-radius:7px;border:1px solid #caa875;font-size:14px;}
+.legal-edit-warning label.legal-check{flex-direction:row;align-items:center;gap:9px;}
+.legal-check input[type=checkbox]{width:22px;height:22px;flex:0 0 22px;}
+
+#planning-reason-row[hidden]{display:none!important}
+</style>
+<link rel="manifest" href="./manifest.webmanifest">
+<meta name="theme-color" content="#101e29">
+<meta name="application-name" content="iCHEF Planning RH">
+<link rel="icon" type="image/png" href="./icon-192.png">
+<script>if(new URLSearchParams(location.search).get('controlRoom')==='1')document.documentElement.classList.add('rh-control-room');</script>
+<style id="ichef-v276-control-room-style">
+/* V276 : dans RH, l'éditeur officiel occupe un écran (pas une copie de données). */
+html.rh-control-room,html.rh-control-room body{height:100%!important;min-height:0!important;overflow:hidden!important;}
+html.rh-control-room .shell{grid-template-columns:minmax(0,1fr)!important;height:100dvh!important;min-height:0!important;overflow:hidden!important;}
+html.rh-control-room .sidebar{display:none!important;}
+html.rh-control-room .main{height:100dvh!important;max-height:100dvh!important;overflow:hidden!important;min-height:0!important;display:flex!important;flex-direction:column!important;padding:9px 11px 5px!important;}
+html.rh-control-room .top{margin-bottom:7px!important;min-height:32px!important;gap:8px!important;}
+html.rh-control-room .top .eyebrow,html.rh-control-room .top .sub{display:none!important;}
+html.rh-control-room .top h1{font-size:17px!important;line-height:1.1!important;}
+html.rh-control-room .top .actions{gap:5px!important;}
+html.rh-control-room #logout,html.rh-control-room #print,html.rh-control-room #return-rh,html.rh-control-room .top .userpic{display:none!important;}
+html.rh-control-room .top .btn{min-height:31px!important;padding:6px 9px!important;font-size:10px!important;}
+html.rh-control-room .kpis{grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:6px!important;margin-bottom:7px!important;}
+html.rh-control-room .kpi{min-height:0!important;padding:7px 10px!important;border-radius:9px!important;}
+html.rh-control-room .kpi label{font-size:10px!important;}
+html.rh-control-room .kpi .value{font-size:18px!important;margin-top:2px!important;}
+html.rh-control-room .kpi .hint{margin-top:1px!important;font-size:9px!important;}
+html.rh-control-room .kpi-icon{width:28px!important;min-width:28px!important;height:28px!important;font-size:15px!important;}
+html.rh-control-room .board{display:flex!important;flex-direction:column!important;flex:1 1 0!important;min-height:0!important;overflow:hidden!important;}
+html.rh-control-room .board-toolbar{flex:0 0 auto!important;padding:7px 9px!important;gap:7px!important;}
+html.rh-control-room .board-sub{flex:0 0 auto!important;padding:6px 9px!important;min-height:30px!important;}
+html.rh-control-room .range-title{font-size:13px!important;min-width:0!important;}
+html.rh-control-room .content-grid{display:grid!important;grid-template-columns:minmax(0,1fr) clamp(158px,19vw,218px)!important;gap:0!important;flex:1 1 0!important;min-height:0!important;overflow:hidden!important;}
+html.rh-control-room .schedule-wrap{min-height:0!important;height:100%!important;max-height:none!important;overflow:auto!important;overscroll-behavior:contain;}
+html.rh-control-room .sidepanel{min-height:0!important;max-height:100%!important;overflow:auto!important;}
+html.rh-control-room .main > .bottom-hint{display:none!important;}
+html.rh-control-room .monthday{min-height:0!important;}
+html.rh-control-room .legend{gap:7px!important;}
+html.rh-control-room .schedule th:first-child{width:clamp(114px,15vw,160px)!important;}
+@media(max-width:810px){
+ html.rh-control-room .main{padding:5px!important;}
+ html.rh-control-room .top h1{font-size:12px!important;}
+ html.rh-control-room .top .btn{padding:5px!important;font-size:9px!important;}
+ html.rh-control-room .kpis{gap:3px!important;}
+ html.rh-control-room .kpi{padding:4px!important;}
+ html.rh-control-room .kpi .value{font-size:14px!important;}
+ html.rh-control-room .kpi label{font-size:8px!important;}
+ html.rh-control-room .kpi .hint,html.rh-control-room .kpi-icon{display:none!important;}
+ html.rh-control-room .content-grid{grid-template-columns:minmax(0,1fr)!important;}
+ html.rh-control-room .sidepanel{display:none!important;}
+ html.rh-control-room .board-toolbar{flex-wrap:wrap!important;padding:5px!important;}
+ html.rh-control-room .board-sub .legend{display:none!important;}
+ html.rh-control-room .board-sub{font-size:9px!important;}
+ html.rh-control-room .schedule th:first-child{width:92px!important;}
+ html.rh-control-room .staff-open .staff-metrics{display:none!important;}
+}
+@media(max-height:520px){html.rh-control-room .kpis{display:none!important;}html.rh-control-room .top{margin-bottom:3px!important;}}
+@media print{html.rh-control-room,html.rh-control-room body{overflow:visible!important;}}
+</style>
+<style id="ichef-v282-rh-sso-style">
+.ichef-from-rh #login-shield .login-card{display:none!important;}
+#rh-session-unavailable{display:none;max-width:440px;width:100%;padding:32px 25px;background:#fff;color:#14212a;border-radius:18px;box-shadow:0 15px 60px #0006;text-align:center;}
+.ichef-from-rh #login-shield:not(.hide) #rh-session-unavailable{display:block;}
+#rh-session-unavailable strong{display:block;font-size:20px;margin-bottom:12px;}
+#rh-session-unavailable p{font-size:13px;line-height:1.5;color:#536774;margin-bottom:20px;}
+#rh-session-unavailable a{display:block;background:#142734;color:#fff;border-radius:11px;padding:14px;text-decoration:none;font-weight:800;}
+</style>
+</head>
+<body>
+<div class="shell">
+<aside class="sidebar">
+ <div class="brand"><div class="brand-logo">iCHEF<span>OS</span></div><div class="brand-sub">RESSOURCES HUMAINES</div></div>
+ <div class="nav-label">PILOTAGE</div>
+ <button class="nav" type="button" data-inactive="Tableau de bord"><span class="ico">⌂</span> Tableau de bord</button>
+ <button class="nav active" type="button" aria-current="page"><span class="ico">▦</span> Planning</button>
+ <button class="nav" type="button" data-inactive="Équipe"><span class="ico">♙</span> Équipe</button>
+ <div class="nav-label">TEMPS & ABSENCES</div>
+ <button class="nav" type="button" data-inactive="Pointeuse"><span class="ico">◷</span> Pointage</button>
+ <button class="nav" type="button" data-inactive="Congés et absences"><span class="ico">◇</span> Congés & absences</button>
+ <button class="nav" type="button" data-inactive="Portail Staff"><span class="ico">◈</span> Portail Staff</button>
+ <div class="nav-label">INTELLIGENCE</div>
+ <button class="nav" type="button" id="ai-side"><span class="ico">✧</span> Assistant planning</button>
+ <div class="sidebar-spacer"></div>
+ <div class="demo-pill"><strong>● Planning iCHEF central</strong>Gestion connectée au serveur RH. Données confidentielles jamais stockées en cache PWA.</div>
+ <div class="sidebar-foot">iCHEF RH · Planning Premium connecté</div>
+</aside>
+<main class="main">
+ <header class="top"><div><div class="eyebrow">ORGANISATION DES ÉQUIPES</div><h1>Planning des équipes</h1><div class="sub">Une seule source de planning, des horaires clairs et une validation maîtrisée.</div></div><div class="actions"><button type="button" class="btn" id="logout" title="Fermer la session locale de planning">Déconnexion</button><button type="button" class="btn" id="print">⎙ &nbsp; Imprimer</button><button type="button" class="btn soft" id="ai" aria-controls="ai-advisor" aria-expanded="false" title="Afficher ou masquer les suggestions du planning">✧ &nbsp; Conseils IA</button><button type="button" class="btn" id="return-rh">↶ &nbsp; Retour RH</button><button type="button" class="btn dark" id="publish">⤴ &nbsp; Publier le mois</button><div class="userpic" aria-hidden="true">RH</div></div></header>
+ <section class="kpis" aria-label="Indicateurs"><article class="kpi"><div><label>Heures planifiées</label><div class="value" id="kpi-hours">—</div><div class="hint" id="kpi-period-label">Semaine affichée</div></div><div class="kpi-icon">◷</div></article><article class="kpi"><div><label>Jours de présence</label><div class="value" id="kpi-shifts">—</div><div class="hint">Services de l'équipe</div></div><div class="kpi-icon">▤</div></article><article class="kpi"><div><label>Jours d'absence</label><div class="value" id="kpi-absences">—</div><div class="hint">Congés et maladie</div></div><div class="kpi-icon">⚑</div></article><article class="kpi"><div><label>Collaborateurs</label><div class="value" id="kpi-staff">7</div><div class="hint">Équipe de l’établissement</div></div><div class="kpi-icon">♙</div></article></section>
+ <section class="board" aria-label="Planning officiel synchronisé"><div class="board-toolbar"><div class="range"><button type="button" class="iconbtn" id="prev" aria-label="Période précédente">‹</button><div class="range-title" id="range">—</div><button type="button" class="iconbtn" id="next" aria-label="Période suivante">›</button><button type="button" class="btn small" id="today">Aujourd'hui</button></div><div class="toolbar-right"><select class="sel" id="department" aria-label="Département"><option value="ALL">Tous les services</option><option value="Cuisine">Cuisine</option><option value="Salle">Salle</option><option value="Bar">Bar</option></select><div class="segmented" role="group" aria-label="Vue du planning"><button type="button" id="view-day" aria-pressed="false">Jour</button><button type="button" id="view-week" class="active" aria-pressed="true">Semaine</button><button type="button" id="view-month" aria-pressed="false">Mois</button></div><button type="button" class="btn panel-toggle" id="panel-toggle" aria-controls="planning-sidepanel" aria-expanded="false">☷ Détails</button></div></div>
+ <div class="multi-days-toolbar" id="multi-days-toolbar" aria-label="Modification de plusieurs journées">
+ <button type="button" class="btn soft multi-mode-button" id="multi-mode" aria-pressed="false" title="Touchez pour modifier, glissez horizontalement ou maintenez le doigt pour sélectionner 200 cases maximum">☝ Sélectionner plusieurs jours</button>
+ <span class="multi-counter" id="multi-counter" role="status" aria-live="polite">1 toucher : modifier · glisser : plusieurs jours</span>
+ <label class="multi-date-control" for="multi-from">Du <input type="date" id="multi-from" aria-label="Début de la période à sélectionner"></label>
+ <label class="multi-date-control" for="multi-to">Au <input type="date" id="multi-to" aria-label="Fin de la période à sélectionner"></label>
+ <button type="button" class="btn small" id="multi-range" title="Ajouter les dates de la période (200 cases maximum)">＋ Période</button>
+ <button type="button" class="btn small" id="multi-all-visible" title="Sélectionner toutes les cases du tableau actuellement affichées">＋ Toutes les cases visibles</button>
+ <button type="button" class="btn small" id="multi-clear">Effacer</button>
+ <button type="button" class="btn dark" id="multi-apply" disabled>Modifier les jours</button>
+ <div class="multi-quick-presets" id="multi-quick-presets" aria-label="Création rapide pour les journées sélectionnées">
+  <span class="multi-quick-caption">Appliquer aux cases choisies :</span>
+  <button type="button" class="multi-quick M" data-multi-preset="M" disabled>☀ Matin</button>
+  <button type="button" class="multi-quick S" data-multi-preset="S" disabled>◐ Soir</button>
+  <button type="button" class="multi-quick C" data-multi-preset="C" disabled>⇄ Coupure</button>
+  <button type="button" class="multi-quick R" data-multi-preset="R" disabled>◯ Repos</button>
+  <button type="button" class="multi-quick CP" data-multi-preset="CP" disabled>✈ Congé</button>
+  <span class="multi-quick-help">Choisissez des cases dans plusieurs lignes, même sur d’autres semaines. Vérifiez puis confirmez avant publication.</span>
+ </div>
+</div>
+<div class="board-sub"><span id="board-status">● Connexion au serveur en attente</span><strong id="publication-status" style="font-size:11px;color:#6f8190">Publication : —</strong><div class="legend" aria-label="Légende"><span><i class="dot m"></i> Matin</span><span><i class="dot s"></i> Soir</span><span><i class="dot c"></i> Coupure</span><span><i class="dot r"></i> Repos</span><span><i class="dot a"></i> Absence</span></div></div>
+ <div id="person-bar" class="person-bar hide" aria-live="polite">
+  <div class="person-ident"><span class="person-avatar" id="person-avatar" aria-hidden="true">RH</span><div class="person-text"><span class="person-eyebrow">PLANNING INDIVIDUEL</span><strong id="person-title">Collaborateur</strong><small id="person-role">—</small></div></div>
+  <div class="person-tools"><span class="person-hours" id="person-hours">—</span><button type="button" class="btn dark" id="team-return">← Toute l’équipe</button></div>
+ </div>
+ <div class="content-grid"><div class="schedule-wrap"><div id="day-host" class="hide"></div><div id="week-host"></div><div id="month-host" class="hide"></div></div><aside class="sidepanel" id="planning-sidepanel"><div class="mobile-legend" aria-label="Légende des services"><span><i class="dot m"></i> Matin</span><span><i class="dot s"></i> Soir</span><span><i class="dot c"></i> Coupure</span><span><i class="dot r"></i> Repos</span><span><i class="dot a"></i> Absence</span></div><section><div class="mini-head"><h2 class="panel-title" id="panel-view-title">Vue d'ensemble</h2><span id="panel-range-label">Cette semaine</span></div><div class="panel-muted" id="panel-view-subtitle">Planning officiel : lecture et modification directement sur iCHEF OS.</div><div class="service"><div>Couverture des jours<small>Jours avec au moins un service</small></div><strong id="coverage">—</strong></div><div class="progress"><i id="coverage-bar" style="width:0"></i></div><div class="service"><div>Services matin<small>Présences programmées</small></div><strong id="morning">—</strong></div><div class="service"><div>Services soir<small>Présences programmées</small></div><strong id="evening">—</strong></div><div class="service"><div>Coupures<small>Présences en deux séquences</small></div><strong id="split">—</strong></div></section><details class="ai-mini" id="ai-advisor">
+  <summary><span class="ai-mini-star" aria-hidden="true">✧</span><span>Conseils de planning</span><span class="ai-mini-count" id="ai-count">—</span></summary>
+  <div class="ai-mini-body">
+    <p class="ai-mini-intro">Pistes calculées sur le planning affiché, sans modifier les horaires.</p>
+    <div class="ai-suggestions" id="ai-suggestions" role="status" aria-live="polite"><p class="ai-mini-intro">Connectez-vous à RH pour afficher des propositions.</p></div>
+    <p class="ai-mini-footer">Suggestions indicatives : vérifier contrats, repos, disponibilités et règles locales avant toute décision.</p>
+    <button type="button" class="ai-full" id="ai-full">✧ Proposition complète dans RH</button>
+  </div>
+</details>
+<details class="legal-panel" id="legal-panel"><summary>⚖ Règles de publication FR / CH <span class="legal-badge">Contrôle des délais</span></summary>
+ <div class="legal-panel-body"><label for="legal-profile">Régime de l'établissement</label>
+ <select class="sel" id="legal-profile"><option value="">— Choisir le régime applicable —</option>
+ <option value="CH_CCNT_YEAR">Suisse · CCNT · établissement à l'année (14 j)</option>
+ <option value="CH_CCNT_SEASON">Suisse · CCNT · saisonnier (7 j)</option>
+ <option value="FR_HCR_AMEN19">France · HCR · avenant n° 19 (15 j / 8 j)</option>
+ <option value="FR_HCR_PART_TIME">France · HCR · temps partiel (7 j avant modification)</option>
+ <option value="FR_HCR_OTHER">France · HCR · autre régime / à vérifier</option></select>
+ <button type="button" class="btn small" id="legal-save">Enregistrer pour l'établissement</button>
+ <p id="legal-profile-status" role="status">Configuration à vérifier</p><p id="legal-rules-hint">Les contrats et accords peuvent prévoir des règles particulières.</p>
+ <a id="legal-source" href="#" target="_blank" rel="noopener noreferrer" hidden>Consulter le texte officiel ↗</a>
+ <p class="legal-caveat">Aide au contrôle des délais, pas certification de conformité. Vérifier repos, durées, accords, temps partiel, compensation et preuve de communication.</p>
+ </div></details><section class="panel-section"><h2 class="panel-title">Validation & traçabilité</h2><div class="statuslabel">✓ Modifications enregistrées et historisées côté serveur</div><div class="audit"><b id="audit-title">Aucune modification</b><div id="audit-detail">Cliquez sur une journée pour modifier une case du planning.</div><time id="audit-date"></time></div><button class="btn small" type="button" id="reset" style="width:100%;margin-top:12px">↻ &nbsp; Actualiser les données</button><p class="bottom-hint">Les changements validés sont enregistrés dans TIMESHEETS_MASTER. Publiez depuis le module RH officiel.</p></section></aside></div></section>
+ <p class="bottom-hint">Données officielles iCHEF : RH · Portail Staff · Pointeuse · Assistance Planning. Les pointages ne sont jamais modifiés par ce planning.</p>
+</main></div>
+<div class="modal-backdrop hide" id="modal-backdrop" role="presentation"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-top"><div><h2 id="modal-title">Modifier un service</h2><p id="modal-sub">—</p></div><button type="button" class="iconbtn" id="close" aria-label="Fermer">×</button></div><form id="shift-form"><div class="shift-presets" role="group" aria-label="Choix rapide du type de service">
+ <button type="button" class="preset" data-preset="M">Matin</button>
+ <button type="button" class="preset" data-preset="S">Soir</button>
+ <button type="button" class="preset" data-preset="C">Coupure</button>
+ <button type="button" class="preset" data-preset="R">Repos</button>
+ <button type="button" class="preset" data-preset="CP">Congé</button>
+ </div><div class="modal-content"><div class="field full"><label for="kind">Type de journée</label><select id="kind"><option value="M">Service du matin</option><option value="S">Service du soir</option><option value="C">Service en coupure</option><option value="R">Repos</option><option value="CP">Congé payé</option><option value="MAL">Maladie</option><option value="RECUP">Récupération</option><option value="FERIE">Jour férié</option><option value="FORM">Formation</option><option value="A">Absence autorisée</option><option value="NJS">Absence injustifiée</option><option value="ACC">Accident du travail</option><option value="MAT">Maternité</option><option value="PAT">Paternité</option><option value="PAR">Congé parental</option><option value="EFM">Enfant malade</option><option value="EVF">Événement familial</option><option value="DEC">Décès / deuil</option><option value="SSL">Sans solde</option><option value="O">Case vide</option></select></div><div class="field" id="time1"><label for="start">Début</label><input id="start" type="time" value="08:00"/></div><div class="field" id="time2"><label for="end">Fin</label><input id="end" type="time" value="16:00"/></div><div class="field full" id="split-row"><label>Deuxième service (coupure)</label><div style="display:flex;gap:9px"><input id="split-start" type="time" value="18:00"/><input id="split-end" type="time" value="22:00"/></div></div><div class="field full"><label for="note">Note interne (facultative)</label><textarea id="note" placeholder="Ex. Formation, remplacement…"></textarea></div><div class="field full hide" id="multi-note-opt"><label class="multi-note-label"><input type="checkbox" id="multi-apply-note"> Appliquer également cette note aux journées sélectionnées</label><small class="multi-note-tip">Par défaut, les notes et tâches déjà affectées à chaque journée sont conservées.</small></div><section class="field full legal-edit-warning" id="legal-edit-warning" hidden aria-live="polite"><h3>⚖ Contrôle du délai de prévenance</h3>
+<p id="legal-edit-text"></p>
+<label id="legal-basis-wrap" hidden>Situation à vérifier
+<select id="legal-basis"><option value="to_verify">À vérifier / examen RH</option><option value="agreed">Accord du collaborateur vérifié</option><option value="urgent">Urgence justifiée et collaborateur informé</option><option value="compensation">Contreparties applicables vérifiées</option></select></label>
+<label id="legal-details-wrap" hidden>Justification / preuve de contrôle
+<input id="legal-details" type="text" maxlength="240" placeholder="Ex. accord documenté ou urgence imprévue"></label>
+<label id="legal-ack-wrap" hidden class="legal-check"><input id="legal-ack" type="checkbox"> J’ai vérifié les règles applicables et la communication au salarié.</label>
+</section><div class="field full" id="planning-reason-row"><label for="reason">Motif de modification (obligatoire pour une modification ou hors délai)</label><input id="reason" type="text" maxlength="180" required placeholder="Ex. Ajustement du service" /></div><div class="form-info" id="form-hint">Après validation, les modifications sont enregistrées sur le serveur RH avec motif et historique.</div></div><div class="modal-bottom"><button type="button" class="btn danger" id="remove">Effacer la case</button><span style="flex:1"></span><button type="button" class="btn" id="cancel">Annuler</button><button type="submit" class="btn dark">Enregistrer sur iCHEF</button></div></form></div></div>
+<div class="modal-backdrop hide" id="task-backdrop" role="presentation">
+ <div class="modal task-modal" role="dialog" aria-modal="true" aria-labelledby="task-title">
+  <div class="modal-top"><div><h2 id="task-title">Tâches du jour</h2><p id="task-sub">—</p></div><button type="button" class="iconbtn" id="task-close" aria-label="Fermer">×</button></div>
+  <form id="task-form"><div class="task-editor-body">
+   <p class="task-help">Ajoutez uniquement les tâches nécessaires pour ce service. Elles sont conservées avec la journée RH.</p>
+   <div id="task-fields"></div>
+   <button type="button" class="btn soft" id="task-add">＋ Ajouter une tâche</button>
+   <p class="task-error" id="task-error" role="alert"></p>
+   <label class="task-reason-label" for="task-reason">Motif de modification <span>(obligatoire)</span></label>
+   <input id="task-reason" type="text" maxlength="180" required value="Mise à jour des tâches" placeholder="Ex. Préparation du service"/>
+   <p class="task-help">Enregistrement serveur via le champ note de la journée, sans modifier les horaires ni les pointages.</p>
+  </div><div class="modal-bottom"><button type="button" class="btn" id="task-cancel">Annuler</button><button type="submit" class="btn dark" id="task-save">Enregistrer les tâches</button></div></form>
+ </div>
+</div>
+<div class="toast hide" id="toast" role="status" aria-live="polite"></div>
+<div id="login-shield" class="login-shield"><section id="rh-session-unavailable" role="alert"><strong>Connexion au planning</strong><p id="rh-handoff-message" aria-live="polite">Vérification de votre session RH…</p><a id="rh-handoff-return" href="../rh.html">Retour à RH</a></section><form id="login-form" class="login-card" autocomplete="off"><div class="login-brand">iCHEF <span>OS</span></div><div class="eyebrow">PLANNING RH · ACCÈS SÉCURISÉ</div><h2>Connexion à votre établissement</h2><p>Seuls les responsables RH et Direction autorisés peuvent consulter et modifier le planning.</p><label>Établissement <input id="login-tenant" required pattern="[a-zA-Z0-9_-]{2,80}" autocomplete="off"></label><label>Code PIN Direction / RH <input id="login-pin" type="password" inputmode="numeric" pattern="[0-9]{4,12}" minlength="4" maxlength="12" required autocomplete="off"></label><button class="btn dark" id="login-button" type="submit">Accéder au planning</button><p class="login-error" id="login-error" role="alert"></p><small>Un seul code à l'ouverture de la session (validité serveur : 2 h). Aucune donnée RH n’est disponible hors connexion.</small></form></div>
+<!-- V286 : diagnostic séparé pour le chargement du programme et la vérification de session RH. -->
+<script id="ichef-planning-v283-chargement-surveille">
+(function(){
+  'use strict';
+  if(new URLSearchParams(location.search).get('fromRh')!=='1')return;
+  const text=document.getElementById('rh-handoff-message');
+  const shield=document.getElementById('login-shield');
+  const report=function(message){
+    if(text&&shield&&!shield.classList.contains('hide'))text.textContent=message;
   };
-  rhDirectorySyncTimers=[setTimeout(tryRefresh,delay),setTimeout(tryRefresh,Math.max(delay+3000,5000))];
-}
-
-let pendingRhJump=rhJump;
-let anchor=rhJump?monday(new Date(rhJump.date+'T12:00:00')):monday(TODAY),view='week',filter='ALL',focusedStaffId=null,selected=null,staff=[],state={},actualMonths={},rhSettings={},publication=null,actor=null,tenant='',token='',device='',busy=false,readOnly=false,lastFetch=0;
-const premiumChannel=typeof BroadcastChannel!=='undefined'?new BroadcastChannel('ichef-planning-premium-events-v1'):null;
-function broadcastPlanningChange(mm){try{premiumChannel?.postMessage({type:'PLANNING_CHANGED',tenant,month:mm,at:Date.now()});}catch(_){}}
-function mkDevice(){
- const key='ichef_planning_device_v1';let id='';
- try{id=localStorage.getItem(key)||'';}catch(_){ }
- if(!id)try{id=sessionStorage.getItem(key)||'';}catch(_){ }
- if(!id){try{id=crypto.randomUUID();}catch(_){id='pwa_'+Date.now()+'_'+Math.random().toString(36).slice(2);}}
- try{sessionStorage.setItem(key,id);}catch(_){ }
- try{localStorage.setItem(key,id);}catch(_){ }
- return id;
-}
-device=mkDevice();let oldTenant='';try{oldTenant=localStorage.getItem('ichef_tenant_id')||'';}catch{}tenant=(query.get('tenantID')||oldTenant||'').trim().slice(0,80);$('login-tenant').value=tenant;if($('rh-handoff-return'))$('rh-handoff-return').href='/rh.html?tenantID='+encodeURIComponent(tenant);
-function setStatus(text,error=false){$('board-status').textContent=(error?'● ':'● ')+text;$('board-status').style.color=error?'#b64140':'#357b66';}
-function notify(message){$('toast').textContent=message;$('toast').classList.remove('hide');clearTimeout(notify.timer);notify.timer=setTimeout(()=>$('toast').classList.add('hide'),4300);}
-function showAuth(error=''){
- if(query.get('fromRh')==='1'){
-   const msg=$('rh-handoff-message');
-   if(msg)msg.textContent=error?('Connexion sécurisée non disponible : '+error+' Revenez dans RH et réessayez.'):'Session RH manquante ou expirée. Revenez dans RH et réessayez.';
- }
-
- if(query.get('controlRoom')==='1'&&window.parent!==window){
-  try{window.parent.postMessage({type:'ICHEF_PREMIUM_CONTROL_AUTH_REQUIRED',tenant},location.origin);}catch(_){}
- }
- multiEnabled=false;multiCells.clear();multiStaffId=null;if($('ai-advisor'))$('ai-advisor').open=false;if(taskSelected)closeTaskModal();token='';actor=null;focusedStaffId=null;staff=[];state={};actualMonths={};publication=null;render();$('login-shield').classList.remove('hide');$('login-error').textContent=error;setStatus('Connexion requise',true);}
-function authKey(){return 'ichef_planning_premium_auth_v1';}
-function forget(){try{sessionStorage.removeItem(authKey());}catch{}}
-function authHeaders(){return {'Accept':'application/json','Authorization':`Bearer ${token}`,'X-iCHEF-Tenant':tenant,'X-iCHEF-Device':device};}
-async function jsonFetch(path,opts={}){
- const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),12500);
- try{const response=await fetch(new URL(path,RH_API_BASE),{...opts,credentials:'include',cache:'no-store',signal:ctrl.signal});const data=await response.json().catch(()=>({}));if(!response.ok||data.success===false){const err=new Error(data.error||`Erreur HTTP ${response.status}`);err.status=response.status;err.code=data.code;throw err;}return data;}
- finally{clearTimeout(timer);}
-}
-async function login(ev){ev.preventDefault();const t=$('login-tenant').value.trim();const pin=$('login-pin').value.trim();if(!/^[a-z0-9_-]{2,80}$/i.test(t)||!/^[0-9]{4,12}$/.test(pin))return void ($('login-error').textContent='Identifiant ou code PIN invalide.');const btn=$('login-button');btn.disabled=true;$('login-error').textContent='Vérification sécurisée…';
- try{const res=await jsonFetch('/api/rh/planning/session',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json','X-iCHEF-Tenant':t,'X-iCHEF-Device':device},body:JSON.stringify({tenantID:t,pin,deviceId:device})});tenant=t;token=res.accessToken;actor=res.actor;try{localStorage.setItem('ichef_tenant_id',tenant);}catch{}query.set('tenantID',tenant);history.replaceState(null,'',location.pathname+'?'+query.toString());$('login-pin').value='';try{sessionStorage.setItem(authKey(),JSON.stringify({tenant,device,token,actor,exp:Date.now()+Math.min(Number(res.expiresInSeconds||7200),7200)*1000-10000}));}catch{}$('login-shield').classList.add('hide');await refresh(true);}
- catch(e){$('login-pin').value='';forget();showAuth(e.message||'Connexion refusée.');}
- finally{btn.disabled=false;}
-}
-async function restoreAuth(){
- let row=null;
- try{row=JSON.parse(sessionStorage.getItem(authKey())||'null');}
- catch(e){console.warn('[RH premium] lecture de session indisponible',e?.message);showAuth('Stockage temporaire de session indisponible.');return;}
- if(!row?.token){showAuth('Le transfert de session RH n’a pas abouti. Utilisez le bouton Planning dans RH.');return;}
- if(row.tenant!==tenant){showAuth('La session appartient à un autre établissement. Revenez dans RH.');return;}
- if(row.device!==device){showAuth('Appareil de session non reconnu. Revenez dans RH.');return;}
- if(!(Number(row.exp)>Date.now())){forget();showAuth('Session Planning expirée. Revenez dans RH.');return;}
- try{token=row.token;actor=row.actor;$('login-shield').classList.add('hide');await refresh(true);}
- catch(e){console.warn('[RH premium] chargement après authentification',e?.message);showAuth(e.message||'Chargement sécurisé impossible.');}
-}
-function convert(day){if(!day||!Object.keys(day).length)return empty();const s=String(day.status||'');const p=String(day.s1||'').split('-'),q=String(day.s2||'').split('-');let k='A';if(s==='off')k='R';else if(s==='conge')k='CP';else if(s==='maladie')k='MAL';else if(s==='accident_travail')k='ACC';else if(s==='absence_injustifiee')k='NJS';else if(s==='maternite')k='MAT';else if(s==='paternite')k='PAT';else if(s==='parental')k='PAR';else if(s==='enfant_malade')k='EFM';else if(s==='evenement_familial')k='EVF';else if(s==='deces')k='DEC';else if(s==='sans_solde')k='SSL';else if(s==='recup')k='RECUP';else if(s==='ferie')k='FERIE';else if(s==='formation')k='FORM';else if(s==='present'||s==='off_matin'||s==='off_soir')k=(day.s1&&day.s2)?'C':(day.s1?'M':'S');return {k,status:s,start:p[0]||'',end:p[1]||'',s2:q[0]||'',e2:q[1]||'',pause:Number(day.pause||0),note:String(day.obs||''),original:day};}
-function get(p,date){const d=iso(date),m=d.slice(0,7),n=String(Number(d.slice(8)));return convert(state?.[m]?.[p.id]?.[n]);}
-function work(r){return ['M','S','C'].includes(r.k);}
-// Les tâches sont conservées dans le champ obs existant des journées RH.
-// Un texte lisible est utilisé pour rester compatible avec RH et Portail Staff.
-const TASK_TAG='Tâches à faire :';
-const MAX_TASKS=6,MAX_TASK_LENGTH=65,MAX_OBS_LENGTH=500;
-function splitDayTasks(raw){
- const text=String(raw||'');
- const marker='\n'+TASK_TAG+'\n';
- const index=text.lastIndexOf(marker);
- if(index<0){
-  if(text.startsWith(TASK_TAG+'\n'))return {note:'',tasks:text.slice(TASK_TAG.length+1).split('\n').filter(x=>x.startsWith('• ')).map(x=>x.slice(2).trim()).filter(Boolean)};
-  return {note:text,tasks:[]};
- }
- const lines=text.slice(index+marker.length).split('\n');
- if(!lines.every(x=>!x.trim()||x.startsWith('• ')))return {note:text,tasks:[]};
- return {note:text.slice(0,index),tasks:lines.filter(x=>x.startsWith('• ')).map(x=>x.slice(2).trim()).filter(Boolean)};
-}
-function packDayTasks(note,tasks){
- const cleanNote=String(note||'').trim();
- const list=tasks.map(x=>String(x||'').replace(/[\r\n]/g,' ').trim()).filter(Boolean);
- const payload=cleanNote+(list.length?(cleanNote?'\n':'')+TASK_TAG+'\n'+list.map(x=>'• '+x).join('\n'):'');
- if(payload.length>MAX_OBS_LENGTH)throw Error('Notes et tâches trop longues (500 caractères maximum au total).');
- return payload;
-}
-function taskListFor(r){return splitDayTasks(r.note).tasks;}
-
-function mins(a,b){if(!a||!b)return 0;const t=x=>Number(x.slice(0,2))*60+Number(x.slice(3,5));return ((t(b)-t(a)+1440)%1440)/60;}
-function hours(r){return !work(r)?0:Math.max(0,mins(r.start,r.end)+mins(r.s2,r.e2)-r.pause/60);}
-function label(r){
- const segments=[];
- if(r.start&&r.end)segments.push(`${r.start}–${r.end}`);
- if(r.s2&&r.e2)segments.push(`${r.s2}–${r.e2}`);
- return segments.join(' / ');
-}
-function visible(){
- const matching=staff.filter(x=>filter==='ALL'||x.dept===filter);
- return focusedStaffId?staff.filter(x=>String(x.id)===focusedStaffId):matching;
-}
-// V272 — Heures réelles lues uniquement depuis une source RH/pointage renvoyée
-// par le serveur. Les horaires du planning ne sont JAMAIS assimilés aux pointages.
-function safeNumber(value){
- if(value===null||value===undefined||value==='')return null;
- if(typeof value==='string'&&!/^[+-]?\d+(?:[.,]\d+)?$/.test(value.trim()))return null;
- const n=Number(String(value).replace(',','.'));
- return Number.isFinite(n)?n:null;
-}
-function numberFrom(record,keys){
- if(!record||typeof record!=='object')return null;
- for(const key of keys){const n=safeNumber(record[key]);if(n!==null)return n;}
- return null;
-}
-function displayHours(value){
- if(value===null||!Number.isFinite(value))return '—';
- return `${Math.round(value*10)/10}`.replace('.',',')+' h';
-}
-function signedHours(value){
- if(value===null||!Number.isFinite(value))return '—';
- const rounded=Math.round(value*10)/10;
- return (rounded>0?'+':rounded<0?'−':'±')+displayHours(Math.abs(rounded));
-}
-function getWeeklyTarget(person){
- // La durée contractuelle vient de la fiche RH; ne pas fixer 35/39 h en dur.
- const direct=numberFrom(person,['contractHoursWeek','weeklyContractHours','hoursPerWeek','weeklyHours']);
- if(direct!==null)return direct>=0?direct:null;
- const contract=person?.contract;
- if(contract&&typeof contract==='object')return numberFrom(contract,['hoursPerWeek','weeklyHours','hours','durationHours']);
- const num=safeNumber(contract);
- return num!==null&&num>=0?num:null;
-}
-function readRealMonth(res,mm){
- // Convention RH: REAL_TIMESHEETS_MONTHS[mois].staff[id].days[jour].workedHours.
- // Tolère différentes enveloppes de réponse, sans créer de nouvelles routes API.
- const candidates=[res.realTimesheets,res.realTimeSheets,res.actualTimesheets,res.realHours,res.timeTracking];
- for(const root of candidates){
-  if(!root||typeof root!=='object')continue;
-  const node=root.months?.[mm]||root[mm]||(root.month===mm?root:null);
-  if(node&&typeof node==='object'){
-   const all=node.staff||node.byStaff||node.employees||node;
-   if(all&&typeof all==='object')return all;
-  }
- }
- // Dans certaines réponses, un bloc d'heures réelles est déjà découpé par mois.
- for(const key of ['realTimesheetsByStaff','actualSheetsByStaff']){
-  const data=res[key];
-  if(data&&typeof data==='object'&&(data.month===mm||data.period===mm))return data.staff||data.byStaff||null;
- }
- return null;
-}
-function realSheet(person,mm){
- const monthData=actualMonths[mm];
- return monthData?.[String(person.id)]||monthData?.[person.id]||null;
-}
-function realDayHours(person,date){
- const sheet=realSheet(person,month(date));
- if(!sheet||!sheet.days||typeof sheet.days!=='object')return null;
- const d=date.getDate();
- const day=sheet.days[String(d).padStart(2,'0')]??sheet.days[String(d)]??sheet.days[iso(date)];
- if(day===undefined||day===null)return 0;
- return numberFrom(day,['workedHours','manualWorkedHours','retainedHours','hours']);
-}
-function realHoursForPeriod(person,days){
- if(!days.length)return null;
- const mm=month(days[0]);
- if(days.every(d=>month(d)===mm)){
-  const sheet=realSheet(person,mm);
-  // Pour une vue mensuelle, privilégier le total retenu/validé côté RH.
-  if(view==='month'&&sheet){
-   const total=numberFrom(sheet.totals,['workedHours','retainedHours']);
-   if(total!==null)return total;
-  }
- }
- let sum=0;
- for(const day of days){
-  const actual=realDayHours(person,day);
-  if(actual===null)return null;
-  sum+=actual;
- }
- return Math.round(sum*100)/100;
-}
-function hoursSummary(person,days){
- const planned=days.reduce((total,day)=>total+hours(get(person,day)),0);
- const actual=realHoursForPeriod(person,days);
- let target=null;
- if(view==='week')target=getWeeklyTarget(person);
- else if(view==='day')target=null;
- else {
-  const sheet=realSheet(person,month(days[0]));
-  target=numberFrom(sheet?.totals,['adjustedTarget','expectedHours','targetHours']);
- }
- // Écart indicatif heures effectuées moins objectif contractuel; ce n'est
- // pas une qualification de majorations légales / heures supplémentaires payées.
- const difference=actual!==null&&target!==null?actual-target:null;
- return {planned:Math.round(planned*10)/10,actual,target,difference};
-}
-function metricMarkup(info){
- const actual=info.actual!==null;
- const actualLabel='Effectuées';
- const first=info.actual;
- const balanceClass=info.difference===null?'missing':info.difference>0.001?'positive':info.difference<-.001?'negative':'neutral';
- const balance=info.difference===null?'—':signedHours(info.difference);
- const summary=actual?'Pointage RH':'Planning uniquement, pointage indisponible';
- const title=actual
-  ?`Heures effectuées : ${displayHours(info.actual)}. Contrat / objectif : ${displayHours(info.target)}. Écart : ${balance}. Prévu : ${displayHours(info.planned)}.`
-  :`Heures prévues : ${displayHours(info.planned)}. Heures réellement effectuées indisponibles dans la réponse serveur.`;
- return `<span class="staff-metrics" title="${esc(title)}" aria-label="${esc(summary+'. '+title)}"><span class="staff-metric"><span class="metric-label">${actualLabel}</span><strong>${esc(displayHours(first))}</strong></span><span class="staff-metric staff-balance ${balanceClass}"><span class="metric-label">Écart</span><strong>${esc(balance)}</strong></span>${actual?'':`<span class="staff-plan-line">Prévues : ${esc(displayHours(info.planned))}</span>`}</span>`;
-}
-function shiftMarkup(r){
- if(r.k==='O')return '<span class="entry-label">+</span>';
- const heading=esc(types[r.k]||'ABSENCE');
- const segments=[];
- if(r.start&&r.end)segments.push(`${r.start}–${r.end}`);
- if(r.s2&&r.e2)segments.push(`${r.s2}–${r.e2}`);
- return `<span class="entry-label">${heading}</span>${segments.map(x=>`<span class="entry-time">${esc(x)}</span>`).join('')}`;
-}
-function openEmployee(staffId){
- // La sélection V285 peut couvrir plusieurs collaborateurs, y compris si
- // l'utilisateur consulte entre-temps une fiche individuelle.
- if(multiEnabled)multiStaffId=String(staffId);
- const p=staff.find(x=>String(x.id)===String(staffId));
- if(!p)return;
- focusedStaffId=String(p.id);
- anchor=view==='month'?monday(anchor):anchor;
- switchView(view==='day'?'day':'week');
- $('person-bar').scrollIntoView({block:'nearest',behavior:'smooth'});
-}
-function closeEmployee(){focusedStaffId=null;render();}
-function periodDays(){
- if(view==='day')return [new Date(anchor)];
- if(view==='week')return Array.from({length:7},(_,i)=>add(monday(anchor),i));
- const first=new Date(anchor.getFullYear(),anchor.getMonth(),1,12);
- const n=new Date(first.getFullYear(),first.getMonth()+1,0).getDate();
- return Array.from({length:n},(_,i)=>add(first,i));
-}
-function renderPersonBar(){
- const person=focusedStaffId?staff.find(x=>String(x.id)===focusedStaffId):null;
- $('person-bar').classList.toggle('hide',!person);
- document.querySelector('.board').classList.toggle('person-mode',Boolean(person));
- $('panel-view-title').textContent=person?'Ce collaborateur':view==='day'?'Détail de la journée':'Vue d’ensemble';
- $('panel-view-subtitle').textContent=person?
-  `Consultez et modifiez les journées de ${person.name} directement sur le planning officiel.`:
-  'Planning officiel : lecture et modification directement sur iCHEF OS.';
- if(!person)return;
- $('person-title').textContent=person.name||'Collaborateur';
- $('person-role').textContent=[person.role,person.dept].filter(Boolean).join(' · ');
- $('person-avatar').textContent=person.avatar||'?';
- const days=periodDays();
- const summary=hoursSummary(person,days);
- $('person-hours').textContent=`${summary.actual===null?'Prévues':'Effectuées'} ${displayHours(summary.actual===null?summary.planned:summary.actual)} · Écart ${signedHours(summary.difference)}`;
- $('person-hours').title=summary.actual===null?'Heures de pointage indisponibles côté serveur. Seules les heures planifiées sont affichées.':'Écart indicatif entre les heures pointées et l’objectif communiqué par RH.';
-}
-function multiValidDate(value){
- if(!/^\d{4}-\d{2}-\d{2}$/.test(String(value||'')))return false;
- const d=new Date(value+'T12:00:00');return Number.isFinite(+d)&&iso(d)===value;
-}
-function multiName(){
- const ids=multiPeople();
- if(ids.size===1){const id=[...ids][0];return staff.find(p=>String(p.id)===id)?.name||'Collaborateur';}
- return `${ids.size} collaborateurs`;
-}
-function multiUpdateToolbar(){
- const bar=$('multi-days-toolbar');if(!bar)return;
- bar.classList.toggle('is-active',multiEnabled);
- $('multi-mode').setAttribute('aria-pressed',String(multiEnabled));
- $('multi-mode').textContent=multiEnabled?'✓ Sélection libre active':'☝ Sélectionner des cases';
- const n=multiCells.size,np=multiPeople().size;
- $('multi-counter').textContent=multiEnabled
-  ? `${n} case${n>1?'s':''} choisie${n>1?'s':''} · ${np} collaborateur${np>1?'s':''} · toucher / glisser (max. ${MULTI_CELL_LIMIT})`
-  : 'Touchez une case pour modifier · activez la sélection pour choisir des cases libres';
- bar.classList.toggle('has-selection',multiEnabled&&n>0);
- $('multi-apply').disabled=!multiEnabled||readOnly||busy||!n;
- $('multi-apply').textContent=n?`Modifier ${n} case${n>1?'s':''}`:'Modifier les cases';
- document.querySelectorAll('[data-multi-preset]').forEach(b=>{b.disabled=!multiEnabled||!n||readOnly||busy;});
- $('multi-range').disabled=!multiEnabled||readOnly||busy;
- const all=$('multi-all-visible');if(all){all.disabled=!multiEnabled||readOnly||busy||!token||view==='month'&&!focusedStaffId;all.title=view==='month'&&!focusedStaffId?'Choisissez la vue Semaine ou un collaborateur en vue Mois.':'Ajouter toutes les cases affichées, sans effacer la sélection précédente.';}
- $('multi-mode').disabled=readOnly||busy;
-}
-function multiPaint(){
- document.querySelectorAll('.entry[data-person][data-date],.monthday[data-edit-person][data-edit-date],.day-shift[data-edit-person][data-edit-date]').forEach(el=>{
-  const person=el.dataset.person||el.dataset.editPerson;
-  const date=el.dataset.date||el.dataset.editDate;
-  const on=multiEnabled&&multiHas(person,date);
-  el.classList.toggle('is-multi-selected',on);
-  if(multiEnabled)el.setAttribute('aria-pressed',String(on));else el.removeAttribute('aria-pressed');
- });
- multiUpdateToolbar();
-}
-function multiClear({all=false}={}){multiCells.clear();if(all)multiStaffId=null;multiPaint();}
-function multiEnable(force){
- if(!token||readOnly)return notify('Connexion RH autorisée requise pour modifier le planning.');
- multiEnabled=typeof force==='boolean'?force:!multiEnabled;
- if(!multiEnabled)multiClear({all:true});
- else if(focusedStaffId)multiStaffId=focusedStaffId;
- multiPaint();
- if(multiEnabled)notify('Sélection libre : touchez les cases souhaitées, même sur plusieurs lignes ou semaines.');
-}
-function multiSelectDate(person,date,forcedAdd=false){
- if(!multiEnabled||!token||readOnly||busy||!multiValidDate(date))return;
- if(!staff.some(s=>String(s.id)===String(person)))return;
- const key=multiKey(person,date);
- multiStaffId=String(person);
- if(multiCells.has(key)){if(!forcedAdd)multiCells.delete(key);}
- else if(multiCells.size<MULTI_CELL_LIMIT)multiCells.set(key,{person:String(person),date});
- else notify(`Maximum ${MULTI_CELL_LIMIT} cases par opération : validez les cases choisies avant de continuer.`);
- multiPaint();
-}
-function multiSelectVisible(){
- if(!multiEnabled||readOnly||busy||!token)return;
- const cells=[...document.querySelectorAll((view==='week'?'#week-host':view==='day'?'#day-host':'#month-host')+' [data-person][data-date], '+(view==='week'?'#week-host':view==='day'?'#day-host':'#month-host')+' [data-edit-person][data-edit-date]')];
- if(!cells.length)return notify('Passez en vue Semaine ou ouvrez un collaborateur pour sélectionner toutes les cases visibles.');
- const remaining=cells.filter(el=>!multiHas(el.dataset.person||el.dataset.editPerson,el.dataset.date||el.dataset.editDate));
- if(multiCells.size+remaining.length>MULTI_CELL_LIMIT)return notify(`Cette sélection dépasserait ${MULTI_CELL_LIMIT} cases. Sélectionnez une période plus courte.`);
- for(const el of remaining){const person=String(el.dataset.person||el.dataset.editPerson),date=el.dataset.date||el.dataset.editDate;if(multiValidDate(date))multiCells.set(multiKey(person,date),{person,date});}
- multiPaint();notify(`${multiCells.size} cases sélectionnées · ${multiPeople().size} collaborateurs.`);
-}
-function multiRangeAdd(){
- if(!multiEnabled||readOnly||busy)return;
- const start=$('multi-from').value,end=$('multi-to').value;
- if(!multiValidDate(start)||!multiValidDate(end)||start>end)return notify('Choisissez deux dates valides dans l’ordre.');
- const p=focusedStaffId||multiStaffId;
- if(!p)return notify('Touchez d’abord une case du collaborateur concerné.');
- const count=Math.round((Date.parse(end+'T12:00:00')-Date.parse(start+'T12:00:00'))/86400000)+1;
- if(count<1||count>MULTI_CELL_LIMIT)return notify(`Choisissez une période de ${MULTI_CELL_LIMIT} jours maximum.`);
- const span=[];for(let i=0;i<count;i++)span.push(iso(add(new Date(start+'T12:00:00'),i)));
- const newCount=span.filter(date=>!multiHas(p,date)).length;
- if(multiCells.size+newCount>MULTI_CELL_LIMIT)return notify(`Cette période dépasserait ${MULTI_CELL_LIMIT} cases.`);
- for(const date of span)multiCells.set(multiKey(p,date),{person:String(p),date});
- multiPaint();notify(`${multiCells.size} cases sélectionnées.`);
-}
-function multiOpenEditor(){
- if(!multiEnabled||!multiCells.size||busy||readOnly)return;
- const cells=multiSelected(),first=cells[0];
- openModal(first.person,first.date);
- if(!selected)return;
- selected.bulkCells=cells;
- const n=multiPeople().size;
- legalEditRender();$('modal-title').textContent=`Modifier ${cells.length} cases`;
- $('modal-sub').textContent=`${n} collaborateur${n>1?'s':''} · ${cells.length} case${cells.length>1?'s':''} · même modification`;
- $('legal-ack').checked=false;$('legal-details').value='';$('multi-note-opt').classList.remove('hide');
- $('multi-apply-note').checked=false;
- $('form-hint').textContent=`Appliquer les mêmes horaires ou absences à toutes les cases sélectionnées. Les notes et tâches de chaque employé restent conservées par défaut. Chaque case est enregistrée individuellement sur le serveur et les modifications doivent être publiées.`;
-}
-// V281 — glisser pour sélectionner sans dupliquer les enregistrements.
-// La validation continue d'utiliser saveMultiple() et le serveur RH existants.
-function multiQuickPreset(kind){
- if(!['M','S','C','R','CP'].includes(kind)||!multiEnabled||!multiCells.size||readOnly||busy)return;
- multiOpenEditor();
- if(!selected)return;
- $('kind').value=kind;
- updateForm();
-}
-function multiSpanBetween(a,b){
- if(!multiValidDate(a)||!multiValidDate(b))return [];
- const begin=a<=b?a:b,finish=a<=b?b:a;
- const days=Math.round((new Date(finish+'T12:00:00')-new Date(begin+'T12:00:00'))/86400000)+1;
- // Ne jamais créer une sélection disproportionnée lors d’un geste hors de la grille.
- if(days<1||days>31)return [b];
- const dates=[];for(let i=0;i<days;i++)dates.push(iso(add(new Date(begin+'T12:00:00'),i)));
- return dates;
-}
-// V285 : sélection tactile par cases (lignes ET colonnes).
-// Toucher simple hors sélection = modifier. Glisser horizontalement = choisir.
-// Sélection active = toucher/faire glisser sur n'importe quelle cellule.
-function multiPointerBind(host){
- if(!host)return;
- const selector='[data-person][data-date], [data-edit-person][data-edit-date]';
- const atPoint=(x,y)=>{
-  const found=document.elementFromPoint(x,y)?.closest?.(selector);
-  return found&&host.contains(found)?found:null;
- };
- const getIdentity=cell=>({person:String(cell.dataset.person||cell.dataset.editPerson),date:cell.dataset.date||cell.dataset.editDate});
- const clearTimer=g=>{if(g?.holdTimer){clearTimeout(g.holdTimer);g.holdTimer=0;}};
- const applyCell=(gesture,person,date)=>{
-  const key=multiKey(person,date);
-  if(gesture.visited.has(key))return;
-  gesture.visited.add(key);
-  if(gesture.action==='remove'){multiCells.delete(key);multiPaint();}
-  else multiSelectDate(person,date,true);
- };
- const startSelection=(gesture)=>{
-  if(gesture.started||multiPointer!==gesture||!token||readOnly||busy)return;
-  clearTimer(gesture);
-  gesture.freezeToolbar=!multiEnabled;
-  if(gesture.freezeToolbar)$('multi-days-toolbar')?.classList.add('is-gesturing');
-  if(!multiEnabled)multiEnable(true);
-  if(!multiEnabled){$('multi-days-toolbar')?.classList.remove('is-gesturing');return;}
-  gesture.action=multiHas(gesture.person,gesture.startDate)?'remove':'add';
-  gesture.started=true;
-  applyCell(gesture,gesture.person,gesture.startDate);
-  multiIgnoreClickUntil=Date.now()+900;
-  try{host.setPointerCapture(gesture.id);}catch(_){}
- };
- host.addEventListener('pointerdown',e=>{
-  if(!token||readOnly||busy||selected||e.button!==0||multiPointer)return;
-  const cell=e.target.closest?.(selector);
-  if(!cell||!host.contains(cell)||cell.disabled)return;
-  const {person,date}=getIdentity(cell);
-  if(!multiValidDate(date)||!staff.some(p=>String(p.id)===String(person)))return;
-  const gesture={id:e.pointerId,person,startDate:date,lastPerson:person,lastDate:date,
-    startX:e.clientX,startY:e.clientY,visited:new Set(),action:'add',started:false,holdTimer:0};
-  multiPointer=gesture;
-  if(multiEnabled){startSelection(gesture);e.preventDefault();}
-  else if(e.pointerType==='touch'||e.pointerType==='pen')gesture.holdTimer=setTimeout(()=>startSelection(gesture),420);
- },{passive:false});
- host.addEventListener('pointermove',e=>{
-  const gesture=multiPointer;
-  if(!gesture||gesture.id!==e.pointerId)return;
-  const dx=e.clientX-gesture.startX,dy=e.clientY-gesture.startY;
-  if(!gesture.started){
-   if(Math.abs(dy)>15&&Math.abs(dy)>Math.abs(dx)*1.2){clearTimer(gesture);multiPointer=null;return;}
-   const cell=atPoint(e.clientX,e.clientY),other=cell?getIdentity(cell):null;
-   if(Math.abs(dx)>14&&Math.abs(dx)>Math.abs(dy)*1.2&&other?.person===gesture.person)startSelection(gesture);
-   else return;
-  }
-  const cell=atPoint(e.clientX,e.clientY);
-  if(!cell)return;
-  const {person,date}=getIdentity(cell);
-  if(!multiValidDate(date)||!staff.some(p=>String(p.id)===person))return;
-  if(person===gesture.lastPerson&&date!==gesture.lastDate){
-   for(const day of multiSpanBetween(gesture.lastDate,date))applyCell(gesture,person,day);
-  }else applyCell(gesture,person,date);
-  gesture.lastPerson=person;gesture.lastDate=date;
-  multiIgnoreClickUntil=Date.now()+850;e.preventDefault();
- },{passive:false});
- const end=e=>{
-  const gesture=multiPointer;
-  if(!gesture||gesture.id!==e.pointerId)return;
-  clearTimer(gesture);
-  if(gesture.freezeToolbar)$('multi-days-toolbar')?.classList.remove('is-gesturing');
-  if(gesture.started){
-   multiIgnoreClickUntil=Date.now()+850;
-   try{if(host.hasPointerCapture?.(e.pointerId))host.releasePointerCapture(e.pointerId);}catch(_){}
-  }
-  multiPointer=null;
- };
- host.addEventListener('pointerup',end);
- host.addEventListener('pointercancel',end);
- host.addEventListener('lostpointercapture',e=>{
-  if(e.target!==host)return;
-  if(multiPointer?.id===e.pointerId){clearTimer(multiPointer);$('multi-days-toolbar')?.classList.remove('is-gesturing');multiPointer=null;multiIgnoreClickUntil=Date.now()+700;}
- });
-}
-function multiCellClick(person,date,event){
- if(!multiEnabled&&(event?.ctrlKey||event?.metaKey)){
-  multiEnable(true);multiSelectDate(person,date);return;
- }
- if(multiEnabled){
-  if(event?.detail===0||Date.now()>multiIgnoreClickUntil)multiSelectDate(person,date);
-  return;
- }
- openModal(person,date);
-}
-function renderWeek(){
- const people=visible(),days=Array.from({length:7},(_,i)=>add(monday(anchor),i));
- let h='<table class="schedule" aria-label="Planning semaine officiel"><thead><tr><th>COLLABORATEUR</th>';
- for(const d of days)h+=`<th class="${iso(d)===iso(TODAY)?'today':''}"><button type="button" class="week-day-button" data-open-day="${iso(d)}" aria-label="Voir le détail du ${iso(d)}"><span class="weekday">${fmt(d,{weekday:'short'})}</span><span class="daynumber">${fmt(d,{day:'2-digit'})}</span></button></th>`;
- h+='</tr></thead><tbody>';
- for(const p of people){
-  const summary=hoursSummary(p,days);
-  h+=`<tr><td><button type="button" class="staff-open" data-profile="${esc(p.id)}" aria-label="Voir le planning individuel de ${esc(p.name)}. Heures effectuées : ${esc(displayHours(summary.actual))}. Heures prévues : ${esc(displayHours(summary.planned))}. Écart : ${esc(signedHours(summary.difference))}" title="Afficher le planning de ${esc(p.name)}"><span class="avatar">${esc(p.avatar)}</span><span class="staff-details"><span class="staff-name">${esc(p.name)}</span><span class="staff-role">${esc(p.role)}</span>${metricMarkup(summary)}</span></button></td>`;
-  for(const d of days){
-   const r=get(p,d),caption=[types[r.k]||'Absence',label(r)].filter(Boolean).join(' · ');
-   const enabled=!readOnly;
-   h+=`<td class="${iso(d)===iso(TODAY)?'today':''}"><button class="entry ${(['M','S','C','R','O'].includes(r.k)?r.k:'A')}" type="button" data-person="${esc(p.id)}" data-date="${iso(d)}" ${enabled?'':'disabled'} title="${esc(caption)}" aria-label="${enabled?'Modifier':'Consulter'} le ${iso(d)} pour ${esc(p.name)} : ${esc(caption)}">${shiftMarkup(r)}</button></td>`;
-  }
-  h+='</tr>';
- }
- h+='</tbody><tfoot><tr><td>TOTAL PRÉSENCES</td>';
- for(const d of days){const arr=people.map(p=>get(p,d)).filter(work);h+=`<td class="day-summary">${arr.length} équipe<span>${arr.reduce((sum,r)=>sum+hours(r),0).toFixed(1)} h</span></td>`;}
- h+='</tr></tfoot></table>';
- $('week-host').innerHTML=h;
- $('week-host').querySelectorAll('[data-open-day]').forEach(b=>b.addEventListener('click',()=>openDay(b.dataset.openDay)));
- $('week-host').querySelectorAll('[data-profile]').forEach(b=>b.addEventListener('click',()=>openEmployee(b.dataset.profile)));
- $('week-host').querySelectorAll('[data-person]').forEach(b=>b.addEventListener('click',event=>multiCellClick(b.dataset.person,b.dataset.date,event)));
- multiPaint();
-}
-function openDay(date){
- if(!/^\d{4}-\d{2}-\d{2}$/.test(date))return;
- anchor=new Date(date+'T12:00:00');
- switchView('day');
- lastFetch=0;void refresh(true);
-}
-function renderDay(){
- const d=new Date(anchor),people=visible();
- const order=people.slice().sort((a,b)=>Number(work(get(b,d)))-Number(work(get(a,d))));
- const n=people.filter(p=>work(get(p,d))).length;
- let h=`<div class="day-header"><strong>${esc(fmt(d,{weekday:'long',day:'numeric',month:'long',year:'numeric'}))}</strong><small>${n} service${n>1?'s':''} programmés · ${people.length} collaborateurs</small></div>`;
- h+='<table class="day-table" aria-label="Détail de la journée, horaires et tâches"><thead><tr><th>Collaborateur</th><th>Horaire</th><th>Durée prévue</th><th>Tâches à faire</th><th>Modifier</th></tr></thead><tbody>';
- for(const p of order){
-  const r=get(p,d),tk=taskListFor(r),k=['M','S','C','R'].includes(r.k)?r.k:'A';
-  const value=work(r)?displayHours(hours(r)):'—';
-  const hourLabel=label(r)||types[r.k]||'Non planifié';
-  h+=`<tr><td><div class="day-person"><span class="avatar">${esc(p.avatar)}</span><button type="button" data-profile="${esc(p.id)}"><strong>${esc(p.name)}</strong><small>${esc(p.role)}</small></button></div></td>`;
-  h+=`<td><button type="button" class="day-shift ${k}" data-edit-person="${esc(p.id)}" data-edit-date="${iso(d)}" ${readOnly?'disabled':''} title="Modifier cet horaire">${esc(types[r.k]||'ABSENCE')}<small>${esc(hourLabel)}</small></button></td>`;
-  h+=`<td class="day-duration">${esc(value)}</td><td><div class="day-tasks">${tk.length?tk.map(x=>`<span class="day-task-chip">${esc(x)}</span>`).join(''):'<span class="day-no-tasks">Aucune tâche ajoutée</span>'}</div></td>`;
-  h+=`<td class="day-action-cell"><button type="button" class="btn day-edit-task" data-task-person="${esc(p.id)}" data-task-date="${iso(d)}" ${(!work(r)||readOnly)?'disabled title="Tâches disponibles pour les journées travaillées uniquement"':''}>${tk.length?'✎ Tâches':'＋ Tâche'}</button></td></tr>`;
- }
- h+='</tbody></table>';
- $('day-host').innerHTML=h;
- $('day-host').querySelectorAll('[data-profile]').forEach(b=>b.addEventListener('click',()=>openEmployee(b.dataset.profile)));
- $('day-host').querySelectorAll('[data-edit-person]').forEach(b=>b.addEventListener('click',event=>multiCellClick(b.dataset.editPerson,b.dataset.editDate,event)));
- multiPaint();
- $('day-host').querySelectorAll('[data-task-person]').forEach(b=>b.addEventListener('click',()=>openTaskModal(b.dataset.taskPerson,b.dataset.taskDate)));
-}
-function renderMonth(){
- const first=new Date(anchor.getFullYear(),anchor.getMonth(),1,12),shift=(first.getDay()+6)%7,last=new Date(first.getFullYear(),first.getMonth()+1,0).getDate();
- const person=focusedStaffId?staff.find(x=>String(x.id)===focusedStaffId):null;
- let h='<div class="month-wrap"><div class="month-head">';
- for(const d of ['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'])h+=`<div>${d}</div>`;
- h+='</div><div class="month-grid">';
- for(let j=0;j<Math.ceil((last+shift)/7)*7;j++){
-  const day=j-shift+1;
-  if(day<1||day>last){h+='<div class="monthday empty"></div>';continue;}
-  const date=new Date(first.getFullYear(),first.getMonth(),day,12),key=iso(date);
-  if(person){
-    const r=get(person,date),caption=types[r.k]||'ABSENCE';
-    const segments=[r.start&&r.end?`${r.start}–${r.end}`:'',r.s2&&r.e2?`${r.s2}–${r.e2}`:''].filter(Boolean);
-    h+=`<button class="monthday ${key===iso(TODAY)?'today':''} ${['M','S','C','R'].includes(r.k)?r.k:''}" data-edit-person="${esc(person.id)}" data-edit-date="${key}" type="button" ${readOnly?'disabled':''} aria-label="${esc(person.name)} · ${key} · ${esc(caption)} · ${esc(segments.join(' et '))}"><b>${day}</b><span class="month-label">${esc(r.k==='O'?'Ajouter +':caption)}</span>${segments.map(t=>`<small class="month-time">${esc(t)}</small>`).join('')}${taskListFor(r).length?`<small class="month-extra">${taskListFor(r).length} tâche${taskListFor(r).length>1?'s':''}</small>`:''}</button>`;
-  }else{
-    const shifts=visible().map(p=>({p,r:get(p,date)})).filter(x=>work(x.r));
-    const maxShown=window.innerWidth<680?1:window.innerHeight<740?2:3;
-    const shown=shifts.slice(0,maxShown);
-    const tooltip=shifts.map(({p,r})=>p.name+' '+label(r)).join(' | ');
-    const tags=shown.map(({p,r})=>{
-      const compact=r.k==='C'?[r.start,r.s2].filter(Boolean).map(x=>x.slice(0,2)).join('/'):
-        `${(r.start||r.s2||'').slice(0,2)}-${(r.end||r.e2||'').slice(0,2)}`;
-      return `<span class="month-shift ${r.k}" title="${esc(p.name+' · '+label(r))}"><span class="month-full">${esc((p.name||'').split(/\s+/)[0])} ${esc(label(r))}</span><span class="month-mini">${r.k} ${esc(compact)}</span></span>`;
-    }).join('');
-    const overflow=shifts.length>shown.length?`<span class="month-extra">+${shifts.length-shown.length} autre${shifts.length-shown.length>1?'s':''}</span>`:'';
-    h+=`<button class="monthday ${key===iso(TODAY)?'today':''} ${shifts.length?'month-has-work':''}" data-month-day="${key}" type="button" title="${esc(tooltip||'Aucun horaire')}" aria-label="Voir le jour ${key}, ${shifts.length} services"><b>${day}</b><span class="month-shifts">${tags}${overflow}</span>${shifts.length?'':'<small>Repos</small>'}</button>`;
-  }
- }
- h+='</div></div>';
- $('month-host').style.setProperty('--planning-month-weeks',String(Math.ceil((last+shift)/7)));
- $('month-host').innerHTML=h;
- $('month-host').querySelectorAll('[data-month-day]').forEach(b=>b.addEventListener('click',()=>openDay(b.dataset.monthDay)));
- $('month-host').querySelectorAll('[data-edit-person]').forEach(b=>b.addEventListener('click',event=>multiEnabled||event.ctrlKey||event.metaKey?multiCellClick(b.dataset.editPerson,b.dataset.editDate,event):openDay(b.dataset.editDate)));
- multiPaint();
-}
-// V275 — analyse rapide et explicable : aucune IA distante, aucun envoi supplémentaire.
-// Le moteur de proposition complet existant reste dans RH ; ici : pistes non contraignantes.
-function adviceCandidates(){
- if(!token||!staff.length)return [];
- const days=periodDays(),people=visible(),list=[];
- if(!people.length)return [];
- const labelDay=d=>fmt(d,{weekday:'short',day:'numeric',month:'short'});
- const push=(priority,title,body,date=null)=>list.push({priority,title,body,date:date?iso(date):null});
- const teamMode=!focusedStaffId;
- if(teamMode){
-  const dayStats=days.map(d=>({d,entries:people.map(p=>({p,r:get(p,d)})).filter(x=>work(x.r))}));
-  const nonEmpty=dayStats.filter(x=>x.entries.length);
-  // Un jour non couvert n'est pas forcément une erreur si le site est fermé.
-  for(const row of dayStats.filter(x=>!x.entries.length).slice(0,2)){
-   push(1,`${labelDay(row.d)} · aucun horaire`,
-    `Vérifier si ${filter==='ALL'?'l’établissement':'ce service'} est ouvert, puis compléter si besoin.`,row.d);
-  }
-  // Un seul collaborateur : piste uniquement, sans inventer un seuil de personnel.
-  if(people.length>1){
-   const short=dayStats.find(x=>x.entries.length===1);
-   if(short)push(3,`${labelDay(short.d)} · 1 personne`,
-     'Couverture réduite : envisager un renfort si l’activité le nécessite.',short.d);
-  }
-  const hasEvening=nonEmpty.some(x=>x.entries.some(v=>v.r.k==='S'||v.r.k==='C'));
-  const hasMorning=nonEmpty.some(x=>x.entries.some(v=>v.r.k==='M'||v.r.k==='C'));
-  if(hasEvening){
-   const missing=nonEmpty.find(x=>x.entries.every(v=>v.r.k==='M'));
-   if(missing)push(4,`${labelDay(missing.d)} · aucun soir`,
-    'Service du soir à vérifier uniquement s’il est prévu ce jour-là.',missing.d);
-  }
-  if(hasMorning){
-   const missing=nonEmpty.find(x=>x.entries.every(v=>v.r.k==='S'));
-   if(missing)push(4,`${labelDay(missing.d)} · aucun matin`,
-    'Service du matin à vérifier uniquement s’il est prévu ce jour-là.',missing.d);
-  }
- }
- for(const p of people){
-  const arr=days.map(d=>({d,r:get(p,d)}));
-  if(view==='week'){
-   let streak=0;
-   for(const item of arr){
-    streak=work(item.r)?streak+1:0;
-    if(streak>=6){push(1,`${p.name} · ${streak} jours de suite`,
-      'Vérifier les repos et les règles applicables, y compris les jours hors période.',item.d);break;}
-   }
-   const target=getWeeklyTarget(p);
-   const weekHours=arr.reduce((sum,x)=>sum+hours(x.r),0);
-   const approvedLeave=arr.some(x=>!['M','S','C','R','O'].includes(x.r.k));
-   if(target!==null&&!approvedLeave){
-    const delta=weekHours-target;
-    if(delta>=4)push(2,`${p.name} · ${displayHours(delta)} au-dessus du contrat`,
-      `Prévu ${displayHours(weekHours)} / référence ${displayHours(target)} : vérifier la répartition.`,arr[0].d);
-    else if(delta<=-4)push(4,`${p.name} · ${displayHours(-delta)} sous la référence`,
-      `Prévu ${displayHours(weekHours)} / référence ${displayHours(target)}. Comparer avec ses disponibilités.`,arr[0].d);
-   }
-  }
-  const longDay=arr.find(x=>work(x.r)&&hours(x.r)>10);
-  if(longDay)push(2,`${p.name} · journée de ${displayHours(hours(longDay.r))}`,
-    'Durée planifiée élevée : revoir les pauses et le repos éventuel.',longDay.d);
- }
- // Pour le mois, éviter de présenter une limite hebdomadaire à partir d'un total mensuel.
- list.sort((a,b)=>a.priority-b.priority);
- const unique=[];
- for(const row of list){if(unique.some(x=>x.title===row.title))continue;unique.push(row);if(unique.length===4)break;}
- if(!unique.length)unique.push({priority:5,title:'Aucun point prioritaire détecté',
-  body:'Continuer la vérification des besoins de service et des contraintes RH : cette aide ne garantit pas la conformité.',date:null});
- return unique;
-}
-function renderAdvice(){
- const host=$('ai-suggestions'),count=$('ai-count');
- if(!host||!count)return;
- if(!token||!staff.length){count.textContent='—';host.innerHTML='<p class="ai-mini-intro">Suggestions disponibles après synchronisation RH.</p>';return;}
- const rows=adviceCandidates();
- const noIssue=rows.length===1&&rows[0].priority===5;
- count.textContent=noIssue?'RAS':`${rows.length} piste${rows.length>1?'s':''}`;
- host.replaceChildren();
- for(const item of rows){
-  const card=document.createElement('div');card.className='ai-suggestion';
-  const title=document.createElement('strong');title.textContent=item.title;
-  const body=document.createElement('p');body.textContent=item.body;
-  card.append(title,body);
-  if(item.date){
-   const jump=document.createElement('button');jump.type='button';jump.textContent='Voir le jour →';
-   jump.setAttribute('aria-label','Voir le '+item.date+' : '+item.title);
-   jump.addEventListener('click',()=>{
-    if(window.innerWidth<1024){document.querySelector('.board').classList.remove('show-panel');$('panel-toggle').setAttribute('aria-expanded','false');$('panel-toggle').textContent='☷ Détails';}
-    openDay(item.date);
-   });
-   card.append(jump);
-  }
-  host.append(card);
- }
-}
-function toggleAdvice(force){
- if(!token){notify('Connectez-vous à RH pour consulter les propositions.');return;}
- const details=$('ai-advisor');
- const open=typeof force==='boolean'?force:!details.open;
- details.open=open;
- $('ai').setAttribute('aria-expanded',String(open));
- $('ai-side').setAttribute('aria-expanded',String(open));
- if(open){
-  renderAdvice();
-  if(window.innerWidth<1024){document.querySelector('.board').classList.add('show-panel');$('panel-toggle').setAttribute('aria-expanded','true');$('panel-toggle').textContent='× Fermer';}
-  details.scrollIntoView({block:'nearest',behavior:'instant'});
- }
-}
-function openFullAssistant(){
- if(!token){notify('Connexion RH nécessaire.');return;}
- if(window.parent!==window&&query.get('rhEmbedded')==='1'){
-  window.parent.postMessage({type:'ICHEF_PREMIUM_OPEN_RH_ASSISTANT'},location.origin);
- }else{
-  notify('Ouverture du module RH : sélectionnez « Assistance planning » pour générer une proposition.');
-  setTimeout(returnToRh,650);
- }
-}
-function renderStats(){
- const days=periodDays(),people=visible(),arr=people.flatMap(p=>days.map(d=>get(p,d)));
- const sh=arr.filter(work),tot=sh.reduce((s,r)=>s+hours(r),0);
- $('kpi-hours').textContent=tot.toFixed(1).replace('.',',')+' h';
- $('kpi-shifts').textContent=sh.length;
- $('kpi-absences').textContent=arr.filter(r=>['A','CP','MAL','RECUP','FORM','FERIE','NJS','ACC','MAT','PAT','PAR','EFM','EVF','DEC','SSL'].includes(r.k)).length;
- $('kpi-staff').textContent=people.length;
- $('morning').textContent=arr.filter(r=>r.k==='M'||r.k==='C').length;
- $('evening').textContent=arr.filter(r=>r.k==='S'||r.k==='C').length;
- $('split').textContent=arr.filter(r=>r.k==='C').length;
- const covered=days.filter(d=>people.some(p=>work(get(p,d)))).length;
- $('coverage').textContent=`${covered}/${days.length}`;
- $('coverage-bar').style.width=days.length?covered/days.length*100+'%':'0%';
- $('panel-range-label').textContent=view==='month'?'Ce mois':view==='day'?'Ce jour':'Cette semaine';
- $('kpi-period-label').textContent=view==='month'?'Mois affiché':view==='day'?'Jour affiché':'Semaine affichée';
-}
-// Hauteur automatique des lignes pour conserver la grille visible dans un seul écran PC.
-// Si l'équipe est trop grande, défilement interne uniquement : aucun texte tronqué.
-let planningFitRaf=0;
-function fitPlanningToViewport(){
- if(!window.matchMedia('(min-height:580px)').matches){
-  document.documentElement.style.removeProperty('--planning-row-height');return;
- }
- const wrap=document.querySelector('.schedule-wrap');
- const rows=$('week-host').querySelectorAll('tbody tr').length;
- if(!wrap||!rows)return;
- const h=wrap.clientHeight;
- if(!h)return;
- // 36px d'en-tête + 31px de pied de tableau ; garder 32px min par salarié.
- const mobile=window.innerWidth<1024;
- const extra=mobile?49:69;
- const size=Math.max(mobile?56:55,Math.min(72,Math.floor((h-extra)/rows)));
- document.documentElement.style.setProperty('--planning-row-height',size+'px');
-}
-function queuePlanningFit(){cancelAnimationFrame(planningFitRaf);planningFitRaf=requestAnimationFrame(fitPlanningToViewport);}
-window.addEventListener('resize',queuePlanningFit,{passive:true});
-function render(){renderPersonBar();if(view==='week'){$('range').textContent=`${fmt(anchor,{day:'numeric',month:'short'})} – ${fmt(add(anchor,6),{day:'numeric',month:'short',year:'numeric'})}`;renderWeek();}else if(view==='day'){$('range').textContent=fmt(anchor,{weekday:'short',day:'numeric',month:'short',year:'numeric'});renderDay();}else{$('range').textContent=fmt(anchor,{month:'long',year:'numeric'});renderMonth();}renderStats();renderAdvice();multiPaint();queuePlanningFit();}
-function switchView(v){view=v;for(const which of ['day','week','month']){$('view-'+which).classList.toggle('active',which===v);$('view-'+which).setAttribute('aria-pressed',String(which===v));$(which+'-host').classList.toggle('hide',which!==v);}render();}
-function updateDepartments(){const select=$('department'),old=filter;select.innerHTML='<option value="ALL">Tous les services</option>';[...new Set(staff.map(s=>s.dept).filter(Boolean))].sort().forEach(d=>{const o=document.createElement('option');o.value=d;o.textContent=d;select.appendChild(o);});filter=old==='ALL'||staff.some(s=>s.dept===old)?old:'ALL';select.value=filter;}
-async function refresh(force=false){if(!token||busy)return;if(!force&&Date.now()-lastFetch<3500)return;busy=true;setStatus('Synchronisation sécurisée en cours…');try{const m=month(anchor);const res=await jsonFetch(`/api/rh/planning/premium/state?tenantID=${encodeURIComponent(tenant)}&month=${m}`,{headers:authHeaders()});if(res.tenantID!==tenant||!Array.isArray(res.staff))throw Error('Réponse RH d’un autre établissement ou répertoire invalide.');
-const refreshedStaff=res.staff.map(p=>({...p,id:String(p.id),dept:String(p.dept||'Sans secteur'),avatar:String(p.name||'?').split(/\s+/).slice(0,2).map(z=>z[0]).join('').toUpperCase()}));
-if(refreshedStaff.some(p=>!p.id)||new Set(refreshedStaff.map(p=>p.id)).size!==refreshedStaff.length)throw Error('Identifiants collaborateurs RH invalides ou en doublon.');
-staff=refreshedStaff;
-if(focusedStaffId&&!staff.some(p=>p.id===focusedStaffId)&&!selected)focusedStaffId=null;state={...state,...(res.timesheets||{})};actualMonths[m]=readRealMonth(res,m);rhSettings=res.settings||{};legalPolicy=LEGAL_PROFILES[rhSettings.legalPlanning?.code]?rhSettings.legalPlanning:null;legalPanelRender();
-publication=res.publication||null;readOnly=rhSettings.planningStatus==='locked';lastFetch=Date.now();
-$('publication-status').textContent=publication?.status==='published'?'✓ Mois publié':
-  publication?.status==='to_review'?'⚠ Modifié après publication · à revalider':'Publication : en attente';
-updateDepartments();render();setStatus(`RH + Planning synchronisés · ${staff.length} collaborateurs actifs · ${new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}${readOnly?' · planning verrouillé':''}`);
-// V276 : cibler exactement le salarié et la date demandés depuis RH après la réponse serveur autorisée.
-if(pendingRhJump){const jump=pendingRhJump;pendingRhJump=null;
- if(jump.tenant===tenant){const match=staff.find(p=>String(p.id)===String(jump.staffId));
-   if(match){anchor=monday(new Date(jump.date+'T12:00:00'));focusedStaffId=String(match.id);switchView('week');
-     if(!readOnly)openModal(String(match.id),jump.date);
-     else notify('Planning verrouillé : case affichée en lecture seule.');
-   }else notify('Collaborateur introuvable dans cet établissement : aucune modification effectuée.');
- }
-}
-
-if(query.get('controlRoom')==='1'&&window.parent!==window)window.parent.postMessage({type:'ICHEF_PREMIUM_CONTROL_READY',tenant,at:new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})},location.origin);
- // En vue semaine à cheval sur deux mois, charger la seconde période sans bloquer le premier affichage.
- if(view==='week'){
-  const extra=month(add(monday(anchor),6));
-  if(extra!==m){
-   void jsonFetch(`/api/rh/planning/premium/state?tenantID=${encodeURIComponent(tenant)}&month=${extra}`,{headers:authHeaders()})
-    .then(extraRes=>{state={...state,...(extraRes.timesheets||{})};actualMonths[extra]=readRealMonth(extraRes,extra);if(month(add(monday(anchor),6))===extra)render();})
-    .catch(e=>console.warn('[iCHEF Planning] mois adjacent indisponible',e?.message));
-  }
- }}
-catch(e){if(query.get('controlRoom')==='1'&&window.parent!==window)window.parent.postMessage({type:'ICHEF_PREMIUM_CONTROL_ERROR',tenant,reason:e.message},location.origin);setStatus(e.message,true);if(e.status===401||e.status===403){forget();showAuth(e.message);}else notify('Réseau indisponible. Les données ne sont pas modifiées.');}finally{busy=false;multiUpdateToolbar();}}
-function openModal(person,date){$('modal-title').textContent='Modifier un service';$('multi-note-opt').classList.add('hide');$('form-hint').textContent='Après validation, les modifications sont enregistrées sur le serveur RH avec motif et historique.';if(!token||readOnly)return;const p=staff.find(x=>x.id===person);if(!p)return;const d=new Date(date+'T12:00:00'),r=get(p,d);selected={person,date,base:r.original};$('modal-sub').textContent=`${p.name} · ${fmt(d,{weekday:'long',day:'numeric',month:'long'})}`;$('kind').value=types[r.k]?r.k:'A';$('start').value=r.start||'08:00';$('end').value=r.end||'16:00';$('split-start').value=r.s2||'18:00';$('split-end').value=r.e2||'22:00';$('note').value=splitDayTasks(r.note).note;$('reason').value='';updateForm();$('legal-ack').checked=false;$('legal-details').value='';legalEditRender();$('modal-backdrop').classList.remove('hide');$('kind').focus();}
-function closeModal(){selected=null;legalEditRender();$('modal-backdrop').classList.add('hide');}
-function updateForm(){const k=$('kind').value;document.querySelectorAll('[data-preset]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.preset===k)));for(const id of ['time1','time2'])$(id).classList.toggle('hide',!['M','S','C'].includes(k));$('split-row').classList.toggle('hide',k!=='C');legalEditRender();}
-function pair(a,b){return /^\d{2}:\d{2}$/.test(a)&&/^\d{2}:\d{2}$/.test(b)&&a!==b;}
-function getDraft(){const k=$('kind').value,original=selected?.base||{},note=$('note').value.trim().slice(0,500);let r={...original,status:'off',s1:'',s2:'',pause:0,obs:packDayTasks(note,splitDayTasks(String(original.obs||'')).tasks)};if(['M','S','C'].includes(k)){if(!pair($('start').value,$('end').value))throw Error('Horaires de service invalides.');r.status=k==='M'?'off_soir':k==='S'?'off_matin':'present';const s=`${$('start').value}-${$('end').value}`;if(k==='S')r.s2=s;else r.s1=s;if(k==='C'){if(!pair($('split-start').value,$('split-end').value))throw Error('Deuxième service invalide.');r.s2=`${$('split-start').value}-${$('split-end').value}`;}}else{r.status=({R:'off',CP:'conge',MAL:'maladie',RECUP:'recup',FERIE:'ferie',FORM:'formation',A:'absence_autorisee',NJS:'absence_injustifiee',ACC:'accident_travail',MAT:'maternite',PAT:'paternite',PAR:'parental',EFM:'enfant_malade',EVF:'evenement_familial',DEC:'deces',SSL:'sans_solde',O:'off'})[k]||'off';}return k==='O'?null:r;}
-async function saveMultiple(){
- if(!selected?.bulkCells?.length||busy||readOnly||!token)return;
- const cells=selected.bulkCells.slice().sort((a,b)=>a.date.localeCompare(b.date)||a.person.localeCompare(b.person));
- if(cells.length>MULTI_CELL_LIMIT)return notify(`Maximum ${MULTI_CELL_LIMIT} cases.`);
- const reason=$('reason').value.trim();if(legalReasonRequired()&&reason.length<3)return notify('Motif obligatoire pour une modification ou une création hors délai.');
- let legalReview;try{legalReview=legalEditReview();}catch(e){return notify(e.message);}
- const sharedNote=$('note').value,applyNote=$('multi-apply-note').checked;
- let template;
- try{template=getDraft();}catch(e){return notify(e.message||'Horaires invalides.');}
- const n=multiPeople().size;
- if(!confirm(`Appliquer les mêmes horaires à ${cells.length} cases de ${n} collaborateur${n>1?'s':''} ?\n\nChaque case sera enregistrée séparément sur le serveur RH. En cas d'échec, les cases restantes resteront sélectionnées. Vérifiez les repos, congés et obligations légales avant de continuer.`))return;
- busy=true;const btn=$('shift-form').querySelector('[type="submit"]');btn.disabled=true;multiUpdateToolbar();
- let done=0,failed=null;const changedMonths=new Set();
- try{
-  // Toujours relire les mois officiels avant écriture, afin de préserver
-  // les dernières notes, tâches et révisions de chaque case.
-  for(const mm of new Set(cells.map(c=>c.date.slice(0,7)))){
-   const res=await jsonFetch(`/api/rh/planning/premium/state?tenantID=${encodeURIComponent(tenant)}&month=${mm}`,{headers:authHeaders()});
-   if(res.settings?.planningStatus==='locked')throw Error(`Planning verrouillé (${mm}).`);
-   state={...state,...(res.timesheets||{})};
-  }
-  for(const cell of cells){
-   const p=staff.find(s=>String(s.id)===cell.person);
-   if(!p){failed=Error('Collaborateur introuvable dans RH.');break;}
-   const base=get(p,new Date(cell.date+'T12:00:00')).original;
-   const newDay=template===null?null:{...(base||{}),status:template.status,s1:template.s1,s2:template.s2,pause:template.pause,obs:packDayTasks(
-      applyNote?sharedNote.trim().slice(0,500):splitDayTasks(String(base?.obs||'')).note,
-      splitDayTasks(String(base?.obs||'')).tasks
-   )};
-   setStatus(`Enregistrement sécurisé ${done+1}/${cells.length}…`);
-   let res;
-   try{
-    res=await jsonFetch('/api/rh/planning/premium/day',{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenant,date:cell.date,staffId:cell.person,day:newDay,reason,legalReview,baseRevision:base?.planningVersionId||null})});
-   }catch(e){failed=e;break;}
-   const mm=cell.date.slice(0,7),d=String(Number(cell.date.slice(8)));
-   if(!state[mm])state[mm]={};if(!state[mm][cell.person])state[mm][cell.person]={};
-   if(res.day)state[mm][cell.person][d]=res.day;else delete state[mm][cell.person][d];
-   multiCells.delete(multiKey(cell.person,cell.date));changedMonths.add(mm);done++;
-  }
-  for(const mm of changedMonths)broadcastPlanningChange(mm);
-  if(done){
-   $('audit-title').textContent=`${done} case${done>1?'s':''} · ${n} collaborateur${n>1?'s':''}`;
-   $('audit-detail').textContent=`${done}/${cells.length} case(s) enregistrée(s) · ${reason}`;
-   $('audit-date').textContent=fmt(new Date(),{hour:'2-digit',minute:'2-digit'});
-   $('publication-status').textContent='⚠ Horaire(s) modifié(s) · publication à vérifier';
-   if(publication?.status==='published')publication={...publication,status:'to_review'};
-  }
-  lastFetch=0;closeModal();render();
-  if(failed){
-   setStatus(`${done}/${cells.length} cases enregistrées · erreur : ${failed.message}`,true);
-   notify(`${done} enregistrée(s), ${cells.length-done} restante(s). Corrigez le problème puis réessayez.`);
-   if(failed.status===401||failed.status===403){forget();showAuth(failed.message);}
-  }else{
-   setStatus(`${done} cases enregistrées sur le serveur RH`);
-   notify(`${done} cases enregistrées. Pensez à publier les mois concernés.`);
-   multiClear({all:true});multiEnabled=false;multiUpdateToolbar();
-  }
- }catch(e){
-  setStatus(e.message||'Synchronisation refusée.',true);
-  if(e.status===401||e.status===403){forget();showAuth(e.message);}else notify('Aucune nouvelle modification : '+e.message);
- }finally{
-  busy=false;btn.disabled=false;multiUpdateToolbar();
-  // Ne pas effacer la sélection restante lors du rafraîchissement.
-  void refresh(true);
- }
-}
-async function save(){if(selected?.bulkCells?.length)return saveMultiple();if(!selected||busy)return;const reason=$('reason').value.trim();if(legalReasonRequired()&&reason.length<3)return notify('Motif obligatoire pour une modification ou une création hors délai.');let day,legalReview;try{day=getDraft();legalReview=legalEditReview();}catch(e){return notify(e.message);}busy=true;setStatus('Enregistrement sur le serveur…');const btn=$('shift-form').querySelector('[type="submit"]');btn.disabled=true;try{const res=await jsonFetch('/api/rh/planning/premium/day',{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenant,date:selected.date,staffId:selected.person,day,reason,legalReview,baseRevision:selected.base?selected.base.planningVersionId||'':null})});const m=selected.date.slice(0,7),n=String(Number(selected.date.slice(8)));if(!state[m])state[m]={};if(!state[m][selected.person])state[m][selected.person]={};if(res.day)state[m][selected.person][n]=res.day;else delete state[m][selected.person][n];$('audit-title').textContent=`Enregistré · ${res.staffName||selected.person}`;$('audit-detail').textContent=`${selected.date} · ${reason}`;$('audit-date').textContent=fmt(new Date(),{hour:'2-digit',minute:'2-digit'});closeModal();render();setStatus('Enregistré sur le serveur central · RH et Staff informés');notify('Horaire sauvegardé et synchronisé.');broadcastPlanningChange(m);lastFetch=0;
-if(publication?.status==='published'){$('publication-status').textContent='⚠ Horaire modifié · à republier';publication={...publication,status:'to_review'};}}
-catch(e){setStatus(e.message,true);if(e.status===409){notify('Planning modifié ailleurs : rechargement nécessaire avant de réessayer.');closeModal();lastFetch=0;}else if(e.status===401||e.status===403){forget();showAuth(e.message);}else notify('Enregistrement refusé : '+e.message);}
-finally{busy=false;btn.disabled=false;}}
-// Éditeur de tâches du jour : utilise uniquement l'API RH officielle déjà autorisée.
-let taskSelected=null;
-function openTaskModal(person,date){
- if(!token||readOnly)return;
- const p=staff.find(x=>x.id===String(person));
- if(!p)return;
- const d=new Date(date+'T12:00:00'),r=get(p,d);
- if(!work(r))return notify('Ajoutez d’abord un horaire travaillé à cette journée.');
- taskSelected={person:String(person),date,base:r.original};
- $('task-sub').textContent=p.name+' · '+fmt(d,{weekday:'long',day:'numeric',month:'long'});
- $('task-reason').value='Mise à jour des tâches';$('task-error').textContent='';
- $('task-fields').innerHTML='';
- const tasks=taskListFor(r);
- for(const item of tasks)addTaskField(item);
- if(!tasks.length)addTaskField('');
- $('task-backdrop').classList.remove('hide');
- $('task-fields').querySelector('input')?.focus();
-}
-function addTaskField(value=''){
- const fields=$('task-fields');
- if(fields.children.length>=MAX_TASKS)return notify('6 tâches maximum par service.');
- const row=document.createElement('div');row.className='task-row';
- const input=document.createElement('input');input.type='text';input.maxLength=MAX_TASK_LENGTH;input.placeholder='Ex. Contrôler les températures HACCP';input.setAttribute('aria-label','Description de la tâche');input.value=value;
- const remove=document.createElement('button');remove.type='button';remove.textContent='×';remove.title='Supprimer cette tâche';remove.setAttribute('aria-label','Supprimer cette tâche');
- remove.addEventListener('click',()=>{row.remove();if(!fields.children.length)addTaskField('');});
- row.append(input,remove);fields.append(row);
-}
-function closeTaskModal(){taskSelected=null;$('task-backdrop').classList.add('hide');}
-async function saveTasks(ev){
- ev.preventDefault();if(!taskSelected||busy)return;
- const tasks=Array.from($('task-fields').querySelectorAll('input')).map(x=>x.value.replace(/[\r\n]/g,' ').trim()).filter(Boolean);
- const reason=$('task-reason').value.trim();
- if(reason.length<3){$('task-error').textContent='Indiquez un motif de 3 caractères minimum.';return;}
- if(tasks.some(t=>t.length>MAX_TASK_LENGTH)){$('task-error').textContent='Tâche limitée à 65 caractères.';return;}
- const {person,date,base}=taskSelected;
- const record=get(staff.find(p=>p.id===person),new Date(date+'T12:00:00'));
- if(!record.original||!work(record)){$('task-error').textContent='Ce collaborateur ne possède pas de service travaillé à cette date.';return;}
- let obs;
- try{obs=packDayTasks(splitDayTasks(record.note).note,tasks);}catch(e){$('task-error').textContent=e.message;return;}
- busy=true;const button=$('task-save');button.disabled=true;setStatus('Enregistrement des tâches…');
- try{
-  const day={...record.original,obs};
-  const res=await jsonFetch('/api/rh/planning/premium/day',{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenant,date,staffId:person,day,reason,baseRevision:base?.planningVersionId||null})});
-  const m=date.slice(0,7),n=String(Number(date.slice(8)));
-  if(!state[m])state[m]={};if(!state[m][person])state[m][person]={};
-  state[m][person][n]=res.day||day;
-  $('audit-title').textContent='Tâches modifiées';$('audit-detail').textContent=date+' · '+reason;
-  $('audit-date').textContent=fmt(new Date(),{hour:'2-digit',minute:'2-digit'});
-  closeTaskModal();render();broadcastPlanningChange(m);lastFetch=0;
-  setStatus('Tâches enregistrées avec le planning RH');notify('Tâches enregistrées sur le serveur RH.');
-  if(publication?.status==='published'){$('publication-status').textContent='⚠ Journée modifiée · à republier';publication={...publication,status:'to_review'};}
- }catch(e){$('task-error').textContent=e.message||'Enregistrement impossible.';setStatus(e.message,true);if(e.status===409){lastFetch=0;notify('Cette journée a changé. Actualisez puis réessayez.');}else if(e.status===401||e.status===403){forget();closeTaskModal();showAuth(e.message);}}
- finally{busy=false;button.disabled=false;}
-}
-$('task-close').onclick=closeTaskModal;$('task-cancel').onclick=closeTaskModal;
-$('task-add').onclick=()=>addTaskField();$('task-form').onsubmit=saveTasks;
-$('task-backdrop').onclick=e=>{if(e.target===$('task-backdrop'))closeTaskModal();};
-$('multi-mode').onclick=()=>multiEnable();
-$('multi-clear').onclick=()=>multiClear({all:true});
-$('multi-range').onclick=multiRangeAdd;
-$('multi-apply').onclick=multiOpenEditor;
-const multiSelectAllButton=$('multi-all-visible');
-if(multiSelectAllButton)multiSelectAllButton.onclick=multiSelectVisible;
-else console.warn('[iCHEF Planning V286] Interface ancienne détectée : sélection globale indisponible jusqu’à la mise à jour de index.html.');
-document.querySelectorAll('[data-multi-preset]').forEach(b=>b.addEventListener('click',()=>multiQuickPreset(b.dataset.multiPreset)));
-multiPointerBind($('week-host'));multiPointerBind($('day-host'));multiPointerBind($('month-host'));
-$('logout').onclick=()=>{forget();$('login-pin').value='';showAuth('Session fermée sur cet appareil.');if(window.parent!==window&&query.get('rhEmbedded')==='1'){window.parent.postMessage({type:'ICHEF_PREMIUM_LOGOUT'},location.origin);}};
-$('login-form').onsubmit=login;$('prev').onclick=()=>{anchor=view==='day'?add(anchor,-1):view==='week'?add(anchor,-7):new Date(anchor.getFullYear(),anchor.getMonth()-1,1,12);render();refresh(true);};$('next').onclick=()=>{anchor=view==='day'?add(anchor,1):view==='week'?add(anchor,7):new Date(anchor.getFullYear(),anchor.getMonth()+1,1,12);render();refresh(true);};$('today').onclick=()=>{anchor=view==='day'?new Date(TODAY):view==='week'?monday(TODAY):new Date(TODAY.getFullYear(),TODAY.getMonth(),1,12);render();refresh(true);};$('view-day').onclick=()=>{const current=view==='week'?iso(monday(anchor))===iso(monday(TODAY)):view==='month'?month(anchor)===month(TODAY):false;anchor=current?new Date(TODAY):new Date(anchor);switchView('day');refresh(true);};$('view-week').onclick=()=>{anchor=monday(anchor);switchView('week');refresh(true);};$('view-month').onclick=()=>{anchor=new Date(anchor.getFullYear(),anchor.getMonth(),1,12);switchView('month');refresh(true);};$('department').onchange=e=>{filter=e.target.value;focusedStaffId=null;render();};$('team-return').onclick=closeEmployee;$('close').onclick=closeModal;$('cancel').onclick=closeModal;$('kind').onchange=updateForm;document.querySelectorAll('[data-preset]').forEach(b=>b.addEventListener('click',()=>{$('kind').value=b.dataset.preset;updateForm();}));$('remove').onclick=()=>{$('kind').value='O';save();};$('shift-form').onsubmit=e=>{e.preventDefault();save();};$('modal-backdrop').onclick=e=>{if(e.target===$('modal-backdrop'))closeModal();};document.addEventListener('keydown',e=>{if(e.key==='Escape'){if(selected)closeModal();if(taskSelected)closeTaskModal();}});$('reset').onclick=()=>refresh(true);
-$('panel-toggle').onclick=()=>{const on=document.querySelector('.board').classList.toggle('show-panel');$('panel-toggle').setAttribute('aria-expanded',String(on));$('panel-toggle').textContent=on?'× Fermer':'☷ Détails';};
-async function publishMonth(){
-  if(!token||busy||readOnly)return;
-  const m=month(anchor);
-  const legalReview=legalPublishReview(m);if(!legalReview)return;
-  busy=true;const b=$('publish');b.disabled=true;setStatus('Publication sécurisée en cours…');
-  try{
-    const res=await jsonFetch('/api/rh/planning/premium/publish',{
-      method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},
-      body:JSON.stringify({tenantID:tenant,month:m,confirmed:true,legalReview})
-    });
-    publication=res.publication||null;
-    $('publication-status').textContent='✓ Mois publié';
-    setStatus(`Mois ${m} publié · équipes synchronisées`);notify('Planning publié auprès du Portail Staff.');
-    broadcastPlanningChange(m);lastFetch=0;
-  }catch(e){setStatus(e.message,true);
-    if(e.status===401||e.status===403){forget();showAuth(e.message);}else notify('Publication refusée : '+e.message);
-  }finally{busy=false;b.disabled=false;}
-}
-$('legal-save').onclick=legalSavePolicy;
-$('legal-profile').onchange=()=>{const id=$('legal-profile').value;const x=LEGAL_PROFILES[id];$('legal-rules-hint').textContent=x?`Choix non enregistré · ${x.label}. Cliquez sur « Enregistrer ».`:'Choisissez le régime applicable.';};
-$('publish').onclick=publishMonth;
-function returnToRh(){
- if(window.parent!==window && new URLSearchParams(location.search).get('rhEmbedded')==='1'){
-   try{window.parent.postMessage({type:'ICHEF_PREMIUM_RETURN_RH'},location.origin);return;}catch(_){}
- }
- location.assign('/rh.html?tenantID='+encodeURIComponent(tenant));
-}
-$('return-rh').onclick=returnToRh;
-$('ai').onclick=$('ai-side').onclick=()=>toggleAdvice();$('ai-full').onclick=openFullAssistant;$('ai-advisor').addEventListener('toggle',()=>{const open=$('ai-advisor').open;$('ai').setAttribute('aria-expanded',String(open));$('ai-side').setAttribute('aria-expanded',String(open));if(open)renderAdvice();});$('print').onclick=()=>window.print();document.querySelectorAll('[data-inactive]').forEach(b=>b.onclick=()=>{const key=b.dataset.inactive;if(window.parent!==window&&query.get('rhEmbedded')==='1'){window.parent.postMessage({type:'ICHEF_PREMIUM_RETURN_RH',target:key},location.origin);return;}const page=key==='Pointeuse'?'/pointeuse.html':key==='Portail Staff'?'/portail-staff.html':'/rh.html';location.assign(page+'?tenantID='+encodeURIComponent(tenant));});if(premiumChannel)premiumChannel.onmessage=e=>{
-  const msg=e?.data;
-  if(!msg||msg.tenant!==tenant)return;
-  if(msg.type==='PLANNING_CHANGED'&&!selected&&!taskSelected){lastFetch=0;void refresh(true);}
-  if(msg.type==='STAFF_DIRECTORY_CHANGED')scheduleRhDirectoryRefresh(1300);
-};
-window.addEventListener('storage',e=>{
-  // Une modification RH dans un autre onglet est un signal, pas une source de données.
-  if(e.key==='empire_hr_directory'||e.key==='EMPIRE_GLOBAL_SYNC')scheduleRhDirectoryRefresh(1600);
-});
-window.addEventListener('focus',()=>{if(token&&!selected&&!taskSelected){lastFetch=0;void refresh(true);}});
-window.addEventListener('online',()=>{if(token&&!selected&&!taskSelected)scheduleRhDirectoryRefresh(450);});
-let rhEmbeddedPaused=false;
-async function resumeFromRh(){
-  rhEmbeddedPaused=false;
-  if(query.get('rhEmbedded')!=='1')return;
-  try{
-    const row=JSON.parse(sessionStorage.getItem(authKey())||'null');
-    if(!row||row.tenant!==tenant||row.device!==device||typeof row.token!=='string'||row.exp<Date.now()+10000){
-      forget();showAuth('Session expirée. Reconnectez-vous dans RH.');return;
+  window.addEventListener('error',function(event){
+    const target=event.target;
+    if(target&&target.tagName==='SCRIPT'&&/\/app\.js(?:\?|$)/.test(target.src||'')){
+      report('Le moteur du Planning ne s’est pas chargé. Revenez dans RH et réessayez après actualisation.');
     }
-    token=row.token;actor=row.actor;$('login-shield').classList.add('hide');
-    lastFetch=0;await refresh(true);
-  }catch(e){showAuth('Connexion RH non disponible.');}
-}
-window.addEventListener('message',e=>{
-  if(e.origin!==location.origin||e.source!==window.parent||query.get('rhEmbedded')!=='1')return;
-  if(e.data?.type==='ICHEF_PREMIUM_PAUSE')rhEmbeddedPaused=true;
-  if(e.data?.type==='ICHEF_PREMIUM_RESUME')void resumeFromRh();
-  if(e.data?.type==='ICHEF_PREMIUM_PARENT_LOGOUT'){
-    rhEmbeddedPaused=true;forget();showAuth('Session RH fermée.');
-  }
-});
-document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!rhEmbeddedPaused&&!selected&&!taskSelected)refresh(true);});
-// Les appareils différents relisent le même serveur toutes les 15 secondes lorsque le planning est visible.
-setInterval(()=>{if(!document.hidden&&!rhEmbeddedPaused&&!selected&&!taskSelected)refresh(true);},15000);
-if('serviceWorker' in navigator&&location.protocol==='https:'){navigator.serviceWorker.register('./sw.js',{scope:'./'}).catch(e=>console.warn('PWA non installée',e));}
-// V283 : le démarrage RH -> Planning doit toujours aboutir à l'affichage du
-// planning autorisé ou à une erreur explicite, jamais à une attente infinie.
-window.__ichefPlanningBootedV283 = true;
-window.__ichefPlanningBootedV286 = true;
-async function startPlanningV283(){
-  try { render(); }
-  catch(error){ console.error('[iCHEF Planning V283] Rendu initial indisponible :',error); }
-  try { await restoreAuth(); }
-  catch(error){
-    console.error('[iCHEF Planning V283] Restauration de session indisponible :',error);
-    // Ne jamais créer une session de secours ou ignorer l'API officielle.
-    const shield=$('login-shield'),message=$('rh-handoff-message');
-    if(shield)shield.classList.remove('hide');
-    if(message&&query.get('fromRh')==='1')
-      message.textContent='Impossible de vérifier votre session RH. Revenez dans RH et ouvrez à nouveau le planning.';
-    const loginError=$('login-error');if(loginError)loginError.textContent='Session non vérifiée.';
-  }
-}
-void startPlanningV283();
+  },true);
+  window.addEventListener('load',function(){
+    setTimeout(function(){
+      if(!window.__ichefPlanningBootedV283){
+        const loaded=!!window.__ichefPlanningJsLoadedV286;
+        report(loaded
+          ? 'Le Planning a rencontré une erreur de démarrage. Vérifiez que index.html et app.js doivent être publiés ensemble (V303), puis actualisez.'
+          : 'Le fichier app.js du Planning ne s’est pas chargé. Vérifiez son emplacement dans planning-rh, puis actualisez.');
+      }
+    },3800);
+    setTimeout(function(){
+      if(shield&&!shield.classList.contains('hide')&&text&&text.textContent.includes('Vérification de votre session')){
+        report('La vérification RH ne répond pas. Retournez dans RH puis ouvrez le planning dans le même onglet.');
+      }
+    },17500);
+  },{once:true});
 })();
+</script>
+<script src="./app.js?v=303" defer></script>
+</body>
+</html>
 
 
 
