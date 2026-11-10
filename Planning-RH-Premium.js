@@ -13,7 +13,8 @@
 
 
 
-/* iCHEF Planning V303 : enregistrement rapide et preuve serveur ; contrôle juridique vérifié + compatibilité de chargement V285 + sélection de cases libres, plusieurs collaborateurs,
+/* iCHEF Planning V304 : sélection directe tactile/souris sans barre lourde, sécurité inchangée.
+   Basé sur V303 : enregistrement rapide et preuve serveur ; contrôle juridique vérifié + compatibilité de chargement V285 + sélection de cases libres, plusieurs collaborateurs,
     validation groupée et synchronisation via les API RH existantes. */
 /* V266: source fournie par le client, renommée en .js. */
 /* iCHEF OS Planning Premium PWA · client connecté au TIMESHEETS_MASTER.
@@ -211,7 +212,7 @@ const rhJump=(()=>{if(query.get('rhJump')!=='1')return null;
 // V285 : les couples (collaborateur, date) sont uniques. Pas de PIN, de données RH
 // sensibles ni de sélection persistés. Limite de sécurité contre l'envoi massif.
 const MULTI_CELL_LIMIT=200;
-let multiEnabled=false,multiStaffId=null,multiCells=new Map(),multiPointer=null,multiIgnoreClickUntil=0;
+let multiEnabled=true,multiStaffId=null,multiCells=new Map(),multiPointer=null,multiIgnoreClickUntil=0;
 const multiKey=(person,date)=>JSON.stringify([String(person),String(date)]);
 const multiHas=(person,date)=>multiCells.has(multiKey(person,date));
 const multiPeople=()=>new Set([...multiCells.values()].map(x=>x.person));
@@ -466,6 +467,9 @@ function multiName(){
 }
 function multiUpdateToolbar(){
  const bar=$('multi-days-toolbar');if(!bar)return;
+ // V304 : la grande barre de sélection n'est plus nécessaire.
+ // Elle reste dans le DOM pour ne pas casser les dépendances existantes.
+ // Masquer seulement la ligne supérieure : conserver les boutons rapides enfants.
  bar.classList.toggle('is-active',multiEnabled);
  $('multi-mode').setAttribute('aria-pressed',String(multiEnabled));
  $('multi-mode').textContent=multiEnabled?'✓ Sélection libre active':'☝ Sélectionner des cases';
@@ -474,6 +478,9 @@ function multiUpdateToolbar(){
   ? `${n} case${n>1?'s':''} choisie${n>1?'s':''} · ${np} collaborateur${np>1?'s':''} · toucher / glisser (max. ${MULTI_CELL_LIMIT})`
   : 'Touchez une case pour modifier · activez la sélection pour choisir des cases libres';
  bar.classList.toggle('has-selection',multiEnabled&&n>0);
+ const compact=$('ichef-v304-selection-info');
+ if(compact){compact.textContent=n?`${n} case${n>1?'s':''} sélectionnée${n>1?'s':''} · ${np} collaborateur${np>1?'s':''}`:'Touchez les cases à planifier';compact.setAttribute('aria-live','polite');}
+ const clearCompact=$('ichef-v304-clear');if(clearCompact)clearCompact.disabled=!n;
  $('multi-apply').disabled=!multiEnabled||readOnly||busy||!n;
  $('multi-apply').textContent=n?`Modifier ${n} case${n>1?'s':''}`:'Modifier les cases';
  document.querySelectorAll('[data-multi-preset]').forEach(b=>{b.disabled=!multiEnabled||!n||readOnly||busy;});
@@ -498,7 +505,7 @@ function multiEnable(force){
  if(!multiEnabled)multiClear({all:true});
  else if(focusedStaffId)multiStaffId=focusedStaffId;
  multiPaint();
- if(multiEnabled)notify('Sélection libre : touchez les cases souhaitées, même sur plusieurs lignes ou semaines.');
+ if(multiEnabled)notify('Touchez ou glissez sur les cases, puis choisissez Matin, Soir, Coupure, Repos ou Congé.');
 }
 function multiSelectDate(person,date,forcedAdd=false){
  if(!multiEnabled||!token||readOnly||busy||!multiValidDate(date))return;
@@ -621,8 +628,11 @@ function multiPointerBind(host){
   const gesture={id:e.pointerId,person,startDate:date,lastPerson:person,lastDate:date,
     startX:e.clientX,startY:e.clientY,visited:new Set(),action:'add',started:false,holdTimer:0};
   multiPointer=gesture;
-  if(multiEnabled){startSelection(gesture);e.preventDefault();}
-  else if(e.pointerType==='touch'||e.pointerType==='pen')gesture.holdTimer=setTimeout(()=>startSelection(gesture),420);
+  // V304 : une seule pression sélectionne aussitôt, sans mode séparé,
+  // sans maintien de 420 ms et sans ouvrir l'éditeur.
+  if(!multiEnabled)multiEnabled=true;
+  startSelection(gesture);
+  if(gesture.started)e.preventDefault();
  },{passive:false});
  host.addEventListener('pointermove',e=>{
   const gesture=multiPointer;
@@ -663,14 +673,11 @@ function multiPointerBind(host){
  });
 }
 function multiCellClick(person,date,event){
- if(!multiEnabled&&(event?.ctrlKey||event?.metaKey)){
-  multiEnable(true);multiSelectDate(person,date);return;
- }
- if(multiEnabled){
-  if(event?.detail===0||Date.now()>multiIgnoreClickUntil)multiSelectDate(person,date);
-  return;
- }
- openModal(person,date);
+ // La pression pointerdown a déjà sélectionné la case : ne jamais
+ // l'annuler avec le click synthétique qui suit sur écran tactile/souris.
+ if(Date.now()<=multiIgnoreClickUntil)return;
+ if(!multiEnabled)multiEnabled=true;
+ multiSelectDate(person,date);
 }
 function renderWeek(){
  const people=visible(),days=Array.from({length:7},(_,i)=>add(monday(anchor),i));
@@ -756,7 +763,7 @@ function renderMonth(){
  $('month-host').style.setProperty('--planning-month-weeks',String(Math.ceil((last+shift)/7)));
  $('month-host').innerHTML=h;
  $('month-host').querySelectorAll('[data-month-day]').forEach(b=>b.addEventListener('click',()=>openDay(b.dataset.monthDay)));
- $('month-host').querySelectorAll('[data-edit-person]').forEach(b=>b.addEventListener('click',event=>multiEnabled||event.ctrlKey||event.metaKey?multiCellClick(b.dataset.editPerson,b.dataset.editDate,event):openDay(b.dataset.editDate)));
+ $('month-host').querySelectorAll('[data-edit-person]').forEach(b=>b.addEventListener('click',event=>multiCellClick(b.dataset.editPerson,b.dataset.editDate,event)));
  multiPaint();
 }
 // V275 — analyse rapide et explicable : aucune IA distante, aucun envoi supplémentaire.
@@ -1028,7 +1035,7 @@ async function saveMultiple({quick=false}={}){
   }else{
    setStatus(`✓ ${done} case(s) confirmée(s) par le serveur RH · Staff à actualiser`);
    notify(`${done} cases enregistrées. Pensez à publier les mois concernés.`);
-   multiClear({all:true});multiEnabled=false;multiUpdateToolbar();
+   multiClear({all:true});multiEnabled=true;multiUpdateToolbar();
   }
  }catch(e){
   setStatus(e.message||'Synchronisation refusée.',true);
@@ -1107,6 +1114,20 @@ $('multi-apply').onclick=multiOpenEditor;
 const multiSelectAllButton=$('multi-all-visible');
 if(multiSelectAllButton)multiSelectAllButton.onclick=multiSelectVisible;
 else console.warn('[iCHEF Planning V286] Interface ancienne détectée : sélection globale indisponible jusqu’à la mise à jour de index.html.');
+// V304 : petit état de sélection à côté des boutons existants.
+// La grande barre est masquée, mais conservée pour les intégrations.
+(()=>{
+ const first=document.querySelector('[data-multi-preset]');if(!first)return;
+ const group=first.parentElement;if(!group||$('ichef-v304-selection-info'))return;
+ const label=document.createElement('span');label.id='ichef-v304-selection-info';
+ label.textContent='Touchez les cases à planifier';label.style.cssText='display:inline-flex;align-items:center;font-size:12px;font-weight:650;margin:5px 8px;';
+ const clear=document.createElement('button');clear.type='button';clear.id='ichef-v304-clear';clear.textContent='Effacer la sélection';
+ clear.style.cssText='border:1px solid #bccbd2;border-radius:9px;padding:7px 10px;background:#fff;color:#24435a;cursor:pointer;min-height:38px;';
+ clear.onclick=()=>multiClear({all:true});group.append(label,clear);
+ const css=document.createElement('style');css.textContent='#multi-days-toolbar > :not(#multi-quick-presets){display:none!important} #multi-days-toolbar{padding-top:6px!important} .entry.is-multi-selected,.monthday.is-multi-selected,.day-shift.is-multi-selected{outline:3px solid #0d7fb1!important;outline-offset:-3px!important;box-shadow:inset 0 0 0 2px #fff!important;}';
+ document.head.appendChild(css);
+ multiUpdateToolbar();
+})();
 document.querySelectorAll('[data-multi-preset]').forEach(b=>b.addEventListener('click',()=>multiQuickPreset(b.dataset.multiPreset)));
 multiPointerBind($('week-host'));multiPointerBind($('day-host'));multiPointerBind($('month-host'));
 $('logout').onclick=()=>{forget();$('login-pin').value='';showAuth('Session fermée sur cet appareil.');if(window.parent!==window&&query.get('rhEmbedded')==='1'){window.parent.postMessage({type:'ICHEF_PREMIUM_LOGOUT'},location.origin);}};
