@@ -5,13 +5,21 @@
 
 
 
+
+
+
+
+
+
+
+
 <!doctype html>
 <html lang="fr">
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>iCHEF OS · Planning RH Premium</title>
-<meta name="ichef-build" content="PLANNING-RH-V305-TOUCH-INLINE">
+<meta name="ichef-build" content="PLANNING-RH-V307-QUICK-VERIFIED">
 <script>if(new URLSearchParams(location.search).get("fromRh")==="1")document.documentElement.classList.add("ichef-from-rh");</script>
 <style>
 :root{--ink:#14212a;--muted:#72808c;--line:#e5e9ed;--bg:#f6f8fa;--white:#fff;--nav:#0e1a25;--nav2:#152634;--gold:#c6a56b;--green:#148e72;--red:#d45c59;--blue:#4c87c1;--orange:#d69449;--shadow:0 10px 34px rgba(20,36,48,.055)}
@@ -734,6 +742,8 @@ html.rh-control-room .schedule th:first-child{width:clamp(114px,15vw,160px)!impo
   },{once:true});
 })();
 </script>
+<!-- V307 : repère visible permettant de confirmer le déploiement du BON fichier. -->
+<div id="ichef-v307-build-marker" style="position:fixed;right:10px;bottom:8px;z-index:20;background:#173b4a;color:white;border-radius:7px;padding:4px 9px;font:700 11px Arial,sans-serif;pointer-events:none">Planning V307 · sélection rapide</div>
 <!-- V304 : moteur du Planning embarqué dans ce fichier unique. Aucune dépendance app.js, aucun cache de script obsolète. -->
 <script id="ichef-planning-core-v304">
 /* iCHEF Planning V304 : sélection directe tactile/souris sans barre lourde, sécurité inchangée.
@@ -1282,22 +1292,42 @@ function multiOpenEditor(){
 // n'exigent ni motif ni examen juridique. Les autres cas ouvrent l'éditeur.
 function multiQuickPreset(kind){
  if(!['M','S','C','R','CP'].includes(kind)||!multiEnabled||!multiCells.size||readOnly||busy||!token)return;
+ // V307 : la commande rapide ne doit pas ouvrir systématiquement l’éditeur.
+ // La décision de simplifier ne contourne PAS la prévenance, les droits ou le serveur.
+ const cells=multiSelected();
+ const within14=cells.some(c=>planningLeadDaysV301(c.date)<14);
+ const notice=legalCellsUnderNotice(cells,'edit');
+ const requiresLegal=(!notice.profile||notice.unknown||notice.count>0);
  multiOpenEditor();
  if(!selected)return;
  $('kind').value=kind;
  updateForm();
- const cells=selected.bulkCells||[];
- const notice=legalEditSummary();
- // Ne pas contourner la vérification de droit ou la règle des 14 jours.
- const direct=cells.length>0 && cells.every(c=>planningLeadDaysV301(c.date)>=14) &&
-    Boolean(notice.profile) && !notice.unknown && notice.count===0;
- if(!direct)return; // L'éditeur reste ouvert pour justification, horaires ou contrôle.
- // Les horaires du matin/soir/coupure utilisent les champs de l'éditeur existant.
- // Ne pas créer de plage horaire arbitraire pour une case vide : ouvrir l'éditeur.
- if(['M','S','C'].includes(kind) && cells.some(c=>{
-   const p=staff.find(x=>String(x.id)===String(c.person));
-   return !p || !get(p,new Date(c.date+'T12:00:00')).original;
- }))return;
+ if(within14||requiresLegal){
+   $('modal-backdrop').classList.remove('hide');
+   const why=within14?'Une ou plusieurs dates sont à moins de 14 jours. Un motif est obligatoire.':'Le délai légal applicable nécessite un examen RH.';
+   $('form-hint').textContent=why+' Le planning ne sera enregistré qu’après confirmation du serveur.';
+   notify(why);
+   return;
+ }
+ // Matin, Soir, Coupure : réutiliser des horaires existants UNIQUEMENT s’ils
+ // correspondent au même type et sont identiques pour toutes les cases.
+ if(['M','S','C'].includes(kind)){
+   const existing=cells.map(c=>{
+      const p=staff.find(x=>String(x.id)===String(c.person));
+      return p?get(p,new Date(c.date+'T12:00:00')):null;
+   });
+   const first=existing[0];
+   const same=first&&first.k===kind&&first.start&&first.end&&existing.every(r=>r&&r.k===kind&&r.start===first.start&&r.end===first.end&&r.s2===first.s2&&r.e2===first.e2);
+   if(!same){
+      $('modal-backdrop').classList.remove('hide');
+      $('form-hint').textContent='Indiquez une fois les heures de ce service. Elles seront appliquées aux cases choisies après validation serveur.';
+      return;
+   }
+   $('start').value=first.start;$('end').value=first.end;
+   if(kind==='C'){$('split-start').value=first.s2;$('split-end').value=first.e2;}
+   updateForm();
+ }
+ // Repos et Congé ne demandent pas de plage horaire : enregistrement direct.
  $('modal-backdrop').classList.add('hide');
  void saveMultiple({quick:true});
 }
