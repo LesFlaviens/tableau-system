@@ -1,8 +1,17 @@
-* iCHEF Planning V300 : contrôle juridique vérifié + compatibilité de chargement V285 + sélection de cases libres, plusieurs collaborateurs,
-    validation groupée et synchronisation via les API RH existantes. */
-/* V266: source fournie par le client, renommée en .js. */
-/* iCHEF OS Planning Premium PWA · client connecté au TIMESHEETS_MASTER.
-   Aucune donnée RH n'est stockée en cache ni dans localStorage. */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 (()=>{'use strict';
 // V286 : accusé de chargement, distinct de l'authentification.
 window.__ichefPlanningJsLoadedV286=true;
