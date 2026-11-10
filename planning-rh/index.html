@@ -5,14 +5,13 @@
 
 
 
-
 <!doctype html>
 <html lang="fr">
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>iCHEF OS · Planning RH Premium</title>
-<meta name="ichef-build" content="PLANNING-RH-V304-UNIQUE-HTML">
+<meta name="ichef-build" content="PLANNING-RH-V305-TOUCH-INLINE">
 <script>if(new URLSearchParams(location.search).get("fromRh")==="1")document.documentElement.classList.add("ichef-from-rh");</script>
 <style>
 :root{--ink:#14212a;--muted:#72808c;--line:#e5e9ed;--bg:#f6f8fa;--white:#fff;--nav:#0e1a25;--nav2:#152634;--gold:#c6a56b;--green:#148e72;--red:#d45c59;--blue:#4c87c1;--orange:#d69449;--shadow:0 10px 34px rgba(20,36,48,.055)}
@@ -532,6 +531,12 @@
 .legal-check input[type=checkbox]{width:22px;height:22px;flex:0 0 22px;}
 
 #planning-reason-row[hidden]{display:none!important}
+
+/* iCHEF V305 : interface simplifiée, sans modifier la sécurité ni les APIs */
+#multi-days-toolbar{display:flex!important;flex-wrap:wrap!important}
+#multi-days-toolbar > :not(#multi-quick-presets){display:none!important}
+#multi-days-toolbar #multi-quick-presets{display:flex!important;width:100%!important;flex-wrap:wrap!important}
+.entry.is-multi-selected,.monthday.is-multi-selected,.day-shift.is-multi-selected{outline:3px solid #0d7fb1!important;outline-offset:-3px!important;box-shadow:inset 0 0 0 2px #fff!important}
 </style>
 <link rel="manifest" href="./manifest.webmanifest">
 <meta name="theme-color" content="#101e29">
@@ -731,6 +736,12 @@ html.rh-control-room .schedule th:first-child{width:clamp(114px,15vw,160px)!impo
 </script>
 <!-- V304 : moteur du Planning embarqué dans ce fichier unique. Aucune dépendance app.js, aucun cache de script obsolète. -->
 <script id="ichef-planning-core-v304">
+/* iCHEF Planning V304 : sélection directe tactile/souris sans barre lourde, sécurité inchangée.
+   Basé sur V303 : enregistrement rapide et preuve serveur ; contrôle juridique vérifié + compatibilité de chargement V285 + sélection de cases libres, plusieurs collaborateurs,
+    validation groupée et synchronisation via les API RH existantes. */
+/* V266: source fournie par le client, renommée en .js. */
+/* iCHEF OS Planning Premium PWA · client connecté au TIMESHEETS_MASTER.
+   Aucune donnée RH n'est stockée en cache ni dans localStorage. */
 (()=>{'use strict';
 // V286 : accusé de chargement, distinct de l'authentification.
 window.__ichefPlanningJsLoadedV286=true;
@@ -831,13 +842,23 @@ function legalSelectionAllInitialDraft(){
    return !raw||!Object.keys(raw).length;
  });
 }
-function legalReasonRequired(){return !legalInitialCreationTimely();}
+// V301 — règle de saisie indépendante des avertissements juridiques FR/CH.
+function planningLeadDaysV301(day){
+ const zone=LEGAL_PROFILES[legalPolicy?.code]?.zone||'Europe/Paris';
+ const parts=Object.fromEntries(new Intl.DateTimeFormat('en-GB',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).filter(x=>x.type!=='literal').map(x=>[x.type,x.value]));
+ const today=`${parts.year}-${parts.month}-${parts.day}`;
+ return Math.round((Date.parse(day+'T00:00:00Z')-Date.parse(today+'T00:00:00Z'))/86400000);
+}
+function legalReasonRequired(){
+ const cells=selected?.bulkCells?.length?selected.bulkCells:(selected?.date?[{date:selected.date}]:[]);
+ return cells.some(c=>planningLeadDaysV301(c.date)<14);
+}
 function legalReasonRender(){
  const isRequired=legalReasonRequired();
  const row=$('planning-reason-row'),input=$('reason');
  if(row)row.hidden=!isRequired;
  if(input)input.required=isRequired;
- if(!isRequired)$('form-hint').textContent='Création initiale dans le délai de communication : aucune justification personnelle nécessaire. L’enregistrement reste historisé.';
+ if(!isRequired)$('form-hint').textContent='À partir de J+14 : modification sans motif obligatoire, avec historique et contrôles juridiques conservés.';
 }
 function legalEditSummary(){
  const cells=selected?.bulkCells?.length?selected.bulkCells:(selected?.date?[{date:selected.date}]:[]);
@@ -914,7 +935,7 @@ const rhJump=(()=>{if(query.get('rhJump')!=='1')return null;
 // V285 : les couples (collaborateur, date) sont uniques. Pas de PIN, de données RH
 // sensibles ni de sélection persistés. Limite de sécurité contre l'envoi massif.
 const MULTI_CELL_LIMIT=200;
-let multiEnabled=false,multiStaffId=null,multiCells=new Map(),multiPointer=null,multiIgnoreClickUntil=0;
+let multiEnabled=true,multiStaffId=null,multiCells=new Map(),multiPointer=null,multiIgnoreClickUntil=0;
 const multiKey=(person,date)=>JSON.stringify([String(person),String(date)]);
 const multiHas=(person,date)=>multiCells.has(multiKey(person,date));
 const multiPeople=()=>new Set([...multiCells.values()].map(x=>x.person));
@@ -938,15 +959,7 @@ let pendingRhJump=rhJump;
 let anchor=rhJump?monday(new Date(rhJump.date+'T12:00:00')):monday(TODAY),view='week',filter='ALL',focusedStaffId=null,selected=null,staff=[],state={},actualMonths={},rhSettings={},publication=null,actor=null,tenant='',token='',device='',busy=false,readOnly=false,lastFetch=0;
 const premiumChannel=typeof BroadcastChannel!=='undefined'?new BroadcastChannel('ichef-planning-premium-events-v1'):null;
 function broadcastPlanningChange(mm){try{premiumChannel?.postMessage({type:'PLANNING_CHANGED',tenant,month:mm,at:Date.now()});}catch(_){}}
-function mkDevice(){
- const key='ichef_planning_device_v1';let id='';
- try{id=localStorage.getItem(key)||'';}catch(_){ }
- if(!id)try{id=sessionStorage.getItem(key)||'';}catch(_){ }
- if(!id){try{id=crypto.randomUUID();}catch(_){id='pwa_'+Date.now()+'_'+Math.random().toString(36).slice(2);}}
- try{sessionStorage.setItem(key,id);}catch(_){ }
- try{localStorage.setItem(key,id);}catch(_){ }
- return id;
-}
+function mkDevice(){const key='ichef_planning_device_v1';let id='';try{id=localStorage.getItem(key)||'';if(!id){id=crypto.randomUUID();localStorage.setItem(key,id);}}catch{ id=(crypto.randomUUID?.()||('pwa_'+Date.now())); }return id;}
 device=mkDevice();let oldTenant='';try{oldTenant=localStorage.getItem('ichef_tenant_id')||'';}catch{}tenant=(query.get('tenantID')||oldTenant||'').trim().slice(0,80);$('login-tenant').value=tenant;if($('rh-handoff-return'))$('rh-handoff-return').href='/rh.html?tenantID='+encodeURIComponent(tenant);
 function setStatus(text,error=false){$('board-status').textContent=(error?'● ':'● ')+text;$('board-status').style.color=error?'#b64140':'#357b66';}
 function notify(message){$('toast').textContent=message;$('toast').classList.remove('hide');clearTimeout(notify.timer);notify.timer=setTimeout(()=>$('toast').classList.add('hide'),4300);}
@@ -973,26 +986,7 @@ async function login(ev){ev.preventDefault();const t=$('login-tenant').value.tri
  catch(e){$('login-pin').value='';forget();showAuth(e.message||'Connexion refusée.');}
  finally{btn.disabled=false;}
 }
-async function restoreAuth(){
- let row=null;
- try{row=JSON.parse(sessionStorage.getItem(authKey())||'null');}
- catch(e){console.warn('[RH premium] lecture de session indisponible',e?.message);showAuth('Stockage temporaire de session indisponible.');return;}
- if(!row?.token){showAuth('Le transfert de session RH n’a pas abouti. Utilisez le bouton Planning dans RH.');return;}
- if(row.tenant!==tenant){showAuth('La session appartient à un autre établissement. Revenez dans RH.');return;}
- if(row.device!==device){
-  // Le jeton signé et son appareil doivent rester liés. Le stockage local peut
-  // avoir été écrasé par une ancienne version ; revenir à l'ID déjà lié à la
-  // session du même onglet, sans générer de droit et sans changer le jeton.
-  if(typeof row.device!=='string'||!/^[A-Za-z0-9_-]{12,180}$/.test(row.device)){
-   showAuth('Appareil de session non reconnu. Revenez dans RH.');return;
-  }
-  device=row.device;
-  try{sessionStorage.setItem('ichef_planning_device_v1',device);}catch(_){ }
- }
- if(!(Number(row.exp)>Date.now())){forget();showAuth('Session Planning expirée. Revenez dans RH.');return;}
- try{token=row.token;actor=row.actor;$('login-shield').classList.add('hide');await refresh(true);}
- catch(e){console.warn('[RH premium] chargement après authentification',e?.message);showAuth(e.message||'Chargement sécurisé impossible.');}
-}
+async function restoreAuth(){try{const row=JSON.parse(sessionStorage.getItem(authKey())||'null');if(row?.token&&row?.tenant===tenant&&row?.device===device&&row.exp>Date.now()){token=row.token;actor=row.actor;$('login-shield').classList.add('hide');await refresh(true);return;}}catch(e){console.warn('[RH premium] session à réauthentifier',e?.message);}showAuth();}
 function convert(day){if(!day||!Object.keys(day).length)return empty();const s=String(day.status||'');const p=String(day.s1||'').split('-'),q=String(day.s2||'').split('-');let k='A';if(s==='off')k='R';else if(s==='conge')k='CP';else if(s==='maladie')k='MAL';else if(s==='accident_travail')k='ACC';else if(s==='absence_injustifiee')k='NJS';else if(s==='maternite')k='MAT';else if(s==='paternite')k='PAT';else if(s==='parental')k='PAR';else if(s==='enfant_malade')k='EFM';else if(s==='evenement_familial')k='EVF';else if(s==='deces')k='DEC';else if(s==='sans_solde')k='SSL';else if(s==='recup')k='RECUP';else if(s==='ferie')k='FERIE';else if(s==='formation')k='FORM';else if(s==='present'||s==='off_matin'||s==='off_soir')k=(day.s1&&day.s2)?'C':(day.s1?'M':'S');return {k,status:s,start:p[0]||'',end:p[1]||'',s2:q[0]||'',e2:q[1]||'',pause:Number(day.pause||0),note:String(day.obs||''),original:day};}
 function get(p,date){const d=iso(date),m=d.slice(0,7),n=String(Number(d.slice(8)));return convert(state?.[m]?.[p.id]?.[n]);}
 function work(r){return ['M','S','C'].includes(r.k);}
@@ -1196,6 +1190,9 @@ function multiName(){
 }
 function multiUpdateToolbar(){
  const bar=$('multi-days-toolbar');if(!bar)return;
+ // V304 : la grande barre de sélection n'est plus nécessaire.
+ // Elle reste dans le DOM pour ne pas casser les dépendances existantes.
+ // Masquer seulement la ligne supérieure : conserver les boutons rapides enfants.
  bar.classList.toggle('is-active',multiEnabled);
  $('multi-mode').setAttribute('aria-pressed',String(multiEnabled));
  $('multi-mode').textContent=multiEnabled?'✓ Sélection libre active':'☝ Sélectionner des cases';
@@ -1204,6 +1201,9 @@ function multiUpdateToolbar(){
   ? `${n} case${n>1?'s':''} choisie${n>1?'s':''} · ${np} collaborateur${np>1?'s':''} · toucher / glisser (max. ${MULTI_CELL_LIMIT})`
   : 'Touchez une case pour modifier · activez la sélection pour choisir des cases libres';
  bar.classList.toggle('has-selection',multiEnabled&&n>0);
+ const compact=$('ichef-v304-selection-info');
+ if(compact){compact.textContent=n?`${n} case${n>1?'s':''} sélectionnée${n>1?'s':''} · ${np} collaborateur${np>1?'s':''}`:'Touchez les cases à planifier';compact.setAttribute('aria-live','polite');}
+ const clearCompact=$('ichef-v304-clear');if(clearCompact)clearCompact.disabled=!n;
  $('multi-apply').disabled=!multiEnabled||readOnly||busy||!n;
  $('multi-apply').textContent=n?`Modifier ${n} case${n>1?'s':''}`:'Modifier les cases';
  document.querySelectorAll('[data-multi-preset]').forEach(b=>{b.disabled=!multiEnabled||!n||readOnly||busy;});
@@ -1228,7 +1228,7 @@ function multiEnable(force){
  if(!multiEnabled)multiClear({all:true});
  else if(focusedStaffId)multiStaffId=focusedStaffId;
  multiPaint();
- if(multiEnabled)notify('Sélection libre : touchez les cases souhaitées, même sur plusieurs lignes ou semaines.');
+ if(multiEnabled)notify('Touchez ou glissez sur les cases, puis choisissez Matin, Soir, Coupure, Repos ou Congé.');
 }
 function multiSelectDate(person,date,forcedAdd=false){
  if(!multiEnabled||!token||readOnly||busy||!multiValidDate(date))return;
@@ -1278,12 +1278,28 @@ function multiOpenEditor(){
 }
 // V281 — glisser pour sélectionner sans dupliquer les enregistrements.
 // La validation continue d'utiliser saveMultiple() et le serveur RH existants.
+// V303 : boutons tactiles directs uniquement si les contrôles de prévenance
+// n'exigent ni motif ni examen juridique. Les autres cas ouvrent l'éditeur.
 function multiQuickPreset(kind){
- if(!['M','S','C','R','CP'].includes(kind)||!multiEnabled||!multiCells.size||readOnly||busy)return;
+ if(!['M','S','C','R','CP'].includes(kind)||!multiEnabled||!multiCells.size||readOnly||busy||!token)return;
  multiOpenEditor();
  if(!selected)return;
  $('kind').value=kind;
  updateForm();
+ const cells=selected.bulkCells||[];
+ const notice=legalEditSummary();
+ // Ne pas contourner la vérification de droit ou la règle des 14 jours.
+ const direct=cells.length>0 && cells.every(c=>planningLeadDaysV301(c.date)>=14) &&
+    Boolean(notice.profile) && !notice.unknown && notice.count===0;
+ if(!direct)return; // L'éditeur reste ouvert pour justification, horaires ou contrôle.
+ // Les horaires du matin/soir/coupure utilisent les champs de l'éditeur existant.
+ // Ne pas créer de plage horaire arbitraire pour une case vide : ouvrir l'éditeur.
+ if(['M','S','C'].includes(kind) && cells.some(c=>{
+   const p=staff.find(x=>String(x.id)===String(c.person));
+   return !p || !get(p,new Date(c.date+'T12:00:00')).original;
+ }))return;
+ $('modal-backdrop').classList.add('hide');
+ void saveMultiple({quick:true});
 }
 function multiSpanBetween(a,b){
  if(!multiValidDate(a)||!multiValidDate(b))return [];
@@ -1335,8 +1351,11 @@ function multiPointerBind(host){
   const gesture={id:e.pointerId,person,startDate:date,lastPerson:person,lastDate:date,
     startX:e.clientX,startY:e.clientY,visited:new Set(),action:'add',started:false,holdTimer:0};
   multiPointer=gesture;
-  if(multiEnabled){startSelection(gesture);e.preventDefault();}
-  else if(e.pointerType==='touch'||e.pointerType==='pen')gesture.holdTimer=setTimeout(()=>startSelection(gesture),420);
+  // V304 : une seule pression sélectionne aussitôt, sans mode séparé,
+  // sans maintien de 420 ms et sans ouvrir l'éditeur.
+  if(!multiEnabled)multiEnabled=true;
+  startSelection(gesture);
+  if(gesture.started)e.preventDefault();
  },{passive:false});
  host.addEventListener('pointermove',e=>{
   const gesture=multiPointer;
@@ -1377,14 +1396,11 @@ function multiPointerBind(host){
  });
 }
 function multiCellClick(person,date,event){
- if(!multiEnabled&&(event?.ctrlKey||event?.metaKey)){
-  multiEnable(true);multiSelectDate(person,date);return;
- }
- if(multiEnabled){
-  if(event?.detail===0||Date.now()>multiIgnoreClickUntil)multiSelectDate(person,date);
-  return;
- }
- openModal(person,date);
+ // La pression pointerdown a déjà sélectionné la case : ne jamais
+ // l'annuler avec le click synthétique qui suit sur écran tactile/souris.
+ if(Date.now()<=multiIgnoreClickUntil)return;
+ if(!multiEnabled)multiEnabled=true;
+ multiSelectDate(person,date);
 }
 function renderWeek(){
  const people=visible(),days=Array.from({length:7},(_,i)=>add(monday(anchor),i));
@@ -1470,7 +1486,7 @@ function renderMonth(){
  $('month-host').style.setProperty('--planning-month-weeks',String(Math.ceil((last+shift)/7)));
  $('month-host').innerHTML=h;
  $('month-host').querySelectorAll('[data-month-day]').forEach(b=>b.addEventListener('click',()=>openDay(b.dataset.monthDay)));
- $('month-host').querySelectorAll('[data-edit-person]').forEach(b=>b.addEventListener('click',event=>multiEnabled||event.ctrlKey||event.metaKey?multiCellClick(b.dataset.editPerson,b.dataset.editDate,event):openDay(b.dataset.editDate)));
+ $('month-host').querySelectorAll('[data-edit-person]').forEach(b=>b.addEventListener('click',event=>multiCellClick(b.dataset.editPerson,b.dataset.editDate,event)));
  multiPaint();
 }
 // V275 — analyse rapide et explicable : aucune IA distante, aucun envoi supplémentaire.
@@ -1657,24 +1673,44 @@ if(query.get('controlRoom')==='1'&&window.parent!==window)window.parent.postMess
   }
  }}
 catch(e){if(query.get('controlRoom')==='1'&&window.parent!==window)window.parent.postMessage({type:'ICHEF_PREMIUM_CONTROL_ERROR',tenant,reason:e.message},location.origin);setStatus(e.message,true);if(e.status===401||e.status===403){forget();showAuth(e.message);}else notify('Réseau indisponible. Les données ne sont pas modifiées.');}finally{busy=false;multiUpdateToolbar();}}
-function openModal(person,date){$('modal-title').textContent='Modifier un service';$('multi-note-opt').classList.add('hide');$('form-hint').textContent='Après validation, les modifications sont enregistrées sur le serveur RH avec motif et historique.';if(!token||readOnly)return;const p=staff.find(x=>x.id===person);if(!p)return;const d=new Date(date+'T12:00:00'),r=get(p,d);selected={person,date,base:r.original};$('modal-sub').textContent=`${p.name} · ${fmt(d,{weekday:'long',day:'numeric',month:'long'})}`;$('kind').value=types[r.k]?r.k:'A';$('start').value=r.start||'08:00';$('end').value=r.end||'16:00';$('split-start').value=r.s2||'18:00';$('split-end').value=r.e2||'22:00';$('note').value=splitDayTasks(r.note).note;$('reason').value='';updateForm();$('legal-ack').checked=false;$('legal-details').value='';legalEditRender();$('modal-backdrop').classList.remove('hide');$('kind').focus();}
+function openModal(person,date){$('modal-title').textContent='Modifier un service';$('multi-note-opt').classList.add('hide');$('form-hint').textContent='Enregistrement sécurisé avec historique et synchronisation RH ↔ Staff.';if(!token||readOnly)return;const p=staff.find(x=>x.id===person);if(!p)return;const d=new Date(date+'T12:00:00'),r=get(p,d);selected={person,date,base:r.original};$('modal-sub').textContent=`${p.name} · ${fmt(d,{weekday:'long',day:'numeric',month:'long'})}`;$('kind').value=types[r.k]?r.k:'A';$('start').value=r.start||'08:00';$('end').value=r.end||'16:00';$('split-start').value=r.s2||'18:00';$('split-end').value=r.e2||'22:00';$('note').value=splitDayTasks(r.note).note;$('reason').value='';updateForm();$('legal-ack').checked=false;$('legal-details').value='';legalEditRender();$('modal-backdrop').classList.remove('hide');$('kind').focus();}
 function closeModal(){selected=null;legalEditRender();$('modal-backdrop').classList.add('hide');}
 function updateForm(){const k=$('kind').value;document.querySelectorAll('[data-preset]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.preset===k)));for(const id of ['time1','time2'])$(id).classList.toggle('hide',!['M','S','C'].includes(k));$('split-row').classList.toggle('hide',k!=='C');legalEditRender();}
 function pair(a,b){return /^\d{2}:\d{2}$/.test(a)&&/^\d{2}:\d{2}$/.test(b)&&a!==b;}
 function getDraft(){const k=$('kind').value,original=selected?.base||{},note=$('note').value.trim().slice(0,500);let r={...original,status:'off',s1:'',s2:'',pause:0,obs:packDayTasks(note,splitDayTasks(String(original.obs||'')).tasks)};if(['M','S','C'].includes(k)){if(!pair($('start').value,$('end').value))throw Error('Horaires de service invalides.');r.status=k==='M'?'off_soir':k==='S'?'off_matin':'present';const s=`${$('start').value}-${$('end').value}`;if(k==='S')r.s2=s;else r.s1=s;if(k==='C'){if(!pair($('split-start').value,$('split-end').value))throw Error('Deuxième service invalide.');r.s2=`${$('split-start').value}-${$('split-end').value}`;}}else{r.status=({R:'off',CP:'conge',MAL:'maladie',RECUP:'recup',FERIE:'ferie',FORM:'formation',A:'absence_autorisee',NJS:'absence_injustifiee',ACC:'accident_travail',MAT:'maternite',PAT:'paternite',PAR:'parental',EFM:'enfant_malade',EVF:'evenement_familial',DEC:'deces',SSL:'sans_solde',O:'off'})[k]||'off';}return k==='O'?null:r;}
-async function saveMultiple(){
+// V303 : reçu consultable à l'écran, sans enregistrer de données RH dans
+// le stockage local. Les identifiants correspondent à l'historique côté serveur.
+let planningProofsV303=[];
+function planningShowProofV303(records,partial=false){
+ if(!Array.isArray(records)||!records.length)return;
+ planningProofsV303=records.slice();
+ const host=$('audit-title')?.parentElement;
+ if(!host)return;
+ let button=$('planning-proof-v303');
+ if(!button){
+  button=document.createElement('button');button.id='planning-proof-v303';
+  button.type='button';button.textContent='Voir la preuve serveur';
+  button.style.cssText='margin:8px 0;padding:9px 13px;min-height:42px;border-radius:9px;cursor:pointer;border:1px solid currentColor;background:transparent;color:inherit';
+  button.addEventListener('click',()=>{
+   const proof=planningProofsV303.map(x=>`${x.date} · ${x.staffName} · ${x.versionId} · ${x.serverTime}`).join('\n');
+   alert(`Preuve d’enregistrement côté serveur\n\n${proof}\n\nCes identifiants figurent dans l’historique central. La réception par le téléphone Staff n’est pas confirmée par ce reçu.`);
+  });host.appendChild(button);
+ }
+ button.textContent=partial?'Voir les preuves des cases confirmées':'Voir la preuve serveur';
+}
+async function saveMultiple({quick=false}={}){
  if(!selected?.bulkCells?.length||busy||readOnly||!token)return;
  const cells=selected.bulkCells.slice().sort((a,b)=>a.date.localeCompare(b.date)||a.person.localeCompare(b.person));
  if(cells.length>MULTI_CELL_LIMIT)return notify(`Maximum ${MULTI_CELL_LIMIT} cases.`);
- const reason=$('reason').value.trim();if(legalReasonRequired()&&reason.length<3)return notify('Motif obligatoire pour une modification ou une création hors délai.');
+ const reason=$('reason').value.trim();if(legalReasonRequired()&&reason.length<3)return notify('Motif obligatoire pour une date antérieure à J+14.');
  let legalReview;try{legalReview=legalEditReview();}catch(e){return notify(e.message);}
  const sharedNote=$('note').value,applyNote=$('multi-apply-note').checked;
  let template;
  try{template=getDraft();}catch(e){return notify(e.message||'Horaires invalides.');}
  const n=multiPeople().size;
- if(!confirm(`Appliquer les mêmes horaires à ${cells.length} cases de ${n} collaborateur${n>1?'s':''} ?\n\nChaque case sera enregistrée séparément sur le serveur RH. En cas d'échec, les cases restantes resteront sélectionnées. Vérifiez les repos, congés et obligations légales avant de continuer.`))return;
+ if(!quick && !confirm(`Appliquer les mêmes horaires à ${cells.length} cases de ${n} collaborateur${n>1?'s':''} ?\n\nChaque case sera enregistrée séparément sur le serveur RH. En cas d'échec, les cases restantes resteront sélectionnées. Vérifiez les repos, congés et obligations légales avant de continuer.`))return;
  busy=true;const btn=$('shift-form').querySelector('[type="submit"]');btn.disabled=true;multiUpdateToolbar();
- let done=0,failed=null;const changedMonths=new Set();
+ let done=0,failed=null;const changedMonths=new Set(),proofs=[];
  try{
   // Toujours relire les mois officiels avant écriture, afin de préserver
   // les dernières notes, tâches et révisions de chaque case.
@@ -1696,15 +1732,20 @@ async function saveMultiple(){
    try{
     res=await jsonFetch('/api/rh/planning/premium/day',{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenant,date:cell.date,staffId:cell.person,day:newDay,reason,legalReview,baseRevision:base?.planningVersionId||null})});
    }catch(e){failed=e;break;}
+   // Ne pas appliquer localement une modification sans reçu du serveur.
+   if(!res.success || !res.versionId || !res.serverTime){failed=Error('Accusé serveur incomplet : vérification requise.');break;}
    const mm=cell.date.slice(0,7),d=String(Number(cell.date.slice(8)));
    if(!state[mm])state[mm]={};if(!state[mm][cell.person])state[mm][cell.person]={};
    if(res.day)state[mm][cell.person][d]=res.day;else delete state[mm][cell.person][d];
+   proofs.push({staffName:res.staffName||p.name,staffId:cell.person,date:cell.date,
+    versionId:res.versionId,serverTime:res.serverTime,reason});
    multiCells.delete(multiKey(cell.person,cell.date));changedMonths.add(mm);done++;
   }
   for(const mm of changedMonths)broadcastPlanningChange(mm);
   if(done){
    $('audit-title').textContent=`${done} case${done>1?'s':''} · ${n} collaborateur${n>1?'s':''}`;
-   $('audit-detail').textContent=`${done}/${cells.length} case(s) enregistrée(s) · ${reason}`;
+   $('audit-detail').textContent=`${done}/${cells.length} case(s) confirmée(s) par le serveur · ${proofs[proofs.length-1]?.versionId||''}`;
+   planningShowProofV303(proofs,Boolean(failed));
    $('audit-date').textContent=fmt(new Date(),{hour:'2-digit',minute:'2-digit'});
    $('publication-status').textContent='⚠ Horaire(s) modifié(s) · publication à vérifier';
    if(publication?.status==='published')publication={...publication,status:'to_review'};
@@ -1715,20 +1756,20 @@ async function saveMultiple(){
    notify(`${done} enregistrée(s), ${cells.length-done} restante(s). Corrigez le problème puis réessayez.`);
    if(failed.status===401||failed.status===403){forget();showAuth(failed.message);}
   }else{
-   setStatus(`${done} cases enregistrées sur le serveur RH`);
+   setStatus(`✓ ${done} case(s) confirmée(s) par le serveur RH · Staff à actualiser`);
    notify(`${done} cases enregistrées. Pensez à publier les mois concernés.`);
-   multiClear({all:true});multiEnabled=false;multiUpdateToolbar();
+   multiClear({all:true});multiEnabled=true;multiUpdateToolbar();
   }
  }catch(e){
   setStatus(e.message||'Synchronisation refusée.',true);
-  if(e.status===401||e.status===403){forget();showAuth(e.message);}else notify('Aucune nouvelle modification : '+e.message);
+  if(e.status===401||e.status===403){forget();showAuth(e.message);}else{if(quick&&selected)$('modal-backdrop').classList.remove('hide');notify('Aucune nouvelle modification : '+e.message);}
  }finally{
   busy=false;btn.disabled=false;multiUpdateToolbar();
   // Ne pas effacer la sélection restante lors du rafraîchissement.
   void refresh(true);
  }
 }
-async function save(){if(selected?.bulkCells?.length)return saveMultiple();if(!selected||busy)return;const reason=$('reason').value.trim();if(legalReasonRequired()&&reason.length<3)return notify('Motif obligatoire pour une modification ou une création hors délai.');let day,legalReview;try{day=getDraft();legalReview=legalEditReview();}catch(e){return notify(e.message);}busy=true;setStatus('Enregistrement sur le serveur…');const btn=$('shift-form').querySelector('[type="submit"]');btn.disabled=true;try{const res=await jsonFetch('/api/rh/planning/premium/day',{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenant,date:selected.date,staffId:selected.person,day,reason,legalReview,baseRevision:selected.base?selected.base.planningVersionId||'':null})});const m=selected.date.slice(0,7),n=String(Number(selected.date.slice(8)));if(!state[m])state[m]={};if(!state[m][selected.person])state[m][selected.person]={};if(res.day)state[m][selected.person][n]=res.day;else delete state[m][selected.person][n];$('audit-title').textContent=`Enregistré · ${res.staffName||selected.person}`;$('audit-detail').textContent=`${selected.date} · ${reason}`;$('audit-date').textContent=fmt(new Date(),{hour:'2-digit',minute:'2-digit'});closeModal();render();setStatus('Enregistré sur le serveur central · RH et Staff informés');notify('Horaire sauvegardé et synchronisé.');broadcastPlanningChange(m);lastFetch=0;
+async function save(){if(selected?.bulkCells?.length)return saveMultiple();if(!selected||busy)return;const reason=$('reason').value.trim();if(legalReasonRequired()&&reason.length<3)return notify('Motif obligatoire pour une date antérieure à J+14.');let day,legalReview;try{day=getDraft();legalReview=legalEditReview();}catch(e){return notify(e.message);}busy=true;setStatus('Enregistrement sur le serveur…');const btn=$('shift-form').querySelector('[type="submit"]');btn.disabled=true;try{const res=await jsonFetch('/api/rh/planning/premium/day',{method:'POST',headers:{...authHeaders(),'Content-Type':'application/json'},body:JSON.stringify({tenantID:tenant,date:selected.date,staffId:selected.person,day,reason,legalReview,baseRevision:selected.base?selected.base.planningVersionId||'':null})});if(!res.success||!res.versionId||!res.serverTime)throw Error('Enregistrement non confirmé par le serveur. Actualisez pour vérifier.');const m=selected.date.slice(0,7),n=String(Number(selected.date.slice(8)));if(!state[m])state[m]={};if(!state[m][selected.person])state[m][selected.person]={};if(res.day)state[m][selected.person][n]=res.day;else delete state[m][selected.person][n];$('audit-title').textContent=`Enregistré · ${res.staffName||selected.person}`;$('audit-detail').textContent=`${selected.date} · ${reason}`;$('audit-date').textContent=fmt(new Date(),{hour:'2-digit',minute:'2-digit'});planningShowProofV303([{staffName:res.staffName||selected.person,staffId:selected.person,date:selected.date,versionId:res.versionId,serverTime:res.serverTime,reason}]);closeModal();render();setStatus('Enregistré sur le serveur central · RH et Staff informés');notify('Horaire enregistré sur le serveur ; actualisation Staff déclenchée.');broadcastPlanningChange(m);lastFetch=0;
 if(publication?.status==='published'){$('publication-status').textContent='⚠ Horaire modifié · à republier';publication={...publication,status:'to_review'};}}
 catch(e){setStatus(e.message,true);if(e.status===409){notify('Planning modifié ailleurs : rechargement nécessaire avant de réessayer.');closeModal();lastFetch=0;}else if(e.status===401||e.status===403){forget();showAuth(e.message);}else notify('Enregistrement refusé : '+e.message);}
 finally{busy=false;btn.disabled=false;}}
@@ -1796,6 +1837,20 @@ $('multi-apply').onclick=multiOpenEditor;
 const multiSelectAllButton=$('multi-all-visible');
 if(multiSelectAllButton)multiSelectAllButton.onclick=multiSelectVisible;
 else console.warn('[iCHEF Planning V286] Interface ancienne détectée : sélection globale indisponible jusqu’à la mise à jour de index.html.');
+// V304 : petit état de sélection à côté des boutons existants.
+// La grande barre est masquée, mais conservée pour les intégrations.
+(()=>{
+ const first=document.querySelector('[data-multi-preset]');if(!first)return;
+ const group=first.parentElement;if(!group||$('ichef-v304-selection-info'))return;
+ const label=document.createElement('span');label.id='ichef-v304-selection-info';
+ label.textContent='Touchez les cases à planifier';label.style.cssText='display:inline-flex;align-items:center;font-size:12px;font-weight:650;margin:5px 8px;';
+ const clear=document.createElement('button');clear.type='button';clear.id='ichef-v304-clear';clear.textContent='Effacer la sélection';
+ clear.style.cssText='border:1px solid #bccbd2;border-radius:9px;padding:7px 10px;background:#fff;color:#24435a;cursor:pointer;min-height:38px;';
+ clear.onclick=()=>multiClear({all:true});group.append(label,clear);
+ const css=document.createElement('style');css.textContent='#multi-days-toolbar > :not(#multi-quick-presets){display:none!important} #multi-days-toolbar{padding-top:6px!important} .entry.is-multi-selected,.monthday.is-multi-selected,.day-shift.is-multi-selected{outline:3px solid #0d7fb1!important;outline-offset:-3px!important;box-shadow:inset 0 0 0 2px #fff!important;}';
+ document.head.appendChild(css);
+ multiUpdateToolbar();
+})();
 document.querySelectorAll('[data-multi-preset]').forEach(b=>b.addEventListener('click',()=>multiQuickPreset(b.dataset.multiPreset)));
 multiPointerBind($('week-host'));multiPointerBind($('day-host'));multiPointerBind($('month-host'));
 $('logout').onclick=()=>{forget();$('login-pin').value='';showAuth('Session fermée sur cet appareil.');if(window.parent!==window&&query.get('rhEmbedded')==='1'){window.parent.postMessage({type:'ICHEF_PREMIUM_LOGOUT'},location.origin);}};
@@ -1889,6 +1944,7 @@ void startPlanningV283();
 </script>
 </body>
 </html>
+
 
 
 
