@@ -1,18 +1,4 @@
 
-
-
-
-
-
-
-
-
-
-// iCHEF SERVER V297 — diagnostic sécurisé des e-mails PIN oublié; sécurité V296 conservée.
-// iCHEF SERVER V296 — 3 demandes PIN oublié/jour par collaborateur, 4e via Direction uniquement.
-// iCHEF SERVER V295 — connexion Staff limitée à son établissement et à son identité RH
-// iCHEF SERVER V293 - diagnostic quotas Gemini / delais adaptatifs, routes HACCP IA seulement.
-
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -35553,6 +35539,63 @@ function ichefPremiumRhValidateDay(raw) {
     if(!['present','off_soir','off_matin'].includes(status)&&(s1||s2))return {ok:false,error:'Une absence ne doit pas comporter d’horaires.'};
     return {ok:true,day:{status,s1,s2,pause,obs:String(raw.obs||'').slice(0,500)}};
 }
+// V309 — Modèles d'horaires / catégories RH par établissement.
+// La configuration n'altère ni les identités, ni les sessions, ni les données médicales.
+const ICHEF_V309_KINDS = new Set(['M','S','C','R','CP','MAL','RECUP','FERIE','FORM','A','NJS','ACC','MAT','PAT','PAR','EFM','EVF','DEC','SSL']);
+function ichefV309ValidConfig(raw){
+ if(!raw||typeof raw!=='object'||Array.isArray(raw))return null;
+ if(!Array.isArray(raw.categories)||raw.categories.length>25)return null;
+ const time=v=>typeof v==='string'&&/^([01]\d|2[0-3]):[0-5]\d$/.test(v);
+ const names=new Set(),list=[];
+ for(const entry of raw.categories){
+  if(!entry||typeof entry!=='object')return null;
+  const id=String(entry.id||'');const name=String(entry.name||'').trim();const kind=String(entry.kind||'');
+  const color=String(entry.color||'');
+  if(!/^[A-Za-z0-9_-]{1,32}$/.test(id)||!name||name.length>42||!ICHEF_V309_KINDS.has(kind)||!/^#[0-9a-fA-F]{6}$/.test(color)||names.has(id))return null;
+  names.add(id);
+  const start=String(entry.start||''),end=String(entry.end||''),start2=String(entry.start2||''),end2=String(entry.end2||'');
+  if(['M','S','C'].includes(kind)){
+   if(!time(start)||!time(end)||start===end)return null;
+   if(kind==='C'&&(!time(start2)||!time(end2)||start2===end2))return null;
+    if(kind!=='C'&&(start2||end2))return null;
+  }
+  const pause=Number(entry.pause||0);
+  if(!Number.isInteger(pause)||pause<0||pause>720)return null;
+  list.push({id,name,kind,color,start: ['M','S','C'].includes(kind)?start:'',end:['M','S','C'].includes(kind)?end:'',start2:kind==='C'?start2:'',end2:kind==='C'?end2:'',pause: ['M','S','C'].includes(kind)?pause:0});
+ }
+ return {categories:list};
+}
+app.get('/api/rh/planning/premium/config-v309',async(req,res)=>{
+ res.setHeader('Cache-Control','private, no-store');
+ try{
+  const auth=await ichefLoadRhPlanningManagerSession(req);
+  if(!auth.ok)return res.status(401).json({success:false,error:auth.error});
+  const doc=await AppState.findOne({tenantID:auth.tenantID},{'activeOrders.PLANNING_PRESETS_V309':1}).lean();
+  if(!doc)return res.status(404).json({success:false,error:'Établissement introuvable.'});
+  const cfg=ichefPlanningNodeData(doc.activeOrders||{},'PLANNING_PRESETS_V309',{});
+  return res.json({success:true,tenantID:auth.tenantID,categories:Array.isArray(cfg.categories)?cfg.categories:[],revision:String(cfg.revision||''),serverTime:new Date().toISOString()});
+ }catch(error){console.error('[iCHEF V309 CONFIG READ]',error);return res.status(500).json({success:false,error:'Configuration indisponible.'});}
+});
+app.post('/api/rh/planning/premium/config-v309',async(req,res)=>{
+ res.setHeader('Cache-Control','private, no-store');
+ try{
+  const auth=await ichefLoadRhPlanningManagerSession(req);
+  if(!auth.ok)return res.status(401).json({success:false,error:auth.error});
+  const config=ichefV309ValidConfig(req.body);
+  if(!config)return res.status(400).json({success:false,error:'Catégories ou horaires invalides.'});
+  const revision=String(req.body.revision||'');
+  const now=new Date();const newRevision=`cfg_${now.getTime().toString(36)}_${nodeCrypto.randomBytes(5).toString('hex')}`;
+  const key='activeOrders.PLANNING_PRESETS_V309.data';
+  const condition={tenantID:auth.tenantID};
+  if(revision)condition[`${key}.revision`]=revision;
+  else condition.$or=[{[`${key}.revision`]:{$exists:false}},{[`${key}.revision`]:''}];
+  const result=await AppState.updateOne(condition,{$set:{[key]:{...config,revision:newRevision,updatedAt:now.toISOString(),updatedBy:String(auth.claims?.actorName||'Direction RH').slice(0,120)},'activeOrders.PLANNING_PRESETS_V309.updatedAt':now}});
+  if(result.matchedCount!==1)return res.status(409).json({success:false,error:'Configuration modifiée ailleurs. Actualisez avant de réessayer.'});
+  io.to(auth.tenantID).emit('rhPlanningPresetUpdated',{tenantID:auth.tenantID,revision:newRevision});
+  return res.json({success:true,revision:newRevision,serverTime:now.toISOString()});
+ }catch(error){console.error('[iCHEF V309 CONFIG WRITE]',error);return res.status(500).json({success:false,error:'Enregistrement configuration indisponible.'});}
+});
+
 app.get('/api/rh/planning/premium/state', async(req,res)=>{
     res.setHeader('Cache-Control','no-store, private');
     try {
@@ -38392,6 +38435,10 @@ console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
 console.log('==========================================');
 }
 );
+
+
+
+
 
 
 
