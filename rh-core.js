@@ -8,11 +8,6 @@
 
 
 
-
-
-
-
-
 /* iCHEF RH V285 - garde d'identité par ID collaborateur; fonctions de sécurité inchangées. */
 
 ;
@@ -6943,7 +6938,6 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                     // Nécessaire aux écritures planning et à l'IA sécurisées.
                     // Le PIN reste uniquement en mémoire vive de cette page.
                     rhDirectionAuthPin = enteredPin;
-                    document.dispatchEvent(new Event('ichef:rh-direction-authenticated'));
                     const pinModal = document.getElementById('pin-modal');
                     if (pinModal) {
                         pinModal.classList.remove('show');
@@ -7002,11 +6996,8 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                 currentStaffId = null;
                 isGlobalView = true;
                 isAnnualView = false;
-                // V317 : une exception de rendu ne doit plus bloquer l’accès à Équipe.
-                try { refreshViews(); }
-                catch (error) { console.error('[iCHEF RH V318] Rafraîchissement Équipe', error); }
-                try { toggleViewDisplay(); }
-                catch (error) { console.error('[iCHEF RH V318] Affichage Équipe', error); }
+                refreshViews();
+                toggleViewDisplay();
             } else if(type === 'logs') {
                 renderLogs();
             } else if(type === 'requests') {
@@ -17656,7 +17647,3 @@ window.__ICHEF_RH_CORE_BUILD__='RH-CORE-V252-13E-ANNUEL-MENSUEL';
   if (document.body) render();
   else document.addEventListener('DOMContentLoaded', render, { once:true });
 })();
-
-
-
-
