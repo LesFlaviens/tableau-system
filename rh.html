@@ -2,6 +2,15 @@
 
 
 
+
+
+
+
+
+
+
+
+
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -359,7 +368,7 @@ html{background:#080a0d}body{margin:0;background:#080a0d;color:#f2f3f4;font:500 
 <span class="rh-v224-nav-label">PILOTER</span>
 <button class="active" type="button" onclick="renderRhCockpit();"><span class="rh-nav-ico">◈</span><span>Tableau de bord</span></button>
 <button type="button" onclick="return iChefOpenPlanningRH()"><span class="rh-nav-ico">▦</span><span>Planning</span></button>
-<button type="button" onclick="openInterface('hr'); setTimeout(()=>document.getElementById('staff-list-render')?.scrollIntoView({behavior:'smooth',block:'start'}),120);"><span class="rh-nav-ico">◎</span><span>Équipe</span></button>
+<button type="button" onclick="return iChefRhOpenTeamV316(event)"><span class="rh-nav-ico">◎</span><span>Équipe</span></button>
 <button type="button" id="rh-staff-invites-nav-v280" onclick="openRhStaffInvitesV280()"><span class="rh-nav-ico">✉</span><span>Invitations Staff</span></button>
 <span class="rh-v224-nav-label">TEMPS</span>
 <button type="button" onclick="openInterface('timesheets')"><span class="rh-nav-ico">◷</span><span>Heures & pointages</span></button>
@@ -3182,6 +3191,69 @@ NOTE : le moteur fournit une assistance de conformité à partir du profil confi
 #rh-v278-panel .v278-message.error{color:#a83f36}
 @media(max-width:760px){#rh-v278-panel .v278-headline{font-size:17px}#rh-v226-primary > .rh-v278-panel{padding:12px!important}#rh-v278-panel .v278-scroll{max-height:300px}#rh-v278-panel .v278-person{min-width:120px;width:125px;max-width:125px}#rh-v278-panel .v278-cell{min-width:80px}}
 </style>
+
+<!-- iCHEF RH V316 : rétablissement ciblé navigation Équipe et lecture Planning.
+     La session Premium reste délivrée UNIQUEMENT par le serveur avec PIN RH existant. -->
+<script id="ichef-rh-v316-navigation-and-session-fix">
+(()=>{'use strict';
+ const KEY='ichef_planning_premium_auth_v1',DEVICE='ichef_planning_device_v1';
+ const BASE=(location.hostname==='localhost'||location.hostname==='127.0.0.1')?'http://localhost:10000':'https://tableau-system.onrender.com';
+ const VALID=/^[A-Za-z0-9_-]{2,80}$/;
+ let pending=null;
+ function tenant(){return String(new URLSearchParams(location.search).get('tenantID')||localStorage.getItem('ichef_tenant_id')||'').trim();}
+ function device(){let d=localStorage.getItem(DEVICE)||'';if(!d){d=typeof crypto.randomUUID==='function'?crypto.randomUUID():'rh_'+Date.now().toString(36);localStorage.setItem(DEVICE,d);}return d;}
+ function existing(t,d){try{const s=JSON.parse(sessionStorage.getItem(KEY)||'null');return s&&s.tenant===t&&s.device===d&&typeof s.token==='string'&&s.token.length>30&&Number(s.exp)>Date.now()+30000?s:null;}catch(_){return null;}}
+ window.iChefRhEnsurePremiumSessionV316=function(){
+   if(pending)return pending;
+   pending=(async()=>{
+     const t=tenant();if(!VALID.test(t))throw Error('Établissement non identifié.');
+     const d=device();const old=existing(t,d);if(old)return old;
+     // RH a déjà validé le PIN : lecture depuis la session en mémoire seulement.
+     const pin=typeof getRhDirectionAuthPin==='function'?String(getRhDirectionAuthPin()||'').trim():'';
+     if(!/^\d{4,12}$/.test(pin))throw Error('PIN Direction/RH à valider de nouveau dans RH.');
+     const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),12000);
+     try{
+       const response=await fetch(BASE+'/api/rh/planning/session',{
+         method:'POST',credentials:'include',cache:'no-store',signal:controller.signal,
+         headers:{'Content-Type':'application/json','Accept':'application/json','X-iCHEF-Tenant':t,'X-iCHEF-Device':d},
+         body:JSON.stringify({tenantID:t,pin,deviceId:d})
+       });
+       const data=await response.json().catch(()=>({}));
+       if(!response.ok||data.success!==true||typeof data.accessToken!=='string'||data.accessToken.length<30)
+         throw Error(data.error||'Autorisation Planning refusée par le serveur.');
+       const seconds=Math.max(60,Math.min(7200,Number(data.expiresInSeconds)||7200));
+       const entry={tenant:t,device:d,token:data.accessToken,actor:data.actor||null,exp:Date.now()+seconds*1000-15000};
+       sessionStorage.setItem(KEY,JSON.stringify(entry));
+       document.dispatchEvent(new CustomEvent('ichef:premium:rh-synced'));
+       return entry;
+     }finally{clearTimeout(timer);}
+   })().finally(()=>{pending=null;});
+   return pending;
+ };
+ window.iChefRhOpenTeamV316=function(event){
+   event?.preventDefault?.();
+   if(typeof window.openInterface!=='function'){
+     console.error('[iCHEF RH V316] openInterface non disponible : vérifier rh-core.js et rh-modules.js');
+     alert('Le module Équipe ne peut pas être ouvert : vérifier le chargement des scripts RH.');return false;
+   }
+   try{
+     window.openInterface('hr');
+     // L'annuaire complet V287 est la destination de l'onglet Équipe.
+     const locate=()=>{
+       const directory=document.getElementById('rh-v287-directory');
+       const hr=document.getElementById('hr-interface');
+       if(hr?.classList.contains('rh-v236-individual-mode'))hr.classList.remove('rh-v236-individual-mode');
+       const target=directory||document.getElementById('staff-list-render');
+       target?.scrollIntoView({behavior:'auto',block:'start'});
+       if(directory){const refresh=directory.querySelector('[data-v287-action="refresh"]');refresh?.click();}
+     };
+     requestAnimationFrame(()=>setTimeout(locate,100));
+   }catch(error){console.error('[iCHEF RH V316] Ouverture Équipe',error);alert('Ouverture Équipe indisponible : vérifiez les modules RH.');}
+   return false;
+ };
+})();
+</script>
+
 <script id="ichef-rh-planning-integral-v279-script">
 (()=>{'use strict';
   if(window.__ICHEF_RH_PLANNING_INTEGRAL_V278__)return;
@@ -3347,8 +3419,8 @@ NOTE : le moteur fournit une assistance de conformité à partir du profil confi
     if(!force&&signature===lastSignature&&Date.now()-lastAt<25000)return;
     const t=tenant();if(!valid.test(t)){message('Connectez-vous à votre établissement pour afficher le planning.',true);return;}
     let a=auth();
-    if(!a){try{await window.ICHEF_RH_PREMIUM_MIRROR?.refresh?.(true);}catch(_){}a=auth();}
-    if(!a){message('Session Planning Premium non encore disponible. Votre accès RH doit être autorisé par le serveur.');return;}
+    if(!a){try{await window.iChefRhEnsurePremiumSessionV316?.();}catch(error){message('Session Planning Premium : '+String(error?.message||'connexion sécurisée indisponible'),true);return;}a=auth();}
+    if(!a){message('Session Planning Premium non disponible. Reconnectez-vous avec votre PIN Direction/RH.',true);return;}
     const stamp=++requestSerial;loading=true;
     host.querySelector('.v278-range').textContent=dateLabel(ds);
     host.querySelector('.v278-state').textContent='Chargement des horaires officiels…';
@@ -4763,6 +4835,10 @@ body:not(.rh-v313-section-open) #rh-v313-menu-toggle{display:none!important}
 
 </body>
 </html>
+
+
+
+
 
 
 
