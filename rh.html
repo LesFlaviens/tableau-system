@@ -1,3 +1,6 @@
+
+
+
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -46,7 +49,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>iCHEF RH · Legal Command Center · France / Suisse</title>
-<meta name="ichef-build" content="RH-V302-PLANNING-CONNEXION-UNIQUE">
+<meta name="ichef-build" content="RH-V296-UNIQUE-SCRIPTS-COHERENTS">
 <script>
 ;
 /* RH V264 - preserved script #1 */
@@ -183,31 +186,6 @@ html{background:#080a0d}body{margin:0;background:#080a0d;color:#f2f3f4;font:500 
   #hr-interface > #rh-v287-directory{margin-bottom:0!important;}
 }
 </style>
-<!-- iCHEF RH V301 : le lien Planning doit utiliser l'authentification RH unique.
-     Garde placée AVANT les anciens écouteurs de navigation ; aucune donnée sensible n'est transmise. -->
-<script id="ichef-rh-v302-priority-planning-navigation">
-// Routage unique sur les boutons de Planning RH, installé AVANT les gestionnaires historiques.
-// Ne modifie pas la connexion, le PIN, les droits ou les autres éléments du menu.
-(function(){
-  'use strict';
-  const targets=[
-    '#rh-v226-sidebar [data-v226-nav="planning"]',
-    '#rh-v236-side [data-v236-nav="planning"]',
-    '#director-hub .rh-cockpit-nav button[onclick*="iChefOpenPlanningRH"]',
-    '#director-hub .rh-view-full-plan',
-    '#rh-v287-directory .v292-open-planning',
-    '.rh-v259-open', '.ichef-v258-open'
-  ].join(',');
-  document.addEventListener('click',function(event){
-    const target=event.target;
-    const button=target && typeof target.closest==='function' ? target.closest(targets) : null;
-    if(!button || typeof window.iChefOpenPlanningRH!=='function')return;
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    void window.iChefOpenPlanningRH();
-  },true);
-})();
-</script>
 </head>
 <body>
 <div id="landing-portal" class="official-gateway">
@@ -4186,6 +4164,25 @@ NOTE : le moteur fournit une assistance de conformité à partir du profil confi
         namebox.append(node('small','',duplicate?'Identifiant RH en doublon — édition sécurisée bloquée':(s.contract?String(s.contract)+' h / semaine':'Contrat à compléter')));
         identity.append(avatar,namebox);
         row.append(identity,node('div','v287-role',s.role||'Poste non renseigné'));
+        // V313 : tableau de pilotage. La durée contractuelle n'est PAS un pointage.
+        // Les heures réelles et le solde restent indisponibles jusqu'à réception
+        // d'un agrégat de pointages validé par le serveur pour cette période.
+        const hours=node('div','rh-v313-hours');
+        hours.setAttribute('aria-label','Heures théoriques, réalisées et solde pour '+String(s.name||'collaborateur'));
+        const theoretical=Number(s.contract);
+        const theoValid=s.contract!==null&&s.contract!==undefined&&String(s.contract).trim()!==''&&Number.isFinite(theoretical)&&theoretical>=0;
+        const hoursFmt=n=>new Intl.NumberFormat('fr-FR',{maximumFractionDigits:2}).format(n)+' h';
+        for(const [label,value] of [
+          ['Théo.',theoValid?hoursFmt(theoretical):'—'],
+          ['Réel','—'],
+          ['Solde','—']
+        ]){
+          const el=node('span','rh-v313-hour');
+          el.append(node('small','',label),node('strong','',value));
+          if(label!=='Théo.')el.title='En attente des pointages validés et de la période de calcul : aucune estimation affichée.';
+          hours.append(el);
+        }
+        row.append(hours);
         row.append(node('span','v287-state'+(s.active===false?' inactive':''),s.active===false?'INACTIF':'ACTIF'));
         const actions=node('div','v287-row-actions');
         for(const [a,label] of [['edit','FICHE / MODIFIER'],['planning','PLANNING']]){
@@ -4491,152 +4488,188 @@ NOTE : le moteur fournit une assistance de conformité à partir du profil confi
 })();
 </script>
 
-<!-- iCHEF RH V297 — passage authentifié RH -> Planning (une seule saisie PIN).
-     Aucun secret dans l'URL; le serveur contrôle les droits à chaque session. -->
-<script id="ichef-rh-v297-sso-planning">
-(function(){
-  'use strict';
+<!-- iCHEF RH V295 — Passage RH -> Planning Premium sans second écran PIN.
+     Le serveur valide toujours le droit RH et délivre un jeton court, lié à l'établissement et à l'appareil. -->
+<script id="ichef-rh-v295-navigation-planning-sso">
+(function(){'use strict';
+  const TENANT=/^[A-Za-z0-9_-]{2,80}$/;
   const KEY='ichef_planning_premium_auth_v1';
-  const DEVICE_KEY='ichef_planning_device_v1';
-  const TENANT_RE=/^[A-Za-z0-9_-]{2,80}$/;
-  const API=(location.hostname==='localhost'||location.hostname==='127.0.0.1')
+  const DEVICE='ichef_planning_device_v1';
+  const BASE=(location.hostname==='localhost'||location.hostname==='127.0.0.1')
     ? 'http://localhost:10000' : 'https://tableau-system.onrender.com';
-  let ongoing=null;
+  let opening=false;
   function getTenant(){
     try{return String(new URLSearchParams(location.search).get('tenantID')||localStorage.getItem('ichef_tenant_id')||'').trim();}
-    catch(_){return '';}
+    catch(_){return String(new URLSearchParams(location.search).get('tenantID')||'').trim();}
   }
   function getDevice(){
-    let id='';
-    try{id=localStorage.getItem(DEVICE_KEY)||'';}catch(_){}
-    if(!id)try{id=sessionStorage.getItem(DEVICE_KEY)||'';}catch(_){}
-    if(!id){
-      id=typeof crypto.randomUUID==='function'?crypto.randomUUID():('rh_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2));
-    }
-    try{sessionStorage.setItem(DEVICE_KEY,id);}catch(_){}
-    try{localStorage.setItem(DEVICE_KEY,id);}catch(_){}
-    return id;
+    let d='';try{d=localStorage.getItem(DEVICE)||'';}catch(_){}
+    if(!d){d=typeof crypto.randomUUID==='function'?crypto.randomUUID():'rh_'+Date.now().toString(36);
+      try{localStorage.setItem(DEVICE,d);}catch(_){}}
+    return d;
   }
-  function getRhPin(){
+  function session(tenant,device){
+    try{const row=JSON.parse(sessionStorage.getItem(KEY)||'null');
+      if(row&&row.tenant===tenant&&row.device===device&&
+        typeof row.token==='string'&&row.token.length>30&&Number(row.exp)>Date.now()+30000)
+        return row;
+    }catch(_){}return null;
+  }
+  function getPinInRhMemory(){
     try{return typeof getRhDirectionAuthPin==='function'?String(getRhDirectionAuthPin()||'').trim():'';}
     catch(_){return '';}
   }
-  function existing(tenant,device){
-    try{
-      const row=JSON.parse(sessionStorage.getItem(KEY)||'null');
-      if(row&&row.tenant===tenant&&row.device===device&&typeof row.token==='string'&&
-         row.token.length>30&&Number(row.exp)>Date.now()+20000)return row;
-    }catch(_){}return null;
-  }
-  function clearPlanningToken(){try{sessionStorage.removeItem(KEY);}catch(_){} }
-  async function checkedJSON(path,opts={}){
-    const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),12500);
-    try{
-      const response=await fetch(API+path,{...opts,credentials:'include',cache:'no-store',signal:controller.signal});
-      const data=await response.json().catch(()=>({}));
-      if(!response.ok||data.success===false){
-        const e=new Error(String(data.error||'Erreur HTTP '+response.status));e.status=response.status;throw e;
-      }
-      return data;
-    }finally{clearTimeout(timer);}
-  }
-  async function ensureSession(){
-    const tenant=getTenant();
-    if(!TENANT_RE.test(tenant))throw Error('Établissement inconnu. Connectez-vous à RH.');
-    const device=getDevice();
-    // Jeton délivré par le serveur : on le réutilise jusqu'à expiration.
-    // Les API du Planning revérifient signature, appareil, établissement et droits.
-    const previous=existing(tenant,device);
-    if(previous)return previous;
-
-    // Aucun jeton RH Planning disponible : il faut une connexion RH déjà validée.
-    // Le PIN n'est jamais placé dans l'URL ou stocké dans la session.
-    const pin=getRhPin();
+  window.iChefOpenPlanningRH=async function(options){
+    if(opening)return false;
+    const t=getTenant();
+    if(!TENANT.test(t)){
+      alert('Établissement non identifié. Connectez-vous dans RH avant d’ouvrir le planning.');
+      return false;
+    }
+    const jump=options&&typeof options==='object'&&options.jump===true;
+    const destination='/planning-rh/?tenantID='+encodeURIComponent(t)+(jump?'&rhJump=1':'');
+    const d=getDevice();
+    // Même avec un jeton local, il faut être connecté à RH dans cet onglet.
+    const pin=getPinInRhMemory();
     if(!/^\d{4,12}$/.test(pin)){
-      throw Error('Accès RH non reconnu dans cette page. Revenez à RH et connectez-vous avec votre PIN.');
+      alert('Votre session RH n’est plus disponible. Reconnectez-vous dans RH avant d’ouvrir le planning.');
+      return false;
     }
-    const response=await checkedJSON('/api/rh/planning/session',{
-      method:'POST',
-      headers:{'Content-Type':'application/json','Accept':'application/json',
-        'X-iCHEF-Tenant':tenant,'X-iCHEF-Device':device},
-      body:JSON.stringify({tenantID:tenant,pin,deviceId:device})
-    });
-    if(response.success!==true||typeof response.accessToken!=='string'||response.accessToken.length<30){
-      throw Error('Le serveur n’a pas délivré de session Planning autorisée.');
+    if(session(t,d)){
+      location.assign(destination);return false;
     }
-    const ttl=Math.max(60,Math.min(7200,Number(response.expiresInSeconds)||7200));
-    const row={tenant,device,token:response.accessToken,actor:response.actor||null,
-      exp:Date.now()+ttl*1000-15000};
-    // IMPORTANT : écrire la session AVANT toute navigation. Un seul onglet.
+    // PIN déjà validé en RH ; aucun deuxième écran, PIN absent de l'URL.
+    opening=true;
+    const controller=new AbortController();
+    const timer=setTimeout(()=>controller.abort(),12000);
     try{
-      sessionStorage.setItem(KEY,JSON.stringify(row));
-      const saved=JSON.parse(sessionStorage.getItem(KEY)||'null');
-      if(saved?.token!==row.token||saved?.tenant!==tenant||saved?.device!==device){
-        throw Error('Session navigateur non persistée.');
+      const response=await fetch(BASE+'/api/rh/planning/session',{
+        method:'POST',credentials:'include',cache:'no-store',signal:controller.signal,
+        headers:{'Content-Type':'application/json','Accept':'application/json',
+          'X-iCHEF-Tenant':t,'X-iCHEF-Device':d},
+        body:JSON.stringify({tenantID:t,pin,deviceId:d})
+      });
+      const data=await response.json().catch(()=>({}));
+      if(!response.ok||data.success!==true||typeof data.accessToken!=='string'||
+         data.accessToken.length<30){
+        alert(data.error||'Accès Planning refusé : droits Direction/RH requis.');
+        return false;
       }
-    }catch(_){throw Error('Le navigateur bloque la session temporaire. Autorisez les données du site iCHEF.');}
-    // V301 vérifiait encore l'état RH avant d'ouvrir le planning. Si ce GET
-    // échouait ou expirait, il supprimait le jeton pourtant valide : régression.
-    // Ici, aucune donnée n'est retournée sans contrôle d'autorisation du serveur ;
-    // le Planning recharge et vérifie lui-même son état via l'API protégée.
-    return row;
-  }
-  async function provision(){
-    if(ongoing)return ongoing;
-    ongoing=ensureSession().then(row=>{
-      // Rafraîchit immédiatement la carte RH qui lisait l'API avant que le jeton n'existe.
-      document.dispatchEvent(new CustomEvent('ichef:premium:rh-synced'));
-      return row;
-    }).finally(()=>{ongoing=null;});
-    return ongoing;
-  }
-  let navigating=false;
-  async function openPlanning(options){
-    if(navigating)return false;
-    navigating=true;
-    try{
-      const row=await provision();
-      const dest=new URL('/planning-rh/',location.origin);
-      dest.searchParams.set('tenantID',row.tenant);
-      dest.searchParams.set('fromRh','1');
-      if(options&&typeof options==='object'&&options.jump===true)dest.searchParams.set('rhJump','1');
-      location.assign(dest.pathname+dest.search);
-    }catch(err){
-      // Jamais de transfert d'accès implicite, et jamais de secret dans l'URL.
-      const message=err?.name==='AbortError'?'Serveur RH trop lent. Réessayez.':String(err?.message||'Connexion Planning indisponible.');
-      console.warn('[iCHEF RH/Planning V302] Ouverture refusée:',message);
-      alert('Ouverture du Planning impossible : '+message);
-      navigating=false;
-    }
+      const seconds=Math.max(60,Math.min(7200,Number(data.expiresInSeconds)||7200));
+      const entry={tenant:t,device:d,token:data.accessToken,
+        actor:data.actor||null,exp:Date.now()+seconds*1000-15000};
+      try{sessionStorage.setItem(KEY,JSON.stringify(entry));}
+      catch(_){alert('Session locale indisponible. Autorisez le stockage du site, puis réessayez.');return false;}
+      location.assign(destination);
+    }catch(error){
+      alert(error?.name==='AbortError'
+        ? 'Serveur RH momentanément indisponible. Réessayez.'
+        : 'Connexion sécurisée au planning impossible. Réessayez depuis RH.');
+    }finally{clearTimeout(timer);opening=false;}
     return false;
-  }
-  window.iChefOpenPlanningRH=openPlanning;
-  // Les anciennes entrées RH utilisent dorénavant la même route authentifiée.
-  window.iChefOpenPlanningPremiumV257=()=>openPlanning();
-  window.iChefRhOpenOfficialPlanningV259=()=>openPlanning();
-  // Après validation du PIN RH, préparer un jeton signé en avance, sans jamais
-  // bloquer la connexion RH en cas de réseau lent / refus Planning.
-  if(typeof window.submitOfficialGatewayPin==='function'&&!window.submitOfficialGatewayPin.__ichefV297){
-    const original=window.submitOfficialGatewayPin;
-    const wrapped=async function(...args){
-      const result=await original.apply(this,args);
-      if(/^\d{4,12}$/.test(getRhPin()))void provision().catch(err=>console.warn('[iCHEF RH V297] Planning à réauthentifier :',err?.message));
-      return result;
+  };
+  // Lors d'une déconnexion RH, la session locale du planning est effacée.
+  if(typeof window.fullLogout==='function'&&!window.fullLogout.__ichefV295Sso){
+    const oldLogout=window.fullLogout;
+    const secureLogout=function(...args){
+      try{sessionStorage.removeItem(KEY);}catch(_){}
+      return oldLogout.apply(this,args);
     };
-    wrapped.__ichefV297=true;
-    window.submitOfficialGatewayPin=wrapped;
+    secureLogout.__ichefV295Sso=true;
+    window.fullLogout=secureLogout;
   }
-  if(typeof window.fullLogout==='function'&&!window.fullLogout.__ichefV297){
-    const original=window.fullLogout;
-    const wrapped=function(...args){clearPlanningToken();return original.apply(this,args);};
-    wrapped.__ichefV297=true;window.fullLogout=wrapped;
-  }
+})();
+</script>
+
+<!-- iCHEF RH V313 : menu latéral visible dans toutes les sections RH + compteurs explicites.
+     Extension UI uniquement : aucune modification des API, PIN, sessions, permissions ou sauvegardes. -->
+<style id="ichef-rh-v313-sidebar-style">
+/* Annuaire : 3 colonnes d'heures, jamais confondre planning avec pointage */
+#rh-v287-directory .rh-v313-hours{display:flex;flex-wrap:wrap;gap:5px;min-width:210px;align-items:center}
+#rh-v287-directory .rh-v313-hour{display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:61px;padding:4px 6px;border:1px solid #dce5eb;border-radius:7px;background:#f7f9fa;color:#172a37}
+#rh-v287-directory .rh-v313-hour small{font-size:9px;color:#587080;font-weight:750}
+#rh-v287-directory .rh-v313-hour strong{font-size:11px;font-weight:900}
+#rh-v287-directory .v287-row{grid-template-columns:minmax(130px,1.4fr) minmax(100px,.8fr) minmax(195px,1fr) auto auto!important}
+@media(max-width:1450px){#rh-v287-directory .v287-row{grid-template-columns:minmax(130px,1fr) minmax(75px,.7fr) minmax(195px,1fr) auto auto!important}}
+@media(max-width:1200px){#rh-v287-directory .v287-row{grid-template-columns:minmax(130px,1fr) minmax(190px,1fr) auto!important}#rh-v287-directory .v287-role{display:none!important}#rh-v287-directory .v287-state{display:none!important}}
+@media(max-width:760px){#rh-v287-directory .v287-row{grid-template-columns:minmax(0,1fr) auto!important}#rh-v287-directory .rh-v313-hours{grid-column:1/-1;justify-content:flex-start}#rh-v287-directory .v287-row-actions{grid-column:1/-1!important}}
+/* Un dock visuel du même menu, visible UNIQUEMENT hors tableau de bord. */
+#rh-v313-navdock{display:none;position:fixed;top:0;left:0;bottom:0;width:260px;z-index:350;overflow:auto;overscroll-behavior:contain;background:#fff;border-right:1px solid #dce5e9;box-shadow:3px 0 12px #19273610;color:#101820;padding:22px 12px;box-sizing:border-box;font-family:Inter,system-ui,sans-serif}
+body.rh-v313-section-open #rh-v313-navdock{display:block}
+#rh-v313-navdock .rh-cockpit-brand{padding:8px 12px 22px;cursor:pointer}
+#rh-v313-navdock .rh-cockpit-brand-main{font-size:31px;font-weight:950;letter-spacing:-1px;color:#101820}
+#rh-v313-navdock .rh-cockpit-brand-main span{color:#f36a27}
+#rh-v313-navdock .rh-cockpit-brand-sub{font-size:12px;font-weight:800;color:#25313c}
+#rh-v313-navdock .rh-cockpit-nav{display:flex;flex-direction:column;gap:3px}
+#rh-v313-navdock .rh-v224-nav-label{display:block;padding:11px 10px 4px;color:#27343c;letter-spacing:1.8px;font-size:11px;font-weight:950}
+#rh-v313-navdock .rh-cockpit-nav button{display:grid;grid-template-columns:26px 1fr auto;align-items:center;gap:8px;width:100%;min-height:44px;text-align:left;border:0;border-radius:12px;background:transparent;color:#15202a;font-size:13px;font-weight:750;padding:9px 10px;cursor:pointer}
+#rh-v313-navdock .rh-cockpit-nav button:hover{background:#edf2f5}
+#rh-v313-navdock .rh-cockpit-nav button.active{background:#111820;color:#fff}
+#rh-v313-navdock .rh-nav-ico{font-size:18px;text-align:center}
+#rh-v313-navdock .rh-cockpit-side-footer{padding:14px 12px;margin-top:24px;background:#111820;border-radius:12px;color:#fff}
+#rh-v313-navdock .rh-cockpit-side-footer strong{display:none}
+#rh-v313-navdock .rh-cockpit-side-footer span{font-size:13px;font-weight:850}
+body.rh-v313-section-open > .full-interface:not(#director-hub){margin-left:260px!important;width:calc(100% - 260px)!important;max-width:none!important;box-sizing:border-box!important}
+body.rh-v313-section-open #rh-v313-navdock button:focus-visible{outline:3px solid #367caa;outline-offset:1px}
+@media(max-width:850px){
+ #rh-v313-navdock{width:240px;transform:translateX(-100%);transition:transform .18s}
+ body.rh-v313-section-open.rh-v313-menu-open #rh-v313-navdock{transform:translateX(0)}
+ body.rh-v313-section-open > .full-interface:not(#director-hub){margin-left:0!important;width:100%!important}
+ #rh-v313-menu-toggle{display:flex!important}
+}
+#rh-v313-menu-toggle{display:none;position:fixed;left:10px;top:12px;z-index:351;min-width:50px;min-height:44px;align-items:center;justify-content:center;background:#111820;color:#fff;border:1px solid #cad7df;border-radius:10px;font-weight:900;cursor:pointer}
+body:not(.rh-v313-section-open) #rh-v313-menu-toggle{display:none!important}
+@media print{#rh-v313-navdock,#rh-v313-menu-toggle{display:none!important}body.rh-v313-section-open > .full-interface:not(#director-hub){margin-left:0!important;width:100%!important}}
+</style>
+<script id="ichef-rh-v313-nav-script">
+(()=>{'use strict';
+ if(window.__ICHEF_RH_V313_MENU__)return;
+ window.__ICHEF_RH_V313_MENU__=true;
+ const ready=()=>{
+  const origin=document.querySelector('#director-hub > .rh-cockpit-sidebar');
+  if(!origin||document.getElementById('rh-v313-navdock'))return;
+  // Reprend STRICTEMENT les mêmes commandes de navigation, sans toucher au login.
+  const dock=origin.cloneNode(true);
+  dock.id='rh-v313-navdock';dock.classList.remove('rh-cockpit-sidebar');
+  dock.setAttribute('aria-label','Navigation iCHEF Ressources Humaines');
+  // Pas d'identifiants en double dans le DOM.
+  dock.querySelectorAll('[id]').forEach(el=>el.removeAttribute('id'));
+  // Un clic sur l'élément dupliqué lance la même action que sur le menu d'origine.
+  document.body.append(dock);
+  const toggle=document.createElement('button');toggle.type='button';toggle.id='rh-v313-menu-toggle';toggle.textContent='☰ RH';toggle.setAttribute('aria-label','Afficher ou masquer le menu RH');
+  toggle.addEventListener('click',()=>document.body.classList.toggle('rh-v313-menu-open'));
+  document.body.append(toggle);
+  dock.addEventListener('click',e=>{
+    const b=e.target.closest('button');if(b){
+      origin.querySelectorAll('nav button').forEach(x=>x.classList.toggle('active',x.textContent.trim()===b.textContent.trim()));
+      dock.querySelectorAll('nav button').forEach(x=>x.classList.toggle('active',x===b));
+      document.body.classList.remove('rh-v313-menu-open');
+    }
+  });
+  // Les pages RH d'origine sont frères de #director-hub. Ne jamais montrer
+  // le menu avant la connexion : seul un écran full-interface visible l'active.
+  const sections=[...document.querySelectorAll('body > .full-interface')].filter(el=>el.id!=='director-hub');
+  const visible=el=>{if(!el)return false;const st=getComputedStyle(el);return st.display!=='none'&&st.visibility!=='hidden'&&el.getBoundingClientRect().width>0;};
+  const update=()=>{
+    const active=sections.some(visible);
+    document.body.classList.toggle('rh-v313-section-open',active);
+    if(!active)document.body.classList.remove('rh-v313-menu-open');
+    // Évite d'intercepter les raccourcis du clavier PIN, les écrans de connexion et les modales.
+    dock.setAttribute('aria-hidden',active?'false':'true');
+    toggle.setAttribute('aria-expanded',document.body.classList.contains('rh-v313-menu-open')?'true':'false');
+  };
+  const observer=new MutationObserver(update);
+  sections.concat(document.getElementById('director-hub')).filter(Boolean).forEach(el=>observer.observe(el,{attributes:true,attributeFilter:['style','class','hidden']}));
+  update();
+  document.addEventListener('click',e=>{if(e.target.closest('#rh-v313-navdock,#rh-v313-menu-toggle'))return;if(document.body.classList.contains('rh-v313-menu-open'))document.body.classList.remove('rh-v313-menu-open');},{passive:true});
+  window.addEventListener('resize',update,{passive:true});
+ };
+ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',ready,{once:true});else ready();
 })();
 </script>
 
 </body>
 </html>
-
 
 
 
