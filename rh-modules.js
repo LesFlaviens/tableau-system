@@ -8,11 +8,6 @@
 
 
 
-
-
-
-
-
 /* iCHEF RH V266 - modules historiques conservés, ordre original de chargement. */
 
 ;
@@ -807,7 +802,6 @@ async function submitOfficialGatewayPin() {
         // pour les appels RH protégés (planning, IA, synchronisation).
         currentPin = pin;
         rhDirectionAuthPin = pin;
-        document.dispatchEvent(new Event('ichef:rh-direction-authenticated'));
         loginMode = "director";
         currentDept = "admin";
         document.querySelectorAll(".full-interface").forEach(el => el.style.display = "none");
@@ -21181,7 +21175,3 @@ window.__ICHEF_RH_BUILD__='RH-V240-AUTO-STYLE-SELF-HEAL';
  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start,{once:true});
  else start();
 })();
-
-
-
-
