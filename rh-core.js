@@ -15,9 +15,6 @@
 
 
 
-
-
-
 /* iCHEF RH V285 - garde d'identité par ID collaborateur; fonctions de sécurité inchangées. */
 
 ;
@@ -7009,9 +7006,9 @@ const urlParamsJS = new URLSearchParams(window.location.search);
                 isAnnualView = false;
                 // V317 : une exception de rendu ne doit plus bloquer l’accès à Équipe.
                 try { refreshViews(); }
-                catch (error) { console.error('[iCHEF RH V317] Rafraîchissement Équipe', error); }
+                catch (error) { console.error('[iCHEF RH V318] Rafraîchissement Équipe', error); }
                 try { toggleViewDisplay(); }
-                catch (error) { console.error('[iCHEF RH V317] Affichage Équipe', error); }
+                catch (error) { console.error('[iCHEF RH V318] Affichage Équipe', error); }
             } else if(type === 'logs') {
                 renderLogs();
             } else if(type === 'requests') {
