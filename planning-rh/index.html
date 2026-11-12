@@ -14,7 +14,7 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>iCHEF OS · Planning RH Premium</title>
-<meta name="ichef-build" content="PLANNING-RH-V310-CONFIG-LEGAL">
+<meta name="ichef-build" content="PLANNING-RH-V311-CONFIG-LEGAL">
 <script>if(new URLSearchParams(location.search).get("fromRh")==="1")document.documentElement.classList.add("ichef-from-rh");</script>
 <style>
 :root{--ink:#14212a;--muted:#72808c;--line:#e5e9ed;--bg:#f6f8fa;--white:#fff;--nav:#0e1a25;--nav2:#152634;--gold:#c6a56b;--green:#148e72;--red:#d45c59;--blue:#4c87c1;--orange:#d69449;--shadow:0 10px 34px rgba(20,36,48,.055)}
@@ -2212,6 +2212,73 @@ document.addEventListener('click',e=>{
  if(url.origin!==location.origin||url.pathname===location.pathname)return;
  if(!ichefV310ExitPrompt()){e.preventDefault();e.stopImmediatePropagation();}
 },true);
+
+// ============================================================================
+// V311 — NAVIGATION ENTRE SEMAINES, SANS INTERFERER AVEC LE PINCEAU V310.
+// - Roulette sur l'en-tête des dates : semaine précédente/suivante.
+// - Défilement horizontal du trackpad sur la grille : semaine -/+.
+// - Glissement tactile horizontal sur le titre de période : semaine -/+.
+// La molette verticale dans les lignes garde son défilement normal.
+// Aucun brouillon n'est enregistré, annulé ou envoyé pendant la navigation.
+// ============================================================================
+(function ichefV311WeekNavigation(){
+ const title=$('range');
+ const grid=document.querySelector('.schedule-wrap');
+ if(!title||!grid)return;
+ let lastAt=0,gesture=null,accumulated=0;
+ const navigate=direction=>{
+  if(view!=='week'||!token||busy||selected||taskSelected||multiPointer||ichefV310Saving)return;
+  const now=Date.now();
+  if(now-lastAt<450)return;
+  lastAt=now;
+  // Reprendre exactement les handlers historiques, sans modifier l'authentification
+  // ni le transport RH. Les brouillons V310 restent dans leur Map en mémoire.
+  (direction<0?$('prev'):$('next'))?.click();
+  // La grille rerend les cases de la nouvelle semaine avec les brouillons existants.
+  requestAnimationFrame(()=>ichefV310RepaintDrafts());
+ };
+ const wheelHandler=(event,location)=>{
+  if(view!=='week'||!token||busy||selected||taskSelected||multiPointer||ichefV310Saving)return;
+  // Dans la grille : conserver la molette verticale pour défiler les employés.
+  // L'en-tête peut utiliser la molette verticale, et la grille le trackpad horizontal.
+  const horizontal=location==='grid';
+  if(horizontal&&Math.abs(event.deltaX)<Math.abs(event.deltaY)*1.15)return;
+  const delta=horizontal?event.deltaX:(Math.abs(event.deltaX)>Math.abs(event.deltaY)?event.deltaX:event.deltaY);
+  if(Math.abs(delta)<2)return;
+  event.preventDefault();
+  accumulated+=delta;
+  if(Math.abs(accumulated)>=45){
+   const direction=Math.sign(accumulated);
+   accumulated=0;
+   navigate(direction);
+  }
+ };
+ title.addEventListener('wheel',e=>wheelHandler(e,'title'),{passive:false});
+ grid.addEventListener('wheel',e=>wheelHandler(e,'grid'),{passive:false});
+ // Swipe uniquement sur le titre de semaine : sur les cases, le geste est réservé
+ // à la peinture des horaires. Ne pas capturer ni bloquer le défilement vertical.
+ title.style.touchAction='pan-y';
+ title.style.cursor='ew-resize';
+ title.setAttribute('title','Faire défiler pour changer de semaine ; glisser horizontalement sur mobile');
+ title.addEventListener('pointerdown',e=>{
+  if(e.pointerType==='mouse'||view!=='week'||!token)return;
+  gesture={id:e.pointerId,x:e.clientX,y:e.clientY};
+ });
+ title.addEventListener('pointerup',e=>{
+  if(!gesture||gesture.id!==e.pointerId)return;
+  const dx=e.clientX-gesture.x,dy=e.clientY-gesture.y;
+  gesture=null;
+  if(Math.abs(dx)>55&&Math.abs(dx)>Math.abs(dy)*1.25){
+   navigate(dx<0?1:-1); // glisser vers la gauche = semaine suivante
+  }
+ });
+ title.addEventListener('pointercancel',()=>gesture=null);
+ const help=document.createElement('small');
+ help.id='ichef-v311-week-nav-hint';
+ help.textContent='↔ Glisser ou défiler : changer de semaine';
+ help.style.cssText='display:block;font-size:10px;font-weight:500;color:#647785;margin-top:2px;white-space:normal;';
+ title.appendChild(help);
+})();
 
 multiPointerBind($('week-host'));multiPointerBind($('day-host'));multiPointerBind($('month-host'));
 $('logout').onclick=()=>{if(!ichefV310ExitPrompt())return;multiClear({all:true});forget();$('login-pin').value='';showAuth('Session fermée sur cet appareil.');if(window.parent!==window&&query.get('rhEmbedded')==='1'){window.parent.postMessage({type:'ICHEF_PREMIUM_LOGOUT'},location.origin);}};
