@@ -1,4 +1,11 @@
 
+
+
+
+
+
+
+
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -2355,6 +2362,16 @@ res.once('close', unlock);
 next();
 });
 });
+// iCHEF V332 — Endpoint de santé HTTP pour Render.
+// Lecture seule : aucune donnée métier, identité, session, clé ou information Mongo exposée.
+// Ne modifie ni les connexions ni les autorisations RH/Staff/PWA.
+// La disponibilité DB est contrôlée séparément par la route existante /readyz.
+app.get('/health', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    return res.status(200).json({ ok: true, service: 'iCHEF' });
+});
+
 app.get('/healthz', (req, res) => {
 const mongoState = mongoose.connection.readyState;
 if (mongoURI && mongoState !== 1 && mongoState !== 2) {
@@ -38435,6 +38452,10 @@ console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
 console.log('==========================================');
 }
 );
+
+
+
+
 
 
 
