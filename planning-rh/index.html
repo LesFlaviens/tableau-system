@@ -8,8 +8,6 @@
 
 
 
-
-
 <!doctype html>
 <html lang="fr">
 <head>
@@ -1190,7 +1188,25 @@ function shiftMarkup(r){
  if(r.s2&&r.e2)segments.push(`${r.s2}–${r.e2}`);
  return `<span class="entry-label">${heading}</span>${segments.map(x=>`<span class="entry-time">${esc(x)}</span>`).join('')}`;
 }
+// V318 : clic sur le NOM = fiche RH officielle, jamais un second dossier local.
+// Ne transmet ni PIN ni jeton. La page RH valide la session et l'identité.
+function ichefV318OpenRhProfile(staffId){
+ const person=staff.find(x=>String(x.id)===String(staffId));
+ if(!person)return false;
+ if(!ichefV310ExitPrompt())return true; // abandon de navigation, brouillons conservés
+ const payload={type:'ICHEF_RH_OPEN_STAFF_PROFILE_V318',tenantID:String(tenant),staffId:String(person.id),staffName:String(person.name||'')};
+ if(window.parent!==window && query.get('rhEmbedded')==='1'){
+   window.parent.postMessage(payload,location.origin);
+   return true;
+ }
+ // Même onglet, même origine : passage éphémère d'un identifiant seulement.
+ try{sessionStorage.setItem('ichef_rh_open_profile_v318',JSON.stringify({...payload,at:Date.now()}));}
+ catch(_){notify('La navigation RH nécessite un stockage de session autorisé.');return true;}
+ location.assign('/rh.html?tenantID='+encodeURIComponent(tenant));
+ return true;
+}
 function openEmployee(staffId){
+ if(ichefV318OpenRhProfile(staffId))return;
  // La sélection V285 peut couvrir plusieurs collaborateurs, y compris si
  // l'utilisateur consulte entre-temps une fiche individuelle.
  if(multiEnabled)multiStaffId=String(staffId);
@@ -1474,7 +1490,7 @@ function renderWeek(){
  h+='</tr></thead><tbody>';
  for(const p of people){
   const summary=hoursSummary(p,days);
-  h+=`<tr><td><button type="button" class="staff-open" data-profile="${esc(p.id)}" aria-label="Voir le planning individuel de ${esc(p.name)}. Heures effectuées : ${esc(displayHours(summary.actual))}. Heures prévues : ${esc(displayHours(summary.planned))}. Écart : ${esc(signedHours(summary.difference))}" title="Afficher le planning de ${esc(p.name)}"><span class="avatar">${esc(p.avatar)}</span><span class="staff-details"><span class="staff-name">${esc(p.name)}</span><span class="staff-role">${esc(p.role)}</span>${metricMarkup(summary)}</span></button></td>`;
+  h+=`<tr><td><button type="button" class="staff-open" data-profile="${esc(p.id)}" aria-label="Ouvrir la fiche RH de ${esc(p.name)}. Heures effectuées : ${esc(displayHours(summary.actual))}. Heures prévues : ${esc(displayHours(summary.planned))}. Écart : ${esc(signedHours(summary.difference))}" title="Ouvrir la fiche RH de ${esc(p.name)}"><span class="avatar">${esc(p.avatar)}</span><span class="staff-details"><span class="staff-name">${esc(p.name)}</span><span class="staff-role">${esc(p.role)}</span>${metricMarkup(summary)}</span></button></td>`;
   for(const d of days){
    const r=get(p,d),caption=[types[r.k]||'Absence',label(r)].filter(Boolean).join(' · ');
    const enabled=!readOnly;
