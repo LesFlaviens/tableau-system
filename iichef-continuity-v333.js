@@ -2,91 +2,136 @@
 
 
 
-<!doctype html>
-<html lang="fr">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="robots" content="noindex,nofollow">
-  <meta name="theme-color" content="#101820">
-  <title>Service momentanément indisponible | iCHEF OS</title>
-  <style>
-    :root { color-scheme: light; font-family: system-ui,-apple-system,"Segoe UI",Arial,sans-serif; }
-    * { box-sizing: border-box; }
-    html { min-height: 100%; }
-    body {
-      min-height: 100vh;
-      min-height: 100dvh;
-      margin: 0;
-      padding: 32px 18px;
-      display: grid;
-      place-items: center;
-      background-color: #111c25;
-      /* Image déjà présente à la racine du dépôt tableau-system */
-      background-image:
-        linear-gradient(125deg, rgba(6,16,25,.78),rgba(10,21,30,.52)),
-        url("/ChatGPT%20Image%2020%20sept.%202026%2C%2014_24_41.png");
-      background-position: center;
-      background-size: cover;
-      background-repeat: no-repeat;
-      background-attachment: fixed;
-      color: #18232b;
+
+
+
+/* iCHEF OS V333 — continuité visuelle, sans modifier les connexions ni les écritures.
+ * Le contrôle de santé ne constitue PAS une preuve de sauvegarde.
+ * À charger après les scripts métier dans RH / Planning / Staff.
+ */
+(function () {
+  'use strict';
+  if (window.__ichefContinuityV333) return;
+  window.__ichefContinuityV333 = true;
+  const cfg = window.ICHEF_CONTINUITY_V333 || {};
+  const renderOrigin = 'https://tableau-system.onrender.com';
+  const knownOrigins = ['os.ichef.ch', 'ichef.ch', 'www.ichef.ch', 'tableau-system.onrender.com'];
+  const host = location.hostname.toLowerCase();
+  const defaultEndpoint = (host === 'localhost' || host === '127.0.0.1')
+    ? 'http://localhost:10000/health'
+    : knownOrigins.includes(host) ? location.origin + '/health' : renderOrigin + '/health';
+  let endpoint = defaultEndpoint;
+  // URL configurée par l'exploitant : HTTPS (ou HTTP uniquement sur localhost).
+  if (typeof cfg.healthUrl === 'string') {
+    try {
+      const url = new URL(cfg.healthUrl, location.href);
+      const allowed = url.protocol === 'https:' ||
+        (url.protocol === 'http:' && ['localhost','127.0.0.1'].includes(url.hostname));
+      if (allowed && url.pathname === '/health') endpoint = url.toString();
+    } catch (_) { /* configuration incorrecte : repli */ }
+  }
+  const pollMs = Math.max(10000, Math.min(120000, Number(cfg.intervalMs) || 25000));
+  const timeoutMs = 6500;
+  let failures = 0;
+  let checking = false;
+  let timer = null;
+  let banner = null;
+  let textNode = null;
+  let retryButton = null;
+  let offlineHint = false;
+
+  function createBanner() {
+    if (banner || !document.body) return;
+    const style = document.createElement('style');
+    style.id = 'ichef-v333-style';
+    style.textContent = `
+#ichef-v333-alert{position:fixed;z-index:2147483000;left:16px;right:16px;bottom:16px;max-width:720px;margin:auto;box-sizing:border-box;display:none;align-items:center;gap:14px;padding:17px 19px;border:1px solid #d7dfe5;border-radius:14px;background:#fff;color:#172d3d;box-shadow:0 12px 44px rgba(0,0,0,.22);font-family:system-ui,-apple-system,Segoe UI,Arial,sans-serif}
+#ichef-v333-alert[data-show="true"]{display:flex}
+#ichef-v333-alert .ichef-v333-copy{flex:1;min-width:0;font-size:13px;line-height:1.5}
+#ichef-v333-alert strong{display:block;font-size:15px;margin-bottom:3px}
+#ichef-v333-alert button{font:inherit;font-size:13px;font-weight:700;border:0;border-radius:9px;background:#172d3d;color:#fff;padding:11px 15px;cursor:pointer;min-height:42px}
+#ichef-v333-alert button:disabled{opacity:.6;cursor:wait}
+@media(max-width:480px){#ichef-v333-alert{flex-wrap:wrap;left:10px;right:10px;bottom:10px}#ichef-v333-alert button{width:100%}}
+@media print{#ichef-v333-alert{display:none!important}}
+`;
+    document.head.appendChild(style);
+    banner = document.createElement('aside');
+    banner.id = 'ichef-v333-alert';
+    banner.setAttribute('role', 'status');
+    banner.setAttribute('aria-live', 'polite');
+    const copy = document.createElement('div');
+    copy.className = 'ichef-v333-copy';
+    const title = document.createElement('strong');
+    title.textContent = 'iCHEF OS · Connexion momentanément indisponible';
+    textNode = document.createElement('span');
+    textNode.textContent = 'Le service rencontre une difficulté technique. Les opérations non confirmées peuvent ne pas avoir été enregistrées.';
+    retryButton = document.createElement('button');
+    retryButton.type = 'button';
+    retryButton.textContent = 'Réessayer';
+    retryButton.addEventListener('click', function () { void check(true); });
+    copy.appendChild(title);
+    copy.appendChild(textNode);
+    banner.append(copy, retryButton);
+    document.body.appendChild(banner);
+  }
+  function show(message) {
+    createBanner();
+    if (!banner) return;
+    textNode.textContent = message;
+    banner.dataset.show = 'true';
+    document.dispatchEvent(new CustomEvent('ichef:continuity', { detail: { online: false } }));
+  }
+  function hide() {
+    if (banner) banner.dataset.show = 'false';
+    document.dispatchEvent(new CustomEvent('ichef:continuity', { detail: { online: true } }));
+  }
+  function schedule() {
+    clearTimeout(timer);
+    timer = setTimeout(function () { void check(false); }, pollMs);
+  }
+  async function check(manual) {
+    if (checking) return;
+    if (document.visibilityState === 'hidden' && !manual) { schedule(); return; }
+    checking = true;
+    if (retryButton) retryButton.disabled = true;
+    const ctrl = new AbortController();
+    const timeout = setTimeout(function () { ctrl.abort(); }, timeoutMs);
+    try {
+      const response = await fetch(endpoint, { method: 'GET', cache: 'no-store', credentials: 'omit', signal: ctrl.signal });
+      // On attend une réponse HTTP valide, pas le statut métier des utilisateurs.
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      failures = 0;
+      offlineHint = false;
+      hide();
+    } catch (_) {
+      failures += 1;
+      // Évite d'afficher un faux incident sur une brève interruption réseau.
+      if (manual || offlineHint || failures >= 2) {
+        show(navigator.onLine === false
+          ? 'Votre appareil semble hors connexion. Les modifications non confirmées ne sont pas sauvegardées. Vérifiez votre réseau, puis réessayez.'
+          : 'Nous rencontrons une difficulté technique temporaire. Les modifications non confirmées ne doivent pas être considérées comme enregistrées. Réessayez dans quelques instants.');
+      }
+    } finally {
+      clearTimeout(timeout);
+      checking = false;
+      if (retryButton) retryButton.disabled = false;
+      schedule();
     }
-    main {
-      width: min(100%, 580px);
-      background: rgba(255,255,255,.96);
-      border: 1px solid rgba(255,255,255,.75);
-      border-radius: 22px;
-      padding: clamp(27px,5.5vw,54px);
-      box-shadow: 0 24px 90px rgba(2,9,16,.32);
-      text-align: center;
-    }
-    .brand-logo {
-      display: block;
-      width: min(215px, 65%);
-      max-height: 118px;
-      object-fit: contain;
-      margin: 0 auto 26px;
-    }
-    .brand-fallback { font-size: 33px; font-weight: 900; letter-spacing: -1.5px; margin: 0 auto 25px; }
-    .brand-fallback small { font-size: 13px; font-weight: 650; vertical-align: middle; letter-spacing: 2px; }
-    .indicator { width: 10px; height: 10px; border-radius: 50%; background: #d99042; display: inline-block; margin-right: 8px; }
-    .eyebrow { color: #647482; letter-spacing: .14em; font-size: 11px; font-weight: 800; text-transform: uppercase; }
-    h1 { margin: 14px 0 17px; font-size: clamp(24px,4vw,33px); line-height: 1.2; letter-spacing: -.035em; }
-    p { margin: 0 0 14px; color: #4a5965; font-size: 15px; line-height: 1.65; }
-    .note { margin-top: 19px; font-size: 13px; color: #63737f; }
-    .actions { margin-top: 30px; }
-    button { appearance: none; border: 0; border-radius: 11px; cursor: pointer; padding: 14px 32px; background: #101820; color: #fff; font-weight: 750; font-size: 15px; min-height: 48px; }
-    button:hover { background: #283946; }
-    button:focus-visible { outline: 3px solid #ec9a54; outline-offset: 4px; }
-    footer { color: #788692; font-size: 12px; margin-top: 32px; }
-    @media (max-width: 480px) {
-      body { padding: 18px 12px; background-attachment: scroll; }
-      main { padding: 29px 23px; }
-      .actions button { width: 100%; }
-    }
-    @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto; } }
-  </style>
-</head>
-<body>
-  <main role="main">
-    <!-- Le chemin pointe vers logo-ichef.png à la racine du dépôt. -->
-    <img class="brand-logo" src="/logo-ichef.png" alt="iCHEF OS" onerror="this.hidden=true;document.getElementById('brand-fallback').hidden=false;">
-    <div id="brand-fallback" class="brand-fallback" hidden>iCHEF <small>OS</small></div>
-    <div class="eyebrow"><span class="indicator" aria-hidden="true"></span>Information de service</div>
-    <h1>Votre espace est momentanément indisponible</h1>
-    <p>Nous rencontrons actuellement une difficulté technique temporaire. Nous vous invitons à réessayer dans quelques instants.</p>
-    <p class="note">Les opérations déjà confirmées par le serveur restent enregistrées. Si vous étiez en train de saisir une commande ou une modification, vérifiez son statut avant de la recommencer.</p>
-    <div class="actions"><button id="ichef-retry" type="button">Réessayer</button></div>
-    <footer>iCHEF OS · Votre activité, notre priorité.</footer>
-  </main>
-  <script>
-    document.getElementById('ichef-retry').addEventListener('click', function () {
-      window.location.reload();
-    });
-  </script>
-</body>
-</html>
+  }
+  window.addEventListener('offline', function () {
+    offlineHint = true;
+    show('Votre appareil est hors connexion. Les opérations non confirmées ne sont pas enregistrées sur le serveur.');
+  });
+  window.addEventListener('online', function () { void check(false); });
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') void check(false);
+  });
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function () { void check(false); }, { once: true });
+  } else {
+    void check(false);
+  }
+})();
 
 
 
@@ -95,91 +140,136 @@
 
 
 
-<!doctype html>
-<html lang="fr">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="robots" content="noindex,nofollow">
-  <meta name="theme-color" content="#101820">
-  <title>Service momentanément indisponible | iCHEF OS</title>
-  <style>
-    :root { color-scheme: light; font-family: system-ui,-apple-system,"Segoe UI",Arial,sans-serif; }
-    * { box-sizing: border-box; }
-    html { min-height: 100%; }
-    body {
-      min-height: 100vh;
-      min-height: 100dvh;
-      margin: 0;
-      padding: 32px 18px;
-      display: grid;
-      place-items: center;
-      background-color: #111c25;
-      /* Image déjà présente à la racine du dépôt tableau-system */
-      background-image:
-        linear-gradient(125deg, rgba(6,16,25,.78),rgba(10,21,30,.52)),
-        url("/ChatGPT%20Image%2020%20sept.%202026%2C%2014_24_41.png");
-      background-position: center;
-      background-size: cover;
-      background-repeat: no-repeat;
-      background-attachment: fixed;
-      color: #18232b;
+
+
+
+/* iCHEF OS V333 — continuité visuelle, sans modifier les connexions ni les écritures.
+ * Le contrôle de santé ne constitue PAS une preuve de sauvegarde.
+ * À charger après les scripts métier dans RH / Planning / Staff.
+ */
+(function () {
+  'use strict';
+  if (window.__ichefContinuityV333) return;
+  window.__ichefContinuityV333 = true;
+  const cfg = window.ICHEF_CONTINUITY_V333 || {};
+  const renderOrigin = 'https://tableau-system.onrender.com';
+  const knownOrigins = ['os.ichef.ch', 'ichef.ch', 'www.ichef.ch', 'tableau-system.onrender.com'];
+  const host = location.hostname.toLowerCase();
+  const defaultEndpoint = (host === 'localhost' || host === '127.0.0.1')
+    ? 'http://localhost:10000/health'
+    : knownOrigins.includes(host) ? location.origin + '/health' : renderOrigin + '/health';
+  let endpoint = defaultEndpoint;
+  // URL configurée par l'exploitant : HTTPS (ou HTTP uniquement sur localhost).
+  if (typeof cfg.healthUrl === 'string') {
+    try {
+      const url = new URL(cfg.healthUrl, location.href);
+      const allowed = url.protocol === 'https:' ||
+        (url.protocol === 'http:' && ['localhost','127.0.0.1'].includes(url.hostname));
+      if (allowed && url.pathname === '/health') endpoint = url.toString();
+    } catch (_) { /* configuration incorrecte : repli */ }
+  }
+  const pollMs = Math.max(10000, Math.min(120000, Number(cfg.intervalMs) || 25000));
+  const timeoutMs = 6500;
+  let failures = 0;
+  let checking = false;
+  let timer = null;
+  let banner = null;
+  let textNode = null;
+  let retryButton = null;
+  let offlineHint = false;
+
+  function createBanner() {
+    if (banner || !document.body) return;
+    const style = document.createElement('style');
+    style.id = 'ichef-v333-style';
+    style.textContent = `
+#ichef-v333-alert{position:fixed;z-index:2147483000;left:16px;right:16px;bottom:16px;max-width:720px;margin:auto;box-sizing:border-box;display:none;align-items:center;gap:14px;padding:17px 19px;border:1px solid #d7dfe5;border-radius:14px;background:#fff;color:#172d3d;box-shadow:0 12px 44px rgba(0,0,0,.22);font-family:system-ui,-apple-system,Segoe UI,Arial,sans-serif}
+#ichef-v333-alert[data-show="true"]{display:flex}
+#ichef-v333-alert .ichef-v333-copy{flex:1;min-width:0;font-size:13px;line-height:1.5}
+#ichef-v333-alert strong{display:block;font-size:15px;margin-bottom:3px}
+#ichef-v333-alert button{font:inherit;font-size:13px;font-weight:700;border:0;border-radius:9px;background:#172d3d;color:#fff;padding:11px 15px;cursor:pointer;min-height:42px}
+#ichef-v333-alert button:disabled{opacity:.6;cursor:wait}
+@media(max-width:480px){#ichef-v333-alert{flex-wrap:wrap;left:10px;right:10px;bottom:10px}#ichef-v333-alert button{width:100%}}
+@media print{#ichef-v333-alert{display:none!important}}
+`;
+    document.head.appendChild(style);
+    banner = document.createElement('aside');
+    banner.id = 'ichef-v333-alert';
+    banner.setAttribute('role', 'status');
+    banner.setAttribute('aria-live', 'polite');
+    const copy = document.createElement('div');
+    copy.className = 'ichef-v333-copy';
+    const title = document.createElement('strong');
+    title.textContent = 'iCHEF OS · Connexion momentanément indisponible';
+    textNode = document.createElement('span');
+    textNode.textContent = 'Le service rencontre une difficulté technique. Les opérations non confirmées peuvent ne pas avoir été enregistrées.';
+    retryButton = document.createElement('button');
+    retryButton.type = 'button';
+    retryButton.textContent = 'Réessayer';
+    retryButton.addEventListener('click', function () { void check(true); });
+    copy.appendChild(title);
+    copy.appendChild(textNode);
+    banner.append(copy, retryButton);
+    document.body.appendChild(banner);
+  }
+  function show(message) {
+    createBanner();
+    if (!banner) return;
+    textNode.textContent = message;
+    banner.dataset.show = 'true';
+    document.dispatchEvent(new CustomEvent('ichef:continuity', { detail: { online: false } }));
+  }
+  function hide() {
+    if (banner) banner.dataset.show = 'false';
+    document.dispatchEvent(new CustomEvent('ichef:continuity', { detail: { online: true } }));
+  }
+  function schedule() {
+    clearTimeout(timer);
+    timer = setTimeout(function () { void check(false); }, pollMs);
+  }
+  async function check(manual) {
+    if (checking) return;
+    if (document.visibilityState === 'hidden' && !manual) { schedule(); return; }
+    checking = true;
+    if (retryButton) retryButton.disabled = true;
+    const ctrl = new AbortController();
+    const timeout = setTimeout(function () { ctrl.abort(); }, timeoutMs);
+    try {
+      const response = await fetch(endpoint, { method: 'GET', cache: 'no-store', credentials: 'omit', signal: ctrl.signal });
+      // On attend une réponse HTTP valide, pas le statut métier des utilisateurs.
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      failures = 0;
+      offlineHint = false;
+      hide();
+    } catch (_) {
+      failures += 1;
+      // Évite d'afficher un faux incident sur une brève interruption réseau.
+      if (manual || offlineHint || failures >= 2) {
+        show(navigator.onLine === false
+          ? 'Votre appareil semble hors connexion. Les modifications non confirmées ne sont pas sauvegardées. Vérifiez votre réseau, puis réessayez.'
+          : 'Nous rencontrons une difficulté technique temporaire. Les modifications non confirmées ne doivent pas être considérées comme enregistrées. Réessayez dans quelques instants.');
+      }
+    } finally {
+      clearTimeout(timeout);
+      checking = false;
+      if (retryButton) retryButton.disabled = false;
+      schedule();
     }
-    main {
-      width: min(100%, 580px);
-      background: rgba(255,255,255,.96);
-      border: 1px solid rgba(255,255,255,.75);
-      border-radius: 22px;
-      padding: clamp(27px,5.5vw,54px);
-      box-shadow: 0 24px 90px rgba(2,9,16,.32);
-      text-align: center;
-    }
-    .brand-logo {
-      display: block;
-      width: min(215px, 65%);
-      max-height: 118px;
-      object-fit: contain;
-      margin: 0 auto 26px;
-    }
-    .brand-fallback { font-size: 33px; font-weight: 900; letter-spacing: -1.5px; margin: 0 auto 25px; }
-    .brand-fallback small { font-size: 13px; font-weight: 650; vertical-align: middle; letter-spacing: 2px; }
-    .indicator { width: 10px; height: 10px; border-radius: 50%; background: #d99042; display: inline-block; margin-right: 8px; }
-    .eyebrow { color: #647482; letter-spacing: .14em; font-size: 11px; font-weight: 800; text-transform: uppercase; }
-    h1 { margin: 14px 0 17px; font-size: clamp(24px,4vw,33px); line-height: 1.2; letter-spacing: -.035em; }
-    p { margin: 0 0 14px; color: #4a5965; font-size: 15px; line-height: 1.65; }
-    .note { margin-top: 19px; font-size: 13px; color: #63737f; }
-    .actions { margin-top: 30px; }
-    button { appearance: none; border: 0; border-radius: 11px; cursor: pointer; padding: 14px 32px; background: #101820; color: #fff; font-weight: 750; font-size: 15px; min-height: 48px; }
-    button:hover { background: #283946; }
-    button:focus-visible { outline: 3px solid #ec9a54; outline-offset: 4px; }
-    footer { color: #788692; font-size: 12px; margin-top: 32px; }
-    @media (max-width: 480px) {
-      body { padding: 18px 12px; background-attachment: scroll; }
-      main { padding: 29px 23px; }
-      .actions button { width: 100%; }
-    }
-    @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto; } }
-  </style>
-</head>
-<body>
-  <main role="main">
-    <!-- Le chemin pointe vers logo-ichef.png à la racine du dépôt. -->
-    <img class="brand-logo" src="/logo-ichef.png" alt="iCHEF OS" onerror="this.hidden=true;document.getElementById('brand-fallback').hidden=false;">
-    <div id="brand-fallback" class="brand-fallback" hidden>iCHEF <small>OS</small></div>
-    <div class="eyebrow"><span class="indicator" aria-hidden="true"></span>Information de service</div>
-    <h1>Votre espace est momentanément indisponible</h1>
-    <p>Nous rencontrons actuellement une difficulté technique temporaire. Nous vous invitons à réessayer dans quelques instants.</p>
-    <p class="note">Les opérations déjà confirmées par le serveur restent enregistrées. Si vous étiez en train de saisir une commande ou une modification, vérifiez son statut avant de la recommencer.</p>
-    <div class="actions"><button id="ichef-retry" type="button">Réessayer</button></div>
-    <footer>iCHEF OS · Votre activité, notre priorité.</footer>
-  </main>
-  <script>
-    document.getElementById('ichef-retry').addEventListener('click', function () {
-      window.location.reload();
-    });
-  </script>
-</body>
-</html>
+  }
+  window.addEventListener('offline', function () {
+    offlineHint = true;
+    show('Votre appareil est hors connexion. Les opérations non confirmées ne sont pas enregistrées sur le serveur.');
+  });
+  window.addEventListener('online', function () { void check(false); });
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') void check(false);
+  });
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function () { void check(false); }, { once: true });
+  } else {
+    void check(false);
+  }
+})();
 
 
 
