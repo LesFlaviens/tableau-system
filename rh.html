@@ -1,6 +1,8 @@
 
 
 
+
+
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -4137,8 +4139,11 @@ NOTE : le moteur fournit une assistance de conformité à partir du profil confi
       const matches=rows.filter(s=>String(s.id)===id);
       if(!id||matches.length!==1){setStatus('Identifiant RH introuvable ou en doublon : action bloquée.',true);return;}
       if(action==='edit'){
-        if(typeof openStaffModal==='function')openStaffModal(matches[0].id);
-        else setStatus('Fiche RH indisponible : réessayez après synchronisation.',true);
+        // V319 : même ouverture de fiche pour le nom et le bouton FICHE / MODIFIER.
+        // Réutiliser uniquement les fonctions RH existantes et leurs autorisations.
+        if(!window.ichefV319OpenStaffFiche?.(matches[0].id)){
+          setStatus('La fiche RH ne peut pas s’ouvrir. Vérifiez la connexion RH et la console.',true);
+        }
       }else{
         // V293 : le bouton PLANNING ouvre le module Planning RH Premium,
         // pas une fiche ou un aperçu dans la page RH.
@@ -4202,7 +4207,12 @@ NOTE : le moteur fournit une assistance de conformité à partir du profil confi
         const identity=node('div','v287-identity');
         const initials=String(s.name||'?').trim().split(/\s+/).slice(0,2).map(w=>w[0]||'').join('').toLocaleUpperCase('fr')||'?';
         const avatar=node('span','v287-avatar',initials);avatar.setAttribute('aria-hidden','true');
-        const namebox=node('div','v287-identity-text');namebox.append(node('strong','',s.name||'Collaborateur'));
+        const namebox=node('div','v287-identity-text');
+        const profileButton=node('button','v319-name-open',s.name||'Collaborateur');
+        profileButton.type='button';profileButton.dataset.v287Action='edit';
+        profileButton.dataset.v287Id=String(s.id);profileButton.disabled=duplicate;
+        profileButton.setAttribute('aria-label','Ouvrir la fiche RH de '+String(s.name||'Collaborateur'));
+        namebox.append(profileButton);
         namebox.append(node('small','',duplicate?'Identifiant RH en doublon — édition sécurisée bloquée':(s.contract?String(s.contract)+' h / semaine':'Contrat à compléter')));
         identity.append(avatar,namebox);
         row.append(identity,node('div','v287-role',s.role||'Poste non renseigné'));
@@ -4820,43 +4830,75 @@ body:not(.rh-v313-section-open) #rh-v313-menu-toggle{display:none!important}
   'use strict';
   if(window.ichefOpenTeamDirectoryV317) return;
   window.ichefOpenTeamDirectoryV317=function(event){
-    if(event && typeof event.preventDefault==='function')event.preventDefault();
-    // V236/V239 : la sélection d'un collaborateur peut rester en mémoire même
-    // après openInterface('hr') et masquer le répertoire entier.
-    window.__ICHEF_V239_SELECTED_STAFF_ID__='';
-    const hr=document.getElementById('hr-interface');
-    if(hr)hr.classList.remove('rh-v236-individual-mode');
-    try{
-      if(typeof window.openInterface!=='function'){
-        console.warn('[iCHEF RH V317] Navigation RH indisponible');
-        return false;
-      }
+    if(event?.preventDefault)event.preventDefault();
+    try {
+      if(typeof window.openInterface!=='function')throw new Error('Navigation RH non chargée (rh-core.js).');
+      // Ne pas désactiver l'authentification : openInterface fait la navigation normale.
+      window.__ICHEF_V239_SELECTED_STAFF_ID__='';
       window.openInterface('hr');
-    }catch(error){
-      console.error('[iCHEF RH V317] Impossible d’ouvrir Équipe',error);
-      return false;
+      const show=()=>{
+        const hr=document.getElementById('hr-interface');
+        if(!hr || getComputedStyle(hr).display==='none')return;
+        hr.classList.remove('rh-v236-individual-mode');
+        const directory=document.getElementById('rh-v287-directory');
+        if(directory){
+          directory.hidden=false;
+          directory.style.removeProperty('display');
+          const status=directory.querySelector('[data-v287-status]');
+          if(status&&status.textContent.includes('Chargement'))status.textContent='Répertoire RH prêt';
+          directory.scrollIntoView({block:'start',behavior:'auto'});
+        }
+      };
+      requestAnimationFrame(show);setTimeout(show,150);setTimeout(show,500);
+    }catch(err){
+      console.error('[iCHEF RH V319] Équipe : navigation indisponible',err);
+      const message=document.getElementById('rh-v319-nav-error');
+      if(message){message.textContent='Impossible d’ouvrir Équipe : '+err.message;message.hidden=false;}
     }
-    // Une mise à jour asynchrone de V236/V239 peut réinstaller le mode
-    // individuel : il faut garder l'annuaire en mode équipe.
-    const showDirectory=function(){
-      if(window.__ICHEF_V239_SELECTED_STAFF_ID__)return;
-      const section=document.getElementById('hr-interface');
-      if(!section||getComputedStyle(section).display==='none')return;
-      section.classList.remove('rh-v236-individual-mode');
-      const directory=document.getElementById('rh-v287-directory') ||
-                      document.getElementById('staff-list-render');
-      if(directory){
-        try{directory.scrollIntoView({behavior:'auto',block:'start'});}catch(_){}
-      }
-    };
-    requestAnimationFrame(showDirectory);
-    setTimeout(showDirectory,120);
-    setTimeout(showDirectory,400);
     return false;
   };
 })();
 </script>
 
+
+<!-- iCHEF RH V319 — correction ciblée navigation Équipe / ouverture des fiches -->
+<style id="ichef-rh-v319-fiches-style">
+#rh-v287-directory .v319-name-open{appearance:none;border:0;background:transparent;color:#172b3a;
+  font:inherit;font-size:13px;font-weight:900;text-align:left;padding:6px 3px;cursor:pointer;
+  text-decoration:underline;text-decoration-color:transparent;text-underline-offset:3px;}
+#rh-v287-directory .v319-name-open:hover,#rh-v287-directory .v319-name-open:focus-visible{
+  text-decoration-color:currentColor;color:#17628e;}
+#rh-v287-directory .v319-name-open:focus-visible{outline:2px solid #17628e;outline-offset:2px;}
+#rh-v287-directory .v319-name-open:disabled{opacity:.5;cursor:not-allowed;}
+</style>
+<div id="rh-v319-nav-error" role="alert" hidden style="position:fixed;bottom:12px;right:12px;z-index:10000;background:white;border:2px solid #ad3838;padding:12px;border-radius:8px;max-width:350px"></div>
+<script id="ichef-rh-v319-ouverture-fiche">
+(function(){'use strict';
+  if(window.ichefV319OpenStaffFiche)return;
+  window.ichefV319OpenStaffFiche=function(staffId){
+    const id=String(staffId??'').trim();
+    if(!id){console.warn('[iCHEF RH V319] Identifiant collaborateur manquant');return false;}
+    // Ne pas utiliser un nom seul et ne jamais modifier les droits ou la session.
+    try {
+      // L'éditeur d'origine donne accès au contrat et aux renseignements personnels.
+      if(typeof window.openStaffModal==='function'){
+        window.openStaffModal(id);
+        return true;
+      }
+      // Une autre version de RH utilise la sélection individuelle protégée.
+      if(typeof window.openInterface==='function'&&typeof window.selectStaff==='function'){
+        window.openInterface('hr');
+        window.selectStaff(id);
+        window.__ICHEF_V239_SELECTED_STAFF_ID__=id;
+        window.ICHEF_RH_V236?.updateIndividual?.();
+        return true;
+      }
+      console.error('[iCHEF RH V319] Editeur de fiche absent. Vérifier le chargement de rh-core.js / rh-modules.js.');
+      return false;
+    }catch(error){console.error('[iCHEF RH V319] Ouverture fiche impossible',error);return false;}
+  };
+})();
+</script>
 </body>
 </html>
 
