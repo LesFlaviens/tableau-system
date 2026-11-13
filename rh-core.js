@@ -7,6 +7,17 @@
 
 
 
+// V320 — Compatibilité navigation Équipe : bouton Vue globale absent dans le nouveau shell.
+// Correction ciblée : ne jamais faire innerHTML sur un élément manquant. Connexions, sessions et API inchangées.
+
+
+
+
+
+
+
+
+
 
 /* iCHEF RH V285 - garde d'identité par ID collaborateur; fonctions de sécurité inchangées. */
 
@@ -14797,17 +14808,17 @@ const urlParamsJS = new URLSearchParams(window.location.search);
             const head = document.getElementById('individual-header-controls');
             const stats = document.getElementById('dashboard-stats-panel');
             if(isGlobalView) {
-                btn.innerHTML = 'VUE INDIVIDUELLE';
+                if (btn) btn.innerHTML = 'VUE INDIVIDUELLE';
                 empty.style.display = 'none'; indCont.style.display = 'none'; annCont.style.display = 'none';
                 head.style.display = 'none'; stats.style.display = 'none'; globCont.style.display = 'block';
             } else if (currentStaffId) {
-                btn.innerHTML = 'VUE GLOBALE';
+                if (btn) btn.innerHTML = 'VUE GLOBALE';
                 empty.style.display = 'none'; globCont.style.display = 'none';
                 annCont.style.display = isAnnualView ? 'block' : 'none';
                 indCont.style.display = isAnnualView ? 'none' : 'block';
                 head.style.display = 'flex'; stats.style.display = 'grid';
             } else {
-                btn.innerHTML = 'VUE GLOBALE';
+                if (btn) btn.innerHTML = 'VUE GLOBALE';
                 empty.style.display = 'flex'; indCont.style.display = 'none'; annCont.style.display = 'none';
                 globCont.style.display = 'none'; head.style.display = 'none'; stats.style.display = 'none';
             }
@@ -17647,3 +17658,7 @@ window.__ICHEF_RH_CORE_BUILD__='RH-CORE-V252-13E-ANNUEL-MENSUEL';
   if (document.body) render();
   else document.addEventListener('DOMContentLoaded', render, { once:true });
 })();
+
+
+
+
