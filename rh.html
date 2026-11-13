@@ -1,7 +1,6 @@
 
 
 
-
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -359,7 +358,7 @@ html{background:#080a0d}body{margin:0;background:#080a0d;color:#f2f3f4;font:500 
 <span class="rh-v224-nav-label">PILOTER</span>
 <button class="active" type="button" onclick="renderRhCockpit();"><span class="rh-nav-ico">◈</span><span>Tableau de bord</span></button>
 <button type="button" onclick="return iChefOpenPlanningRH()"><span class="rh-nav-ico">▦</span><span>Planning</span></button>
-<button type="button" onclick="openInterface('hr'); setTimeout(()=>{const equipe=document.getElementById('rh-v287-directory')||document.getElementById('staff-list-render');equipe?.scrollIntoView({behavior:'smooth',block:'start'});},200);"><span class="rh-nav-ico">◎</span><span>Équipe</span></button>
+<button type="button" onclick="return ichefOpenTeamDirectoryV317(event)"><span class="rh-nav-ico">◎</span><span>Équipe</span></button>
 <button type="button" id="rh-staff-invites-nav-v280" onclick="openRhStaffInvitesV280()"><span class="rh-nav-ico">✉</span><span>Invitations Staff</span></button>
 <span class="rh-v224-nav-label">TEMPS</span>
 <button type="button" onclick="openInterface('timesheets')"><span class="rh-nav-ico">◷</span><span>Heures & pointages</span></button>
@@ -3310,6 +3309,57 @@ NOTE : le moteur fournit une assistance de conformité à partir du profil confi
       return false;
     }
   }
+  // V318 : navigation depuis le nom du collaborateur dans Planning Premium.
+  // Résolution via l'annuaire RH existant + contrôle de la session active.
+  const V318_KEY='ichef_rh_open_profile_v318';
+  const v318Read=()=>{try{
+    const raw=sessionStorage.getItem(V318_KEY);if(!raw)return null;
+    const data=JSON.parse(raw);
+    if(!data || data.type!=='ICHEF_RH_OPEN_STAFF_PROFILE_V318' ||
+       data.tenantID!==tenant() || !valid.test(tenant()) ||
+       !Number.isFinite(Number(data.at)) || Date.now()-Number(data.at)>60000 ||
+       Date.now()<Number(data.at)-5000 ||
+       typeof data.staffId!=='string' || data.staffId.length>160 ||
+       typeof data.staffName!=='string' || data.staffName.length>180){
+      sessionStorage.removeItem(V318_KEY);return null;
+    }
+    return data;
+  }catch(_){try{sessionStorage.removeItem(V318_KEY);}catch(_){}return null;}};
+  function v318Open(data){
+    if(!data || !auth())return false;
+    const result=openStaffProfile(data.staffId,data.staffName);
+    return result===true;
+  }
+  function v318ConsumeIncoming(){
+    const data=v318Read();if(!data)return;
+    let attempts=0;
+    const probe=()=>{
+      if(v318Read()===null)return;
+      // Les données RH peuvent arriver après DOMContentLoaded; pas de faux clic.
+      let dir=[];try{dir=typeof getDir==='function'?getDir():[];}catch(_){}
+      if(auth() && Array.isArray(dir) && dir.length){
+        try{sessionStorage.removeItem(V318_KEY);}catch(_){}
+        v318Open(data);return;
+      }
+      if(++attempts<16)setTimeout(probe,350);
+      else {try{sessionStorage.removeItem(V318_KEY);}catch(_){}console.warn('[iCHEF RH V318] Fiche non ouverte : session ou annuaire indisponible.');}
+    };
+    probe();
+  }
+  window.addEventListener('message',event=>{
+    if(event.origin!==location.origin || !event.data ||
+       event.data.type!=='ICHEF_RH_OPEN_STAFF_PROFILE_V318')return;
+    const iframe=document.querySelector('#ichef-v267-overlay iframe.v267-frame');
+    if(!iframe || event.source!==iframe.contentWindow ||
+       event.data.tenantID!==tenant() || !auth())return;
+    if(typeof event.data.staffId!=='string'||event.data.staffId.length>160||
+       typeof event.data.staffName!=='string'||event.data.staffName.length>180)return;
+    // Ferme seulement l'éditeur du planning, sans déconnexion.
+    try{window.iChefRhPlanningBridgeV267?.close?.();}catch(_){}
+    v318Open(event.data);
+  });
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',v318ConsumeIncoming,{once:true});
+  else v318ConsumeIncoming();
   function label(v){const s=String(v?.status||'');if(!s)return {kind:'empty',name:'+',hours:''};
     if(['present','off_matin','off_soir'].includes(s)){
       const x=[v.s1,v.s2].filter(Boolean).map(z=>String(z).replace(/-(?=\d{2}:\d{2}$)/,'–'));
@@ -4761,6 +4811,51 @@ body:not(.rh-v313-section-open) #rh-v313-menu-toggle{display:none!important}
   #rh-v313-navdock{display:none!important;}
 }
 </style>
+
+
+<!-- iCHEF RH V317 — navigation Équipe : reset du collaborateur sélectionné AVANT ouverture.
+     Aucun changement d'API, authentification, session, droits ou données RH. -->
+<script id="ichef-rh-v317-equipe-navigation">
+(function(){
+  'use strict';
+  if(window.ichefOpenTeamDirectoryV317) return;
+  window.ichefOpenTeamDirectoryV317=function(event){
+    if(event && typeof event.preventDefault==='function')event.preventDefault();
+    // V236/V239 : la sélection d'un collaborateur peut rester en mémoire même
+    // après openInterface('hr') et masquer le répertoire entier.
+    window.__ICHEF_V239_SELECTED_STAFF_ID__='';
+    const hr=document.getElementById('hr-interface');
+    if(hr)hr.classList.remove('rh-v236-individual-mode');
+    try{
+      if(typeof window.openInterface!=='function'){
+        console.warn('[iCHEF RH V317] Navigation RH indisponible');
+        return false;
+      }
+      window.openInterface('hr');
+    }catch(error){
+      console.error('[iCHEF RH V317] Impossible d’ouvrir Équipe',error);
+      return false;
+    }
+    // Une mise à jour asynchrone de V236/V239 peut réinstaller le mode
+    // individuel : il faut garder l'annuaire en mode équipe.
+    const showDirectory=function(){
+      if(window.__ICHEF_V239_SELECTED_STAFF_ID__)return;
+      const section=document.getElementById('hr-interface');
+      if(!section||getComputedStyle(section).display==='none')return;
+      section.classList.remove('rh-v236-individual-mode');
+      const directory=document.getElementById('rh-v287-directory') ||
+                      document.getElementById('staff-list-render');
+      if(directory){
+        try{directory.scrollIntoView({behavior:'auto',block:'start'});}catch(_){}
+      }
+    };
+    requestAnimationFrame(showDirectory);
+    setTimeout(showDirectory,120);
+    setTimeout(showDirectory,400);
+    return false;
+  };
+})();
+</script>
 
 </body>
 </html>
