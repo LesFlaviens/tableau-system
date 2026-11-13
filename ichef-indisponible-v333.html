@@ -5,6 +5,8 @@
 
 
 
+
+
 <!doctype html>
 <html lang="fr">
 <head>
@@ -12,7 +14,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex,nofollow">
   <meta name="theme-color" content="#101820">
-  <title>Service momentanément indisponible | iCHEF OS</title>
+  <title>Service momentanément indisponible | iCHEF OS V337</title>
   <style>
     :root { color-scheme: light; font-family: system-ui,-apple-system,"Segoe UI",Arial,sans-serif; }
     * { box-sizing: border-box; }
@@ -81,7 +83,7 @@
 </head>
 <body>
   <main role="main">
-    <!-- V336 : fond transparent ; réessai avec véritable contrôle de disponibilité. -->
+    <!-- V337 : fond transparent ; réessai vers dernier espace iCHEF. -->
     <!-- Le chemin pointe vers logo-ichef.png à la racine du dépôt. -->
     <img class="brand-logo" src="/logo-ichef.png" alt="iCHEF OS" onerror="this.hidden=true;document.getElementById('brand-fallback').hidden=false;">
     <div id="brand-fallback" class="brand-fallback" hidden>iCHEF <small>OS</small></div>
@@ -91,47 +93,60 @@
     <p class="note">Les opérations déjà confirmées par le serveur restent enregistrées. Si vous étiez en train de saisir une commande ou une modification, vérifiez son statut avant de la recommencer.</p>
     <div class="actions">
       <button id="ichef-retry" type="button">Réessayer</button>
-      <p id="ichef-retry-status" class="retry-status" role="status" aria-live="polite">Cliquez sur « Réessayer » pour vérifier le service.</p>
+      <p id="ichef-retry-status" class="retry-status" role="status" aria-live="polite">« Réessayer » vous ramène à votre dernier espace iCHEF quand le service est rétabli.</p>
       <a class="return-link" id="ichef-return" href="/connexion.html">Retour à iCHEF OS</a>
     </div>
     <footer>iCHEF OS · Votre activité, notre priorité.</footer>
   </main>
   <script>
-    // V336 : vérifier le serveur, puis revenir à une page iCHEF autorisée.
-    // Aucune connexion, session, action métier ou écriture n'est modifiée ici.
+    // V337 : "Réessayer" rouvre le dernier module iCHEF utilisé dans cet onglet.
+    // N'enregistre aucun PIN / token, n'authentifie personne et ne contourne aucun droit.
     (function () {
       'use strict';
       const retry = document.getElementById('ichef-retry');
       const status = document.getElementById('ichef-retry-status');
       const returnLink = document.getElementById('ichef-return');
       const pageUrl = new URL(window.location.href);
-      const allowedPaths = new Set([
-        '/', '/connexion.html', '/ichef.html', '/rh.html', '/planning-rh/',
-        '/planning-rh/index.html', '/portail-staff.html', '/caissetactile.html',
-        '/pointeuse.html', '/chef.html', '/haccp.html'
+      const LAST_PAGE_KEY = 'ichef:last-module-page:v337';
+      const allowedRoots = new Set([
+        '/connexion.html', '/ichef.html', '/rh.html', '/portail-staff.html',
+        '/caissetactile.html', '/pointeuse.html', '/chef.html', '/haccp.html',
+        '/administration.html', '/admin.html', '/cockpit.html', '/reglages.html',
+        '/economat.html', '/hotelreservation.html', '/bar.html', '/production.html',
+        '/reservation.html', '/anti-rush.html', '/livraisons-staff.html',
+        '/commande-fournisseurs.html', '/commandes-fournisseurs.html',
+        '/planning-rh/', '/planning-rh/index.html', '/planning-rh.html'
       ]);
 
       function safeDestination(value) {
         try {
-          if (!value || /^\s*\/\//.test(value)) return null;
-          const url = new URL(value, pageUrl.origin);
-          if (url.origin !== pageUrl.origin || !allowedPaths.has(url.pathname)) return null;
-          url.hash = '';
-          return url;
+          if (!value || /^\s*\/\//.test(String(value))) return null;
+          const url = new URL(String(value), pageUrl.origin);
+          if (url.origin !== pageUrl.origin || !allowedRoots.has(url.pathname)) return null;
+          // On ne conserve QUE le contexte établissement, jamais un secret dans l'URL.
+          const tenant = url.searchParams.get('tenantID');
+          const cleaned = new URL(url.pathname, pageUrl.origin);
+          if (tenant && /^[a-z0-9_-]{1,100}$/i.test(tenant)) cleaned.searchParams.set('tenantID', tenant);
+          return cleaned;
         } catch (_) { return null; }
       }
 
-      // Exemple pour revenir au module RH :
-      // /ichef-indisponible-v333.html?retour=%2Frh.html%3FtenantID%3Dmon-etablissement
-      let destination = safeDestination(pageUrl.searchParams.get('retour'));
-      if (!destination) destination = safeDestination(document.referrer);
-      if (!destination) destination = safeDestination('/connexion.html');
-      // Conserver le tenant seulement s'il est transmis dans l'URL de la page.
+      let lastPage = null;
+      try { lastPage = window.sessionStorage.getItem(LAST_PAGE_KEY); } catch (_) {}
+      // L'URL "retour" explicite prime (si l'application y a placé le module).
+      // Sinon : dernier module de l'onglet, puis referrer, enfin page de connexion.
+      let destination = safeDestination(pageUrl.searchParams.get('retour')) ||
+        safeDestination(lastPage) ||
+        safeDestination(document.referrer) ||
+        safeDestination('/connexion.html');
       const tenantID = pageUrl.searchParams.get('tenantID');
-      if (tenantID && !destination.searchParams.has('tenantID') && /^[a-zA-Z0-9_-]{1,100}$/.test(tenantID)) {
+      if (tenantID && !destination.searchParams.has('tenantID') &&
+          /^[a-z0-9_-]{1,100}$/i.test(tenantID)) {
         destination.searchParams.set('tenantID', tenantID);
       }
-      returnLink.href = destination.pathname + destination.search;
+      const target = destination.pathname + destination.search;
+      returnLink.href = target;
+      returnLink.textContent = 'Retour à mon dernier espace iCHEF';
 
       let checking = false;
       function setStatus(message, state) {
@@ -143,34 +158,30 @@
         checking = true;
         retry.disabled = true;
         retry.textContent = 'Vérification…';
-        setStatus('Vérification de la disponibilité du service en cours…', 'checking');
+        setStatus('Vérification de la disponibilité du service…', 'checking');
         const controller = new AbortController();
         const timeout = window.setTimeout(function () { controller.abort(); }, 8000);
         try {
-          // Même origine : aucun PIN, jeton ni donnée privée n'est envoyé.
           const url = new URL('/health', pageUrl.origin);
           url.searchParams.set('_', String(Date.now()));
           const response = await fetch(url.href, {
-            method: 'GET',
-            credentials: 'omit',
-            cache: 'no-store',
-            redirect: 'error',
-            signal: controller.signal,
+            method: 'GET', credentials: 'omit', cache: 'no-store',
+            redirect: 'error', signal: controller.signal,
             headers: { 'Accept': 'application/json' }
           });
           if (!response.ok) throw new Error('HTTP ' + response.status);
-          setStatus('Le service répond à nouveau. Retour vers iCHEF OS…', 'success');
-          // assign permet de revenir à la page d'origine, pas de recharger l'écran d'erreur.
-          window.location.assign(destination.pathname + destination.search);
+          setStatus('Service rétabli. Retour à votre dernier espace iCHEF…', 'success');
+          // Le navigateur et le serveur revérifient normalement la session et les droits.
+          window.location.assign(target);
         } catch (error) {
           if (navigator.onLine === false) {
             setStatus('Votre appareil est hors connexion. Vérifiez le réseau puis réessayez.', 'error');
           } else if (error && error.name === 'AbortError') {
-            setStatus('Le service ne répond pas dans les délais. Vous pouvez réessayer.', 'error');
+            setStatus('Le service ne répond pas. Vous pouvez réessayer.', 'error');
           } else if (error && /HTTP 404/.test(error.message || '')) {
-            setStatus('Vérification automatique indisponible. Vous pouvez utiliser « Retour à iCHEF OS ».', 'error');
+            setStatus('Contrôle de disponibilité non trouvé. Utilisez le lien de retour ci-dessous.', 'error');
           } else {
-            setStatus('Le service reste momentanément indisponible. Réessayez dans quelques instants.', 'error');
+            setStatus('Le service est encore indisponible. Votre dernier espace sera accessible dès son rétablissement.', 'error');
           }
         } finally {
           window.clearTimeout(timeout);
