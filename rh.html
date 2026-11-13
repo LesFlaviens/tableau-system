@@ -1,8 +1,6 @@
 
 
 
-
-
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -3124,6 +3122,18 @@ NOTE : le moteur fournit une assistance de conformité à partir du profil confi
    view.querySelector('[data-v267="next"]').addEventListener('click',()=>addMonths(1));
    view.querySelector('[data-v267="refresh"]').addEventListener('click',()=>{lastRefresh=0;void refresh(true);});
  }
+ // V324 : le tableau de bord pouvait attendre indéfiniment : il appelait
+ // ICHEF_RH_PREMIUM_MIRROR.refresh(), qui n'existait pas. On expose uniquement
+ // la demande de session officielle déjà sécurisée (aucune validation locale).
+ let ichefV324SessionPromise=null;
+ async function ichefV324EnsureSession(){
+   const existing=authSession();if(existing)return existing;
+   if(ichefV324SessionPromise)return ichefV324SessionPromise;
+   ichefV324SessionPromise=session();
+   try{return await ichefV324SessionPromise;}
+   finally{ichefV324SessionPromise=null;}
+ }
+ window.ICHEF_RH_PREMIUM_MIRROR=Object.freeze({refresh:ichefV324EnsureSession});
  window.iChefRhPlanningBridgeV267={openMirror:show,openEditor,close,refresh:()=>refresh(true)};
  // Intercepte uniquement les entrées Planning, avant les anciens listeners.
  document.addEventListener('click',event=>{
@@ -3406,9 +3416,23 @@ NOTE : le moteur fournit une assistance de conformité à partir du profil confi
     if(loading){if(force)rerun=true;return;}
     if(!force&&signature===lastSignature&&Date.now()-lastAt<25000)return;
     const t=tenant();if(!valid.test(t)){message('Connectez-vous à votre établissement pour afficher le planning.',true);return;}
+    host.querySelector('.v278-range').textContent=dateLabel(ds);
     let a=auth();
-    if(!a){try{await window.ICHEF_RH_PREMIUM_MIRROR?.refresh?.(true);}catch(_){}a=auth();}
-    if(!a){message('Session Planning Premium non encore disponible. Votre accès RH doit être autorisé par le serveur.');return;}
+    if(!a){
+      const status=host.querySelector('.v278-state');
+      if(status)status.textContent='Vérification sécurisée de votre accès Planning Premium…';
+      try{
+        const connector=window.ICHEF_RH_PREMIUM_MIRROR;
+        if(!connector||typeof connector.refresh!=='function')throw Error('Connecteur Planning Premium non chargé. Actualisez la page.');
+        await connector.refresh();
+      }catch(e){
+        const reason=String(e?.message||'Session RH indisponible');
+        message('Accès au planning : '+reason+' Cliquez sur ↻ pour réessayer.',true);
+        return;
+      }
+      a=auth();
+    }
+    if(!a){message('Session Planning Premium non délivrée. Reconnectez-vous en Direction/RH, puis cliquez sur ↻.',true);return;}
     const stamp=++requestSerial;loading=true;
     host.querySelector('.v278-range').textContent=dateLabel(ds);
     host.querySelector('.v278-state').textContent='Chargement des horaires officiels…';
