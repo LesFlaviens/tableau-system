@@ -7920,6 +7920,166 @@ html body #chef-mainmenu-carte-trigger.chef-mainmenu-trigger[aria-expanded="true
 })();
 </script>
 
+
+<!-- iCHEF Chef V308 : synchronisation de lecture multi-modules, sans nouvelle session ni socket. -->
+<script id="ichef-chef-sync-v308-script">
+(() => {
+  'use strict';
+  if (window.__ICHEF_CHEF_SYNC_V308__) return;
+  window.__ICHEF_CHEF_SYNC_V308__ = true;
+
+  // La session, le PIN, les rôles, les droits et la connexion Socket.IO
+  // continuent d'être gérés EXCLUSIVEMENT par le code Chef d'origine.
+  const tenant = String(typeof tenantID !== 'undefined' ? tenantID : '').trim();
+  if (!tenant) return;
+  const normalizedTenant = tenant.toLowerCase();
+  const existingSocket = window.ichefSocket;
+  const events = [
+    'server-state-changed', 'menuSynced', 'menu-updated',
+    'inventory-updated', 'recipes-updated', 'supplier-invoices-updated',
+    'haccp-updated', 'ichef-switch-updated',
+    'client-remote-orders-updated'
+  ];
+  let timer = null;
+  let inFlight = false;
+  let nextNeeded = false;
+  let lastAttempt = 0;
+  let lastHomeRefresh = 0;
+  let lastSuccessAt = 0;
+
+  function ready() {
+    return window.ICHEF_SECURITY?.ready === true;
+  }
+  function busyEditing() {
+    // Aucune mise à jour de l'interface pendant la saisie ou une sauvegarde.
+    if ((typeof isTyping !== 'undefined' && isTyping) ||
+        (typeof isSavingStock !== 'undefined' && isSavingStock) ||
+        (typeof isSyncingMenu !== 'undefined' && isSyncingMenu)) return true;
+    const focused = document.activeElement;
+    if (focused && (focused.isContentEditable ||
+        /^(INPUT|TEXTAREA|SELECT)$/.test(focused.tagName || ''))) return true;
+    return Array.from(document.querySelectorAll('.modal'))
+      .some(modal => modal.style.display === 'flex');
+  }
+  function status(label, background) {
+    const text = document.getElementById('sync-text');
+    const dot = document.getElementById('sync-dot');
+    if (text) text.textContent = label;
+    if (dot && background) dot.style.background = background;
+  }
+  function sameTenant(payload) {
+    if (!payload || typeof payload !== 'object' || !payload.tenantID) return true;
+    return String(payload.tenantID).trim().toLowerCase() === normalizedTenant;
+  }
+  async function refreshFromServer() {
+    // Une lecture authentifiée par les en-têtes existants ; aucun PIN en URL.
+    const url = `${SERVER_URL}/get-current-state?tenantID=${encodeURIComponent(tenant)}&_t=${Date.now()}`;
+    const response = await fetch(url, {
+      method: 'GET', cache: 'no-store', credentials: 'include',
+      headers: ichefAuthHeaders({Accept:'application/json'})
+    });
+    if (!response.ok) throw new Error('État serveur indisponible (' + response.status + ')');
+    const state = await response.json();
+    if (!state || state.success === false ||
+        String(state.tenantID || '').trim().toLowerCase() !== normalizedTenant ||
+        !state.activeOrders || typeof state.activeOrders !== 'object') {
+      throw new Error('État serveur non confirmé pour cet établissement');
+    }
+    return state;
+  }
+  function applyChefSources(state) {
+    const orders = state.activeOrders || {};
+    // Sources centrales déjà utilisées par l'interface Chef existante.
+    if (Array.isArray(orders.INVENTORY_MASTER?.data))
+      stockGlobalData = orders.INVENTORY_MASTER.data;
+    if (Array.isArray(orders.RECIPES_MASTER?.data))
+      recipesData = orders.RECIPES_MASTER.data;
+    if (Array.isArray(orders.STOCK_CATS?.data))
+      stockCategories = orders.STOCK_CATS.data;
+    if (orders.SETTINGS_MASTER?.data &&
+        typeof orders.SETTINGS_MASTER.data === 'object' &&
+        !Array.isArray(orders.SETTINGS_MASTER.data)) {
+      systemSettings = orders.SETTINGS_MASTER.data;
+      if (systemSettings.currency) currentCurrency = systemSettings.currency;
+    }
+    const menuNode = orders.MENU_MASTER || orders.MENU_CUISINE;
+    if (menuNode?.data && typeof menuNode.data === 'object' &&
+        !Array.isArray(menuNode.data)) {
+      menuData = JSON.parse(JSON.stringify(menuNode.data));
+      for (const category of Object.keys(menuData)) {
+        if (!Array.isArray(menuData[category])) menuData[category] = [];
+      }
+    }
+    if (typeof renderAll === 'function') renderAll();
+  }
+  async function process() {
+    timer = null;
+    if (!ready()) return;
+    if (inFlight) { nextNeeded = true; return; }
+    if (busyEditing()) { schedule('édition en cours', 2500); return; }
+    const gap = Date.now() - lastAttempt;
+    if (gap < 4500) { schedule('anti-rafale', 4500-gap); return; }
+    lastAttempt = Date.now();
+    inFlight = true;
+    try {
+      const fresh = await refreshFromServer();
+      if (!ready()) return;
+      if (busyEditing()) { nextNeeded = true; return; }
+      applyChefSources(fresh);
+      lastSuccessAt = Date.now();
+      if (existingSocket?.connected) {
+        status('DONNÉES CHEF À JOUR', 'var(--success)');
+      } else {
+        status('DONNÉES ACTUALISÉES · DIRECT INTERROMPU', 'var(--gold)');
+      }
+      // Les indicateurs des tâches, achats et réceptions utilisent déjà
+      // les API /api/ops sécurisées ; ne pas lancer une rafale de requêtes.
+      if (Date.now() - lastHomeRefresh >= 15000 &&
+          typeof loadChefHomeIndicators === 'function') {
+        lastHomeRefresh = Date.now();
+        void loadChefHomeIndicators().catch(() => {});
+      }
+    } catch (error) {
+      status('SYNC CHEF À VÉRIFIER', 'var(--alert)');
+      console.warn('[iCHEF CHEF V308] Actualisation non confirmée :',
+        String(error?.message || 'Erreur lecture serveur'));
+    } finally {
+      inFlight = false;
+      if (nextNeeded) {
+        nextNeeded = false;
+        schedule('événement en attente', 1500);
+      }
+    }
+  }
+  function schedule(_reason, delay = 1000) {
+    if (!ready()) return;
+    if (timer !== null) return;
+    timer = setTimeout(process, Math.max(200, Number(delay) || 1000));
+  }
+  if (existingSocket && typeof existingSocket.on === 'function') {
+    existingSocket.on('connect', () => schedule('reconnexion Socket.IO', 1600));
+    existingSocket.on('tenant-joined', payload => {
+      if (sameTenant(payload)) schedule('établissement rejoint', 750);
+    });
+    for (const event of events) {
+      existingSocket.on(event, payload => {
+        if (sameTenant(payload)) schedule(event, 1100);
+      });
+    }
+  }
+  window.addEventListener('online', () => schedule('réseau rétabli', 2000));
+  window.addEventListener('focus', () => {
+    if (Date.now() - lastSuccessAt > 15000) schedule('retour fenêtre', 1800);
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && Date.now() - lastSuccessAt > 15000)
+      schedule('retour application', 1800);
+  });
+  // Option de diagnostic manuel, sans changement de droits ni d'état serveur.
+  window.ichefChefRefreshSharedV308 = () => schedule('actualisation manuelle', 250);
+})();
+</script>
+
 </body>
 </html>
 
