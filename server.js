@@ -1,11 +1,3 @@
-
-
-
-
-
-
-
-
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -24244,86 +24236,147 @@ function ichefStaffResetCanonicalId(profile={}){
 // fiche RH de DIRECTORY_MASTER, même avant synchronisation STAFF_ACCESS.
 // Ne jamais relier deux fiches par nom ou PIN : uniquement par identifiant RH.
 // Ne jamais chercher dans un autre établissement ni choisir entre homonymes.
+// Correctif ciblé V299 — PIN oublié : identifiant RH ou adresse de récupération.
+// Aucune modification du login, des sessions, des droits, du PIN ou des autres API.
+// L'identifiant est limité à UN établissement ; les homonymes sont refusés.
 async function ichefStaffResolveProfileForReset(tenantID,loginId){
     const safeTenant=cleanString(tenantID);
-    const wanted=String(loginId||'').trim();
+    const wanted=String(loginId||'').trim().slice(0,160);
     if(!safeTenant||!wanted)return null;
 
-    // Chemin existant inchangé pour les identifiants techniques.
+    // Priorité ABSOLUE aux identifiants techniques déjà reconnus par le serveur.
     const exact=await ichefStaffFindActiveSecurityProfile(safeTenant,wanted);
-    if(exact)return exact;
+    // Si STAFF_ACCESS a été explicitement désactivé, une ancienne fiche RH
+    // ne doit pas réactiver la récupération du compte par erreur.
+    const inactiveAccessMatch=(state,ids)=>{
+        const wantedIds=new Set([...ids].map(v=>String(v).trim().toLowerCase()));
+        if(!wantedIds.size)return false;
+        return ichefStaffPortalArray(state?.activeOrders?.STAFF_ACCESS).some(item=>
+            item?.active===false &&
+            ichefStaffResetIdentityValues(item).some(v=>
+                wantedIds.has(String(v).trim().toLowerCase())
+            )
+        );
+    };
+    if(exact){
+        const ids=[
+            ...ichefStaffResetIdentityValues(exact.member||{}),
+            ...ichefStaffResetIdentityValues(exact.directoryEntry||{})
+        ];
+        if(inactiveAccessMatch(exact.state,ids))return null;
+        return exact;
+    }
 
-    // La même règle de validité établissement que l'accès Staff.
+    const audit=(reason,extra={})=>console.info(
+        '[iCHEF STAFF PIN RESOLUTION V299]',JSON.stringify({
+            reason, ...extra
+        })
+    ); // Aucun nom, e-mail, PIN, identifiant ou jeton dans les logs.
+
     const tenant=await Tenant.findOne({tenantID:safeTenant},{
         tenantID:1,status:1,archivedAt:1,demoExpiration:1
     }).lean();
     if(!tenant||tenant.archivedAt||
        String(tenant.status||'').toUpperCase()==='SUSPENDU'||
-       (tenant.demoExpiration&&new Date()>new Date(tenant.demoExpiration)))return null;
-
+       (tenant.demoExpiration&&new Date()>new Date(tenant.demoExpiration))){
+        audit('ETABLISSEMENT_NON_ELIGIBLE');
+        return null;
+    }
     const state=await AppState.findOne({tenantID:safeTenant},{
         'activeOrders.STAFF_ACCESS.data':1,
         'activeOrders.DIRECTORY_MASTER.data':1
     }).lean();
-    if(!state)return null;
-    const members=ichefStaffPortalArray(state?.activeOrders?.STAFF_ACCESS)
-        .filter(item=>item&&item.active!==false);
+    if(!state){
+        audit('ETAT_STAFF_ABSENT');
+        return null;
+    }
+    const accessRecords=ichefStaffPortalArray(state?.activeOrders?.STAFF_ACCESS);
+    const members=accessRecords.filter(item=>item&&item.active!==false);
     const directory=ichefStaffPortalArray(state?.activeOrders?.DIRECTORY_MASTER)
         .filter(item=>item&&item.active!==false);
 
     const norm=value=>String(value??'').trim().toLowerCase()
         .normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ');
+    // Variante sans séparateurs : « flavien iche » / « flavieniche ».
+    // Un résultat unique est obligatoire : jamais de sélection arbitraire.
+    const compact=value=>norm(value).replace(/[\s._-]+/g,'');
     const wantedNormalized=norm(wanted);
-    const technical=item=>new Set(ichefStaffResetIdentityValues(item).map(norm).filter(Boolean));
-    const aliases=item=>[
-        ...technical(item),item?.name,item?.pseudo,item?.displayName,
-        item?.prenom,item?.firstName
+    const wantedCompact=compact(wanted);
+    const technical=item=>new Set(
+        ichefStaffResetIdentityValues(item).map(norm).filter(Boolean)
+    );
+    const human=item=>[
+        item?.name,item?.pseudo,item?.displayName,item?.prenom,item?.firstName
     ].map(norm).filter(Boolean);
-    const isMatch=item=>aliases(item).includes(wantedNormalized);
+    const identityValues=item=>[...technical(item),...human(item)];
+    const matches=item=>{
+        if(!item)return false;
+        const values=identityValues(item);
+        // Correspondance exacte (ID / nom / pseudo) conservée.
+        if(values.includes(wantedNormalized))return true;
+        // Tolérance de présentation, sans ignorer unicité ou droits.
+        if(wantedCompact.length>=3 && values.some(value=>compact(value)===wantedCompact))return true;
+        // L'e-mail n'est accepté que par égalité stricte et s'il est déjà
+        // inscrit dans la fiche Staff/RH. Envoi OTP exclusivement à cet e-mail.
+        const registered=ichefStaffProfileEmail({member:item,directoryEntry:{}});
+        return Boolean(registered && wantedNormalized===norm(registered));
+    };
     const linked=(a,b)=>{
         const aIds=technical(a),bIds=technical(b);
         return [...aIds].some(value=>bIds.has(value));
     };
     const groups=[];
     const directoryLinks=new Map();
-
     for(const member of members){
-        const matchingDirectory=directory.filter(item=>linked(member,item));
-        // Une fiche STAFF_ACCESS ne doit jamais lier plusieurs personnes RH.
-        matchingDirectory.forEach(row=>
+        const linkedDirectory=directory.filter(item=>linked(member,item));
+        linkedDirectory.forEach(row=>
             directoryLinks.set(row,(directoryLinks.get(row)||0)+1)
         );
         groups.push({
-            member,directoryEntry:matchingDirectory.length===1?matchingDirectory[0]:null,
-            linkedDirectory:matchingDirectory,
-            ambiguous:matchingDirectory.length>1
+            member,
+            directoryEntry:linkedDirectory.length===1?linkedDirectory[0]:null,
+            linkedDirectory,
+            ambiguous:linkedDirectory.length>1
         });
     }
     for(const row of directory){
         if(directoryLinks.has(row))continue;
         const staffId=ichefStaffActivationTechnicalId(row);
-        // Le PIN est écrit après vérification par identifiant technique stable.
         if(!staffId)continue;
         groups.push({
-            member:{
-                ...row,id:staffId,
-                name:ichefStaffActivationDisplayName(row)
-            },
+            member:{...row,id:staffId,name:ichefStaffActivationDisplayName(row)},
             directoryEntry:row,linkedDirectory:[row],ambiguous:false
         });
     }
-
     const matched=groups.filter(group=>
-        isMatch(group.member)||group.linkedDirectory.some(isMatch)
+        matches(group.member)||group.linkedDirectory.some(matches)
     );
-    // N'envoyer aucun code si deux employés ont le même nom / alias.
-    if(matched.length!==1)return null;
+    if(matched.length!==1){
+        audit(matched.length?'IDENTITE_AMBIGUE':'IDENTIFIANT_NON_RECONNU',{
+            staffRecords:members.length,rhRecords:directory.length,
+            candidateCount:matched.length
+        });
+        return null;
+    }
     const selected=matched[0];
-    if(selected.ambiguous || selected.linkedDirectory.some(
+    if(inactiveAccessMatch(state,[
+        ...ichefStaffResetIdentityValues(selected.member||{}),
+        ...ichefStaffResetIdentityValues(selected.directoryEntry||{})
+    ])){
+        audit('COLLABORATEUR_DESACTIVE');
+        return null;
+    }
+    if(selected.ambiguous||selected.linkedDirectory.some(
         row=>directoryLinks.has(row)&&directoryLinks.get(row)!==1
-    ))return null;
+    )){
+        audit('LIAISON_RH_AMBIGUE');
+        return null;
+    }
     const staffId=ichefStaffResetCanonicalId(selected);
-    if(!staffId)return null;
+    if(!staffId){
+        audit('IDENTIFIANT_TECHNIQUE_ABSENT');
+        return null;
+    }
     return {
         tenant,state,member:selected.member,
         directoryEntry:selected.directoryEntry||{},canonicalStaffId:staffId,
@@ -24333,6 +24386,7 @@ async function ichefStaffResolveProfileForReset(tenantID,loginId){
         ])]
     };
 }
+
 function ichefStaffResetMailer(){
     const user=String(process.env.GMAIL_USER||process.env.EMAIL_USER||process.env.SMTP_USER||'').trim();
     const pass=String(process.env.GMAIL_APP_PASSWORD||process.env.EMAIL_APP_PASSWORD||process.env.SMTP_PASS||'').trim();
