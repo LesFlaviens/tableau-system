@@ -1,3 +1,13 @@
+
+
+
+
+
+
+
+
+
+
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -19692,8 +19702,16 @@ async function ichefStaffSendActivationEmail({
 
 Votre responsable vous invite à rejoindre iCHEF Staff.
 
-1. Installez l'application sur votre téléphone (Android ou iPhone) :
+1. Installez iCHEF Staff sur votre téléphone :
 ${installLink}
+
+- Sur Android (Google Pixel, Samsung, etc.) : ouvrez ce lien dans GOOGLE CHROME,
+  puis dans Chrome, menu ⋮ > « Installer l'application » si cette option apparaît.
+- Sur iPhone : ouvrez le lien dans SAFARI, puis Partager > « Sur l'écran d'accueil ».
+
+Si votre messagerie ouvre le lien dans Edge ou un autre navigateur, copiez
+l'adresse d'installation ci-dessus, ouvrez Chrome sur Android et collez-la
+manuellement dans la barre d'adresse. Un e-mail ne peut pas forcer Chrome.
 
 2. Ouvrez ensuite votre lien personnel d'activation :
 ${link}
@@ -19729,8 +19747,13 @@ iCHEF Staff`;
       <p style="margin:0 0 16px;color:#edf0f1;font-size:15px">Bonjour ${safeName},</p>
       <p style="margin:0 0 18px;color:#aeb8bd;font-size:14px;line-height:1.55">Votre responsable vous invite à rejoindre <b style="color:#fff">iCHEF Staff</b>.</p>
       <p style="margin:0 0 8px;color:#aeb8bd;font-size:13px;line-height:1.55">1. Installez iCHEF Staff sur votre téléphone :</p>
-      <div style="text-align:center;margin:20px 0 26px">
-        <a href="${safeInstall}" style="display:inline-block;background:#253845;color:#f3f7f8;border:1px solid #4d6b7c;text-decoration:none;padding:16px 25px;border-radius:11px;font-size:15px;font-weight:800">INSTALLER ICHEF STAFF</a>
+      <div style="text-align:center;margin:20px 0 12px">
+        <a href="${safeInstall}" style="display:inline-block;background:#253845;color:#f3f7f8;border:1px solid #4d6b7c;text-decoration:none;padding:16px 25px;border-radius:11px;font-size:15px;font-weight:800">OUVRIR LA PAGE D’INSTALLATION</a>
+      </div>
+      <div style="padding:13px 15px;border:1px solid #35515d;border-radius:10px;background:#14242c;margin:0 0 23px;color:#dbe9ec;font-size:13px;line-height:1.65">
+        <b>Android (Google Pixel, Samsung…) :</b> ouvrez le lien dans <b>Google Chrome</b>, puis utilisez le menu &#8942; &gt; « Installer l’application » lorsque cette option est proposée.<br>
+        <b>iPhone :</b> ouvrez le lien dans <b>Safari</b>, puis Partager &gt; « Sur l’écran d’accueil ».<br>
+        <span style="color:#a9bac0">Si votre messagerie ouvre Edge, copiez ce lien public et collez-le dans Chrome. Un e-mail ne peut pas imposer le navigateur.</span>
       </div>
       <p style="margin:0 0 8px;color:#aeb8bd;font-size:13px;line-height:1.55">2. Revenez dans cet e-mail et activez votre accès personnel :</p>
       <div style="text-align:center;margin:20px 0 24px">
@@ -24231,11 +24254,6 @@ function ichefStaffResetCanonicalId(profile={}){
 
     return '';
 }
-// V298 — PIN oublié : même périmètre d'identité que la connexion Staff.
-// Le login peut utiliser un nom/pseudo dans un établissement identifié et une
-// fiche RH de DIRECTORY_MASTER, même avant synchronisation STAFF_ACCESS.
-// Ne jamais relier deux fiches par nom ou PIN : uniquement par identifiant RH.
-// Ne jamais chercher dans un autre établissement ni choisir entre homonymes.
 // Correctif ciblé V299 — PIN oublié : identifiant RH ou adresse de récupération.
 // Aucune modification du login, des sessions, des droits, du PIN ou des autres API.
 // L'identifiant est limité à UN établissement ; les homonymes sont refusés.
@@ -29245,6 +29263,55 @@ app.post('/api/staff/workspace/training', async (req,res) => {
     } catch (error) {
         console.error('[iCHEF STAFF workspace training V107]',error?.message || error);
         return res.status(500).json({success:false,error:'Progression de formation momentanément indisponible.'});
+    }
+});
+
+
+// ============================================================================
+// iCHEF V301 — PASSERELLE STAFF -> CHEF : CONTRÔLE D'ACCÈS (LECTURE SEULE)
+// Une invitation RH -> Staff reste suffisante : pas de nouveau compte/PIN ici.
+// Le contrôle est effectue sur une session Staff SIGNÉE et un profil ACTIF en base.
+// IMPORTANT : cet endpoint n'authentifie PAS chef.html ; l'auth existante reste
+// obligatoire avant tout accès aux fonctionnalités de cuisine.
+// ============================================================================
+function ichefStaffChefAccessV301(staff={}) {
+    const perms=staff?.permissions && typeof staff.permissions==='object'
+      ? staff.permissions : {};
+    // Une interdiction explicite prime TOUJOURS sur le titre du poste.
+    const grants=[perms?.chef?.access,perms?.chefAccess,perms?.['chef.access'],staff?.chefAccess];
+    if(grants.some(value=>value===false))return false;
+    if(grants.some(value=>value===true))return true;
+    // N'accepte pas les rôles Salle (CHEF DE RANG, CHEF DE BAR) comme cuisine.
+    const normalize=value=>String(value||'').trim().normalize('NFD')
+      .replace(/[\u0300-\u036f]/g,'').toUpperCase()
+      .replace(/[^A-Z0-9]+/g,'_').replace(/^_+|_+$/g,'');
+    const roles=[staff?.role,staff?.fonction,staff?.title,staff?.position,staff?.poste,
+        staff?.jobTitle,staff?.workProfile?.position,staff?.workProfile?.poste,
+        staff?.workProfile?.fonction,staff?.workProfile?.jobTitle].map(normalize);
+    const allowed=new Set([
+      'CHEF','CHEF_DE_CUISINE','CHEF_EXECUTIF','CHEF_EXECUTIVE',
+      'SOUS_CHEF','SECOND_DE_CUISINE','CHEF_DE_PARTIE',
+      'CHEF_PATISSIER','RESPONSABLE_CUISINE','CHEFFE_DE_CUISINE'
+    ]);
+    return roles.some(role=>allowed.has(role));
+}
+app.get('/api/staff/chef/access',async(req,res)=>{
+    res.setHeader('Cache-Control','no-store');
+    try{
+        const auth=await ichefLoadActiveStaffSession(req);
+        if(!auth.ok){
+            return res.status(401).json({success:false,allowed:false,
+                error:'Session Staff invalide ou compte désactivé.'});
+        }
+        // Aucun PIN, adresse e-mail ou jeton dans le résultat / les logs.
+        const allowed=ichefStaffChefAccessV301(auth.staff);
+        return res.json({success:true,allowed,
+            // Chemin relatif fixe. Jamais d'URL passée par le client.
+            route:allowed?'/chef.html':null});
+    }catch(error){
+        console.warn('[iCHEF STAFF CHEF ACCESS V301]',String(error?.code||'UNAVAILABLE'));
+        return res.status(503).json({success:false,allowed:false,
+            error:'Vérification des accès momentanément indisponible.'});
     }
 });
 
@@ -38506,6 +38573,10 @@ console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
 console.log('==========================================');
 }
 );
+
+
+
+
 
 
 
