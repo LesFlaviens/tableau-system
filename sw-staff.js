@@ -4,7 +4,7 @@
  * Périmètre strict : /portail-staff.html + manifest / icones Staff.
  * Aucun accès aux API, sessions, PIN, invitations, Socket.IO ou autres modules.
  */
-const VERSION = '232';
+const VERSION = '308';
 const CACHE = `ichef-staff-shell-v${VERSION}`;
 const ORIGIN = self.location.origin;
 const APP = '/portail-staff.html';
@@ -92,5 +92,27 @@ self.addEventListener('fetch', event => {
         { status: 503, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' } }
       );
     }
+  })());
+});
+
+
+// iCHEF Collaborateur V308 — notifications système privées; aucun secret dans le cache.
+self.addEventListener('push',event=>{
+  let data={};try{data=event.data?event.data.json():{};}catch(_){data={};}
+  const title='iCHEF Collaborateur';
+  const body=typeof data.body==='string'&&data.body.length<180?data.body:'Vous avez une nouvelle notification.';
+  event.waitUntil(self.registration.showNotification(title,{
+    body,icon:'/ichef-staff-192.png',badge:'/ichef-staff-192.png',
+    tag:typeof data.tag==='string'?data.tag:'ichef-notification',
+    data:{url:'/portail-staff.html'},renotify:false
+  }));
+});
+self.addEventListener('notificationclick',event=>{
+  event.notification.close();
+  event.waitUntil((async()=>{
+    const all=await self.clients.matchAll({type:'window',includeUncontrolled:true});
+    const found=all.find(c=>{try{return new URL(c.url).origin===self.location.origin&&new URL(c.url).pathname==='/portail-staff.html';}catch(_){return false;}});
+    if(found){await found.focus();return;}
+    await self.clients.openWindow('/portail-staff.html');
   })());
 });
