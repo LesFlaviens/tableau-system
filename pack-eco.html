@@ -1,3 +1,4 @@
+
 <!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"><meta name="theme-color" content="#ffffff"><link rel="preconnect" href="https://tableau-system.onrender.com" crossorigin><link rel="dns-prefetch" href="//tableau-system.onrender.com"><link rel="preload" as="script" href="https://tableau-system.onrender.com/socket.io/socket.io.js" crossorigin="anonymous"><script>
 (function(){
 function base(){
@@ -947,7 +948,7 @@ STATE.undoStack.pop();
 }
 const last=STATE.undoStack[STATE.undoStack.length-1];
 b.disabled=!last||last.table!==STATE.currentTable;
-b.title=last?`Annuler : ${last.label}`:"Aucune action à annuler";
+b.title=last?`Annuler uniquement la dernière action : ${last.label}`:"Aucune action récente à annuler. Pour une commande envoyée, ouvrez OUTILS > ANNULER LA COMMANDE.";
 }
 
 async function undoLastAction(){
@@ -2320,38 +2321,62 @@ toast(` ${seatLabel(seat)} · ${product.name}${suffix}`);
 return line;
 }
 
+/* V41 — Motif recueilli avant l'action ; l'identité et l'heure officielles
+   doivent être calculées et validées par le serveur, jamais par le navigateur. */
+function ichefPadCancellationReason(message){
+const value=prompt(message+"\n\nMotif obligatoire (3 à 250 caractères) :","");
+if(value===null)return null;
+const motif=String(value).trim();
+if(motif.length<3||motif.length>250){
+  toast("Motif requis : 3 à 250 caractères",true);
+  return null;
+}
+return motif;
+}
+
 async function cancelSentLine(item,reason=""){
-if(!item||!lineFired(item))return false;
-
-let motif=text(reason);
-if(!motif){
-motif=text(prompt(`Motif d’annulation — ${seatLabel(itemSeat(item)||1)} · ${itemName(item)} :`,"Erreur de commande"));
+if(!STATE.currentTable||!item||!lineFired(item)||item.cancelled)return false;
+const table=STATE.currentTable;
+const o=ensureOrder(table);
+if(fiscalOrderFinalized(o)){
+  toast("Commande encaissée : utilisez la correction fiscale",true);
+  return false;
 }
-if(!motif){
-toast("Motif obligatoire",true);
-return false;
-}
-
-const o=ensureOrder(STATE.currentTable);
 const target=o.items.find(x=>lineKey(x)===lineKey(item));
-if(!target)return false;
+if(!target||target.cancelled||!lineFired(target))return false;
+const q=itemQty(target), name=itemName(target), total=itemPrice(target)*q;
+const motif=String(reason||"").trim() || ichefPadCancellationReason(
+  `ANNULER L'ARTICLE DÉJÀ ENVOYÉ\nTable ${table} · ${seatLabel(itemSeat(target)||1)}\n${name} x${q} · ${money(total)}\nLa cuisine sera informée.`
+);
+if(!motif||motif.length<3||motif.length>250)return false;
+if(!confirm(`Confirmer l'annulation de ${name} x${q} à la table ${table} ?\nMotif : ${motif}\nLe PASS Cuisine sera alerté.`))return false;
 
-target.originalPrice=target.originalPrice!==undefined?target.originalPrice:itemPrice(target);
+const original=itemPrice(target);
+target.originalPrice=target.originalPrice!==undefined?target.originalPrice:original;
+target.cancelledTotal=Number((original*q).toFixed(2)); // Montant indicatif, non fiscal.
+target.cancelledAt=new Date().toISOString(); // Heure appareil indicative seulement.
+target.cancelReason=motif;
+target.cancelled=true;
 target.p=0;
 target.price=0;
 target.isOffered=true;
 target.done=true;
-target.cancelled=true;
-target.cancelReason=motif;
 target.sequenceStatus="CANCELLED";
-target.obs=` ANNULÉ (${motif})${target.obs?" | "+target.obs:""}`;
+target.obs=`ANNULÉ (${motif})${target.obs?" | "+target.obs:""}`;
 
-const ok=await saveCurrent(o,"Annulation article déjà envoyé",{immediate:true});
-if(ok){
-await productionAlert(target,"ANNULATION",motif);
-toast(" Annulation transmise au poste");
+const audit=`ANNULATION ARTICLE ENVOYÉ · Table ${table} · ${name} x${q} · Motif : ${motif}`;
+const ok=await saveCurrent(o,audit,{immediate:true});
+if(!ok){
+  toast("Annulation en attente : synchronisation serveur à vérifier",true);
+  return false;
 }
-return ok;
+try{
+  await productionAlert(target,"ANNULATION",motif);
+  toast("Annulation enregistrée · alerte cuisine envoyée");
+}catch(_){
+  toast("Annulation enregistrée ; vérifier l'alerte au PASS",true);
+}
+return true;
 }
 
 async function mutateLine(key,action){
@@ -2385,21 +2410,29 @@ return;
 }
 }
 
+// Toute réduction/suppression de ligne, même avant envoi, conserve un motif.
+const reduction=(action==="minus"||action==="delete");
+const oldQty=itemQty(i),newQty=action==="delete"?0:Math.max(0,oldQty-1);
+let motif=null;
+if(reduction){
+  motif=ichefPadCancellationReason(
+    `ANNULATION AVANT ENVOI · Table ${STATE.currentTable}\n${itemName(i)} · ${seatLabel(itemSeat(i)||STATE.activeSeat)}\nQuantité : ${oldQty} → ${newQty}`
+  );
+  if(!motif)return;
+}
 const before=cloneOrderForUndo(o);
-
-if(action==="plus")i.qty=itemQty(i)+1;
-
+if(action==="plus")i.qty=oldQty+1;
 if(action==="minus"){
-i.qty=Math.max(0,itemQty(i)-1);
-if(i.qty<=0)o.items=o.items.filter(x=>x!==i);
+  i.qty=newQty;
+  if(newQty<=0)o.items=o.items.filter(x=>x!==i);
 }
-
-if(action==="delete"){
-o.items=o.items.filter(x=>x!==i);
-}
-
+if(action==="delete")o.items=o.items.filter(x=>x!==i);
+const trace=reduction
+  ?`ANNULATION AVANT ENVOI · Table ${STATE.currentTable} · ${itemName(i)} · quantité ${oldQty} → ${newQty} · Motif : ${motif}`
+  :"Modification rapide article";
 pushUndo(`Modification ${seatLabel(itemSeat(i)||STATE.activeSeat)} · ${itemName(i)}`,before);
-await saveCurrent(o,"Modification rapide article",{delay:120});
+const ok=await saveCurrent(o,trace,{immediate:reduction,delay:120});
+if(reduction&&!ok)toast("Correction non confirmée par le serveur — synchronisation à vérifier",true);
 }
 
 async function sendKitchen(){
@@ -3106,7 +3139,9 @@ const seatBadge=seat?seatBadgeHTML(seat):'<span class="seat-badge">CTR</span>';
 const obs=text(i.obs);
 const critical=i.allergyCritical===true||/allerg/i.test(obs);
 
-const controls=sent
+const controls=i.cancelled
+?`<span class="line-state" aria-label="Article annulé">ANNULÉ</span>`
+:sent
 ?`<button data-line="${esc(key)}" data-act="obs" title="Observation"></button>
           <button data-line="${esc(key)}" data-act="cooking" title="Cuisson"></button>
           <button data-line="${esc(key)}" data-act="delete" title="Annuler au poste" style="width:52px">ANN.</button>`
@@ -5128,7 +5163,7 @@ if(a==="logout")location.reload();
 });
 }
 
-function openOrderMore(){openSheet("TABLE "+STATE.currentTable,`<div class="action-grid"><button class="action-btn green" data-om="send"> ENVOYER</button><button class="action-btn purple" data-om="who"> QUI MANGE ?</button><button class="action-btn gold" data-om="summary"> RÉSUMÉ / CAISSE</button><button class="action-btn gold" data-om="payment"> PAIEMENT DIRECT</button><button class="action-btn" data-om="note"> NOTE</button><button class="action-btn orange" data-om="close"> FERMER TABLE</button><button class="action-btn red" data-om="delete"> SUPPRIMER COMMANDE</button></div>`);$("sheetBody").querySelectorAll("[data-om]").forEach(b=>b.onclick=()=>{const a=b.dataset.om;if(a==="send"){closeSheet();sendKitchen()}if(a==="who"){openWho()}if(a==="summary"){closeSheet();openSummary()}if(a==="payment"){openPayment()}if(a==="note"){editNote()}if(a==="close"){closeTable()}if(a==="delete"){deleteOrder()}})}
+function openOrderMore(){openSheet("TABLE "+STATE.currentTable,`<div class="action-grid"><button class="action-btn green" data-om="send"> ENVOYER</button><button class="action-btn purple" data-om="who"> QUI MANGE ?</button><button class="action-btn gold" data-om="summary"> RÉSUMÉ / CAISSE</button><button class="action-btn gold" data-om="payment"> PAIEMENT DIRECT</button><button class="action-btn" data-om="note"> NOTE</button><button class="action-btn orange" data-om="close"> FERMER TABLE</button><button class="action-btn red" data-om="delete"> ANNULER LA COMMANDE</button></div>`);$("sheetBody").querySelectorAll("[data-om]").forEach(b=>b.onclick=()=>{const a=b.dataset.om;if(a==="send"){closeSheet();sendKitchen()}if(a==="who"){openWho()}if(a==="summary"){closeSheet();openSummary()}if(a==="payment"){openPayment()}if(a==="note"){editNote()}if(a==="close"){closeTable()}if(a==="delete"){deleteOrder()}})}
 
 function editNote(){if(!STATE.currentTable)return;const o=ensureOrder(STATE.currentTable),n=prompt("Note de service :",o.note||o.observation||"");if(n===null)return;o.note=text(n);saveCurrent(o,"Note de service");closeSheet()}
 
@@ -5993,32 +6028,74 @@ await optimisticWrite(table,null,"Fermeture table sans vente");
 closeSheet();closeOrder();toast(" Table fermée");
 }
 
+/* V41 — N'écrase jamais une vente encaissée : correction fiscale existante. */
+let ICHEF_PAD_CANCEL_ORDER_BUSY=false;
 async function deleteOrder(){
-if(!STATE.currentTable)return;
-const reason=prompt("Motif obligatoire de correction / annulation :","");
-if(!text(reason)||text(reason).length<3){toast("Motif obligatoire",true);return;}
+if(!STATE.currentTable||ICHEF_PAD_CANCEL_ORDER_BUSY)return;
 const table=STATE.currentTable;
 const o=STATE.currentOrder||getOrder(table)||ensureOrder(table);
-if(fiscalOrderFinalized(o)){
-const ticketNumber=text(o.fiscalTicket?.ticketNumber||o.fiscalReceiptReference||o.paymentDraft?.receiptReference);
-if(!ticketNumber){toast("Ticket fiscal original introuvable",true);return;}
-const confirmCorrection=confirm(`Créer une contre-écriture fiscale complète pour ${ticketNumber} ?\n\nL'original restera conservé.`);
-if(!confirmCorrection)return;
+const rows=(o.items||[]).filter(i=>i&&!i.cancelled);
+if(!rows.length){toast("Aucun article à annuler",true);return;}
+const details=rows.slice(0,14).map(i=>`${itemName(i)} x${itemQty(i)} · ${money(itemPrice(i)*itemQty(i))}`);
+const extra=rows.length>14?`\n... et ${rows.length-14} autre(s) article(s)`:"";
+const reason=ichefPadCancellationReason(
+  `ANNULER TOUTE LA COMMANDE · ${table}\n${details.join("\n")}${extra}\n\n${rows.length} ligne(s) · ${money(orderTotal(o))}`
+);
+if(!reason)return;
+if(!confirm(`Confirmer l'annulation de toute la commande de ${table} ?\n${rows.length} article(s) · ${money(orderTotal(o))}\nMotif : ${reason}\nCette action doit être journalisée.`))return;
+ICHEF_PAD_CANCEL_ORDER_BUSY=true;
 try{
-const id=serverPaymentId("CORRECTION");
-const r=await paymentServerRequest('/api/fiscal/correction',{method:'POST',idempotencyKey:id,body:{ticketNumber,tableId:table,reason:text(reason),mode:"FULL_VOID",correctionRequestId:id}});
-closeSheet();closeOrder();await syncFull("fiscal-correction").catch(()=>{});
-toast(` Correction fiscale ${r.correctionTicketNumber||r.ticketNumber||"enregistrée"}`);
-}catch(err){toast("Correction refusée : "+err.message,true)}
-return;
+  if(fiscalOrderFinalized(o)){
+    const ticketNumber=text(o.fiscalTicket?.ticketNumber||o.fiscalReceiptReference||o.paymentDraft?.receiptReference);
+    if(!ticketNumber){toast("Ticket fiscal original introuvable",true);return;}
+    const confirmCorrection=confirm(`Créer une contre-écriture fiscale complète pour ${ticketNumber} ?\n\nL'original restera conservé.`);
+    if(!confirmCorrection)return;
+    try{
+      const id=serverPaymentId("CORRECTION");
+      const r=await paymentServerRequest('/api/fiscal/correction',{
+        method:'POST',idempotencyKey:id,
+        body:{ticketNumber,tableId:table,reason,mode:"FULL_VOID",correctionRequestId:id}
+      });
+      closeSheet();closeOrder();await syncFull("fiscal-correction").catch(()=>{});
+      toast(`Correction fiscale ${r.correctionTicketNumber||r.ticketNumber||"enregistrée"}`);
+    }catch(err){toast("Correction refusée : "+err.message,true)}
+    return;
+  }
+  const fiscal=fiscalBreakdown(o);
+  // Données de référence client uniquement ; le serveur devra horodater et identifier l'acteur.
+  const summary=rows.map(i=>({
+    name:itemName(i),qty:itemQty(i),unitPrice:itemPrice(i),
+    amount:Number((itemPrice(i)*itemQty(i)).toFixed(2)),
+    lineId:lineKey(i),sent:!!lineFired(i)
+  }));
+  const trace=await fiscalEvent("CANCEL_ORDER",{
+    reason,signedTotal:fiscalRound2(-fiscal.gross),tableId:table,
+    articles:summary
+  });
+  if(!trace?.ok){toast("Annulation refusée : journal indisponible",true);return;}
+  const cancelled={...clone(o),status:"cancelled",cancelled:true,
+    cancelledAt:new Date().toISOString(),cancellationReason:reason,
+    cancelledLines:summary};
+  const archiveKey="FISCAL_CANCEL_"+Date.now()+"_"+fiscalSafeId(table);
+  const archived=await optimisticWrite(archiveKey,{data:cancelled},
+    `ARCHIVE ANNULATION COMMANDE · ${table} · Motif : ${reason}`);
+  if(!archived){toast("Archive non confirmée : commande non retirée",true);return;}
+  const removed=await optimisticWrite(table,null,
+    `ANNULATION COMMANDE · ${table} · ${rows.length} article(s) · Motif : ${reason}`);
+  if(!removed){toast("Annulation en attente de confirmation serveur",true);return;}
+  // Prévenir chaque poste pour les lignes qui avaient déjà été envoyées.
+  // Aucun renvoi de commande : uniquement l'alerte d'annulation existante.
+  let passAlertOk=true;
+  for(const line of rows.filter(lineFired)){
+    try{
+      if(await productionAlert(line,"ANNULATION","COMMANDE COMPLÈTE · "+reason)===false)passAlertOk=false;
+    }catch(_){passAlertOk=false;}
+  }
+  closeSheet();closeOrder();
+  toast(passAlertOk?"Commande annulée · archive confirmée":"Annulation enregistrée ; alerte PASS à vérifier",!passAlertOk);
+}finally{
+  ICHEF_PAD_CANCEL_ORDER_BUSY=false;
 }
-const fiscal=fiscalBreakdown(o);
-const trace=await fiscalEvent("CANCEL_ORDER",{reason:text(reason),signedTotal:fiscalRound2(-fiscal.gross),tableId:table});
-if(!trace?.ok){toast("Annulation refusée : journal indisponible",true);return;}
-const cancelled={...clone(o),status:"cancelled",cancelled:true,cancelledAt:new Date().toISOString(),cancellationReason:text(reason)};
-await optimisticWrite("FISCAL_CANCEL_"+Date.now()+"_"+fiscalSafeId(table),{data:cancelled},"Archive annulation commande");
-await optimisticWrite(table,null,"Retrait commande annulée");
-closeSheet();closeOrder();toast(" Commande annulée et archivée");
 }
 
 function cookingOptions(item){
@@ -8144,7 +8221,9 @@ const seatBadge=seat?seatBadgeHTML(seat):'<span class="seat-badge">CTR</span>';
 const obs=text(i.obs);
 const critical=i.allergyCritical===true||/allerg/i.test(obs);
 
-const controls=sent
+const controls=i.cancelled
+?`<span class="line-state" aria-label="Article annulé">ANNULÉ</span>`
+:sent
 ?`<button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
           <button data-line="${esc(key)}" data-act="cooking" title="Cuisson">🌡️</button>
           <button data-line="${esc(key)}" data-act="delete" title="Annuler au poste" style="width:52px">ANN.</button>`
@@ -13039,7 +13118,9 @@ const cooking=text(i.cooking)
 const obs=text(i.obs);
 const critical=i.allergyCritical===true||/allerg/i.test(obs);
 
-const controls=sent
+const controls=i.cancelled
+?`<span class="line-state" aria-label="Article annulé">ANNULÉ</span>`
+:sent
 ?`<button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
   <button data-line="${esc(key)}" data-act="cooking" title="Cuisson">🌡️</button>
   <button data-line="${esc(key)}" data-act="delete" title="Annuler au poste">ANN.</button>`
@@ -16633,3 +16714,6 @@ button,input,select,textarea,
 </style>
 
 </body></html>
+
+
+
