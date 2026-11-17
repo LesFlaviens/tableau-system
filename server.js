@@ -1,17 +1,4 @@
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -21965,6 +21952,217 @@ async function ichefLoadActiveStaffSession(req) {
 
 
 // ============================================================================
+// iCHEF COLLABORATEUR V308 — ALERTES PRIVÉES / WEB PUSH (MODULE ADDITIF)
+// Activation explicite : ICHEF_STAFF_NOTIFICATIONS_ENABLED=true.
+// Connexions, PIN, mots de passe, sessions, RH et sockets existants INCHANGÉS.
+// Les notifications ne remplacent pas les pièces et statuts RH officiels.
+// ============================================================================
+const ICHEF_NOTIF_V308_ENABLED = /^(true|1|yes|on)$/i.test(String(process.env.ICHEF_STAFF_NOTIFICATIONS_ENABLED || 'false'));
+const ICHEF_NOTIF_V308_TENANT = cleanString(process.env.ICHEF_STAFF_NOTIFICATIONS_TENANT || '');
+const ICHEF_NOTIF_V308_VAPID_PUBLIC = String(process.env.ICHEF_VAPID_PUBLIC_KEY || '').trim();
+const ICHEF_NOTIF_V308_VAPID_PRIVATE = String(process.env.ICHEF_VAPID_PRIVATE_KEY || '').trim();
+const ICHEF_NOTIF_V308_VAPID_SUBJECT = String(process.env.ICHEF_VAPID_SUBJECT || '').trim();
+let ichefWebPushV308 = null;
+try {
+    if (ICHEF_NOTIF_V308_ENABLED && ICHEF_NOTIF_V308_VAPID_PUBLIC &&
+        ICHEF_NOTIF_V308_VAPID_PRIVATE && /^(mailto:|https:\/\/)/i.test(ICHEF_NOTIF_V308_VAPID_SUBJECT)) {
+        ichefWebPushV308 = require('web-push');
+        ichefWebPushV308.setVapidDetails(ICHEF_NOTIF_V308_VAPID_SUBJECT,
+            ICHEF_NOTIF_V308_VAPID_PUBLIC, ICHEF_NOTIF_V308_VAPID_PRIVATE);
+    }
+} catch (e) {
+    console.warn('[iCHEF NOTIFICATIONS V308] Push indisponible (module web-push/configuration)',e?.message||e);
+    ichefWebPushV308=null;
+}
+const ichefNotifSchemaV308 = new mongoose.Schema({
+    tenantID:{type:String,required:true,index:true}, staffId:{type:String,required:true,index:true},
+    eventId:{type:String,required:true}, category:{type:String,default:'INFO'},
+    title:{type:String,required:true}, body:{type:String,default:''},
+    createdAt:{type:Date,default:Date.now,index:true}, readAt:{type:Date,default:null},
+    actor:{type:String,default:''}
+},{minimize:false});
+ichefNotifSchemaV308.index({tenantID:1,staffId:1,eventId:1},{unique:true});
+ichefNotifSchemaV308.index({tenantID:1,staffId:1,createdAt:-1});
+const IchefStaffNotificationV308 = mongoose.models.IchefStaffNotificationV308 ||
+    mongoose.model('IchefStaffNotificationV308',ichefNotifSchemaV308);
+const ichefPushSchemaV308 = new mongoose.Schema({
+    tenantID:{type:String,required:true,index:true}, staffId:{type:String,required:true,index:true},
+    deviceId:{type:String,required:true}, endpointHash:{type:String,required:true},
+    endpoint:{type:String,required:true}, keys:{p256dh:String,auth:String},
+    enabled:{type:Boolean,default:true}, updatedAt:{type:Date,default:Date.now}
+},{minimize:false});
+ichefPushSchemaV308.index({tenantID:1,staffId:1,endpointHash:1},{unique:true});
+ichefPushSchemaV308.index({endpointHash:1});
+const IchefStaffPushV308=mongoose.models.IchefStaffPushV308 || mongoose.model('IchefStaffPushV308',ichefPushSchemaV308);
+function ichefNotifAllowedV308(tenantID) {
+    return ICHEF_NOTIF_V308_ENABLED &&
+        (!ICHEF_NOTIF_V308_TENANT || cleanString(tenantID)===ICHEF_NOTIF_V308_TENANT);
+}
+function ichefNotifStringV308(value,max=200){return String(value??'').replace(/[\x00-\x1f\x7f]/g,' ').trim().slice(0,max);}
+function ichefNotifPushHostV308(endpoint){
+    try{
+        const u=new URL(endpoint);
+        if(u.protocol!=='https:'||u.username||u.password||u.port)return false;
+        const h=u.hostname.toLowerCase();
+        return h==='fcm.googleapis.com'||h==='updates.push.services.mozilla.com'||
+            h.endsWith('.push.apple.com')||h.endsWith('.notify.windows.com')||
+            h.endsWith('.push.windows.com');
+    }catch(_){return false;}
+}
+async function ichefNotifSendPushV308(tenantID,staffId,notification){
+    if(!ichefWebPushV308)return;
+    const subs=await IchefStaffPushV308.find({tenantID,staffId,enabled:true})
+        .sort({updatedAt:-1}).limit(4).lean();
+    const payload=JSON.stringify({id:String(notification._id),
+        title:'iCHEF Collaborateur',
+        body:notification.category==='URGENT'?'Information importante disponible.':'Vous avez une nouvelle notification.',
+        tag:'ichef-'+String(notification._id),url:'/portail-staff.html'});
+    await Promise.allSettled(subs.map(async sub=>{
+        if(!ichefNotifPushHostV308(sub.endpoint))return;
+        try{
+            await ichefWebPushV308.sendNotification({endpoint:sub.endpoint,keys:sub.keys},payload,{TTL:1800,timeout:5000,urgency:notification.category==='URGENT'?'high':'normal'});
+        }catch(err){
+            if([404,410].includes(Number(err?.statusCode||0)))
+                await IchefStaffPushV308.updateOne({_id:sub._id},{$set:{enabled:false}});
+            else console.warn('[iCHEF NOTIF PUSH V308]',Number(err?.statusCode||0)||'UNAVAILABLE');
+        }
+    }));
+}
+async function ichefNotifPublishV308({tenantID,staffIds,eventId,category='INFO',title,body='',actor=''}){
+    const tenant=cleanString(tenantID);
+    if(!ichefNotifAllowedV308(tenant))return;
+    const ids=[...new Set((Array.isArray(staffIds)?staffIds:[]).map(s=>ichefNotifStringV308(s,120)).filter(Boolean))].slice(0,500);
+    if(!ids.length)return;
+    // Aucune publication vers un collaborateur supprimé/désactivé ou autre établissement.
+    const state=await AppState.findOne({tenantID:tenant},
+        {'activeOrders.STAFF_ACCESS':1,'activeOrders.DIRECTORY_MASTER':1}).lean();
+    if(!state)return;
+    const source=state.activeOrders||{};
+    const disabled=new Set([
+        ...ichefStaffPortalArray(source.STAFF_ACCESS),
+        ...ichefStaffPortalArray(source.DIRECTORY_MASTER)
+    ].filter(x=>x?.active===false).map(x=>ichefStaffChatMemberId(x)));
+    const active=new Set(ichefStaffChatDirectory(source).map(x=>ichefStaffChatMemberId(x)).filter(x=>!disabled.has(x)));
+    for(const staffId of ids){
+        if(!active.has(staffId))continue;
+        let row;let created=false;
+        try{
+            const q={tenantID:tenant,staffId,eventId:ichefNotifStringV308(eventId,160)};
+            const result=await IchefStaffNotificationV308.updateOne(q,{$setOnInsert:{
+                category:ichefNotifStringV308(category,25),title:ichefNotifStringV308(title,120),
+                body:ichefNotifStringV308(body,800),actor:ichefNotifStringV308(actor,120),createdAt:new Date()
+            }},{upsert:true});
+            created=Boolean(result.upsertedCount);
+            if(created)row=await IchefStaffNotificationV308.findOne(q).lean();
+        }catch(e){if(e?.code!==11000)throw e;}
+        if(!created||!row)continue;
+        // Événement temps réel privé, jamais envoyé à la salle tenant globale.
+        try{io.to(ichefStaffUserRoom(tenant,staffId)).emit('ichef-staff-notification-v308',{
+            tenantID:tenant,staffId,id:String(row._id),category:row.category
+        });}catch(_){}
+        void ichefNotifSendPushV308(tenant,staffId,row).catch(e=>
+            console.warn('[iCHEF NOTIF PUSH V308]',e?.message||'ERROR'));
+    }
+}
+function ichefNotifBackgroundV308(args){
+    if(!ichefNotifAllowedV308(args?.tenantID))return;
+    setImmediate(()=>ichefNotifPublishV308(args).catch(e=>
+        console.warn('[iCHEF NOTIFICATIONS V308]',e?.message||'ERROR')));
+}
+async function ichefNotifStaffAuthV308(req,res){
+    const auth=await ichefLoadActiveStaffSession(req);
+    if(!auth.ok){res.status(401).json({success:false,error:auth.error});return null;}
+    if(!ichefNotifAllowedV308(auth.tenantID)){res.status(403).json({success:false,error:'Notifications non activées pour cet établissement.'});return null;}
+    return auth;
+}
+app.get('/api/staff/notifications/v308/config',async(req,res)=>{
+    try{const auth=await ichefNotifStaffAuthV308(req,res);if(!auth)return;
+        return res.json({success:true,pushSupported:!!ichefWebPushV308,
+            vapidPublicKey:ichefWebPushV308?ICHEF_NOTIF_V308_VAPID_PUBLIC:'',
+            build:'V308'});
+    }catch(e){return res.status(503).json({success:false,error:'Notifications temporairement indisponibles.'});}
+});
+app.get('/api/staff/notifications/v308/list',async(req,res)=>{
+    try{const auth=await ichefNotifStaffAuthV308(req,res);if(!auth)return;
+        const staffId=String(auth.claims.staffId);
+        const records=await IchefStaffNotificationV308.find({tenantID:auth.tenantID,staffId})
+            .sort({createdAt:-1}).limit(80).lean();
+        return res.json({success:true,notifications:records.map(x=>({
+            id:String(x._id),title:x.title,body:x.body,category:x.category,
+            createdAt:x.createdAt,readAt:x.readAt
+        })),unread:records.filter(x=>!x.readAt).length});
+    }catch(e){return res.status(503).json({success:false,error:'Historique momentanément indisponible.'});}
+});
+app.post('/api/staff/notifications/v308/read',async(req,res)=>{
+    try{const auth=await ichefNotifStaffAuthV308(req,res);if(!auth)return;
+        const id=String(req.body?.id||'');
+        if(!mongoose.Types.ObjectId.isValid(id))return res.status(400).json({success:false,error:'Notification invalide.'});
+        await IchefStaffNotificationV308.updateOne({_id:id,tenantID:auth.tenantID,staffId:String(auth.claims.staffId)},
+            {$set:{readAt:new Date()}});
+        return res.json({success:true});
+    }catch(e){return res.status(503).json({success:false,error:'Lecture momentanément indisponible.'});}
+});
+app.post('/api/staff/notifications/v308/subscribe',async(req,res)=>{
+    try{const auth=await ichefNotifStaffAuthV308(req,res);if(!auth)return;
+        if(!ichefWebPushV308)return res.status(503).json({success:false,error:'Push non configuré sur le serveur.'});
+        const s=req.body?.subscription||{};
+        const endpoint=String(s.endpoint||'').trim();
+        const p256dh=String(s.keys?.p256dh||'').trim(),keyAuth=String(s.keys?.auth||'').trim();
+        if(endpoint.length>2048||!ichefNotifPushHostV308(endpoint)||
+            !/^[A-Za-z0-9_-]{70,180}$/.test(p256dh)||!/^[A-Za-z0-9_-]{12,64}$/.test(keyAuth))
+            return res.status(400).json({success:false,error:'Abonnement push non valide.'});
+        const epHash=nodeCrypto.createHash('sha256').update(endpoint).digest('hex');
+        const staffId=String(auth.claims.staffId),deviceId=String(auth.claims.deviceId||'');
+        // Le même navigateur ne doit jamais conserver l'abonnement de l'ancien compte.
+        await IchefStaffPushV308.updateMany({endpointHash:epHash,
+            $nor:[{tenantID:auth.tenantID,staffId}]},{$set:{enabled:false,updatedAt:new Date()}});
+        await IchefStaffPushV308.updateOne({tenantID:auth.tenantID,staffId,endpointHash:epHash},
+            {$set:{endpoint,keys:{p256dh,auth:keyAuth},deviceId,enabled:true,updatedAt:new Date()}},{upsert:true});
+        return res.json({success:true});
+    }catch(e){return res.status(503).json({success:false,error:'Abonnement non enregistré.'});}
+});
+app.post('/api/staff/notifications/v308/unsubscribe',async(req,res)=>{
+    try{const auth=await ichefNotifStaffAuthV308(req,res);if(!auth)return;
+        const endpoint=String(req.body?.endpoint||'').trim();
+        if(endpoint.length>2048)return res.status(400).json({success:false});
+        if(endpoint)await IchefStaffPushV308.updateOne({tenantID:auth.tenantID,
+            staffId:String(auth.claims.staffId),endpointHash:nodeCrypto.createHash('sha256').update(endpoint).digest('hex')},
+            {$set:{enabled:false,updatedAt:new Date()}});
+        return res.json({success:true});
+    }catch(e){return res.status(503).json({success:false,error:'Désactivation indisponible.'});}
+});
+// La Direction peut avertir une personne ou toute l'équipe avec session RH révalidée.
+// Aucune API publique sans authentification; aucun ID / tenant choisi par le client
+// n'est accepté sans comparaison au répertoire actif de l'établissement.
+app.post('/api/rh/staff/notifications/v308/send',async(req,res)=>{
+    try{
+        const auth=await ichefLoadRhDocumentsManagerSession(req);
+        if(!auth.ok)return res.status(403).json({success:false,error:auth.error});
+        if(!ichefNotifAllowedV308(auth.tenantID))return res.status(403).json({success:false,error:'Fonction non activée.'});
+        const title=ichefNotifStringV308(req.body?.title,120);
+        const body=ichefNotifStringV308(req.body?.body,800);
+        const scope=String(req.body?.scope||'INDIVIDUAL').toUpperCase();
+        if(title.length<3||body.length<3||!['ALL','INDIVIDUAL'].includes(scope))
+            return res.status(400).json({success:false,error:'Notification invalide.'});
+        const state=await AppState.findOne({tenantID:auth.tenantID},
+            {'activeOrders.STAFF_ACCESS':1,'activeOrders.DIRECTORY_MASTER':1}).lean();
+        const ids=ichefStaffChatDirectory(state?.activeOrders||{}).map(x=>ichefStaffChatMemberId(x));
+        const wanted=scope==='ALL'?ids:[ichefNotifStringV308(req.body?.staffId,120)];
+        const targets=[...new Set(wanted)].filter(id=>ids.includes(id)).slice(0,500);
+        if(!targets.length)return res.status(404).json({success:false,error:'Destinataire actif introuvable.'});
+        const eid='direction-'+nodeCrypto.randomUUID();
+        await ichefNotifPublishV308({tenantID:auth.tenantID,staffIds:targets,eventId:eid,
+            category:req.body?.urgent===true?'URGENT':'INFO',title,body,
+            actor:String(auth.claims?.actorName||'Direction').slice(0,120)});
+        return res.json({success:true,recipients:targets.length});
+    }catch(e){console.warn('[iCHEF NOTIF DIRECTION V308]',e?.message||e);
+        return res.status(503).json({success:false,error:'Envoi momentanément indisponible.'});}
+});
+// ============================================================================
+// FIN DU MODULE ADDITIF — aucune route existante remplacée.
+// ============================================================================
+
+// ============================================================================
 // ⚡ iCHEF STAFF CHAT V126 — VALIDATION ACTIVE COURTE + SESSION SIGNÉE
 // Le cache ne remplace jamais la signature ni le contrôle appareil/tenant.
 // Il mémorise seulement, quelques secondes, un profil déjà revalidé dans AppState.
@@ -28636,6 +28834,28 @@ app.post('/api/staff/chat/message', async (req,res) => {
         ).catch(error => {
             console.warn('[iCHEF STAFF CHAT realtime emit V126]',error?.message || error);
         });
+        // V308 : destinataires recalculés depuis le répertoire actif du serveur.
+        if(ichefNotifAllowedV308(access.tenantID)) {
+            setImmediate(async()=>{
+              try{
+                const channel=access.channel;
+                const state=await AppState.findOne({tenantID:access.tenantID},
+                  {'activeOrders.STAFF_ACCESS':1,'activeOrders.DIRECTORY_MASTER':1}).lean();
+                const directory=ichefStaffChatDirectory(state?.activeOrders||{});
+                const type=String(channel?.type||'').toUpperCase();
+                const listed=(Array.isArray(channel?.participantIds)?channel.participantIds:[]).map(String);
+                const members=(type==='ALL') ? directory.map(x=>ichefStaffChatMemberId(x))
+                  : (type==='DEPARTMENT') ? directory.filter(x=>
+                    ichefStaffChatDeptKey(ichefStaffChatMemberDept(x))===String(channel?.deptKey||''))
+                    .map(x=>ichefStaffChatMemberId(x)) : listed;
+                await ichefNotifPublishV308({tenantID:access.tenantID,
+                  staffIds:members.filter(id=>id&&id!==String(self.id)),
+                  eventId:'chat-'+messageId,category:'MESSAGE',title:'Nouveau message',
+                  body:'Un message vous attend dans la messagerie iCHEF.',actor:String(self.name||'')});
+              }catch(err){console.warn('[iCHEF NOTIF CHAT V308]',err?.message||'ERROR');}
+            });
+        }
+
 
         return res.json({
             success:true,
@@ -29359,6 +29579,9 @@ app.post('/api/rh/chat/message', async (req,res) => {
         );
 
         await ichefRhChatEmitToStaff(auth.tenantID,access.channel,row.toObject());
+        ichefNotifBackgroundV308({tenantID:auth.tenantID,staffIds:[access.staffId],
+            eventId:'rh-chat-'+messageId,category:'MESSAGE',title:'Message de la Direction',
+            body:'Un message privé vous attend dans iCHEF.',actor:'Direction / RH'});
         return res.json({success:true,private:true,message:ichefStaffChatPublicMessage(row.toObject())});
     } catch (error) {
         if (storedAttachment?.attachmentId) {
@@ -30276,6 +30499,8 @@ app.post('/api/rh/documents/upload-binary', express.raw({type:'application/octet
             }catch(error){console.warn('[iCHEF RH documents audit upload-binary]',error?.message||error);}
             try{ichefEmitStaffSyncRequired(auth.tenantID,{tableId:'RH_DOCUMENTS',source:'rh-document-upload-binary',staffId,timestamp:uploadedAt.toISOString()});}catch(_){}
             try{io.to(auth.tenantID).emit('staff-document-updated',{tenantID:auth.tenantID,staffId,type:'UPLOAD',proofId:proof.proofId,timestamp:uploadedAt.toISOString()});}catch(_){}
+            ichefNotifBackgroundV308({tenantID:auth.tenantID,staffIds:[staffId],eventId:'rh-doc-'+String(upload.id),
+                category:'DOCUMENT',title:'Nouveau document RH',body:'Un document personnel est disponible dans iCHEF.',actor:'Direction / RH'});
         });
         return;
     } catch(error) {
@@ -30357,6 +30582,8 @@ app.post('/api/rh/documents/upload', async (req,res) => {
             try{await RhDocumentAudit.create({tenantID:auth.tenantID,documentId:String(upload.id),staffId,staffName:String(staff.name||staffName||'Collaborateur').slice(0,140),action:'UPLOAD',category,title,fileName:filename,sha256,actorId:String(auth.claims?.actorId||'MASTER'),actorName:String(auth.claims?.actorName||'Direction / RH').slice(0,120),reason:`Document envoyé au collaborateur · preuve ${proof.proofId}`});}catch(error){console.warn('[iCHEF RH documents audit upload]',error?.message||error);}
             try{ichefEmitStaffSyncRequired(auth.tenantID,{tableId:'RH_DOCUMENTS',source:'rh-document-upload',staffId,timestamp:uploadedAt.toISOString()});}catch(_){}
             try{io.to(auth.tenantID).emit('staff-document-updated',{tenantID:auth.tenantID,staffId,type:'UPLOAD',proofId:proof.proofId,timestamp:uploadedAt.toISOString()});}catch(_){}
+            ichefNotifBackgroundV308({tenantID:auth.tenantID,staffIds:[staffId],eventId:'rh-doc-'+String(upload.id),
+                category:'DOCUMENT',title:'Nouveau document RH',body:'Un document personnel est disponible dans iCHEF.',actor:'Direction / RH'});
         });
         return;
     } catch(error) {
@@ -36179,6 +36406,9 @@ app.post('/api/rh/planning/premium/day', async(req,res)=>{
         try{if(typeof ichefEmitStaffSyncRequired==='function')ichefEmitStaffSyncRequired(auth.tenantID,{tableId:'TIMESHEETS_MASTER',source:'premium-pwa',timestamp:now.toISOString()});}catch(_){}
         io.to(auth.tenantID).emit('rhPlanningUpdated',{tenantID:auth.tenantID,source:'PLANNING_PREMIUM_PWA',changed:1,timestamp:now.toISOString()});
         io.to(auth.tenantID).emit('staff-planning-notice',{tenantID:auth.tenantID,source:'PLANNING_PREMIUM_PWA',changed:1,timestamp:now.toISOString()});
+        ichefNotifBackgroundV308({tenantID:auth.tenantID,staffIds:[sid],
+            eventId:'planning-day-'+id,category:window.urgent===true?'URGENT':'PLANNING',
+            title:'Votre planning a changé',body:'Consultez vos horaires dans iCHEF Collaborateur.',actor});
         return res.json({success:true,changed:1,day:after,staffName:employee.name,versionId:id,serverTime:now.toISOString()});
     }catch(e){console.error('[PLANNING PREMIUM DAY]',e);return res.status(500).json({success:false,error:'Impossible d’enregistrer le service.'});}
 });
@@ -36234,6 +36464,14 @@ app.post('/api/rh/planning/premium/publish', async(req,res)=>{
       source:'PLANNING_PREMIUM_PUBLISHED',month:mm,changed:0,timestamp:now});
     io.to(auth.tenantID).emit('staff-planning-notice',{tenantID:auth.tenantID,
       source:'PLANNING_PREMIUM_PUBLISHED',month:mm,changed:0,timestamp:now});
+    // V308 : annonce privée à chaque compte actif (publication validée).
+    if(ichefNotifAllowedV308(auth.tenantID)){
+      const directory=ichefStaffChatDirectory(orders);
+      ichefNotifBackgroundV308({tenantID:auth.tenantID,
+        staffIds:directory.map(x=>ichefStaffChatMemberId(x)),
+        eventId:'published-'+mm+'-'+String(now),category:'PLANNING',
+        title:'Nouveau planning publié',body:'Votre planning est disponible dans iCHEF.',actor:'Direction / RH'});
+    }
     return res.json({success:true,publication:pub,serverTime:now});
   }catch(err){console.error('[PLANNING PREMIUM PUBLISH]',err);
     return res.status(500).json({success:false,error:'Publication RH momentanément indisponible.'});}
@@ -36382,6 +36620,15 @@ app.post('/api/rh/planning/save', async (req,res) => {
         } catch (_) {}
         io.to(auth.tenantID).emit('rhPlanningUpdated',{tenantID:auth.tenantID,source,changed:changes.length,timestamp:auditAt});
         io.to(auth.tenantID).emit('staff-planning-notice',{tenantID:auth.tenantID,source,changed:changes.length,timestamp:auditAt});
+        // V308 : une alerte par collaborateur concerné après sauvegarde effective.
+        for(const staffId of [...new Set(windows.map(w=>String(w.staffId||'')).filter(Boolean))]){
+            const affected=windows.filter(w=>String(w.staffId||'')===staffId);
+            const latest=affected[affected.length-1];
+            ichefNotifBackgroundV308({tenantID:auth.tenantID,staffIds:[staffId],
+                eventId:'planning-'+auditAt+'-'+staffId,
+                category:affected.some(w=>w.window?.urgent)?'URGENT':'PLANNING',
+                title:'Planning mis à jour',body:'Consultez vos horaires dans iCHEF Collaborateur.',actor:auditBy});
+        }
         return res.json({
             success:true, changed:changes.length, timesheets:next,
             urgentChanges:windows.filter(c=>c.window.urgent).length,
@@ -38912,23 +39159,3 @@ console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
 console.log('==========================================');
 }
 );
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
