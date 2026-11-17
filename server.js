@@ -1,3 +1,4 @@
+
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -392,7 +393,24 @@ async function ichefWriteSecurityEvent({
  * ils protègent les routes sensibles sans limiter les échanges normaux
  * de Socket.IO / commandes / planning.
  */
-function ichefSecurityRateLimitForPath(pathname){
+// V306 — Mode test volontairement limité à UN établissement non productif.
+// Deux variables Render sont nécessaires pour activer ce mode :
+// ICHEF_STAFF_PIN_TEST_NO_SEND_LIMITS=true
+// ICHEF_STAFF_PIN_TEST_TENANT=testenfc
+// Ce mode supprime les quotas d'ENVOI (code/lien PIN) et leur temporisation,
+// mais NE supprime JAMAIS la vérification d'identité, le PIN, la session,
+// les essais de code OTP, l'expiration des codes ou les permissions.
+function ichefStaffPinTestNoSendLimitV306(tenantID){
+    const enabled=/^(true|1|yes|on)$/i.test(
+        String(process.env.ICHEF_STAFF_PIN_TEST_NO_SEND_LIMITS||'').trim()
+    );
+    const configured=String(process.env.ICHEF_STAFF_PIN_TEST_TENANT||'')
+        .trim().toLowerCase();
+    const requested=String(tenantID||'').trim().toLowerCase();
+    return Boolean(enabled && configured && requested && requested===configured);
+}
+
+function ichefSecurityRateLimitForPath(pathname,req){
     const p =
         String(pathname || '')
             .trim()
@@ -412,6 +430,13 @@ function ichefSecurityRateLimitForPath(pathname){
         };
     }
 
+    // En test ciblé, seules les routes d'ENVOI sont sans quota.
+    // /confirm et /complete conservent le quota anti-bruteforce.
+    if(
+        (p === '/api/staff/pin-reset/request' ||
+         p === '/api/staff/pin-reset/code/request') &&
+        ichefStaffPinTestNoSendLimitV306(ichefSecurityTenant(req))
+    ) return null;
     if(
         p === '/api/staff/pin-reset/request' ||
         p === '/api/staff/pin-reset/code/request' ||
@@ -496,7 +521,7 @@ function ichefSecurityRateLimitForPath(pathname){
 function ichefSecurityBucketCheck(req){
     const policy =
         ichefSecurityRateLimitForPath(
-            req?.path
+            req?.path,req
         );
 
     if(!policy){
@@ -713,7 +738,7 @@ app.use(async(req,res,next)=>{
     const monitored =
         Boolean(
             ichefSecurityRateLimitForPath(
-                req.path
+                req.path,req
             )
         );
 
@@ -1607,6 +1632,10 @@ function ichefStaffPinResetSelfV296(requestedFrom){
     return String(requestedFrom||'').toUpperCase().startsWith('SELF');
 }
 async function ichefStaffPinResetSelfQuotaReserveV296(tenantID,staffId){
+    // Pas d'écriture du compteur Mongo dans l'établissement de test ciblé.
+    if(ichefStaffPinTestNoSendLimitV306(tenantID)){
+        return {ok:true,unlimitedTest:true};
+    }
     // Garantit l'index unique avant le premier quota (fail-closed si Mongo indisponible).
     await IchefStaffPinResetDailyQuotaV296.init();
     const dayKey=ichefStaffPinResetParisDayV296();
@@ -1638,7 +1667,7 @@ async function ichefStaffPinResetSelfQuotaReserveV296(tenantID,staffId){
         : {ok:false,dayKey,requiresDirection:true};
 }
 async function ichefStaffPinResetSelfQuotaReleaseV296(tenantID,staffId,reservation){
-    if(!reservation?.ok)return;
+    if(!reservation?.ok || reservation.unlimitedTest)return;
     await IchefStaffPinResetDailyQuotaV296.updateOne({
         tenantID:cleanString(tenantID),
         staffId:String(staffId).trim(),
@@ -1649,6 +1678,7 @@ async function ichefStaffPinResetSelfQuotaReleaseV296(tenantID,staffId,reservati
     });
 }
 async function ichefStaffPinResetSelfUsageV296(tenantID,staffId){
+    if(ichefStaffPinTestNoSendLimitV306(tenantID))return 0;
     const row=await IchefStaffPinResetDailyQuotaV296.findOne({
         tenantID:cleanString(tenantID),
         staffId:String(staffId).trim(),
@@ -24856,7 +24886,9 @@ app.post('/api/staff/pin-reset/request',async(req,res)=>{
         const generic=()=>res.json({
             success:true,
             message:
-                'Si le compte est autorisé et possède un e-mail, un lien de réinitialisation peut lui être envoyé (maximum trois demandes par jour). Au-delà, contactez la Direction.'
+                ichefStaffPinTestNoSendLimitV306(tenantID)
+                    ? 'Si le compte est autorisé et possède un e-mail RH, un lien de réinitialisation peut lui être envoyé.'
+                    : 'Si le compte est autorisé et possède un e-mail, un lien de réinitialisation peut lui être envoyé (maximum trois demandes par jour). Au-delà, contactez la Direction.'
         });
 
         if(!tenantID || !staffId){
@@ -24882,15 +24914,13 @@ app.post('/api/staff/pin-reset/request',async(req,res)=>{
                 0
             );
 
-        // Limite un email par minute.
-        if(Date.now()-last<60000){
-            return generic();
+        // La temporisation d'envoi est suspendue UNIQUEMENT en mode test ciblé.
+        if(!ichefStaffPinTestNoSendLimitV306(tenantID)){
+            if(Date.now()-last<60000){
+                return generic();
+            }
+            ichefStaffPinResetBuckets.set(key,Date.now());
         }
-
-        ichefStaffPinResetBuckets.set(
-            key,
-            Date.now()
-        );
 
         const profile=
             await ichefStaffResolveProfileForReset(
@@ -24949,7 +24979,9 @@ app.post('/api/staff/pin-reset/request',async(req,res)=>{
         return res.json({
             success:true,
             message:
-                'Si le compte est autorisé et possède un e-mail, un lien de réinitialisation peut lui être envoyé (maximum trois demandes par jour). Au-delà, contactez la Direction.'
+                ichefStaffPinTestNoSendLimitV306(ichefSecurityTenant(req))
+                    ? 'Si le compte est autorisé et possède un e-mail RH, un lien de réinitialisation peut lui être envoyé.'
+                    : 'Si le compte est autorisé et possède un e-mail, un lien de réinitialisation peut lui être envoyé (maximum trois demandes par jour). Au-delà, contactez la Direction.'
         });
     }
 });
@@ -24971,7 +25003,9 @@ app.post('/api/staff/pin-reset/code/request',async(req,res)=>{
         success:true,
         challengeId:id,
         requestRef,
-        message:'Si le compte possède une adresse e-mail RH et n’a pas dépassé trois demandes aujourd’hui, un code de vérification lui sera envoyé. Au-delà, contactez la Direction.'
+        message:ichefStaffPinTestNoSendLimitV306(ichefSecurityTenant(req))
+            ? 'Si le compte possède une adresse e-mail RH, un code de vérification peut lui être envoyé.'
+            : 'Si le compte possède une adresse e-mail RH et n’a pas dépassé trois demandes aujourd’hui, un code de vérification lui sera envoyé. Au-delà, contactez la Direction.'
     });
     try{
         const tenantID=cleanString(req.body?.tenantID||req.headers?.['x-ichef-tenant']||'');
@@ -24990,16 +25024,19 @@ app.post('/api/staff/pin-reset/code/request',async(req,res)=>{
         const ip=ichefSecurityHash(ichefSecurityClientIp(req));
         const key=`PIN_RESET_OTP_V214|${tenantID}|${staffId.toLowerCase()}|${ip}`;
         const last=Number(ichefStaffPinResetBuckets.get(key)||0);
-        if(Date.now()-last<60000){
-            audit('ATTENTE_60_SECONDES');
-            return generic(newFakeId());
+        if(!ichefStaffPinTestNoSendLimitV306(tenantID)){
+            if(Date.now()-last<60000){
+                audit('ATTENTE_60_SECONDES');
+                return generic(newFakeId());
+            }
+            ichefStaffPinResetBuckets.set(key,Date.now());
         }
-        ichefStaffPinResetBuckets.set(key,Date.now());
         if(ichefStaffPinResetBuckets.size>10000){
             for(const [k,ts] of ichefStaffPinResetBuckets){
                 if(Date.now()-Number(ts||0)>600000)ichefStaffPinResetBuckets.delete(k);
             }
         }
+        if(ichefStaffPinTestNoSendLimitV306(tenantID))audit('MODE_TEST_ENVOIS_SANS_QUOTA');
         const profile=await ichefStaffResolveProfileForReset(tenantID,staffId);
         if(!profile){
             audit('COMPTE_INTROUVABLE_OU_NON_ACTIF');
@@ -38721,5 +38758,23 @@ console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
 console.log('==========================================');
 }
 );
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
