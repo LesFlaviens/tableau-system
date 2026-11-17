@@ -1,13 +1,3 @@
-
-
-
-
-
-
-
-
-
-
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -408,6 +398,9 @@ function ichefSecurityRateLimitForPath(pathname){
             .trim()
             .toLowerCase();
 
+    if(p === '/api/pad/cancellations/history'){
+        return {limit:30,windowMs:60_000,blockMs:5*60_000};
+    }
     if(p === '/api/rh/planning/session'){
         return {limit:12,windowMs:60_000,blockMs:5*60_000};
     }
@@ -6199,6 +6192,7 @@ entityId: { type: String, default: '' },
 action: { type: String, required: true },
 detail: { type: String, default: '' },
 operator: { type: String, default: '' },
+actorId: { type: String, default: '' }, // V305 : identifiant de l'opérateur vérifié
 role: { type: String, default: '' },
 terminal: { type: String, default: '' },
 deviceId: { type: String, default: '' },
@@ -6236,12 +6230,18 @@ item.lineId || item.itemId || item.id || item.uuid || item._id ||
 function ichefHistoryItemName(item) {
 return String(item?.name || item?.n || item?.label || item?.title || 'Article').trim();
 }
+// V305 — Informations historiques indicatives, calculées à partir du snapshot serveur.
+// Elles ne créent aucune écriture de caisse et ne modifient aucun montant fiscal.
 function ichefHistoryLineSnapshot(item) {
 if (!item || typeof item !== 'object') return null;
+const qtyRaw = Number(item.qty ?? item.quantity ?? 1);
+const qty = Number.isFinite(qtyRaw) && qtyRaw >= 0 ? qtyRaw : 1;
+const priceRaw = Number(item.originalPrice ?? item.unitPrice ?? item.price ?? item.p ?? 0);
+const unitPriceBeforeCancellation = Number.isFinite(priceRaw) ? priceRaw : 0;
 return {
 lineId: String(item.lineId || item.itemId || item.id || ''),
 name: ichefHistoryItemName(item),
-qty: Number(item.qty ?? item.quantity ?? 1) || 1,
+qty,
 seat: Number(item.seat ?? item.guestSeat ?? item.seatNumber ?? 0) || 0,
 cooking: String(item.cooking || item.cuisson || ''),
 observation: String(item.obs || item.observation || item.note || ''),
@@ -6249,27 +6249,69 @@ destination: String(item.dest || item.destination || item.station || ''),
 status: String(item.status || ''),
 ready: item.ready === true,
 served: item.served === true,
-cancelled: item.cancelled === true
+cancelled: item.cancelled === true,
+unitPriceBeforeCancellation,
+amountBeforeCancellation: Math.round(unitPriceBeforeCancellation * qty * 100) / 100,
+cancelReason: String(item.cancelReason || item.cancellationReason || '').slice(0,250),
+// Heure de l'appareil uniquement indicative ; at est créé par le serveur.
+clientCancellationTime: String(item.cancelledAt || '').slice(0,60)
 };
 }
 function ichefHistoryActor(access = {}, body = {}) {
-const staff = access?.staff && typeof access.staff === 'object' ? access.staff : {};
-const operator = String(
-body.operator ||
-body.waiter ||
-staff.name ||
-staff.displayName ||
-staff.id ||
-access.role ||
-staff.role ||
-staff.dept ||
-body.terminal ||
-'SYSTEME'
-).trim();
-const role = String(
-access.role || staff.role || staff.dept || body.role || ''
-).trim();
-return { operator, role };
+const staff = access?.staff && typeof access.staff === 'object' ? access.staff : null;
+// Les annulations PAD V41 passent par un PIN serveur vérifié.
+// Les autres terminaux conservent leur libellé historique de compatibilité,
+// mais sans actorId vérifié : ne pas le traiter comme preuve d'identité.
+// En cas de PIN Master partagé, l'utilisateur humain n'est pas identifiable.
+const operator = staff
+  ? String(staff.name || staff.displayName || staff.fullName ||
+      [staff.prenom, staff.nom].filter(Boolean).join(' ') ||
+      staff.id || 'COLLABORATEUR IDENTIFIÉ').trim().slice(0,140)
+  : (access?.isManager ? 'DIRECTION (PIN MASTER)' :
+      String(body.operator || body.waiter || body.terminal || 'SYSTEME').trim().slice(0,140));
+const role = String(access?.role || staff?.role || staff?.dept ||
+  (access?.isManager ? 'MASTER' : body.role || '')).trim().slice(0,100);
+const actorId = staff
+  ? String(staff.id || staff.staffId || staff.employeeId || '').trim().slice(0,120)
+  : (access?.isManager ? 'MASTER_PIN' : '');
+return { operator, role, actorId };
+}
+// Contrôle ciblé de suppression/annulation sur une commande existante.
+// Aucun changement aux mécanismes de connexion, aux PIN ni aux autres routes.
+function ichefOrderCancellationRiskV305(before, after, reason = '') {
+if (!before || !Array.isArray(before.items) || !before.items.length) return false;
+if (after == null) return true;
+if (!after || !Array.isArray(after.items)) return false;
+if (after.cancelled === true && before.cancelled !== true) return true;
+if (/\b(annul|cancel)/i.test(String(reason || ''))) return true;
+const oldItems = before.items;
+const newItems = after.items;
+const newIds = new Map(newItems.map((item, index) => [ichefHistoryItemId(item, index), item]));
+return oldItems.some((oldItem, index) => {
+  const nextItem = newIds.get(ichefHistoryItemId(oldItem, index));
+  return nextItem && oldItem?.cancelled !== true && nextItem.cancelled === true;
+});
+}
+function ichefOrderPaidV305(order) {
+if (!order || typeof order !== 'object') return false;
+const parts = [order.status, order.state, order.paymentStatus,
+  order.fiscalStatus, order.paymentDraft?.status, order.paymentDraft?.fiscalStatus]
+  .map(v => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase());
+return parts.some(v => ['PAYE','PAID','FISCALIZED','FISCALISE','SEALED','SCELLE','CLOSED_PAID'].includes(v)) ||
+  Boolean(order.fiscalFinalizedAt || order.fiscalTicket?.ticketNumber || order.fiscalTicket?.ticketHash);
+}
+function ichefCancellationReasonV305(body = {}, incoming = null) {
+const audit = String(body.auditReason || '').slice(0,1000);
+const fromAudit = /Motif\s*:\s*(.+)$/i.exec(audit);
+const reason = String(incoming?.cancellationReason || incoming?.cancelReason ||
+  fromAudit?.[1] || '').trim().slice(0,250);
+if (reason.length >= 3 && reason.length <= 250) return reason;
+if (Array.isArray(incoming?.items)) {
+  const item = incoming.items.find(i => i?.cancelled === true &&
+    String(i?.cancelReason || '').trim().length >= 3);
+  if (item) return String(item.cancelReason).trim().slice(0,250);
+}
+return '';
 }
 function ichefCentralHistoryEntry(data = {}) {
 const at = data.at || new Date().toISOString();
@@ -6286,6 +6328,7 @@ action: String(data.action || 'MISE À JOUR'),
 detail: String(data.detail || ''),
 by: String(data.by || data.operator || 'SYSTEME'),
 operator: String(data.operator || data.by || 'SYSTEME'),
+actorId: String(data.actorId || ''),
 role: String(data.role || ''),
 terminal: String(data.terminal || 'INCONNU'),
 deviceId: String(data.deviceId || ''),
@@ -6304,6 +6347,7 @@ tableId,
 serviceId,
 operator: context.operator || 'SYSTEME',
 by: context.operator || 'SYSTEME',
+actorId: context.actorId || '',
 role: context.role || '',
 terminal: context.terminal || 'INCONNU',
 deviceId: context.deviceId || '',
@@ -6315,10 +6359,25 @@ const push = (action, detail = '', line = null, meta = {}) => {
 entries.push(ichefCentralHistoryEntry({ ...base, action, detail, line, meta }));
 };
 if (after === null || after === undefined) {
-push(
-Array.isArray(before?.items) ? 'TABLE LIBÉRÉE / COMMANDE SUPPRIMÉE' : `SUPPRESSION ${tableId}`,
-context.auditReason || ''
-);
+// Une annulation complète ne fait jamais disparaître la liste des plats du journal.
+const previousLines = Array.isArray(before?.items) ? before.items.filter(Boolean) : [];
+const explicitCancellation = /annul|cancel/i.test(String(context.auditReason || ''));
+if (explicitCancellation && previousLines.length) {
+  push('COMMANDE ANNULÉE', String(context.auditReason || '').slice(0,1000), null,
+    {totalLines: previousLines.length, nonFiscal: true});
+  for (const item of previousLines.slice(0,150)) {
+    push(`ANNULÉ · ${ichefHistoryItemName(item)}`,
+      String(context.auditReason || '').slice(0,1000),
+      ichefHistoryLineSnapshot(item), {nonFiscal:true});
+  }
+  if (previousLines.length > 150) {
+    push('ANNULATION · LIGNES SUPPLÉMENTAIRES',
+      `${previousLines.length - 150} lignes au-delà du plafond de détail journal (150)`);
+  }
+} else {
+  push(Array.isArray(before?.items) ? 'TABLE LIBÉRÉE / COMMANDE SUPPRIMÉE' : `SUPPRESSION ${tableId}`,
+    context.auditReason || '');
+}
 return entries;
 }
 if (!before || typeof before !== 'object') {
@@ -6352,7 +6411,12 @@ const nextCancelled = item.cancelled === true;
 if (!prevSent && nextSent) push(`ENVOYÉ · ${name}`, context.auditReason || '', line);
 if (!prevReady && nextReady) push(`PRÊT · ${name}`, context.auditReason || '', line);
 if (!prevServed && nextServed) push(`SERVICE EFFECTUÉ · ${name}`, context.auditReason || '', line);
-if (!prevCancelled && nextCancelled) push(`ANNULÉ · ${name}`, context.auditReason || String(item.cancelReason || item.cancellationReason || ''), line);
+if (!prevCancelled && nextCancelled) push(`ANNULÉ · ${name}`,
+  String(item.cancelReason || item.cancellationReason || context.auditReason || '').slice(0,1000),
+  // Avant modification : prix réel précédent, pas celui mis à zéro par le PAD.
+  {...ichefHistoryLineSnapshot(previous), cancelled:true,
+    cancelReason:String(item.cancelReason || item.cancellationReason || '').slice(0,250)},
+  {nonFiscal:true});
 const prevCooking = String(previous.cooking || previous.cuisson || '');
 const nextCooking = String(item.cooking || item.cuisson || '');
 if (prevCooking !== nextCooking && nextCooking) {
@@ -6366,12 +6430,19 @@ push(`OBSERVATION MODIFIÉE · ${name}`, nextObs || 'Observation supprimée', li
 const prevQty = Number(previous.qty ?? previous.quantity ?? 1) || 1;
 const nextQty = Number(item.qty ?? item.quantity ?? 1) || 1;
 if (prevQty !== nextQty) {
-push(`QUANTITÉ MODIFIÉE · ${name}`, `${prevQty} → ${nextQty}`, line);
+const isCancellation = nextQty < prevQty && /annul|cancel/i.test(String(context.auditReason || ''));
+push(`${isCancellation ? 'ANNULÉ PARTIELLEMENT' : 'QUANTITÉ MODIFIÉE'} · ${name}`,
+  `${prevQty} → ${nextQty}${isCancellation ? ' · ' + String(context.auditReason || '').slice(0,300) : ''}`,
+  isCancellation ? ichefHistoryLineSnapshot(previous) : line,
+  isCancellation ? {qtyRemoved: prevQty - nextQty,nonFiscal:true} : {});
 }
 }
 for (const [key, item] of oldMap.entries()) {
 if (!newMap.has(key)) {
-push(`ARTICLE RETIRÉ · ${ichefHistoryItemName(item)}`, context.auditReason || '', ichefHistoryLineSnapshot(item));
+const isCancellation = /annul|cancel/i.test(String(context.auditReason || ''));
+push(`${isCancellation ? 'ANNULÉ ·' : 'ARTICLE RETIRÉ ·'} ${ichefHistoryItemName(item)}`,
+  String(context.auditReason || '').slice(0,1000), ichefHistoryLineSnapshot(item),
+  isCancellation ? {nonFiscal:true} : {});
 }
 }
 }
@@ -6389,7 +6460,7 @@ push(context.auditReason);
 if (!entries.length) {
 push(`MISE À JOUR ${tableId}`);
 }
-return entries.slice(0, 40);
+return entries.slice(0, 165);
 }
 function ichefAuditMasterArray(raw) {
 if (Array.isArray(raw)) return raw;
@@ -6440,6 +6511,7 @@ entityId: String(event.entityId || ''),
 action: String(event.action || 'MISE À JOUR'),
 detail: String(event.detail || ''),
 operator: String(event.operator || event.by || ''),
+actorId: String(event.actorId || ''),
 role: String(event.role || ''),
 terminal: String(event.terminal || ''),
 deviceId: String(event.deviceId || ''),
@@ -14053,6 +14125,7 @@ app.post('/api/order-symbiose', async (req, res) => {
             deviceId: String(body.deviceId || ''),
             auditReason: String(body.auditReason || 'Synchronisation production'),
             operator: actor.operator,
+            actorId: actor.actorId,
             role: actor.role,
             source: 'order-symbiose'
           }
@@ -14234,6 +14307,36 @@ const previousStateForHistory = await AppState
 .lean();
 const previousValueForHistory =
 previousStateForHistory?.activeOrders?.[tableId];
+// V305 : sécuriser explicitement les annulations et suppressions de commandes
+// sans toucher aux autres modules. Le terminal client et body.operator ne font
+// jamais preuve de l'identité du serveur humain.
+let ichefVerifiedCancellationActorV305 = null;
+if (ichefOrderCancellationRiskV305(previousValueForHistory, order, auditReason)) {
+  const cancellationAccess = await ichefCheckServiceTerminalAccess({
+    tenantID, pin, terminal:'PAD'
+  });
+  if (!cancellationAccess.ok || cancellationAccess.bypass) {
+    return res.status(cancellationAccess.status || 403).json({
+      success:false, persisted:false, code:'CANCELLATION_AUTH_REQUIRED',
+      error:cancellationAccess.error || 'Annulation : PIN personnel actif requis.'
+    });
+  }
+  if (ichefOrderPaidV305(previousValueForHistory)) {
+    return res.status(409).json({success:false,persisted:false,
+      code:'FISCAL_CORRECTION_REQUIRED',
+      error:'Commande fiscalisée : utilisez la procédure de correction fiscale.'});
+  }
+  // Motif requis pour les annulations explicites du PAD V41.
+  const explicit = /annul|cancel/i.test(String(auditReason || '')) ||
+    order?.cancelled === true ||
+    Array.isArray(order?.items) && order.items.some(i => i?.cancelled === true);
+  if (explicit && !ichefCancellationReasonV305(req.body || {}, order)) {
+    return res.status(422).json({success:false,persisted:false,
+      code:'CANCELLATION_REASON_REQUIRED',
+      error:'Motif d’annulation obligatoire (3 à 250 caractères).'});
+  }
+  ichefVerifiedCancellationActorV305 = cancellationAccess;
+}
 // Empêcher une publication/dépublication obsolète via les réglages RH génériques.
 if (ICHEF_PLANNING_PREMIUM_ONLY && String(tableId) === 'RH_SETTINGS' && order !== null) {
   const oldNode = previousValueForHistory?.data ?? previousValueForHistory ?? {};
@@ -14246,7 +14349,8 @@ if (ICHEF_PLANNING_PREMIUM_ONLY && String(tableId) === 'RH_SETTINGS' && order !=
       error:'Publication du planning réservée au Planning Premium.'});
   }
 }
-const actorForHistory = ichefHistoryActor(terminalAccess, req.body || {});
+const actorForHistory = ichefHistoryActor(
+  ichefVerifiedCancellationActorV305 || terminalAccess, req.body || {});
 let orderToPersist = order;
 if (
 tableId === 'STAFF_ACCESS' &&
@@ -14377,6 +14481,7 @@ terminal: String(terminal || 'INCONNU'),
 deviceId: String(deviceId || ''),
 auditReason: String(auditReason || ''),
 operator: actorForHistory.operator,
+actorId: actorForHistory.actorId,
 role: actorForHistory.role,
 source: 'update-order'
 }
@@ -14627,6 +14732,49 @@ error: tooLarge
 : "Erreur serveur pendant l'enregistrement de la commande."
 });
 }
+});
+// V305 — Consultation dédiée, en lecture seule, des annulations.
+// La Direction/Manager doit présenter un PIN vérifié dans un en-tête :
+// jamais dans l'URL ni dans un lien partagé. Aucune mutation de commande.
+app.get('/api/pad/cancellations/history', async (req, res) => {
+  try {
+    const tenantID = cleanString(req.query?.tenantID || req.headers['x-ichef-tenant'] || '');
+    const pin = String(req.headers['x-ichef-pin'] || '').trim();
+    const auth = await ichefAuthorizePin(tenantID, pin, {managerOnly:true});
+    if (!auth.ok) {
+      return res.status(auth.status || 403).json({
+        success:false, code:'CANCELLATION_HISTORY_FORBIDDEN',
+        error:auth.error || 'Réservé à la Direction.'
+      });
+    }
+    const limit = Math.max(1, Math.min(200, Number(req.query?.limit) || 100));
+    const tableId = String(req.query?.tableId || '').trim().slice(0,100);
+    const filter = {
+      tenantID,
+      action: /^(COMMANDE ANNULÉE|ANNULÉ ·|ANNULÉ PARTIELLEMENT ·|ANNULATION ·)/
+    };
+    if (tableId) {
+      if (!ichefValidStateKey(tableId)) {
+        return res.status(400).json({success:false,error:'Table invalide.'});
+      }
+      filter.tableId = tableId;
+    }
+    const rows = await SystemHistoryRecord.find(filter)
+      .sort({at:-1,_id:-1}).limit(limit).lean();
+    return res.json({
+      success:true,tenantID,count:rows.length,
+      data:rows.map(row=>({
+        at:row.at,tableId:row.tableId,serviceId:row.serviceId,
+        action:row.action,detail:row.detail,
+        operator:row.operator,actorId:row.actorId,role:row.role,
+        terminal:row.terminal,source:row.source,
+        line:row.line,meta:row.meta
+      }))
+    });
+  } catch (error) {
+    console.warn('[iCHEF V305 HISTORIQUE ANNULATIONS]',error?.message || error);
+    return res.status(500).json({success:false,error:'Historique des annulations indisponible.'});
+  }
 });
 app.get('/api/audit/history', async (req, res) => {
 try {
@@ -38573,19 +38721,5 @@ console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
 console.log('==========================================');
 }
 );
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
