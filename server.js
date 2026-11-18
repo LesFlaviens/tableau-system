@@ -8,12 +8,6 @@
 
 
 
-
-
-
-
-
-
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -6323,19 +6317,27 @@ return { operator, role, actorId };
 }
 // Contrôle ciblé de suppression/annulation sur une commande existante.
 // Aucun changement aux mécanismes de connexion, aux PIN ni aux autres routes.
+// V310 : une annulation n'est nouvelle QUE si l'etat serveur change.
+// Une ligne DEJA annulee dans un snapshot ne doit pas bloquer les futurs
+// envois de cuisine, la synchronisation PAD ou les mises a jour normales.
+// La disparition/reduction d'une ligne ACTIVE reste une annulation protegee.
 function ichefOrderCancellationRiskV305(before, after, reason = '') {
-if (!before || !Array.isArray(before.items) || !before.items.length) return false;
-if (after == null) return true;
-if (!after || !Array.isArray(after.items)) return false;
-if (after.cancelled === true && before.cancelled !== true) return true;
-if (/\b(annul|cancel)/i.test(String(reason || ''))) return true;
-const oldItems = before.items;
-const newItems = after.items;
-const newIds = new Map(newItems.map((item, index) => [ichefHistoryItemId(item, index), item]));
-return oldItems.some((oldItem, index) => {
-  const nextItem = newIds.get(ichefHistoryItemId(oldItem, index));
-  return nextItem && oldItem?.cancelled !== true && nextItem.cancelled === true;
-});
+  if (!before || !Array.isArray(before.items) || !before.items.length) return false;
+  const activeBefore = before.items.filter(i => i && i.cancelled !== true);
+  if (after === null || after === undefined) return activeBefore.length > 0;
+  if (!after || !Array.isArray(after.items)) return false;
+  if (after.cancelled === true && before.cancelled !== true) return true;
+  const newItems = new Map(after.items.filter(Boolean).map((i, index) => [ichefHistoryItemId(i, index), i]));
+  for (let index = 0; index < before.items.length; index++) {
+    const oldItem = before.items[index];
+    if (!oldItem || oldItem.cancelled === true) continue;
+    const newItem = newItems.get(ichefHistoryItemId(oldItem, index));
+    if (!newItem || newItem.cancelled === true) return true;
+    const oldQty = Number(oldItem.qty ?? oldItem.quantity ?? 1);
+    const newQty = Number(newItem.qty ?? newItem.quantity ?? 1);
+    if (Number.isFinite(oldQty) && Number.isFinite(newQty) && newQty < oldQty) return true;
+  }
+  return false;
 }
 function ichefOrderPaidV305(order) {
 if (!order || typeof order !== 'object') return false;
@@ -6345,18 +6347,32 @@ const parts = [order.status, order.state, order.paymentStatus,
 return parts.some(v => ['PAYE','PAID','FISCALIZED','FISCALISE','SEALED','SCELLE','CLOSED_PAID'].includes(v)) ||
   Boolean(order.fiscalFinalizedAt || order.fiscalTicket?.ticketNumber || order.fiscalTicket?.ticketHash);
 }
-function ichefCancellationReasonV305(body = {}, incoming = null) {
-const audit = String(body.auditReason || '').slice(0,1000);
-const fromAudit = /Motif\s*:\s*(.+)$/i.exec(audit);
-const reason = String(incoming?.cancellationReason || incoming?.cancelReason ||
-  fromAudit?.[1] || '').trim().slice(0,250);
-if (reason.length >= 3 && reason.length <= 250) return reason;
-if (Array.isArray(incoming?.items)) {
-  const item = incoming.items.find(i => i?.cancelled === true &&
-    String(i?.cancelReason || '').trim().length >= 3);
-  if (item) return String(item.cancelReason).trim().slice(0,250);
-}
-return '';
+// V310 : ne pas reutiliser le motif d'une ANCIENNE annulation pour
+// valider une nouvelle suppression ou diminution de quantite.
+function ichefCancellationReasonV305(body = {}, incoming = null, previous = null) {
+  const audit = String(body.auditReason || '').slice(0,1000);
+  const fromAudit = /Motif\s*:\s*(.+)$/i.exec(audit);
+  const candidates = [
+    fromAudit?.[1],
+    String(incoming?.cancellationReason || '') !== String(previous?.cancellationReason || '') ? incoming?.cancellationReason : '',
+    String(incoming?.cancelReason || '') !== String(previous?.cancelReason || '') ? incoming?.cancelReason : ''
+  ];
+  for (const candidate of candidates) {
+    const explicit = String(candidate || '').trim();
+    if (explicit.length >= 3 && explicit.length <= 250) return explicit;
+  }
+  if (Array.isArray(incoming?.items)) {
+    const oldItems = new Map((Array.isArray(previous?.items) ? previous.items : [])
+      .filter(Boolean).map((i,index) => [ichefHistoryItemId(i,index),i]));
+    for (const [index, item] of incoming.items.entries()) {
+      if (!item || item.cancelled !== true) continue;
+      const oldItem = oldItems.get(ichefHistoryItemId(item,index));
+      if (oldItem?.cancelled === true) continue;
+      const reason = String(item.cancelReason || item.cancellationReason || '').trim();
+      if (reason.length >= 3 && reason.length <= 250) return reason;
+    }
+  }
+  return '';
 }
 function ichefCentralHistoryEntry(data = {}) {
 const at = data.at || new Date().toISOString();
@@ -14371,11 +14387,9 @@ if (ichefOrderCancellationRiskV305(previousValueForHistory, order, auditReason))
       code:'FISCAL_CORRECTION_REQUIRED',
       error:'Commande fiscalisée : utilisez la procédure de correction fiscale.'});
   }
-  // Motif requis pour les annulations explicites du PAD V41.
-  const explicit = /annul|cancel/i.test(String(auditReason || '')) ||
-    order?.cancelled === true ||
-    Array.isArray(order?.items) && order.items.some(i => i?.cancelled === true);
-  if (explicit && !ichefCancellationReasonV305(req.body || {}, order)) {
+  // V310 : une NOUVELLE annulation exige toujours un motif ; une ligne deja
+  // annulee ne peut pas bloquer les ecritures normales ni servir de motif.
+  if (!ichefCancellationReasonV305(req.body || {}, order, previousValueForHistory)) {
     return res.status(422).json({success:false,persisted:false,
       code:'CANCELLATION_REASON_REQUIRED',
       error:'Motif d’annulation obligatoire (3 à 250 caractères).'});
@@ -39224,10 +39238,6 @@ console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
 console.log('==========================================');
 }
 );
-
-
-
-
 
 
 
