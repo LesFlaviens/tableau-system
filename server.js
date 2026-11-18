@@ -3,6 +3,11 @@
 
 
 
+
+
+
+
+
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -7449,7 +7454,7 @@ async function ichef229SyncInvoice(invoice){
   if(changed){
    for(const recipe of recipes){
     const calc=ichefSwitchRecipeCost(recipe,map);if(calc.linked>0)recipe.cost=calc.cost;
-    const ref=ichefSwitchFindMenuItem(menu,recipe.name),selling=ichefSwitchNum(ref?.item?.price??recipe?.price,0);
+    const ref=ichefSwitchFindMenuItem(menu,recipe.name),selling=ichefSwitchReferenceSellingPrice(ref?.item,recipe);
     recipe.fc=selling>0?Math.round(ichefSwitchNum(recipe.cost,0)/selling*1000)/10:0;
     recipe.switchUpdatedAt=now;
     if(ref?.item){ref.item.foodCost=recipe.cost;ref.item.foodCostRate=recipe.fc;ref.item.switchUpdatedAt=now;}
@@ -14302,6 +14307,55 @@ app.post('/api/order-symbiose', async (req, res) => {
 const ICHEF_PLANNING_PREMIUM_ONLY =
   !/^(0|false|no|off)$/i.test(String(process.env.ICHEF_PLANNING_PREMIUM_ONLY ?? 'true').trim());
 
+
+// V318 — Validation serveur du poids tarifé. Ne remplace ni l'authentification
+// PAD ni les contrôles d'encaissement. Les anciennes lignes inchangées survivent
+// à une modification ultérieure du prix sur la carte.
+function ichefWeightV318Validate(order, previousOrder, menuNode){
+ if(!order||!Array.isArray(order.items))return null;
+ const menu=menuNode?.data??menuNode??{};
+ const catalog=[];
+ for(const arr of Object.values(menu)){if(Array.isArray(arr))catalog.push(...arr);}
+ const oldLines=Array.isArray(previousOrder?.items)?previousOrder.items:[];
+ const oldMap=new Map(oldLines.map(l=>[String(l?.lineId||l?.id||l?.itemId||''),l]));
+ for(const line of order.items){
+  if(!line||line.cancelled===true)continue;
+  const lineId=String(line.lineId||line.id||line.itemId||'');
+  const old=oldMap.get(lineId);
+  const lineMode=String(line.saleMode||'');
+  const productId=String(line.productId||line.recipeId||'');
+  const fromMenu=catalog.find(p=>String(p?.id||'')===productId) ||
+       catalog.find(p=>String(p?.name||p?.n||'').trim()===String(line.name||line.n||'').trim());
+  const menuMode=String(fromMenu?.saleMode||'');
+  const guarded=['WEIGHT_KG','WEIGHT_100G'].includes(lineMode)||['WEIGHT_KG','WEIGHT_100G'].includes(menuMode);
+  if(!guarded)continue;
+  // Ancienne vente déjà validée : aucune revalorisation quand le tarif change.
+  const unchanged=old && Number(old.weightGrams||0)===Number(line.weightGrams||0)
+    && Number(old.price??old.p??0)===Number(line.price??line.p??0)
+    && Number(old.qty??1)===Number(line.qty??1)
+    && Number(old.referenceWeightGrams||0)===Number(line.referenceWeightGrams||0)
+    && Number(old.basisPrice||0)===Number(line.basisPrice||0)
+    && Number(old.priceBasis||0)===Number(line.priceBasis||0)
+    && String(old.productId||'')===String(line.productId||'')
+    && String(old.recipeId||'')===String(line.recipeId||'')
+    && String(old.name||old.n||'')===String(line.name||line.n||'')
+    && String(old.saleMode||'')===lineMode;
+  if(unchanged)continue;
+  if(!fromMenu)return 'Plat au poids introuvable dans la carte centrale.';
+  if(!['WEIGHT_KG','WEIGHT_100G'].includes(menuMode)||lineMode!==menuMode)return 'Mode de vente différent de la carte centrale.';
+  const basis=menuMode==='WEIGHT_KG'?1000:100;
+  const grams=Number(line.weightGrams),tariff=Number(fromMenu.price),quantity=Number(line.qty??1);
+  const expected=Math.round(tariff*grams/basis*100)/100;
+  const amount=Number(line.price??line.p);
+  if(!Number.isFinite(grams)||grams<=0||grams>50000||!Number.isFinite(tariff)||tariff<0||
+     !Number.isFinite(amount)||!Number.isFinite(expected)||Math.abs(amount-expected)>0.0101||
+     Number(line.priceBasis)!==basis||Number(line.basisPrice)!==tariff||quantity!==1||
+     Number(line.referenceWeightGrams||0)!==Number(fromMenu.referenceWeightGrams||0)){
+      return 'Poids ou prix incorrect : actualisez la carte et ressaisissez le poids.';
+  }
+ }
+ return null;
+}
 app.post('/update-order', async (req, res) => {
 try {
 const tenantID =
@@ -14367,13 +14421,16 @@ terminalAccess.requiresDuty === true
 const historyProjection = {
 [`activeOrders.${tableId}`]: 1,
 'activeOrders.AUDIT_MASTER': 1,
-'activeOrders.SETTINGS_MASTER': 1 // V311: devise historique à l'instant de l'écriture
+'activeOrders.SETTINGS_MASTER': 1, // V311: devise historique à l'instant de l'écriture
+'activeOrders.MENU_MASTER': 1 // V318: contrôle autoritaire tarifs au poids
 };
 const previousStateForHistory = await AppState
 .findOne({ tenantID }, historyProjection)
 .lean();
 const previousValueForHistory =
 previousStateForHistory?.activeOrders?.[tableId];
+const weightValidationError=ichefWeightV318Validate(order,previousValueForHistory,previousStateForHistory?.activeOrders?.MENU_MASTER);
+if(weightValidationError)return res.status(422).json({success:false,persisted:false,code:'WEIGHT_PRICE_INVALID',error:weightValidationError});
 // V305 : sécuriser explicitement les annulations et suppressions de commandes
 // sans toucher aux autres modules. Le terminal client et body.operator ne font
 // jamais preuve de l'identité du serveur humain.
@@ -34309,7 +34366,7 @@ function ichefSwitchInventoryQty(item){ return ichefSwitchNum(item?.currentQty ?
 function ichefSwitchInventoryUnit(item){ return ichefSwitchText(item?.unit ?? item?.unite ?? 'u').toLowerCase(); }
 function ichefSwitchIngredientUsage(ing, inventoryItem){
   const raw=ichefSwitchNum(ing?.qtyPerPortion ?? ing?.qty ?? ing?.quantity ?? ing?.amount ?? ing?.grammage,0);
-  const recipeUnit=ichefSwitchText(ing?.unit ?? ing?.unite ?? ing?.inventoryUnit ?? '').toLowerCase();
+  const recipeUnit=ichefSwitchText(ing?.quantityUnit ?? ing?.unit ?? ing?.unite ?? ing?.inventoryUnit ?? '').toLowerCase();
   const stockUnit=ichefSwitchInventoryUnit(inventoryItem);
   if(raw<=0) return 0;
   if(['kg','kilo','kilogramme','kilogrammes'].includes(stockUnit)){
@@ -34350,6 +34407,16 @@ function ichefSwitchRecipeCapacity(recipe, inventoryMap){
     capacity=Math.min(capacity,Math.floor(Math.max(0,ichefSwitchInventoryQty(inv))/use));
   }
   return constrained ? Math.max(0,capacity===Infinity?0:capacity) : null;
+}
+
+function ichefSwitchReferenceSellingPrice(menuItem,recipe){
+  const item=menuItem||recipe||{};
+  const tariff=ichefSwitchNum(item.price??recipe?.price,0);
+  const mode=String(item.saleMode||recipe?.saleMode||'');
+  if(!['WEIGHT_KG','WEIGHT_100G'].includes(mode))return tariff;
+  const grams=Number(recipe?.referenceWeightGrams||item?.referenceWeightGrams);
+  if(!Number.isFinite(grams)||grams<=0)return 0;
+  return tariff*grams/(mode==='WEIGHT_KG'?1000:100);
 }
 function ichefSwitchFindRecipe(recipes,item){
   const pid=String(item?.recipeId ?? item?.productId ?? item?.id ?? '');
@@ -34406,6 +34473,11 @@ async function ichefSwitchProcessFinalizedOrder(tenantID,tableId,order,meta={}){
       const name=ichefSwitchText(line.name??line.n??line.label??'Article');
       const price=ichefSwitchNum(line.price??line.p??line.prix,0);
       const recipe=ichefSwitchFindRecipe(recipes,line);
+      const weightG=Number(line.weightGrams);
+      const refG=Number(recipe?.referenceWeightGrams);
+      const isWeight=['WEIGHT_KG','WEIGHT_100G'].includes(String(line.saleMode||''));
+      // Référence confirmée dans la recette : sans elle, ne jamais débiter un stock au hasard.
+      const stockFactor=isWeight ? ((weightG>0&&refG>0)?weightG/refG:null) : 1;
       const menuRef=ichefSwitchFindMenuItem(menu,name);
       const unitPrice=price || ichefSwitchNum(menuRef?.item?.price??menuRef?.item?.p,0);
       revenue += unitPrice*qty;
@@ -34419,7 +34491,8 @@ async function ichefSwitchProcessFinalizedOrder(tenantID,tableId,order,meta={}){
           const perPortion=ichefSwitchIngredientUsage(ing,inv);
           if(perPortion<=0) continue;
           const before=ichefSwitchInventoryQty(inv);
-          const consumed=perPortion*qty;
+          if(stockFactor===null){unlinkedLines++;continue;}
+          const consumed=perPortion*qty*stockFactor;
           const after=Math.max(0,before-consumed);
           inv.currentQty=Math.round(after*1000000)/1000000;
           inv.updatedAt=new Date().toISOString();
@@ -34427,8 +34500,10 @@ async function ichefSwitchProcessFinalizedOrder(tenantID,tableId,order,meta={}){
           stockMovements++;
         }
       } else unlinkedLines++;
-      estimatedCost += unitCost*qty;
-      saleLines.push({name,qty,unitPrice,unitCost,revenue:unitPrice*qty,cost:unitCost*qty,recipeId:recipe?.id??null});
+      const lineCost=stockFactor===null?0:unitCost*qty*stockFactor;
+      estimatedCost += lineCost;
+      saleLines.push({name,qty,unitPrice,unitCost,revenue:unitPrice*qty,cost:lineCost,
+         weightGrams:isWeight?weightG:null,stockCalculation:isWeight?(stockFactor===null?'NON_CALCULABLE':'PONDÉRÉ_AU_POIDS'):'PORTION',recipeId:recipe?.id??null});
     }
 
     // Recalcul Food Cost + potentiel de production + disponibilité carte.
@@ -34437,7 +34512,7 @@ async function ichefSwitchProcessFinalizedOrder(tenantID,tableId,order,meta={}){
       const calc=ichefSwitchRecipeCost(recipe,refreshedInvMap);
       if(calc.linked>0){ recipe.cost=calc.cost; }
       const menuRef=ichefSwitchFindMenuItem(menu,recipe?.name);
-      const sellingPrice=ichefSwitchNum(menuRef?.item?.price??recipe?.price,0);
+      const sellingPrice=ichefSwitchReferenceSellingPrice(menuRef?.item,recipe);
       recipe.fc=sellingPrice>0?Math.round((ichefSwitchNum(recipe.cost,0)/sellingPrice)*1000)/10:0;
       recipe.switchCapacity=ichefSwitchRecipeCapacity(recipe,refreshedInvMap);
       recipe.switchUpdatedAt=new Date().toISOString();
@@ -34499,7 +34574,7 @@ app.post('/api/ichef-switch/recompute', async (req,res)=>{
     const invMap=new Map((Array.isArray(inventory)?inventory:[]).map(x=>[String(x?.id??''),x]));
     for(const recipe of recipes){
       const calc=ichefSwitchRecipeCost(recipe,invMap); if(calc.linked>0)recipe.cost=calc.cost;
-      const ref=ichefSwitchFindMenuItem(menu,recipe?.name); const price=ichefSwitchNum(ref?.item?.price??recipe?.price,0);
+      const ref=ichefSwitchFindMenuItem(menu,recipe?.name); const price=ichefSwitchReferenceSellingPrice(ref?.item,recipe);
       recipe.fc=price>0?Math.round((ichefSwitchNum(recipe.cost,0)/price)*1000)/10:0;
       recipe.switchCapacity=ichefSwitchRecipeCapacity(recipe,invMap);
       if(ref?.item){ref.item.foodCost=recipe.cost;ref.item.foodCostRate=recipe.fc;ref.item.switchMaxPortions=recipe.switchCapacity;ref.item.switchUnavailable=recipe.switchCapacity!==null&&recipe.switchCapacity<=0;ref.item.switchStockState=recipe.switchCapacity===null?'UNLINKED':recipe.switchCapacity<=0?'OUT':recipe.switchCapacity<=5?'LOW':'OK';if(recipe.switchCapacity!==null)ref.item.stock=recipe.switchCapacity;}
@@ -39400,5 +39475,19 @@ console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
 console.log('==========================================');
 }
 );
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
