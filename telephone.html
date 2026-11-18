@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -8,7 +7,7 @@
     <script>
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.getRegistrations().then(function(registrations) {
-                for (let registration of registrations) registration.unregister();
+                for (let registra:tion of registrations) registration.unregister();
             });
         }
     </script>
@@ -1783,6 +1782,25 @@ function closeOrder() {
     document.getElementById('order-drawer').classList.remove('open');
 }
 
+
+/* V318 — vente par pièce, portion, kg ou 100 g : ticket au prix figé. */
+function padV318Weight(item){return ['WEIGHT_KG','WEIGHT_100G'].includes(String(item?.saleMode||''));}
+function padV318Label(item){const m=String(item?.saleMode||'');return m==='WEIGHT_KG'?'/kg':m==='WEIGHT_100G'?'/100 g':m==='PIECE'?'/pièce':'/portion';}
+function padV318Select(item){
+ const mode=String(item?.saleMode||'PORTION');const tariff=Number(item?.price??item?.p??0);
+ if(!Number.isFinite(tariff)||tariff<0)return null;
+ if(!padV318Weight(item))return {saleMode:mode,price:tariff,weightGrams:null};
+ const basis=mode==='WEIGHT_KG'?1000:100;
+ const raw=prompt(`Poids en grammes · ${item.name||item.n}\nTarif ${padMoney(tariff)} / ${basis===1000?'kg':'100 g'}`,String(item.referenceWeightGrams||''));
+ if(raw===null)return null;
+ if(!/^\d+(?:[,.]\d{1,2})?$/.test(raw.trim())){alert('Poids invalide.');return null;}
+ const grams=Number(raw.replace(',','.'));
+ if(!Number.isFinite(grams)||grams<=0||grams>50000){alert('Poids entre 0 et 50 000 grammes requis.');return null;}
+ const price=Math.round(tariff*grams/basis*100)/100;
+ if(!confirm(`${item.name||item.n} · ${grams} g\nTotal : ${padMoney(price)}\nAjouter au ticket ?`))return null;
+ return {saleMode:mode,price,weightGrams:grams,priceBasis:basis,basisPrice:tariff,
+  referenceWeightGrams:Number(item.referenceWeightGrams)||null,recipeId:item.recipeId||item.id||null};
+}
 function renderMenu(category) {
     const norm=(v)=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
     const picked=[];
@@ -1806,10 +1824,10 @@ function renderMenu(category) {
         if (!Number.isFinite(price) || price<0) continue;
         const btn=document.createElement('button'); btn.type='button'; btn.className='btn-item';
         const title=document.createElement('span'); title.textContent=name;
-        const priceEl=document.createElement('span'); priceEl.className='price'; priceEl.textContent=padMoney(price);
+        const priceEl=document.createElement('span'); priceEl.className='price'; priceEl.textContent=padMoney(price)+' '+padV318Label(item);
         btn.append(title,priceEl);
         const dest=Object.values(menuBar).some(arr=>Array.isArray(arr)&&arr.includes(item))?'bar':(item.dest || item.destination || guessDestination(name));
-        btn.addEventListener('click',()=>addToTicket(name,price,String(item.category||group||''),dest));
+        btn.addEventListener('click',()=>addToTicket(name,price,String(item.category||group||''),dest,item));
         grid.appendChild(btn);
     }
     if (!grid.childElementCount) { const empty=document.createElement('div');empty.style.padding='20px';empty.textContent='Aucun article dans cette catégorie';grid.appendChild(empty); }
@@ -1821,9 +1839,10 @@ function guessDestination(name) {
         : 'cuisine';
 }
 
-function addToTicket(name, price, category='', destination='') {
+function addToTicket(name, price, category='', destination='', product=null) {
     if (!currentUser || !padSessionPin) return;
-    const existing = currentTicket.find(i => padLineName(i) === name && !padLineSent(i) && padLineActive(i));
+    const sale=padV318Select(product||{name,price});if(!sale)return;
+    const existing = !sale.weightGrams && currentTicket.find(i => padLineName(i) === name && !padLineSent(i) && padLineActive(i) && !i.weightGrams);
     if (existing) {
         existing.qty = (existing.qty || 1) + 1;
     } else {
@@ -1831,7 +1850,13 @@ function addToTicket(name, price, category='', destination='') {
             id:Date.now()*1000 + Math.floor(Math.random()*1000),
             itemId:Date.now(),
             n:String(name),
-            p:Number(price || 0),
+            p:sale.price,
+            price:sale.price,
+            productId:product?.id||null,
+            recipeId:sale.recipeId||product?.recipeId||product?.id||null,
+            saleMode:sale.saleMode,saleUnit:sale.weightGrams?'g':sale.saleMode==='PIECE'?'piece':'portion',
+            weightGrams:sale.weightGrams||null,priceBasis:sale.priceBasis||null,
+            basisPrice:sale.basisPrice??null,referenceWeightGrams:sale.referenceWeightGrams??null,
             qty:1,
             isSent:false,
             category:String(category||''),
@@ -1852,7 +1877,7 @@ function renderTicket() {
             ? `<span class="pad-v46-cancelled">ANNULÉ ${i.cancelledAt?'· '+padEscape(new Date(i.cancelledAt).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})):''}</span>`
             : `${padLineSent(i)?'<span class="pad-v46-sent">ENVOYÉ</span>':''}<button type="button" class="pad-v46-line-cancel" data-line-cancel="${idx}">ANNULER</button>`;
         return `<div class="ticket-item-row ${cancelled?'pad-v46-line-void':''}">
-            <div style="color:var(--text-main);font-size:.9rem"><strong>${padLineQty(i)}× ${padEscape(padLineName(i))}</strong><small style="display:block;color:var(--text-muted)">${padEscape(i.category||i.dest||'')}</small>${cancelled&&i.cancelReason?`<small>${padEscape(i.cancelReason)}</small>`:''}</div>
+            <div style="color:var(--text-main);font-size:.9rem"><strong>${padLineQty(i)}× ${padEscape(padLineName(i))}</strong><small style="display:block;color:var(--text-muted)">${padEscape(i.category||i.dest||'')}${i.weightGrams?' · '+padEscape(i.weightGrams)+' g':''}</small>${cancelled&&i.cancelReason?`<small>${padEscape(i.cancelReason)}</small>`:''}</div>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
                 <span style="color:var(--gold)">${cancelled?`<s>${padMoney(lineTotal)}</s> · 0`:padMoney(lineTotal)}</span>${status}
             </div>
@@ -2229,7 +2254,3 @@ setInterval(() => {
 
 </body>
 </html>
-
-
-
-
