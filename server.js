@@ -1,4 +1,19 @@
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -29857,6 +29872,56 @@ function ichefStaffChefAccessV301(staff={}) {
     ]);
     return roles.some(role=>allowed.has(role));
 }
+
+// V309 — Session Chef par Portail Staff (SSO).
+// Aucun mot de passe réutilisé ou transmis à Chef : identité signée STAFF,
+// appareil, établissement, droits Chef, présence et quota d'écrans vérifiés.
+// Ce POST n'est appelé qu'à l'ouverture du module Chef, jamais lors de la
+// simple consultation du lien RH. L'accès direct PIN existant ne change pas.
+app.post('/api/staff/chef/session',async(req,res)=>{
+    res.setHeader('Cache-Control','no-store');
+    try{
+        const auth=await ichefLoadActiveStaffSession(req);
+        if(!auth.ok) return res.status(401).json({success:false,
+            code:'STAFF_SESSION_REQUIRED',error:'Session Collaborateur expirée ou appareil révoqué.'});
+        if(!ichefStaffChefAccessV301(auth.staff))return res.status(403).json({
+            success:false,code:'CHEF_ACCESS_DENIED',error:'Accès Chef non autorisé dans RH.'});
+        // Cohérence avec /api/verify-pin CHEF : hors service, les collaborateurs
+        // ne peuvent pas ouvrir un module opérationnel (seul le Portail Staff).
+        if(auth.staff?.onDuty!==true)return res.status(403).json({
+            success:false,code:'NOT_ON_DUTY',error:'Accès Chef réservé au service actif.'});
+        const device=String(req.headers['x-ichef-device']||'').trim();
+        if(!device || device!==String(auth.claims?.deviceId||'').trim())return res.status(401).json({
+            success:false,code:'CHEF_DEVICE_NOT_VERIFIED',error:'Appareil non vérifié.'});
+        const tenant=await Tenant.findOne({tenantID:auth.tenantID});
+        if(!tenant||tenant.archivedAt||String(tenant.status||'').toUpperCase()!=='ACTIF')
+            return res.status(403).json({success:false,code:'TENANT_INACTIVE',error:'Établissement inactif.'});
+        if(tenant.demoExpiration && Date.now()>new Date(tenant.demoExpiration).getTime())
+            return res.status(403).json({success:false,code:'DEMO_EXPIRED',error:'Démonstration expirée.'});
+        // Même règle de quota opérationnel que /api/verify-pin pour CHEF.
+        const maxScreens=await syncTenantScreenLimit(tenant,{deferSave:true});
+        const existing=Array.isArray(tenant.registeredDevices)?tenant.registeredDevices:[];
+        const deduped=[...new Set(existing.map(x=>String(x||'').trim()).filter(Boolean))];
+        if(!deduped.includes(device)&&deduped.length>=maxScreens)return res.status(403).json({
+            success:false,code:'SCREEN_LIMIT_REACHED',error:'Limite d’écrans opérationnels atteinte.'});
+        if(deduped.length!==existing.length||!deduped.includes(device)){
+            tenant.registeredDevices=deduped.includes(device)?deduped:[...deduped,device];
+            tenant.markModified('registeredDevices');
+        }
+        if(tenant.isModified())await tenant.save();
+        // Ne renvoie pas de code PIN, de mot de passe ou de nouveau jeton.
+        // Chef reprend exclusivement la session STAFF signée et validée.
+        return res.json({success:true,allowed:true,scope:'STAFF_CHEF',
+            staff:{id:String(auth.claims.staffId),name:String(auth.staff?.name||'Chef').slice(0,120),
+                role:String(auth.staff?.role||'CHEF').slice(0,100)},
+            tenantID:auth.tenantID,verifiedAt:new Date().toISOString()});
+    }catch(error){
+        console.warn('[ICHEF STAFF CHEF SSO V309]',String(error?.code||'UNAVAILABLE'));
+        return res.status(503).json({success:false,code:'CHEF_SSO_UNAVAILABLE',
+            error:'Vérification du compte Chef momentanément indisponible.'});
+    }
+});
+
 app.get('/api/staff/chef/access',async(req,res)=>{
     res.setHeader('Cache-Control','no-store');
     try{
@@ -29866,7 +29931,7 @@ app.get('/api/staff/chef/access',async(req,res)=>{
                 error:'Session Staff invalide ou compte désactivé.'});
         }
         // Aucun PIN, adresse e-mail ou jeton dans le résultat / les logs.
-        const allowed=ichefStaffChefAccessV301(auth.staff);
+        const allowed=ichefStaffChefAccessV301(auth.staff) && auth.staff?.onDuty===true;
         return res.json({success:true,allowed,
             // Chemin relatif fixe. Jamais d'URL passée par le client.
             route:allowed?'/chef.html':null});
@@ -39159,3 +39224,23 @@ console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
 console.log('==========================================');
 }
 );
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
