@@ -1,5 +1,3 @@
-
-
 <!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"><meta name="theme-color" content="#ffffff"><link rel="preconnect" href="https://tableau-system.onrender.com" crossorigin><link rel="dns-prefetch" href="//tableau-system.onrender.com"><link rel="preload" as="script" href="https://tableau-system.onrender.com/socket.io/socket.io.js" crossorigin="anonymous"><script>
 (function(){
 function base(){
@@ -2246,6 +2244,30 @@ return null;
 return item;
 }
 
+
+/* V318 — vente à la pièce / portion / poids, sans recalcul des tickets anciens. */
+function ichefPadV318IsWeight(product){return ['WEIGHT_KG','WEIGHT_100G'].includes(String(product?.raw?.saleMode||product?.saleMode||''));}
+function ichefPadV318Offer(product){
+ const raw=product?.raw||product||{};
+ const saleMode=String(raw.saleMode||'PORTION');
+ const tariff=Number(product.price??raw.price??0);
+ if(!Number.isFinite(tariff)||tariff<0)return null;
+ if(!ichefPadV318IsWeight(product))return {saleMode,price:tariff,weightGrams:null,priceBasis:null};
+ const basis=saleMode==='WEIGHT_KG'?1000:100;
+ const value=prompt(`Poids réel en grammes — ${product.name}\nTarif : ${money(tariff)} / ${basis===1000?'kg':'100 g'}\nExemple : 350`,String(raw.referenceWeightGrams||''));
+ if(value===null)return null;
+ if(!/^\d+(?:[,.]\d{1,2})?$/.test(value.trim())){toast('Poids invalide : saisir les grammes.',true);return null;}
+ const grams=Number(value.replace(',','.'));
+ if(!Number.isFinite(grams)||grams<=0||grams>50000){toast('Poids entre 0 et 50 000 g requis.',true);return null;}
+ const price=Math.round(tariff*grams/basis*100)/100;
+ if(!confirm(`${product.name} — ${grams} g\nTotal calculé : ${money(price)}\nConfirmer ?`))return null;
+ return {saleMode,price,weightGrams:grams,priceBasis:basis,basisPrice:tariff,
+    referenceWeightGrams:Number(raw.referenceWeightGrams)||null,recipeId:raw.recipeId||raw.id||null};
+}
+function ichefPadV318PriceLabel(product){
+ const mode=String(product?.raw?.saleMode||product?.saleMode||'');
+ return mode==='WEIGHT_KG'?'/kg':mode==='WEIGHT_100G'?'/100 g':mode==='PIECE'?'/pièce':'/portion';
+}
 function addProduct(product,options={}){
 if(!STATE.currentTable||!product)return;
 
@@ -2256,6 +2278,8 @@ toast(`Cuisson obligatoire · ${seatLabel(itemSeat(pendingCookingItem)||1)}`,tru
 return;
 }
 
+const selling=ichefPadV318Offer(product);
+if(!selling)return;
 const before=cloneOrderForUndo(ensureOrder(STATE.currentTable));
 const o=ensureOrder(STATE.currentTable);
 const raw=product.raw||{};
@@ -2269,7 +2293,7 @@ const automaticCooking=(dest==="cuisine" ? text(cookingProfile.automatic||"") : 
 const selectedCooking=explicitCooking||automaticCooking;
 const cookingRequired=(dest==="cuisine"&&cookingProfile.required===true&&!selectedCooking);
 
-const same=o.items.find(i=>
+const same=(!ichefPadV318IsWeight(product))&&o.items.find(i=>
 !lineFired(i) &&
 text(i.productId||i.id)===text(product.id) &&
 itemSeat(i)===seat &&
@@ -2286,7 +2310,7 @@ same.qty=itemQty(same)+1;
 line=same;
 }else{
 const name=product.name;
-const price=product.price;
+const price=selling.price;
 const tva=product.vatRate??raw.vatRate??raw.tva??raw.taxRate??fiscalDefaultVatForProduct(product);
 
 line=normalizeCompatItem({
@@ -2295,6 +2319,11 @@ lineId:uid(),
 itemId:Date.now(),
 
 productId:product.id,
+recipeId:selling.recipeId||raw.recipeId||product.id,
+saleMode:selling.saleMode,
+saleUnit:selling.weightGrams?'g':(selling.saleMode==='PIECE'?'piece':'portion'),
+weightGrams:selling.weightGrams,priceBasis:selling.priceBasis||null,basisPrice:selling.basisPrice??null,
+referenceWeightGrams:selling.referenceWeightGrams??null,
 
 n:name,
 name:name,
@@ -3123,7 +3152,7 @@ return `<button class="product ${p.available?"":"sold"}"
                       data-pname="${esc(p.name)}"
                       title="${esc(p.name)}">
         <span class="pname">${esc(buttonLabel)}</span>
-        <span class="price">${money(p.price)}</span>
+        <span class="price">${money(p.price)} ${ichefPadV318PriceLabel(p)}</span>
         <span class="product-hold-hint">Tap = ajouter au convive choisi · cuisson si nécessaire · maintien 0,6 s = nom complet</span>
       </button>`;
 }).join("")
@@ -3187,7 +3216,7 @@ const controls=i.cancelled
 ?`<button data-line="${esc(key)}" data-act="obs" title="Observation"></button>
           <button data-line="${esc(key)}" data-act="cooking" title="Cuisson"></button>
           <button data-line="${esc(key)}" data-act="delete" title="Annuler au poste" style="width:52px">ANN.</button>`
-:`<button data-line="${esc(key)}" data-act="minus">−</button>
+:i.weightGrams?`<span class="line-state" title="Poids et prix figés">${esc(i.weightGrams)} g</span><button data-line="${esc(key)}" data-act="delete" title="Retirer">×</button>`:`<button data-line="${esc(key)}" data-act="minus">−</button>
           <button data-line="${esc(key)}" data-act="plus">+</button>
           <button data-line="${esc(key)}" data-act="obs" title="Observation"></button>
           <button data-line="${esc(key)}" data-act="delete">×</button>`;
@@ -3200,7 +3229,7 @@ return `<div class="ticket-row ${sent?"sent-lock":""}">
             ${cooking}
             ${state}
           </div>
-          <div class="ticket-meta">x${q} · ${esc(i.course||i.category||"")}</div>
+          <div class="ticket-meta">x${q} · ${esc(i.course||i.category||"")}${i.weightGrams?` · ${esc(i.weightGrams)} g · ${money(i.basisPrice)} / ${i.priceBasis===1000?'kg':'100 g'}`:''}</div>
           ${obs?`<span class="ticket-obs ${critical?"critical":""}">${critical?" ":" "}${esc(obs)}</span>`:""}
         </div>
         <div class="ticket-right">
@@ -8269,7 +8298,7 @@ const controls=i.cancelled
 ?`<button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
           <button data-line="${esc(key)}" data-act="cooking" title="Cuisson">🌡️</button>
           <button data-line="${esc(key)}" data-act="delete" title="Annuler au poste" style="width:52px">ANN.</button>`
-:`<button data-line="${esc(key)}" data-act="minus">−</button>
+:i.weightGrams?`<span class="line-state" title="Poids et prix figés">${esc(i.weightGrams)} g</span><button data-line="${esc(key)}" data-act="delete" title="Retirer">×</button>`:`<button data-line="${esc(key)}" data-act="minus">−</button>
           <button data-line="${esc(key)}" data-act="plus">+</button>
           <button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
           <button data-line="${esc(key)}" data-act="delete">×</button>`;
@@ -8282,7 +8311,7 @@ return `<div class="ticket-row ${sent?"sent-lock":""}" data-course-col="${col}">
           <div class="ticket-tags">
             ${destinationTagHTML(i)}${cooking}${state}
           </div>
-          <div class="ticket-meta">x${q} · ${esc(i.course||i.category||"")}</div>
+          <div class="ticket-meta">x${q} · ${esc(i.course||i.category||"")}${i.weightGrams?` · ${esc(i.weightGrams)} g · ${money(i.basisPrice)} / ${i.priceBasis===1000?'kg':'100 g'}`:''}</div>
           ${obs?`<span class="ticket-obs ${critical?"critical":""}">${critical?"🛑 ":"⚠️ "}${esc(obs)}</span>`:""}
         </div>
         <div class="ticket-right">
@@ -13166,7 +13195,7 @@ const controls=i.cancelled
 ?`<button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
   <button data-line="${esc(key)}" data-act="cooking" title="Cuisson">🌡️</button>
   <button data-line="${esc(key)}" data-act="delete" title="Annuler au poste">ANN.</button>`
-:`<button data-line="${esc(key)}" data-act="minus" title="Retirer">−</button>
+:i.weightGrams?`<span class="line-state" title="Poids et prix figés">${esc(i.weightGrams)} g</span><button data-line="${esc(key)}" data-act="delete" title="Retirer">×</button>`:`<button data-line="${esc(key)}" data-act="minus" title="Retirer">−</button>
   <button data-line="${esc(key)}" data-act="plus" title="Ajouter">+</button>
   <button data-line="${esc(key)}" data-act="obs" title="Observation">📝</button>
   <button data-line="${esc(key)}" data-act="delete" title="Supprimer">×</button>`;
@@ -16793,12 +16822,3 @@ button,input,select,textarea,
 </script>
 
 </body></html>
-Fermer la visionneuse
-
-
-
-<!DOCTYPE html> <html lang="fr"> <head> <!-- ICHEF ADMIN V44 — STAFF : ACCÈS À …
-Texte collé
-
-tu peux mettre a jour attention au connexion fonction et la sécurité stp
-
