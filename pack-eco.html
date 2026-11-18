@@ -1,4 +1,3 @@
-
 <!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"><meta name="theme-color" content="#ffffff"><link rel="preconnect" href="https://tableau-system.onrender.com" crossorigin><link rel="dns-prefetch" href="//tableau-system.onrender.com"><link rel="preload" as="script" href="https://tableau-system.onrender.com/socket.io/socket.io.js" crossorigin="anonymous"><script>
 (function(){
 function base(){
@@ -968,9 +967,22 @@ updateUndoButton();
 return;
 }
 
+// V42 : toute annulation rapide doit conserver un motif explicite,
+// y compris lorsque l'article n'etait pas encore envoye en production.
+const motif=ichefPadCancellationReason(
+  `ANNULER LA DERNIERE ACTION · Table ${STATE.currentTable}\n${last.label}`
+);
+if(!motif){
+  STATE.undoStack.push(last);
+  updateUndoButton();
+  return;
+}
 STATE.currentOrder=clone(last.order);
-await saveCurrent(last.order,"Annulation rapide : "+last.label,{immediate:true,noUndo:true});
-toast("↶ "+last.label+" annulé");
+const ok=await saveCurrent(last.order,
+  `ANNULATION RAPIDE · Table ${STATE.currentTable} · ${last.label} · Motif : ${motif}`,
+  {immediate:true,noUndo:true});
+if(!ok)toast("Annulation en attente de synchronisation",true);
+else toast("↶ "+last.label+" annulé");
 updateUndoButton();
 }
 
@@ -1023,6 +1035,28 @@ setOrderSyncState(" SERVEUR À JOUR","good");
 return true;
 }catch(err){
 lastError=err;
+if(err?.code==="CANCELLATION_REASON_REQUIRED"){
+  // Reparation des anciennes annulations V41 restees en file locale :
+  // jamais de motif invente ou d'effacement silencieux.
+  const motif=ichefPadCancellationReason(
+    `ANNULATION EN ATTENTE DE SYNCHRONISATION
+Table ${key}
+${String(pending.reason||"").slice(0,160)}
+
+Renseignez le motif pour envoyer l'ecriture au serveur.`
+  );
+  if(!motif)break;
+  const prefix=String(pending.reason||"Mise a jour PAD")
+    .replace(/\s*[·|–-]\s*Motif\s*:.*/i,"").slice(0,360);
+  pending.reason=`${prefix} · Motif : ${motif}`;
+  const current=ICHEF_LOCAL_PENDING.get(key);
+  if(current&&current.version===pending.version){
+    current.reason=pending.reason;
+    ichefPersistFailedWrite(key,current);
+  }
+  if(attempt<2)continue;
+  break;
+}
 const msg=String(err?.message||"");
 if(/401|403|AUTH|PIN|PERMISSION/i.test(msg))break;
 if(attempt<2)await new Promise(r=>setTimeout(r,220*(attempt+1)));
@@ -1565,7 +1599,12 @@ method:"POST",
 body:JSON.stringify(body)
 });
 const j=await r.json().catch(()=>({}));
-if(!r.ok||j.success===false)throw new Error(j.error||j.message||("Écriture serveur "+r.status));
+if(!r.ok||j.success===false){
+ const err=new Error(j.error||j.message||("Écriture serveur "+r.status));
+ err.code=String(j.code||'');
+ err.httpStatus=r.status;
+ throw err;
+}
 if(j.persisted===false)throw new Error("Écriture reçue mais non persistée");
 return j;
 }
@@ -16714,6 +16753,3 @@ button,input,select,textarea,
 </style>
 
 </body></html>
-
-
-
