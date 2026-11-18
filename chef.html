@@ -4,9 +4,6 @@
 
 
 
-
-
-
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -1071,6 +1068,11 @@
             <p class="ichef-security-subtitle">Saisissez le code PIN de l’établissement. La validation est effectuée par le serveur iCHEF.</p>
             <input type="password" id="pin-input" inputmode="numeric" autocomplete="off" maxlength="12" placeholder="CODE PIN" aria-label="Code PIN">
             <button id="pin-submit-btn" type="button" onclick="checkPin()" class="add-btn primary">DÉVERROUILLER</button>
+            <button id="ichef-chef-staff-sso-link-v316" type="button"
+                    class="add-btn" style="margin-top:10px;"
+                    onclick="window.ichefChefGoToStaffV316?.()">
+                CONNEXION VIA ICHEF COLLABORATEUR
+            </button>
             <button id="pin-return-admin-btn"
                     type="button"
                     class="add-btn"
@@ -7904,6 +7906,11 @@ html body #chef-mainmenu-carte-trigger.chef-mainmenu-trigger[aria-expanded="true
   <div class="ichef-chef-mobile-actions">
     <button type="button" data-chef-mobile-action="raccourcis"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg> Raccourcis</button>
     <button type="button" data-chef-mobile-action="personnalisation"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M10 2h4l1 3 3 1 3-1 2 4-2 3 2 3-2 4-3-1-3 1-1 3h-4l-1-3-3-1-3 1-2-4 2-3-2-3 2-4 3 1 3-1z"/></svg> Personnalisation</button>
+    <button type="button" id="ichef-chef-retour-staff-v316"
+            onclick="window.ichefChefGoToStaffV316?.()">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 5 3 12l7 7M3 12h18"/></svg>
+      Retour iCHEF Collaborateur
+    </button>
     <button type="button" data-chef-mobile-action="admin"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 5 3 12l7 7M3 12h18"/></svg> Retour administration</button>
     <button type="button" data-chef-mobile-action="kiosque"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="15" rx="2"/><path d="M8 22h8M12 18v4"/></svg> Mode kiosque</button>
   </div>
@@ -8613,6 +8620,100 @@ html body #chef-mainmenu-carte-trigger.chef-mainmenu-trigger[aria-expanded="true
 }
 </style>
 
+
+<!-- iCHEF Chef V316 : ouverture sans second mot de passe depuis une session
+     Portail Staff déjà connectée. Validation obligatoire par serveur. -->
+<script id="ichef-chef-staff-sso-v316">
+(() => {
+  'use strict';
+  if(window.__ICHEF_CHEF_STAFF_SSO_V316__)return;
+  window.__ICHEF_CHEF_STAFF_SSO_V316__=true;
+  const $=id=>document.getElementById(id);
+  let staffSso=false;
+  let busy=false;
+  const staffToken=()=>{
+    try{return String(sessionStorage.getItem('ichef_auth_token')||
+                      sessionStorage.getItem('ichef_access_token')||'').trim();}
+    catch(_){return '';}
+  };
+  window.ichefChefGoToStaffV316=()=>{
+    const url=new URL('portail-staff.html',location.href);
+    if(typeof tenantID!=='undefined'&&tenantID)url.searchParams.set('tenantID',tenantID);
+    location.assign(url.href);
+  };
+  function ssoMessage(message){
+    const el=$('error-msg');
+    if(el){el.style.display='block';el.style.color='var(--alert)';el.textContent=message;}
+  }
+  async function staffChefCheck(){
+    if(busy)return false;
+    const token=staffToken();
+    if(!token || !tenantID)return false;
+    const device=getDeviceFingerprint();
+    if(!device)return false;
+    busy=true;
+    try{
+      const response=await fetch(SERVER_URL+'/api/staff/chef/session',{
+        method:'POST',cache:'no-store',credentials:'omit',
+        headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json',
+          'Accept':'application/json','X-iCHEF-Tenant':tenantID,
+          'X-iCHEF-Device':device},
+        body:JSON.stringify({tenantID})
+      });
+      const result=await response.json().catch(()=>({}));
+      if(!response.ok||result.success!==true||result.allowed!==true){
+        if(staffSso){
+          staffSso=false;
+          if(window.ICHEF_SECURITY)window.ICHEF_SECURITY.ready=false;
+          const overlay=$('security-overlay');if(overlay)overlay.style.display='flex';
+          ssoMessage('Accès Chef suspendu. Reconnectez-vous depuis iCHEF Collaborateur.');
+        }else if(response.status===401||response.status===403){
+          ssoMessage(result.error||'Session Collaborateur non autorisée pour Chef.');
+        }
+        return false;
+      }
+      if(!staffSso && window.ICHEF_SECURITY?.ready===true)return true;
+      if(staffSso)return true;
+      window.ICHEF_SECURITY=Object.assign(window.ICHEF_SECURITY||{}, {
+        tenantID,deviceId:device,accessToken:token,operationsToken:token,
+        sessionId:null,sessionExpiresAt:null,
+        user:result.staff||{role:'CHEF'},
+        permissions:[],csrfToken:'',ready:true,
+        connectionState:'online',authSource:'STAFF_SSO_V316'
+      });
+      staffSso=true;
+      // Le PIN / mot de passe n'est pas recopié ni conservé dans Chef.
+      persistChefAccessTokenForModules();
+      const overlay=$('security-overlay');if(overlay)overlay.style.display='none';
+      const pin=$('pin-input');if(pin)pin.value='';
+      const msg=$('error-msg');if(msg)msg.style.display='none';
+      if(window.ichefSocket && !window.ichefSocket.connected){
+        window.ichefSocket.auth={tenantID,deviceId:device,csrfToken:'',accessToken:token};
+        window.ichefSocket.connect();
+      }
+      await bootSystem();
+      enterChefAfterPin();
+      try{await loadChefHomeIndicators();}catch(_){}
+      startChefSharedPolling();
+      return true;
+    }catch(error){
+      if(!staffSso)ssoMessage('Validation Chef indisponible. Réessayez depuis iCHEF Collaborateur.');
+      return false;
+    }finally{busy=false;}
+  }
+  // Dans l'app mobile : aucun second formulaire si la session Staff est
+  // déjà active. En cas de déconnexion, aucun contournement : PIN historique
+  // seulement pour les personnes détenant une autre autorisation valide.
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>void staffChefCheck(),{once:true});
+  else void staffChefCheck();
+  // Réévaluation du compte actif, de l'appareil et des droits : un retrait RH
+  // bloque la page Chef ouverte sans déconnecter ni modifier le compte Staff.
+  const guard=()=>{if(staffSso)void staffChefCheck();};
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden)guard();});
+  window.addEventListener('focus',guard);
+  setInterval(()=>{if(staffSso&&!document.hidden)guard();},60000);
+})();
+</script>
 </body>
 </html>
 
