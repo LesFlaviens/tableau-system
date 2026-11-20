@@ -1,13 +1,4 @@
 
-
-
-
-
-
-
-
-
-
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -430,6 +421,14 @@ function ichefSecurityRateLimitForPath(pathname,req){
     }
     if(p === '/api/ichef/cancellations/v311'){
         return {limit:30,windowMs:60_000,blockMs:5*60_000};
+    }
+    // V321 : quotas adaptés au temps réel ; limite anti-bruteforce stricte si PIN seul.
+    if(p === '/api/ichef/control/v320'){
+        if(req?.headers?.['x-ichef-pin']) return {limit:8,windowMs:60_000,blockMs:15*60_000};
+        return {limit:600,windowMs:60_000,blockMs:5*60_000};
+    }
+    if(p === '/api/ichef/control/v320/events'){
+        return {limit:120,windowMs:60_000,blockMs:5*60_000};
     }
     if(p === '/api/rh/planning/session'){
         return {limit:12,windowMs:60_000,blockMs:5*60_000};
@@ -14321,17 +14320,23 @@ function ichefWeightV318Validate(order, previousOrder, menuNode){
  for(const line of order.items){
   if(!line||line.cancelled===true)continue;
   const lineId=String(line.lineId||line.id||line.itemId||'');
-  const old=oldMap.get(lineId);
+  const old=lineId ? oldMap.get(lineId) : null;
   const lineMode=String(line.saleMode||'');
-  const productId=String(line.productId||line.recipeId||'');
-  const fromMenu=catalog.find(p=>String(p?.id||'')===productId) ||
-       catalog.find(p=>String(p?.name||p?.n||'').trim()===String(line.name||line.n||'').trim());
+  const productId=String(line.productId||line.recipeId||'').trim();
+  // V319 : quand la ligne référence un produit, ne JAMAIS remplacer une
+  // référence inconnue par un autre produit ayant le même nom. Pour les
+  // anciennes cartes sans identifiant, on n'accepte qu'un nom unique.
+  const candidates=productId
+    ? catalog.filter(p=>p?.id!=null && String(p.id)===productId)
+    : catalog.filter(p=>String(p?.name||p?.n||'').trim()===String(line.name||line.n||'').trim());
+  const fromMenu=candidates.length===1?candidates[0]:null;
   const menuMode=String(fromMenu?.saleMode||'');
   const guarded=['WEIGHT_KG','WEIGHT_100G'].includes(lineMode)||['WEIGHT_KG','WEIGHT_100G'].includes(menuMode);
   if(!guarded)continue;
   // Ancienne vente déjà validée : aucune revalorisation quand le tarif change.
-  const unchanged=old && Number(old.weightGrams||0)===Number(line.weightGrams||0)
+  const unchanged=old && old.cancelled!==true && Number(old.weightGrams||0)===Number(line.weightGrams||0)
     && Number(old.price??old.p??0)===Number(line.price??line.p??0)
+    && Number(old.p??old.price??0)===Number(line.p??line.price??0)
     && Number(old.qty??1)===Number(line.qty??1)
     && Number(old.referenceWeightGrams||0)===Number(line.referenceWeightGrams||0)
     && Number(old.basisPrice||0)===Number(line.basisPrice||0)
@@ -14345,10 +14350,19 @@ function ichefWeightV318Validate(order, previousOrder, menuNode){
   if(!['WEIGHT_KG','WEIGHT_100G'].includes(menuMode)||lineMode!==menuMode)return 'Mode de vente différent de la carte centrale.';
   const basis=menuMode==='WEIGHT_KG'?1000:100;
   const grams=Number(line.weightGrams),tariff=Number(fromMenu.price),quantity=Number(line.qty??1);
-  const expected=Math.round(tariff*grams/basis*100)/100;
+  // V319 : comparaison au CENTIME EXACT (V318 acceptait 1 cent d'écart).
+  // Refuser aussi les prix à > 2 décimales ou les résultats non sûrs.
+  const expectedCents=Math.round(tariff*grams/basis*100);
   const amount=Number(line.price??line.p);
+  const amountCents=Math.round(amount*100);
+  const legacyAmount=line.p==null ? amount : Number(line.p);
+  const legacyCents=Math.round(legacyAmount*100);
   if(!Number.isFinite(grams)||grams<=0||grams>50000||!Number.isFinite(tariff)||tariff<0||
-     !Number.isFinite(amount)||!Number.isFinite(expected)||Math.abs(amount-expected)>0.0101||
+     !Number.isFinite(amount)||!Number.isSafeInteger(expectedCents)||expectedCents<0||
+     !Number.isSafeInteger(amountCents)||Math.abs(amount*100-amountCents)>0.000001||
+     amountCents!==expectedCents||
+     !Number.isFinite(legacyAmount)||!Number.isSafeInteger(legacyCents)||
+     Math.abs(legacyAmount*100-legacyCents)>0.000001||legacyCents!==expectedCents||
      Number(line.priceBasis)!==basis||Number(line.basisPrice)!==tariff||quantity!==1||
      Number(line.referenceWeightGrams||0)!==Number(fromMenu.referenceWeightGrams||0)){
       return 'Poids ou prix incorrect : actualisez la carte et ressaisissez le poids.';
@@ -15053,6 +15067,324 @@ app.get('/api/ichef/cancellations/v311', async (req,res) => {
     return res.status(503).json({success:false,error:'Historique des annulations momentanément indisponible.'});
   }
 });
+
+
+// ============================================================================
+// iCHEF V320 — JOURNAL CENTRAL MULTISECTEURS (NON FISCAL)
+// Collection autonome : n'altère ni les commandes, ni la caisse, ni
+// INVENTORY_MASTER / ICHEF_SWITCH_MASTER. L'API est la source des déclarations,
+// pas une preuve de consommation physique ou de food cost réel.
+// Tout accès est validé côté serveur (tenant, session signée, RH, secteur).
+// ============================================================================
+const ICHEF_CTRL320_SECTORS=Object.freeze([
+  ['CUISINE','Cuisine'],['PATISSERIE','Pâtisserie'],['BOUCHERIE','Boucherie'],
+  ['PETIT_DEJEUNER','Petit-déjeuner'],['RESTAURANT','Restaurant'],['TERRASSE','Terrasse'],
+  ['BAR','Bar'],['ROOM_SERVICE','Room service'],['ECONOMAT','Économat'],
+  ['EMPORTER','Vente à emporter'],['BANQUETS','Banquets / événements']
+]);
+const ICHEF_CTRL320_LABELS=new Map(ICHEF_CTRL320_SECTORS);
+const ichefCtrl320Schema=new mongoose.Schema({
+  tenantID:{type:String,required:true,index:true},
+  eventId:{type:String,required:true},
+  at:{type:Date,default:Date.now,index:true},
+  kind:{type:String,required:true,enum:['LOSS','UNSOLD','TRANSFER','OFFER','REVERSAL']},
+  sourceSector:{type:String,required:true},destinationSector:{type:String,default:''},
+  productId:{type:String,default:''},productName:{type:String,default:''},
+  qty:{type:Number,default:0},unit:{type:String,default:'piece'},
+  reason:{type:String,required:true},
+  reference:{type:String,default:''},
+  relatedEventId:{type:String,default:''},
+  unitCost:{type:Number,default:null},estimatedCost:{type:Number,default:null},
+  costSource:{type:String,default:'UNAVAILABLE'},
+  currency:{type:String,default:''},
+  actorId:{type:String,required:true},actorName:{type:String,required:true},
+  actorRole:{type:String,default:''},
+  status:{type:String,default:'DECLARED'},
+  provenance:{type:String,default:'MANUAL_V320'}
+},{minimize:false,versionKey:false});
+ichefCtrl320Schema.index({tenantID:1,eventId:1},{unique:true});
+ichefCtrl320Schema.index({tenantID:1,at:-1});
+ichefCtrl320Schema.index({tenantID:1,relatedEventId:1},{unique:true,partialFilterExpression:{kind:'REVERSAL'}});
+const IchefCtrl320Event=mongoose.models.IchefCtrl320Event||mongoose.model('IchefCtrl320Event',ichefCtrl320Schema);
+function ichefCtrl320Text(x,max=140){return String(x??'').replace(/[\x00-\x1f\x7f]/g,' ').trim().slice(0,max)}
+function ichefCtrl320Norm(x){return ichefCtrl320Text(x,80).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[^A-Z0-9]+/g,'_').replace(/^_|_$/g,'')}
+function ichefCtrl320Tenant(req){return cleanString(req.headers?.['x-ichef-tenant']||req.query?.tenantID||req.body?.tenantID||'')}
+function ichefCtrl320Currency(ao={}){
+ const cfg=ao.SETTINGS_MASTER?.data||{};
+ const c=ichefCtrl320Norm(cfg.currency||cfg.devise||'');
+ if(c==='CHF'||c==='EUR')return c;
+ const country=ichefCtrl320Norm(cfg.fiscalCountry||cfg.country||'');
+ if(['CH','CHE','SUISSE','SWITZERLAND'].includes(country))return 'CHF';
+ if(['FR','BE','DE','IT','ES','PT','NL','AT','FI','IE','LU','GR','SK','SI','EE','LV','LT','MT','CY','HR'].includes(country))return 'EUR';
+ return '';
+}
+function ichefCtrl320Role(auth){
+ const staff=auth.staff||{};
+ const permissions=staff.permissions&&typeof staff.permissions==='object'?staff.permissions:{};
+ if(permissions?.control?.access===false||permissions?.['control.access']===false||staff.controlAccess===false)return '';
+ const privileged=[staff.role,staff.position,staff.title,staff.fonction,staff.rank].some(x=>
+   /^(MASTER|SUPER_ADMIN|SUPERADMIN|ADMIN|DIRECTION|DIRECTEUR|DIRECTRICE|GERANT|GERANTE|PROPRIETAIRE|OWNER)$/.test(ichefCtrl320Norm(x)));
+ if(ichef239IsMaster(auth)||privileged)return 'DIRECTION';
+ const role=ichefOpsRoleText(staff);
+ if(ichefStaffChefAccessV301(auth.staff||{})&&ichef240DutyState(auth).onDuty)return 'CHEF';
+ if(/maitre.?d.?hotel|maitre.?d.?h[oô]tel|head.?waiter|responsable.?salle|chef.?de.?rang|restaurant.?manager/.test(role)&&ichef240DutyState(auth).onDuty)return 'MAITRE_HOTEL';
+ if(/responsable|manager|superviseur|supervisor/.test(role)&&ichef240DutyState(auth).onDuty)return 'SECTEUR';
+ return '';
+}
+function ichefCtrl320Allowed(auth,role){
+ if(role==='DIRECTION')return ICHEF_CTRL320_SECTORS.map(x=>x[0]);
+ const raw=[auth.staff?.dept,auth.staff?.department,auth.staff?.service,auth.staff?.role,auth.staff?.fonction].filter(Boolean).join(' ');
+ const dept=ichefCtrl320Norm(raw);
+ const set=new Set();
+ if(role==='CHEF'){
+   if(/BAR/.test(dept)){set.add('BAR');}
+   else if(/PATISS/.test(dept)){set.add('PATISSERIE');set.add('CUISINE');}
+   else {set.add('CUISINE');set.add('PATISSERIE');set.add('BOUCHERIE');set.add('PETIT_DEJEUNER');}
+ }
+ if(role==='MAITRE_HOTEL'){['RESTAURANT','TERRASSE','ROOM_SERVICE','BANQUETS','EMPORTER','PETIT_DEJEUNER'].forEach(s=>set.add(s));}
+ if(role==='SECTEUR'){
+   if(/BAR/.test(dept))set.add('BAR');
+   if(/ECONOMAT|STOCK|ACHAT/.test(dept))set.add('ECONOMAT');
+   if(/RESTAURANT|SALLE|SERVICE|TERRASSE/.test(dept))['RESTAURANT','TERRASSE','ROOM_SERVICE'].forEach(s=>set.add(s));
+   if(/CUISINE|KITCHEN/.test(dept))set.add('CUISINE');
+ }
+ return [...set];
+}
+async function ichefCtrl320Authorize(req,res,{write=false}={}){
+ const tenantID=ichefCtrl320Tenant(req);
+ if(!/^[A-Za-z0-9_-]{2,80}$/.test(tenantID)){
+   res.status(400).json({success:false,code:'TENANT_INVALID',error:'Établissement invalide.'});return null;
+ }
+ let auth=await ichefOpsLoadAuthorizedSession(req);
+ // Lecture seule compatible avec le PIN Manager Admin V45/V46, jamais depuis URL.
+ // Un jeton invalide/expiré n'est jamais rétrogradé implicitement en accès PIN.
+ if(!auth.ok && !write && !ichefBearerToken(req)){
+   const pin=ichefCtrl320Text(req.headers?.['x-ichef-pin']||'',12);
+   if(pin&&/^\d{4,12}$/.test(pin)){
+     const allowed=await ichefAuthorizePin(tenantID,pin,{managerOnly:true});
+     if(allowed.ok&&allowed.isManager)return {tenantID,role:'DIRECTION',allowedSectors:ICHEF_CTRL320_SECTORS.map(x=>x[0]),auth:null,managerPinRead:true};
+   }
+ }
+ if(!auth.ok||auth.tenantID!==tenantID){
+   res.status(401).json({success:false,code:'SESSION_REQUIRED',error:'Session iCHEF valide nécessaire.'});return null;
+ }
+ const role=ichefCtrl320Role(auth);
+ const allowedSectors=ichefCtrl320Allowed(auth,role);
+ if(!role||!allowedSectors.length){
+   res.status(403).json({success:false,code:'SECTOR_FORBIDDEN',error:'Aucun droit sur le suivi des secteurs.'});return null;
+ }
+ return {tenantID,role,allowedSectors,auth,managerPinRead:false};
+}
+function ichefCtrl320Unit(value){
+ const unit=ichefCtrl320Norm(value);
+ return ['PIECE','PORTION','G','KG','ML','L'].includes(unit)?unit:'';
+}
+function ichefCtrl320Valuation(ao,event){
+ const recipes=ao.RECIPES_MASTER?.data||ao.RECIPES_MASTER;
+ const stocks=ao.INVENTORY_MASTER?.data||ao.INVENTORY_MASTER;
+ const rows=Array.isArray(recipes)?recipes:[];
+ const inv=Array.isArray(stocks)?stocks:[];
+ const id=String(event.productId||'');
+ const norm=ichefCtrl320Norm(event.productName);
+ const nameMatches=rows.filter(r=>norm&&ichefCtrl320Norm(r?.name)===norm);
+ const recipe=rows.find(r=>id&&String(r?.id??'')===id)||(nameMatches.length===1?nameMatches[0]:null);
+ if(recipe){
+   const c=Number(recipe.cost);
+   if(Number.isFinite(c)&&c>0){
+     const ref=Number(recipe.referenceWeightGrams);
+     const factor=event.unit==='G'&&ref>0?1/ref:event.unit==='KG'&&ref>0?1000/ref:
+       ['PIECE','PORTION'].includes(event.unit)?1:null;
+     if(factor!==null)return {unitCost:Math.round(c*factor*1e6)/1e6,costSource:'RECETTE_ESTIMEE'};
+   }
+ }
+ const item=inv.find(r=>String(r?.id??'')===id&&id);
+ if(item){
+   const itemUnit=ichefCtrl320Unit(item?.unit||item?.saleUnit||'');
+   // Seul un coût explicitement unitaire et de même unité est exploitable.
+   const explicit=Number(item.costPerUnit??item.unitCost??NaN);
+   if(Number.isFinite(explicit)&&explicit>=0&&itemUnit===event.unit)return {unitCost:explicit,costSource:'STOCK_UNITAIRE'};
+ }
+ return {unitCost:null,costSource:'UNAVAILABLE'};
+}
+function ichefCtrl320Public(row,{withCost=false}={}){
+ const x={eventId:row.eventId,at:row.at,kind:row.kind,sourceSector:row.sourceSector,
+  destinationSector:row.destinationSector,productId:row.productId,productName:row.productName,
+  qty:row.qty,unit:row.unit,reason:row.reason,reference:row.reference,relatedEventId:row.relatedEventId,
+  actorId:row.actorId,actorName:row.actorName,actorRole:row.actorRole,status:row.status,
+  currency:row.currency,provenance:row.provenance};
+ if(withCost){x.unitCost=row.unitCost??null;x.estimatedCost=row.estimatedCost??null;x.costSource=row.costSource;}
+ return x;
+}
+// GET : données persistées + annulations existantes. Aucun historique fictif.
+app.get('/api/ichef/control/v320',async(req,res)=>{
+ res.setHeader('Cache-Control','no-store');
+ try{
+   const ctx=await ichefCtrl320Authorize(req,res);if(!ctx)return;
+   const now=Date.now();
+   const days=[1,7,30,90,365,1825].includes(Number(req.query?.days))?Number(req.query.days):30;
+   const rawYear=ichefCtrl320Text(req.query?.year||'',6);
+   const year=rawYear?Number(rawYear):null;
+   if(rawYear&&(!Number.isInteger(year)||year<2020||year>new Date().getUTCFullYear()))return res.status(422).json({success:false,error:'Année invalide.'});
+   const dateStart=year?new Date(Date.UTC(year,0,1)):new Date(now-days*86400000);
+   const dateEnd=year?new Date(Date.UTC(year+1,0,1)):null;
+   const scope=ichefCtrl320Norm(req.query?.sector||'');
+   if(scope&&scope!=='TOUS'&&!ctx.allowedSectors.includes(scope))return res.status(403).json({success:false,error:'Secteur non autorisé.'});
+   const query={tenantID:ctx.tenantID,at:dateEnd?{$gte:dateStart,$lt:dateEnd}:{$gte:dateStart}};
+   if(scope&&scope!=='TOUS')query.$or=[{sourceSector:scope},{destinationSector:scope}];
+   else if(ctx.role!=='DIRECTION')query.$or=[{sourceSector:{$in:ctx.allowedSectors}},{destinationSector:{$in:ctx.allowedSectors}}];
+   const MAX=5000;
+   const allRows=await IchefCtrl320Event.find(query).sort({at:-1,_id:-1}).limit(MAX+1).lean();
+   const incomplete=allRows.length>MAX;
+   const list=allRows.slice(0,MAX);
+   const originals=list.filter(r=>r.kind!=='REVERSAL').map(r=>r.eventId);
+   // V321 : une rectification peut être faite après la période du rapport.
+   // Recherche unique sur les IDs visibles, même si la correction date du mois suivant.
+   const linkedReversals=originals.length
+     ? await IchefCtrl320Event.find({tenantID:ctx.tenantID,kind:'REVERSAL',relatedEventId:{$in:originals}})
+         .select({relatedEventId:1}).lean()
+     : [];
+   const reversedIds=new Set([...list.filter(r=>r.kind==='REVERSAL').map(r=>r.relatedEventId),
+     ...linkedReversals.map(r=>r.relatedEventId)]);
+   const active=list.filter(r=>r.kind!=='REVERSAL'&&!reversedIds.has(r.eventId));
+   const total={LOSS:0,UNSOLD:0,TRANSFER:0,OFFER:0,ANNULATION:0,knownLossCost:0,knownLossCostByCurrency:{},uncostedLosses:0};
+   const sectors={};
+   const bucket=(sector)=>sectors[sector]||(sectors[sector]={LOSS:0,UNSOLD:0,OFFER:0,transfersIn:0,transfersOut:0,knownLossCost:0,uncostedLosses:0});
+   for(const r of active){
+     total[r.kind]+=1;
+     // Les transferts visibles depuis un secteur autorisé ne créent pas de
+     // tableau statistique pour un autre secteur interdit au collaborateur.
+     const sourceVisible=ctx.role==='DIRECTION'||ctx.allowedSectors.includes(r.sourceSector);
+     const destinationVisible=ctx.role==='DIRECTION'||ctx.allowedSectors.includes(r.destinationSector);
+     if(r.kind==='TRANSFER'){
+       if(sourceVisible)bucket(r.sourceSector).transfersOut+=1;
+       if(destinationVisible)bucket(r.destinationSector).transfersIn+=1;
+     }else if(sourceVisible){
+       const source=bucket(r.sourceSector);
+       source[r.kind]=(source[r.kind]||0)+1;
+       if(r.kind==='LOSS'&&r.status==='CONFIRMED'){
+         if(Number.isFinite(r.estimatedCost)&&['EUR','CHF'].includes(r.currency)){total.knownLossCostByCurrency[r.currency]=(total.knownLossCostByCurrency[r.currency]||0)+r.estimatedCost;source.knownLossCost+=r.estimatedCost;}
+         else {total.uncostedLosses++;source.uncostedLosses++;}
+       }
+     }
+   }
+   for(const k of Object.keys(total.knownLossCostByCurrency))total.knownLossCostByCurrency[k]=Math.round(total.knownLossCostByCurrency[k]*100)/100;
+   const costCurrencies=Object.keys(total.knownLossCostByCurrency);
+   total.knownLossCost=costCurrencies.length===1?total.knownLossCostByCurrency[costCurrencies[0]]:null;
+   // Annulations PAD : seulement l'historique déjà tracé côté serveur.
+   const cancelQuery={tenantID:ctx.tenantID,at:dateEnd?{$gte:dateStart,$lt:dateEnd}:{$gte:dateStart},action:/^(COMMANDE ANNULÉE|ANNULÉ ·|ANNULÉ PARTIELLEMENT ·|ANNULATION ·)/};
+   const cancelRows=await SystemHistoryRecord.find(cancelQuery).sort({at:-1,_id:-1}).limit(501).lean();
+   let cancellations=cancelRows.map(r=>{
+     const dest=ichefCtrl320Norm(r.line?.destination||r.line?.station||'');
+     const sector=/BAR/.test(dest)?'BAR':/PATISS/.test(dest)?'PATISSERIE':/CUISINE|PASS/.test(dest)?'CUISINE':'NON_ATTRIBUE';
+     return {eventId:String(r.historyId||r._id),at:r.at,kind:'ANNULATION',sourceSector:sector,
+       productName:ichefCtrl320Text(r.line?.name||r.action),qty:Number(r.meta?.qtyRemoved||r.line?.qty||0)||0,
+       unit:'PIECE',reason:ichefCtrl320Text(r.meta?.reason||r.line?.cancelReason||r.detail,250),
+       actorName:ichefCtrl320Text(r.operator),actorId:ichefCtrl320Text(r.actorId,120),
+       tableId:ichefCtrl320Text(r.tableId,100),status:'ANNULÉ',provenance:'SYSTEM_HISTORY',currency:''};
+   }).filter(r=>ctx.role==='DIRECTION'||ctx.allowedSectors.includes(r.sourceSector));
+   if(scope&&scope!=='TOUS')cancellations=cancellations.filter(r=>r.sourceSector===scope);
+   total.ANNULATION=cancellations.length;
+   const settings=await AppState.findOne({tenantID:ctx.tenantID},{'activeOrders.SETTINGS_MASTER':1}).lean();
+   const currency=ichefCtrl320Currency(settings?.activeOrders||{});
+   const withCost=ctx.role==='DIRECTION'||ctx.role==='CHEF';
+   if(!withCost){delete total.knownLossCost;delete total.knownLossCostByCurrency;delete total.uncostedLosses;
+      for(const val of Object.values(sectors)){delete val.knownLossCost;delete val.uncostedLosses;}
+   }
+   // 200 lignes détaillées les plus récentes ; totaux des 5000 événements en mémoire.
+   const rawFeed=[...list.slice(0,400).map(r=>{const x=ichefCtrl320Public(r,{withCost});if(reversedIds.has(x.eventId))x.status='RECTIFIE';return x;}),...cancellations]
+      .sort((a,b)=>new Date(b.at)-new Date(a.at)).slice(0,400);
+   // Les données SALES_MASTER peuvent être limitées par le mécanisme existant;
+   // aucune donnée partielle ne sera appelée « CA global exact ».
+   return res.json({success:true,tenantID:ctx.tenantID,role:ctx.role,
+     allowedSectors:ctx.allowedSectors,sectorLabels:Object.fromEntries(ICHEF_CTRL320_SECTORS),
+     currency,days,year,serverTime:new Date().toISOString(),
+     totals:total,bySector:sectors,data:rawFeed,
+     coverage:{journalComplete:!incomplete,cancellationHistoryCapped:cancelRows.length>500,
+       cancellationCountShown:cancellations.length,costMethod:'ESTIMATION_RECETTES_OU_STOCK_UNITAIRE',
+       actualStockAdjusted:false,actualFoodCostVerified:false,
+       note:'Déclarations autonomes : stock physique, food cost réel, invendus et ventes non rapprochés automatiquement.'}});
+ }catch(e){console.error('[iCHEF CTRL V320 GET]',e?.code||e?.message);return res.status(503).json({success:false,error:'Contrôle multisecteurs indisponible.'});}
+});
+// POST : seule une session signée avec droit opérationnel peut écrire.
+app.post('/api/ichef/control/v320/events',async(req,res)=>{
+ res.setHeader('Cache-Control','no-store');
+ try{
+   const ctx=await ichefCtrl320Authorize(req,res,{write:true});if(!ctx)return;
+   const b=req.body||{};
+   const eventId=ichefCtrl320Text(b.eventId,80);
+   const kind=ichefCtrl320Norm(b.kind);
+   const sourceSector=ichefCtrl320Norm(b.sourceSector);
+   const destinationSector=ichefCtrl320Norm(b.destinationSector);
+   if(!/^[A-Za-z0-9_-]{16,80}$/.test(eventId))return res.status(422).json({success:false,error:'Identifiant de déclaration invalide.'});
+   if(!['LOSS','UNSOLD','TRANSFER','OFFER','REVERSAL'].includes(kind))return res.status(422).json({success:false,error:'Type de mouvement inconnu.'});
+   if(!ICHEF_CTRL320_LABELS.has(sourceSector)||!ctx.allowedSectors.includes(sourceSector))return res.status(403).json({success:false,error:'Secteur d’origine non autorisé.'});
+   const duplicate=await IchefCtrl320Event.findOne({tenantID:ctx.tenantID,eventId}).lean();
+   if(duplicate){
+     if(duplicate.kind!==kind||duplicate.sourceSector!==sourceSector||
+        (kind==='REVERSAL'&&duplicate.relatedEventId!==ichefCtrl320Text(b.relatedEventId,80))||
+        (kind!=='REVERSAL'&&(duplicate.productName!==ichefCtrl320Text(b.productName,140)||
+          duplicate.qty!==Number(b.qty)||duplicate.unit!==ichefCtrl320Unit(b.unit)||
+          duplicate.reason!==ichefCtrl320Text(b.reason,250)||
+          (kind==='TRANSFER'&&duplicate.destinationSector!==ichefCtrl320Norm(b.destinationSector)))))
+       return res.status(409).json({success:false,error:'Identifiant déjà utilisé pour une déclaration différente.'});
+     return res.json({success:true,idempotent:true,serverTime:new Date().toISOString(),event:ichefCtrl320Public(duplicate,{withCost:ctx.role==='DIRECTION'||ctx.role==='CHEF'})});
+   }
+   if(kind==='TRANSFER' && (!ICHEF_CTRL320_LABELS.has(destinationSector)||destinationSector===sourceSector))return res.status(422).json({success:false,error:'Destination de transfert invalide.'});
+   // Un transfert entre départements est réservé à la Direction pour empêcher
+   // une modification des chiffres d'un secteur non autorisé.
+   if(kind==='TRANSFER'&&ctx.role!=='DIRECTION'&&!ctx.allowedSectors.includes(destinationSector))return res.status(403).json({success:false,error:'Transfert intersectoriel réservé à la Direction.'});
+   if(kind==='REVERSAL'&&ctx.role!=='DIRECTION')return res.status(403).json({success:false,error:'Rectification réservée à la Direction.'});
+   const reason=ichefCtrl320Text(b.reason,250);
+   if(reason.length<3)return res.status(422).json({success:false,error:'Motif obligatoire (3 à 250 caractères).'});
+   let qty=Number(b.qty),unit=ichefCtrl320Unit(b.unit),productName=ichefCtrl320Text(b.productName,140);
+   const relatedEventId=ichefCtrl320Text(b.relatedEventId,80);
+   if(kind==='REVERSAL'){
+     if(!/^[A-Za-z0-9_-]{16,80}$/.test(relatedEventId))return res.status(422).json({success:false,error:'Référence de correction invalide.'});
+   }else if(!productName||!unit||!Number.isFinite(qty)||qty<=0||qty>1e6||Math.abs(qty-Math.round(qty*1000)/1000)>1e-9){
+     return res.status(422).json({success:false,error:'Produit, quantité positive (3 décimales maximum) et unité obligatoires.'});
+   }
+   let original=null;
+   if(kind==='REVERSAL'){
+     original=await IchefCtrl320Event.findOne({tenantID:ctx.tenantID,eventId:relatedEventId}).lean();
+     if(!original||original.kind==='REVERSAL')return res.status(404).json({success:false,error:'Déclaration originale introuvable.'});
+     const old=await IchefCtrl320Event.findOne({tenantID:ctx.tenantID,kind:'REVERSAL',relatedEventId}).lean();
+     if(old)return res.status(409).json({success:false,error:'Déclaration déjà rectifiée.'});
+     if(sourceSector!==original.sourceSector)return res.status(422).json({success:false,error:'Le secteur doit correspondre à la déclaration originale.'});
+     qty=original.qty;unit=original.unit;productName=original.productName;
+   }
+   const state=await AppState.findOne({tenantID:ctx.tenantID},{'activeOrders.RECIPES_MASTER':1,'activeOrders.INVENTORY_MASTER':1,'activeOrders.SETTINGS_MASTER':1}).lean();
+   const value=kind==='REVERSAL'?{unitCost:original.unitCost,costSource:original.costSource}:
+     ichefCtrl320Valuation(state?.activeOrders||{},{productId:ichefCtrl320Text(b.productId,120),productName,qty,unit});
+   const currency=kind==='REVERSAL'?original.currency:ichefCtrl320Currency(state?.activeOrders||{});
+   const total=value.unitCost===null?null:Math.round(value.unitCost*qty*100)/100;
+   const self=ichefOpsSelf(ctx.auth);
+   const row={tenantID:ctx.tenantID,eventId,kind,sourceSector,
+     destinationSector:kind==='TRANSFER'?destinationSector:'',
+     productId:kind==='REVERSAL'?original.productId:ichefCtrl320Text(b.productId,120),productName,
+     qty,unit,reason,reference:ichefCtrl320Text(b.reference,120),relatedEventId:kind==='REVERSAL'?relatedEventId:'',
+     unitCost:value.unitCost,estimatedCost:total,costSource:value.costSource,currency,
+     actorId:self.id,actorName:self.name,actorRole:ctx.role,
+     status:kind==='LOSS'&&ctx.role!=='CHEF'&&ctx.role!=='DIRECTION'?'TO_CONFIRM':'CONFIRMED',
+     provenance:'MANUAL_V320'};
+   let created;
+   try{created=await IchefCtrl320Event.create(row);}catch(error){
+     if(error?.code===11000){
+       const old=await IchefCtrl320Event.findOne({tenantID:ctx.tenantID,eventId}).lean();
+       if(old)return res.json({success:true,idempotent:true,serverTime:new Date().toISOString(),event:ichefCtrl320Public(old,{withCost:ctx.role==='DIRECTION'||ctx.role==='CHEF'})});
+       return res.status(409).json({success:false,error:'Cette déclaration ou rectification existe déjà.'});
+     }
+     throw error;
+   }
+   // Signal d'invalidation SANS valeurs / noms / montants sur la socket commune.
+   // Tous les secteurs concernés rechargent la vue via l'API authentifiée.
+   const packet={tenantID:ctx.tenantID,eventId:created.eventId,updatedAt:new Date().toISOString()};
+   io.to(ctx.tenantID).emit('ichef-control-v320-changed',packet);
+   const room=ichefStaffRealtimeRoom(ctx.tenantID);
+   if(room)io.to(room).emit('ichef-control-v320-changed',packet);
+   return res.status(201).json({success:true,persisted:true,serverTime:packet.updatedAt,event:ichefCtrl320Public(created,{withCost:ctx.role==='DIRECTION'||ctx.role==='CHEF'})});
+ }catch(e){console.error('[iCHEF CTRL V320 POST]',e?.code||e?.message);return res.status(503).json({success:false,error:'Déclaration non confirmée par le serveur : vérifier son état avant de recommencer.'});}
+});
+// ============================================================================
 
 app.get('/api/audit/history', async (req, res) => {
 try {
@@ -39475,6 +39807,10 @@ console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
 console.log('==========================================');
 }
 );
+
+
+
+
 
 
 
