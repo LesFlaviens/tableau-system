@@ -12,6 +12,7 @@
 
 
 
+
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -14122,7 +14123,7 @@ const ticketsDate=t=>t?.date||t?.time||t?.paidAt||t?.createdAt||t?.timestamp||nu
 const ticketAmount=t=>{const x=Number(t?.totalTTC??t?.total??NaN);return Number.isFinite(x)?x:null;};
 const ticketCurrency=t=>{const c=String(t?.currency||'').trim().toUpperCase();return ['EUR','CHF'].includes(c)?c:currency();};
 const status=(msg,error=false)=>{const el=$('ic47-status');if(el){el.textContent=msg;el.dataset.error=String(error);}};
-let last=null,loading=false,selectedDay='',openedBeforeRefresh='',cacheDay=new Map(),lastError='';
+let last=null,loading=false,selectedDay='',openedBeforeRefresh='',cacheDay=new Map(),lastError='',sharedFinance=null;
 let tickets=[];
 const labels={ANNULATION:'Annulations',LOSS:'Pertes',UNSOLD:'Invendus',OFFER:'Offerts',TRANSFER:'Transferts',REVERSAL:'Rectifications'};
 const periods=()=>{const y=$('ic47-year')?.value||'';const d=Number($('ic47-period')?.value||30);return {year:y,days:[1,7,30,90,365].includes(d)?d:30};};
@@ -14189,7 +14190,7 @@ function populateDetails(root,day,dayData){
  if(dayData.coverage?.note)root.append(n('p','ic47-note',dayData.coverage.note));
 }
 function ticketRowsFor(day){return tickets.filter(t=>dayKey(ticketsDate(t))===day).sort((a,b)=>new Date(ticketsDate(b))-new Date(ticketsDate(a)));}
-function renderTickets(allClosed){tickets=Array.isArray(allClosed)?allClosed.slice():sourceItems();render();}
+function renderTickets(allClosed){if(sharedFinance)return; tickets=Array.isArray(allClosed)?allClosed.slice():sourceItems();render();}
 function buildRow(day,txn,oper){
  const r=n('details','ic47-day');r.dataset.day=day;
  const summary=n('summary','ic47-day-summary');summary.setAttribute('aria-label','Voir le détail du '+fmtDay(day));
@@ -14205,11 +14206,12 @@ function kpi(id,value,sub){const e=$(id);if(e)e.textContent=value;const h=$(id+'
 function render(){
  const root=$('admin-finance-list');if(!root)return;
  const {d,unknownDate,nonNumeric}=sumTickets();
+ if(sharedFinance?.byDay){ for(const [day,row] of Object.entries(sharedFinance.byDay)){if(!visibleDay(day))continue; const r=d.get(day)||{count:0,sums:new Map(),tickets:[]};r.sums.clear();if(sharedFinance.currency&&row.caGrossTickets!==undefined)r.sums.set(sharedFinance.currency,row.caGrossTickets);r.count=row.ticketCount||0;d.set(day,r);} }
  const op=last?.byDay&&typeof last.byDay==='object'?last.byDay:null;
  const keys=new Set([...d.keys(),...Object.keys(op||{}).filter(visibleDay)]);
  const ordered=[...keys].filter(x=>/^\d{4}-\d{2}-\d{2}$/.test(x)).sort().reverse();
  const totals=new Map();for(const v of d.values())for(const [c,a]of v.sums)totals.set(c,(totals.get(c)||0)+a);
- kpi('finance-total-ca',amountSum(totals),'Tickets de l’historique chargé · montant TTC affiché, pas une clôture fiscale');
+ kpi('finance-total-ca',sharedFinance? (sharedFinance.caGrossTickets!==null?money(sharedFinance.caGrossTickets,sharedFinance.currency):'—') : '—',sharedFinance?'CA établissement global identique à Chef · tickets TTC (non sectorisé), non fiscal':'Source commune indisponible : CA masqué');
  if(op){let a=0,p=0,i=0,unpriced=0;const sums={};for(const [day,v] of Object.entries(op)){if(!visibleDay(day))continue;a+=v.ANNULATION||0;p+=v.LOSS||0;i+=v.UNSOLD||0;unpriced+=v.uncostedLosses||0;for(const [c,val]of Object.entries(v.knownLossCostByCurrency||{}))sums[c]=(sums[c]||0)+Number(val||0);}
    kpi('ic47-annulations',String(a),'Nombre d’événements, pas un montant perdu');
    const lossStr=lossAmount({knownLossCostByCurrency:sums});kpi('ic47-pertes',String(p),lossStr?'Coût matière confirmé estimé : '+lossStr+(unpriced?' · '+unpriced+' sans coût':''):'Déclarations · coût matière non établi');
@@ -14222,6 +14224,9 @@ function render(){
  for(const day of ordered)root.append(buildRow(day,d.get(day),op?.[day]));
  if(!ordered.length)root.append(n('p','ic47-empty','Aucune journée disponible pour cette période.'));
  const msg=[];
+ if(!sharedFinance)msg.push('CA commun Chef/Admin indisponible : vérifier le serveur V323');
+ if(sharedFinance?.coverage?.ticketDetailsComplete===false)msg.push('Liste détaillée des tickets partielle');
+ if(sharedFinance?.coverage?.historicalCompletenessUnverified)msg.push('Historique caisse non certifié exhaustif');
  if(unknownDate)msg.push(`${unknownDate} ticket(s) sans date exploitable`);
  if(nonNumeric)msg.push(`${nonNumeric} ticket(s) sans montant ou devise exploitable`);
  if(last&&!last.coverage?.journalComplete)msg.push('Plus de 5 000 mouvements : chiffres opérationnels partiels');
@@ -14244,6 +14249,15 @@ async function getControl(query){
  if(data.tenantID!==tenant())throw Error('Réponse d’un autre établissement refusée.');
  return data;
 }
+async function getSharedFinance(query){
+ if(sec().ready!==true||!validTenant(tenant()))throw Error('Connexion Administration requise.');
+ const base=String(sec().serverURL||'');const u=new URL(base);
+ const prod=u.protocol==='https:'&&u.hostname==='tableau-system.onrender.com'&&(!u.port||u.port==='443');
+ const local=u.protocol==='http:'&&['localhost','127.0.0.1'].includes(u.hostname)&&['10000','3000'].includes(u.port);
+ if((!prod&&!local)||u.username||u.password||u.search||u.hash||!['','/'].includes(u.pathname))throw Error('Serveur non autorisé.');
+ const response=await fetch(u.origin+'/api/ichef/finance/overview/v323?'+new URLSearchParams({...query,tenantID:tenant()}),{headers:authHeaders(),credentials:'omit',cache:'no-store',referrerPolicy:'no-referrer'});
+ const d=await response.json().catch(()=>({}));if(!response.ok||d.success!==true||d.tenantID!==tenant())throw Error(d.error||'API finance V323 indisponible.');return d;
+}
 function isOpen(){return $('tab-finance')?.classList.contains('active')&&sec().ready===true;}
 async function refresh(){
  if(!isOpen()||loading)return;
@@ -14251,12 +14265,14 @@ async function refresh(){
  status('Lecture sécurisée du contrôle multisecteurs…');
  const p=periods(),scope=$('ic47-sector')?.value||'TOUS';
  try{
-   const r=await getControl({...(!p.year?{days:String(p.days)}:{year:p.year}),...(scope!=='TOUS'?{sector:scope}:{})});
+   const q={...(!p.year?{days:String(p.days)}:{year:p.year}),...(scope!=='TOUS'?{sector:scope}:{})};
+   const [r,fin]=await Promise.all([getControl(q),getSharedFinance(!p.year?{days:String(p.days)}:{year:p.year})]);
+   sharedFinance=fin; tickets=fin.tickets||[];
    if(!r.byDay)throw Error('Le serveur V322 doit être installé pour la synthèse journalière.');
    last=r;lastError='';cacheDay.clear();
    const el=$('ic47-sector');if(el){const prev=el.value;el.replaceChildren();el.append(new Option('Tous les secteurs autorisés','TOUS'));for(const k of r.allowedSectors||[])el.append(new Option(r.sectorLabels?.[k]||k,k));el.value=(r.allowedSectors||[]).includes(prev)?prev:'TOUS';}
-   status('Synchronisé à '+when(r.serverTime)+' · Ventes tirées des tickets chargés, événements tirés du serveur.');
- }catch(e){last=null;cacheDay.clear();lastError=String(e.message||e);status('Tickets disponibles. Contrôle des annulations et pertes non synchronisé : '+lastError,true);}
+   status('Synchronisé à '+when(r.serverTime)+' · CA commun Chef/Admin : source serveur FINANCIAL_HISTORY · valeur historique non fiscale.');
+ }catch(e){last=null;sharedFinance=null;cacheDay.clear();lastError=String(e.message||e);status('Tickets disponibles. Contrôle des annulations et pertes non synchronisé : '+lastError,true);}
  finally{loading=false;if(btn)btn.disabled=false;render();}
 }
 async function loadDay(day,root){
