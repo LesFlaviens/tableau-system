@@ -1,4 +1,19 @@
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -423,6 +438,9 @@ function ichefSecurityRateLimitForPath(pathname,req){
         return {limit:30,windowMs:60_000,blockMs:5*60_000};
     }
     // V321 : quotas adaptés au temps réel ; limite anti-bruteforce stricte si PIN seul.
+    if(p === '/api/ichef/finance/overview/v323'){
+        return {limit:30,windowMs:60_000,blockMs:5*60_000};
+    }
     if(p === '/api/ichef/control/v320'){
         if(req?.headers?.['x-ichef-pin']) return {limit:8,windowMs:60_000,blockMs:15*60_000};
         return {limit:600,windowMs:60_000,blockMs:5*60_000};
@@ -15118,6 +15136,24 @@ function ichefCtrl320Currency(ao={}){
  if(['FR','BE','DE','IT','ES','PT','NL','AT','FI','IE','LU','GR','SK','SI','EE','LV','LT','MT','CY','HR'].includes(country))return 'EUR';
  return '';
 }
+// V322 — séparation d'une journée selon l'heure de l'établissement (CH/zone euro).
+function ichefCtrl322LocalDay(value,currency){
+ const d=new Date(value);
+ if(!Number.isFinite(d.getTime()))return '';
+ const tz=currency==='CHF'?'Europe/Zurich':'Europe/Paris';
+ const p=new Intl.DateTimeFormat('en-GB',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(d);
+ const part=k=>p.find(x=>x.type===k)?.value||'';
+ return `${part('year')}-${part('month')}-${part('day')}`;
+}
+function ichefCtrl322UtcLocalMidnight(day,currency){
+ const [y,m,d]=day.split('-').map(Number);
+ const guess=Date.UTC(y,m-1,d);
+ const tz=currency==='CHF'?'Europe/Zurich':'Europe/Paris';
+ const p=new Intl.DateTimeFormat('en-GB',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).formatToParts(new Date(guess));
+ const part=k=>Number(p.find(x=>x.type===k)?.value||0);
+ const asUTC=Date.UTC(part('year'),part('month')-1,part('day'),part('hour'),part('minute'),part('second'));
+ return new Date(guess-(asUTC-guess));
+}
 function ichefCtrl320Role(auth){
  const staff=auth.staff||{};
  const permissions=staff.permissions&&typeof staff.permissions==='object'?staff.permissions:{};
@@ -15215,6 +15251,97 @@ function ichefCtrl320Public(row,{withCost=false}={}){
  if(withCost){x.unitCost=row.unitCost??null;x.estimatedCost=row.estimatedCost??null;x.costSource=row.costSource;}
  return x;
 }
+
+// ============================================================================
+// iCHEF V323 — VUE FINANCIERE PARTAGEE CHEF / ADMIN, EN LECTURE SEULE
+// Source unique: FINANCIAL_HISTORY pour les tickets, aucun calcul sur les plats
+// seulement terminés, ni mutation de la caisse, des stocks ou de l'historique.
+// La caisse officielle / l'audit fiscal demeurent des sources séparées.
+// ============================================================================
+app.get('/api/ichef/finance/overview/v323',async(req,res)=>{
+ res.setHeader('Cache-Control','no-store');
+ try{
+  const ctx=await ichefCtrl320Authorize(req,res);if(!ctx)return;
+  // Un chef authentifié et la direction peuvent lire cette synthèse. Ne jamais
+  // étendre automatiquement l'accès financier aux autres collaborateurs.
+  if(ctx.managerPinRead||!['CHEF','DIRECTION'].includes(ctx.role))return res.status(403).json({success:false,error:'Session signée et rôle financier autorisé requis.'});
+  const days=[1,7,30,90,365,1825].includes(Number(req.query?.days))?Number(req.query.days):30;
+  const yearRaw=String(req.query?.year||'').trim();
+  const year=yearRaw?Number(yearRaw):null;
+  if(yearRaw&&(!/^\d{4}$/.test(yearRaw)||year<2020||year>new Date().getUTCFullYear()))return res.status(422).json({success:false,error:'Année invalide.'});
+  // Sectorisation de la CAISSE impossible si les tickets historiques n'ont pas de
+  // secteur fiable. Pas de filtrage qui pourrait rendre les chiffres trompeurs.
+  const sector=ichefCtrl320Norm(req.query?.sector||'TOUS');
+  if(sector!=='TOUS'&&sector!=='')return res.status(422).json({success:false,code:'TICKET_SECTOR_NOT_VERIFIED',error:'CA par secteur non encore disponible avec des données garanties.'});
+  const state=await AppState.findOne({tenantID:ctx.tenantID},{'activeOrders.FINANCIAL_HISTORY':1,'activeOrders.SETTINGS_MASTER':1,'activeOrders.INVENTORY_MASTER':1}).lean();
+  const ao=state?.activeOrders||{};
+  const currency=ichefCtrl320Currency(ao);
+  const raw=ao.FINANCIAL_HISTORY;
+  const archive=Array.isArray(raw)?raw:Array.isArray(raw?.data)?raw.data:null;
+  const localDay=date=>ichefCtrl322LocalDay(date,currency);
+  const currentDay=localDay(new Date());
+  const earliestDay=localDay(new Date(Date.now()-(days-1)*86400000));
+  const showDay=day=>year?day.startsWith(String(year)+'-'):day>=earliestDay&&day<=currentDay;
+  const byDay={};const entries=[];
+  let undated=0,unpriced=0,foreignCurrency=0,valid=0;let totalCents=0;
+  const findDate=t=>t?.date||t?.time||t?.paidAt||t?.createdAt||t?.timestamp||null;
+  const findAmount=t=>Number(t?.totalTTC??t?.total??NaN);
+  for(const t of archive||[]){
+   if(!t||typeof t!=='object')continue;
+   const day=localDay(findDate(t));if(!day){undated++;continue;}
+   if(!showDay(day))continue;
+   const amount=findAmount(t);
+   const ticketCurrency=String(t.currency||currency||'').trim().toUpperCase();
+   if(!Number.isFinite(amount)||!Number.isSafeInteger(Math.round(amount*100))||!['EUR','CHF'].includes(ticketCurrency)){unpriced++;continue;}
+   if(currency&&ticketCurrency!==currency){foreignCurrency++;continue;}
+   const cents=Math.round(amount*100);
+   valid++;totalCents+=cents;
+   const b=byDay[day]||(byDay[day]={caGrossTickets:0,ticketCount:0});
+   b.caGrossTickets=Math.round((b.caGrossTickets*100+cents))/100;
+   b.ticketCount++;
+   if(entries.length<1200){
+    entries.push({date:findDate(t),day,totalTTC:cents/100,currency:ticketCurrency,
+     tableId:String(t.tableId||t.table||'').slice(0,80),
+     ticketNumber:String(t.ticketNumber||t.ticketId||t.id||'').slice(0,100),
+     operator:String(t.operator||t.serverName||t.staffName||'').slice(0,100),
+     sector:String(t.sector||t.zone||t.department||'').slice(0,90),
+     source:String(t.source||t.terminal||t.type||'Caisse').slice(0,90)});
+   }
+  }
+  // Valeur indicative du stock théorique : seuls les articles de l'inventaire
+  // avec currentQty et coût unitaire explicites et compatibles sont évalués.
+  // Ne pas valoriser deux fois recettes finies et ingrédients : un stock physique
+  // non qualifié comme matière première est exclu du montant exact.
+  const inv=Array.isArray(ao.INVENTORY_MASTER?.data)?ao.INVENTORY_MASTER.data:
+            Array.isArray(ao.INVENTORY_MASTER)?ao.INVENTORY_MASTER:null;
+  let stockCostCents=0,stockPriced=0,stockMissing=0;
+  for(const p of inv||[]){
+   if(!p||typeof p!=='object')continue;
+   const q=(p.currentQty===undefined||p.currentQty===null||p.currentQty==='')?NaN:Number(p.currentQty);
+   const cost=Number(p.costPerUnit??p.unitCost??NaN);
+   if(!Number.isFinite(q)||q<0||!Number.isFinite(cost)||cost<0||
+      !String(p.unit||'').trim()||(['FINISHED','PREPARED','PLAT'].includes(ichefCtrl320Norm(p.type||p.kind||'')))){stockMissing++;continue;}
+   stockCostCents+=Math.round(q*cost*100);stockPriced++;
+  }
+  return res.json({success:true,tenantID:ctx.tenantID,currency:currency||null,
+   role:ctx.role,days,year,sector:'TOUS',serverTime:new Date().toISOString(),
+   caGrossTickets:archive&&currency&&valid?Math.round(totalCents)/100:null,
+   byDay,tickets:entries,
+   // Ces deux indicateurs ne sont pas encore traçables par une source fiable.
+   missedSales:null,potentialCA:null,
+   stockTheoretical:inv&&currency&&stockPriced&&stockMissing===0?Math.round(stockCostCents)/100:null,
+   coverage:{historicalTicketsAvailable:archive!==null,validTickets:valid,
+     undatedTickets:undated,invalidAmountTickets:unpriced,foreignCurrencyTickets:foreignCurrency,
+     ticketDetailsComplete:valid<=entries.length,
+     historicalCompletenessUnverified:true,stockItemsPriced:stockPriced,
+     stockItemsMissingValuation:stockMissing,stockValuationComplete:Boolean(inv&&stockMissing===0&&stockPriced>0),
+     stockMethod:'SOMME_COUTS_UNITAIRES_INVENTAIRE_INDICATIVE',
+     fiscalClosureVerified:false,
+     potentialCANotCalculated:true,missedSalesNotCalculated:true}});
+ }catch(e){console.warn('[ICHEF FINANCE V323]',String(e?.code||'UNAVAILABLE'));
+  return res.status(503).json({success:false,error:'Synthèse financière momentanément indisponible.'});}
+});
+
 // GET : données persistées + annulations existantes. Aucun historique fictif.
 app.get('/api/ichef/control/v320',async(req,res)=>{
  res.setHeader('Cache-Control','no-store');
@@ -15225,8 +15352,22 @@ app.get('/api/ichef/control/v320',async(req,res)=>{
    const rawYear=ichefCtrl320Text(req.query?.year||'',6);
    const year=rawYear?Number(rawYear):null;
    if(rawYear&&(!Number.isInteger(year)||year<2020||year>new Date().getUTCFullYear()))return res.status(422).json({success:false,error:'Année invalide.'});
-   const dateStart=year?new Date(Date.UTC(year,0,1)):new Date(now-days*86400000);
-   const dateEnd=year?new Date(Date.UTC(year+1,0,1)):null;
+   // V322 : jour précis, contrôlé côté serveur avec bornes horaires locales.
+   const rawDay=ichefCtrl320Text(req.query?.date||'',12);
+   if(rawDay){
+     const valid=/^\d{4}-\d{2}-\d{2}$/.test(rawDay)&&
+       Number.isFinite(new Date(rawDay+'T12:00:00Z').getTime())&&
+       new Date(rawDay+'T12:00:00Z').toISOString().slice(0,10)===rawDay;
+     if(!valid)return res.status(422).json({success:false,error:'Date de journée invalide.'});
+   }
+   if(rawDay&&rawYear)return res.status(422).json({success:false,error:'Ne combinez pas journée et année.'});
+   const settings=await AppState.findOne({tenantID:ctx.tenantID},{'activeOrders.SETTINGS_MASTER':1}).lean();
+   const currency=ichefCtrl320Currency(settings?.activeOrders||{});
+   const rawNextDay=rawDay?new Date(Date.parse(rawDay+'T00:00:00Z')+86400000).toISOString().slice(0,10):'';
+   const dateStart=rawDay?ichefCtrl322UtcLocalMidnight(rawDay,currency):
+     year?new Date(Date.UTC(year,0,1)):new Date(now-days*86400000);
+   const dateEnd=rawDay?ichefCtrl322UtcLocalMidnight(rawNextDay,currency):
+     year?new Date(Date.UTC(year+1,0,1)):null;
    const scope=ichefCtrl320Norm(req.query?.sector||'');
    if(scope&&scope!=='TOUS'&&!ctx.allowedSectors.includes(scope))return res.status(403).json({success:false,error:'Secteur non autorisé.'});
    const query={tenantID:ctx.tenantID,at:dateEnd?{$gte:dateStart,$lt:dateEnd}:{$gte:dateStart}};
@@ -15272,7 +15413,8 @@ app.get('/api/ichef/control/v320',async(req,res)=>{
    total.knownLossCost=costCurrencies.length===1?total.knownLossCostByCurrency[costCurrencies[0]]:null;
    // Annulations PAD : seulement l'historique déjà tracé côté serveur.
    const cancelQuery={tenantID:ctx.tenantID,at:dateEnd?{$gte:dateStart,$lt:dateEnd}:{$gte:dateStart},action:/^(COMMANDE ANNULÉE|ANNULÉ ·|ANNULÉ PARTIELLEMENT ·|ANNULATION ·)/};
-   const cancelRows=await SystemHistoryRecord.find(cancelQuery).sort({at:-1,_id:-1}).limit(501).lean();
+   const cancelLimit=rawDay?2000:500;
+   const cancelRows=await SystemHistoryRecord.find(cancelQuery).sort({at:-1,_id:-1}).limit(cancelLimit+1).lean();
    let cancellations=cancelRows.map(r=>{
      const dest=ichefCtrl320Norm(r.line?.destination||r.line?.station||'');
      const sector=/BAR/.test(dest)?'BAR':/PATISS/.test(dest)?'PATISSERIE':/CUISINE|PASS/.test(dest)?'CUISINE':'NON_ATTRIBUE';
@@ -15284,23 +15426,49 @@ app.get('/api/ichef/control/v320',async(req,res)=>{
    }).filter(r=>ctx.role==='DIRECTION'||ctx.allowedSectors.includes(r.sourceSector));
    if(scope&&scope!=='TOUS')cancellations=cancellations.filter(r=>r.sourceSector===scope);
    total.ANNULATION=cancellations.length;
-   const settings=await AppState.findOne({tenantID:ctx.tenantID},{'activeOrders.SETTINGS_MASTER':1}).lean();
-   const currency=ichefCtrl320Currency(settings?.activeOrders||{});
    const withCost=ctx.role==='DIRECTION'||ctx.role==='CHEF';
    if(!withCost){delete total.knownLossCost;delete total.knownLossCostByCurrency;delete total.uncostedLosses;
       for(const val of Object.values(sectors)){delete val.knownLossCost;delete val.uncostedLosses;}
    }
-   // 200 lignes détaillées les plus récentes ; totaux des 5000 événements en mémoire.
-   const rawFeed=[...list.slice(0,400).map(r=>{const x=ichefCtrl320Public(r,{withCost});if(reversedIds.has(x.eventId))x.status='RECTIFIE';return x;}),...cancellations]
-      .sort((a,b)=>new Date(b.at)-new Date(a.at)).slice(0,400);
+   // V322 : agrégat quotidien des événements actifs, et NON des montants de caisse.
+   // Source : uniquement les déclarations validées du tenant et les annulations tracées.
+   const byDay={};
+   const daily=(at)=>{
+     const key=ichefCtrl322LocalDay(at,currency);
+     if(!key)return null;
+     if(!byDay[key])byDay[key]={LOSS:0,UNSOLD:0,OFFER:0,TRANSFER:0,ANNULATION:0,uncostedLosses:0};
+     return byDay[key];
+   };
+   for(const r of active){
+     const b=daily(r.at);if(!b)continue;
+     b[r.kind]=(b[r.kind]||0)+1;
+     if(withCost&&r.kind==='LOSS'&&r.status==='CONFIRMED'){
+       if(Number.isFinite(r.estimatedCost)&&['EUR','CHF'].includes(r.currency)){
+         b.knownLossCostByCurrency ||= {};
+         b.knownLossCostByCurrency[r.currency]=(b.knownLossCostByCurrency[r.currency]||0)+r.estimatedCost;
+       }else b.uncostedLosses++;
+     }
+   }
+   for(const r of cancellations){const b=daily(r.at);if(b)b.ANNULATION++;}
+   for(const b of Object.values(byDay)){
+     if(b.knownLossCostByCurrency)for(const c of Object.keys(b.knownLossCostByCurrency))
+       b.knownLossCostByCurrency[c]=Math.round(b.knownLossCostByCurrency[c]*100)/100;
+     if(!withCost)delete b.uncostedLosses;
+   }
+   const feedLimit=rawDay?2000:400;
+   const combined=[...list.map(r=>{const x=ichefCtrl320Public(r,{withCost});if(reversedIds.has(x.eventId))x.status='RECTIFIE';return x;}),...cancellations]
+      .sort((a,b)=>new Date(b.at)-new Date(a.at));
+   const rawFeed=combined.slice(0,feedLimit);
    // Les données SALES_MASTER peuvent être limitées par le mécanisme existant;
    // aucune donnée partielle ne sera appelée « CA global exact ».
    return res.json({success:true,tenantID:ctx.tenantID,role:ctx.role,
      allowedSectors:ctx.allowedSectors,sectorLabels:Object.fromEntries(ICHEF_CTRL320_SECTORS),
-     currency,days,year,serverTime:new Date().toISOString(),
-     totals:total,bySector:sectors,data:rawFeed,
-     coverage:{journalComplete:!incomplete,cancellationHistoryCapped:cancelRows.length>500,
-       cancellationCountShown:cancellations.length,costMethod:'ESTIMATION_RECETTES_OU_STOCK_UNITAIRE',
+     currency,days,year,date:rawDay||null,serverTime:new Date().toISOString(),
+     totals:total,bySector:sectors,byDay,data:rawFeed,
+     coverage:{journalComplete:!incomplete,cancellationHistoryCapped:cancelRows.length>cancelLimit,
+       dailySummaryComplete:!incomplete&&cancelRows.length<=cancelLimit,
+       detailFeedComplete:combined.length<=feedLimit&&!incomplete&&cancelRows.length<=cancelLimit,
+       detailLimit:feedLimit,cancellationCountShown:cancellations.length,costMethod:'ESTIMATION_RECETTES_OU_STOCK_UNITAIRE',
        actualStockAdjusted:false,actualFoodCostVerified:false,
        note:'Déclarations autonomes : stock physique, food cost réel, invendus et ventes non rapprochés automatiquement.'}});
  }catch(e){console.error('[iCHEF CTRL V320 GET]',e?.code||e?.message);return res.status(503).json({success:false,error:'Contrôle multisecteurs indisponible.'});}
