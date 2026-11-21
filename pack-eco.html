@@ -1,3 +1,9 @@
+
+
+
+
+
+
 <!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"><meta name="theme-color" content="#ffffff"><link rel="preconnect" href="https://tableau-system.onrender.com" crossorigin><link rel="dns-prefetch" href="//tableau-system.onrender.com"><link rel="preload" as="script" href="https://tableau-system.onrender.com/socket.io/socket.io.js" crossorigin="anonymous"><script>
 (function(){
 function base(){
@@ -5189,6 +5195,11 @@ openSheet("OUTILS",`
         SYNCHRONISER
       </button>
       
+      <!-- iCHEF V324 : Consultation seule des opérations validées par le serveur -->
+      <button class="action-btn" data-more="history" style="border:3px solid #b58b36!important;background:#fff9ec!important;color:#66480e!important;min-height:80px!important;font-size:20px!important;font-weight:950!important;">
+        HISTORIQUE · ANNULATIONS &amp; PERTES
+      </button>
+
       <button class="action-btn" data-more="printer" style="border: 3px solid #cfd2d5 !important; background: #ffffff !important; color: #111111 !important; min-height: 80px !important; font-size: 22px !important; font-weight: 950 !important;">
         IMPRIMANTES
       </button>
@@ -5224,6 +5235,10 @@ if(a==="display")openDisplay();
 if(a==="express")openExpressTableCreate();
 if(a==="summary"){closeSheet();openSummary()}
 if(a==="sync"){closeSheet();syncFull("manual")}
+if(a==="history"){
+  if(window.ichefPadHistoryV324?.open) window.ichefPadHistoryV324.open();
+  else toast("Historique indisponible : module V324 absent",true);
+}
 if(a==="printer")openPrinterSetup();
 if(a==="fiscal")openFiscalAudit();
 if(a==="admin"){
@@ -16821,4 +16836,195 @@ button,input,select,textarea,
 })();
 </script>
 
+<!-- iCHEF PAD V324 — historique en lecture seule, sans altérer les commandes/PIN/paiements -->
+<style id="ichef-pad-history-v324-style">
+#sheet.ic324-history-mode .sheet-card{width:min(740px,100%);max-height:94dvh;background:#f9fafb;color:#101820;border:2px solid #c9a34b}
+#sheet.ic324-history-mode .sheet-head{background:#111a20;border-bottom:1px solid #27333c}
+#sheet.ic324-history-mode .sheet-title{color:#e5c064}
+#sheet.ic324-history-mode .close-btn{background:#fff;color:#0d1115;border-color:#fff}
+#sheet.ic324-history-mode .sheet-body{padding:14px;background:#f9fafb}
+.ic324-toolbar{display:flex;flex-wrap:wrap;gap:9px;align-items:flex-end;margin-bottom:12px}
+.ic324-toolbar label{display:grid;gap:4px;font-weight:900;font-size:12px;color:#20303a;flex:1 1 120px}
+.ic324-toolbar select,.ic324-toolbar button{min-height:44px;padding:8px 11px;font-size:13px;border:2px solid #b7c0c6;border-radius:10px;background:#fff;color:#111;font-weight:800}
+.ic324-toolbar button{border-color:#a67a22;color:#754e0e;cursor:pointer}
+.ic324-note{font-size:12px;line-height:1.5;color:#43515b;margin-bottom:10px}
+.ic324-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:8px 0 14px}
+.ic324-summary>div{border:1px solid #d3dbe0;border-radius:12px;background:#fff;padding:10px 7px;text-align:center}
+.ic324-summary span{display:block;font-size:10px;font-weight:900;color:#5b6871}
+.ic324-summary strong{display:block;font-size:23px;color:#192730}
+.ic324-day{border:1px solid #ccd4da;border-radius:11px;background:#fff;margin-bottom:9px;overflow:hidden}
+.ic324-day>summary{cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:13px;font-weight:950;font-size:14px;color:#141e27;background:#f1f3f4}
+.ic324-day[open]>summary{background:#eee5d1}
+.ic324-events{padding:7px 10px 11px}
+.ic324-event{padding:12px 4px;border-bottom:1px solid #e4e9eb;line-height:1.4}
+.ic324-event:last-child{border-bottom:0}
+.ic324-event .ic324-head{font-weight:950;font-size:14px;color:#1d2932}
+.ic324-event .ic324-meta{font-size:12px;color:#44525d;margin-top:4px;white-space:normal;overflow-wrap:anywhere}
+.ic324-event .ic324-pill{display:inline-block;font-size:11px;font-weight:950;padding:3px 7px;border-radius:7px;margin-right:6px}
+.ic324-pill.cancel{background:#ffe1e4;color:#9c2030}.ic324-pill.loss{background:#ffebd6;color:#8b4d0a}.ic324-pill.unsold{background:#fff4c5;color:#6f5c02}
+.ic324-message{padding:18px 10px;color:#495661;background:#fff;border:1px dashed #bdc8cc;border-radius:10px;font-size:13px}
+.ic324-message.ic324-error{color:#8b2735;background:#fff1f2;border-color:#f0a4ab}
+@media(max-width:430px){.ic324-summary strong{font-size:18px}.ic324-summary span{font-size:9px}}
+</style>
+<script id="ichef-pad-history-v324">
+(()=>{
+ 'use strict';
+ if(window.ichefPadHistoryV324)return;
+ const $=id=>document.getElementById(id);
+ let busy=false,periodDays=7,epoch=0,latestSocket=null,openDay='';
+ const normalized=v=>String(v??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase();
+ const currencyMoney=(value,currency)=>{
+   if(!['CHF','EUR'].includes(currency)||!Number.isFinite(Number(value)))return null;
+   return new Intl.NumberFormat('fr-FR',{style:'currency',currency}).format(Number(value));
+ };
+ const tz=(currency)=>currency==='CHF'?'Europe/Zurich':'Europe/Paris';
+ const dayKey=(date,currency)=>{
+   const d=new Date(date);if(!Number.isFinite(d.getTime()))return '';
+   const parts=new Intl.DateTimeFormat('en-GB',{year:'numeric',month:'2-digit',day:'2-digit',timeZone:tz(currency)}).formatToParts(d);
+   const part=k=>parts.find(x=>x.type===k)?.value||'';
+   return `${part('year')}-${part('month')}-${part('day')}`;
+ };
+ const moment=(v,currency)=>{
+   const d=new Date(v);return Number.isFinite(d.getTime())?
+     new Intl.DateTimeFormat('fr-FR',{dateStyle:'short',timeStyle:'medium',timeZone:tz(currency)}).format(d):'Heure non renseignée';
+ };
+ const el=(tag,cls,content)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(content!==undefined)e.textContent=String(content);return e;};
+ function active(){return Boolean($('sheet')?.classList.contains('ic324-history-mode') && $('ic324-root')?.isConnected);}
+ function status(message,error=false){const root=$('ic324-message');if(!root||!active())return;root.textContent=message;root.classList.toggle('ic324-error',error);}
+ function pinHeaders(){
+   if(typeof STATE==='undefined'||STATE.authenticated!==true||STATE.demo||!String(STATE.pin||''))throw Error('Connexion PAD par PIN requise.');
+   return {'Accept':'application/json','X-iCHEF-Tenant':STATE.tenantID,
+     'X-iCHEF-PIN':STATE.pin,'X-iCHEF-Device':STATE.deviceId||''};
+ }
+ async function getHistory(extra={}){
+   const tenant=String(STATE.tenantID||'').trim();
+   if(!/^[A-Za-z0-9_-]{2,80}$/.test(tenant))throw Error('Établissement invalide.');
+   const query=new URLSearchParams({tenantID:tenant,days:String(periodDays),limit:'200',...extra});
+   const response=await serverFetch('/api/ichef/pad/history/v324?'+query.toString(),{
+     method:'GET',headers:pinHeaders(),credentials:'omit',cache:'no-store'
+   });
+   const data=await response.json().catch(()=>({}));
+   if(!response.ok||data.success!==true)throw Error(String(data.error||'Historique refusé par le serveur (HTTP '+response.status+')'));
+   if(String(data.tenantID||'')!==tenant)throw Error('Réponse provenant d’un autre établissement refusée.');
+   return data;
+ }
+ function eventUI(record,currency){
+   const kind=String(record.kind||'');
+   const article=el('article','ic324-event');
+   const name=String(record.productName||'Article non renseigné');
+   const header=el('div','ic324-head');
+   const pill=el('span','ic324-pill '+(kind==='ANNULATION'?'cancel':kind==='LOSS'?'loss':'unsold'),
+     kind==='ANNULATION'?'ANNULATION':kind==='LOSS'?'PERTE':'INVENDU');
+   header.append(pill,document.createTextNode(name));article.append(header);
+   const details=[];
+   details.push(moment(record.at,currency));
+   if(record.tableId)details.push('Table '+record.tableId);
+   if(Number(record.seat)>0)details.push('Convive '+record.seat);
+   if(Number(record.qty)>0)details.push('Quantité '+record.qty+' '+(record.unit||''));
+   if(record.sourceSector)details.push('Secteur '+record.sourceSector);
+   if(record.actorName)details.push('Collaborateur : '+record.actorName);
+   if(record.actorRole)details.push('Rôle : '+record.actorRole);
+   if(record.reason)details.push('Motif : '+record.reason);
+   if(record.status)details.push('Statut : '+record.status);
+   if(record.productionStatus)details.push('Cuisine : '+record.productionStatus);
+   if(record.id)details.push('Trace : '+record.id);
+   if(Number.isFinite(Number(record.commercialAmount))&&['CHF','EUR'].includes(record.commercialCurrency)){
+     details.push('Valeur commerciale annulée (non fiscale) : '+currencyMoney(record.commercialAmount,record.commercialCurrency));
+   }
+   if(record.costKnown===true){const v=currencyMoney(record.cost,record.currency);if(v)details.push('Coût matière indicatif : '+v);}
+   article.append(el('div','ic324-meta',details.join(' · ')));
+   return article;
+ }
+ function groupByDay(data){
+   const all=Array.isArray(data.data)?data.data:[];
+   const groups=new Map();for(const r of all){const day=dayKey(r.at,data.currency);if(!day)continue;if(!groups.has(day))groups.set(day,[]);groups.get(day).push(r);}
+   return [...groups.entries()].sort(([a],[b])=>b.localeCompare(a));
+ }
+ function populateDay(target,day,data){
+   if(!target?.isConnected||!active())return;
+   target.replaceChildren();
+   const rows=(data.data||[]).filter(x=>dayKey(x.at,data.currency)===day);
+   if(!rows.length){target.append(el('p','ic324-message','Aucune opération enregistrée pour ce jour.'));return;}
+   rows.forEach(r=>target.append(eventUI(r,data.currency)));
+   if(data.coverage?.complete===false)target.append(el('p','ic324-message','Historique partiel (limite de consultation) : consulter une période plus courte.'));
+ }
+ async function expandDay(day,container){
+   openDay=day;container.replaceChildren(el('p','ic324-message','Lecture du journal complet de cette journée…'));
+   const seq=epoch;
+   try{const data=await getHistory({date:day,limit:'300'});if(seq===epoch)populateDay(container,day,data);}
+   catch(err){if(seq===epoch&&container.isConnected)container.replaceChildren(el('p','ic324-message ic324-error',String(err.message||err)));}
+ }
+ function render(data){
+   const root=$('ic324-root');if(!root||!active())return;
+   const cards=$('ic324-cards');cards?.replaceChildren();
+   const counts={ANNULATION:0,LOSS:0,UNSOLD:0};
+   for(const r of data.data||[])if(Object.hasOwn(counts,r.kind))counts[r.kind]++;
+   for(const [kind,label] of [['ANNULATION','Annulations'],['LOSS','Pertes'],['UNSOLD','Invendus']]){
+     const box=el('div');box.append(el('span','',label),el('strong','',counts[kind]));cards?.append(box);
+   }
+   const list=$('ic324-list');if(!list)return;list.replaceChildren();
+   const groups=groupByDay(data);
+   if(!groups.length)list.append(el('p','ic324-message','Aucune annulation, perte ou déclaration d’invendu dans la période consultée.'));
+   for(const [day,records] of groups){
+     const box=el('details','ic324-day');box.dataset.day=day;
+     const head=el('summary');head.append(el('span','',new Intl.DateTimeFormat('fr-FR',{dateStyle:'full',timeZone:'UTC'}).format(new Date(day+'T12:00:00Z'))),el('span','',records.length+' événement(s) ▾'));box.append(head);
+     const content=el('div','ic324-events');content.append(el('div','ic324-note','Cliquez pour charger les détails complets de cette journée.'));box.append(content);
+     box.addEventListener('toggle',()=>{if(box.open)void expandDay(day,content);});
+     list.append(box);
+     if(openDay===day){box.open=true;}
+   }
+   status('Actualisé : '+moment(data.serverTime,data.currency)+'. '+(data.scope==='OWN'?'Mes opérations confirmées par le serveur.':'Historique établissement : accès responsable.'));
+   if(data.coverage?.complete===false)status('Attention : résultats partiels. Sélectionnez une journée pour obtenir plus de détails.',true);
+ }
+ async function reload(){
+   if(!active()||busy)return;
+   busy=true;const reqId=++epoch;
+   const select=$('ic324-period');if(select)periodDays=Number(select.value)||7;
+   status('Chargement sécurisé depuis le serveur…');
+   try{const result=await getHistory();if(reqId===epoch&&active())render(result);}
+   catch(err){if(reqId===epoch&&active()){
+     const list=$('ic324-list');list?.replaceChildren();
+     $('ic324-cards')?.replaceChildren();status(String(err.message||err),true);
+   }}finally{busy=false;}
+ }
+ function open(){
+   if(typeof STATE==='undefined'||STATE.authenticated!==true||STATE.demo||!String(STATE.pin||'')){
+     if(typeof toast==='function')toast('PIN PAD validé nécessaire pour consulter l’historique.',true);return;
+   }
+   // Utilise la feuille existante : aucune nouvelle barre, aucun doublon dans le menu.
+   openSheet('HISTORIQUE · ANNULATIONS & PERTES',
+     '<div id="ic324-root"><div class="ic324-toolbar"><label>Période<select id="ic324-period"><option value="1">Aujourd’hui</option><option value="7" selected>7 jours</option><option value="30">30 jours</option><option value="90">90 jours</option></select></label><button type="button" id="ic324-refresh">Actualiser</button></div><div class="ic324-note">Annulation ≠ perte réelle. Les prix annulés ne sont pas des coûts matière. Le journal est en lecture seule et conserve les auteurs vérifiés par le serveur.</div><div id="ic324-cards" class="ic324-summary"></div><div id="ic324-message" class="ic324-message" role="status">Chargement…</div><div id="ic324-list"></div></div>');
+   $('sheet')?.classList.add('ic324-history-mode');
+   $('ic324-period')?.addEventListener('change',()=>{openDay='';void reload();});
+   $('ic324-refresh')?.addEventListener('click',()=>void reload());
+   void reload();
+ }
+ // Fermer toute trace du PIN d'affichage: seul le fetch en-tête transmet le PIN.
+ const sheet=$('sheet');
+ const observer=sheet&&new MutationObserver(()=>{if(!sheet.classList.contains('open')){
+   sheet.classList.remove('ic324-history-mode');openDay='';epoch++;
+ }});
+ if(observer)observer.observe(sheet,{attributes:true,attributeFilter:['class']});
+ let pendingTimer=0;
+ function scheduleLive(){
+   if(!active()||!STATE.authenticated)return;
+   if(pendingTimer)return;
+   pendingTimer=setTimeout(()=>{pendingTimer=0;if(active()&&!document.hidden)void reload();},1200);
+ }
+ setInterval(()=>{if(!active()||!STATE.authenticated||document.hidden)return;
+   const sock=STATE.socket;
+   if(sock&&sock!==latestSocket){latestSocket=sock;
+     try{sock.on('ichef-control-v320-changed',scheduleLive);sock.on('orderUpdated',scheduleLive);sock.on('order-updated',scheduleLive);}catch(_){ }
+   }
+ },3000);
+ // Secours polling si un événement Socket.IO a été manqué.
+ setInterval(()=>{if(active()&&!document.hidden)void reload();},25000);
+ window.ichefPadHistoryV324=Object.freeze({open,reload});
+})();
+</script>
+
 </body></html>
+
+
+
+
