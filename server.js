@@ -15347,6 +15347,100 @@ function ichefCtrl320Public(row,{withCost=false}={}){
 }
 
 // ============================================================================
+// iCHEF V327 — RÉSERVATIONS DU CHEF : API DE CONSULTATION SIGNÉE
+// Lecture seule, tenant isolé, contrôles par rôle et service.
+// Ne modifie pas RESERVATIONS_MASTER, ni les paiements, ni la caisse.
+// ============================================================================
+function ichefRes327Day(v){
+ const value=String(v||'').trim();
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(value))return '';
+ const d=new Date(value+'T12:00:00Z');
+ return Number.isFinite(d.getTime())&&d.toISOString().slice(0,10)===value?value:'';
+}
+function ichefRes327Service(row){
+ const normalized=ichefCtrl320Norm(row?.service||row?.shift||row?.meal||'');
+ if(/^(MIDI|LUNCH|DEJEUNER|SERVICE_MIDI|MIDDAY)$/.test(normalized))return 'MIDI';
+ if(/^(SOIR|DINER|DINNER|SERVICE_SOIR|EVENING)$/.test(normalized))return 'SOIR';
+ const h=String(row?.time||row?.heure||'').match(/^(\d{1,2})[:hH](\d{2})/);
+ if(!h)return 'AUTRE';
+ const mins=Number(h[1])*60+Number(h[2]);
+ if(!Number.isFinite(mins)||mins<0||mins>=1440)return 'AUTRE';
+ if(mins>=10*60&&mins<16*60)return 'MIDI';
+ if(mins>=17*60)return 'SOIR';
+ return 'AUTRE';
+}
+function ichefRes327Status(row){
+ const raw=ichefCtrl320Norm(row?.status||row?.reservationStatus||'CONFIRMED');
+ const map={ANNULE:'CANCELLED',ANNULEE:'CANCELLED',CANCELED:'CANCELLED',CANCELLED:'CANCELLED',
+  REJECTED:'REJECTED',REFUSE:'REJECTED',REFUSEE:'REJECTED',NO_SHOW:'NOSHOW',NOSHOW:'NOSHOW',
+  EN_ATTENTE:'PENDING',PENDING:'PENDING',OPTION:'PENDING',CONFIRMED:'CONFIRMED',
+  CONFIRMEE:'CONFIRMED',CONFIRME:'CONFIRMED',RESERVED:'CONFIRMED',RESERVEE:'CONFIRMED',
+  ARRIVED:'ARRIVED',ARRIVEE:'ARRIVED',SEATED:'SEATED',INSTALLE:'SEATED',
+  COMPLETED:'COMPLETED',DONE:'COMPLETED',TERMINE:'COMPLETED',TERMINEE:'COMPLETED'};
+ return map[raw]||'UNKNOWN';
+}
+app.get('/api/ichef/reservations/chef/v327',async(req,res)=>{
+ res.setHeader('Cache-Control','no-store, private');
+ try{
+   const ctx=await ichefCtrl320Authorize(req,res,{write:false});
+   if(!ctx)return;
+   // Pas d'accès PIN implicite. Session signée seulement, rôle vérifié côté serveur.
+   if(ctx.managerPinRead||!ctx.auth||!['DIRECTION','CHEF','MAITRE_HOTEL'].includes(ctx.role)){
+     return res.status(403).json({success:false,code:'RESERVATION_ACCESS_DENIED',error:'Accès Réservations non autorisé.'});
+   }
+   const tenantID=ctx.tenantID;
+   const cfg=await AppState.findOne({tenantID},{'activeOrders.RESERVATIONS_MASTER.data':1,'activeOrders.SETTINGS_MASTER.data':1}).lean();
+   const ao=cfg?.activeOrders||{};
+   const currency=ichefCtrl320Currency(ao);
+   const today=ichefCtrl322LocalDay(new Date(),currency);
+   const wanted=String(req.query.date||today).trim();
+   const date=ichefRes327Day(wanted);
+   if(!date)return res.status(422).json({success:false,code:'INVALID_DATE',error:'Date invalide (AAAA-MM-JJ).'});
+   const delta=Math.abs(Date.parse(date+'T12:00:00Z')-Date.parse(today+'T12:00:00Z'));
+   if(delta>740*86400000)return res.status(422).json({success:false,code:'DATE_OUT_OF_RANGE',error:'Date hors période autorisée.'});
+   const raw=ao.RESERVATIONS_MASTER?.data;
+   const available=Array.isArray(raw);
+   const summary={MIDI:{reservations:0,covers:0},SOIR:{reservations:0,covers:0},AUTRE:{reservations:0,covers:0},pending:0};
+   const rows=[];
+   let omitted=0,dayRows=0;
+   for(const r of available?raw:[]){
+     if(!r||typeof r!=='object')continue;
+     if(ichefRes327Day(String(r.date||'').slice(0,10))!==date)continue;
+     const status=ichefRes327Status(r);
+     const service=ichefRes327Service(r);
+     const rawPax=Number.parseInt(r.couverts??r.pax??r.guests??r.personnes??1,10);
+     const pax=Number.isFinite(rawPax)?Math.max(1,Math.min(500,rawPax)):1;
+     const counted=['CONFIRMED','ARRIVED','SEATED','COMPLETED'].includes(status);
+     if(counted){summary[service].reservations++;summary[service].covers+=pax;}
+     if(status==='PENDING')summary.pending++;
+     dayRows++;
+     if(rows.length>=500){omitted++;continue;}
+     const time=String(r.time||r.heure||'').trim().slice(0,12);
+     const id=ichefCtrl320Text(r.reservationId||r.id||r.bookingId||'',120);
+     // Le Chef voit les indications utiles au service sans numéros de téléphone,
+     // e-mails ni données de fidélité. Pas de données d'autres établissements.
+     rows.push({
+       id,date,time,service,status,pax,
+       table:ichefCtrl320Text(r.assignedTable||r.tableId||r.table||'',60),
+       name:ctx.role==='CHEF'?'':ichefCtrl320Text(r.name||r.clientName||'',100),
+       occasion:ichefCtrl320Text(r.occasion||'',80),
+       note:ichefCtrl320Text(r.clientNote||r.obs||r.observations||'',300)
+     });
+   }
+   rows.sort((a,b)=>a.time.localeCompare(b.time)||a.table.localeCompare(b.table));
+   return res.json({success:true,tenantID,date,today,serverTime:new Date().toISOString(),
+     sourceAvailable:available,role:ctx.role,summary,reservations:rows,
+     coverage:{dayRows,returned:rows.length,truncated:omitted>0,notReturned:omitted},
+     // Une réservation en attente / annulée / refusée / no-show n'est jamais
+     // incluse dans les compteurs « Midi / Soir » de l'accueil.
+     countingRule:'CONFIRMED_ARRIVED_SEATED_COMPLETED'});
+ }catch(error){
+   console.warn('[iCHEF RÉSERVATIONS V327]',String(error?.code||'UNAVAILABLE'));
+   return res.status(503).json({success:false,code:'RESERVATIONS_UNAVAILABLE',error:'Réservations momentanément indisponibles.'});
+ }
+});
+
+// ============================================================================
 // iCHEF V323 — VUE FINANCIERE PARTAGEE CHEF / ADMIN, EN LECTURE SEULE
 // Source unique: FINANCIAL_HISTORY pour les tickets, aucun calcul sur les plats
 // seulement terminés, ni mutation de la caisse, des stocks ou de l'historique.
@@ -40069,23 +40163,3 @@ console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
 console.log('==========================================');
 }
 );
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
