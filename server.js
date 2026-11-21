@@ -1,19 +1,3 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -433,6 +417,9 @@ function ichefSecurityRateLimitForPath(pathname,req){
 
     if(p === '/api/pad/cancellations/history'){
         return {limit:30,windowMs:60_000,blockMs:5*60_000};
+    }
+    if(p === '/api/ichef/pad/history/v324'){
+        return {limit:40,windowMs:60_000,blockMs:5*60_000};
     }
     if(p === '/api/ichef/cancellations/v311'){
         return {limit:30,windowMs:60_000,blockMs:5*60_000};
@@ -15086,6 +15073,113 @@ app.get('/api/ichef/cancellations/v311', async (req,res) => {
   }
 });
 
+
+// ============================================================================
+// iCHEF V324 — HISTORIQUE PAD ANNULATIONS / PERTES / INVENDUS (LECTURE SEULE)
+// Le PIN est dans un en-tête uniquement. L'identité provient de STAFF_ACCESS,
+// JAMAIS d'un nom envoyé par le navigateur. Aucun changement de caisse/stock.
+// ============================================================================
+app.get('/api/ichef/pad/history/v324',async(req,res)=>{
+ res.setHeader('Cache-Control','private,no-store,max-age=0');
+ try{
+  const headerTenant=cleanString(req.headers?.['x-ichef-tenant']||'');
+  const queryTenant=cleanString(req.query?.tenantID||'');
+  const tenantID=headerTenant;
+  if(!/^[A-Za-z0-9_-]{2,80}$/.test(tenantID))return res.status(400).json({success:false,error:'Établissement invalide.'});
+  if(!queryTenant||queryTenant!==tenantID)return res.status(403).json({success:false,error:'Établissement non concordant.'});
+  // Jamais accepter un PIN dans les paramètres ou le corps d'une requête GET.
+  const pin=String(req.headers?.['x-ichef-pin']||'').trim();
+  const auth=await ichefAuthorizePin(tenantID,pin);
+  if(!auth.ok)return res.status(auth.status||403).json({success:false,error:auth.error||'PIN PAD refusé.'});
+  const service=await ichefCheckServiceTerminalAccess({tenantID,pin,terminal:'PAD'});
+  if(!service.ok)return res.status(service.status||403).json({success:false,error:service.error||'Session PAD non autorisée.'});
+  const isManager=Boolean(auth.isManager && service.isManager);
+  // Un serveur ne lit que SES propres événements. Sans ID RH sûr, aucun accès.
+  const actorId=String(auth.staff?.id||auth.staff?.staffId||auth.staff?.employeeId||'').trim().slice(0,120);
+  if(!isManager&&!actorId)return res.status(403).json({success:false,code:'STAFF_ID_REQUIRED',error:'Identifiant RH vérifié requis pour consulter votre historique.'});
+  const days=[1,7,30,90].includes(Number(req.query?.days))?Number(req.query.days):7;
+  const rawDate=String(req.query?.date||'').trim();
+  if(rawDate&&(!/^\d{4}-\d{2}-\d{2}$/.test(rawDate)||
+      !Number.isFinite(Date.parse(rawDate+'T12:00:00Z'))||
+      new Date(rawDate+'T12:00:00Z').toISOString().slice(0,10)!==rawDate))
+   return res.status(422).json({success:false,error:'Journée invalide.'});
+  const limitRaw=Number(req.query?.limit||150);
+  const limit=Number.isInteger(limitRaw)?Math.max(10,Math.min(300,limitRaw)):150;
+  const state=await AppState.findOne({tenantID},{'activeOrders.SETTINGS_MASTER':1}).lean();
+  const currency=ichefCtrl320Currency(state?.activeOrders||{});
+  const nextDay=rawDate?new Date(Date.parse(rawDate+'T00:00:00Z')+86400000).toISOString().slice(0,10):'';
+  const start=rawDate?ichefCtrl322UtcLocalMidnight(rawDate,currency):
+   days===1?ichefCtrl322UtcLocalMidnight(ichefCtrl322LocalDay(new Date(),currency),currency):
+   new Date(Date.now()-days*86400000);
+  const end=rawDate?ichefCtrl322UtcLocalMidnight(nextDay,currency):null;
+  const at=end?{$gte:start,$lt:end}:{$gte:start};
+  const cancelFilter={tenantID,at,action:/^(COMMANDE ANNULÉE|ANNULÉ ·|ANNULÉ PARTIELLEMENT ·|ANNULATION ·)/};
+  const ctrlFilter={tenantID,at,kind:{$in:['LOSS','UNSOLD']}};
+  if(!isManager){cancelFilter.actorId=actorId;ctrlFilter.actorId=actorId;}
+  const [cancelRows,ctrlRows]=await Promise.all([
+   SystemHistoryRecord.find(cancelFilter).sort({at:-1,_id:-1}).limit(limit+1).lean(),
+   IchefCtrl320Event.find(ctrlFilter).sort({at:-1,_id:-1}).limit(limit+1).lean()
+  ]);
+  const cappedCancel=cancelRows.length>limit,cappedCtrl=ctrlRows.length>limit;
+  const sourceCancel=cancelRows.slice(0,limit);
+  // Une annulation complète peut écrire un titre puis des lignes. N'afficher
+  // qu'une ligne par plat quand le détail existe : évite les doubles comptages.
+  const actualLines=sourceCancel.filter(r=>r.line&&r.action&&String(r.action).startsWith('ANNULÉ ·'));
+  const showCancel=sourceCancel.filter(r=>{
+   if(!String(r.action||'').startsWith('COMMANDE ANNULÉE'))return true;
+   return !actualLines.some(line=>String(line.tableId)===String(r.tableId)&&
+     String(line.serviceId||'')===String(r.serviceId||'')&&
+     String(line.actorId||'')===String(r.actorId||'')&&
+     Math.abs(new Date(line.at).getTime()-new Date(r.at).getTime())<4000);
+  });
+  const eventIDs=ctrlRows.slice(0,limit).filter(r=>r.kind!=='REVERSAL').map(r=>r.eventId);
+  const reversals=eventIDs.length?await IchefCtrl320Event.find({tenantID,kind:'REVERSAL',relatedEventId:{$in:eventIDs}}).select({relatedEventId:1}).lean():[];
+  const reversed=new Set(reversals.map(x=>String(x.relatedEventId||'')));
+  const data=[
+   ...showCancel.map(r=>{
+     const line=r.line&&typeof r.line==='object'?r.line:{};
+     const name=String(line.name||'Commande entière').slice(0,140);
+     const qty=Number(r.meta?.qtyRemoved??line.qty??0);
+     const prod=line.served?'Servi':line.ready?'Prêt':line.sent?'Envoyé en cuisine':line.status||'Non renseigné';
+     const price=Number(line.unitPriceBeforeCancellation??NaN);
+     // Une ancienne ligne sans devise historisée n'est pas réétiquetée
+     // artificiellement avec la devise actuelle de l'établissement.
+     const historicCurrency=String(r.meta?.currency||line.currency||'').toUpperCase();
+     const curr=['CHF','EUR'].includes(historicCurrency)?historicCurrency:'';
+     const entry={id:String(r.historyId||r._id||''),at:r.at,kind:'ANNULATION',
+      tableId:String(r.tableId||''),productName:name,qty:Number.isFinite(qty)?qty:0,
+      unit:'PIECE',seat:Number(line.seat||0),reason:String(line.cancelReason||r.detail||'').slice(0,250),
+      status:'ANNULÉ',productionStatus:String(prod).slice(0,90),
+      actorId:String(r.actorId||''),actorName:String(r.operator||'Non identifié').slice(0,140),
+      actorRole:String(r.role||'').slice(0,80),currency:curr,sourceSector:String(line.destination||'').slice(0,80),
+      costKnown:false};
+     // Montant commercial informatif uniquement pour Manager, sans confondre
+     // avec le coût matière et sans modifier une opération fiscale.
+     if(isManager&&curr&&Number.isFinite(price)&&price>=0){entry.commercialAmount=Math.round(price*entry.qty*100)/100;entry.commercialCurrency=curr;}
+     return entry;
+   }),
+   ...ctrlRows.slice(0,limit).map(r=>{
+      const entry={id:String(r.eventId||''),at:r.at,kind:r.kind,
+       productName:String(r.productName||'').slice(0,140),qty:Number(r.qty||0),unit:String(r.unit||''),
+       reason:String(r.reason||'').slice(0,250),status:reversed.has(String(r.eventId))?'RECTIFIÉ':String(r.status||''),
+       sourceSector:String(r.sourceSector||''),actorId:String(r.actorId||''),
+       actorName:String(r.actorName||'').slice(0,140),actorRole:String(r.actorRole||''),currency:r.currency||currency,
+       costKnown:false};
+      if(isManager&&r.status==='CONFIRMED'&&!reversed.has(String(r.eventId))&&
+         Number.isFinite(r.estimatedCost)&&['CHF','EUR'].includes(r.currency)){
+        entry.costKnown=true;entry.cost=r.estimatedCost;
+      }
+      return entry;
+   })
+  ].sort((a,b)=>new Date(b.at)-new Date(a.at)).slice(0,limit);
+  return res.json({success:true,tenantID,scope:isManager?'ESTABLISHMENT':'OWN',
+   currency:currency||null,days,date:rawDate||null,serverTime:new Date().toISOString(),
+   data,coverage:{complete:!cappedCancel&&!cappedCtrl&&data.length<limit,
+     source:'SYSTEM_HISTORY_AND_MULTISECTOR_DECLARATIONS',
+     stockAutomaticallyAdjusted:false,lossesRequireConfirmation:true}});
+ }catch(error){console.warn('[ICHEF PAD HISTORY V324]',String(error?.code||'UNAVAILABLE'));
+  return res.status(503).json({success:false,error:'Journal central momentanément indisponible.'});}
+});
 
 // ============================================================================
 // iCHEF V320 — JOURNAL CENTRAL MULTISECTEURS (NON FISCAL)
