@@ -1812,24 +1812,8 @@ body.partner-alt-screen {
 if ('serviceWorker' in navigator) {
     window.addEventListener('load', async () => {
         try {
-            const registrations =
-                await navigator.serviceWorker.getRegistrations();
-
-            // Retire les anciennes registrations iCHEF qui ne pointent pas sur V21.
-            for (const oldReg of registrations) {
-                const scriptURL =
-                    oldReg.active?.scriptURL ||
-                    oldReg.waiting?.scriptURL ||
-                    oldReg.installing?.scriptURL ||
-                    '';
-
-                if (
-                    scriptURL &&
-                    !scriptURL.includes('service-worker.js?v=21')
-                ) {
-                    await oldReg.unregister();
-                }
-            }
+            // Ne pas désinstaller les Service Workers d'autres modules iCHEF.
+            // Leur cycle de vie et leurs caches doivent rester indépendants.
 
             const reg =
                 await navigator.serviceWorker.register(
@@ -1842,45 +1826,7 @@ if ('serviceWorker' in navigator) {
 
             await reg.update();
 
-            if ('caches' in window) {
-                const keys =
-                    await caches.keys();
-
-                await Promise.all(
-                    keys
-                        .filter(name =>
-                            name.startsWith('ichef-cache-') ||
-                            name.startsWith('ichef-dynamic-')
-                        )
-                        .map(name =>
-                            caches.delete(name)
-                        )
-                );
-            }
-
-            navigator.serviceWorker.addEventListener(
-                'controllerchange',
-                () => {
-                    const key =
-                        'ichef_sw_v21_reloaded';
-
-                    if (
-                        sessionStorage.getItem(key) !== '1'
-                    ) {
-                        sessionStorage.setItem(
-                            key,
-                            '1'
-                        );
-
-                        window.location.replace(
-                            window.location.pathname +
-                            window.location.search +
-                            (window.location.search ? '&' : '?') +
-                            '_sw=21'
-                        );
-                    }
-                }
-            );
+            // Ne pas effacer les caches des autres modules à chaque ouverture.
 
         } catch (error) {
             console.warn(
@@ -1891,68 +1837,119 @@ if ('serviceWorker' in navigator) {
     });
 }
 
-// La PWA se lance via le manifeste sur la connexion partenaire officielle.
-// L'installation n'enregistre aucun PIN et n'altère ni Stripe ni les contrôles de licence.
+// iCHEF PWA V2 — installation uniquement après action de l'utilisateur.
+// Les navigateurs n'autorisent pas le déclenchement de leur boîte native sans geste utilisateur.
+// Aucun changement de PIN, Stripe, licence, tenant ni authentification.
 let deferredPrompt = null;
 function ichefStandalone() {
     return window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 }
-window.addEventListener('beforeinstallprompt', (event) => {
+window.addEventListener('beforeinstallprompt', event => {
     event.preventDefault();
     deferredPrompt = event;
+    const button = document.getElementById('pwa-install-btn');
+    if (button && !ichefStandalone()) {
+        button.style.display = '';
+        button.title = 'Installation directe disponible';
+    }
 });
 window.addEventListener('appinstalled', () => {
     deferredPrompt = null;
-    const btn = document.getElementById('pwa-install-btn');
-    if (btn) btn.style.display = 'none';
+    const button = document.getElementById('pwa-install-btn');
+    if (button) button.style.display = 'none';
+    document.getElementById('pwa-modal')?.style.setProperty('display','none');
 });
+async function ichefPwaDiagnostics() {
+    const messages = [];
+    if (!window.isSecureContext) messages.push('Connexion HTTPS nécessaire.');
+    const manifestLink = document.querySelector('link[rel="manifest"]');
+    if (!manifestLink) {
+        messages.push('Manifeste PWA manquant dans la page.');
+    } else {
+        try {
+            const url = new URL(manifestLink.getAttribute('href'), location.href);
+            const res = await fetch(url.href, {cache:'no-store', credentials:'same-origin'});
+            if (!res.ok) throw Error(`HTTP ${res.status}`);
+            const manifest = await res.json();
+            if (!manifest.start_url || !manifest.name || !Array.isArray(manifest.icons)) {
+                messages.push('Manifeste incomplet (nom, démarrage ou icônes).');
+            }
+            const icons = (manifest.icons || []).filter(i => i.src && i.sizes);
+            if (!icons.length) messages.push('Icônes PWA manquantes.');
+            else {
+                const first = new URL(icons[0].src, url.href);
+                const iconRes = await fetch(first.href, {method:'HEAD', cache:'no-store'});
+                if (!iconRes.ok) messages.push('Icône PWA inaccessible (HTTP '+iconRes.status+').');
+            }
+        } catch (e) {
+            messages.push('Manifeste ou icônes inaccessibles : vérifier le déploiement.');
+        }
+    }
+    if (!('serviceWorker' in navigator)) messages.push('Service Worker non pris en charge par ce navigateur.');
+    else {
+        try {
+            const regs = await navigator.serviceWorker.getRegistrations();
+            if (!regs.some(r => r.active && new URL(r.scope).origin === location.origin)) {
+                messages.push('Service Worker actif non détecté (recharger puis vérifier la console).');
+            }
+        } catch (_) { messages.push('État du Service Worker impossible à vérifier.'); }
+    }
+    return messages;
+}
 async function ouvrirGuideInstallation() {
     if (ichefStandalone()) return;
     if (deferredPrompt) {
         const prompt = deferredPrompt;
-        deferredPrompt = null;
+        deferredPrompt = null; // événement utilisable une seule fois
         try {
-            await prompt.prompt();
+            await prompt.prompt(); // doit rester directement lié au clic
             const choice = await prompt.userChoice;
-            if (choice && choice.outcome === 'accepted') return;
-        } catch (error) { console.warn('[iCHEF PWA] Installation via navigateur', error); }
+            if (choice?.outcome === 'accepted') return;
+            // Si refusé, ne pas ouvrir un guide trompeur immédiatement.
+            if (choice?.outcome === 'dismissed') return;
+        } catch (error) {
+            console.warn('[iCHEF PWA] Invite native indisponible',error);
+        }
     }
     const modal = document.getElementById('pwa-modal');
     const title = document.getElementById('ichef-pwa-title');
     const info = document.getElementById('pwa-instructions');
     const guide = document.getElementById('ios-guide');
-    if (!modal || !guide || !info) return;
+    if (!modal || !guide || !info || !title) return;
     const ua = navigator.userAgent || '';
     const ios = /iPad|iPhone|iPod/i.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     const android = /Android/i.test(ua);
     const edge = /Edg\//i.test(ua);
     const chrome = /Chrome\//i.test(ua) && !edge;
+    title.textContent = 'Installer iCHEF OS';
     if (ios) {
-        title.textContent = 'Installer iCHEF OS sur iPhone / iPad';
-        info.textContent = 'Ouvrez cette page dans Safari pour ajouter l’application à votre écran d’accueil.';
-        guide.textContent = '1. Ouvrez dans Safari.  2. Touchez Partager.  3. Choisissez Sur l’écran d’accueil puis Ajouter.  4. Ouvrez l’icône iCHEF OS.';
+        info.textContent = 'Sur iPhone et iPad, l’installation nécessite une confirmation dans le menu Partager.';
+        guide.textContent = 'Safari → Partager → Sur l’écran d’accueil → Ajouter.';
     } else if (android) {
-        title.textContent = 'Installer iCHEF OS sur Android';
-        info.textContent = 'Ouvrez cette page dans Chrome ou Edge.';
-        guide.textContent = '1. Ouvrez le menu ⋮ du navigateur.  2. Choisissez Installer l’application ou Ajouter à l’écran d’accueil.  3. Confirmez puis ouvrez iCHEF OS.';
+        info.textContent = 'L’invite d’installation automatique n’est pas actuellement disponible.';
+        guide.textContent = 'Chrome → menu ⋮ → Installer l’application ou Ajouter à l’écran d’accueil.';
     } else if (edge) {
-        title.textContent = 'Installer iCHEF OS sur Windows — Edge';
-        info.textContent = 'Sur Microsoft Edge, iCHEF OS peut s’ouvrir dans une fenêtre d’application dédiée.';
-        guide.textContent = '1. Cliquez sur ⋯ en haut à droite.  2. Applications → Installer ce site en tant qu’application.  3. Validez avec Installer.  4. Épinglez l’application au menu Démarrer ou à la barre des tâches.';
+        info.textContent = 'L’invite native d’installation n’est pas actuellement disponible.';
+        guide.textContent = 'Edge → menu ⋯ → Applications → Installer ce site en tant qu’application.';
     } else if (chrome) {
-        title.textContent = 'Installer iCHEF OS — Chrome';
-        info.textContent = 'Sur ordinateur, iCHEF OS peut s’ouvrir comme une application indépendante.';
-        guide.textContent = '1. Ouvrez le menu ⋮.  2. Choisissez Installer iCHEF OS (ou Enregistrer et partager → Installer la page en tant qu’application).  3. Validez et épinglez l’application.';
+        info.textContent = 'L’invite native d’installation n’est pas actuellement disponible.';
+        guide.textContent = 'Chrome → menu ⋮ → Enregistrer et partager / Caster, enregistrer et partager → Installer la page en tant qu’application.';
     } else {
-        title.textContent = 'Installer iCHEF OS';
-        info.textContent = 'Utilisez Chrome, Edge ou Safari pour l’installation.';
-        guide.textContent = 'Sur ordinateur : menu du navigateur → Installer l’application. Sur iPhone : Safari → Partager → Sur l’écran d’accueil.';
+        info.textContent = 'Ce navigateur ne propose pas actuellement d’installation directe.';
+        guide.textContent = 'Ouvrez la page dans Chrome, Edge ou Safari selon votre appareil.';
     }
     modal.style.display = 'flex';
+    // Diagnostic non bloquant : ni redirection, ni modification de session.
+    const diagnostics = await ichefPwaDiagnostics();
+    if (modal.style.display === 'flex' && diagnostics.length) {
+        const tip = document.createElement('p');
+        tip.style.cssText = 'color:#fbbf24;font-size:.76rem;line-height:1.5;margin:12px 0 0;white-space:pre-line';
+        tip.textContent = 'Vérifications techniques :\n' + diagnostics.join('\n');
+        guide.replaceChildren(document.createTextNode(guide.textContent),tip);
+    }
 }
 if (ichefStandalone()) {
-    const btn = document.getElementById('pwa-install-btn');
-    if (btn) btn.style.display = 'none';
+    document.getElementById('pwa-install-btn')?.style.setProperty('display','none');
 }
 
 
