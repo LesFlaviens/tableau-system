@@ -1,4 +1,16 @@
 
+
+
+
+
+
+
+
+
+
+
+
+
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -884,6 +896,9 @@ body.ichef-v7-metiers-ready section[data-legacy-offers="true"]{display:none}
 .ichef-socle-card>span{color:#eac05d}.ichef-socle-card strong{flex:1}.ichef-socle-card button{border:1px solid #9a793c;border-radius:9px;background:transparent;color:#eac05d;font-weight:800;font-size:10px;padding:8px;cursor:pointer}
 .ichef-options-title{color:#eac05d;font-size:17px;margin:16px 0 12px}
 @media(max-width:650px){.ichef-socle-depart{grid-template-columns:1fr}}
+
+/* V20 — sélection explicite de la zone tarifaire : CHF Suisse / EUR zone euro */
+
 </style></head>
 <body>
 
@@ -936,7 +951,7 @@ body.ichef-v7-metiers-ready section[data-legacy-offers="true"]{display:none}
       <div>
         <div class="launch-label">Édition lancement</div>
         <div class="launch-price"><span id="launchAmount">2 990</span> <span class="currency" id="launchCurrency">€</span></div>
-        <div class="launch-first">259< >€</div>
+        <div class="launch-first">Première année · HT</div>
         <div class="launch-meta">Installation · Configuration · sythème de autocommande · Formation incluses ainsi aur tous nos modules </div>
       </div>
       <div class="launch-right">
@@ -1059,7 +1074,6 @@ body.ichef-v7-metiers-ready section[data-legacy-offers="true"]{display:none}
     <div class="section-kicker">Nos offres</div>
     <h2 class="section-title">Une formule adaptée à chaque ambition.</h2>
     <p class="section-sub">Toutes les fonctionnalités. Zéro commission. Une seule plateforme.</p>
-    <div id="autoCurrencyLabel" style="margin-top:8px;color:#b7b7b7;font-size:10px;letter-spacing:.4px;text-align:center;">Tarifs : Suisse en CHF · zone euro en €</div>
 
     <div class="cards">
       <article class="card">
@@ -1201,7 +1215,7 @@ const ICHEF_PRICES = {
     symbol: 'CHF',
     launch: 2990,
     essential: 1490,
-    complete: 200
+    complete: 2990
   }
 };
 
@@ -1230,21 +1244,13 @@ function applyAutomaticMarket(market){
   const marketField = document.getElementById('demoMarket');
   if(marketField) marketField.value = `${p.label} · ${p.currency}`;
 
-  const autoLabel = document.getElementById('autoCurrencyLabel');
-  if(autoLabel){
-    autoLabel.textContent = `Suisse : CHF · zone euro : € — Affichage actuel : ${p.label} (${p.symbol})`;
-  }
 
   document.documentElement.dataset.currency = p.currency;
   document.documentElement.dataset.market = p.label;
   if(typeof ichefRenderForfaits==='function' && document.getElementById('ichef-metiers')){try{ichefRenderForfaits();ichefRenderMetierResume();}catch(_){}}
   if(typeof ichefPackMajResume==='function' && document.getElementById('ichef-pack-prix'))ichefPackMajResume();
+  document.dispatchEvent(new CustomEvent('ichef:market-changed',{detail:{currency:currentMarket}}));
 
-  const countryCode = document.getElementById('countryCode');
-  if(countryCode && currentMarket === 'CHF'){
-    const swissOption = [...countryCode.options].find(o => o.value === '+41');
-    if(swissOption) countryCode.value = '+41';
-  }
 }
 
 function selectDynamicPlan(plan){
@@ -1337,24 +1343,28 @@ async function detectCountryByIP(){
   return '';
 }
 
+/* La devise s'affiche automatiquement selon le pays détecté.
+   Le pays renseigné dans le formulaire de l'établissement est prioritaire.
+   Aucun sélecteur de devise, aucune préférence persistante pouvant fausser un nouveau visiteur. */
+let ichefCountryFromForm = false;
+function ichefChooseMarket(market){
+ ichefCountryFromForm = true;
+ applyAutomaticMarket(market);
+}
 async function detectMarketAutomatically(){
-  /* 1. Affichage immédiat, sans attendre le réseau */
-  const hint = localCountryHint();
-  applyAutomaticMarket(hint === 'CH' ? 'CHF' : 'EUR');
-
-  /* 2. L'adresse IP tranche ensuite de façon automatique */
-  const country = await detectCountryByIP();
-
-  if(country){
-    applyAutomaticMarket(country === 'CH' || country === 'CHE' ? 'CHF' : 'EUR');
-  }
+ const hint=localCountryHint();
+ // Le fuseau/langue fournit un premier affichage rapide, avant vérification IP.
+ applyAutomaticMarket(hint==='CH'?'CHF':'EUR');
+ // En cas de paramètre explicite de test, respecter la valeur.
+ const params=new URLSearchParams(location.search);
+ if(params.has('country')||params.has('pays')||params.has('currency')||params.has('devise'))return;
+ const country=await detectCountryByIP();
+ if(!ichefCountryFromForm && country){
+   applyAutomaticMarket(country==='CH'||country==='CHE'?'CHF':'EUR');
+ }
 }
-
-if(document.readyState === 'loading'){
-  document.addEventListener('DOMContentLoaded', detectMarketAutomatically);
-}else{
-  detectMarketAutomatically();
-}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',detectMarketAutomatically);
+else detectMarketAutomatically();
 
 function openDemo(){document.getElementById('demoModal').classList.add('show')}
 function closeDemo(){document.getElementById('demoModal').classList.remove('show')}
@@ -2021,7 +2031,7 @@ function ichefPackMarketFromCountry(value){
 }
 function ichefPackSynchroniserPays(){
  const field=document.querySelector('#ichef-pack-form [name="pays"]');
- if(field && field.value.trim())applyAutomaticMarket(ichefPackMarketFromCountry(field.value));
+ if(field && field.value.trim())ichefChooseMarket(ichefPackMarketFromCountry(field.value));
 }
 
 function ichefPackPrix(){return `${ichefFormatTarif(ICHEF_PRICES[currentMarket]?.launch ?? 2990)} ${ichefPrixSymbol()}`;}
@@ -2095,7 +2105,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
   <button type="button" class="ichef-pack-close" aria-label="Fermer" onclick="document.getElementById('ichef-pack-dialog').close()">×</button>
   <div class="ichef-pack-kicker">OFFRE DE LANCEMENT · iCHEF OS</div>
   <h2 id="ichef-pack-title">Composez votre configuration</h2>
-  <p>Tarif selon le pays de votre établissement : Suisse en CHF, zone euro en €. Personnalisez le pack à <strong id="ichef-pack-prix">2 990 €</strong> pour la première année. Installation, configuration, puces NFC et formation incluses, selon le périmètre validé.</p>
+  <p>Personnalisez le pack à <strong id="ichef-pack-prix">2 990 €</strong> pour la première année. Installation, configuration, puces NFC et formation incluses, selon le périmètre validé.</p>
   <div class="ichef-pack-grid">
    <label>Votre activité <select name="activite" id="ichef-pack-activite" required><option value="restaurant">Restaurant</option><option value="hotel">Hôtel</option><option value="bar">Bar</option><option value="mixte">Établissement mixte</option></select></label>
    <label id="ichef-pack-hotel-rest-label" hidden>Votre hôtel a-t-il un restaurant ? <select name="hotelRestaurant" id="ichef-pack-hotel-rest"><option value="non">Non</option><option value="oui">Oui</option></select></label>
@@ -2167,6 +2177,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
 </body>
 </html>
 Draggable item chatgpt:conversation:6b022d47-4984-83eb-950d-b12a90754c24 was dropped over droppable area sidebar-thread-container:chats
+
 
 
 
