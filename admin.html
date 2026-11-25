@@ -1,17 +1,4 @@
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -113,6 +100,8 @@
     function redirectToLogin(reason = "SESSION_INVALID") {
         const sec = window.ICHEF_SECURITY;
         sec.ready = false;
+        sec.hotelAccess = false;
+        document.documentElement.removeAttribute("data-ichef-hotel-access");
         sec.connectionState = "unauthenticated";
         sec.user = null;
         sec.permissions = [];
@@ -456,6 +445,8 @@ async function verifyAdminPin() {
                     ? data.permissions
                     : (adminRoleAllowed(data) ? ['*'] : []);
 
+            sec.hotelAccess = false;
+            if (typeof window.ichefApplyHotelLicense === 'function') window.ichefApplyHotelLicense(data);
             sec.ready = true;
             sec.connectionState = 'online';
 
@@ -2611,6 +2602,10 @@ body:not(.ichef-admin-locked) .app-container{
 
 
 <style id="ichef-hotel-admin-module-v1">
+html:not([data-ichef-hotel-access="yes"]) [data-nav-group="hotel"],
+html:not([data-ichef-hotel-access="yes"]) #tab-hotel { display:none !important; }
+html:not([data-ichef-hotel-guest="yes"]) [onclick="openIchefGuestPreview()"] { display:none !important; }
+
 #tab-hotel .ichef-hotel-hero{
     border:1px solid rgba(212,175,55,.30);
     background:
@@ -6283,6 +6278,11 @@ html, body {
             let visibleCount = 0;
 
             groups.forEach(group => {
+                if (group.dataset.navGroup === 'hotel' && !window.ICHEF_SECURITY?.hotelAccess) {
+                    group.classList.add('search-hidden');
+                    group.classList.remove('search-open');
+                    return;
+                }
                 const items = Array.from(group.querySelectorAll('.ichef-pro-item'));
                 let groupHasMatch = false;
 
@@ -6350,6 +6350,7 @@ html, body {
 
 
         function switchTab(tabId, el) {
+            if (tabId === 'tab-hotel' && !window.ICHEF_SECURITY?.hotelAccess) return;
             const scrollHost = document.querySelector('.content-scroll');
 
             document.querySelectorAll('.main-scroll').forEach(t => {
@@ -13126,6 +13127,45 @@ document.addEventListener("DOMContentLoaded",()=>{
 (function(){
     "use strict";
 
+    const sec = window.ICHEF_SECURITY;
+    let refreshing = false;
+    window.ichefApplyHotelLicense = function(data) {
+        const addons = Array.isArray(data?.addons) ? data.addons.map(v => String(v).trim().toLowerCase()) : [];
+        const blocked = Array.isArray(data?.blockedModules) ? data.blockedModules.map(v => String(v).trim().toLowerCase()) : [];
+        const status = String(data?.status || '').toUpperCase();
+        const allowed = data?.success === true && !['SUSPENDU','SUSPENDED','EXPIRED','CANCELLED'].includes(status)
+            && addons.includes('ichef-stay.html') && !blocked.includes('ichef-stay.html');
+        sec.hotelAccess = allowed;
+        sec.hotelGuestAccess = allowed && !blocked.includes('ichef-guest.html');
+        if (sec.hotelGuestAccess) document.documentElement.setAttribute('data-ichef-hotel-guest','yes');
+        else document.documentElement.removeAttribute('data-ichef-hotel-guest');
+        document.documentElement.toggleAttribute('data-ichef-hotel-access', allowed);
+        if (allowed) document.documentElement.setAttribute('data-ichef-hotel-access','yes');
+        const group = document.querySelector('[data-nav-group="hotel"]');
+        if (allowed) group?.classList.remove('search-hidden');
+        document.querySelectorAll('[onclick="openIchefGuestPreview()"]').forEach(el => {
+            el.style.setProperty('display', sec.hotelGuestAccess ? '' : 'none', sec.hotelGuestAccess ? '' : 'important');
+        });
+        if (!allowed) {
+            const frame = document.getElementById('ichef-hotel-frame');
+            if (frame && frame.getAttribute('src') !== 'about:blank') frame.setAttribute('src','about:blank');
+            if (document.getElementById('tab-hotel')?.classList.contains('active')) {
+                const general = document.querySelector('[data-title="Paramètres généraux"]');
+                if (typeof openIchefTab === 'function') openIchefTab('tab-general', general, 'establishment');
+            }
+        }
+    };
+    async function refreshHotelLicense() {
+        if (!sec.ready || refreshing) return;
+        refreshing = true;
+        try {
+            const res = await secureFetch('/api/check-license?tenantID=' + encodeURIComponent(sec.tenantID) + '&_t=' + Date.now());
+            window.ichefApplyHotelLicense(res.ok ? await res.json() : null);
+        } catch (_) { window.ichefApplyHotelLicense(null); }
+        finally { refreshing = false; }
+    }
+    window.addEventListener('focus', refreshHotelLicense);
+    setInterval(refreshHotelLicense, 60000);
     function currentIchefHotelTenant(){
         return String(
             window.tenantID ||
@@ -13144,6 +13184,7 @@ document.addEventListener("DOMContentLoaded",()=>{
     };
 
     window.ichefLoadHotelFrame = function(force){
+        if (!sec.ready || !sec.hotelAccess) return;
         const frame = document.getElementById("ichef-hotel-frame");
         if (!frame) return;
 
@@ -13156,6 +13197,7 @@ document.addEventListener("DOMContentLoaded",()=>{
     };
 
     window.openIchefHotelModule = function(el){
+        if (!sec.ready || !sec.hotelAccess) return;
         if (typeof openIchefNavGroup === "function") openIchefNavGroup("hotel");
 
         if (typeof switchTab === "function") {
@@ -13170,14 +13212,17 @@ document.addEventListener("DOMContentLoaded",()=>{
     };
 
     window.openIchefHotelierWindow = function(){
+        if (!sec.ready || !sec.hotelAccess) return;
         window.open(window.ichefHotelURL("ichef-stay.html"), "_blank", "noopener");
     };
 
     window.openIchefGuestPreview = function(){
+        if (!sec.ready || !sec.hotelGuestAccess) return;
         window.open(window.ichefHotelURL("ichef-guest.html"), "_blank", "noopener");
     };
 
     window.addEventListener("ichef:security-ready", function(){
+        void refreshHotelLicense();
         const tab = document.getElementById("tab-hotel");
         if (tab?.classList.contains("active")) {
             window.ichefLoadHotelFrame(false);
@@ -14448,3 +14493,4 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
 
 
 
+⋮⋮⋮⋮
