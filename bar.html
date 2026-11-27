@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="fr">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"><link rel="manifest" href="manifest.json"><link rel="apple-touch-icon" href="icon-512.png"><link rel="icon" type="image/png" href="icon-512.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="mobile-web-app-capable" content="yes"><meta name="theme-color" content="#0b0f19"><title>iCHEF PASS BAR V40 · SMART BAR · SYNCHRONISATION</title><script id="ichef-security-bootstrap">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"><link rel="manifest" href="manifest.json"><link rel="apple-touch-icon" href="icon-512.png"><link rel="icon" type="image/png" href="icon-512.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="mobile-web-app-capable" content="yes"><meta name="theme-color" content="#0b0f19"><title>iCHEF PASS BAR V41 · SMART BAR · CATÉGORIES ACTIVES</title><script id="ichef-security-bootstrap">
 (function(){
   function getDeviceFingerprint(){
   let deviceId=localStorage.getItem('ichef_device_fingerprint');
@@ -500,7 +500,7 @@ header::-webkit-scrollbar-thumb{background:rgba(255,255,255,.16);border-radius:9
         </div>
       </div>
 
-      <span class="v9-role">PASS BAR · V38</span>
+      <span class="v9-role">PASS BAR · V41</span>
       <span id="connection-badge" class="v9-live-badge">● CONNEXION</span>
     </div>
 
@@ -1241,7 +1241,7 @@ function barRefreshCategorySources(activeOrdersState){
   [...cats,...menu.categories].forEach(label=>{
     if(label&&!merged.some(x=>barNorm(x)===barNorm(label))) merged.push(label);
   });
-  if(merged.length) barServerCategories=merged;
+  barServerCategories=merged;
   barMenuCategoryIndex=menu.map;
   barRefreshCategoryFilter();
   barRefreshStationSources(activeOrdersState);
@@ -1280,14 +1280,13 @@ function barItemBelongsToBar(item){
 }
 
 function barCanonicalColumns(tickets=[]){
-  const cols=[...barServerCategories];
+  const cols=[];
   for(const ticket of tickets){
     for(const item of ticket.items||[]){
       const cat=barItemCategory(item);
       if(cat&&!cols.some(x=>barNorm(x)===barNorm(cat))) cols.push(cat);
     }
   }
-  if(!cols.length) cols.push('BAR');
   return cols;
 }
 
@@ -1295,7 +1294,7 @@ function barRefreshCategoryFilter(){
   const select=document.getElementById('bar-category-filter');
   if(!select) return;
   const previous=barSelectedCategory||'ALL';
-  const options=['ALL',...barServerCategories];
+  const options=['ALL',...Array.from(document.querySelectorAll('#board .bar-service-column')).map(el=>el.dataset.barCategory).filter(Boolean)];
   select.innerHTML=options.map(x=>`<option value="${escapeHTML(x)}">${x==='ALL'?'TOUTES CATÉGORIES':escapeHTML(x)}</option>`).join('');
   if(options.includes(previous)) select.value=previous;
   else { barSelectedCategory='ALL'; select.value='ALL'; }
@@ -1670,6 +1669,7 @@ function dispatchTickets(){
     categories:barServerCategories,
     filter:barSelectedCategory,
     station:barSelectedStation,
+    confirmed:Boolean(passBarSocket?.connected && barLastCanonicalStateAt),
     offline:typeof barOfflineRead==='function'?barOfflineRead().length:0
   });
   if(hash!==lastBarHash){
@@ -1744,6 +1744,15 @@ function barRenderTicketForCategory(ticket,category,categoryItems){
   </article>`;
 }
 
+function bar41UpdateEmpty(){
+  const el=document.querySelector('#board .bar41-empty-state'); if(!el)return;
+  const online=Boolean(passBarSocket?.connected && barLastCanonicalStateAt);
+  const filtered=barSelectedStation!=='ALL';
+  el.classList.toggle('confirmed',online&&!filtered);
+  el.querySelector('[data-bar41-status]').textContent=!online?'SYNCHRONISATION':filtered?'POSTE SANS COMMANDE':'SERVICE STABLE';
+  el.querySelector('[data-bar41-message]').textContent=!online?'État du service non confirmé.':filtered?'Aucune boisson pour ce poste.':'Aucune boisson à préparer.';
+  el.querySelector('[data-bar41-detail]').textContent=!online?'Vérification de la connexion au serveur.':filtered?'Sélectionnez Tous pour consulter les autres postes.':'En attente de nouvelles commandes.';
+}
 function renderColumn(scrollId,counterId,tickets){
   const counter=document.getElementById(counterId);
   const totalQty=tickets.reduce((n,t)=>n+(t.items||[]).reduce((s,i)=>s+Number(i.qty||1),0),0);
@@ -1752,12 +1761,19 @@ function renderColumn(scrollId,counterId,tickets){
   const container=document.getElementById(scrollId);
   if(!container) return;
   container.classList.add('bar-category-board');
-  container.style.setProperty("--bar-visible-columns",String(Math.max(1,barSelectedCategory==='ALL'?barCanonicalColumns(tickets).length:1)));
-
   const columns=barCanonicalColumns(tickets);
+  if(barSelectedCategory!=='ALL' && !columns.some(c=>barNorm(c)===barNorm(barSelectedCategory))) barSelectedCategory='ALL';
+  container.style.setProperty("--bar-visible-columns",String(Math.max(1,barSelectedCategory==='ALL'?columns.length:1)));
+  container.classList.toggle('bar41-empty',!columns.length);
   barEnsureCuisineStructureControls();
   window.bar38Categories?.(columns);
 
+  if(!columns.length){
+    container.innerHTML='<div class="bar41-empty-state" role="status"><span class="bar41-empty-dot"></span><strong data-bar41-status></strong><p data-bar41-message></p><small data-bar41-detail></small></div>';
+    bar41UpdateEmpty();
+    barRefreshCategoryFilter();
+    return;
+  }
   container.innerHTML=columns.map(category=>{
     const columnTickets=[];
     let qty=0;
@@ -1779,6 +1795,7 @@ function renderColumn(scrollId,counterId,tickets){
       <div class="bar-service-column-body">${body}</div>
     </section>`;
   }).join('');
+  barRefreshCategoryFilter();
   window.bar38Filter?.();
 }
 
@@ -3309,7 +3326,7 @@ function refreshSelectors(){
     const previous=typeof barSelectedCategory!=="undefined"?barSelectedCategory:"ALL";
     let cats=[];
     try{
-      cats=Array.isArray(barServerCategories)?barServerCategories.slice():[];
+      cats=Array.from(document.querySelectorAll("#board .bar-service-column")).map(el=>el.dataset.barCategory).filter(Boolean);
     }catch(_){}
     if(!cats.length){
       document.querySelectorAll("#board .bar-service-column").forEach(el=>{
@@ -3702,5 +3719,12 @@ window.bar38Filter=()=>{const q=$('bar38-search').value.trim().toLocaleLowerCase
 function maybeOffer(){if(offered||seen()||!window.ICHEF_AUTH?.authenticated||!barLastCanonicalStateAt||!passBarSocket?.connected)return;if(document.querySelector('#board .ticket-card')||barOfflineRead().length||document.querySelector('#mep-modal.open,#bar-library-modal.show')||getComputedStyle($('incident-popup')).display!=='none')return;offered=true;open();}
 setInterval(maybeOffer,2500);
 })();
-</script></body>
+</script>
+<style id="bar41-active-columns">
+#board.bar-category-board{grid-template-columns:repeat(var(--bar-visible-columns,1),minmax(280px,1fr))!important;grid-auto-flow:column!important}
+#board.bar-category-board.bar41-empty{grid-template-columns:minmax(0,1fr)!important;overflow:hidden!important}
+#board .bar-service-column{min-width:0!important}
+.bar41-empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:12px;min-height:0;padding:20px;color:#cbd5e1;background:#101a2b;border:1px dashed #35465f;border-radius:14px}
+.bar41-empty-state strong{font-size:clamp(20px,3vw,34px);letter-spacing:1px;color:#e2e8f0}.bar41-empty-state.confirmed strong{color:#86efac}.bar41-empty-state p{margin:0;font-size:18px}.bar41-empty-state small{color:#94a3b8;font-size:14px}.bar41-empty-dot{width:12px;height:12px;border-radius:50%;background:#e6bb55}.confirmed .bar41-empty-dot{background:#22c55e}
+</style><script>setInterval(bar41UpdateEmpty,1000);</script></body>
 </html>
