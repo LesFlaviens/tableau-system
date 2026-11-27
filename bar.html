@@ -1,6 +1,9 @@
+
+
+
 <!DOCTYPE html>
 <html lang="fr">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"><link rel="manifest" href="manifest.json"><link rel="apple-touch-icon" href="icon-512.png"><link rel="icon" type="image/png" href="icon-512.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="mobile-web-app-capable" content="yes"><meta name="theme-color" content="#0b0f19"><title>iCHEF PASS BAR V37 · IDENTIQUE PASS CUISINE · MOTEUR BAR · ANTI-COUPURE</title><script id="ichef-security-bootstrap">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"><link rel="manifest" href="manifest.json"><link rel="apple-touch-icon" href="icon-512.png"><link rel="icon" type="image/png" href="icon-512.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="mobile-web-app-capable" content="yes"><meta name="theme-color" content="#0b0f19"><title>iCHEF PASS BAR V38 · SMART BAR</title><script id="ichef-security-bootstrap">
 (function(){
   function getDeviceFingerprint(){
   let deviceId=localStorage.getItem('ichef_device_fingerprint');
@@ -500,7 +503,7 @@ header::-webkit-scrollbar-thumb{background:rgba(255,255,255,.16);border-radius:9
         </div>
       </div>
 
-      <span class="v9-role">CHEF BARMAN · V37</span>
+      <span class="v9-role">PASS BAR · V38</span>
       <span id="connection-badge" class="v9-live-badge">● CONNEXION</span>
     </div>
 
@@ -578,6 +581,7 @@ header::-webkit-scrollbar-thumb{background:rgba(255,255,255,.16);border-radius:9
   <div id="kitchen-batches"></div>
 </div>
 
+<div id="bar38-tools"><div id="bar38-categories" aria-label="Catégories de boissons"></div><input id="bar38-search" type="search" placeholder="Rechercher une table ou une boisson" aria-label="Rechercher une table ou une boisson"><button id="bar38-guide-button" type="button">Comment ça marche ?</button></div>
 <div class="board service-columns-board bar-category-board tickets-scroll" id="board">
   <div class="empty-state">
     <h3>Bar prêt</h3>
@@ -1404,7 +1408,6 @@ async function barFlushOfflineMutations(){
   const rows=barOfflineRead();
   if(!rows.length){barSetConnectionBadge(!!passBarSocket?.connected);return}
   BAR_OFFLINE_FLUSHING=true;
-  const remaining=[];
   try{
     for(const row of rows){
       try{
@@ -1412,20 +1415,14 @@ async function barFlushOfflineMutations(){
         if(Object.prototype.hasOwnProperty.call(data,'order')){
           applyBarOrderPacket({tenantID,tableId:row.tableId,order:data.order});
         }
-      }catch(err){
-        remaining.push(row);
-        if(!navigator.onLine || err?.status===401 || err?.status===403) break;
-      }
+        barOfflineWrite(barOfflineRead().filter(x=>x.id!==row.id));
+      }catch(err){break;}
     }
-    const untouched=rows.slice(rows.length-(remaining.length||0));
-    barOfflineWrite(remaining.length?remaining:[]);
-    if(!remaining.length){
+    if(!barOfflineRead().length){
       barSetConnectionBadge(!!passBarSocket?.connected,'TEMPS RÉEL');
       await fetchProductionState().catch(()=>{});
       showToast('BAR RESYNCHRONISÉ');
-    }else{
-      barSetConnectionBadge(false,'À SYNCHRONISER');
-    }
+    }else{barSetConnectionBadge(false,'À SYNCHRONISER');}
   }finally{
     BAR_OFFLINE_FLUSHING=false;
   }
@@ -1574,6 +1571,14 @@ async function fetchProductionState(){
   }
 }
 
+function barValidTime(...values){
+  for(const v of values){
+    if(v==null||v==='')continue;
+    const str=String(v).trim();
+    const n=/^\d{13}$/.test(str)?Number(str):/^\d{10}$/.test(str)?Number(str)*1000:/^\d{4}-\d{2}-\d{2}/.test(str)?Date.parse(str):NaN;
+    if(Number.isFinite(n)&&n>=946684800000&&n<=Date.now()+60000)return n;
+  }return null;
+}
 function dispatchTickets(){
   const tickets=[];
   const orders=[];
@@ -1599,7 +1604,8 @@ function dispatchTickets(){
 
     order.items.forEach(i=>{
       if(i.isSent && !i.served && i.itemId && barItemBelongsToBar(i)){
-        delay=Math.max(delay,(Date.now()-Number(i.itemId))/60000);
+        const stamp=barValidTime(i.createdAt,i.addedAt,i.itemId,order.createdAt,order.time);
+        if(stamp) delay=Math.max(delay,(Date.now()-stamp)/60000);
       }
     });
 
@@ -1673,9 +1679,9 @@ function barRenderTicketForCategory(ticket,category,categoryItems){
         ${obs}${seat}<span class="bar-category-chip">${escapeHTML(category)}</span>
       </div>
       <div class="item-actions">
-        <button class="recipe-btn" onclick="openRecipeForTicket(decodeURIComponent('${encoded}'),${Number(item.qty||1)})">FICHE</button>
+        <button class="recipe-btn" onclick="openRecipeForTicket(decodeURIComponent('${encoded}'),${Number(item.qty||1)})">Recette</button>
         <button class="btn-ready" ${ticket.isTimeShifted?'disabled':''}
-          onclick="markItemAsReady('${String(ticket.tableId).replace(/'/g,"\\'")}',${item.originalIndex})">${done?'ANNULER':'VALIDER'}</button>
+          onclick="markItemAsReady('${String(ticket.tableId).replace(/'/g,"\\'")}',${item.originalIndex})">${done?'Remettre en préparation':'Prêt'}</button>
       </div>
     </div>`;
   }).join('');
@@ -1686,7 +1692,7 @@ function barRenderTicketForCategory(ticket,category,categoryItems){
   if(ticket.isTimeShifted){
     footer='<button class="btn-ticket-ready" disabled>EN ATTENTE DU DÉCLENCHEMENT</button>';
   }else if(allBarDone){
-    footer=`<button class="btn-ticket-ready" onclick="markBarOrderReady('${String(ticket.tableId).replace(/'/g,"\\'")}')">BOUCLER LE TICKET BAR</button>`;
+    footer=`<button class="btn-ticket-ready" onclick="markBarOrderReady('${String(ticket.tableId).replace(/'/g,"\\'")}')">Envoyer au pass salle</button>`;
   }else if(categoryDone){
     footer='<button class="btn-ticket-ready" disabled>CATÉGORIE PRÊTE · AUTRES EN COURS</button>';
   }
@@ -1694,8 +1700,8 @@ function barRenderTicketForCategory(ticket,category,categoryItems){
   return `<article class="ticket-card ${chronoClass} ${ticket.isTimeShifted?'timeshift':''}">
     ${chronoHtml}
     <div class="ticket-top">
-      <span class="ticket-table">${title}</span>
-      <div style="text-align:right"><div class="ticket-time">${ticket.time}</div><div class="ticket-source">${escapeHTML(ticket.source)}</div></div>
+      <span class="ticket-table">${escapeHTML(title)}</span>
+      <div style="text-align:right"><div class="ticket-time">${escapeHTML(ticket.time)}</div><div class="ticket-source">${escapeHTML(ticket.source)}</div></div>
     </div>
     <div class="ticket-middle">${itemsHtml}</div>
     <div class="ticket-footer-bar">${footer}</div>
@@ -1713,6 +1719,7 @@ function renderColumn(scrollId,counterId,tickets){
 
   const columns=barCanonicalColumns(tickets);
   barEnsureCuisineStructureControls();
+  window.bar38Categories?.(columns);
 
   container.innerHTML=columns.map(category=>{
     const columnTickets=[];
@@ -1735,6 +1742,7 @@ function renderColumn(scrollId,counterId,tickets){
       <div class="bar-service-column-body">${body}</div>
     </section>`;
   }).join('');
+  window.bar38Filter?.();
 }
 
 async function markItemAsReady(tableId,itemIndex){
@@ -3189,15 +3197,7 @@ function orderHeld(order){
     status.includes("TIME-SHIFT") || status.includes("ATTENTE");
 }
 function itemTime(order,item){
-  const candidates=[item?.itemId,item?.createdAt,item?.addedAt,order?.time,order?.createdAt];
-  for(const v of candidates){
-    if(v==null||v==="")continue;
-    const n=Number(v);
-    if(Number.isFinite(n)&&n>1e11)return n;
-    const d=new Date(v).getTime();
-    if(Number.isFinite(d))return d;
-  }
-  return Date.now();
+  return barValidTime(item?.createdAt,item?.addedAt,item?.itemId,order?.createdAt,order?.time)||Date.now();
 }
 function allLines(){
   const rows=[];
@@ -3259,8 +3259,9 @@ function refreshSelectors(){
     const stations=[];
     allLines().forEach(x=>{if(x.station&&!stations.some(s=>norm(s)===norm(x.station)))stations.push(x.station)});
     if(!stations.length)stations.push("BAR");
-    stationSel.innerHTML=['<option value="ALL">TOUS</option>',...stations.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`)].join("");
-    stationSel.value=stations.includes(previous)?previous:"ALL";
+    const stationOptions=['<option value="ALL">TOUS</option>',...stations.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`)].join("");
+    if(stationSel.dataset.options!==stationOptions){stationSel.innerHTML=stationOptions;stationSel.dataset.options=stationOptions;}
+    if(document.activeElement!==stationSel)stationSel.value=stations.includes(previous)?previous:"ALL";
     if(stationSel.dataset.v37!=="1"){
       stationSel.dataset.v37="1";
       stationSel.addEventListener("change",e=>{
@@ -3280,8 +3281,9 @@ function refreshSelectors(){
         if(c&&!cats.some(x=>norm(x)===norm(c)))cats.push(c);
       });
     }
-    flowSel.innerHTML=['<option value="ALL">TOUT</option>',...cats.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`)].join("");
-    if(cats.includes(previous))flowSel.value=previous; else flowSel.value="ALL";
+    const flowOptions=['<option value="ALL">TOUT</option>',...cats.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`)].join("");
+    if(flowSel.dataset.options!==flowOptions){flowSel.innerHTML=flowOptions;flowSel.dataset.options=flowOptions;}
+    if(document.activeElement!==flowSel)flowSel.value=cats.includes(previous)?previous:"ALL";
     if(flowSel.dataset.v37!=="1"){
       flowSel.dataset.v37="1";
       flowSel.addEventListener("change",e=>{
@@ -3388,7 +3390,8 @@ function renderInlineCockpit(s,a,model){
     `<div class="v10-chip"><span class="n">${s.pendingQty}</span><span class="l">À PRODUIRE</span></div>`+
     `<div class="v10-chip ready"><span class="n">${s.readyQty}</span><span class="l">PRÊT</span></div>`+
     `<div class="v10-chip wait"><span class="n">${s.waitingQty}</span><span class="l">ATTENTE</span></div>`+
-    `<div class="v10-chip batch"><span class="n">${s.batches.length}</span><span class="l">LOTS</span></div>`;
+    `<div class="v10-chip batch"><span class="n">${s.batches.length}</span><span class="l">LOTS</span></div>`+
+    `<div class="v10-chip late"><span class="n">${s.pending.filter(x=>x.waitMin>=limitLateMin).reduce((n,x)=>n+x.qty,0)}</span><span class="l">RETARDS</span></div>`;
 
   const action=document.getElementById("v10-action");
   if(action){
@@ -3585,7 +3588,8 @@ function renderConnection(){
   try{online=online&&!!passBarSocket?.connected}catch(_){}
   const badge=document.getElementById("connection-badge");
   if(badge){
-    badge.textContent=online?"● CONNEXION":"● HORS LIGNE";
+    const queued=barOfflineRead().length;
+    badge.textContent=online?(queued?`À synchroniser (${queued})`:"Connecté"):(queued?`Hors ligne (${queued} en attente)`:"Hors ligne");
     badge.classList.toggle("offline",!online);
   }
   document.getElementById("ichef-brand")?.classList.toggle("is-offline",!online);
@@ -3617,7 +3621,7 @@ document.addEventListener("DOMContentLoaded",()=>{bindControls();refresh()},{onc
 window.addEventListener("online",refresh,{passive:true});
 window.addEventListener("offline",refresh,{passive:true});
 window.addEventListener("ichef:live-state-updated",refresh);
-setInterval(refresh,1200);
+setInterval(refresh,3000);
 
 /* click backdrop closes MEP like Cuisine */
 document.addEventListener("click",e=>{
@@ -3625,10 +3629,46 @@ document.addEventListener("click",e=>{
   if(e.target===modal)closeMep();
 });
 
-window.__ICHEF_PASS_BAR_VERSION__="V37-EXACT-CUISINE-LAYOUT-FUNCTIONS";
+window.__ICHEF_PASS_BAR_VERSION__="V38-SMART-BAR";
 })();
 </script>
 
 
-</body>
+<style id="bar38-style">
+body{background:#0b1220!important;color:#f1f5f9!important} .topbar.topbar-v9{background:#111c2e!important}
+.topbar-v9 .v9-menu-bar{height:auto!important;min-height:0!important;flex-wrap:wrap!important;overflow:visible!important;padding:8px 12px!important;gap:8px!important}
+.topbar-v9 .v9-brand-zone{flex:1 1 100%!important;flex-wrap:wrap!important;gap:8px!important}
+.topbar-v9 .v9-live-badge{display:inline-flex!important;color:#6ee7b7!important;font-size:12px!important} .topbar-v9 .v9-live-badge.offline{color:#fca5a5!important}
+.topbar-v9 .v9-role{display:inline-flex!important;color:#dbeafe!important}
+.topbar-v9 .v18-cockpit-inline{order:8!important;flex:1 1 100%!important;width:100%!important;max-width:none!important;display:flex!important;height:auto!important;gap:8px!important}
+.topbar-v9 .v18-cockpit-inline .v10-kpis{display:flex!important;flex:1!important;gap:8px!important;max-width:none!important;width:auto!important}
+.topbar-v9 .v18-cockpit-inline .v10-chip{flex:1!important;min-width:65px!important;height:59px!important;display:flex!important;flex-direction:column!important;justify-content:center!important;align-items:flex-start!important;padding:8px 12px!important;background:#1c2b41!important;border-radius:10px!important;gap:4px!important}
+.topbar-v9 .v18-cockpit-inline .v10-chip .n{font-size:22px!important}.topbar-v9 .v18-cockpit-inline .v10-chip .l{display:block!important;font-size:10px!important;color:#dbeafe!important}
+.topbar-v9 .v10-chip.ready{border-color:#22c55e!important}.topbar-v9 .v10-chip.wait{border-color:#60a5fa!important}.topbar-v9 .v10-chip.late{border:1px solid #fb7185!important;color:#fda4af!important}
+.topbar-v9 .v18-cockpit-inline .v10-action{height:auto!important;min-height:59px!important;max-width:none!important;flex:0 1 250px!important}.topbar-v9 .v18-cockpit-inline .v10-action .meta{display:block!important;font-size:10px!important}
+.topbar-v9 .v17-rush-inline{max-width:none!important;flex:0 1 auto!important}.topbar-v9 .v9-menu-actions{flex-wrap:wrap!important;margin-left:0!important}
+#bar38-tools{display:flex;flex:0 0 auto;gap:8px;padding:10px 12px;align-items:center;background:#0e1828;flex-wrap:wrap} #bar38-categories{display:flex;flex:1;gap:6px;overflow:auto;min-width:160px} #bar38-tools button,#bar38-tools input{background:#18263b;color:#e2e8f0;border:1px solid #35465f;border-radius:9px;min-height:40px;padding:8px 12px;font:700 13px Inter,sans-serif;white-space:nowrap} #bar38-tools button{cursor:pointer} #bar38-categories button.active{background:#e6bb55;color:#172033;border-color:#e6bb55} #bar38-guide-button{border-color:#d4af37!important} #bar38-search{width:250px;max-width:100%}
+#board.bar-category-board{background:#0b1220!important;grid-auto-columns:minmax(290px,1fr)!important;gap:10px!important} .bar-service-column{background:#101c2c!important;border-color:#334155!important} .bar-service-column-head{background:#1a2b42!important;color:#bfdbfe!important;font-size:13px!important} .bar-service-column .ticket-card{background:#162337!important;border:1px solid #3b506b!important;border-radius:12px!important} .bar-service-column .ticket-top{background:#20324a!important} .ticket-table{font-size:19px!important;color:#f8fafc} .ticket-time,.item-seat,.item-qty{color:#b9c9dd!important} .item-title{font-size:15px!important;color:#f8fafc} .btn-ready,.recipe-btn{min-height:38px!important;padding:7px 9px!important;font-size:12px!important;border-radius:8px!important} .btn-ready{border-color:#22c55e!important;color:#bbf7d0!important;background:#123d30!important} .btn-ticket-ready{min-height:42px!important;font-size:13px!important} .ticket-card[hidden]{display:none!important}
+#bar38-guide{border:1px solid #475569;border-radius:20px;background:#142236;color:#f8fafc;width:min(520px,92vw);padding:24px;box-shadow:0 20px 80px #0008} #bar38-guide::backdrop{background:#030712bb} #bar38-guide h2{margin:12px 0;font-size:24px} #bar38-guide p{line-height:1.6;color:#cbd5e1} #bar38-guide progress{width:100%;accent-color:#d4af37} #bar38-guide footer{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px} #bar38-guide button{padding:10px 15px;min-height:44px;border:1px solid #475569;border-radius:8px;background:#22344d;color:white;cursor:pointer;font-weight:700} #bar38-next{background:#e6bb55!important;color:#101827!important;margin-left:auto} @media(max-width:1000px){.topbar-v9 .v18-cockpit-inline{flex-wrap:wrap!important}.topbar-v9 .v18-cockpit-inline .v10-action{flex:1!important}.topbar-v9 .v18-cockpit-inline .v10-chip{padding:5px!important}.topbar-v9 .v18-cockpit-inline .v10-chip .n{font-size:18px!important} #bar38-tools{padding:6px} #board.bar-category-board{grid-auto-columns:minmax(280px,1fr)!important}}
+</style><dialog id="bar38-guide" aria-labelledby="bar38-title"><small>iCHEF GUIDE · PASS BAR</small><h2 id="bar38-title"></h2><p id="bar38-copy"></p><progress id="bar38-progress" max="7" value="1"></progress><p id="bar38-step"></p><footer><button id="bar38-later" type="button">Plus tard</button><button id="bar38-prev" type="button">Précédent</button><button id="bar38-next" type="button">Suivant</button></footer></dialog>
+<script id="bar38-guide-script">
+(()=>{
+const $=id=>document.getElementById(id), guide=$('bar38-guide');
+const steps=[['Bienvenue au Pass Bar','Retrouvez les boissons à préparer en temps réel. Cette visite ne modifie aucune commande.'],['Vos indicateurs','À produire, prêt, attente, lots et retards : les quantités concernent les boissons du service, pas les ventes.'],['Catégories et recherche','Choisissez une catégorie ou recherchez une table ou une boisson. Le filtre ne modifie aucune commande.'],['Préparer les boissons','Consultez les quantités, les observations et les sièges. Recette ouvre la fiche technique. Prêt valide la ligne ; Remettre en préparation permet de revenir en arrière.'],['Envoyer au pass salle','Lorsque toutes les boissons du ticket sont prêtes, utilisez Envoyer au pass salle. Cette action transmet le statut au service.'],['Mise en place et Anti-Rush','La mise en place regroupe les besoins de production. Anti-Rush indique la charge et les priorités ; les réservations aident à anticiper.'],['Connexion et assistance','Hors ligne signifie que le serveur ne confirme pas encore vos actions. Vérifiez les actions en attente lors du retour de la connexion. Relancez ce guide à tout moment.']];
+let index=0,offered=false;
+const key=()=>`ichef:guide:bar38:${window.ICHEF_AUTH?.tenantID||''}:${window.ICHEF_AUTH?.role||''}`;
+function seen(){try{return localStorage.getItem(key())==='done'}catch(_){return false}}
+function draw(){ $('bar38-title').textContent=steps[index][0];$('bar38-copy').textContent=steps[index][1];$('bar38-progress').value=index+1;$('bar38-step').textContent=`Étape ${index+1} sur ${steps.length}`;$('bar38-prev').disabled=index===0;$('bar38-next').textContent=index===steps.length-1?'Terminer':'Suivant';}
+function open(){if(!window.ICHEF_AUTH?.authenticated||guide.open)return;index=0;draw();guide.showModal();}
+$('bar38-guide-button').onclick=open;$('bar38-later').onclick=()=>guide.close();$('bar38-prev').onclick=()=>{if(index>0){index--;draw()}};$('bar38-next').onclick=()=>{if(index<steps.length-1){index++;draw()}else{try{localStorage.setItem(key(),'done')}catch(_){}guide.close()}};
+window.bar38Categories=columns=>{const box=$('bar38-categories');const values=['ALL',...columns];box.replaceChildren(...values.map(v=>{const b=document.createElement('button');b.type='button';b.textContent=v==='ALL'?'Toutes':v;b.classList.toggle('active',v===barSelectedCategory);b.setAttribute('aria-pressed',String(v===barSelectedCategory));b.onclick=()=>{barSelectedCategory=v;dispatchTickets()};return b}));};
+window.bar38Filter=()=>{const q=$('bar38-search').value.trim().toLocaleLowerCase('fr');document.querySelectorAll('#board .ticket-card').forEach(c=>{c.hidden=!!q&&!c.textContent.toLocaleLowerCase('fr').includes(q)});};$('bar38-search').addEventListener('input',window.bar38Filter);
+function maybeOffer(){if(offered||seen()||!window.ICHEF_AUTH?.authenticated||!barLastCanonicalStateAt||!passBarSocket?.connected)return;if(document.querySelector('#board .ticket-card')||barOfflineRead().length||document.querySelector('#mep-modal.open,#bar-library-modal.show')||getComputedStyle($('incident-popup')).display!=='none')return;offered=true;open();}
+setInterval(maybeOffer,2500);
+})();
+</script></body>
 </html>
+
+
+
+
