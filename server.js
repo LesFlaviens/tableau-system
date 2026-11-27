@@ -1,3 +1,7 @@
+
+
+
+
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -23680,7 +23684,8 @@ function ichefStaffPasswordModeV307(tenantID){
 function ichefStaffValidPasswordV307(password){
     if(typeof password!=='string')return false;
     const length=Array.from(password).length;
-    return length>=15&&length<=128&&Buffer.byteLength(password,'utf8')<=512&&
+    return length>=8&&length<=15&&Buffer.byteLength(password,'utf8')<=512&&
+        /\p{Ll}/u.test(password)&&/\p{Lu}/u.test(password)&&/[\p{P}\p{S}]/u.test(password)&&
         !/[\u0000-\u001f\u007f]/.test(password);
 }
 function ichefStaffInternalPinV307(){
@@ -26349,12 +26354,12 @@ app.post('/api/staff/pin-reset/confirm',async(req,res)=>{
         const challengeId=String(req.body?.challengeId||'').trim();
         const code=String(req.body?.code||'').trim();
         const passwordRequestedV307=Object.prototype.hasOwnProperty.call(req.body||{},'newPassword');
-        const newPasswordV307=passwordRequestedV307?String(req.body.newPassword??''):'';
+        const newPasswordV307=passwordRequestedV307?req.body.newPassword:'';
         const newPin=passwordRequestedV307?ichefStaffInternalPinV307():String(req.body?.newPin||'').trim();
         if(!/^[A-Za-z0-9_-]{16,80}$/.test(challengeId)||
            !/^\d{6}$/.test(code)||
            (passwordRequestedV307?!ichefStaffValidPasswordV307(newPasswordV307):!/^\d{4,12}$/.test(newPin))){
-            return res.status(400).json({success:false,error:'Code e-mail ou nouveau PIN invalide.'});
+            return res.status(400).json({success:false,error:passwordRequestedV307?'Code e-mail ou nouveau mot de passe invalide.':'Code e-mail ou nouveau PIN invalide.'});
         }
         const now=new Date();
         const validFilter={
@@ -26419,11 +26424,11 @@ app.post('/api/staff/pin-reset/complete',async(req,res)=>{
     try{
         const token=String(req.body?.token||'').trim();
         const passwordRequestedV307=Object.prototype.hasOwnProperty.call(req.body||{},'newPassword');
-        const newPasswordV307=passwordRequestedV307?String(req.body.newPassword??''):'';
+        const newPasswordV307=passwordRequestedV307?req.body.newPassword:'';
         const newPin=passwordRequestedV307?ichefStaffInternalPinV307():String(req.body?.newPin||'').trim();
         const match=/^pr1\.([A-Za-z0-9_-]{16,80})\.([A-Za-z0-9_-]{30,160})$/.exec(token);
         if(!match || (passwordRequestedV307?!ichefStaffValidPasswordV307(newPasswordV307):!/^\d{4,12}$/.test(newPin))){
-            return res.status(400).json({success:false,error:'Lien ou nouveau PIN invalide.'});
+            return res.status(400).json({success:false,error:passwordRequestedV307?'Lien ou nouveau mot de passe invalide.':'Lien ou nouveau PIN invalide.'});
         }
         const resetId=match[1],secret=match[2],now=new Date();
         const expected=ichefStaffPinResetHmac(`${resetId}|${secret}`);
@@ -26785,7 +26790,7 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
             .slice(0,180);
 
         const passwordRequestedV307=Object.prototype.hasOwnProperty.call(req.body||{},'newPassword');
-        const newPasswordV307=passwordRequestedV307 ? String(req.body.newPassword??'') : '';
+        const newPasswordV307=passwordRequestedV307 ? req.body.newPassword : '';
         const newPin=passwordRequestedV307 ? ichefStaffInternalPinV307() :
             String(req.body?.newPin||'').replace(/\D/g,'').slice(0,12);
 
@@ -26818,7 +26823,7 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
                 error:
                     (passwordRequestedV307 ? !ichefStaffValidPasswordV307(newPasswordV307) : !/^\d{4,12}$/.test(newPin))
                         ? (passwordRequestedV307
-                            ? 'Choisissez un mot de passe de 15 à 128 caractères.'
+                            ? 'Choisissez un mot de passe de 8 à 15 caractères, dont une minuscule, une majuscule et un caractère spécial.'
                             : 'Choisissez un PIN personnel de 4 à 12 chiffres.')
                         : 'Saisissez le code d’activation reçu par e-mail.'
             });
@@ -40163,3 +40168,7 @@ console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
 console.log('==========================================');
 }
 );
+
+
+
+
