@@ -4,7 +4,7 @@
  * Périmètre strict : /portail-staff.html + manifest / icones Staff.
  * Aucun accès aux API, sessions, PIN, invitations, Socket.IO ou autres modules.
  */
-const VERSION = '308';
+const VERSION = '327';
 const CACHE = `ichef-staff-shell-v${VERSION}`;
 const ORIGIN = self.location.origin;
 const APP = '/portail-staff.html';
