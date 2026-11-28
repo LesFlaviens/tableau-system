@@ -396,21 +396,10 @@ async function ichefWriteSecurityEvent({
  * ils protègent les routes sensibles sans limiter les échanges normaux
  * de Socket.IO / commandes / planning.
  */
-// V306 — Mode test volontairement limité à UN établissement non productif.
-// Deux variables Render sont nécessaires pour activer ce mode :
-// ICHEF_STAFF_PIN_TEST_NO_SEND_LIMITS=true
-// ICHEF_STAFF_PIN_TEST_TENANT=testenfc
-// Ce mode supprime les quotas d'ENVOI (code/lien PIN) et leur temporisation,
-// mais NE supprime JAMAIS la vérification d'identité, le PIN, la session,
-// les essais de code OTP, l'expiration des codes ou les permissions.
+// V326 : le mode mot de passe est généralisé. Aucun établissement, y compris
+// les anciens tenants de test, ne peut désactiver les quotas d’envoi OTP via V306.
 function ichefStaffPinTestNoSendLimitV306(tenantID){
-    const enabled=/^(true|1|yes|on)$/i.test(
-        String(process.env.ICHEF_STAFF_PIN_TEST_NO_SEND_LIMITS||'').trim()
-    );
-    const configured=String(process.env.ICHEF_STAFF_PIN_TEST_TENANT||'')
-        .trim().toLowerCase();
-    const requested=String(tenantID||'').trim().toLowerCase();
-    return Boolean(enabled && configured && requested && requested===configured && !ichefStaffPasswordModeV307(tenantID));
+    return false;
 }
 
 function ichefSecurityRateLimitForPath(pathname,req){
@@ -20274,7 +20263,8 @@ async function ichefStaffFindActiveSecurityProfile(tenantID,staffId){
                 tenantID:1,
                 status:1,
                 archivedAt:1,
-                demoExpiration:1
+                demoExpiration:1,
+                moduleAccess:1
             }
         ).lean();
 
@@ -20933,7 +20923,7 @@ async function ichefStaffAutoInviteV216({tenantID,staffId,origin='AUTO_PIN',req=
 
     // Toujours recharger un profil ACTIF dans le tenant canonique.
     const profile=await ichefStaffFindActiveSecurityProfile(safeTenant,safeStaff);
-    if(!profile)return {status:'PROFILE_MISSING'};
+    if(!profile || !ichefStaffTenantEligibleV326(profile.tenant))return {status:'PROFILE_MISSING'};
     const email=ichefStaffProfileEmail(profile);
     if(!email)return {status:'EMAIL_MISSING'};
     if(!ichefStaffActivationEmailConfigured())return {status:'SMTP_NOT_CONFIGURED'};
@@ -22553,7 +22543,7 @@ async function ichefStaffActivationLoadCredential(input={}){
         row.staffId
     );
 
-    if(!profile){
+    if(!profile || !ichefStaffTenantEligibleV326(profile.tenant)){
         return {ok:false,error:'Profil collaborateur indisponible.'};
     }
 
@@ -22775,19 +22765,14 @@ async function ichefLoadActiveStaffSession(req) {
                 {
                     tenantID: 1,
                     status: 1,
-                    archivedAt: 1
+                    archivedAt: 1,
+                    demoExpiration: 1,
+                    moduleAccess: 1
                 }
             )
             .lean();
 
-    if (
-        !tenant ||
-        tenant.archivedAt ||
-        String(
-            tenant.status || ''
-        ).toUpperCase() !==
-            'ACTIF'
-    ) {
+    if (!ichefStaffTenantEligibleV326(tenant)) {
         return {
             ok: false,
             tenantID:
@@ -23177,10 +23162,10 @@ async function ichefLoadActiveStaffChatSession(req) {
 
     const tenant = await Tenant.findOne(
         { tenantID:auth.tenantID },
-        { tenantID:1, status:1, archivedAt:1 }
+        { tenantID:1, status:1, archivedAt:1, demoExpiration:1, moduleAccess:1 }
     ).lean();
 
-    if (!tenant || tenant.archivedAt || String(tenant.status || '').toUpperCase() !== 'ACTIF') {
+    if (!ichefStaffTenantEligibleV326(tenant)) {
         return {
             ok:false,
             tenantID:auth.tenantID,
@@ -23661,9 +23646,9 @@ app.get(
 
 // ============================================================================
 // iCHEF COLLABORATEUR V307 — MOT DE PASSE SECURISE, PERIMETRE STAFF UNIQUEMENT
-// Activation volontaire sur Render :
-// ICHEF_STAFF_PASSWORD_V307_ENABLED=true
-// ICHEF_STAFF_PASSWORD_V307_TENANT=testenfc
+// V326 : politique Staff multi-tenant par défaut, sans variable Render par client.
+// Les contrôles d’accès utilisent Tenant.status, archivedAt, demoExpiration et moduleAccess.
+// Les comptes PIN historiques restent utilisables tant qu’aucun hash Staff n’existe.
 // Pas de changement des tokens, sessions, droits, modules RH/PAD/Chef/Caisse.
 // ============================================================================
 const ichefStaffPasswordSchemaV307=new mongoose.Schema({
@@ -23677,9 +23662,18 @@ ichefStaffPasswordSchemaV307.index({tenantID:1,staffId:1},{unique:true});
 const IchefStaffPasswordV307=mongoose.models.IchefStaffPasswordV307 ||
     mongoose.model('IchefStaffPasswordV307',ichefStaffPasswordSchemaV307);
 function ichefStaffPasswordModeV307(tenantID){
-    return /^(?:1|true|yes|on)$/i.test(String(process.env.ICHEF_STAFF_PASSWORD_V307_ENABLED||'')) &&
-        Boolean(String(process.env.ICHEF_STAFF_PASSWORD_V307_TENANT||'').trim()) &&
-        cleanString(tenantID)===cleanString(process.env.ICHEF_STAFF_PASSWORD_V307_TENANT);
+    // Politique de format uniquement ; ne constitue jamais une autorisation.
+    return Boolean(cleanString(tenantID));
+}
+function ichefStaffTenantEligibleV326(tenant,now=Date.now()){
+    if(!tenant || !cleanString(tenant.tenantID) || tenant.archivedAt ||
+       String(tenant.status||'').trim().toUpperCase()!=='ACTIF' ||
+       !ichefModuleIsEnabled(tenant,'portail-staff.html'))return false;
+    if(tenant.demoExpiration){
+        const expires=new Date(tenant.demoExpiration).getTime();
+        if(!Number.isFinite(expires)||expires<=now)return false;
+    }
+    return true;
 }
 function ichefStaffValidPasswordV307(password){
     if(typeof password!=='string')return false;
@@ -23727,10 +23721,10 @@ app.post('/api/staff/login',async(req,res,next)=>{
     if(!ichefStaffPasswordModeV307(tenantID))return next();
     const enteredId=String(req.body?.staffId||req.body?.id||'').trim();
     const deviceId=String(req.body?.deviceId||req.headers?.['x-ichef-device']||'').trim();
-    if(!enteredId||!deviceId)return next(); // Contrôles existants prioritaires.
+    if(!enteredId||!deviceId)return res.status(401).json({success:false,code:'STAFF_LOGIN_INVALID',error:'Identifiant ou mot de passe incorrect.'});
     try{
         const profile=await ichefStaffResolveProfileForReset(tenantID,enteredId);
-        if(!profile)return next(); // Refus uniforme par la route login existante.
+        if(!profile)return res.status(401).json({success:false,code:'STAFF_LOGIN_INVALID',error:'Identifiant ou mot de passe incorrect.'});
         const staffId=ichefStaffResetCanonicalId(profile);
         const row=await IchefStaffPasswordV307.findOne({tenantID,staffId})
             .select('+salt +hash').lean();
@@ -24246,7 +24240,8 @@ app.post(
                 tenantID:1,
                 status:1,
                 archivedAt:1,
-                demoExpiration:1
+                demoExpiration:1,
+                moduleAccess:1
             };
 
             const tenants =
@@ -24283,25 +24278,7 @@ app.post(
                             cleanString(item.tenantID)
                         );
 
-                    if (!tenant) {
-                        return false;
-                    }
-
-                    if (
-                        tenant.archivedAt ||
-                        String(tenant.status || '').toUpperCase() === 'SUSPENDU'
-                    ) {
-                        return false;
-                    }
-
-                    if (
-                        tenant.demoExpiration &&
-                        new Date() > new Date(tenant.demoExpiration)
-                    ) {
-                        return false;
-                    }
-
-                    return true;
+                    return ichefStaffTenantEligibleV326(tenant);
                 });
 
             if (allowed.length !== 1) {
@@ -25713,6 +25690,7 @@ async function ichefStaffResolveProfileForReset(tenantID,loginId){
         );
     };
     if(exact){
+        if(!ichefStaffTenantEligibleV326(exact.tenant))return null;
         const ids=[
             ...ichefStaffResetIdentityValues(exact.member||{}),
             ...ichefStaffResetIdentityValues(exact.directoryEntry||{})
@@ -25728,11 +25706,9 @@ async function ichefStaffResolveProfileForReset(tenantID,loginId){
     ); // Aucun nom, e-mail, PIN, identifiant ou jeton dans les logs.
 
     const tenant=await Tenant.findOne({tenantID:safeTenant},{
-        tenantID:1,status:1,archivedAt:1,demoExpiration:1
+        tenantID:1,status:1,archivedAt:1,demoExpiration:1,moduleAccess:1
     }).lean();
-    if(!tenant||tenant.archivedAt||
-       String(tenant.status||'').toUpperCase()==='SUSPENDU'||
-       (tenant.demoExpiration&&new Date()>new Date(tenant.demoExpiration))){
+    if(!ichefStaffTenantEligibleV326(tenant)){
         audit('ETABLISSEMENT_NON_ELIGIBLE');
         return null;
     }
@@ -26850,7 +26826,7 @@ app.post('/api/staff/activation/complete',async(req,res)=>{
         if(passwordRequestedV307!==passwordModeForActivationV307){
             return res.status(428).json({success:false,code:'STAFF_PASSWORD_MODE_MISMATCH',
                 error:passwordRequestedV307
-                    ? 'Mise à jour serveur du mot de passe non activée pour cet établissement.'
+                    ? 'Accès collaborateur indisponible. Contactez votre responsable.'
                     : 'Cette application doit être mise à jour pour créer un mot de passe sécurisé.'});
         }
 
@@ -28983,7 +28959,7 @@ async function ichefStaffChatLoadFastChannelSession(req, channelId) {
         [tenant, channel] = await Promise.all([
             Tenant.findOne(
                 { tenantID:auth.tenantID },
-                { tenantID:1, status:1, archivedAt:1 }
+                { tenantID:1, status:1, archivedAt:1, demoExpiration:1, moduleAccess:1 }
             ).maxTimeMS(4000).lean(),
             StaffChatChannel.findOne({
                 tenantID:auth.tenantID,
@@ -29002,7 +28978,7 @@ async function ichefStaffChatLoadFastChannelSession(req, channelId) {
         };
     }
 
-    if (!tenant || tenant.archivedAt || String(tenant.status || '').toUpperCase() !== 'ACTIF') {
+    if (!ichefStaffTenantEligibleV326(tenant)) {
         return {
             ok:false,
             status:403,
