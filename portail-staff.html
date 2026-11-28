@@ -9,7 +9,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>iCHEF OS — Mon espace collaborateur</title>
-<meta name="ichef-build" content="V325-STAFF-RECOVERY-DIAGNOSTIC">
+<meta name="ichef-build" content="V327-STAFF-SMART-NOTIFICATIONS">
 <meta name="ichef-staff-correctif" content="V302-SINGLE-DOCUMENT-TESTENFC">
 
 <script id="ichef-staff-v230-low-power-hint">
@@ -9580,7 +9580,7 @@ bootstrapCollaboratorPortal();
     w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>@page{size:A4 landscape;margin:10mm}body{font-family:Arial,sans-serif;color:#111}h1{font-size:18px}small{color:#666}table{width:100%;border-collapse:collapse;font-size:9px}th,td{border:1px solid #bbb;padding:5px;text-align:left;vertical-align:top}th{background:#eee}.note{color:#745d22}</style></head><body><h1>${esc(title)}</h1><small>Imprimé le ${esc(new Date().toLocaleString('fr-FR'))}</small>${html}
 
 
-</body></html>`);w.document.close();setTimeout(()=>w.print(),200);
+<style>#staff-notif-toast-v327{position:fixed;top:calc(12px + env(safe-area-inset-top,0px));left:50%;transform:translateX(-50%);width:min(450px,calc(100% - 24px));z-index:5700;background:#17252b;color:#fff;border:1px solid #d7ad5c;border-radius:14px;padding:15px;text-align:left;font:600 14px/1.5 Inter,system-ui,sans-serif;box-shadow:0 8px 30px #0009}#staff-notif-toast-v327[hidden],body.staff-login-open #staff-notif-toast-v327{display:none!important}</style></body></html>`);w.document.close();setTimeout(()=>w.print(),200);
   }
   function printArchive(){
     if(!archiveData){showSync('Affichez d’abord un mois du planning.','error');return;}
@@ -16025,12 +16025,16 @@ body.staff-force-mobile[data-staff-mobile-screen="accueil"] .staff-mobile-header
 (()=>{'use strict';
   if(window.ICHEF_NOTIFICATIONS_V308)return;
   window.ICHEF_NOTIFICATIONS_V308=true;
-  const b=document.createElement('button');b.id='ichef-notif-v308-btn';b.type='button';b.setAttribute('aria-label','Notifications iCHEF');b.innerHTML='🔔 <b hidden>0</b>';
+  const b=document.createElement('button');b.id='ichef-notif-v308-btn';b.type='button';b.setAttribute('aria-label','Notifications iCHEF');b.innerHTML='<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 8-3 8-3 10h18c0-2-3-2-3-10M10 21h4"/></svg> <b hidden>0</b>';
   const panel=document.createElement('section');panel.id='ichef-notif-v308-panel';panel.setAttribute('aria-label','Notifications');
-  panel.innerHTML='<div class="notif-head"><h3>Notifications iCHEF</h3><button type="button" id="ichef-notif-v308-close" aria-label="Fermer">✕</button></div><div class="notif-actions"><button id="ichef-notif-v308-enable" type="button">Autoriser les alertes</button><button id="ichef-notif-v308-disable" type="button" hidden>Désactiver les alertes</button><button id="ichef-notif-v308-refresh" type="button">Actualiser</button></div><p id="ichef-notif-v308-message">Les alertes système demandent votre autorisation.</p><div id="ichef-notif-v308-list"></div>';
+  panel.innerHTML='<div class="notif-head"><h3>Notifications iCHEF</h3><button type="button" id="ichef-notif-v308-close" aria-label="Fermer">✕</button></div><div class="notif-actions"><button id="ichef-notif-v308-enable" type="button">Activer les notifications du téléphone</button><button id="ichef-notif-v308-disable" type="button" hidden>Désactiver les alertes</button><button id="ichef-notif-v308-refresh" type="button">Actualiser</button></div><p id="ichef-notif-v308-message">Recevez vos alertes même lorsque l’application est fermée. Votre autorisation est nécessaire.</p><div id="ichef-notif-v308-list"></div>';
   document.body.append(b,panel);
   const $=id=>document.getElementById(id), badge=b.querySelector('b');
   const account=()=>{try{const token=typeof staffAuthToken==='function'?staffAuthToken():'';const tenant=(localStorage.getItem('ichef_tenant_id')||'').trim();const device=typeof staffDeviceId==='function'?staffDeviceId():'';return token&&tenant&&device?{token,tenant,device}:null;}catch(_){return null;}};
+  const toast=document.createElement('button');toast.type='button';toast.id='staff-notif-toast-v327';toast.hidden=true;document.body.append(toast);
+  let seen=new Set(), seenAccount='', initialized=false, toastTimer, busy=false;
+  const section=n=>({MESSAGE:'messages',PLANNING:'planning',DOCUMENT:'documents'})[n.category]||'';
+  const openSection=n=>{const id=section(n);if(!id)return;panel.classList.remove('open');const link=document.querySelector('.bottom-nav a[href="#'+id+'"]')||document.querySelector('.side-nav a[href="#'+id+'"]');if(link)link.click();else if(typeof staffConnectOpenSection==='function')staffConnectOpenSection(id);};
   const status=t=>{$('ichef-notif-v308-message').textContent=String(t||'');};
   const api=async(path,body)=>{
     const a=account();if(!a)throw Error('Connectez-vous pour consulter les notifications.');
@@ -16043,22 +16047,28 @@ body.staff-force-mobile[data-staff-mobile-screen="accueil"] .staff-mobile-header
   };
   function safeText(s){return String(s??'');}
   async function list(){
-    if(!account()){b.classList.remove('show');panel.classList.remove('open');return;}
+    const current=account();if(!current||document.body.classList.contains('staff-login-open')){hidePrivate();return;}
+    if(busy)return;busy=true;
     try{
-      const data=await api('list');b.classList.add('show');
+      const data=await api('list');const now=account();if(!now||now.token!==current.token||now.tenant!==current.tenant||document.body.classList.contains('staff-login-open'))return;
+      b.classList.add('show');
+      const key=current.tenant+'|'+current.token;if(seenAccount!==key){seenAccount=key;seen.clear();initialized=false;}
+      const rows=data.notifications||[];const fresh=rows.filter(n=>!n.readAt&&!seen.has(n.id));
+      if(initialized&&fresh.length&&!document.hidden){const n=fresh[0];toast.textContent=(n.category==='MESSAGE'?'Message : ':n.category==='PLANNING'?'Planning : ':n.category==='DOCUMENT'?'Documents RH : ':'Notification : ')+n.title+(n.actor?' — '+n.actor:'')+' · Ouvrir';toast.hidden=false;toast.onclick=()=>{toast.hidden=true;if(account()?.token!==current.token)return;if(section(n))openSection(n);else panel.classList.add('open');};clearTimeout(toastTimer);toastTimer=setTimeout(()=>toast.hidden=true,9000);}
+      seen=new Set(rows.map(n=>n.id));initialized=true;
       const unread=Number(data.unread||0);badge.hidden=unread<1;badge.textContent=unread>99?'99+':String(unread);
       const host=$('ichef-notif-v308-list');host.replaceChildren();
       for(const n of data.notifications||[]){
         const item=document.createElement('div');item.className='notif-item'+(!n.readAt?' unread':'');item.tabIndex=0;item.setAttribute('role','button');
-        const title=document.createElement('strong');title.textContent=safeText(n.title);
+        const title=document.createElement('strong');title.textContent=safeText(n.title)+(n.actor?' — '+safeText(n.actor):'');
         const body=document.createElement('p');body.textContent=safeText(n.body);
         const time=document.createElement('small');time.textContent=new Date(n.createdAt).toLocaleString('fr-FR');
-        item.append(title,body,time);const mark=async()=>{if(!n.readAt){try{await api('read',{id:n.id});await list();}catch(e){status(e.message);}}};
+        item.append(title,body,time);const mark=async()=>{if(!n.readAt){try{await api('read',{id:n.id});await list();}catch(e){status(e.message);return;}}openSection(n);};
         item.onclick=mark;item.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();void mark();}};
         host.append(item);
       }
       if(!host.children.length)host.textContent='Aucune notification pour le moment.';
-    }catch(e){status(e.message);}
+    }catch(e){status(e.message);}finally{busy=false;}
   }
   b.onclick=()=>{if(document.body.classList.contains('staff-login-open')||!account()){hidePrivate();return;}
     panel.classList.toggle('open');if(panel.classList.contains('open'))void list();};
@@ -16071,8 +16081,8 @@ body.staff-force-mobile[data-staff-mobile-screen="accueil"] .staff-mobile-header
       if(perm!=='granted')throw Error('Autorisation refusée. Les alertes restent accessibles dans la cloche.');
       const config=await api('config');if(!config.pushSupported||!config.vapidPublicKey)throw Error('Envoi push non configuré sur le serveur.');
       // Utilise le service worker iCHEF déjà en place. Pas de modification de session.
-      const reg=await navigator.serviceWorker.getRegistration('/portail-staff.html')||await navigator.serviceWorker.ready;
-      if(!reg||!reg.pushManager)throw Error('Service Worker Staff indisponible.');
+      const reg=await navigator.serviceWorker.getRegistration('/portail-staff.html');
+      if(!reg||!reg.pushManager||!reg.active||new URL(reg.active.scriptURL).pathname!=='/sw-staff.js')throw Error('Service Worker Staff indisponible.');
       let subscription=await reg.pushManager.getSubscription();
       if(!subscription){
         const key=config.vapidPublicKey.replace(/-/g,'+').replace(/_/g,'/');
@@ -16094,7 +16104,7 @@ body.staff-force-mobile[data-staff-mobile-screen="accueil"] .staff-mobile-header
   };
   let previousAccount=null;
   const hidePrivate=()=>{
-    b.classList.remove('show');panel.classList.remove('open');badge.hidden=true;
+    b.classList.remove('show');panel.classList.remove('open');badge.hidden=true;toast.hidden=true;clearTimeout(toastTimer);seen.clear();seenAccount='';initialized=false;
     $('ichef-notif-v308-list').replaceChildren();
   };
   async function refresh(){
@@ -16129,7 +16139,7 @@ body.staff-force-mobile[data-staff-mobile-screen="accueil"] .staff-mobile-header
   // après connexion sans afficher une deuxième demande d'autorisation.
   let boundAccount='';
   async function syncExistingSubscription(){
-    const a=account();if(!a||!('Notification' in window)||Notification.permission!=='granted'||
+    const a=account();if(!a||document.body.classList.contains('staff-login-open')||!('Notification' in window)||Notification.permission!=='granted'||
       !('serviceWorker' in navigator)||!('PushManager' in window))return;
     const key=a.tenant+'|'+a.token.slice(-12);
     if(key===boundAccount)return;
