@@ -22934,16 +22934,22 @@ function ichefNotifPushHostV308(endpoint){
             h.endsWith('.push.windows.com');
     }catch(_){return false;}
 }
+async function ichefNotifTenantEligibleV327(tenantID){
+    const tenant=await Tenant.findOne({tenantID},{tenantID:1,status:1,archivedAt:1,demoExpiration:1,moduleAccess:1}).lean();
+    return ichefStaffTenantEligibleV326(tenant);
+}
 async function ichefNotifSendPushV308(tenantID,staffId,notification){
-    if(!ichefWebPushV308)return;
+    if(!ichefWebPushV308||!ichefNotifAllowedV308(tenantID)||!await ichefNotifTenantEligibleV327(tenantID))return;
     const subs=await IchefStaffPushV308.find({tenantID,staffId,enabled:true})
         .sort({updatedAt:-1}).limit(4).lean();
     const payload=JSON.stringify({id:String(notification._id),
         title:'iCHEF Collaborateur',
-        body:notification.category==='URGENT'?'Information importante disponible.':'Vous avez une nouvelle notification.',
+        body:({MESSAGE:'Un nouveau message vous attend.',PLANNING:'Votre planning a été actualisé.',DOCUMENT:'Un nouveau document est disponible.',URGENT:'Information importante disponible.'})[notification.category]||'Vous avez une nouvelle notification.',
         tag:'ichef-'+String(notification._id),url:'/portail-staff.html'});
     await Promise.allSettled(subs.map(async sub=>{
-        if(!ichefNotifPushHostV308(sub.endpoint))return;
+        if(!ichefNotifPushHostV308(sub.endpoint)||!sub.deviceId)return;
+        const trusted=await IchefStaffTrustedDevice.findOne({tenantID,staffId,deviceHash:ichefStaffDeviceHash(sub.deviceId),revokedAt:null},{_id:1}).lean();
+        if(!trusted||await ichefStaffSessionDeviceIsRevoked({tenantID,claims:{staffId,deviceId:sub.deviceId}}))return;
         try{
             await ichefWebPushV308.sendNotification({endpoint:sub.endpoint,keys:sub.keys},payload,{TTL:1800,timeout:5000,urgency:notification.category==='URGENT'?'high':'normal'});
         }catch(err){
@@ -22955,7 +22961,7 @@ async function ichefNotifSendPushV308(tenantID,staffId,notification){
 }
 async function ichefNotifPublishV308({tenantID,staffIds,eventId,category='INFO',title,body='',actor=''}){
     const tenant=cleanString(tenantID);
-    if(!ichefNotifAllowedV308(tenant))return;
+    if(!ichefNotifAllowedV308(tenant)||!await ichefNotifTenantEligibleV327(tenant))return;
     const ids=[...new Set((Array.isArray(staffIds)?staffIds:[]).map(s=>ichefNotifStringV308(s,120)).filter(Boolean))].slice(0,500);
     if(!ids.length)return;
     // Aucune publication vers un collaborateur supprimé/désactivé ou autre établissement.
@@ -23014,8 +23020,8 @@ app.get('/api/staff/notifications/v308/list',async(req,res)=>{
             .sort({createdAt:-1}).limit(80).lean();
         return res.json({success:true,notifications:records.map(x=>({
             id:String(x._id),title:x.title,body:x.body,category:x.category,
-            createdAt:x.createdAt,readAt:x.readAt
-        })),unread:records.filter(x=>!x.readAt).length});
+            createdAt:x.createdAt,readAt:x.readAt,actor:x.actor
+        })),unread:await IchefStaffNotificationV308.countDocuments({tenantID:auth.tenantID,staffId,readAt:null})});
     }catch(e){return res.status(503).json({success:false,error:'Historique momentanément indisponible.'});}
 });
 app.post('/api/staff/notifications/v308/read',async(req,res)=>{
@@ -23038,6 +23044,7 @@ app.post('/api/staff/notifications/v308/subscribe',async(req,res)=>{
             return res.status(400).json({success:false,error:'Abonnement push non valide.'});
         const epHash=nodeCrypto.createHash('sha256').update(endpoint).digest('hex');
         const staffId=String(auth.claims.staffId),deviceId=String(auth.claims.deviceId||'');
+        if(!deviceId||!await IchefStaffTrustedDevice.findOne({tenantID:auth.tenantID,staffId,deviceHash:ichefStaffDeviceHash(deviceId),revokedAt:null},{_id:1}).lean())return res.status(403).json({success:false,error:'Appareil Staff non autorisé.'});
         // Le même navigateur ne doit jamais conserver l'abonnement de l'ancien compte.
         await IchefStaffPushV308.updateMany({endpointHash:epHash,
             $nor:[{tenantID:auth.tenantID,staffId}]},{$set:{enabled:false,updatedAt:new Date()}});
