@@ -2,6 +2,10 @@
 
 
 
+
+
+
+
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -408,6 +412,9 @@ function ichefSecurityRateLimitForPath(pathname,req){
             .trim()
             .toLowerCase();
 
+    if(p === '/api/rh/punch' && req?.body?.timeTrust === true){
+        return {limit:30,windowMs:60_000,blockMs:5*60_000};
+    }
     if(p === '/api/pad/cancellations/history'){
         return {limit:30,windowMs:60_000,blockMs:5*60_000};
     }
@@ -9387,6 +9394,7 @@ punchRoute:
 true,
 version:
 'RH-PUNCH-V70-DECONGEST-2026.09.25',
+timeTrust: true,
 timestamp:
 new Date().toISOString()
 });
@@ -9408,10 +9416,14 @@ offlineSync,
 queuedAt,
 fastResponse
 } = req.body || {};
+const timeTrust = req.body?.timeTrust === true;
 const rhPunchStartedAt = Date.now();
+if (timeTrust && (offlineSync === true || offlineEventId || req.headers['idempotency-key'] || clientTimestamp || !/^[A-Za-z0-9_-]{8,200}$/.test(String(deviceId||'')))) {
+  return res.status(400).json({success:false,error:'Pointage TIME TRUST en ligne uniquement.'});
+}
 // V246: chronométrage sans données personnelles pour localiser la lenteur.
 const rhStagesMs = { read: 0, calculation: 0, stateWrite: 0, proofAndAudit: 0 };
-const rhFastResponse = fastResponse === true || String(req.headers['x-ichef-fast-response'] || '') === '1';
+const rhFastResponse = timeTrust || fastResponse === true || String(req.headers['x-ichef-fast-response'] || '') === '1';
 function rhFinishTiming() {
   const total = Math.max(0, Date.now() - rhPunchStartedAt);
   res.setHeader('Server-Timing',
@@ -9442,7 +9454,7 @@ const receivedAtMs =
 Date.now();
 if (
 !safeID ||
-!staffId ||
+(!staffId && !timeTrust) ||
 !/^\d{4,12}$/.test(
 submittedPin
 )
@@ -9505,7 +9517,7 @@ try {
 // pièces jointes ; il ne doit pas être chargé pour un pointage RH.
 const rhReadAt = Date.now();
 const [tenant, existingRhState] = await Promise.all([
-  Tenant.findOne({ tenantID: safeID }, { status: 1 }).lean(),
+  Tenant.findOne({ tenantID: safeID }, { status: 1, moduleAccess: 1, archivedAt: 1, demoExpiration: 1 }).lean(),
   AppState.findOne(
     { tenantID: safeID },
     {
@@ -9538,6 +9550,9 @@ error:
 "Licence suspendue."
 });
 }
+if (timeTrust && (tenant.archivedAt || String(tenant.status||'').toUpperCase() !== 'ACTIF' || !ichefModuleIsEnabled(tenant,'rh.html') || (tenant.demoExpiration && !(new Date(tenant.demoExpiration).getTime()>Date.now())))) {
+  return res.status(403).json({success:false,error:'Accès pointeuse non autorisé.'});
+}
 let state = existingRhState || {
   tenantID: safeID,
   activeOrders: {}
@@ -9561,22 +9576,10 @@ state
 .data
 .slice()
 : [];
-const staff =
-staffAccess.find(
-s =>
-String(
-s?.id || ''
-) ===
-String(
-staffId
-) &&
-s?.active !==
-false &&
-String(
-s?.pin || ''
-).trim() ===
-submittedPin
-);
+const matches = staffAccess.filter(s => s?.active !== false && s?.id &&
+  (timeTrust || String(s.id) === String(staffId)) &&
+  String(s.pin || '').trim() === submittedPin);
+const staff = matches.length === 1 ? matches[0] : null;
 if (!staff) {
 return res
 .status(403)
@@ -9748,11 +9751,11 @@ deviceId || ''
 terminal:
 'RH_POINTEUSE',
 photo:
-(typeof photo === 'string' && photo.startsWith('data:image/') && photo.length <= 700000)
+(!timeTrust && typeof photo === 'string' && photo.startsWith('data:image/') && photo.length <= 700000)
 ? photo
 : '',
 photoRejectedTooLarge:
-Boolean(typeof photo === 'string' && photo.startsWith('data:image/') && photo.length > 700000)
+Boolean(!timeTrust && typeof photo === 'string' && photo.startsWith('data:image/') && photo.length > 700000)
 };
 punches.push(
 punch
@@ -40151,6 +40154,10 @@ console.log('✅ Arrêt propre SIGTERM/SIGINT activé.');
 console.log('==========================================');
 }
 );
+
+
+
+
 
 
 
