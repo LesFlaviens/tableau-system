@@ -9,7 +9,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>iCHEF OS — Mon espace collaborateur</title>
-<meta name="ichef-build" content="V322-RECUPERATION-ASSISTANCE">
+<meta name="ichef-build" content="V323-STAFF-SMART-UPDATE">
 <meta name="ichef-staff-correctif" content="V302-SINGLE-DOCUMENT-TESTENFC">
 
 <script id="ichef-staff-v230-low-power-hint">
@@ -16191,6 +16191,93 @@ body.staff-force-mobile[data-staff-mobile-screen="accueil"] .staff-mobile-header
 </script>
 <!-- iCHEF V320 : journal multi-secteurs autonome; session existante conservée -->
 <script defer src="./ichef-control-v320.js" data-ichef-context="STAFF"></script>
+<!-- V323 : observation du Service Worker Staff existant, sans activation forcée. -->
+<style id="ichef-staff-update-v323-css">
+#staffUpdateV323{position:fixed;z-index:2147483000;right:16px;bottom:calc(100px + env(safe-area-inset-bottom,0px));width:min(390px,calc(100% - 32px));padding:17px;border:1px solid #6b624d;border-radius:18px;background:#151c20;color:#f5f4ef;box-shadow:0 12px 48px #0009;font-family:Inter,system-ui,sans-serif;box-sizing:border-box;}
+#staffUpdateV323[hidden]{display:none!important}
+#staffUpdateV323 .su-kicker{color:#dfc38c;font-size:10px;font-weight:800;letter-spacing:.15em}
+#staffUpdateV323 h2{font-size:18px;line-height:1.25;margin:8px 0;color:#fff}
+#staffUpdateV323 p{font-size:13px;line-height:1.55;margin:0 0 14px;color:#c5d0d1}
+#staffUpdateV323 .su-actions{display:flex;gap:9px;flex-wrap:wrap}
+#staffUpdateV323 button{flex:1;min-height:44px;border-radius:10px;font-size:13px;font-weight:800;padding:8px 12px;cursor:pointer}
+#staffUpdateV323 .su-later{background:#202a2e;color:#fff;border:1px solid #526065}
+#staffUpdateV323 .su-main{background:#dfc38c;color:#101719;border:1px solid #dfc38c}
+#staffUpdateV323 button:focus-visible{outline:2px solid white;outline-offset:3px}
+@media(max-width:600px){#staffUpdateV323{right:12px;width:calc(100% - 24px);bottom:calc(90px + env(safe-area-inset-bottom,0px))}}
+</style>
+<aside id="staffUpdateV323" hidden aria-label="Mise à jour iCHEF Staff">
+<div class="su-kicker">iCHEF STAFF</div>
+<h2 id="staffUpdateTitleV323">Une nouvelle version est disponible</h2>
+<p id="staffUpdateTextV323" role="status" aria-live="polite">Vous pouvez terminer votre travail avant de mettre à jour l’application.</p>
+<div class="su-actions"><button type="button" class="su-later" id="staffUpdateLaterV323">Plus tard</button><button type="button" class="su-main" id="staffUpdateApplyV323">Mettre à jour</button></div>
+</aside>
+<script id="ichef-staff-update-v323">
+(function(){
+ 'use strict';
+ if(!('serviceWorker' in navigator)||!window.isSecureContext)return;
+ const sw=navigator.serviceWorker;
+ const box=document.getElementById('staffUpdateV323'), title=document.getElementById('staffUpdateTitleV323'), copy=document.getElementById('staffUpdateTextV323'), later=document.getElementById('staffUpdateLaterV323'), apply=document.getElementById('staffUpdateApplyV323');
+ const scope=new URL('/portail-staff.html',location.origin).href;
+ let reg=null, lastCheck=0, checking=false, deferredUntil=0, pending=false, changed=false, timer=null;
+ let previous=sw.controller;
+ const watched=new WeakSet();
+ function own(worker){try{return !!worker && new URL(worker.scriptURL).origin===location.origin && new URL(worker.scriptURL).pathname==='/sw-staff.js';}catch(_){return false;}}
+ function present(){
+   if(!pending&&!changed){box.hidden=true;return;}
+   if(Date.now()<deferredUntil||document.hidden)return;
+   title.textContent='Une nouvelle version est disponible';
+   copy.textContent='Vous pouvez terminer votre travail avant de mettre à jour l’application.';
+   apply.textContent='Mettre à jour';box.hidden=false;
+ }
+ function inspect(){
+   pending=!!(reg&&own(reg.waiting)&&reg.active);
+   if(pending||changed)present();else box.hidden=true;
+ }
+ function watch(worker){
+   if(!own(worker)||watched.has(worker))return;
+   watched.add(worker);worker.addEventListener('statechange',inspect);
+ }
+ function bind(r){
+   if(reg===r)return;
+   reg=r;reg.addEventListener('updatefound',()=>{watch(reg.installing);inspect();});
+   watch(reg.installing);watch(reg.waiting);inspect();
+ }
+ async function check(force){
+   if(checking||document.hidden||(!force&&Date.now()-lastCheck<60000))return;
+   checking=true;
+   try{
+     const r=await sw.getRegistration(scope);
+     if(!r||r.scope!==scope||![r.active,r.waiting,r.installing].some(own))return;
+     bind(r);lastCheck=Date.now();await r.update();inspect();
+   }catch(_){/* hors ligne : laisser l’application fonctionner normalement */}
+   finally{checking=false;}
+ }
+ sw.addEventListener('controllerchange',()=>{
+   const current=sw.controller;
+   if(own(previous)&&own(current)&&previous!==current){changed=true;inspect();}
+   previous=current;
+ });
+ later.addEventListener('click',()=>{
+   deferredUntil=Date.now()+30*60000;box.hidden=true;
+   clearTimeout(timer);timer=setTimeout(()=>{inspect();void check(false);},30*60000);
+ });
+ apply.addEventListener('click',()=>{
+   // Aucun skipWaiting, aucun reload automatique, aucune suppression de données.
+   // Sans le code du SW, le cycle normal d’activation reste seul responsable.
+   title.textContent='Comment mettre à jour ?';
+   copy.textContent='Terminez vos opérations et vérifiez leur synchronisation. Fermez toutes les fenêtres et tous les onglets iCHEF Staff, puis ouvrez de nouveau l’application depuis son icône.';
+   apply.textContent='Compris';
+ });
+ apply.addEventListener('click',event=>{
+   if(apply.textContent==='Compris'){event.stopImmediatePropagation();deferredUntil=Date.now()+30*60000;box.hidden=true;clearTimeout(timer);timer=setTimeout(inspect,30*60000);}
+ },true);
+ window.addEventListener('load',()=>{void check(true);setTimeout(()=>void check(true),4000);},{once:true});
+ window.addEventListener('pageshow',()=>void check(false));
+ document.addEventListener('visibilitychange',()=>{if(!document.hidden){inspect();void check(false);}});
+ setInterval(()=>void check(false),5*60000);
+})();
+</script>
+
 </body>
 
 
